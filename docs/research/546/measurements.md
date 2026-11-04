@@ -58,7 +58,7 @@ file in `W` and was refused reading `~/.ssh/known_hosts`, listing `/`, reading
 ```c
 // Minimal Torlek-native sandbox prototype for #546 measurements only (never shipped).
 // Usage: native WORKDIR -- PROGRAM [ARGS...]
-// unshare(user, mount, net, ipc, uts) + Landlock (fs, tcp/udp, scopes) + seccomp deny list + exec.
+// unshare(user, mount, net, ipc, uts) + Landlock (fs, tcp, scopes) + seccomp deny list + exec.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>

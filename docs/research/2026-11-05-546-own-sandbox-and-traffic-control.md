@@ -21,7 +21,8 @@ Build the replacement for Linux and WSL2 first, from five pieces Torlek owns:
 2. **No network in the agent's namespace except one loopback listener.** The launcher creates
    the listener inside the namespace and keeps serving it from outside (file-descriptor
    passing; prototype measured below). Agents reach the network only through it, with
-   `HTTPS_PROXY`/`HTTP_PROXY`. Anything that ignores the variables fails closed.
+   `HTTPS_PROXY`/`HTTP_PROXY`, and `NO_PROXY=localhost,127.0.0.1,::1` keeps the agent's own
+   servers inside the namespace direct. Anything that ignores the variables fails closed.
 3. **A per-session egress proxy in that launcher**, not a shared service. It decides on the
    `CONNECT` host and port and checks the TLS SNI against it, resolves names itself, refuses
    private and loopback addresses unless granted, and refuses an unknown host at once with a
@@ -38,10 +39,12 @@ Build the replacement for Linux and WSL2 first, from five pieces Torlek owns:
 Migrate behind one owner setting, run the same live enforcement suite (#433) and red-team
 (#685) on both backends, make the native one the default, then delete the engines.
 
-Performance does not decide this. On the research host a native launch prototype costs about
-0.75 ms over a plain start (bubblewrap: about 1.8 ms), and each loopback path tested adds
-0.05 to 0.42 ms per request ([measurements](#what-was-measured)); a provider API call takes
-hundreds of milliseconds. The case rests on correctness, one lifecycle and owner control.
+Performance does not decide this. On the research host bubblewrap adds about 1.8 ms to a plain
+start, and a native prototype without a mount view or PID namespace about 0.75 ms. The decided
+design (D3: bubblewrap, then a stage 2 that applies Landlock and seccomp and hands out the
+listener) was not measured end to end; its stage 2 adds one more `exec`. Each loopback path
+tested adds 0.05 to 0.42 ms per request ([measurements](#what-was-measured)); a provider API
+call takes hundreds of milliseconds. The case rests on correctness, one lifecycle and owner control.
 
 - [x] D1 decided 2026-11-05: C, staged (A first, then selective interception).
 - [x] D2 decided 2026-11-05: A, the proxy runs in each session's launcher.
@@ -228,14 +231,17 @@ Require a floor and report the ABI used; refuse below it, never fall back. The f
 (Linux 5.19): under ABI 1 every rename or link across folders is denied, which breaks build
 tools. ABI 4 (6.7) adds TCP `bind`/`connect` rules, ABI 6 (6.12) scopes abstract Unix sockets
 and signals to the sandbox, ABI 9 (7.1) adds `RESOLVE_UNIX` for named Unix sockets and
-ABI 10 (7.2) UDP. WSL2's current kernel, 6.18, has ABI 7. Landlock's network rules match ports, not addresses. Inside a private network
-namespace they add nothing and would break an agent's own test servers on `localhost`, so
+ABI 10 (7.2) UDP. WSL2's current kernel, 6.18, has ABI 7. Landlock's network rules match
+ports, not addresses. Inside a private network namespace they add nothing and would break an agent's own test servers on `localhost`, so
 the native design leaves TCP and UDP unhandled there and relies on the namespace; port rules
 matter only without one (M1 C). The ABI 6 scopes are applied where present but mostly repeat
 the namespaces (abstract sockets belong to a network namespace). `RESOLVE_UNIX` adds more: a
 named socket the mount view exposes read-only stays unreachable unless allowed. Below ABI 9
 the mount view itself must leave out every socket folder the session does not need. The
-`landlock` crate (0.4.7) covers ABIs up to 9, all this design uses.
+`landlock` crate (0.4.7) covers ABIs up to 9, all this design uses. Its default `BestEffort`
+mode drops missing rights silently, so the floor's rights use `HardRequirement`, each right
+above the floor is requested on its own, and the evidence lists only what the kernel
+confirmed.
 
 ### M3. seccomp
 
@@ -244,7 +250,8 @@ Start from Greywall's 27 syscalls and close its gaps: an architecture check, `un
 `setns`, `clone`/`clone3` with namespace flags (`clone3` passes flags by pointer, so it is
 denied with `ENOSYS` and callers fall back to `clone`), the new mount API, `io_uring_*`
 (its operations bypass seccomp), `ioctl(TIOCSTI)` and `TIOCLINUX`, and socket families other
-than Unix, IPv4 and IPv6. Allow-list filters break toolchains on each new syscall; a deny list
+than Unix, IPv4, IPv6 and netlink route (runtimes list interfaces through it; in the empty
+namespace it sees only `lo`). Allow-list filters break toolchains on each new syscall; a deny list
 with these additions is the proportionate choice. User notification is not needed, and its manual page warns against using it for
 security decisions. A
 provider's own nested sandbox (for example one built on bubblewrap) cannot start under this
@@ -270,9 +277,12 @@ runtimes). Torlek can set the variables each runtime needs (Node's built-in clie
 Decide per connection on the `CONNECT` host and port (or the absolute URL of plain HTTP), from
 the session's allowlist. Resolve names in the proxy, then refuse loopback, private, link-local,
 multicast and metadata addresses unless granted by address, which also closes DNS rebinding.
-Refuse IP literals unless granted. Peek the TLS ClientHello and refuse when the SNI is missing
-or differs from the `CONNECT` host; an Encrypted Client Hello (RFC 9849) usually shows another
-outer name and is refused by the same check. No DNS listener exists inside the namespace, so no DNS tunnel.
+Refuse IP literals unless granted. On port 443, peek the TLS ClientHello with a short timeout
+and refuse when the SNI is missing or differs from the `CONNECT` host; an Encrypted Client
+Hello (RFC 9849) usually shows another outer name and is refused by the same check. Any other
+port (SSH on 22, a database whose server speaks first) is a plain tunnel that needs a grant
+naming that host and port; the proxy peeks nothing there. No DNS listener exists inside the
+namespace, so no DNS tunnel.
 
 ### M6. TLS interception
 
@@ -293,7 +303,7 @@ Decided (D1): B is the target, after A ships.
 
 | Option | For | Against |
 | --- | --- | --- |
-| A. In each session's launcher, outside the agent's namespaces, itself confined by Landlock and seccomp | Lifetime is the session's; survives daemon restarts; identity is the listener, so no secrets or ports; a crash affects one session | One small proxy per session (connection pools are not shared) |
+| A. In each session's launcher, outside the agent's namespaces, confining itself with Landlock and seccomp once bubblewrap has started | Lifetime is the session's; survives daemon restarts; identity is the listener, so no secrets or ports; a crash affects one session | One small proxy per session (connection pools are not shared) |
 | B. Inside the daemon | Direct access to grants and the change feed | A daemon restart cuts every agent's open streams; untrusted traffic parsed in the control process (report 03) |
 | C. One shared service (today) | One process | A second lifecycle (#495), fixed ports, a client-identity scheme, one profile per host |
 
@@ -305,8 +315,9 @@ The daemon already starts commands in transient systemd user scopes (#29, decide
 2026-10-31). The launcher can place each session in its own scope with `MemoryMax`, `TasksMax` and
 `CPUWeight`, so a runaway build or fork bomb stops at its session. The user manager is delegated `pids`,
 `memory` and `cpu` by default, which covers all three; I/O limits would need a drop-in installed
-as root. Where no user manager answers, the launcher falls back to `RLIMIT_NPROC` and
-reports the weaker containment.
+as root. `RLIMIT_NPROC` is no fallback: it counts every process of the user, so one session's
+fork bomb would still starve the others. Where no user manager answers, the launcher reports
+"no per-session limits" instead of claiming any.
 
 ### M9. WSL2 and macOS
 
@@ -325,7 +336,7 @@ and root, so neither fits a per-user command.
 torlek daemon ── policy, grants, approvals, evidence, change feed (TUI, phone)
    │  launch spec on an inherited fd          ▲ decisions, requests, counters
    ▼                                          │ (supervisor channel, never in the sandbox)
-tmux pane ─> torlek-sandbox (host network; Landlock: its sockets only; seccomp; scope)
+tmux pane ─> torlek-sandbox (host network; scope; confines itself after starting bwrap)
                │ serves 127.0.0.1:3128 of the agent's namespace (fd passed back)
                │ resolves, decides, connects out
                ▼
@@ -337,7 +348,11 @@ tmux pane ─> torlek-sandbox (host network; Landlock: its sockets only; seccomp
    backend serializes it with the session's allowlist revision and starts `torlek-sandbox` in
    the pane, with the spec on an inherited descriptor and a supervisor token that never enters
    the sandbox. The launcher brings up the namespaces, receives the listener created inside,
-   and only then lets stage 2 `exec` the provider. Any rule it cannot enforce refuses the
+   and only then lets stage 2 `exec` the provider. Then, still single-threaded (before ABI 8,
+   Landlock binds only the calling thread), the launcher confines itself: Landlock to the
+   resolver files (`/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`) and its own
+   sockets, and a seccomp filter. Restrictions bind only processes started afterwards, so
+   bubblewrap and the agent keep their own. Any rule it cannot enforce refuses the
    launch with the rule and reason (`Refusal`), as today.
    The mount view binds Codex's socket folder at its fixed path (#446) without an engine
    feature, and a shared desktop session keeps `xdg-dbus-proxy` limited to
@@ -389,8 +404,11 @@ The profile, refusals and evidence are backend-neutral already, so the switch is
 | 4 | Default becomes `torlek`; Greywall stays selectable for one release as the rollback | Live Linux and WSL2 runs on the owner's hosts with the sandbox on |
 | 5 | Delete `greywall.rs`, `install.rs`, `proxy/`, `seccomp.rs`, pins, `sandbox install`/`restart`/`stop` and their tests; `torlek doctor` offers to stop and remove the old `torlek-greyproxy-<profile>` unit and its state, with the owner's confirmation | No reference to the engines outside history; report 11 and decision register item 15 rewritten |
 
-Selective interception (proposed issue 4) follows stage 1 and gates no stage: nothing Torlek
-launches today depends on Greyproxy's interception. Rollback before stage 5 is one owner setting. Nothing in stages 1 to 4 removes the managed
+Selective interception (proposed issue 4) follows stage 1 and gates stage 4. Torlek asks for no
+placeholder, but Greywall's own detection still replaces matching credential variables (row
+Credentials above), so a native launch must not carry them in instead. Until issue 4 lands,
+the native agent gets only the environment Torlek builds plus its declared pass-through
+secrets; a variable Greywall would have replaced is dropped and named in the evidence. Rollback before stage 5 is one owner setting. Nothing in stages 1 to 4 removes the managed
 Greyproxy, so an owner who switches back finds it running.
 
 ## Decisions for the owner
@@ -449,22 +467,22 @@ Greyproxy) in v0.1.0-alpha.5, macOS in Roadmap: macOS.
 
 ## Proposed issues (not filed)
 
-Ordered; each is one pull request or a small series. Times are for one agent with focused
-tests and do not include review or CI waits.
+Ordered; each is one pull request or a small series. Sizes are rough guesses for one agent
+with focused tests, without review or CI waits.
 
-| # | Title | Acceptance | Milestone (D6) | Supersedes or changes |
-| --- | --- | --- | --- | --- |
-| 1 | Native Linux launcher behind `agents.sandbox_backend` | Through the daemon with a fake provider: checkout writable; `.git/hooks`, `.git/config`, `.torlek` not; `~/.ssh/id_*` and the state database unreadable; no interface but `lo`; `Seccomp: 2`; a second Unix user starts a session (#628); each provider launched with its own sandbox off; evidence names the backend and Landlock ABI | alpha.4 | #628, #434 |
-| 2 | Provider hosts and paths in the provider adapters | Each adapter declares its hosts and folders; a test compares them with the Greywall profiles they replace; attribution kept | alpha.4 | Greywall `--profile` |
-| 3 | Per-session egress proxy | Allowed host connects; unknown host `403` under 1 s with a reason; loopback, private, link-local, metadata and IP literals refused; SNI mismatch refused; no DNS or UDP from inside | alpha.4 | #495 |
-| 4 | Selective TLS interception for credential hosts | A host with a bound credential (for example the project's `GH_TOKEN`, #754) is intercepted with a per-session CA whose key never leaves the launcher's memory; only the certificate enters the session, with trust variables per runtime; the credential is added on that host only and never enters the sandbox, so `git push` over HTTPS and `gh` work with no token inside; every other host stays a plain tunnel; a pinned client's failure names the host | alpha.4 | #59 placeholders, #754's pass-through, #527 |
-| 5 | Network requests as owner decisions | Request listed in `approval list`, Waiting on you and the change feed; allow once, always for the project (D4), deny; who, when, client recorded; revocation closes open tunnels; no path adds an allowlist entry without an owner decision | alpha.4 | #674 (scope text changes per D4), #641 |
-| 6 | Live enforcement CI for the native backend | #433's probes on disposable Linux and WSL2 runners, both backends, four sequential launches | alpha.4 | #433 |
-| 7 | Red-team the native sandbox | #685 section 1 against the native backend; one issue per finding | alpha.4 | #685 |
-| 8 | Default to the native backend | Default `torlek`; doctor's probe launch; rollback documented | alpha.4 | |
-| 9 | Remove Greywall and Greyproxy | Stage 5 above, including the confirmed removal of the old unit and state | alpha.5 | #495, #527, #66 wording |
-| 10 | Per-session resource limits | A fork bomb or memory hog in one session leaves the others running; fallback reported | Hardening: daemon, sessions, CLI and TUI | |
-| 11 | macOS Seatbelt backend | Same probe suite on a macOS runner | Roadmap: macOS | #527, #568 |
+| # | Title | Acceptance | Milestone (D6) | Supersedes or changes | Rough size |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Native Linux launcher behind `agents.sandbox_backend` | Through the daemon with a fake provider: checkout writable; `.git/hooks`, `.git/config`, `.torlek` not; `~/.ssh/id_*` and the state database unreadable; no interface but `lo`; `Seccomp: 2`; a second Unix user starts a session (#628); each provider launched with its own sandbox off; a credential variable Greywall would have replaced is dropped and named in the evidence; evidence names the backend and Landlock ABI | alpha.4 | #628, #434 | about 3 days |
+| 2 | Provider hosts and paths in the provider adapters | Each adapter declares its hosts and folders; a test compares them with the Greywall profiles they replace; attribution kept | alpha.4 | Greywall `--profile` | about half a day |
+| 3 | Per-session egress proxy | Allowed host connects; unknown host `403` under 1 s with a reason; loopback, private, link-local, metadata and IP literals refused; SNI missing or mismatched on 443 refused; a granted host and port other than 443 tunnels without a peek; no DNS or UDP from inside | alpha.4 | #495 | about 2 days |
+| 4 | Selective TLS interception for credential hosts | A host with a bound credential (for example the project's `GH_TOKEN`, #754) is intercepted with a per-session CA whose key never leaves the launcher's memory; only the certificate enters the session, with trust variables per runtime; the credential is added on that host only and never enters the sandbox, so `git push` over HTTPS and `gh` work with no token inside; every other host stays a plain tunnel; a pinned client's failure names the host | alpha.4 | #59 placeholders, #754's pass-through, #527 | about 3 days |
+| 5 | Network requests as owner decisions | Request listed in `approval list`, Waiting on you and the change feed; allow once, always for the project (D4), deny; who, when, client recorded; revocation closes open tunnels; no path adds an allowlist entry without an owner decision | alpha.4 | #674 (scope text changes per D4), #641 | about 2 days |
+| 6 | Live enforcement CI for the native backend | #433's probes on disposable Linux and WSL2 runners, both backends, four sequential launches | alpha.4 | #433 | about 1 day |
+| 7 | Red-team the native sandbox | #685 section 1 against the native backend; one issue per finding | alpha.4 | #685 | about 1 day, plus fixes |
+| 8 | Default to the native backend | Default `torlek`; doctor's probe launch; rollback documented | alpha.4 | | about 2 hours |
+| 9 | Remove Greywall and Greyproxy | Stage 5 above, including the confirmed removal of the old unit and state | alpha.5 | #495, #527, #66 wording | about half a day |
+| 10 | Per-session resource limits | A fork bomb or memory hog in one session leaves the others running; without a user manager, "no per-session limits" is reported | Hardening: daemon, sessions, CLI and TUI | | about half a day |
+| 11 | macOS Seatbelt backend | Same probe suite on a macOS runner | Roadmap: macOS | #527, #568 | about 3 days |
 
 ### Current alpha.4 issues these supersede
 
