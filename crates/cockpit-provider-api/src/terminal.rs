@@ -25,8 +25,9 @@ impl Action<'_> {
     }
 }
 
-/// One step of terminal input, sent in order, each as its own write to the terminal a moment
-/// after the one before: a key never arrives in the burst of the text it follows (#730).
+/// One step of terminal input, sent in order. The sessions' terminal transport writes text
+/// and the keys after it separately, a moment apart, so a key never arrives in the burst of
+/// the text it follows (#730).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalInput {
     /// Typed literally; never interpreted as key names.
