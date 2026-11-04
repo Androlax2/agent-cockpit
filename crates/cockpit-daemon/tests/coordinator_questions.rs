@@ -79,6 +79,7 @@ async fn a_coordinator_starts_a_worker_that_asks() -> Started {
                 permission: permission.to_owned(),
                 without_confirmation: false,
                 per_hour: None,
+                max_active: None,
             },
         )
         .await;
@@ -90,6 +91,7 @@ async fn a_coordinator_starts_a_worker_that_asks() -> Started {
             permission: "start-sessions".to_owned(),
             without_confirmation: true,
             per_hour: Some(5),
+            max_active: None,
         },
     )
     .await;
@@ -344,6 +346,7 @@ async fn a_worker_the_owner_approved_starting_asks_its_coordinator_first() {
                 permission: permission.to_owned(),
                 without_confirmation: false,
                 per_hour: None,
+                max_active: None,
             },
         )
         .await;

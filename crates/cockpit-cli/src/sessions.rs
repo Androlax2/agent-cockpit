@@ -136,25 +136,23 @@ fn session_new(dir: &str, options: &[&str]) -> Result<Command, String> {
     })
 }
 
-/// `grant SESSION PERMISSION [--per-hour N] [--without-confirmation]`: the daemon checks
-/// which permission takes which terms (#410).
+/// `grant SESSION PERMISSION [--per-hour N] [--max-active N] [--without-confirmation]`: the
+/// daemon checks which permission takes which terms (#410, #739).
 fn session_grant(id: &str, permission: &str, options: &[&str]) -> Result<Command, String> {
-    let (mut per_hour, mut without_confirmation) = (None, false);
+    let (mut per_hour, mut max_active, mut without_confirmation) = (None, None, false);
     let mut options = options.iter();
     while let Some(flag) = options.next() {
         match *flag {
             "--without-confirmation" if !without_confirmation => without_confirmation = true,
             "--per-hour" if per_hour.is_none() => {
-                let value = options
-                    .next()
-                    .ok_or_else(|| "--per-hour needs a value".to_owned())?;
-                per_hour = Some(
-                    value
-                        .parse::<u32>()
-                        .map_err(|_| format!("--per-hour {value}: a whole number of starts"))?,
-                );
+                per_hour = Some(count_value(flag, options.next(), "starts")?);
             }
-            "--without-confirmation" | "--per-hour" => return Err(format!("{flag} given twice")),
+            "--max-active" if max_active.is_none() => {
+                max_active = Some(count_value(flag, options.next(), "sessions")?);
+            }
+            "--without-confirmation" | "--per-hour" | "--max-active" => {
+                return Err(format!("{flag} given twice"));
+            }
             _ => return Err(format!("unknown argument {flag}")),
         }
     }
@@ -163,7 +161,16 @@ fn session_grant(id: &str, permission: &str, options: &[&str]) -> Result<Command
         permission: permission.to_owned(),
         without_confirmation,
         per_hour,
+        max_active,
     })
+}
+
+/// The whole number of `what` given after `flag`.
+fn count_value(flag: &str, value: Option<&&str>, what: &str) -> Result<u32, String> {
+    let value = value.ok_or_else(|| format!("{flag} needs a value"))?;
+    value
+        .parse::<u32>()
+        .map_err(|_| format!("{flag} {value}: a whole number of {what}"))
 }
 
 /// Sends `command` and prints the sessions it answers, one line each. Exit 1 when the
@@ -340,12 +347,19 @@ fn over_lines(session: &SessionView) -> String {
     }
 }
 
-/// `grant  permission  id  terms`, tab-separated; `terms` is `per-hour=N confirmed` or
-/// `per-hour=N unconfirmed` for `start-sessions`, `-` otherwise.
+/// `grant  permission  id  terms`, tab-separated; `terms` is
+/// `per-hour=N max-active=M confirmed` or `... unconfirmed` for `start-sessions`, `-`
+/// otherwise.
 fn grant_line(grant: &CoordinatorGrantView) -> String {
-    let terms = match (grant.per_hour, grant.needs_confirmation) {
-        (Some(per_hour), Some(true)) => format!("per-hour={per_hour} confirmed"),
-        (Some(per_hour), Some(false)) => format!("per-hour={per_hour} unconfirmed"),
+    let terms = match (grant.per_hour, grant.max_active, grant.needs_confirmation) {
+        (Some(per_hour), Some(max_active), Some(needs_confirmation)) => {
+            let confirmed = if needs_confirmation {
+                "confirmed"
+            } else {
+                "unconfirmed"
+            };
+            format!("per-hour={per_hour} max-active={max_active} {confirmed}")
+        }
         _ => "-".to_owned(),
     };
     format!("grant\t{}\t{}\t{terms}", grant.permission, grant.grant)

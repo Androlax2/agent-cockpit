@@ -734,6 +734,8 @@ async fn session_grant_sends_the_permission_and_its_start_terms() {
                 "start-sessions",
                 "--per-hour",
                 "3",
+                "--max-active",
+                "4",
                 "--without-confirmation",
             ],
         )
@@ -747,6 +749,7 @@ async fn session_grant_sends_the_permission_and_its_start_terms() {
             permission: "start-sessions".to_owned(),
             without_confirmation: true,
             per_hour: Some(3),
+            max_active: Some(4),
         }
     );
 }
@@ -763,12 +766,14 @@ async fn session_grants_prints_each_grant_then_the_audit_newest_first() {
                     permission: "observe-sessions".to_owned(),
                     grant: 4,
                     per_hour: None,
+                    max_active: None,
                     needs_confirmation: None,
                 },
                 CoordinatorGrantView {
                     permission: "start-sessions".to_owned(),
                     grant: 5,
                     per_hour: Some(10),
+                    max_active: Some(8),
                     needs_confirmation: Some(true),
                 },
             ],
@@ -803,7 +808,7 @@ async fn session_grants_prints_each_grant_then_the_audit_newest_first() {
     assert_eq!(
         text(&output.stdout),
         "grant\tobserve-sessions\t4\t-\n\
-         grant\tstart-sessions\t5\tper-hour=10 confirmed\n\
+         grant\tstart-sessions\t5\tper-hour=10 max-active=8 confirmed\n\
          audit\t9\t1700000100\ts0123456789ab\tstart\t-\t\"approval request 2\"\n\
          audit\t8\t1700000000\ts0123456789ab\tmessage\ts000000000002\t\"rebase on main\"\n"
     );
@@ -847,7 +852,7 @@ async fn session_revoke_sends_the_permission_to_take_back() {
 #[tokio::test]
 async fn malformed_grant_arguments_exit_2_before_any_connection() {
     let home = Home::new();
-    let cases: [&[&str]; 6] = [
+    let cases: [&[&str]; 9] = [
         &["session", "grant", "s0123456789ab"],
         &[
             "session",
@@ -871,6 +876,31 @@ async fn malformed_grant_arguments_exit_2_before_any_connection() {
             "start-sessions",
             "--without-confirmation",
             "--without-confirmation",
+        ],
+        &[
+            "session",
+            "grant",
+            "s0123456789ab",
+            "start-sessions",
+            "--max-active",
+        ],
+        &[
+            "session",
+            "grant",
+            "s0123456789ab",
+            "start-sessions",
+            "--max-active",
+            "-1",
+        ],
+        &[
+            "session",
+            "grant",
+            "s0123456789ab",
+            "start-sessions",
+            "--max-active",
+            "2",
+            "--max-active",
+            "3",
         ],
         &["session", "revoke", "s0123456789ab"],
         &["session", "grants"],

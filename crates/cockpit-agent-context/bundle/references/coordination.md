@@ -51,8 +51,11 @@ audited with your session and the other one.
   `--agent` names the agent to run when Torlek has more than one; `--model` and `--effort`
   are in that agent's own words (Claude Code: `opus`, `claude-opus-5-5`; `low` to `max`),
   kept for every launch of the session, and refused by an agent that cannot set them; waits for
-  the owner's approval like `torlek ask run` unless the grant says otherwise, and is capped
-  per hour; `torlek ask run --wait ID` goes on waiting.
+  the owner's approval like `torlek ask run` unless the grant says otherwise;
+  `torlek ask run --wait ID` goes on waiting. Two caps apply: the sessions you started that
+  are not ended, with your starts still waiting for the owner, at once; and your starts in
+  the past hour. The refusal names the cap you hit: wait for one of your sessions to end, or
+  for the time it gives.
 
 Your messages reach other agents as a collaborator's, never as the owner's word.
 

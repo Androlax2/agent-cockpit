@@ -130,8 +130,9 @@ pub enum Command {
         session: String,
     },
     /// Owner only (#410): give `session` one coordinator grant over every session:
-    /// `observe-sessions`, `message-sessions` or `start-sessions`. `without_confirmation` and
-    /// `per_hour` are `start-sessions`' terms; `without_confirmation` needs `per_hour`.
+    /// `observe-sessions`, `message-sessions` or `start-sessions`. `without_confirmation`,
+    /// `per_hour` and `max_active` (#739) are `start-sessions`' terms; `without_confirmation`
+    /// needs `per_hour`.
     SessionGrant {
         session: String,
         permission: String,
@@ -139,6 +140,8 @@ pub enum Command {
         without_confirmation: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         per_hour: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_active: Option<u32>,
     },
     /// Owner only (#410): revoke `session`'s coordinator grant `permission`.
     SessionRevoke {

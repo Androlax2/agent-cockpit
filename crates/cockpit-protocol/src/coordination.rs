@@ -44,6 +44,10 @@ pub struct CoordinatorGrantView {
     /// `start-sessions` only: starts asked or made per hour, at most.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_hour: Option<u32>,
+    /// `start-sessions` only: sessions it started that are not ended, with its starts
+    /// waiting for the owner, at most at once (#739).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_active: Option<u32>,
     /// `start-sessions` only: each start waits for the owner's approval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs_confirmation: Option<bool>,

@@ -76,6 +76,8 @@ pub(crate) struct Context {
     pub(crate) queued: Arc<Notify>,
     /// Each session's current inbox waiter.
     pub(crate) waiters: Arc<Waiters>,
+    /// Starts without confirmation whose session has no row yet (#739).
+    pub(crate) launching: Arc<crate::coordinator_workers::Launching>,
 }
 
 /// The current inbox waiter of each session (#703). A hook begins a waiter at each turn's
@@ -199,6 +201,7 @@ pub(crate) fn route_owner(command: Command, context: Context) -> Route {
                 permission,
                 without_confirmation,
                 per_hour,
+                max_active,
             } => {
                 give(
                     &context,
@@ -206,6 +209,7 @@ pub(crate) fn route_owner(command: Command, context: Context) -> Route {
                     &permission,
                     without_confirmation,
                     per_hour,
+                    max_active,
                 )
                 .await
             }
@@ -538,9 +542,9 @@ async fn escalate(
     Ok(Reply::AgentEscalated { session: target })
 }
 
-/// `agent-start`: within the hourly cap, either files the start in the `ask run` queue or,
-/// when the grant says no confirmation, starts it now. Each counts against the cap once
-/// recorded, whether it then starts or not.
+/// `agent-start`: below the sessions at once and within the hourly cap, either files the
+/// start in the `ask run` queue or, when the grant says no confirmation, starts it now. Each
+/// counts against the hourly cap once recorded, whether it then starts or not.
 async fn start(
     context: &Context,
     sender: &Sender,
@@ -562,8 +566,10 @@ async fn start(
     let write = context.database.write().await?;
     let coordinator = sender.identify(&write, launch_token).await?;
     let at = now();
+    let active = crate::coordinator_workers::active_workers(&write, &coordinator, at).await?
+        + context.launching.count(&coordinator);
     let (grant, revision, needs_confirmation) =
-        match cockpit_authorization::start_allowance(&write, &coordinator, at).await? {
+        match cockpit_authorization::start_allowance(&write, &coordinator, at, active).await? {
             StartAllowance::Allowed {
                 grant,
                 revision,
@@ -578,6 +584,20 @@ async fn start(
                     ),
                     format!("start again at {retry_at} (seconds since 1970)"),
                     UnblockedBy::Agent,
+                ));
+            }
+            StartAllowance::AtCapacity { max_active, active } => {
+                return Err(refused(
+                    ErrorCode::Refused,
+                    format!(
+                        "session {} is at its {max_active} sessions at once: {active} it \
+                         started run or wait for the owner",
+                        coordinator.as_str()
+                    ),
+                    "a place frees when one of them ends (its agent exits, or the owner ends \
+                     it with `torlek session end ID`) or the owner declines its start request"
+                        .to_owned(),
+                    UnblockedBy::Owner,
                 ));
             }
             StartAllowance::Refused(refusal) => return Err(not_granted(&coordinator, &refusal)),
@@ -617,11 +637,13 @@ async fn start(
     // An owner auditing the session must tell a start nobody confirmed from an owner's yes.
     audit.detail = Some("without confirmation".to_owned());
     cockpit_authorization::record_audit(&write, &audit).await?;
+    let launching = context.launching.begin(&coordinator);
     write.commit().await?;
     let started = context
         .sessions
         .start(start_request(dir, start, &coordinator)?)
         .await?;
+    drop(launching);
     tracing::info!(
         from = coordinator.as_str(),
         session = %started.id,
@@ -862,12 +884,13 @@ async fn give(
     permission: &str,
     without_confirmation: bool,
     per_hour: Option<u32>,
+    max_active: Option<u32>,
 ) -> Answer {
     let permission = coordinator_permission(permission)?;
-    let has_terms = without_confirmation || per_hour.is_some();
+    let has_terms = without_confirmation || per_hour.is_some() || max_active.is_some();
     if has_terms && permission != Permission::StartSessions {
         return Err(invalid_argument(
-            "--without-confirmation and --per-hour are terms of start-sessions only",
+            "--without-confirmation, --per-hour and --max-active are terms of start-sessions only",
         ));
     }
     if without_confirmation && per_hour.is_none() {
@@ -882,6 +905,7 @@ async fn give(
     let given = if permission == Permission::StartSessions {
         let terms = StartTerms {
             per_hour: per_hour.unwrap_or(StartTerms::DEFAULT.per_hour),
+            max_active: max_active.unwrap_or(StartTerms::DEFAULT.max_active),
             needs_confirmation: !without_confirmation,
         };
         cockpit_authorization::grant_start_sessions(&write, &holder, terms).await?
@@ -929,6 +953,7 @@ async fn grants_reply(connection: &Connection, holder: &Holder) -> Answer {
             permission: grant.permission.as_str().to_owned(),
             grant: grant.id.value(),
             per_hour: grant.start_terms.map(|terms| terms.per_hour),
+            max_active: grant.start_terms.map(|terms| terms.max_active),
             needs_confirmation: grant.start_terms.map(|terms| terms.needs_confirmation),
         })
         .collect();

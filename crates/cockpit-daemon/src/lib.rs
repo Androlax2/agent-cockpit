@@ -6,6 +6,7 @@ mod approvals;
 mod bug_report_feed;
 mod bug_reports;
 mod coordination;
+mod coordinator_workers;
 mod error;
 mod feed;
 mod instance;
@@ -362,6 +363,8 @@ impl Instance {
             queued: Arc::clone(&messages_queued),
             // The delivery loop never collects for a hook.
             waiters: Arc::new(coordination::Waiters::new()),
+            // Nor starts a session.
+            launching: Arc::default(),
         };
         let delivering = tokio::spawn(supervisor::supervise(
             "coordinator-messages",

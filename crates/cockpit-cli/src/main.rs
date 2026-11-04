@@ -94,7 +94,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek session sleep|wake|resume|end|show SESSION
        torlek session end --finished
        torlek session link SESSION URL
-       torlek session grant SESSION observe-sessions|message-sessions|start-sessions [--per-hour N [--without-confirmation]]
+       torlek session grant SESSION observe-sessions|message-sessions|start-sessions [--per-hour N [--without-confirmation]] [--max-active N]
        torlek session revoke SESSION observe-sessions|message-sessions|start-sessions
        torlek session grants SESSION
        torlek session sandbox SESSION

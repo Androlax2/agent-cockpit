@@ -63,13 +63,14 @@ fn each_coordinator_command_round_trips_with_only_the_fields_it_was_given() {
         (
             json!({"id": 1, "command": {
                 "kind": "session-grant", "session": "s1", "permission": "start-sessions",
-                "without_confirmation": true, "per_hour": 3
+                "without_confirmation": true, "per_hour": 3, "max_active": 4
             }}),
             Command::SessionGrant {
                 session: "s1".to_owned(),
                 permission: "start-sessions".to_owned(),
                 without_confirmation: true,
                 per_hour: Some(3),
+                max_active: Some(4),
             },
         ),
         (
@@ -81,6 +82,7 @@ fn each_coordinator_command_round_trips_with_only_the_fields_it_was_given() {
                 permission: "observe-sessions".to_owned(),
                 without_confirmation: false,
                 per_hour: None,
+                max_active: None,
             },
         ),
         (
@@ -116,12 +118,14 @@ fn coordinator_grants_name_start_terms_only_on_start_sessions() {
                 permission: "observe-sessions".to_owned(),
                 grant: 4,
                 per_hour: None,
+                max_active: None,
                 needs_confirmation: None,
             },
             CoordinatorGrantView {
                 permission: "start-sessions".to_owned(),
                 grant: 5,
                 per_hour: Some(10),
+                max_active: Some(8),
                 needs_confirmation: Some(true),
             },
         ],
@@ -146,7 +150,7 @@ fn coordinator_grants_name_start_terms_only_on_start_sessions() {
             "grants": [
                 {"permission": "observe-sessions", "grant": 4},
                 {"permission": "start-sessions", "grant": 5, "per_hour": 10,
-                 "needs_confirmation": true}
+                 "max_active": 8, "needs_confirmation": true}
             ],
             "audit": [{
                 "id": 9, "actor": "s1", "permission": "message-sessions", "action": "message",

@@ -17,7 +17,7 @@ pub use error::Error;
 pub use grants::{
     MIGRATIONS, active_coordinator_grants, active_grant, active_grants, audit_entry, audit_of,
     current_revision, evaluate, grant, grant_start_sessions, latest_audit_on,
-    latest_audits_by_target, record_audit, revoke, start_allowance, stored_grant,
+    latest_audits_by_target, record_audit, revoke, start_allowance, started_sessions, stored_grant,
 };
 pub use model::{
     Actor, Audit, AuditEntry, AuditedAction, Basis, Decision, Grant, GrantId, Outcome, Permission,
