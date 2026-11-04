@@ -25,6 +25,20 @@ mod proxy;
 /// outside a release bundle runs profile `dev` (#196).
 pub const BUILD_PROFILE_DIR: &str = "torlek-dev";
 
+/// True, after saying why on standard error, when this host's target has no pinned sandbox
+/// engines (macOS until #568), so a test that starts a daemon with managed engines cannot
+/// run here. A supported target never skips: any other failure to resolve the engines panics.
+pub fn skip_without_pinned_engines() -> bool {
+    match cockpit_sandbox::install::programs(Path::new("/")) {
+        Ok(_) => false,
+        Err(cockpit_sandbox::install::InstallError::UnsupportedTarget(target)) => {
+            eprintln!("SKIPPED: no pinned sandbox engines for {target}");
+            true
+        }
+        Err(error) => panic!("the managed engines resolve on a supported target: {error}"),
+    }
+}
+
 /// Every profile directory a test here runs a daemon under, whose tmux servers the home
 /// stops when dropped.
 const PROFILE_DIRS: [&str; 3] = ["torlek", BUILD_PROFILE_DIR, "torlek-next"];
