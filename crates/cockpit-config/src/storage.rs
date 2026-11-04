@@ -20,6 +20,8 @@ pub struct StorageSettings {
     pub output_prune_interval_minutes: Sourced<u32>,
     /// Sweep a clone when the session that occupied it ends (#767); on by default.
     pub sweep_on_session_end: Sourced<bool>,
+    /// Free space below which launches and heavy jobs wait; 0 turns the guard off.
+    pub low_disk_floor_mib: Sourced<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,6 +39,7 @@ pub(super) struct StorageTable {
     output_prune_projects: Option<Spanned<Vec<String>>>,
     output_prune_interval_minutes: Option<Spanned<u32>>,
     sweep_on_session_end: Option<Spanned<bool>>,
+    low_disk_floor_mib: Option<Spanned<u64>>,
 }
 
 pub(super) fn settings(layers: &[Layer]) -> Result<StorageSettings, ConfigError> {
@@ -53,6 +56,7 @@ pub(super) fn settings(layers: &[Layer]) -> Result<StorageSettings, ConfigError>
         output_prune_projects: Sourced::new(Vec::new(), Source::ProductDefault),
         output_prune_interval_minutes: Sourced::new(60, Source::ProductDefault),
         sweep_on_session_end: Sourced::new(true, Source::ProductDefault),
+        low_disk_floor_mib: Sourced::new(10 * 1024, Source::ProductDefault),
     };
     for layer in layers {
         let Some(table) = &layer.settings.storage else {
@@ -104,6 +108,10 @@ pub(super) fn settings(layers: &[Layer]) -> Result<StorageSettings, ConfigError>
             result.sweep_on_session_end =
                 Sourced::new(*value.get_ref(), layer.source_at(value.span()));
         }
+        if let Some(value) = &table.low_disk_floor_mib {
+            result.low_disk_floor_mib =
+                Sourced::new(*value.get_ref(), layer.source_at(value.span()));
+        }
     }
     let invalid = |key: &str, source: &Source, reason: &str| ConfigError::Invalid {
         key: format!("storage.{key}"),
@@ -115,6 +123,18 @@ pub(super) fn settings(layers: &[Layer]) -> Result<StorageSettings, ConfigError>
             "target_prune_confirm_above_mib",
             &result.confirm_above_mib.source,
             "must be positive and fit the stored byte range",
+        ));
+    }
+    if result
+        .low_disk_floor_mib
+        .value
+        .checked_mul(1024 * 1024)
+        .is_none_or(|bytes| i64::try_from(bytes).is_err())
+    {
+        return Err(invalid(
+            "low_disk_floor_mib",
+            &result.low_disk_floor_mib.source,
+            "must fit the byte range of a disk size",
         ));
     }
     if result.interval_minutes.value == 0 {

@@ -134,6 +134,8 @@ pub enum Reason {
     /// Its workflow's current step is the owner's.
     OwnerStep,
     QueuePaused,
+    /// Free disk space is below the owner's floor (#406).
+    LowDisk,
     ControlUnsupported,
     /// The agent turn can never fit the budget as configured.
     Infeasible,
@@ -147,12 +149,13 @@ pub enum Reason {
 }
 
 impl Reason {
-    const ALL: [Reason; 11] = [
+    const ALL: [Reason; 12] = [
         Reason::NotQueued,
         Reason::WaitsOnItems,
         Reason::RunBlocked,
         Reason::OwnerStep,
         Reason::QueuePaused,
+        Reason::LowDisk,
         Reason::ControlUnsupported,
         Reason::Infeasible,
         Reason::NoRoom,
@@ -168,6 +171,7 @@ impl Reason {
             Reason::RunBlocked => "run-blocked",
             Reason::OwnerStep => "owner-step",
             Reason::QueuePaused => "queue-paused",
+            Reason::LowDisk => "low-disk",
             Reason::ControlUnsupported => "control-unsupported",
             Reason::Infeasible => "infeasible",
             Reason::NoRoom => "no-room",

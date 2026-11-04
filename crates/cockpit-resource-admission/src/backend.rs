@@ -10,7 +10,7 @@ use std::time::Duration;
 use cockpit_processes::{Containment, Execution, LaunchContainment, LaunchSpec, SystemdTools};
 use rustix::process::{Pid, Signal};
 
-use crate::{Availability, Control, ControlSupport, Demand, Error, Limits};
+use crate::{Availability, Control, ControlSupport, Demand, DiskSpace, Error, Limits, Policy};
 
 /// How long a host query (`systemctl`, `ps`, `sysctl`) may take before it counts as failed.
 const HOST_COMMAND_DEADLINE: Duration = Duration::from_secs(5);
@@ -112,6 +112,8 @@ pub struct Backend {
     launch_containment: LaunchContainment,
     cgroups: Cgroups,
     capacity: Demand,
+    /// Shared by every clone of this backend; the daemon's disk guard writes it.
+    disk_space: std::sync::Arc<std::sync::Mutex<Option<DiskSpace>>>,
 }
 
 /// Requested, supported and effective for one control of one execution (report 10).
@@ -176,6 +178,7 @@ impl Backend {
             launch_containment,
             cgroups,
             capacity,
+            disk_space: std::sync::Arc::default(),
         })
     }
 
@@ -190,6 +193,30 @@ impl Backend {
     /// The host's CPUs and memory: the default budget.
     pub fn capacity(&self) -> Demand {
         self.capacity
+    }
+
+    /// Records the disk guard's last reading; every [`Backend::policy`] after it holds
+    /// launches and heavy jobs while it is below the floor.
+    pub fn set_disk_space(&self, space: Option<DiskSpace>) {
+        *self
+            .disk_space
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = space;
+    }
+
+    /// The disk guard's last reading; `None` before its first.
+    pub fn disk_space(&self) -> Option<DiskSpace> {
+        *self
+            .disk_space
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The admission policy now: the host's budget and the disk guard's last reading.
+    pub fn policy(&self) -> Policy {
+        let mut policy = Policy::for_budget(self.capacity);
+        policy.low_disk = self.disk_space().filter(|space| space.is_low());
+        policy
     }
 
     /// What new executions get: the controls that hold work when required.

@@ -41,7 +41,7 @@ pub(crate) struct Resources {
 
 impl Resources {
     fn policy(&self) -> Policy {
-        Policy::for_budget(self.backend.capacity())
+        self.backend.policy()
     }
 }
 

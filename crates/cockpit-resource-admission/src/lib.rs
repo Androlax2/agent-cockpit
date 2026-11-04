@@ -10,9 +10,9 @@ pub use backend::{
 };
 pub use error::Error;
 pub use model::{
-    Admission, AdmissionRequest, Availability, Capacity, Control, ControlSupport, Demand, Hold,
-    InUse, Limits, Policy, Profile, ReleaseReason, Reservation, ReservationId, ReservationState,
-    Resource, Settings, Swept, Verdict, Workload,
+    Admission, AdmissionRequest, Availability, Capacity, Control, ControlSupport, Demand,
+    DiskSpace, Hold, InUse, Limits, Policy, Profile, ReleaseReason, Reservation, ReservationId,
+    ReservationState, Resource, Settings, Swept, Verdict, Workload,
 };
 pub use store::{
     MIGRATIONS, admit, bind_execution, check, hold, in_use, release_ended, release_held,

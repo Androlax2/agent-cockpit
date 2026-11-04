@@ -22,6 +22,7 @@ fn storage_defaults_are_inert_and_report_each_threshold() {
         "storage.target_prune_interval_minutes = 60  # product default",
         "storage.target_prune_base_ref = <unset>  # product default",
         "storage.sweep_on_session_end = true  # product default",
+        "storage.low_disk_floor_mib = 10240  # product default",
     ] {
         assert!(shown.contains(line), "missing {line}: {shown}");
     }
@@ -135,4 +136,28 @@ fn storage_owner_turns_the_session_end_sweep_off() {
         shown.contains("storage.sweep_on_session_end = false  # user config"),
         "{shown}"
     );
+}
+
+#[test]
+fn storage_low_disk_floor_is_loaded_from_the_owner_file_and_zero_turns_it_off() {
+    let home = tempfile::tempdir().unwrap();
+    owner(home.path(), "[storage]\nlow_disk_floor_mib = 0\n");
+    let config = cockpit_config::load(&environment(home.path()), None, &[]).unwrap();
+    assert_eq!(config.storage.low_disk_floor_mib.value, 0);
+    assert!(
+        cockpit_config::render(&config).contains("storage.low_disk_floor_mib = 0  # user config")
+    );
+}
+
+#[test]
+fn storage_low_disk_floor_beyond_the_byte_range_is_rejected() {
+    let home = tempfile::tempdir().unwrap();
+    owner(
+        home.path(),
+        "[storage]\nlow_disk_floor_mib = 18446744073709551615\n",
+    );
+    assert!(matches!(
+        cockpit_config::load(&environment(home.path()), None, &[]),
+        Err(ConfigError::Invalid { .. })
+    ));
 }

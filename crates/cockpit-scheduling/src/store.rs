@@ -130,6 +130,42 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             CREATE INDEX scheduling_placements_finished
                 ON scheduling_placements (project) WHERE ended_reason = 'work-done';",
         },
+        // #406: a pass may now explain `low-disk`. The table is rewritten by every pass, so it
+        // is recreated rather than copied.
+        Migration {
+            version: 3,
+            sql: "DROP TABLE scheduling_explanations;
+            CREATE TABLE scheduling_explanations (
+                item INTEGER PRIMARY KEY,
+                position INTEGER NOT NULL UNIQUE,
+                project TEXT NOT NULL CHECK (project <> ''),
+                title TEXT NOT NULL CHECK (title <> ''),
+                run INTEGER,
+                step_position INTEGER CHECK (step_position >= 1),
+                step TEXT CHECK (step <> ''),
+                reason TEXT NOT NULL CHECK (reason IN ('not-queued', 'waits-on-items',
+                    'run-blocked', 'owner-step', 'queue-paused', 'low-disk',
+                    'control-unsupported',
+                    'infeasible', 'no-room', 'behind', 'no-session', 'no-session-free')),
+                why TEXT NOT NULL CHECK (why <> ''),
+                limited_by TEXT CHECK (limited_by <> ''),
+                sessions TEXT NOT NULL,
+                behind INTEGER,
+                action TEXT NOT NULL CHECK (action <> ''),
+                action_by TEXT NOT NULL CHECK (action_by IN ('owner', 'cockpit')),
+                priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 6),
+                aging_boost INTEGER NOT NULL CHECK (aging_boost >= 0),
+                cpu_millis INTEGER NOT NULL CHECK (cpu_millis >= 0),
+                memory_mib INTEGER NOT NULL CHECK (memory_mib >= 0),
+                headroom_percent INTEGER NOT NULL CHECK (headroom_percent >= 0),
+                waiting_since INTEGER,
+                evaluated_at INTEGER NOT NULL,
+                next_evaluation_at INTEGER NOT NULL,
+                CHECK ((run IS NULL) = (step_position IS NULL)),
+                CHECK ((run IS NULL) = (step IS NULL)),
+                CHECK ((reason = 'behind') = (behind IS NOT NULL))
+            );",
+        },
     ],
 };
 

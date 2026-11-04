@@ -43,6 +43,13 @@ impl Workload {
         matches!(self, Workload::Build | Workload::Test | Workload::Container)
     }
 
+    /// What waits while disk space is low: agent turns (the queue's placements, which start
+    /// new work) and heavy jobs, the work that
+    /// writes the most. Deliveries and approvals keep going, so the owner can still answer.
+    pub fn waits_for_disk(self) -> bool {
+        self == Workload::AgentTurn || self.is_heavy()
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Workload::AgentTurn => "agent-turn",
@@ -262,6 +269,22 @@ pub struct Policy {
     pub foreground_heavy_percent: u64,
     /// A reservation whose work never started is released after this long.
     pub unstarted_expiry: Duration,
+    /// Set only while free disk space is below the owner's floor (#406): see [`Workload::waits_for_disk`].
+    pub low_disk: Option<DiskSpace>,
+}
+
+/// Free disk space and the owner's floor, in MiB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskSpace {
+    pub free_mib: u64,
+    pub floor_mib: u64,
+}
+
+impl DiskSpace {
+    /// A floor of 0 turns the guard off.
+    pub fn is_low(self) -> bool {
+        self.free_mib < self.floor_mib
+    }
 }
 
 impl Policy {
@@ -273,6 +296,7 @@ impl Policy {
             budget,
             foreground_heavy_percent: Policy::DEFAULT_FOREGROUND_HEAVY_PERCENT,
             unstarted_expiry: Policy::DEFAULT_UNSTARTED_EXPIRY,
+            low_disk: None,
         }
     }
 
@@ -312,6 +336,9 @@ pub enum Hold {
     QueuePaused,
     /// A required control cannot be enforced here; `why` is the backend's evidence.
     ControlUnsupported { control: Control, why: String },
+    /// Free disk space is below the owner's floor: nothing is deleted to make room unless the
+    /// owner allowed it.
+    LowDisk(DiskSpace),
     /// The work can never fit `capacity` as it stands, even with nothing else running.
     Infeasible {
         resource: Resource,
@@ -340,6 +367,13 @@ impl fmt::Display for Hold {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Hold::QueuePaused => write!(formatter, "the queue is paused: nothing new starts"),
+            Hold::LowDisk(DiskSpace {
+                free_mib,
+                floor_mib,
+            }) => write!(
+                formatter,
+                "free disk space is {free_mib} MiB, below the {floor_mib} MiB floor: new launches and heavy jobs wait"
+            ),
             Hold::ControlUnsupported { control, why } => write!(
                 formatter,
                 "{} is required but cannot be enforced here: {why}",
@@ -427,6 +461,11 @@ pub(crate) fn decide(
                 why: why.clone(),
             });
         }
+    }
+    if let Some(low_disk) = policy.low_disk
+        && request.workload.waits_for_disk()
+    {
+        return Verdict::Held(Hold::LowDisk(low_disk));
     }
     let mut limits = vec![(Capacity::Budget, policy.budget, in_use.all)];
     if settings.profile == Profile::Foreground && request.workload.is_heavy() {

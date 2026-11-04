@@ -7,6 +7,7 @@ mod bug_report_feed;
 mod bug_reports;
 mod coordination;
 mod coordinator_workers;
+mod disk_guard;
 mod end_sweep;
 mod error;
 mod feed;
@@ -179,6 +180,7 @@ pub struct Daemon {
     pruning: tokio::task::JoinHandle<()>,
     retiring_outputs: tokio::task::JoinHandle<()>,
     sweeping_ended: tokio::task::JoinHandle<()>,
+    guarding_disk: tokio::task::JoinHandle<()>,
     prune_stop: Arc<std::sync::atomic::AtomicBool>,
     _database: Arc<cockpit_turso::Database>,
     _instance: Instance,
@@ -276,6 +278,7 @@ impl Instance {
                 &storage_settings,
             )),
             session_temps: options.session_temps(),
+            sweep_now: Arc::new(tokio::sync::Notify::new()),
         };
         let admission = Arc::new(
             cockpit_resource_admission::Backend::detect(
@@ -457,6 +460,16 @@ impl Instance {
             bug_reports::Faults::none(),
             move || bug_reports::detect_forever(Arc::clone(&fault_receiver), detected.clone()),
         ));
+        let guard = disk_guard::DiskGuard {
+            backend: Arc::clone(&admission),
+            watched_path: options.state_dir.clone(),
+            floor_mib: storage_settings.low_disk_floor_mib.value,
+            queue_changed: Arc::clone(&queue_changed),
+            sweep_now: Arc::clone(&storage.sweep_now),
+            prune_automatic: storage.policy.automatic,
+        };
+        // Read once before any scheduling pass, so a restart on a full disk holds work at once.
+        guard.check(&mut None).await;
         let scheduled = scheduling::Context {
             database: Arc::clone(&database),
             sessions: Arc::clone(&sessions),
@@ -553,6 +566,11 @@ impl Instance {
                 )
             },
         ));
+        let guarding_disk = tokio::spawn(supervisor::supervise(
+            "disk-guard",
+            faults.clone(),
+            move || disk_guard::guard_forever(guard.clone()),
+        ));
         let accepting_agents = accept(&agent_listener, &shared, server::Socket::Agent, &faults);
         tracing::info!(
             socket = %socket_path.display(),
@@ -576,6 +594,7 @@ impl Instance {
             pruning,
             retiring_outputs,
             sweeping_ended,
+            guarding_disk,
             prune_stop,
             _database: database,
             _instance: self,
@@ -703,6 +722,7 @@ impl Drop for Daemon {
         self.pruning.abort();
         self.retiring_outputs.abort();
         self.sweeping_ended.abort();
+        self.guarding_disk.abort();
         bug_reports::mark_stopped(&self._instance.options.state_dir);
     }
 }

@@ -212,6 +212,9 @@ async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, St
 }
 
 async fn with_engine_upgrades(mut report: Report, context: &Context) -> Result<Report, String> {
+    report
+        .requirements
+        .extend(disk_requirement(&context.admission));
     let Ok(current) = context.sandbox.engine() else {
         return Ok(report);
     };
@@ -242,6 +245,22 @@ async fn with_engine_upgrades(mut report: Report, context: &Context) -> Result<R
         }
     }
     Ok(report)
+}
+
+/// The low-disk guard's last reading (#406); nothing before its first reading or when the
+/// owner turned it off.
+fn disk_requirement(backend: &Backend) -> Option<cockpit_readiness::Requirement> {
+    let space = backend.disk_space()?;
+    let detail = format!("{} MiB free, floor {} MiB", space.free_mib, space.floor_mib);
+    if !space.is_low() {
+        return Some(cockpit_readiness::Requirement::available("disk", detail));
+    }
+    Some(cockpit_readiness::Requirement::needs(
+        "disk",
+        cockpit_readiness::Status::MissingPrerequisite,
+        format!("{detail}: new launches and heavy jobs wait"),
+        "free space, or review what `torlek storage` could prune; waiting work resumes by itself",
+    ))
 }
 
 fn sign_in_fact(fact: cockpit_provider_api::SignIn) -> SignInFacts {

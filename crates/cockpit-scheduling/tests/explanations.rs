@@ -29,6 +29,25 @@ async fn a_paused_queue_holds_queued_work_until_the_owner_resumes_it() {
 }
 
 #[tokio::test]
+async fn low_disk_space_holds_queued_work_and_says_how_much_is_free() {
+    let mut fixture = Fixture::with_budget(4).await;
+    fixture.policy.low_disk = Some(cockpit_resource_admission::DiskSpace {
+        free_mib: 2_000,
+        floor_mib: 10_240,
+    });
+    let session = fixture.session("a-1", "a").await;
+    let item = fixture.queued("a", "task", Priority::NORMAL).await;
+
+    let dispatched = fixture.dispatch_at(NOW, &[session]).await;
+
+    assert!(dispatched.placed.is_empty());
+    let explanation = explanation_of(&dispatched.explanations, item.id);
+    assert_eq!(explanation.reason, Reason::LowDisk);
+    assert!(explanation.why.contains("2000 MiB"), "{}", explanation.why);
+    assert_eq!(explanation.action_by, ActionBy::Owner);
+}
+
+#[tokio::test]
 async fn a_turn_larger_than_the_budget_is_infeasible_and_names_the_limit() {
     let mut fixture = Fixture::with_budget(4).await;
     fixture.policy = Policy::for_budget(Demand {

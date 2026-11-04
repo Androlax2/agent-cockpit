@@ -275,6 +275,13 @@ fn held(
             ActionBy::Owner,
             None,
         ),
+        Hold::LowDisk(_) => (
+            Reason::LowDisk,
+            "free disk space: `torlek storage` shows what could be pruned; waiting resumes by itself once space is back above the floor"
+                .to_owned(),
+            ActionBy::Owner,
+            Some("free disk space".to_owned()),
+        ),
         Hold::ControlUnsupported { control, .. } => (
             Reason::ControlUnsupported,
             format!(
