@@ -11,6 +11,7 @@ use cockpit_provider_api::{
 };
 use common::{GENEROUS, refused};
 use messaging_fixture::Home;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy)]
@@ -171,6 +172,52 @@ async fn unsupported_delivery_uses_the_providers_terminal_input_for_send_and_can
             (session.id, "cancel".into())
         ]
     );
+}
+
+/// A prompt like Claude Code's (#730): a read of text is a paste and an Enter that comes in
+/// the same read is dropped; only an Enter read on its own submits what the box holds, as
+/// `<session> <line>` to the messages log. It touches `{ready}` once its terminal is raw.
+const PASTE_DETECTING_PROMPT: &str = r#"#!/usr/bin/python3
+import os, termios, tty
+tty.setraw(0, termios.TCSANOW)
+open('{ready}', 'w').close()
+box = b''
+while chunk := os.read(0, 65536):
+    if chunk == b'\r':
+        with open(os.environ['FAKE_AGENT_MESSAGES'], 'a') as log:
+            log.write(os.environ['TORLEK_SESSION'] + ' ' + box.decode() + '\n')
+        box = b''
+    else:
+        box += chunk.replace(b'\r', b'')
+"#;
+
+#[tokio::test]
+async fn a_typed_message_is_submitted_by_an_agent_that_drops_an_enter_inside_a_paste() {
+    let home = Home::new();
+    let ready = home.path().join("prompt-ready");
+    let program = home.path().join("paste-detecting-prompt");
+    std::fs::write(
+        &program,
+        PASTE_DETECTING_PROMPT.replace("{ready}", ready.to_str().unwrap()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut agent = Agent::new(&home, Transport::Terminal);
+    agent.fake = agent.fake.running(program);
+    let _daemon = home.start(vec![Arc::new(agent)]).await;
+    let client = home.connect().await;
+    let root = home.project(&client).await;
+    let session = home.session(&client, &root, "fake").await;
+    home.waiting(&session.id).await;
+    common::once_logged(1, || ready.exists().then_some(()).into_iter().collect()).await;
+    let answer = "Owner: A. Keep the old flag and rename it in the next release.";
+
+    client
+        .request(send(&session.id, answer), GENEROUS)
+        .await
+        .unwrap();
+
+    assert_eq!(home.messages(1).await, vec![(session.id, answer.into())]);
 }
 
 #[tokio::test]

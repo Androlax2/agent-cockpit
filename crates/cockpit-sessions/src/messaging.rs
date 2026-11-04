@@ -151,10 +151,10 @@ impl Sessions {
                     TerminalInput::Key(Key::Control(letter)) => Keystroke::Control(*letter),
                 })
                 .collect();
-            tmux.send_keys(&pane, &keys).map_err(|error| match error {
-                cockpit_tmux::Error::CommandFailed { .. }
-                | cockpit_tmux::Error::InvalidArgument { .. } => Error::Tmux(error),
-                other => Error::TypingUnconfirmed {
+            type_in_separate_writes(&tmux, &pane, &keys).map_err(|failure| match failure {
+                (0, error @ cockpit_tmux::Error::CommandFailed { .. })
+                | (0, error @ cockpit_tmux::Error::InvalidArgument { .. }) => Error::Tmux(error),
+                (_, other) => Error::TypingUnconfirmed {
                     session: session_id,
                     reason: format!("tmux: {other}"),
                 },
@@ -169,6 +169,30 @@ impl Sessions {
             other => other,
         })
     }
+}
+
+/// How long a terminal step settles before the next one is written. Claude Code reads a
+/// burst of text as a paste and drops an Enter that arrives in it: on 2.1.318, a message of
+/// about 150 characters or more stayed unsent in its input box when text and Enter came in
+/// one write, and was submitted by an Enter written separately, even 50 ms later (#730).
+const STEP_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Writes each of `keys` to `pane` as its own tmux command, [`STEP_SETTLE`] apart, so no
+/// key reaches the agent inside the burst of the text before it. A failure names the index
+/// of the step that failed: the steps before it were typed.
+fn type_in_separate_writes(
+    tmux: &cockpit_tmux::Server,
+    pane: &cockpit_tmux::PaneId,
+    keys: &[Keystroke<'_>],
+) -> Result<(), (usize, cockpit_tmux::Error)> {
+    for (index, key) in keys.iter().enumerate() {
+        if index > 0 {
+            std::thread::sleep(STEP_SETTLE);
+        }
+        tmux.send_keys(pane, std::slice::from_ref(key))
+            .map_err(|error| (index, error))?;
+    }
+    Ok(())
 }
 
 /// `text` as one line a card can show: controls become spaces, and invisible or

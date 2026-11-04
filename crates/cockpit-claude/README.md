@@ -52,7 +52,9 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   failure exits 1. Decided in `docs/decisions/2026-11-04-703-claude-message-inbox.md`.
 - **Terminal actions.** The owner's message is typed then entered at the prompt, queued with Ctrl-X
   Enter during a turn, and refused while a dialog is open or the activity is unknown.
-  Cancel presses Escape; compact types `/compact` at the prompt only.
+  Cancel presses Escape; compact types `/compact` at the prompt only. Each key reaches the
+  terminal as its own write after the text: Claude Code drops an Enter that arrives in the
+  same burst as the text it reads as a paste (#730).
 - **Screen reading** is a fallback with recorded confidence (report 05): a permission dialog
   or a running spinner is `high`, a choice menu or the bare prompt `low`.
 
