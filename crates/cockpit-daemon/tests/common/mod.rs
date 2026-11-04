@@ -346,6 +346,7 @@ pub fn wiring_in(
             tmux: PathBuf::from("tmux"),
             socket: cockpit_tmux::Socket::Path(dir.join("tmux.sock")),
             config_path: dir.join("tmux.conf"),
+            history_limit: 10_000,
         },
         git: cockpit_projects::Git::from_path(),
         providers,
@@ -363,6 +364,7 @@ pub fn wiring_in(
             interval: Duration::from_secs(3600),
             ..cockpit_scheduling::Settings::default()
         },
+        feed_buffer_bytes: 1024 * 1024,
     }
 }
 

@@ -286,8 +286,65 @@ fn the_server_starts_with_cockpits_own_config() {
     let history_limit = fixture.tmux(&["show-options", "-gv", "history-limit"]);
     let default_shell = fixture.tmux(&["show-options", "-gv", "default-shell"]);
 
-    assert_eq!(history_limit.trim(), "50000");
+    assert_eq!(history_limit.trim(), common::HISTORY_LIMIT.to_string());
     assert_eq!(default_shell.trim(), "/bin/sh");
+}
+
+/// The lines of history `session`'s pane holds, as tmux counts them.
+fn history_size(fixture: &TestServer, session: &str) -> u32 {
+    fixture
+        .tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &format!("={session}:"),
+            "#{history_size}",
+        ])
+        .trim()
+        .parse()
+        .expect("tmux prints a count")
+}
+
+#[test]
+fn a_pane_keeps_no_more_history_than_the_spec_allows() {
+    let fixture = TestServer::new();
+    let bounded = fixture.reopen_keeping(300);
+    fixture.start_shell_through(
+        &bounded,
+        "agent-1",
+        "seq 1 5000; echo printed-all; sleep 30",
+    );
+
+    eventually("the pane printed every line", || {
+        fixture
+            .tmux(&["capture-pane", "-p", "-t", "=agent-1:"])
+            .contains("printed-all")
+    });
+
+    // tmux trims a tenth of the limit at a time, so the count stays at or under it.
+    let kept = history_size(&fixture, "agent-1");
+    assert!((1..=300).contains(&kept), "kept {kept} lines");
+}
+
+#[test]
+fn a_history_limit_set_on_a_running_server_bounds_the_panes_opened_after_it() {
+    let fixture = TestServer::new();
+    fixture.start_shell("agent-1", "sleep 30");
+
+    let bounded = fixture.reopen_keeping(300);
+    fixture.start_shell_through(
+        &bounded,
+        "agent-2",
+        "seq 1 5000; echo printed-all; sleep 30",
+    );
+
+    eventually("the pane printed every line", || {
+        fixture
+            .tmux(&["capture-pane", "-p", "-t", "=agent-2:"])
+            .contains("printed-all")
+    });
+    let kept = history_size(&fixture, "agent-2");
+    assert!((1..=300).contains(&kept), "kept {kept} lines");
 }
 
 #[test]

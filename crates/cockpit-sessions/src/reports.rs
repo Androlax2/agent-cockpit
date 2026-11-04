@@ -191,14 +191,54 @@ pub(crate) async fn flag_unreported_launch(
     if has_reported || latest_launch(write, session).await? != Some(launch) {
         return Ok(false);
     }
+    store_dialog(write, session, previous, launch, reason).await?;
+    Ok(true)
+}
+
+/// Records that `launch`'s agent exited while processes it started still run (#406): an
+/// open dialog question saying `reason`. No agent is left to answer it, so it
+/// stays until the owner ends or restarts the session. `false`, recording nothing, when the
+/// question is already open or a newer launch began.
+pub(crate) async fn flag_agentless_launch(
+    write: &WriteTransaction<'_>,
+    session: &SessionId,
+    launch: i64,
+    reason: &str,
+) -> Result<bool, Error> {
+    if latest_launch(write, session).await? != Some(launch) {
+        return Ok(false);
+    }
+    let previous = latest_report(write, session).await?;
+    let is_open = previous.as_ref().is_some_and(|previous| {
+        previous.launch == Some(launch)
+            && previous.question_source == Some(QuestionSource::Dialog)
+            && previous.needs_input.as_deref() == Some(reason)
+    });
+    if is_open {
+        return Ok(false);
+    }
+    store_dialog(write, session, previous, launch, reason).await?;
+    Ok(true)
+}
+
+/// Opens the daemon's own dialog question `reason` on `launch`'s report.
+async fn store_dialog(
+    write: &WriteTransaction<'_>,
+    session: &SessionId,
+    previous: Option<SessionReport>,
+    launch: i64,
+    reason: &str,
+) -> Result<(), Error> {
     let dialog = bounded_text("dialog", reason, QUESTION_MAX_CHARS).map_err(refused)?;
     let report = Report {
         dialog: Some(dialog),
         ..Report::default()
     };
-    let merged = merge(session, previous, report, Some(launch), false);
-    store_report(write, &merged).await?;
-    Ok(true)
+    store_report(
+        write,
+        &merge(session, previous, report, Some(launch), false),
+    )
+    .await
 }
 
 /// Replaces the session's report row with `merged`.

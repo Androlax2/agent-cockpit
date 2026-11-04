@@ -139,6 +139,17 @@ pub fn render(config: &EffectiveConfig) -> String {
         &storage.sweep_on_session_end.value.to_string(),
         &storage.sweep_on_session_end.source,
     ));
+    let memory = &config.memory;
+    for (key, bound) in [
+        ("memory.tmux_history_lines", &memory.tmux_history_lines),
+        ("memory.feed_buffer_kib", &memory.feed_buffer_kib),
+        (
+            "memory.agentless_session_minutes",
+            &memory.agentless_session_minutes,
+        ),
+    ] {
+        lines.push(line(key, &bound.value.to_string(), &bound.source));
+    }
     lines.push(line(
         "storage.low_disk_floor_mib",
         &storage.low_disk_floor_mib.value.to_string(),

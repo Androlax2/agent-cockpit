@@ -43,6 +43,8 @@ struct Variant {
     reports_events: bool,
     /// Its bridge reports as soon as the harness starts, as Claude Code's `SessionStart`.
     reports_at_launch: bool,
+    /// Its agent exits at once and leaves a process of its own running (#406).
+    leaves_a_process: bool,
 }
 
 const BASELINE: Variant = Variant {
@@ -52,6 +54,7 @@ const BASELINE: Variant = Variant {
     chooses: false,
     reports_events: false,
     reports_at_launch: false,
+    leaves_a_process: false,
 };
 
 /// A provider whose bridge reports at launch, so an agent that stays silent after its launch
@@ -87,6 +90,13 @@ const NOT_RESUMING: Variant = Variant {
     ..BASELINE
 };
 
+/// A provider whose agent exits while a process it started keeps running, away from its
+/// terminal: the session stays running with nobody in it (#406).
+const LEAVING_A_PROCESS: Variant = Variant {
+    leaves_a_process: true,
+    ..BASELINE
+};
+
 /// A provider whose agent refuses to start, as a sandbox wrapper that cannot run (#629).
 const REFUSING: Variant = Variant {
     exits_with: Some((3, "Error: failed to wrap command: refusing to start")),
@@ -115,6 +125,29 @@ impl Home {
 
     fn agent_log(&self) -> PathBuf {
         self.path().join("agent.log")
+    }
+
+    /// A program that leaves a process behind: it ignores the hangup its terminal sends when
+    /// the agent exits and holds none of the terminal, so tmux sees the pane's process end.
+    /// The hangup is ignored before the process starts, which inherits it: set in the
+    /// process itself, the agent's exit could come first. The agent exits once
+    /// [`Self::leaving_agent_hold`] does not exist, which is at once unless a test made it.
+    fn leftover_program(&self) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let program = self.path().join("leave-a-process");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\ntrap '' HUP\nsleep 120 </dev/null >/dev/null 2>&1 &\n\
+             while [ -e \"$0.hold\" ]; do sleep 0.05; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        program
+    }
+
+    /// The file that, while it exists, keeps the agent of [`LEAVING_A_PROCESS`] running.
+    fn leaving_agent_hold(&self) -> PathBuf {
+        self.path().join("leave-a-process.hold")
     }
 
     /// Where the fake provider records the harness trust it is asked to keep (#702).
@@ -163,6 +196,9 @@ impl Home {
         }
         if let Some((status, line)) = variant.exits_with {
             provider = provider.exiting(status, line);
+        }
+        if variant.leaves_a_process {
+            provider = provider.running(self.leftover_program()).exiting(0, "bye");
         }
         if variant.chooses {
             provider = provider
@@ -1884,6 +1920,9 @@ mod target_prune;
 
 #[path = "sessions/output_catalog.rs"]
 mod output_catalog;
+
+#[path = "sessions/no_agent.rs"]
+mod no_agent;
 
 /// Settings whose launch deadline passes within a test (#702).
 fn short_report_deadline() -> cockpit_sessions::Settings {

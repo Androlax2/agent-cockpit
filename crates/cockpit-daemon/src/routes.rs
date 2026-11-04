@@ -5,8 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use cockpit_protocol::{
-    Capability, ChangeBatch, Command, ErrorCode, Outcome, ProtocolError, Reply, Unblock,
-    UnblockedBy, Welcome,
+    Capability, Command, ErrorCode, Outcome, ProtocolError, Reply, Unblock, UnblockedBy, Welcome,
 };
 use tokio::sync::mpsc;
 
@@ -37,8 +36,16 @@ pub type Job = Pin<Box<dyn Future<Output = Outcome> + Send + 'static>>;
 
 /// A `subscribe`'s work: its answer and, when it is `Ok`, the feed's batches. It runs in the
 /// bulk lane like any [`Job`]; the stream that follows holds no lane capacity.
-pub type StreamJob =
-    Pin<Box<dyn Future<Output = (Outcome, Option<mpsc::Receiver<ChangeBatch>>)> + Send + 'static>>;
+pub type StreamJob = Pin<
+    Box<dyn Future<Output = (Outcome, Option<mpsc::Receiver<BufferedBatch>>)> + Send + 'static>,
+>;
+
+/// One change batch as the line its connection writes. It holds its bytes of the subscriber's
+/// buffer until it is dropped, which the connection does once the line is written (#406).
+pub struct BufferedBatch {
+    pub(crate) line: Vec<u8>,
+    pub(crate) room: crate::feed::BufferRoom,
+}
 
 /// What the daemon does with one decoded request.
 pub enum Route {
@@ -79,6 +86,8 @@ pub trait Handler: Send + Sync + 'static {
 pub struct Routes {
     storage: crate::storage::Context,
     database: Arc<cockpit_turso::Database>,
+    /// What one change-feed subscriber may have waiting to be written.
+    feed_buffer_bytes: u32,
     /// The host Git that project commands run, with the safe settings applied.
     git: cockpit_projects::Git,
     sessions: Arc<cockpit_sessions::Sessions>,
@@ -169,6 +178,7 @@ impl Routes {
                 queue_changed: capabilities.queue_changed,
             },
             database: capabilities.database,
+            feed_buffer_bytes: capabilities.feed_buffer_bytes,
             git: capabilities.git,
             sessions: capabilities.sessions,
             manager: capabilities.manager,
@@ -193,7 +203,7 @@ impl Handler for Routes {
             (Command::Subscribe { from }, Peer::Owner)
                 if welcome.capabilities.contains(&Capability::ChangeFeed) =>
             {
-                feed::route(from, Arc::clone(&self.database))
+                feed::route(from, Arc::clone(&self.database), self.feed_buffer_bytes)
             }
             (Command::Subscribe { .. }, _) => Route::Answer(refusal(
                 ErrorCode::NotNegotiated,

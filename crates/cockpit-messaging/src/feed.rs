@@ -14,6 +14,11 @@ use cockpit_turso::{Database, ReadTransaction, WriteTransaction};
 use crate::entities::{self, EntityChange};
 use crate::error::{Error, Refusal, ResnapshotReason, invalid_row, stored_revision};
 
+/// Commits read from the capture at a time: a subscriber far behind is caught up without
+/// holding every commit since its cursor at once (#406). What it keeps is one row id per
+/// changed entity.
+const COMMITS_PER_READ: usize = 256;
+
 /// A position in the feed: every change up to `revision` of the database `epoch` is applied.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FeedCursor {
@@ -177,11 +182,21 @@ async fn changed_entities(
 ) -> Result<Vec<EntityChange>, Error> {
     let mut changed_rows = Vec::new();
     let mut seen_rows = HashSet::new();
-    for commit in read.commits_after(after, usize::MAX).await? {
-        for change in commit.changes {
-            if change.table == entities::TABLE && seen_rows.insert(change.row_id) {
-                changed_rows.push(change.row_id);
+    let mut read_through = after;
+    loop {
+        let commits = read.commits_after(read_through, COMMITS_PER_READ).await?;
+        let Some(last) = commits.last() else { break };
+        read_through = last.revision;
+        let is_last_read = commits.len() < COMMITS_PER_READ;
+        for commit in commits {
+            for change in commit.changes {
+                if change.table == entities::TABLE && seen_rows.insert(change.row_id) {
+                    changed_rows.push(change.row_id);
+                }
             }
+        }
+        if is_last_read {
+            break;
         }
     }
     let mut changes = Vec::with_capacity(changed_rows.len());

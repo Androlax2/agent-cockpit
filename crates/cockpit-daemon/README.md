@@ -137,6 +137,12 @@ not share code.
   stops (its history discarded, an error) or a batch larger than `MAX_FRAME_BYTES` closes
   the connection, so the client subscribes again from its cursor and gets
   `resnapshot-required` when that cursor cannot resume; nothing is skipped.
+- A subscriber that reads slowly is owed a bounded buffer (#406): at most 8 batches and
+  the owner's `memory.feed_buffer_kib` (1 MiB) of their wire lines wait for its connection.
+  No batch is built while the buffer holds that much, so it holds at most one batch beyond
+  it, and a batch larger than the whole buffer still passes. The feed waits for room, and
+  the commits made meanwhile reach the subscriber in the next batch, each entity once, so
+  nothing is skipped and nothing accumulates per commit.
 - A supervised worker keeps the newest 100,000 change rows, hourly.
 - Sessions and checkouts (#199): a supervised worker publishes their wire views
   (`session-list`, `checkout-list`) after every commit and every 5 s, and retracts ended
@@ -254,6 +260,13 @@ builds it only when asked and no release installs it.
   resume after a restart with tombstones, `resnapshot-required` for another epoch and for
   discarded history, one feed per connection, none on the agent socket, batches with one
   answer place, an oversized snapshot closing the connection.
+- `tests/memory_bounds.rs`: issue #406's feed buffer: a subscriber that stopped reading is
+  owed its buffer, not a batch per commit; a batch larger than the buffer still passes; a
+  written batch gives its room back. Its ignored test prints what stalled subscribers hold.
+- `tests/sessions/no_agent.rs`: issue #406's session left running with no agent: reported
+  to the owner after the window with the command that ends it, kept running until the
+  owner ends it, not reported before the window nor while its agent runs, and left to the
+  idle sleep when its agent waited at its prompt.
 - `tests/session_feed.rs`: issue #199's sessions and checkouts reaching a subscriber as
   they start, sleep and end, each in the exact state the command answered; a foreign
   `session` entity retracted; a broken owner configuration holding back checkouts only.

@@ -8,20 +8,83 @@ use std::time::Duration;
 use cockpit_messaging::{EntityChange, Feed, FeedBatch, FeedCursor, Refusal};
 use cockpit_protocol::{
     Change, ChangeBatch, ChangeEvent, CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef,
-    EntityRevision, ErrorCode, FeedPosition, Outcome, Reply,
+    EntityRevision, ErrorCode, FeedPosition, Outcome, Reply, ServerFrame,
 };
 use cockpit_turso::Database;
 use tokio::sync::{mpsc, watch};
 
-use crate::routes::{Route, refusal};
+use crate::routes::{BufferedBatch, Route, refusal};
 
 /// Batches built ahead of the connection; the feed waits when the client reads slower.
 const STREAM_BATCHES: usize = 8;
 
-pub(crate) fn route(from: FeedPosition, database: Arc<Database>) -> Route {
+/// The bytes of batches one subscriber has waiting to be written, against what it may have
+/// (#406): beside the count above, what a subscriber that stopped reading makes the daemon
+/// hold. The feed builds no batch while the buffer holds its bytes or more, so it holds at
+/// most one batch beyond them, and a batch larger than the whole buffer still passes.
+struct Buffer {
+    used_bytes: Arc<watch::Sender<usize>>,
+    bytes: usize,
+}
+
+impl Buffer {
+    fn new(bytes: u32) -> Buffer {
+        Buffer {
+            used_bytes: Arc::new(watch::Sender::new(0)),
+            // An empty buffer always has room, so a feed of no bytes still streams.
+            bytes: (bytes as usize).max(1),
+        }
+    }
+
+    /// Waits until the buffer holds less than its bytes.
+    async fn has_room(&self) {
+        let mut used_bytes = self.used_bytes.subscribe();
+        used_bytes
+            .wait_for(|used_bytes| *used_bytes < self.bytes)
+            .await
+            .expect("the buffer keeps its own sender");
+    }
+
+    /// Counts `line` in the buffer until its connection wrote it.
+    fn hold(&self, line: Vec<u8>) -> BufferedBatch {
+        self.used_bytes
+            .send_modify(|used_bytes| *used_bytes += line.len());
+        BufferedBatch {
+            room: BufferRoom {
+                used_bytes: Arc::clone(&self.used_bytes),
+                bytes: line.len(),
+            },
+            line,
+        }
+    }
+}
+
+/// A batch's bytes of its subscriber's buffer, given back when dropped.
+pub(crate) struct BufferRoom {
+    used_bytes: Arc<watch::Sender<usize>>,
+    bytes: usize,
+}
+
+impl Drop for BufferRoom {
+    fn drop(&mut self) {
+        self.used_bytes
+            .send_modify(|used_bytes| *used_bytes -= self.bytes);
+    }
+}
+
+/// `batch` as the line its connection writes, or `None` when it exceeds the frame limit.
+/// Kept as the line, not as the batch: the line is what the buffer counts, and several times
+/// smaller than the parsed states.
+fn batch_line(batch: FeedBatch) -> Option<Vec<u8>> {
+    let mut line = crate::server::encode(&ServerFrame::Changes(change_batch(batch)))?;
+    line.shrink_to_fit();
+    Some(line)
+}
+
+pub(crate) fn route(from: FeedPosition, database: Arc<Database>, buffer_bytes: u32) -> Route {
     Route::Stream {
         job: Box::pin(async move {
-            match start(from, database).await {
+            match start(from, database, buffer_bytes).await {
                 Ok((cursor, batches)) => (Outcome::Ok(Reply::Subscribed { cursor }), Some(batches)),
                 Err(outcome) => (outcome, None),
             }
@@ -34,20 +97,28 @@ pub(crate) fn route(from: FeedPosition, database: Arc<Database>) -> Route {
 async fn start(
     from: FeedPosition,
     database: Arc<Database>,
-) -> Result<(Cursor, mpsc::Receiver<ChangeBatch>), Outcome> {
+    buffer_bytes: u32,
+) -> Result<(Cursor, mpsc::Receiver<BufferedBatch>), Outcome> {
     // Watched before the feed is read, so a commit in between wakes the stream.
     let commits = database.watch_commits();
     let (feed, first) = Feed::open(&database, feed_position(from))
         .await
         .map_err(|error| feed_error(&error))?;
     let cursor = wire_cursor(feed.cursor().clone());
+    let buffer = Buffer::new(buffer_bytes);
     let (sender, batches) = mpsc::channel(STREAM_BATCHES);
     if let Some(first) = first {
-        sender
-            .try_send(change_batch(first))
-            .expect("a new channel has room for the first batch");
+        let Some(line) = batch_line(first) else {
+            // The sender is dropped: the feed ends before its first batch and its
+            // connection closes, as for any batch too large to send.
+            tracing::error!("a change feed's first batch exceeds the frame limit; closing it");
+            return Ok((cursor, batches));
+        };
+        if sender.try_send(buffer.hold(line)).is_err() {
+            unreachable!("a new channel has room for the first batch");
+        }
     }
-    tokio::spawn(stream(feed, database, commits, sender));
+    tokio::spawn(stream(feed, database, commits, sender, buffer));
     Ok((cursor, batches))
 }
 
@@ -57,17 +128,28 @@ async fn stream(
     mut feed: Feed,
     database: Arc<Database>,
     mut commits: watch::Receiver<()>,
-    sender: mpsc::Sender<ChangeBatch>,
+    sender: mpsc::Sender<BufferedBatch>,
+    buffer: Buffer,
 ) {
     loop {
         tokio::select! {
             changed = commits.changed() => if changed.is_err() { return },
             () = sender.closed() => return,
         }
+        // No batch is built for a subscriber whose buffer is full: the commits made while
+        // this waits are in the next batch, each entity once.
+        tokio::select! {
+            () = buffer.has_room() => {}
+            () = sender.closed() => return,
+        }
         match feed.next(&database).await {
             Ok(None) => {}
             Ok(Some(batch)) => {
-                if sender.send(change_batch(batch)).await.is_err() {
+                let Some(line) = batch_line(batch) else {
+                    tracing::error!("a change batch exceeds the frame limit; closing its feed");
+                    return;
+                };
+                if sender.send(buffer.hold(line)).await.is_err() {
                     return;
                 }
             }

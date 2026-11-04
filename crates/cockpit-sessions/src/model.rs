@@ -347,6 +347,9 @@ pub struct TickReport {
     /// Running sessions whose agent did not report by the launch deadline, now shown as
     /// waiting on the owner (#702).
     pub unreported: Vec<SessionId>,
+    /// Running sessions with no agent in their terminal while processes they started still
+    /// run, now shown as waiting on the owner (#406).
+    pub agentless: Vec<SessionId>,
     /// Sessions a step failed for, with the reason; the next tick looks again.
     pub errors: Vec<(SessionId, String)>,
 }
@@ -490,6 +493,11 @@ pub struct Settings {
     /// bridge reports at launch (#702): a harness can stop on a screen of its own (folder
     /// trust, sign-in, update) before any hook runs.
     pub report_deadline: Duration,
+    /// How long a running session may have no agent in its terminal, while processes it
+    /// started still run, before the periodic pass shows it as waiting on the owner (#406):
+    /// the owner's `memory.agentless_session_minutes`. What an agent leaves behind as it
+    /// exits usually ends within seconds, and its session with it.
+    pub agentless_after: Duration,
     /// The owner's environment, whose configuration a launch in a parallel clone reads for
     /// `projects.trusted` before it asks the provider to record its harness's trust of the
     /// clone (#702). The default names no home, so no configuration is read and no trust is
@@ -526,6 +534,7 @@ impl Default for Settings {
             // Claude Code 2.1.317 reports its `SessionStart` within a few seconds, MCP
             // servers included; the pass runs every 30 s, so the owner hears within a minute.
             report_deadline: Duration::from_secs(30),
+            agentless_after: Duration::from_secs(10 * 60),
             owner_environment: cockpit_config::Environment::default(),
         }
     }

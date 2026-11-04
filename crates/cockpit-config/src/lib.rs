@@ -8,10 +8,12 @@
 
 mod github_token;
 mod layout;
+mod memory;
 mod profile;
 mod show;
 mod start_files;
 mod storage;
+pub use memory::MemorySettings;
 pub use storage::StorageSettings;
 
 use std::fmt;
@@ -126,6 +128,8 @@ pub struct ConfigFile {
 #[derive(Clone, Debug)]
 pub struct EffectiveConfig {
     pub storage: StorageSettings,
+    /// What the daemon and its tmux server may hold in memory (#406).
+    pub memory: MemorySettings,
     pub layout: Layout,
     pub user_file: ConfigFile,
     pub project_file: Option<ConfigFile>,
@@ -330,6 +334,7 @@ impl std::error::Error for ConfigError {}
 #[serde(deny_unknown_fields)]
 struct SettingsFile {
     storage: Option<Spanned<storage::StorageTable>>,
+    memory: Option<Spanned<memory::MemoryTable>>,
     projects: Option<Spanned<ProjectsTable>>,
     workflow: Option<WorkflowTable>,
     start_files: Option<Spanned<Vec<Spanned<StartFileEntry>>>>,
@@ -496,6 +501,7 @@ pub fn load(
 
     Ok(EffectiveConfig {
         storage: storage::settings(&layers)?,
+        memory: memory::settings(&layers)?,
         layout,
         user_file,
         project_file,
@@ -560,6 +566,7 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
     // Exhaustive on purpose: a new setting must be classified here as owner or describing.
     let SettingsFile {
         storage,
+        memory,
         projects,
         start_files,
         tasks,
@@ -576,6 +583,12 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         return Err(ConfigError::OwnerOnly {
             key: "storage",
             source: layer.source_at(storage.span()),
+        });
+    }
+    if let Some(memory) = memory {
+        return Err(ConfigError::OwnerOnly {
+            key: "memory",
+            source: layer.source_at(memory.span()),
         });
     }
     if let Some(tasks) = tasks {
