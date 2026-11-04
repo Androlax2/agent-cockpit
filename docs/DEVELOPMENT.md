@@ -49,7 +49,10 @@ platforms; these prerequisite checks do not establish public or live-platform ac
 
 ## Existing commands
 
-Run from the repository root:
+Run from the repository root. These `make` targets are for humans and for `apps/`; coding
+agents do not run them (not for agents, see [CLAUDE.md](../CLAUDE.md) Tests) and use the
+cargo commands listed there instead, for example `cargo nextest run --locked -p <crate>`
+in place of `make crates-test`.
 
 ```sh
 make build

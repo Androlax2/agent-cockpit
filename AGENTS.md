@@ -25,8 +25,8 @@ metadata. Project guidance supplements the user's global instructions.
 Issues labelled `greenfield` build the target architecture under `crates/` following the
 [design reports](docs/design/greenfield/README.md) and the working agreement in
 [issue #17](https://github.com/Androlax2/agent-cockpit/issues/17). Milestones are releases
-(Alpha 1, Alpha 2, Beta 1, Beta 2: cutover, Beta 3: designed UI; `Hardening` for follow-ups
-no release needs); [CONTRIBUTING](CONTRIBUTING.md#milestones) says what a release milestone
+(Alpha 1, Alpha 2, Beta 1, Beta 2: cutover, Beta 3: designed UI; `Maintenance: hardening`
+is the intake for follow-ups no release needs); [CONTRIBUTING](CONTRIBUTING.md#milestones) says what a release milestone
 means. Load the
 reports' README plus the reports named in your issue, nothing more. The architecture map
 describes the code that exists today under `apps/`, which keeps running until the cutover.
@@ -37,12 +37,14 @@ describes the code that exists today under `apps/`, which keeps running until th
    the change. Read surrounding code before choosing an abstraction.
 2. Run the focused test while iterating. Preserve validation and error handling during
    moves; formatting and architectural changes belong in separate reviewable diffs.
-3. Run the affected checks on the final source. Use the shared full-test entry point
-   when full verification is needed; do not launch duplicate broad runs across clones.
+3. Run the affected checks on the final source with the cargo commands in CLAUDE.md,
+   Tests; do not launch duplicate broad runs across clones. The `make` targets are not
+   for agents.
 4. Report actual commands and outcomes, including existing failures or missing tools.
    A skipped check is not a pass.
 
-Build and verification instructions live in [Development](docs/DEVELOPMENT.md).
+Build and verification instructions live in [Development](docs/DEVELOPMENT.md); its
+`make` commands are for humans and `apps/`, not for agents (see CLAUDE.md, Tests).
 Contribution expectations live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Project workflow skills
