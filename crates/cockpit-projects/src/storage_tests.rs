@@ -202,21 +202,21 @@ async fn the_report_caps_registry_rows_and_does_not_modify_them() {
     assert_eq!(crate::checkouts(&read, None).await.unwrap().len(), 131);
 }
 
+/// One registered clone per `(name, file count)`; the scratch keeps the fixture alive.
 async fn stored_clones_with_files(
-    clone_names: &[&str],
-    files_per_target: usize,
-) -> Vec<StoredCheckout> {
+    clones: &[(&str, usize)],
+) -> (Scratch, Database, Vec<StoredCheckout>) {
     let scratch = Scratch::new();
     let database = scratch.open().await;
     let root = scratch.repository("app");
     register(&database, &root).await;
     let mut stored = Vec::new();
-    for name in clone_names {
+    for (name, file_count) in clones {
         let clone = crate::create_parallel_clone(&database, &crate::Git::from_path(), "app", name)
             .await
             .unwrap();
         disk::create_dir(clone.path.join("target")).unwrap();
-        for number in 0..files_per_target {
+        for number in 0..*file_count {
             disk::write(clone.path.join(format!("target/{number}")), b"abc").unwrap();
         }
         stored.push(
@@ -225,14 +225,13 @@ async fn stored_clones_with_files(
                 .unwrap(),
         );
     }
-    // The scratch directory must outlive the walk; leaking it keeps the fixture alive for this test process.
-    std::mem::forget(scratch);
-    stored
+    (scratch, database, stored)
 }
 
 #[tokio::test]
 async fn every_clone_over_the_entry_limit_reports_its_own_partial_size() {
-    let stored = stored_clones_with_files(&["first", "second", "third"], 30).await;
+    let (_scratch, _database, stored) =
+        stored_clones_with_files(&[("first", 30), ("second", 30), ("third", 30)]).await;
 
     let clones = measure_all(stored, 10, SCAN_BUDGET, REPORT_BUDGET);
 
@@ -262,22 +261,34 @@ async fn an_incomplete_count_names_how_many_entries_the_walk_visited() {
 
     assert!(
         matches!(&size, TargetSize::Incomplete { reason, .. }
-        if reason == "report directory-entry limit reached after 8 entries"),
+        if reason == "clone directory-entry limit reached after 8 entries"),
         "{size:?}"
     );
 }
 
 #[tokio::test]
-async fn a_clone_under_the_limits_stays_complete_next_to_one_over_them() {
-    let small = stored_clones_with_files(&["small"], 3).await;
-    let large = stored_clones_with_files(&["large"], 30).await;
+async fn a_target_ending_exactly_at_the_entry_limit_is_complete() {
+    let (_scratch, _database, stored) = fixture().await;
+    for number in 0..3 {
+        disk::write(
+            stored.checkout.path.join(format!("target/{number}")),
+            b"abc",
+        )
+        .unwrap();
+    }
 
-    let clones = measure_all(
-        large.into_iter().chain(small).collect(),
-        10,
-        SCAN_BUDGET,
-        REPORT_BUDGET,
-    );
+    // Three files plus the `.` and `..` entries.
+    let size = measure(&stored, &mut Budget::new(5, SCAN_BUDGET), &mut || {});
+
+    assert_eq!(size, TargetSize::Complete { apparent_bytes: 9 });
+}
+
+#[tokio::test]
+async fn a_clone_under_the_limits_stays_complete_next_to_one_over_them() {
+    let (_scratch, _database, stored) =
+        stored_clones_with_files(&[("large", 30), ("small", 3)]).await;
+
+    let clones = measure_all(stored, 10, SCAN_BUDGET, REPORT_BUDGET);
 
     assert!(matches!(
         clones[0].measurement,
@@ -286,5 +297,24 @@ async fn a_clone_under_the_limits_stays_complete_next_to_one_over_them() {
     assert_eq!(
         clones[1].measurement,
         TargetSize::Complete { apparent_bytes: 9 }
+    );
+}
+
+#[test]
+fn unused_report_time_flows_to_the_clones_still_waiting() {
+    let deadline = Instant::now() + Duration::from_secs(60);
+
+    let first_of_four = fair_time_share(deadline, 4);
+    let last_of_four = fair_time_share(deadline, 1);
+
+    assert!(
+        first_of_four <= Duration::from_secs(15),
+        "{first_of_four:?}"
+    );
+    assert!(first_of_four > Duration::from_secs(14), "{first_of_four:?}");
+    assert!(last_of_four > Duration::from_secs(59), "{last_of_four:?}");
+    assert_eq!(
+        fair_time_share(Instant::now() - Duration::from_secs(1), 3),
+        Duration::ZERO
     );
 }

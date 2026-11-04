@@ -86,8 +86,7 @@ fn measure_all(
         .enumerate()
         .map(|(index, stored)| {
             let clones_left = u32::try_from(clone_count - index).unwrap_or(u32::MAX);
-            let fair_share =
-                report_deadline.saturating_duration_since(Instant::now()) / clones_left;
+            let fair_share = fair_time_share(report_deadline, clones_left);
             let mut budget = Budget::new(entries_per_clone, fair_share.min(time_per_clone));
             let measurement = measure(&stored, &mut budget, &mut || {});
             CloneStorage {
@@ -96,6 +95,12 @@ fn measure_all(
             }
         })
         .collect()
+}
+
+/// Unused time flows to the clones still waiting, so a small `target/` early on gives its
+/// neighbours more than an even split of the report budget.
+fn fair_time_share(report_deadline: Instant, clones_left: u32) -> Duration {
+    report_deadline.saturating_duration_since(Instant::now()) / clones_left
 }
 
 struct Budget {
@@ -116,12 +121,10 @@ impl Budget {
     fn check(&self) -> Result<(), String> {
         let visited = self.limit - self.remaining;
         if Instant::now() >= self.deadline {
-            Err(format!(
-                "report time budget reached after {visited} entries"
-            ))
+            Err(format!("clone time budget reached after {visited} entries"))
         } else if self.remaining == 0 {
             Err(format!(
-                "report directory-entry limit reached after {visited} entries"
+                "clone directory-entry limit reached after {visited} entries"
             ))
         } else {
             Ok(())
@@ -265,9 +268,9 @@ impl Walk<'_> {
         between: &mut dyn FnMut(),
     ) -> Result<(), String> {
         let mut entries = Dir::new(directory).map_err(reason)?;
-        loop {
+        // Checked after each read so a directory that ends exactly at the limit is complete.
+        while let Some(entry) = entries.read() {
             self.budget.check()?;
-            let Some(entry) = entries.read() else { break };
             self.budget.remaining -= 1;
             let entry = entry.map_err(reason)?;
             let name = entry.file_name();

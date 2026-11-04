@@ -26,7 +26,12 @@ the coordinator explicitly authorized reusing the existing exact `rustix =1.1.6`
   smaller of three seconds and an equal share of the time left, so a huge `target/` ends as
   `incomplete` with its observed bytes and "after N entries" in the reason, and never starves
   the clones after it (#764; the first limits, 100,000 entries and five seconds shared by the
-  whole report, left every clone but one unavailable on real 17 to 38 GB targets). Absolute checkout paths also have a 64-component bound. Entry
+  whole report, left every clone but one unavailable on real 17 to 38 GB targets). A count cut
+  off by time depends on disk speed and on how many clones are registered, so two reports of
+  one `target/` can differ; the entry limit is the reproducible one. The report may now hold
+  its Bulk slot and a blocking thread for up to 30 seconds, six times the former bound, which
+  a 400,000-entry fixture does not approach (two such clones took 0.8 seconds, warm cache).
+  Absolute checkout paths also have a 64-component bound. Entry
   and time limits are checked between entries/clones; the bounded identity recheck still
   runs after traversal. A stalled kernel filesystem call cannot be forcibly interrupted.
   Existing Bulk containment retains admission until the work actually ends, including
