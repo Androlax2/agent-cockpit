@@ -8,7 +8,7 @@ use std::fmt;
 use cockpit_protocol::{
     AgentState, BugReportView, Change, ChangeBatch, CheckoutView, EntityKind, FeedPosition,
     GuideStateView, GuideView, ProjectView, QuestionSource, RunRequestView, RunStateView,
-    SessionReport, SessionStateView, SessionView, TurnOutcome,
+    SessionReport, SessionStateView, SessionView, TurnOutcome, ViewArea, ViewStamp,
 };
 
 use crate::attention::{Cue, StartSource, Watch};
@@ -26,6 +26,11 @@ pub struct Board {
     pub(crate) guides: Vec<GuideView>,
     /// The bug report drafts waiting for the owner, by id (#471).
     pub(crate) bug_reports: BTreeMap<i64, BugReportView>,
+    /// The last stamp the feed gave each area the daemon answers by request (#706). Kept
+    /// across snapshots: a stamp that differs after one is how an outage's changes are found.
+    stamps: BTreeMap<ViewArea, ViewStamp>,
+    /// Areas whose stamp moved since the runtime last took them to ask for them again.
+    stale_areas: BTreeSet<ViewArea>,
     /// Which sessions need the owner now, for the bell (#682).
     watch: Watch,
 }
@@ -95,6 +100,13 @@ impl Board {
                         .parse()
                         .map_err(|_| refused("a bug report id is a number".to_owned()))?,
                 ),
+                (EntityKind::ViewStamp, Change::Upsert { state }) => {
+                    // An area this version does not know has no view here to refresh.
+                    let Some(area) = ViewArea::from_id(&event.entity.id) else {
+                        continue;
+                    };
+                    Edit::PutStamp(area, decode(state).map_err(refused)?)
+                }
                 _ => continue,
             });
         }
@@ -127,10 +139,20 @@ impl Board {
                 Edit::RemoveBugReport(id) => {
                     self.bug_reports.remove(&id);
                 }
+                Edit::PutStamp(area, stamp) => {
+                    if self.stamps.insert(area, stamp) != Some(stamp) {
+                        self.stale_areas.insert(area);
+                    }
+                }
             }
         }
         self.look_for_cues(Some(StartSource::Sessions));
         Ok(())
+    }
+
+    /// The areas whose stamp moved since the last call, for the runtime to ask for again.
+    pub(crate) fn take_stale_areas(&mut self) -> BTreeSet<ViewArea> {
+        std::mem::take(&mut self.stale_areas)
     }
 
     pub fn set_projects(&mut self, projects: Vec<ProjectView>) {
@@ -374,6 +396,7 @@ enum Edit {
     RemoveCheckout(i64),
     PutBugReport(BugReportView),
     RemoveBugReport(i64),
+    PutStamp(ViewArea, ViewStamp),
 }
 
 fn decode<View: serde::de::DeserializeOwned>(

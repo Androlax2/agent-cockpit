@@ -171,6 +171,14 @@ impl Cockpit {
     }
 
     pub fn start_with(kind: DaemonKind) -> Cockpit {
+        let mut cockpit = Cockpit::start_without_tui(kind);
+        cockpit.attach();
+        cockpit
+    }
+
+    /// The daemon on a fresh home with project `demo`, and no TUI: what an idle daemon costs
+    /// by itself.
+    pub fn start_without_tui(kind: DaemonKind) -> Cockpit {
         // Under /tmp: the daemon's and tmux's sockets live in the home, and macOS's own
         // temporary directory is too long a path for them.
         let dir = tempfile::Builder::new()
@@ -217,8 +225,12 @@ impl Cockpit {
         };
         cockpit.start_daemon();
         cockpit.add_project();
-        cockpit.attach();
         cockpit
+    }
+
+    /// The running daemon's process id.
+    pub fn daemon_pid(&self) -> u32 {
+        self.daemon.as_ref().expect("the daemon runs").id()
     }
 
     pub fn project_root(&self) -> PathBuf {

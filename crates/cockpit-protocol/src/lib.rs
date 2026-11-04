@@ -33,7 +33,7 @@ pub use bug_reports::{
 };
 pub use change_feed::{
     Change, ChangeBatch, ChangeEvent, CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef,
-    EntityRevision, FeedPosition,
+    EntityRevision, FeedPosition, ViewArea, ViewStamp,
 };
 pub use coordination::{
     CoordinatorAuditView, CoordinatorGrantView, InboundMessageView, InboxView, ObservedSessionView,

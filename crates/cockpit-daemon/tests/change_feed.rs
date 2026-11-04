@@ -166,15 +166,29 @@ fn tombstone(kind: EntityKind, id: &str, revision: u64) -> ChangeEvent {
     }
 }
 
-/// The next batch, applied: the subscriber's cursor moves to its end.
-async fn apply_next(subscription: &mut Subscription) -> ChangeBatch {
-    let pending = tokio::time::timeout(GENEROUS, subscription.next_batch())
-        .await
-        .expect("a batch arrives")
-        .expect("the feed delivers");
-    let batch = pending.batch().clone();
-    pending.applied();
+/// `batch` without the daemon's own `view-stamp` entities (#706), which move with commits
+/// these tests did not make; `view_stamps.rs` covers them.
+fn without_view_stamps(mut batch: ChangeBatch) -> ChangeBatch {
     batch
+        .changes
+        .retain(|event| event.entity.kind != EntityKind::ViewStamp);
+    batch
+}
+
+/// The next batch, applied: the subscriber's cursor moves to its end. A batch of nothing but
+/// view stamps is applied and skipped.
+async fn apply_next(subscription: &mut Subscription) -> ChangeBatch {
+    loop {
+        let pending = tokio::time::timeout(GENEROUS, subscription.next_batch())
+            .await
+            .expect("a batch arrives")
+            .expect("the feed delivers");
+        let batch = without_view_stamps(pending.batch().clone());
+        pending.applied();
+        if !batch.changes.is_empty() || batch.follows == FeedPosition::Snapshot {
+            return batch;
+        }
+    }
 }
 
 /// A connection that asks for the change feed and speaks frames by hand, to see the
@@ -375,7 +389,7 @@ async fn a_cursor_older_than_the_retained_history_is_answered_resnapshot_require
     let refused = peer.subscribe(FeedPosition::Cursor(old.clone())).await;
     let subscribed = peer.subscribe(FeedPosition::Snapshot).await;
     let snapshot = match peer.read_frame().await {
-        ServerFrame::Changes(batch) => batch,
+        ServerFrame::Changes(batch) => without_view_stamps(batch),
         other => panic!("not a batch: {other:?}"),
     };
 

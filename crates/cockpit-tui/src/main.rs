@@ -22,9 +22,11 @@ use cockpit_tui::{App, FeedEvent, Key, draw, follow_feed, record_usage};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use tokio::sync::mpsc;
 
-/// How often the TUI asks the daemon for what is not on the change feed: projects, the
-/// agents' reports and the approval queue.
-const REFRESH: Duration = Duration::from_secs(1);
+/// How often the TUI asks the daemon again for projects, the agents' reports, the approval
+/// queue and the open task or workflow view, whatever the feed said. The feed's view stamps
+/// (#706) bring a change at once; this catches what no commit records: the runner's memory and
+/// a question's hold running out with the clock.
+const REFRESH: Duration = Duration::from_secs(5);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(2);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
@@ -167,7 +169,13 @@ async fn run(
             () = sleep_until(app.pane().grace_ends_at(now)) => {}
             event = feed.recv() => match event {
                 None => return Err("the change feed task stopped".to_owned()),
-                Some(event) => follow(&mut app, event),
+                Some(event) => {
+                    follow(&mut app, event);
+                    for command in app.changed_view_commands() {
+                        unanswered_refreshes += 1;
+                        send(&requests, command, true)?;
+                    }
+                }
             },
             input = received.recv() => match input {
                 None => return Err("the key reader stopped".to_owned()),

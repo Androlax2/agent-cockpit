@@ -64,6 +64,10 @@ pub enum EntityKind {
     Checkout,
     /// A bug report draft waiting for the owner (#471); sent and discarded ones are retracted.
     BugReport,
+    /// "This part of the owner's view changed" (#706). The id is a [`ViewArea::id`] and the
+    /// state a [`ViewStamp`]. A client re-asks for the area when the
+    /// stamp moves instead of polling it.
+    ViewStamp,
     /// A kind this version does not know, kept as sent so a client can skip or show it.
     /// Never build one with a known name: it would read back as the known variant.
     #[serde(untagged)]
@@ -73,6 +77,57 @@ pub enum EntityKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EntityRevision(pub u64);
+
+/// A part of the owner's view that the daemon answers by request rather than as entities:
+/// the change feed carries only a [`ViewStamp`] for it, and the client asks again when the
+/// stamp moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ViewArea {
+    /// `project-list`.
+    Projects,
+    /// `agent-reports`.
+    AgentReports,
+    /// `approval-queue`.
+    Approvals,
+    /// The task list and the queue explanation.
+    Tasks,
+    /// The workflow list, a run and its packet.
+    Workflows,
+}
+
+impl ViewArea {
+    pub const ALL: [ViewArea; 5] = [
+        ViewArea::Projects,
+        ViewArea::AgentReports,
+        ViewArea::Approvals,
+        ViewArea::Tasks,
+        ViewArea::Workflows,
+    ];
+
+    /// The id of this area's [`EntityKind::ViewStamp`] entity.
+    pub fn id(self) -> &'static str {
+        match self {
+            ViewArea::Projects => "projects",
+            ViewArea::AgentReports => "agent-reports",
+            ViewArea::Approvals => "approvals",
+            ViewArea::Tasks => "tasks",
+            ViewArea::Workflows => "workflows",
+        }
+    }
+
+    /// The area a stamp entity id names; `None` for an area this version does not know.
+    pub fn from_id(id: &str) -> Option<ViewArea> {
+        ViewArea::ALL.into_iter().find(|area| area.id() == id)
+    }
+}
+
+/// The state of a [`EntityKind::ViewStamp`] entity: it differs whenever the area may have
+/// changed, and says nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewStamp {
+    /// The commit revision of the last commit that touched what the area shows.
+    pub changed_at: u64,
+}
 
 /// Deliberately closed: a client cannot apply a change it does not understand, and skipping
 /// one would advance its cursor over data it never applied. A new kind needs a new protocol
