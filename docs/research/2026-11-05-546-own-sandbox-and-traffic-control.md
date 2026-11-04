@@ -49,7 +49,9 @@ hundreds of milliseconds. The case rests on correctness, one lifecycle and owner
   and seccomp.
 - [x] D4 decided 2026-11-05: A, "allow always" covers the project only, as a revocable grant;
   #674's text changes from the whole profile to the project.
-- [ ] Theo decides [D5 to D6](#decisions-for-the-owner) and approves or declines each
+- [x] D5 decided 2026-11-05: A, the `landlock` crate and `seccompiler`, pinned exactly; the
+  workspace keeps `unsafe_code = "deny"`.
+- [ ] Theo decides [D6](#decisions-for-the-owner) and approves or declines each
   [proposed issue](#proposed-issues-not-filed).
 
 ## What was measured
@@ -430,6 +432,10 @@ monorepo), pinned exactly; the workspace keeps
 `unsafe_code = "deny"` and their unsafe code is reviewed upstream.
 **B:** raw syscalls in one module allowed to use `unsafe`. **C:** `libseccomp` through its C
 library.
+
+**Decided 2026-11-05: A.** The `landlock` crate and `seccompiler`, pinned exactly; the
+workspace keeps `unsafe_code = "deny"`. The implementing issue adds them; this research adds
+no dependency.
 
 **D6. Milestones.** **A (recommended):** stages 1 to 4 in v0.1.0-alpha.4 (sandbox and security),
 stage 5 in v0.1.0-alpha.5, macOS in Roadmap: macOS. **B:** a new milestone between alpha.4 and
