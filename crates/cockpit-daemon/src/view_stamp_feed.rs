@@ -148,6 +148,7 @@ mod tests {
         "messaging_receipts",
         "process_executions",
         "process_output_sets",
+        "project_end_sweeps",
         "project_target_prune_guards",
         "project_target_prunes",
         "resource_reservations",
