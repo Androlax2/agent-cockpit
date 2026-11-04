@@ -6,6 +6,7 @@ mod bug_form;
 mod feed;
 mod form;
 mod pane;
+mod projects;
 mod render;
 mod task_form;
 mod tasks;

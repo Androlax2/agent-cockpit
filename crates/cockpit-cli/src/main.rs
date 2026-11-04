@@ -70,6 +70,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek bug-report send ID [--gh | --print] [--anyway] | send ID --filed URL
        torlek project add DIR [--name NAME]
        torlek project list
+       torlek project remove PROJECT
        torlek checkout list [PROJECT]
        torlek checkout clone PROJECT BRANCH
        torlek checkout review PROJECT PULL_REQUEST

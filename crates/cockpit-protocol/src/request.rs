@@ -215,6 +215,12 @@ pub enum Command {
         name: Option<String>,
     },
     ProjectList,
+    /// Owner only: unregister the project named `project` (or with that id). Refused while
+    /// it has a session not ended, an occupied checkout or open task items. Nothing on disk
+    /// is deleted; ended sessions and finished items stay as history.
+    ProjectRemove {
+        project: String,
+    },
     /// Checkouts not yet removed, of one project or all.
     CheckoutList {
         project: Option<String>,
@@ -888,6 +894,12 @@ pub enum Reply {
     },
     Projects {
         projects: Vec<ProjectView>,
+    },
+    /// The project is unregistered; `kept_on_disk` are the paths of its clones, left in
+    /// place and no longer tracked.
+    ProjectRemoved {
+        project: ProjectView,
+        kept_on_disk: Vec<String>,
     },
     Checkouts {
         checkouts: Vec<CheckoutView>,

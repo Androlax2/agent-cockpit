@@ -11,6 +11,7 @@ use crate::board::{Board, FeedError};
 use crate::bug_form::BugForm;
 use crate::form::{Form, FormOutcome};
 use crate::pane::{Pane, PaneOutcome};
+use crate::projects::{Projects, ProjectsOutcome};
 use crate::tasks::{TaskOutcome, Tasks};
 use crate::workflows::{Workflows, WorkflowsOutcome};
 
@@ -65,6 +66,8 @@ pub enum Confirm {
     Exit(String),
     /// The sessions of the finished group as the owner saw it: `y` ends only these.
     ExitFinished(Vec<String>),
+    /// A project from the project list (#727).
+    RemoveProject(String),
 }
 
 /// What one key did: the command it counts as in diagnostics (decision 17: every command
@@ -101,6 +104,7 @@ pub struct App {
     pub(crate) bug_form: Option<BugForm>,
     pub(crate) workflows: Option<Workflows>,
     pub(crate) tasks: Option<Tasks>,
+    pub(crate) projects: Option<Projects>,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) confirm: Option<Confirm>,
     pub(crate) log: VecDeque<String>,
@@ -294,7 +298,29 @@ impl App {
                         only: Some(sessions),
                     },
                 ),
+                (Key::Char('y'), Confirm::RemoveProject(project)) => {
+                    Step::sending("project-remove", Command::ProjectRemove { project })
+                }
                 _ => Step::used("confirm-cancel"),
+            };
+        }
+        if let Some(projects) = &mut self.projects
+            && self.focus == Focus::List
+            && key != Key::Tab
+        {
+            return match projects.key(key, &self.board) {
+                ProjectsOutcome::Closed => {
+                    self.projects = None;
+                    Step::used("projects-close")
+                }
+                ProjectsOutcome::AskToRemove(project) => {
+                    self.confirm = Some(Confirm::RemoveProject(project));
+                    Step::used("project-remove-ask")
+                }
+                ProjectsOutcome::Handled { used, send } => Step {
+                    used: Some(used),
+                    send,
+                },
             };
         }
         // While the owner types into the pane, every character is text, `?` and `L` too.
@@ -356,6 +382,10 @@ impl App {
                     .collect();
                 self.form = Some(Form::new(roots));
                 Step::sending("new-session-form", Command::ProviderList)
+            }
+            Key::Char('P') => {
+                self.projects = Some(Projects::default());
+                Step::used("projects")
             }
             Key::Char('B') => self.open(Overlay::BugReports),
             Key::Char('b') => {
@@ -506,6 +536,21 @@ impl App {
                 // The answer to a workflow view closed since.
             }
             Reply::Projects { projects } => self.board.set_projects(projects),
+            Reply::ProjectRemoved {
+                project,
+                kept_on_disk,
+            } => {
+                self.board.remove_project(&project.name);
+                let clones = if kept_on_disk.is_empty() {
+                    String::new()
+                } else {
+                    format!("; clones kept on disk: {}", kept_on_disk.join(", "))
+                };
+                self.note(format!(
+                    "removed project {} ({} stays on disk){clones}",
+                    project.name, project.root
+                ));
+            }
             Reply::AgentReports { reports } => self.board.set_reports(reports),
             Reply::ApprovalQueue { runs, guides } => {
                 self.board.set_queue(runs, guides);
@@ -704,6 +749,7 @@ impl App {
             || self.confirm.is_some()
             || self.workflows.is_some()
             || self.tasks.is_some()
+            || self.projects.is_some()
             || self.overlay.is_some();
         if is_owner_in_column {
             self.keep_keys();

@@ -555,6 +555,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                   torlek bug-report send ID [--gh | --print] [--anyway] | send ID --filed URL\n       \
                   torlek project add DIR [--name NAME]\n       \
                   torlek project list\n       \
+                  torlek project remove PROJECT\n       \
                   torlek checkout list [PROJECT]\n       \
                   torlek checkout clone PROJECT BRANCH\n       \
                   torlek checkout review PROJECT PULL_REQUEST\n       \

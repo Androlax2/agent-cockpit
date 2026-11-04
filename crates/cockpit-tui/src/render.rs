@@ -33,6 +33,9 @@ Sessions
   r                  restart the selected session (confirm with y)
   x                  exit the selected session (confirm with y)
   X                  exit every finished session (confirm with y)
+Projects
+  P                  the registered projects; d removes the selected one (confirm
+                     with y): nothing on disk is deleted, its history stays
 Tasks
   T                  tasks; a add, e edit, h hand to session, Q queue, ? explanation
 Workflows
@@ -84,9 +87,10 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
         (Some(form), ..) => draw_form(form, frame, main),
         (None, Some(form), _) => draw_bug_form(form, frame, main),
         (None, None, Some(workflows)) => workflows.draw(frame, main),
-        (None, None, None) => match &app.tasks {
-            Some(tasks) => tasks.draw(frame, main),
-            None => draw_list(app, frame, main),
+        (None, None, None) => match (&app.projects, &app.tasks) {
+            (Some(projects), _) => projects.draw(app.board(), frame, main),
+            (None, Some(tasks)) => tasks.draw(frame, main),
+            (None, None) => draw_list(app, frame, main),
         },
     }
     if pane_height > 0 {
@@ -101,6 +105,9 @@ fn status_line(app: &App) -> String {
         (Some(Confirm::Exit(session)), ..) => format!("exit {session}? y to confirm"),
         (Some(Confirm::ExitFinished(sessions)), ..) => {
             format!("exit {} finished sessions? y to confirm", sessions.len())
+        }
+        (Some(Confirm::RemoveProject(project)), ..) => {
+            format!("remove project {project}? y to confirm")
         }
         (None, Some(failure), Some(problem)) => format!(
             "{}: {} · change feed: {problem}",

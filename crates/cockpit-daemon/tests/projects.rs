@@ -16,6 +16,9 @@ fn project_commands() -> Vec<Command> {
             name: None,
         },
         Command::ProjectList,
+        Command::ProjectRemove {
+            project: "app".to_owned(),
+        },
         Command::CheckoutList { project: None },
         Command::CheckoutClone {
             project: "app".to_owned(),

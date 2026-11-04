@@ -9,7 +9,7 @@ use cockpit_projects::{
 };
 use cockpit_protocol::{
     CheckoutKindView, CheckoutView, CloneStorageView, Command, ErrorCode, KeptCheckout, KeptReason,
-    Outcome, ProjectView, Reply, TrustView,
+    Outcome, ProjectView, ProtocolError, Reply, TrustView, Unblock, UnblockedBy,
 };
 use cockpit_turso::Database;
 
@@ -60,6 +60,14 @@ pub(crate) fn route(
                 Ok(Reply::Projects {
                     projects: projects.iter().map(project_view).collect(),
                 })
+            }),
+        ),
+        Command::ProjectRemove { project } => (
+            WorkClass::Control,
+            Box::pin(async move {
+                remove_project(&database, &project)
+                    .await
+                    .unwrap_or_else(|refused| refused)
             }),
         ),
         Command::CheckoutList { project } => (
@@ -187,6 +195,140 @@ pub(crate) fn route(
         }
     };
     Route::Run { class, job }
+}
+
+/// Unregisters `project` in one write transaction, so no session starts, claim, task item or
+/// workflow run lands between the checks and the removal; refused, naming each blocker and the
+/// step that clears it, while a session has not ended, a checkout is occupied by someone else,
+/// an item is open or a workflow runs.
+async fn remove_project(database: &Database, project: &str) -> Result<Outcome, Outcome> {
+    let write = database
+        .write()
+        .await
+        .map_err(|error| project_refusal(Error::from(error)))?;
+    let project = cockpit_projects::project_named_or_numbered(&write, project)
+        .await
+        .map_err(project_refusal)?;
+    let checkouts = cockpit_projects::project_checkouts(&write, project.id)
+        .await
+        .map_err(project_refusal)?;
+    let sessions = cockpit_sessions::sessions(&write, false)
+        .await
+        .map_err(|error| internal("read the sessions", &error))?;
+    let open_items = cockpit_tasks::list(
+        &write,
+        &cockpit_tasks::Actor::Owner,
+        &cockpit_tasks::ListFilter {
+            project: Some(project.name.to_string()),
+            include_closed: false,
+        },
+    )
+    .await
+    .map_err(|error| internal("read the task items", &error))?;
+    let running_workflows = cockpit_workflows::runs(
+        &write,
+        &cockpit_workflows::Actor::Owner,
+        &cockpit_workflows::RunFilter {
+            project: Some(project.name.to_string()),
+            include_closed: false,
+        },
+    )
+    .await
+    .map_err(|error| internal("read the workflow runs", &error))?;
+
+    let mut blockers = Vec::new();
+    let mut steps = Vec::new();
+    let live_sessions: Vec<String> = sessions
+        .iter()
+        .filter(|session| {
+            checkouts
+                .iter()
+                .any(|checkout| checkout.id == session.checkout)
+        })
+        .map(|session| session.id.to_string())
+        .collect();
+    if !live_sessions.is_empty() {
+        blockers.extend(
+            live_sessions
+                .iter()
+                .map(|id| format!("session {id} has not ended")),
+        );
+        steps.push("end each session with `torlek session end SESSION`");
+    }
+    // A live session's own clone is released when the session ends; telling the owner to
+    // release it would pull it out from under a running agent.
+    let occupied: Vec<String> = checkouts
+        .iter()
+        .filter_map(|checkout| {
+            let holder = &checkout.occupancy.as_ref()?.holder;
+            let is_live_session = live_sessions.iter().any(|id| id == holder.as_str());
+            (!is_live_session).then(|| format!("checkout {} is occupied by {holder}", checkout.id))
+        })
+        .collect();
+    if !occupied.is_empty() {
+        blockers.extend(occupied);
+        steps.push("release each checkout with `torlek checkout release CHECKOUT HOLDER`");
+    }
+    if !open_items.is_empty() {
+        blockers.extend(
+            open_items
+                .iter()
+                .map(|item| format!("open item {} ({})", item.id.0, item.title)),
+        );
+        steps.push(
+            "finish or delete each item with `torlek todo done ID` or `torlek todo delete ID` \
+             (a proposal: `torlek todo decline ID`)",
+        );
+    }
+    if !running_workflows.is_empty() {
+        blockers.extend(
+            running_workflows
+                .iter()
+                .map(|run| format!("workflow {} is running", run.id.0)),
+        );
+        steps.push("cancel each workflow with `torlek workflow cancel ID`");
+    }
+    if !blockers.is_empty() {
+        let next = format!("{}, then remove the project again", steps.join("; "));
+        return Ok(Outcome::Error(ProtocolError {
+            code: ErrorCode::Conflict,
+            message: format!(
+                "project {} is in use: {}; next: {next}",
+                project.name,
+                blockers.join(", ")
+            ),
+            unblock: Some(Unblock {
+                action: next,
+                by: UnblockedBy::Owner,
+            }),
+        }));
+    }
+
+    let clones = cockpit_projects::remove_project(&write, &project)
+        .await
+        .map_err(project_refusal)?;
+    write
+        .commit()
+        .await
+        .map_err(|error| project_refusal(Error::from(error)))?;
+    Ok(Outcome::Ok(Reply::ProjectRemoved {
+        project: project_view(&project),
+        kept_on_disk: clones.iter().map(|clone| text(&clone.path)).collect(),
+    }))
+}
+
+fn project_refusal(error: Error) -> Outcome {
+    let code = error_code(&error);
+    if code == ErrorCode::Internal {
+        tracing::error!(%error, "removing a project failed");
+    }
+    refusal(code, &error.to_string())
+}
+
+/// A failure of another capability read while removing a project: the daemon's fault.
+fn internal(action: &str, error: &dyn std::fmt::Display) -> Outcome {
+    tracing::error!(%error, "removing a project could not {action}");
+    refusal(ErrorCode::Internal, &format!("could not {action}: {error}"))
 }
 
 /// The lane job for a project operation: its result becomes the request's outcome.
