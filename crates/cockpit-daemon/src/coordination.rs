@@ -1473,11 +1473,14 @@ fn collection_note(target: &str, report: Option<&SessionReport>, sent_at: i64, n
     if report.state == Some(AgentState::Working) {
         return format!("held until session {target}'s turn ends; its hook then hands it over");
     }
-    let waited = now - sent_at.max(report.reported_at);
-    if waited > STUCK_AFTER_SECONDS {
+    // Counted from the send, not the latest report: an idle agent re-reports, and a moving
+    // baseline would flip the note between stuck and not stuck on each one, so `--watch`
+    // would reprint it (#769). The seconds are left out of the note for the same reason.
+    // A message sent during a turn reads stuck for the moments before its hook takes it.
+    if now - sent_at > STUCK_AFTER_SECONDS {
         return format!(
             "stuck: session {target} waits at its prompt, but its hook has not collected it \
-             for {waited} s: its Claude Code may not run asyncRewake hooks, or it started \
+             for over {STUCK_AFTER_SECONDS} s: its Claude Code may not run asyncRewake hooks, or it started \
              before Torlek collected messages; restarting the session starts its hook"
         );
     }
@@ -1613,5 +1616,78 @@ impl From<cockpit_authorization::Error> for Failed {
 impl From<cockpit_messaging::Error> for Failed {
     fn from(error: cockpit_messaging::Error) -> Failed {
         internal(&error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cockpit_authorization::SessionId;
+    use cockpit_sessions::{AgentState, SessionReport};
+
+    use super::{STUCK_AFTER_SECONDS, collection_note};
+
+    const SENT_AT: i64 = 1_000;
+
+    fn waiting_report(reported_at: i64) -> SessionReport {
+        SessionReport {
+            session: SessionId::new("s0123456789ab").unwrap(),
+            state: Some(AgentState::Waiting),
+            label: None,
+            doing: None,
+            needs_input: None,
+            question_source: None,
+            covered_question: None,
+            outcome: None,
+            reported_at,
+            launch: None,
+            question_asked_at: None,
+            question_escalated_at: None,
+        }
+    }
+
+    /// #769: `agent sessions --watch` reprints a line only when it changes, so the note of a
+    /// stuck message must read the same however long the wait has gone on and however often
+    /// the target re-reports while idle.
+    #[test]
+    fn a_stuck_note_reads_the_same_across_polls_and_idle_re_reports() {
+        let note_at = |reported_at: i64, polled_at: i64| {
+            collection_note(
+                "s0123456789ab",
+                Some(&waiting_report(reported_at)),
+                SENT_AT,
+                polled_at,
+            )
+        };
+        let first = note_at(SENT_AT, SENT_AT + STUCK_AFTER_SECONDS + 1);
+        assert!(first.starts_with("stuck: "), "{first}");
+        assert!(first.contains("for over 60 s"), "{first}");
+
+        for (reported_at, polled_at) in [
+            (SENT_AT, SENT_AT + 90),
+            (SENT_AT + 70, SENT_AT + 71),
+            (SENT_AT + 300, SENT_AT + 302),
+        ] {
+            assert_eq!(
+                note_at(reported_at, polled_at),
+                first,
+                "reported at +{}, polled at +{}",
+                reported_at - SENT_AT,
+                polled_at - SENT_AT
+            );
+        }
+    }
+
+    #[test]
+    fn a_message_is_not_stuck_before_the_limit() {
+        let note = collection_note(
+            "s0123456789ab",
+            Some(&waiting_report(SENT_AT)),
+            SENT_AT,
+            SENT_AT + STUCK_AFTER_SECONDS,
+        );
+        assert_eq!(
+            note,
+            "session s0123456789ab's hook collects it within seconds"
+        );
     }
 }
