@@ -69,3 +69,57 @@ fn storage_invalid_bounds_and_ambiguous_base_ref_are_rejected() {
         );
     }
 }
+#[test]
+fn output_retention_defaults_are_inert_and_reported() {
+    let home = tempfile::tempdir().unwrap();
+    let config = cockpit_config::load(&environment(home.path()), None, &[]).unwrap();
+    let shown = cockpit_config::render(&config);
+    for line in [
+        "storage.output_retention_days = 14  # product default",
+        "storage.output_budget_mib = 1024  # product default",
+        "storage.output_budget_grace_hours = 24  # product default",
+        "storage.output_prune_automatic = false  # product default",
+        "storage.output_prune_projects = []  # product default",
+        "storage.output_prune_interval_minutes = 60  # product default",
+    ] {
+        assert!(shown.contains(line), "missing {line}: {shown}");
+    }
+}
+#[test]
+fn output_retention_owner_policy_is_loaded_with_its_source() {
+    let home = tempfile::tempdir().unwrap();
+    owner(
+        home.path(),
+        "[storage]\noutput_retention_days = 3\noutput_budget_mib = 5\noutput_budget_grace_hours = 0\noutput_prune_automatic = true\noutput_prune_projects = ['app']\noutput_prune_interval_minutes = 10\n",
+    );
+    let config = cockpit_config::load(&environment(home.path()), None, &[]).unwrap();
+    let storage = &config.storage;
+    assert_eq!(
+        (
+            storage.output_retention_days.value,
+            storage.output_budget_mib.value,
+            storage.output_budget_grace_hours.value,
+            storage.output_prune_automatic.value,
+            storage.output_prune_projects.value.clone(),
+            storage.output_prune_interval_minutes.value,
+        ),
+        (3, 5, 0, true, vec!["app".to_owned()], 10)
+    );
+}
+#[test]
+fn output_retention_invalid_bounds_are_rejected() {
+    let home = tempfile::tempdir().unwrap();
+    for setting in [
+        "output_retention_days = 0",
+        "output_budget_mib = 0",
+        "output_budget_mib = 18446744073709551615",
+        "output_prune_interval_minutes = 0",
+        "output_prune_projects = ['../outside']",
+    ] {
+        owner(home.path(), &format!("[storage]\n{setting}\n"));
+        assert!(
+            cockpit_config::load(&environment(home.path()), None, &[]).is_err(),
+            "{setting}"
+        );
+    }
+}

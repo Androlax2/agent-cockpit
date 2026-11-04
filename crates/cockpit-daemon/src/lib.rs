@@ -13,6 +13,7 @@ mod instance;
 mod lanes;
 mod logs;
 mod manager;
+mod output_retention;
 mod projects;
 mod readiness;
 mod resources;
@@ -173,6 +174,7 @@ pub struct Daemon {
     delivering: tokio::task::JoinHandle<()>,
     detecting: tokio::task::JoinHandle<()>,
     pruning: tokio::task::JoinHandle<()>,
+    retiring_outputs: tokio::task::JoinHandle<()>,
     prune_stop: Arc<std::sync::atomic::AtomicBool>,
     _database: Arc<cockpit_turso::Database>,
     _instance: Instance,
@@ -242,11 +244,22 @@ impl Instance {
                 .map_err(StartError::Storage)?;
             write.commit().await?;
         }
+        match cockpit_processes::recover_output_retirements(&database, &processes).await {
+            Ok(0) => {}
+            Ok(finished) => tracing::info!(finished, "finished interrupted output retirements"),
+            // Its files stay and it stays retiring: no reader can take it, the next start retries.
+            Err(error) => tracing::warn!(%error, "an interrupted output retirement is unfinished"),
+        }
+        let storage_settings = storage::settings(wiring.environment.clone()).await?;
         let storage = storage::Context {
             database: Arc::clone(&database),
             git: wiring.git.clone(),
-            policy: Arc::new(storage::policy(wiring.environment.clone()).await?),
+            policy: Arc::new(storage::prune_policy(&storage_settings)),
             stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            supervisor: processes.clone(),
+            outputs: Arc::new(output_retention::OutputPolicy::from_settings(
+                &storage_settings,
+            )),
         };
         let admission = Arc::new(
             cockpit_resource_admission::Backend::detect(
@@ -485,6 +498,18 @@ impl Instance {
             },
         ));
         let accepting = accept(&listener, &shared, server::Socket::HostOnly, &faults);
+        let outputs_shared = Arc::clone(&shared);
+        let outputs_context = storage.clone();
+        let retiring_outputs = tokio::spawn(supervisor::supervise(
+            "output-retention",
+            faults.clone(),
+            move || {
+                output_retention::maintain_forever(
+                    outputs_context.clone(),
+                    Arc::clone(&outputs_shared),
+                )
+            },
+        ));
         let storage_shared = Arc::clone(&shared);
         let prune_stop = Arc::clone(&storage.stopping);
         let pruning = tokio::spawn(supervisor::supervise(
@@ -512,6 +537,7 @@ impl Instance {
             delivering,
             detecting,
             pruning,
+            retiring_outputs,
             prune_stop,
             _database: database,
             _instance: self,
@@ -636,6 +662,7 @@ impl Drop for Daemon {
         self.delivering.abort();
         self.detecting.abort();
         self.pruning.abort();
+        self.retiring_outputs.abort();
         bug_reports::mark_stopped(&self._instance.options.state_dir);
     }
 }

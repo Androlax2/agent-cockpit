@@ -17,24 +17,29 @@ pub(crate) struct Context {
     pub(crate) git: cockpit_projects::Git,
     pub(crate) policy: Arc<PrunePolicy>,
     pub(crate) stopping: Arc<AtomicBool>,
+    pub(crate) supervisor: cockpit_processes::Supervisor,
+    pub(crate) outputs: Arc<crate::output_retention::OutputPolicy>,
 }
 
-pub(crate) async fn policy(
+pub(crate) async fn settings(
     environment: cockpit_config::Environment,
-) -> Result<PrunePolicy, crate::StartError> {
-    let settings = tokio::task::spawn_blocking(move || {
+) -> Result<cockpit_config::StorageSettings, crate::StartError> {
+    tokio::task::spawn_blocking(move || {
         cockpit_config::load(&environment, None, &[]).map(|config| config.storage)
     })
     .await
     .map_err(|error| crate::StartError::Runtime(std::io::Error::other(error)))?
-    .map_err(crate::StartError::Config)?;
-    Ok(PrunePolicy {
+    .map_err(crate::StartError::Config)
+}
+
+pub(crate) fn prune_policy(settings: &cockpit_config::StorageSettings) -> PrunePolicy {
+    PrunePolicy {
         automatic: settings.automatic.value,
-        projects: settings.projects.value,
+        projects: settings.projects.value.clone(),
         confirm_above_bytes: settings.confirm_above_mib.value * 1024 * 1024,
         interval_minutes: settings.interval_minutes.value,
-        base_ref: settings.base_ref.value,
-    })
+        base_ref: settings.base_ref.value.clone(),
+    }
 }
 
 fn internal(error: impl std::fmt::Display) -> ProtocolError {
@@ -150,6 +155,9 @@ pub(crate) fn route(command: Command, context: Context) -> Route {
         job: Box::pin(async move {
             let answer = match command {
                 Command::StorageReport => report(&context).await,
+                Command::StorageOutputs { apply } => {
+                    crate::output_retention::pass(&context, apply, None).await
+                }
                 Command::StoragePrunePreview { checkout, prepare } => {
                     preview(&context, checkout, prepare).await
                 }

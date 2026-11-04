@@ -68,6 +68,9 @@ pub async fn guard_output_in(
             "output is historical, unknown-epoch, or not captured in files",
         ));
     }
+    if facts.retirement.is_some() {
+        return Err(crate::output_catalog::invalid(id, "output was retired"));
+    }
     let key = (database.epoch().to_owned(), id.0);
     *users()
         .lock()

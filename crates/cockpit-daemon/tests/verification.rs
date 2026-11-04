@@ -44,18 +44,22 @@ async fn started() -> Verification {
 }
 
 async fn started_with(is_trusted: bool) -> Verification {
+    started_configured(is_trusted, "").await
+}
+
+/// [`started_with`], with `owner_settings` appended to the owner's configuration.
+async fn started_configured(is_trusted: bool, owner_settings: &str) -> Verification {
     let cwd = WORKING_DIRECTORY.lock().await;
     let home = TestHome::new();
     let config = home.home().join("config").join(common::BUILD_PROFILE_DIR);
     std::fs::create_dir_all(&config).unwrap();
     let root = committed_repository(home.home(), "app");
-    if is_trusted {
-        std::fs::write(
-            config.join("config.toml"),
-            format!("[projects]\ntrusted = [{:?}]\n", root.display().to_string()),
-        )
-        .unwrap();
-    }
+    let trusted = if is_trusted {
+        format!("[projects]\ntrusted = [{:?}]\n", root.display().to_string())
+    } else {
+        String::new()
+    };
+    std::fs::write(config.join("config.toml"), trusted + owner_settings).unwrap();
     let database = home.open_state().await;
     cockpit_projects::register_project(&database, &cockpit_projects::Git::from_path(), &root, None)
         .await
@@ -369,3 +373,6 @@ async fn daemon_run_identity_includes_its_database_epoch() {
 
 #[path = "verification/pending.rs"]
 mod pending;
+
+#[path = "verification/output_retention.rs"]
+mod output_retention;

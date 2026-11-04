@@ -85,3 +85,23 @@ pub struct StoragePruneStatusView {
     pub eligibility: String,
     pub reason: Option<String>,
 }
+
+/// One project's ended check outputs that still have their files, under the owner's retention
+/// policy. Apparent bytes of `stdout` and `stderr`; unmeasured outputs are counted, never
+/// selected, and are not zero bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputRetentionView {
+    pub project: String,
+    pub outputs: u64,
+    pub apparent_bytes: u64,
+    pub unmeasured: u64,
+    /// Kept whatever their age: each check's newest run, a live session's latest, a read one.
+    pub protected: u64,
+    pub selected: u64,
+    pub selected_bytes: u64,
+    /// Retired by this pass; zero when it only reports.
+    pub retired: u64,
+    pub retired_bytes: u64,
+    /// Selected outputs this pass kept, each with why.
+    pub failures: Vec<String>,
+}

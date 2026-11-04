@@ -81,6 +81,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek checkout sweep [--dry-run]
        torlek checkout push CHECKOUT
        torlek storage
+       torlek storage outputs [prune]
        torlek storage prune CHECKOUT [--dry-run] | --plan ID --revision N --epoch E --confirm | status ID | abandon ID --revision N --epoch E
        torlek ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check
        torlek ask guide [--cwd DIR] < GUIDE | --wait ID

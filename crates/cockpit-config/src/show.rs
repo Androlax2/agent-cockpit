@@ -96,6 +96,45 @@ pub fn render(config: &EffectiveConfig) -> String {
         &storage.base_ref.source,
     ));
     lines.push(line(
+        "storage.output_retention_days",
+        &storage.output_retention_days.value.to_string(),
+        &storage.output_retention_days.source,
+    ));
+    lines.push(line(
+        "storage.output_budget_mib",
+        &storage.output_budget_mib.value.to_string(),
+        &storage.output_budget_mib.source,
+    ));
+    lines.push(line(
+        "storage.output_budget_grace_hours",
+        &storage.output_budget_grace_hours.value.to_string(),
+        &storage.output_budget_grace_hours.source,
+    ));
+    lines.push(line(
+        "storage.output_prune_automatic",
+        &storage.output_prune_automatic.value.to_string(),
+        &storage.output_prune_automatic.source,
+    ));
+    lines.push(line(
+        "storage.output_prune_projects",
+        &Value::Array(
+            storage
+                .output_prune_projects
+                .value
+                .iter()
+                .cloned()
+                .map(Value::from)
+                .collect(),
+        )
+        .to_string(),
+        &storage.output_prune_projects.source,
+    ));
+    lines.push(line(
+        "storage.output_prune_interval_minutes",
+        &storage.output_prune_interval_minutes.value.to_string(),
+        &storage.output_prune_interval_minutes.source,
+    ));
+    lines.push(line(
         "workflow.preset",
         &config
             .workflow_preset

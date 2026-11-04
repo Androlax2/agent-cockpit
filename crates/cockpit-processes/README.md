@@ -77,7 +77,10 @@ Output goes to `stdout` and `stderr` files in `<executions dir>/<database epoch>
 pipe whose reader is the daemon would kill the program with `SIGPIPE` after a daemon
 restart. `follow_output` drains a file in bounded chunks into a byte-bounded window; a
 viewer that falls behind reads a gap marker naming the bytes it missed. The files
-themselves are not size-limited yet.
+themselves are not size-limited; output retention (#406) retires an ended, attributed output's
+files: `begin_output_retirement` fences readers and commits first, `remove_output_files`
+removes only `stdout` and `stderr`, and `recover_output_retirements` finishes an interrupted
+one. Which outputs to retire is the daemon's policy.
 
 ## Dependency edges
 
@@ -102,6 +105,8 @@ themselves are not size-limited yet.
   transaction: run as that execution, ended as never started on a refused spec, refused
   once no longer reserved.
 - `tests/output.rs`: bounded draining and gap markers for a slow viewer.
+- `tests/output_retirement.rs`: retirable listing, reader and revision fences, removal of
+  only the run's own files, and recovery of an interrupted retirement.
 - `tests/terminal.rs`: terminal executions with util-linux `setsid --ctty` as the leader:
   the program leads the session and has the terminal, its exit status, whole-session
   termination, a leader that cannot take the terminal, a reserved intent launched once, and

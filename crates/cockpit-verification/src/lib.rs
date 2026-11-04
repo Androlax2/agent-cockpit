@@ -7,7 +7,8 @@ mod model;
 mod pending;
 mod receipts;
 pub use pending::{
-    PendingIdentity, PendingResult, pending_result, pending_results, reserve_result, seal_result,
+    PendingIdentity, PendingResult, newest_runs, pending_result, pending_results, reserve_result,
+    seal_result,
 };
 
 use cockpit_turso::{Migration, MigrationSet};

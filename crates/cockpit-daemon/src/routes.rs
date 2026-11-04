@@ -275,7 +275,8 @@ impl Handler for Routes {
                 | Command::StoragePrunePreview { .. }
                 | Command::StoragePruneApply { .. }
                 | Command::StoragePruneAbandon { .. }
-                | Command::StoragePruneStatus { .. }),
+                | Command::StoragePruneStatus { .. }
+                | Command::StorageOutputs { .. }),
                 peer,
             ) => match peer {
                 Peer::Agent { .. } => Route::Answer(owner_only()),

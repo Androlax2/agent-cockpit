@@ -3,13 +3,17 @@
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cockpit_protocol::{CloneStorageView, Command, PruneVerdictView, Reply, TargetSizeView};
+use cockpit_protocol::{
+    CloneStorageView, Command, OutputRetentionView, PruneVerdictView, Reply, TargetSizeView,
+};
 
 use crate::daemon::{BULK_DEADLINE, request, unexpected};
 
 pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
-    if !arguments.is_empty() {
-        return prune(arguments);
+    match arguments.first().and_then(|argument| argument.to_str()) {
+        None => {}
+        Some("outputs") => return outputs(&arguments[1..]),
+        Some(_) => return prune(arguments),
     }
     let reply = match request(Command::StorageReport, BULK_DEADLINE) {
         Ok(reply) => reply,
@@ -210,6 +214,84 @@ fn prune(arguments: &[OsString]) -> Result<ExitCode, String> {
         _ => return Ok(unexpected(&reply)),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `storage outputs [prune]`: what check-output retention selects per project, and with
+/// `prune` retires it. Exit 1 when a selected output was kept, an output was unmeasured, or the
+/// pass left outputs out.
+fn outputs(arguments: &[OsString]) -> Result<ExitCode, String> {
+    let apply = match arguments {
+        [] => false,
+        [prune] if prune == "prune" => true,
+        _ => return Err("storage outputs [prune]".to_owned()),
+    };
+    let reply = match request(Command::StorageOutputs { apply }, BULK_DEADLINE) {
+        Ok(reply) => reply,
+        Err(code) => return Ok(code),
+    };
+    let Reply::StorageOutputs {
+        projects,
+        applied,
+        truncated,
+    } = &reply
+    else {
+        return Ok(unexpected(&reply));
+    };
+    outln!(
+        "check outputs: apparent bytes of each ended check run's stdout and stderr; receipts and their output tails stay"
+    );
+    outln!(
+        "project\toutputs\tbytes\tunmeasured\tprotected\tselected\tselected_bytes\tretired\tretired_bytes"
+    );
+    for project in projects {
+        outln!("{}", output_row(project));
+    }
+    for project in projects {
+        for failure in &project.failures {
+            outln!("{}: {}", cell(&project.project), cell(failure));
+        }
+    }
+    if *applied {
+        outln!(
+            "retired {} outputs, {} apparent bytes",
+            projects.iter().map(|project| project.retired).sum::<u64>(),
+            projects
+                .iter()
+                .map(|project| project.retired_bytes)
+                .sum::<u64>()
+        );
+    } else {
+        outln!(
+            "dry run: nothing retired; `torlek storage outputs prune` retires the selected outputs"
+        );
+    }
+    if *truncated {
+        outln!("incomplete pass: further outputs were left out by its bound");
+    }
+    let incomplete = *truncated
+        || projects
+            .iter()
+            .any(|project| project.unmeasured > 0 || !project.failures.is_empty());
+    Ok(if incomplete {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn output_row(project: &OutputRetentionView) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        cell(&project.project),
+        project.outputs,
+        project.apparent_bytes,
+        project.unmeasured,
+        project.protected,
+        project.selected,
+        project.selected_bytes,
+        project.retired,
+        project.retired_bytes
+    )
 }
 
 #[cfg(test)]

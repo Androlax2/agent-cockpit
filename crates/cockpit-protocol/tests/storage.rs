@@ -59,3 +59,23 @@ fn a_clone_row_from_a_daemon_without_verdicts_still_reads() {
     let reply: Reply = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(serde_json::to_value(reply).unwrap(), value);
 }
+
+#[test]
+fn output_retention_is_one_command_whose_only_argument_is_apply() {
+    for apply in [false, true] {
+        let value = json!({"kind":"storage-outputs", "apply":apply});
+        let command: Command = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(command, Command::StorageOutputs { apply });
+        assert_eq!(serde_json::to_value(command).unwrap(), value);
+    }
+}
+
+#[test]
+fn an_output_retention_row_separates_protected_unmeasured_and_selected_outputs() {
+    let value = json!({"kind":"storage-outputs", "projects":[{"project":"app","outputs":7,
+        "apparent_bytes":4096,"unmeasured":1,"protected":2,"selected":3,"selected_bytes":1024,
+        "retired":3,"retired_bytes":1000,"failures":["execution 9: permission denied"]}],
+        "applied":true,"truncated":false});
+    let reply: Reply = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(reply).unwrap(), value);
+}

@@ -209,3 +209,22 @@ pub async fn pending_results(
     }
     Ok(result)
 }
+
+/// The executions of `epoch` whose output a retention pass keeps whole (#406): each check's
+/// newest run, and its newest finished run while a newer one is still pending.
+pub async fn newest_runs(read: &Connection, epoch: &str) -> Result<Vec<i64>, Error> {
+    let mut rows = read
+        .query(
+            "SELECT max(execution) FROM verification_run_identities WHERE origin_epoch = ?1
+            GROUP BY project, check_name
+            UNION SELECT max(execution) FROM verification_run_identities
+            WHERE origin_epoch = ?1 AND sealed = 1 GROUP BY project, check_name",
+            [epoch],
+        )
+        .await?;
+    let mut newest = Vec::new();
+    while let Some(row) = rows.next().await? {
+        newest.push(row.get(0)?);
+    }
+    Ok(newest)
+}

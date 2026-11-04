@@ -110,3 +110,68 @@ async fn recovery_cannot_record_success_and_a_late_result_cannot_replace_unknown
         Some(record)
     );
 }
+
+fn intent_of(fixture: &Fixture, check_name: &str, execution: i64) -> NewReceipt {
+    let mut receipt = fixture.receipt(
+        &format!("execution-{}-{execution}", fixture.database.epoch()),
+        &check(check_name),
+        &clean_source(),
+        &[],
+        Outcome::Unknown,
+    );
+    receipt.output.clear();
+    receipt.finished_at = receipt.started_at;
+    receipt
+}
+
+#[tokio::test]
+async fn each_check_keeps_its_newest_run_and_its_newest_finished_run() {
+    let fixture = Fixture::new().await;
+    let epoch = fixture.database.epoch().to_owned();
+    let write = fixture.database.write().await.unwrap();
+    for (check_name, execution) in [("test", 1), ("lint", 2), ("test", 3), ("test", 4)] {
+        reserve_result(
+            &write,
+            &epoch,
+            execution,
+            intent_of(&fixture, check_name, execution),
+        )
+        .await
+        .unwrap();
+    }
+    let finished = pending_result(&write, PROJECT, &format!("execution-{epoch}-3"))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut result = finished.receipt.clone();
+    result.outcome = Outcome::Passed;
+    result.exit_code = Some(0);
+    result.finished_at = NOW;
+    seal_result(&write, &finished, result, 0, NOW, false)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let mut newest = newest_runs(&fixture.database.read().await.unwrap(), &epoch)
+        .await
+        .unwrap();
+    newest.sort_unstable();
+
+    assert_eq!(newest, vec![2, 3, 4]);
+}
+
+#[tokio::test]
+async fn a_run_of_another_epoch_is_not_this_epochs_newest() {
+    let fixture = Fixture::new().await;
+    let write = fixture.database.write().await.unwrap();
+    reserve_result(&write, fixture.database.epoch(), 1, intent(&fixture))
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let newest = newest_runs(&fixture.database.read().await.unwrap(), "another-epoch")
+        .await
+        .unwrap();
+
+    assert!(newest.is_empty(), "{newest:?}");
+}
