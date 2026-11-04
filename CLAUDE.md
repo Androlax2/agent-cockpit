@@ -18,27 +18,19 @@ per crate before the first stable release (#152). Decided 2026-11-01. The `main`
 branch, never force-push without lease, never merge by hand, never delete branches or tags.
 Theo's local running copy is applied separately and is never a push target.
 
-## Applying completed work
-
-`~/agent-cockpit` is the running copy the host runs with Theo's rights; no session works in it.
-Sessions work in `~/IdeaProjects/agent-cockpit` or its parallel clones. Finishing requested
-changes includes applying them, without asking again in chat: export the commits with
-`git format-patch origin/main -o .outgoing`, then use `ask-to-run` to run
-`cockpit apply <clone-root>`. Keep the host-side review and approval; never bypass it. The
-apply runs `make after-apply` (relink, rebuild, `cockpit reload`); then run
-`make -C ~/agent-cockpit test` through `ask-to-run`.
-
 ## Tests
 
-`make test` from the repository root: the scripts, hooks and programs through fake commands on
-PATH (apps/cockpit/tests), the daemon's registry (apps/crates/cockpit-daemon), and the Python tools (tools/tests).
-The greenfield workspace in crates/ has its own gate, `make greenfield-ci` (tests: `make crates-test`).
-The Rust tests run under `cargo nextest` (Arch package `cargo-nextest`), one process per test, all
-in parallel; a single file still runs with `cargo nextest run --release --manifest-path apps/Cargo.toml --test <name>`,
-or `cargo nextest run --manifest-path Cargo.toml --test <name>` for a greenfield crate.
+Never use the old cockpit's tooling until the cutover (#66) removes it: no `make test`,
+`make crates-test`, `make greenfield-ci` or other Make target that runs through `agent-build`
+(game guard, admission gate), and no `cockpit-*` host commands. `apps/` is the old cockpit;
+leave it alone unless your issue says otherwise. Run the checks with cargo
+directly from the repository root, with `CARGO_BUILD_JOBS=2` because parallel clones share the host:
 
-## Todo trailers
+- while iterating: `cargo nextest run --locked -p <crate>` (add `--test <name>` for one file)
+- before pushing: `cargo nextest run --locked --workspace`, so crates that depend on yours build too
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`
+- `cargo fmt --all -- --check`
+- `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items`
 
-End a commit message with one `Todo: <id>` line per todo item the commit fixes (8 hex
-characters, as `claude-todo list` shows). `cockpit apply` marks those items done once Theo
-approved the commits.
+CI's `greenfield` job runs the full gate (deny, typos, sandbox smoke too) once the pull request
+is ready for review.
