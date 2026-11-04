@@ -63,10 +63,10 @@ A question a session you started asks with `--needs-input` waits on you first (#
 session's card as "question with coordinator", off their needs-you list, and may still
 answer it at any time.
 
-- Answer it with `torlek agent message SESSION TEXT`: the session's agent reads your message
-  as its next prompt, which clears the question.
+- Answer it with `torlek agent message SESSION TEXT`: the question clears once the session's
+  agent receives your message, collected by its hook or typed as its next prompt.
 - `torlek agent escalate SESSION` hands it to the owner when the decision is theirs.
-- It reaches the owner by itself 15 minutes after it was asked, when your session ends, or
-  when you lose `message-sessions`.
+- It reaches the owner by itself 15 minutes after it was asked, when your session sleeps,
+  stops or ends, or when you lose `message-sessions`.
 - A dialog (a permission prompt) and a question in a session the owner started always wait
   on the owner.

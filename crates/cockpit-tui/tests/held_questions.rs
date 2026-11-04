@@ -5,7 +5,7 @@ mod common;
 
 use std::time::Instant;
 
-use cockpit_protocol::{AgentState, Command, QuestionSource, Reply, SessionReport};
+use cockpit_protocol::{AgentState, Command, QuestionSource, Reply, SessionReport, SessionView};
 use common::{answer, app_with, screen_text, session};
 
 const WORKER: &str = "s00000000000b";
@@ -27,8 +27,12 @@ fn asked(held_by: Option<&str>) -> SessionReport {
 }
 
 fn screen_with(report: SessionReport) -> String {
+    screen_of(session(WORKER, 1, 1), report)
+}
+
+fn screen_of(worker: SessionView, report: SessionReport) -> String {
     let now = Instant::now();
-    let mut app = app_with(&["app"], vec![session(WORKER, 1, 1)], now);
+    let mut app = app_with(&["app"], vec![worker], now);
     answer(
         &mut app,
         Command::AgentReports,
@@ -58,4 +62,20 @@ fn a_question_no_coordinator_holds_waits_on_you() {
 
     assert!(screen.contains("waiting on you"), "{screen}");
     assert!(!screen.contains("question with coordinator"), "{screen}");
+}
+
+#[test]
+fn a_finished_session_whose_question_its_coordinator_holds_stays_listed() {
+    let finished = SessionView {
+        finished: true,
+        ..session(WORKER, 1, 1)
+    };
+
+    let screen = screen_of(finished, asked(Some(COORDINATOR)));
+
+    assert!(
+        screen.contains(&format!("question with coordinator {COORDINATOR}")),
+        "{screen}"
+    );
+    assert!(!screen.contains("Finished (1)"), "{screen}");
 }

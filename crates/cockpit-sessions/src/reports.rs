@@ -271,7 +271,10 @@ pub async fn latest_report(
 
 /// The session's latest launch: the one its reporting agent runs as, since a launch is
 /// recorded before its agent starts and the previous agent is stopped before that.
-async fn latest_launch(connection: &Connection, session: &SessionId) -> Result<Option<i64>, Error> {
+pub(crate) async fn latest_launch(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Option<i64>, Error> {
     let mut rows = connection
         .query(
             "SELECT max(id) FROM session_launches WHERE session_id = ?1",
@@ -340,14 +343,15 @@ fn merge(
         previous_agent_question.filter(|_| !report.is_new_prompt && is_continuing);
     // Asking the kept question again keeps its time and escalation: a repeated report must
     // not take a question back from the owner (#710).
-    let question_times = match (&report.needs_input, &kept_agent_question) {
-        (Some(asked), Some(kept)) if asked == kept => {
-            (previous.question_asked_at, previous.question_escalated_at)
-        }
-        (Some(_), _) => (Some(at), None),
-        (None, Some(_)) => (previous.question_asked_at, previous.question_escalated_at),
-        (None, None) => (None, None),
-    };
+    let (question_asked_at, question_escalated_at) =
+        match (&report.needs_input, &kept_agent_question) {
+            (Some(asked), Some(kept)) if asked == kept => {
+                (previous.question_asked_at, previous.question_escalated_at)
+            }
+            (Some(_), _) => (Some(at), None),
+            (None, Some(_)) => (previous.question_asked_at, previous.question_escalated_at),
+            (None, None) => (None, None),
+        };
     let agent_question = report.needs_input.or(kept_agent_question);
     let kept_dialog = previous_dialog.filter(|_| !is_answering_dialog && is_continuing);
     // An open dialog shows over the agent's question, which waits beneath it.
@@ -369,8 +373,8 @@ fn merge(
         outcome,
         reported_at: at,
         launch,
-        question_asked_at: question_times.0,
-        question_escalated_at: question_times.1,
+        question_asked_at,
+        question_escalated_at,
     }
 }
 

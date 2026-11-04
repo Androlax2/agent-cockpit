@@ -10,16 +10,20 @@ may answer it at any time.
   and allowed to fail without undoing it.
 - **Held is derived at read time, never stored.** `question_holder` decides from the
   report's question time and escalation, the starter's state and its `message-sessions`
-  grant. Nothing needs a timer: a question past its 15 minutes, of an ended or failed
-  coordinator, or of one that lost the grant, reads as the owner's at the next read. The
+  grant. Nothing needs a timer: a question past its 15 minutes, of a coordinator that no
+  longer runs, or of one that lost the grant, reads as the owner's at the next read. The
   wire carries the outcome as `SessionReport.held_by`.
 - **Only the agent's own question is held.** A dialog waits on the owner: a message would
   answer it. A question recorded before #710 has no time and waits on the owner.
 - **Escalating needs no grant.** Starting the session made the question the coordinator's;
   `agent escalate` checks the sender is the starter. Asking the same question again keeps
   its time and escalation; a different question starts again with the coordinator.
-- **The answer clears it on the existing path.** The coordinator's `agent message` reaches
-  the worker as its next prompt, which clears the agent's question (#200).
+- **The starter's message answers it.** A message typed as the worker's next prompt clears
+  the agent's question as any prompt does (#200). One its hook collects starts no prompt
+  (#703), so `answer_question` clears it when the hook takes a message from the session's
+  starter, in the same transaction; a dialog covering it stays the owner's.
+- **Only a running coordinator holds it.** An asleep, stopping, ended or failed coordinator
+  reads nothing, and a question from an earlier launch of the worker is not current.
 - **Rejected:** routing by the `started` audit entry, which is written after the start and
   may be missing; a background timer that writes the escalation, which would add a writer
   for a state a read derives; a per-grant timeout (option C), not chosen.

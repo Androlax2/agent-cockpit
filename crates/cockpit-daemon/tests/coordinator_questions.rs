@@ -225,6 +225,26 @@ async fn the_coordinators_answer_reaches_the_worker_it_holds_the_question_of() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_coordinators_collected_answer_clears_the_workers_question() {
+    let started = a_coordinator_starts_a_worker_that_asks().await;
+
+    let messaged = as_coordinator(
+        &started.home,
+        &started.coordinator_root,
+        &["agent", "message", &started.worker, "Base it on main."],
+    )
+    .await;
+
+    assert!(messaged.ends_with("exit=0\n"), "{messaged}");
+    wait_until("the answer clears the question", || async {
+        report_of(&started.owner, &started.worker)
+            .await
+            .is_some_and(|report| report.needs_input.is_none())
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_escalated_question_waits_on_the_owner() {
     let started = a_coordinator_starts_a_worker_that_asks().await;
 

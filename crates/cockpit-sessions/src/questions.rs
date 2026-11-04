@@ -6,7 +6,7 @@ use cockpit_authorization::{Actor, Outcome, Permission, Scope};
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::Connection;
 
-use crate::reports::{QuestionSource, SessionReport, latest_report};
+use crate::reports::{QuestionSource, SessionReport, latest_launch, latest_report};
 use crate::{Error, SessionId, SessionState};
 
 /// How long a coordinator holds a question it has not answered or escalated before it
@@ -18,9 +18,11 @@ pub const QUESTION_HOLD_SECONDS: i64 = 15 * 60;
 ///
 /// - it is the agent's own question: a dialog waits on the owner, since a message would
 ///   answer it;
-/// - it was asked since #710, less than [`QUESTION_HOLD_SECONDS`] ago, and not escalated;
-/// - a coordinator started the session, has neither ended nor failed, and still holds
-///   `message-sessions` over it, the grant its answer needs.
+/// - it was asked since #710, in the session's current launch, less than
+///   [`QUESTION_HOLD_SECONDS`] ago, and not escalated;
+/// - a coordinator started the session, runs (or is launching), and still holds
+///   `message-sessions` over it, the grant its answer needs: an asleep, stopping, ended or
+///   failed coordinator reads nothing, so its question goes to the owner.
 pub async fn question_holder(
     connection: &Connection,
     report: &SessionReport,
@@ -35,14 +37,20 @@ pub async fn question_holder(
     if report.question_escalated_at.is_some() || now >= asked_at + QUESTION_HOLD_SECONDS {
         return Ok(None);
     }
-    let asking = SessionId::parse(report.session.as_str())?;
-    let Some(coordinator) = crate::store::session(connection, &asking).await?.started_by else {
+    // Checked first: a reporter Torlek never launched has no session row to read.
+    let current_launch = latest_launch(connection, &report.session).await?;
+    if current_launch.is_none() || report.launch != current_launch {
+        return Ok(None);
+    }
+    let asking =
+        crate::store::session(connection, &SessionId::parse(report.session.as_str())?).await?;
+    let Some(coordinator) = asking.started_by else {
         return Ok(None);
     };
     let coordinator_session = crate::store::session(connection, &coordinator).await?;
-    if matches!(
+    if !matches!(
         coordinator_session.state,
-        SessionState::Ended | SessionState::Failed
+        SessionState::Running | SessionState::Launching
     ) {
         return Ok(None);
     }
@@ -87,4 +95,33 @@ pub async fn escalate_question(
         )
         .await?;
     Ok(true)
+}
+
+/// Clears `session`'s own question once its agent's hook collected a message from `from`, the
+/// coordinator that started it (#710): the message is its answer, and a collected one starts
+/// no prompt to clear it (#703); a typed one does, as any prompt. A dialog covering the
+/// question stays open: the owner answers it. Returns whether a question was cleared; a
+/// message from any other session clears nothing.
+pub async fn answer_question(
+    write: &WriteTransaction<'_>,
+    session: &cockpit_authorization::SessionId,
+    from: &cockpit_authorization::SessionId,
+) -> Result<bool, Error> {
+    let asking = crate::store::session(write, &SessionId::parse(session.as_str())?).await?;
+    if asking.started_by.as_ref().map(SessionId::as_str) != Some(from.as_str()) {
+        return Ok(false);
+    }
+    let cleared = write
+        .execute(
+            "UPDATE session_reports SET
+                needs_input = CASE question_source WHEN 'agent' THEN NULL ELSE needs_input END,
+                question_source = CASE question_source WHEN 'agent' THEN NULL
+                    ELSE question_source END,
+                covered_question = NULL, question_asked_at = NULL, question_escalated_at = NULL
+             WHERE session = ?1
+                AND (question_source = 'agent' OR covered_question IS NOT NULL)",
+            [session.as_str()],
+        )
+        .await?;
+    Ok(cleared > 0)
 }

@@ -439,25 +439,31 @@ async fn collect(
     while let Some(claim) =
         cockpit_messaging::claim_next_for(&write, INBOX_PRODUCER, session.as_str(), at).await?
     {
-        let delivery = match authorship(&write, &claim).await.map_err(|reason| {
+        let (delivery, from) = match authorship(&write, &claim).await.map_err(|reason| {
             tracing::error!(%reason, "reading a collected message's sender failed");
             internal(&reason)
         })? {
-            Authorship::Rejected(reason) => Delivery::Failed(Failure::Rejected { reason }),
-            Authorship::Granted(from) => Delivery::Received {
-                receipt: format!(
-                    "handed to session {}'s agent by its hook, from session {}",
-                    session.as_str(),
-                    from.as_str()
-                ),
-            },
+            Authorship::Rejected(reason) => (Delivery::Failed(Failure::Rejected { reason }), None),
+            Authorship::Granted(from) => (
+                Delivery::Received {
+                    receipt: format!(
+                        "handed to session {}'s agent by its hook, from session {}",
+                        session.as_str(),
+                        from.as_str()
+                    ),
+                },
+                Some(from),
+            ),
         };
         let state =
             cockpit_messaging::record_delivery(&write, claim.id, claim.attempt, &delivery, at)
                 .await?;
-        if state != DeliveryState::Received {
+        let Some(from) = from.filter(|_| state == DeliveryState::Received) else {
             continue;
-        }
+        };
+        // A collected message starts no prompt, so nothing else clears the question the
+        // coordinator that started the session answers with it (#710); a typed one does.
+        cockpit_sessions::answer_question(&write, &session, &from).await?;
         let message = audit_entry_of(&claim).ok_or_else(|| internal(&claim.effect_key))?;
         write.commit().await?;
         tracing::info!(

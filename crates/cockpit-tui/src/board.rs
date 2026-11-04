@@ -205,10 +205,13 @@ impl Board {
             .collect()
     }
 
-    /// A finished session folds away unless it waits on the owner: that one stays listed,
-    /// so its question or approval is never hidden behind a count.
+    /// A finished session folds away unless it waits on the owner or a coordinator holds its
+    /// question (#710): that one stays listed, so its question or approval is never hidden
+    /// behind a count.
     fn is_folded(&self, session: &SessionView) -> bool {
-        session.finished && !self.needs_you(&session.id)
+        session.finished
+            && !self.needs_you(&session.id)
+            && self.question_holder(&session.id).is_none()
     }
 
     /// The sessions in list order, flattened across groups.
