@@ -47,7 +47,9 @@ Issue #406. Decided by Theo on 2026-11-04 (option A for PR 3, the Database line 
 - **Rejected:** deleting ended sessions or old approval rows (resume and the audit trail
   need them), in-place `VACUUM` (experimental, forbidden), and a task per schedule (one
   supervised task runs the checkpoint, the backup and the automatic pass in order, so they
-  never compete for the writer).
+  never compete for the writer), and admitting the checkpoint and backup to the Bulk lane
+  (a backup at daemon start would hold a Bulk place and refuse the owner's first feed
+  subscription; the feed's history discard takes no lane place either).
 
 Evidence: `crates/cockpit-sessions/tests/launch_payload_retention.rs`,
 `crates/cockpit-approvals/tests/run_output_retention.rs` and

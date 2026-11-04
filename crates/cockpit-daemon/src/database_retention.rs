@@ -297,61 +297,58 @@ async fn back_up_if_due(
     Ok(Some(backup))
 }
 
-/// At start and every `database_maintenance_interval_minutes`, one Bulk-lane job: checkpoints
-/// the WAL, takes a backup when one is due, and runs the owner's opt-in pass. A full Bulk lane
-/// defers it to the next period, so maintenance never takes the place of an owner request.
+/// At start and every `database_maintenance_interval_minutes`: checkpoints the WAL, takes a
+/// backup when one is due, and runs the owner's opt-in pass on the Bulk lane. The checkpoint
+/// and the backup take no lane place, as the feed's history discard takes none: holding a
+/// Bulk place at daemon start would refuse the owner's first feed subscription.
 pub(crate) async fn maintain_forever(context: Context, shared: Arc<crate::server::Shared>) {
     let mut ticks = tokio::time::interval(context.retention.interval);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticks.tick().await;
-        let worker = context.clone();
-        let work = Box::pin(async move {
-            maintain(&worker).await;
-            Outcome::Ok(Reply::Pong)
-        });
-        let outcome =
-            match shared
-                .lanes
-                .admit(WorkClass::Bulk, "storage-database-maintenance".into(), work)
-            {
-                Ok(work) => work.await,
-                Err(outcome) => outcome,
-            };
-        if let Outcome::Error(error) = outcome {
-            tracing::warn!(error = %error.message, "database maintenance deferred to the next period");
+        match context.database.checkpoint().await {
+            Ok(checkpoint) if checkpoint.is_busy => {
+                tracing::debug!(
+                    ?checkpoint,
+                    "the WAL checkpoint was busy; the next one finishes it"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "WAL checkpoint failed; retrying next period"),
+        }
+        match back_up_if_due(&context, crate::approvals::now().unsigned_abs()).await {
+            Ok(Some(backup)) => tracing::info!(
+                backup = %backup.path.display(),
+                bytes = backup.bytes,
+                "backed up the state database"
+            ),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(%error, "database backup failed; retrying next period"),
+        }
+        if context.retention.automatic {
+            prune_automatically(&context, &shared).await;
         }
     }
 }
 
-async fn maintain(context: &Context) {
-    match context.database.checkpoint().await {
-        Ok(checkpoint) if checkpoint.is_busy => {
-            tracing::debug!(
-                ?checkpoint,
-                "the WAL checkpoint was busy; the next one finishes it"
-            );
+async fn prune_automatically(context: &Context, shared: &crate::server::Shared) {
+    let worker = context.clone();
+    let work = Box::pin(async move {
+        match pass(&worker, true).await {
+            Ok(reply) => Outcome::Ok(reply),
+            Err(error) => Outcome::Error(error),
         }
-        Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "WAL checkpoint failed; retrying next period"),
-    }
-    match back_up_if_due(context, crate::approvals::now().unsigned_abs()).await {
-        Ok(Some(backup)) => tracing::info!(
-            backup = %backup.path.display(),
-            bytes = backup.bytes,
-            "backed up the state database"
-        ),
-        Ok(None) => {}
-        Err(error) => tracing::warn!(%error, "database backup failed; retrying next period"),
-    }
-    if context.retention.automatic {
-        prune_automatically(context).await;
-    }
-}
-
-async fn prune_automatically(context: &Context) {
-    match pass(context, true).await {
-        Ok(Reply::StorageDatabase { database, .. }) => {
+    });
+    let outcome =
+        match shared
+            .lanes
+            .admit(WorkClass::Bulk, "storage-database-automatic".into(), work)
+        {
+            Ok(work) => work.await,
+            Err(outcome) => outcome,
+        };
+    match outcome {
+        Outcome::Ok(Reply::StorageDatabase { database, .. }) => {
             if database.sessions.retired > 0 || database.run_outputs.retired > 0 {
                 tracing::info!(
                     sessions = database.sessions.retired,
@@ -365,9 +362,9 @@ async fn prune_automatically(context: &Context) {
                 tracing::warn!(%failure, "automatic database retention stopped early");
             }
         }
-        Ok(_) => {}
-        Err(error) => {
-            tracing::warn!(error = %error.message, "automatic database retention failed");
+        Outcome::Ok(_) => {}
+        Outcome::Error(error) => {
+            tracing::warn!(error = %error.message, "automatic database retention deferred");
         }
     }
 }
