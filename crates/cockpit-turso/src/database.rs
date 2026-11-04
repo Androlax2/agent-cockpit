@@ -18,6 +18,7 @@ const DATABASE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS cockpit_database (
 /// [`Error::AlreadyOpen`] until this value is dropped.
 pub struct Database {
     epoch: String,
+    path: PathBuf,
     /// Every write goes through this one connection, which has change capture on. The daemon
     /// is the only writer (report 04), so writers queue here instead of on SQLite's busy lock.
     writer: Mutex<turso::Connection>,
@@ -47,6 +48,7 @@ impl Database {
         let epoch = ensure_epoch(&writer).await?;
         Ok(Database {
             epoch,
+            path: path.to_path_buf(),
             writer: Mutex::new(writer),
             commits: watch::Sender::new(()),
             turso,
@@ -99,6 +101,42 @@ impl Database {
         })
     }
 
+    /// Folds the WAL into the main file and truncates it (`PRAGMA wal_checkpoint(TRUNCATE)`),
+    /// between write transactions. Pages freed by deletions are reused by later writes; the
+    /// main file never shrinks here (in-place `VACUUM` is experimental in Turso, report 04).
+    pub async fn checkpoint(&self) -> Result<Checkpoint, Error> {
+        let connection = self.writer.lock().await;
+        if !connection.is_autocommit()? {
+            connection.execute("ROLLBACK", ()).await?;
+        }
+        let mut rows = connection
+            .query("PRAGMA wal_checkpoint(TRUNCATE)", ())
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Err(Error::CheckpointUnreported);
+        };
+        Ok(Checkpoint {
+            is_busy: row.get::<i64>(0)? != 0,
+            wal_frames: row.get(1)?,
+            checkpointed_frames: row.get(2)?,
+        })
+    }
+
+    /// The apparent sizes of the main file and its WAL; a WAL that does not exist is 0 bytes.
+    pub fn file_sizes(&self) -> Result<FileSizes, Error> {
+        let main = std::fs::metadata(&self.path).map_err(Error::io(&self.path))?;
+        let wal_path = sibling_path(&self.path, "-wal");
+        let wal_bytes = match std::fs::metadata(&wal_path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(source) => return Err(Error::io(&wal_path)(source)),
+        };
+        Ok(FileSizes {
+            main_bytes: main.len(),
+            wal_bytes,
+        })
+    }
+
     /// A connection for engine-level statements (backup) that need neither the writer nor a
     /// read-only snapshot.
     pub(crate) fn connect(&self) -> Result<turso::Connection, Error> {
@@ -113,6 +151,21 @@ impl std::fmt::Debug for Database {
             .field("epoch", &self.epoch)
             .finish_non_exhaustive()
     }
+}
+
+/// What one [`Database::checkpoint`] did. A busy checkpoint folded what it could; the next
+/// one finishes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Checkpoint {
+    pub is_busy: bool,
+    pub wal_frames: i64,
+    pub checkpointed_frames: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileSizes {
+    pub main_bytes: u64,
+    pub wal_bytes: u64,
 }
 
 pub struct WriteTransaction<'database> {

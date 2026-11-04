@@ -226,16 +226,16 @@ fn entity_kind(kind: String) -> EntityKind {
         .expect("every string reads as an entity kind")
 }
 
-/// Captured change rows kept for clients that resume; an older cursor gets a snapshot.
-const RETAINED_CHANGES: NonZeroU64 = NonZeroU64::new(100_000).expect("not zero");
 const RETENTION_PERIOD: Duration = Duration::from_secs(60 * 60);
 
-/// Discards the change history past [`RETAINED_CHANGES`] at start and every hour after.
-pub(crate) async fn discard_history_forever(database: Arc<Database>) {
+/// Discards the change history past the newest `keep_changes` captured rows
+/// (`storage.feed_history_changes`) at start and every hour after; an older cursor gets a
+/// snapshot.
+pub(crate) async fn discard_history_forever(database: Arc<Database>, keep_changes: NonZeroU64) {
     let mut period = tokio::time::interval(RETENTION_PERIOD);
     loop {
         period.tick().await;
-        match discard_history(&database).await {
+        match discard_history(&database, keep_changes).await {
             Ok(Some(retained_after)) => {
                 tracing::info!(retained_after, "discarded change history");
             }
@@ -247,9 +247,12 @@ pub(crate) async fn discard_history_forever(database: Arc<Database>) {
     }
 }
 
-async fn discard_history(database: &Database) -> Result<Option<u64>, cockpit_messaging::Error> {
+async fn discard_history(
+    database: &Database,
+    keep_changes: NonZeroU64,
+) -> Result<Option<u64>, cockpit_messaging::Error> {
     let write = database.write().await?;
-    let retained_after = cockpit_messaging::discard_history(&write, RETAINED_CHANGES).await?;
+    let retained_after = cockpit_messaging::discard_history(&write, keep_changes).await?;
     write.commit().await?;
     Ok(retained_after)
 }

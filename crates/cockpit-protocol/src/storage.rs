@@ -131,3 +131,45 @@ pub struct OutputRetentionView {
     /// Selected outputs this pass kept, each with why.
     pub failures: Vec<String>,
 }
+
+/// The state database as the owner's retention policy sees it (#406). Bytes are apparent
+/// sizes; identity and audit rows are never selected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatabaseStorageView {
+    pub file_bytes: u64,
+    pub wal_bytes: u64,
+    /// Sessions and runs that ended this many days ago lose their payloads.
+    pub retention_days: u32,
+    /// Ended or failed sessions whose launches' delivery context and start-file snapshots go.
+    pub sessions: PayloadRetentionView,
+    /// Finished command runs whose output text goes.
+    pub run_outputs: PayloadRetentionView,
+    /// Captured change rows kept for clients that resume, and the most kept.
+    pub feed_changes: u64,
+    pub feed_changes_kept: u64,
+    /// Newest first.
+    pub backups: Vec<BackupView>,
+    pub backups_kept: u32,
+    /// The pass stopped at its bound; further sessions were neither counted nor retired.
+    pub truncated: bool,
+    /// What this report or pass could not do, each with why.
+    pub failures: Vec<String>,
+}
+
+/// Records one retention rule selects, and with `apply` retired.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PayloadRetentionView {
+    pub selected: u64,
+    pub selected_bytes: u64,
+    /// Zero when the pass only reports.
+    pub retired: u64,
+    pub retired_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupView {
+    pub path: String,
+    /// Seconds since the Unix epoch.
+    pub taken_at: u64,
+    pub bytes: u64,
+}

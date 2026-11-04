@@ -7,6 +7,7 @@ mod bug_report_feed;
 mod bug_reports;
 mod coordination;
 mod coordinator_workers;
+mod database_retention;
 mod disk_guard;
 mod end_sweep;
 mod error;
@@ -188,6 +189,7 @@ pub struct Daemon {
     detecting: tokio::task::JoinHandle<()>,
     pruning: tokio::task::JoinHandle<()>,
     retiring_outputs: tokio::task::JoinHandle<()>,
+    maintaining_database: tokio::task::JoinHandle<()>,
     sweeping_ended: tokio::task::JoinHandle<()>,
     guarding_disk: tokio::task::JoinHandle<()>,
     prune_stop: Arc<std::sync::atomic::AtomicBool>,
@@ -288,6 +290,10 @@ impl Instance {
             )),
             session_temps: options.session_temps(),
             sweep_now: Arc::new(tokio::sync::Notify::new()),
+            retention: Arc::new(database_retention::DatabasePolicy::from_settings(
+                &storage_settings,
+                &options.state_dir,
+            )),
         };
         let admission = Arc::new(
             cockpit_resource_admission::Backend::detect(
@@ -526,10 +532,11 @@ impl Instance {
             move || sessions::tick_forever(Arc::clone(&sessions), wiring.session_tick),
         ));
         let retained = Arc::clone(&database);
+        let feed_changes_kept = storage.retention.feed_changes_kept;
         let retaining = tokio::spawn(supervisor::supervise(
             "feed-retention",
             faults.clone(),
-            move || feed::discard_history_forever(Arc::clone(&retained)),
+            move || feed::discard_history_forever(Arc::clone(&retained), feed_changes_kept),
         ));
         let swept_database = Arc::clone(&database);
         let sweeping = tokio::spawn(supervisor::supervise(
@@ -553,6 +560,18 @@ impl Instance {
                 output_retention::maintain_forever(
                     outputs_context.clone(),
                     Arc::clone(&outputs_shared),
+                )
+            },
+        ));
+        let maintained_shared = Arc::clone(&shared);
+        let maintained_context = storage.clone();
+        let maintaining_database = tokio::spawn(supervisor::supervise(
+            "database-retention",
+            faults.clone(),
+            move || {
+                database_retention::maintain_forever(
+                    maintained_context.clone(),
+                    Arc::clone(&maintained_shared),
                 )
             },
         ));
@@ -603,6 +622,7 @@ impl Instance {
             detecting,
             pruning,
             retiring_outputs,
+            maintaining_database,
             sweeping_ended,
             guarding_disk,
             prune_stop,
@@ -731,6 +751,7 @@ impl Drop for Daemon {
         self.detecting.abort();
         self.pruning.abort();
         self.retiring_outputs.abort();
+        self.maintaining_database.abort();
         self.sweeping_ended.abort();
         self.guarding_disk.abort();
         bug_reports::mark_stopped(&self._instance.options.state_dir);

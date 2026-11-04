@@ -267,6 +267,9 @@ fn run_detail(run: &RunRequestView) -> String {
             result.redacted,
             result.output
         );
+        if result.output_retired {
+            let _ = writeln!(text, "output removed by database retention");
+        }
     }
     if let Some(note) = &run.note {
         let _ = writeln!(text, "note: {note}");

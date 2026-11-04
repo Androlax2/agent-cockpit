@@ -33,6 +33,7 @@ fn result(exit_code: i32) -> RunResult {
             truncated_bytes: 0,
             redacted: 0,
         },
+        output_retired: false,
     }
 }
 

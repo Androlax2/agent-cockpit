@@ -70,6 +70,11 @@ pub enum Command {
     StorageOutputs {
         apply: bool,
     },
+    /// Owner only: what database retention would retire, by the owner's policy; `apply`
+    /// retires it. Identity and audit rows stay (#406).
+    StorageDatabase {
+        apply: bool,
+    },
     /// Start the change feed at `from`.
     Subscribe {
         from: FeedPosition,
@@ -891,6 +896,11 @@ pub enum Reply {
         /// Further outputs were left out by the pass's bound; they are neither counted nor
         /// retired.
         truncated: bool,
+    },
+    StorageDatabase {
+        database: Box<crate::storage::DatabaseStorageView>,
+        /// Whether this pass retired what the policy selects, or only reports it.
+        applied: bool,
     },
     Subscribed {
         cursor: Cursor,

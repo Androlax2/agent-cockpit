@@ -39,6 +39,8 @@ pub enum Error {
     CheckpointIncomplete {
         path: PathBuf,
     },
+    /// `PRAGMA wal_checkpoint` answered without its result row.
+    CheckpointUnreported,
     /// Change capture returned a row this crate cannot interpret.
     UnexpectedChange {
         change_id: i64,
@@ -102,6 +104,9 @@ impl fmt::Display for Error {
                  anything",
                 path.display()
             ),
+            Error::CheckpointUnreported => {
+                write!(formatter, "the WAL checkpoint returned no result")
+            }
             Error::UnexpectedChange { change_id, reason } => {
                 write!(formatter, "change {change_id}: {reason}")
             }

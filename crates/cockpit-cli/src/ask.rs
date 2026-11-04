@@ -332,7 +332,11 @@ fn run_answer(request: &RunRequestView) -> Option<ExitCode> {
                     result.truncated_bytes
                 );
             }
-            outln!("{}", result.output);
+            if result.output_retired {
+                eprintln!("torlek: database retention removed this run's output");
+            } else {
+                outln!("{}", result.output);
+            }
             if result.redacted > 0 {
                 eprintln!(
                     "torlek: {} secrets redacted from the output",

@@ -929,6 +929,7 @@ fn run_view(
             omitted_lines: result.output.omitted_lines,
             truncated_bytes: result.output.truncated_bytes,
             redacted: result.output.redacted,
+            output_retired: result.output_retired,
         }),
         note: run.note.clone(),
     }

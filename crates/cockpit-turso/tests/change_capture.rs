@@ -217,3 +217,35 @@ async fn a_commit_wakes_its_watchers_and_a_rollback_does_not() {
     insert_task(&database, "kept").await;
     assert!(commits.has_changed().unwrap(), "a commit wakes the watcher");
 }
+
+#[tokio::test]
+async fn the_retained_change_count_falls_to_what_a_discard_keeps() {
+    let database = open("cdc-retained-count").await;
+    for title in ["a", "b", "c"] {
+        insert_task(&database, title).await;
+    }
+    let before = database
+        .read()
+        .await
+        .unwrap()
+        .retained_changes()
+        .await
+        .unwrap();
+
+    let write = database.write().await.unwrap();
+    write
+        .discard_changes(NonZeroU64::new(2).unwrap())
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let after = database
+        .read()
+        .await
+        .unwrap()
+        .retained_changes()
+        .await
+        .unwrap();
+    assert!(before >= 6, "{before}");
+    assert_eq!(after, 2);
+}

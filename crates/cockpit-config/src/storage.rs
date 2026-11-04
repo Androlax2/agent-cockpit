@@ -22,6 +22,17 @@ pub struct StorageSettings {
     pub sweep_on_session_end: Sourced<bool>,
     /// Free space below which launches and heavy jobs wait; 0 turns the guard off.
     pub low_disk_floor_mib: Sourced<u64>,
+    /// Ended sessions and finished approval runs untouched for this many days lose their
+    /// payloads; their identity and audit rows stay (#406).
+    pub database_retention_days: Sourced<u32>,
+    pub database_prune_automatic: Sourced<bool>,
+    /// How often the WAL is checkpointed, a due backup taken and the opted-in pass run.
+    pub database_maintenance_interval_minutes: Sourced<u32>,
+    pub database_backup_interval_hours: Sourced<u32>,
+    /// Newest backups kept under `<state>/backups`; 0 takes none.
+    pub database_backups_kept: Sourced<u32>,
+    /// Captured change rows kept for clients that resume; an older cursor gets a snapshot.
+    pub feed_history_changes: Sourced<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,6 +51,12 @@ pub(super) struct StorageTable {
     output_prune_interval_minutes: Option<Spanned<u32>>,
     sweep_on_session_end: Option<Spanned<bool>>,
     low_disk_floor_mib: Option<Spanned<u64>>,
+    database_retention_days: Option<Spanned<u32>>,
+    database_prune_automatic: Option<Spanned<bool>>,
+    database_maintenance_interval_minutes: Option<Spanned<u32>>,
+    database_backup_interval_hours: Option<Spanned<u32>>,
+    database_backups_kept: Option<Spanned<u32>>,
+    feed_history_changes: Option<Spanned<u64>>,
 }
 
 pub(super) fn settings(layers: &[Layer]) -> Result<StorageSettings, ConfigError> {
@@ -57,6 +74,12 @@ pub(super) fn settings(layers: &[Layer]) -> Result<StorageSettings, ConfigError>
         output_prune_interval_minutes: Sourced::new(60, Source::ProductDefault),
         sweep_on_session_end: Sourced::new(true, Source::ProductDefault),
         low_disk_floor_mib: Sourced::new(10 * 1024, Source::ProductDefault),
+        database_retention_days: Sourced::new(30, Source::ProductDefault),
+        database_prune_automatic: Sourced::new(false, Source::ProductDefault),
+        database_maintenance_interval_minutes: Sourced::new(60, Source::ProductDefault),
+        database_backup_interval_hours: Sourced::new(24, Source::ProductDefault),
+        database_backups_kept: Sourced::new(7, Source::ProductDefault),
+        feed_history_changes: Sourced::new(100_000, Source::ProductDefault),
     };
     for layer in layers {
         let Some(table) = &layer.settings.storage else {
@@ -110,6 +133,30 @@ pub(super) fn settings(layers: &[Layer]) -> Result<StorageSettings, ConfigError>
         }
         if let Some(value) = &table.low_disk_floor_mib {
             result.low_disk_floor_mib =
+                Sourced::new(*value.get_ref(), layer.source_at(value.span()));
+        }
+        if let Some(value) = &table.database_retention_days {
+            result.database_retention_days =
+                Sourced::new(*value.get_ref(), layer.source_at(value.span()));
+        }
+        if let Some(value) = &table.database_prune_automatic {
+            result.database_prune_automatic =
+                Sourced::new(*value.get_ref(), layer.source_at(value.span()));
+        }
+        if let Some(value) = &table.database_maintenance_interval_minutes {
+            result.database_maintenance_interval_minutes =
+                Sourced::new(*value.get_ref(), layer.source_at(value.span()));
+        }
+        if let Some(value) = &table.database_backup_interval_hours {
+            result.database_backup_interval_hours =
+                Sourced::new(*value.get_ref(), layer.source_at(value.span()));
+        }
+        if let Some(value) = &table.database_backups_kept {
+            result.database_backups_kept =
+                Sourced::new(*value.get_ref(), layer.source_at(value.span()));
+        }
+        if let Some(value) = &table.feed_history_changes {
+            result.feed_history_changes =
                 Sourced::new(*value.get_ref(), layer.source_at(value.span()));
         }
     }
@@ -177,6 +224,43 @@ pub(super) fn settings(layers: &[Layer]) -> Result<StorageSettings, ConfigError>
             "must be at least 1 minute",
         ));
     }
+    for (key, value, reason) in [
+        (
+            "database_retention_days",
+            &result.database_retention_days,
+            "must be at least 1 day",
+        ),
+        (
+            "database_maintenance_interval_minutes",
+            &result.database_maintenance_interval_minutes,
+            "must be at least 1 minute",
+        ),
+        (
+            "database_backup_interval_hours",
+            &result.database_backup_interval_hours,
+            "must be at least 1 hour",
+        ),
+    ] {
+        if value.value == 0 {
+            return Err(invalid(key, &value.source, reason));
+        }
+    }
+    if result.database_backups_kept.value > MAX_BACKUPS_KEPT {
+        return Err(invalid(
+            "database_backups_kept",
+            &result.database_backups_kept.source,
+            "must be at most 1000",
+        ));
+    }
+    if result.feed_history_changes.value == 0
+        || i64::try_from(result.feed_history_changes.value).is_err()
+    {
+        return Err(invalid(
+            "feed_history_changes",
+            &result.feed_history_changes.source,
+            "must be positive and fit the stored revision range",
+        ));
+    }
     if let Some(base) = &result.base_ref.value
         && (!base.starts_with("refs/")
             || base.len() > 1024
@@ -190,6 +274,8 @@ pub(super) fn settings(layers: &[Layer]) -> Result<StorageSettings, ConfigError>
     }
     Ok(result)
 }
+
+const MAX_BACKUPS_KEPT: u32 = 1000;
 
 fn is_stored_mib(mib: u64) -> bool {
     mib != 0

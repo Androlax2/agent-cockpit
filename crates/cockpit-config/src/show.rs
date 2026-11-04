@@ -156,6 +156,39 @@ pub fn render(config: &EffectiveConfig) -> String {
         &storage.low_disk_floor_mib.source,
     ));
     lines.push(line(
+        "storage.database_retention_days",
+        &storage.database_retention_days.value.to_string(),
+        &storage.database_retention_days.source,
+    ));
+    lines.push(line(
+        "storage.database_prune_automatic",
+        &storage.database_prune_automatic.value.to_string(),
+        &storage.database_prune_automatic.source,
+    ));
+    lines.push(line(
+        "storage.database_maintenance_interval_minutes",
+        &storage
+            .database_maintenance_interval_minutes
+            .value
+            .to_string(),
+        &storage.database_maintenance_interval_minutes.source,
+    ));
+    lines.push(line(
+        "storage.database_backup_interval_hours",
+        &storage.database_backup_interval_hours.value.to_string(),
+        &storage.database_backup_interval_hours.source,
+    ));
+    lines.push(line(
+        "storage.database_backups_kept",
+        &storage.database_backups_kept.value.to_string(),
+        &storage.database_backups_kept.source,
+    ));
+    lines.push(line(
+        "storage.feed_history_changes",
+        &storage.feed_history_changes.value.to_string(),
+        &storage.feed_history_changes.source,
+    ));
+    lines.push(line(
         "workflow.preset",
         &config
             .workflow_preset

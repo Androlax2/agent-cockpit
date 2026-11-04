@@ -608,3 +608,90 @@ async fn storage_from_a_daemon_without_session_temp_folders_is_incomplete() {
     );
     assert_eq!(daemon.await.unwrap(), Command::StorageReport);
 }
+
+fn database_report(retired: u64, failures: &[&str]) -> Reply {
+    let rule = |bytes| cockpit_protocol::PayloadRetentionView {
+        selected: 2,
+        selected_bytes: bytes,
+        retired,
+        retired_bytes: if retired > 0 { bytes } else { 0 },
+    };
+    Reply::StorageDatabase {
+        database: Box::new(cockpit_protocol::DatabaseStorageView {
+            file_bytes: 8192,
+            wal_bytes: 0,
+            retention_days: 30,
+            sessions: rule(300),
+            run_outputs: rule(40),
+            feed_changes: 12,
+            feed_changes_kept: 100_000,
+            backups: vec![cockpit_protocol::BackupView {
+                path: "/s/backups/state-9.db".to_owned(),
+                taken_at: 9,
+                bytes: 8192,
+            }],
+            backups_kept: 7,
+            truncated: false,
+            failures: failures
+                .iter()
+                .map(|failure| (*failure).to_owned())
+                .collect(),
+        }),
+        applied: retired > 0,
+    }
+}
+
+#[tokio::test]
+async fn storage_database_reports_each_rule_the_feed_and_backups_without_retiring() {
+    let (sent, code, stdout) =
+        against_scripted(&["storage", "database"], database_report(0, &[])).await;
+
+    assert_eq!(sent, Command::StorageDatabase { apply: false });
+    assert_eq!(code, Some(0), "{stdout}");
+    for line in [
+        "database: 8192 bytes, WAL 0 bytes",
+        "ended sessions' launch context\t2\t300\t0\t0",
+        "finished command runs' output\t2\t40\t0\t0",
+        "change feed: 12 captured rows kept, at most 100000",
+        "backups: 1 of the newest 7 kept",
+        "/s/backups/state-9.db\t9\t8192",
+        "torlek storage database prune",
+    ] {
+        assert!(stdout.contains(line), "missing {line}: {stdout}");
+    }
+}
+
+#[tokio::test]
+async fn storage_database_prune_reports_what_it_retired() {
+    let (sent, code, stdout) =
+        against_scripted(&["storage", "database", "prune"], database_report(2, &[])).await;
+
+    assert_eq!(sent, Command::StorageDatabase { apply: true });
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(
+        stdout.contains("retired 2 sessions' launch context and 2 run outputs, 340 apparent bytes"),
+        "{stdout}"
+    );
+}
+
+#[tokio::test]
+async fn storage_database_prune_fails_when_it_stopped_early() {
+    let (_, code, stdout) = against_scripted(
+        &["storage", "database", "prune"],
+        database_report(1, &["run outputs: database is locked"]),
+    )
+    .await;
+
+    assert_eq!(code, Some(1), "{stdout}");
+    assert!(
+        stdout.contains("run outputs: database is locked"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn storage_database_refuses_an_unknown_argument() {
+    let home = TestHome::new();
+    let output = home.cockpit(&["storage", "database", "now"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+}

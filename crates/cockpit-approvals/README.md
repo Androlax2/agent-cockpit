@@ -50,6 +50,12 @@ the session and records it with `finish_start`. It shares the queue, the revisio
 grace rules, and the asked-under check (`AskedUnder::StartSessions`). A restart marks an
 approved start never finished `not-run`.
 
+Retention (#406): `retirable_run_outputs` measures, and `retire_run_outputs` clears in
+batches, the output of finished command runs ended before a cutoff, marking
+`output_retired_at` (`RunResult::output_retired`). Every other field of the request stays as
+the audit record; a start request's output is kept
+(`../../docs/decisions/2026-11-04-406-database-retention.md`).
+
 `queue_order` puts what the owner is asked in order: a running command waiting for input
 first, then asking requests oldest first.
 

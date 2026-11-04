@@ -143,6 +143,11 @@ stopped in the middle of one finishes or repairs it at its next start.
   refuses, naming tmux, before it changes anything; restore and the periodic pass leave
   active sessions as they are until a daemon starts with tmux.
 - **Design link.** One `http` or `https` URL per session.
+- **Launch-payload retention** (#406). `retirable_launch_payloads` lists, and
+  `retire_launch_payload` removes after rechecking under the writer, the delivery context
+  and start-file snapshots of a session ended or failed before a cutoff. The session, its
+  launches, transitions, reports and exits stay, so it can still be resumed
+  (`../../docs/decisions/2026-11-04-406-database-retention.md`).
 - Nothing is imported from the current cockpit's state.
 
 ## Dependency edges

@@ -152,6 +152,7 @@ fn finished(exit_code: i32, output: &str) -> Outcome {
             omitted_lines: 0,
             truncated_bytes: 0,
             redacted: 0,
+            output_retired: false,
         }),
         ..request(RunStateView::Finished)
     })
@@ -780,4 +781,48 @@ async fn no_wait_given_twice_is_a_usage_error() {
 
     assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
     assert!(text(&output.stderr).contains("--no-wait given twice"));
+}
+
+fn retired(exit_code: i32) -> Outcome {
+    run_reply(RunRequestView {
+        result: Some(RunResultView {
+            exit_code,
+            output: String::new(),
+            omitted_lines: 0,
+            truncated_bytes: 0,
+            redacted: 0,
+            output_retired: true,
+        }),
+        ..request(RunStateView::Finished)
+    })
+}
+
+#[tokio::test]
+async fn waiting_on_a_run_whose_output_retention_removed_says_so_and_keeps_its_code() {
+    let home = Home::new();
+    let _daemon = scripted_conversation(&home.agent_socket(), vec![retired(4)]);
+
+    let output = home.cockpit(&["ask", "run", "--wait", "7"], "").await;
+
+    assert_eq!(output.status.code(), Some(4), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "");
+    assert!(
+        text(&output.stderr).contains("database retention removed this run's output"),
+        "{}",
+        text(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn the_owner_reads_that_retention_removed_a_runs_output() {
+    let home = Home::new();
+    let _daemon = scripted_conversation(&home.owner_socket(), vec![retired(0)]);
+
+    let output = home.cockpit_as_owner(&["approval", "show", "7"], "").await;
+
+    let shown = text(&output.stdout);
+    assert!(
+        shown.contains("output removed by database retention"),
+        "{shown}"
+    );
 }

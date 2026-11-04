@@ -161,3 +161,79 @@ fn storage_low_disk_floor_beyond_the_byte_range_is_rejected() {
         Err(ConfigError::Invalid { .. })
     ));
 }
+
+#[test]
+fn database_retention_defaults_are_reported() {
+    let home = tempfile::tempdir().unwrap();
+    let config = cockpit_config::load(&environment(home.path()), None, &[]).unwrap();
+    let shown = cockpit_config::render(&config);
+    for line in [
+        "storage.database_retention_days = 30  # product default",
+        "storage.database_prune_automatic = false  # product default",
+        "storage.database_maintenance_interval_minutes = 60  # product default",
+        "storage.database_backup_interval_hours = 24  # product default",
+        "storage.database_backups_kept = 7  # product default",
+        "storage.feed_history_changes = 100000  # product default",
+    ] {
+        assert!(shown.contains(line), "missing {line}: {shown}");
+    }
+}
+#[test]
+fn database_retention_owner_policy_is_loaded_with_its_source() {
+    let home = tempfile::tempdir().unwrap();
+    owner(
+        home.path(),
+        "[storage]\ndatabase_retention_days = 3\ndatabase_prune_automatic = true\ndatabase_maintenance_interval_minutes = 5\ndatabase_backup_interval_hours = 2\ndatabase_backups_kept = 0\nfeed_history_changes = 10\n",
+    );
+    let config = cockpit_config::load(&environment(home.path()), None, &[]).unwrap();
+    let storage = &config.storage;
+    assert_eq!(
+        (
+            storage.database_retention_days.value,
+            storage.database_prune_automatic.value,
+            storage.database_maintenance_interval_minutes.value,
+            storage.database_backup_interval_hours.value,
+            storage.database_backups_kept.value,
+            storage.feed_history_changes.value,
+        ),
+        (3, true, 5, 2, 0, 10)
+    );
+    let shown = cockpit_config::render(&config);
+    assert!(
+        shown.contains("storage.database_backups_kept = 0  # user config"),
+        "{shown}"
+    );
+}
+#[test]
+fn database_retention_invalid_bounds_are_rejected() {
+    let home = tempfile::tempdir().unwrap();
+    for setting in [
+        "database_retention_days = 0",
+        "database_maintenance_interval_minutes = 0",
+        "database_backup_interval_hours = 0",
+        "database_backups_kept = 1001",
+        "feed_history_changes = 0",
+        "feed_history_changes = 18446744073709551615",
+    ] {
+        owner(home.path(), &format!("[storage]\n{setting}\n"));
+        assert!(
+            cockpit_config::load(&environment(home.path()), None, &[]).is_err(),
+            "{setting}"
+        );
+    }
+}
+#[test]
+fn database_retention_cannot_be_set_by_a_project() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join(".torlek")).unwrap();
+    std::fs::write(
+        project.path().join(".torlek/config.toml"),
+        "[storage]\ndatabase_retention_days = 1\n",
+    )
+    .unwrap();
+    assert!(matches!(
+        cockpit_config::load(&environment(home.path()), Some(project.path()), &[]),
+        Err(ConfigError::OwnerOnly { key: "storage", .. })
+    ));
+}
