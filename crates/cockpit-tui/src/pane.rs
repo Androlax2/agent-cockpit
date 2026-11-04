@@ -97,7 +97,16 @@ impl Pane {
 
     /// Whether a key now would be ignored.
     pub fn in_grace(&self, now: Instant) -> bool {
-        self.keys_on_their_way > 0 || self.accepts_input_at.is_some_and(|ready| now < ready)
+        self.keys_on_their_way > 0 || self.grace_ends_at(now).is_some()
+    }
+
+    /// When the hint ends by itself, if it is only waiting on the clock: the moment to
+    /// redraw. None while keys are on their way (their answer redraws) or once input is open.
+    pub fn grace_ends_at(&self, now: Instant) -> Option<Instant> {
+        if self.keys_on_their_way > 0 {
+            return None;
+        }
+        self.accepts_input_at.filter(|ready| now < *ready)
     }
 
     /// Follows the queue after it changed: shows its head, unless the owner is typing into

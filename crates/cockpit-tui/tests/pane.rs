@@ -421,6 +421,39 @@ fn within_the_grace_the_pane_says_to_read_first() {
     assert!(screen_text(&app, now).contains("Read it first: keys work again in a moment."));
 }
 
+const GRACE_HINT: &str = "Read it first: keys work again in a moment.";
+
+#[test]
+fn the_redraw_deadline_is_the_end_of_the_grace_and_the_hint_is_gone_at_it() {
+    let now = Instant::now();
+    let app = app_asked(now);
+
+    let deadline = app
+        .pane()
+        .grace_ends_at(now)
+        .expect("the hint ends by the clock");
+
+    assert_eq!(deadline, now + INPUT_GRACE);
+    assert!(screen_text(&app, deadline - Duration::from_millis(1)).contains(GRACE_HINT));
+    assert!(!screen_text(&app, deadline).contains(GRACE_HINT));
+}
+
+#[test]
+fn there_is_no_redraw_deadline_once_the_grace_is_over() {
+    let now = Instant::now();
+    let app = app_asked(now);
+
+    assert_eq!(app.pane().grace_ends_at(after_grace(now)), None);
+}
+
+#[test]
+fn there_is_no_redraw_deadline_while_the_column_s_keys_are_on_their_way() {
+    let now = Instant::now();
+    let app = app_asking(now);
+
+    assert_eq!(app.pane().grace_ends_at(now), None);
+}
+
 #[test]
 fn a_guide_step_that_asks_sends_the_typed_answer_for_that_step() {
     let now = Instant::now();
