@@ -13,6 +13,7 @@ const DATABASE_FILE: &str = "state.db";
 const EXECUTIONS_DIR: &str = "executions";
 const SESSION_DIRS: &str = "sessions";
 const MOUNT_SOURCES: &str = "mounts";
+const SESSION_TEMPS: &str = "tmp";
 /// Only the owner may enter the socket directory.
 const PRIVATE_DIR_MODE: u32 = 0o700;
 
@@ -64,6 +65,12 @@ impl Options {
     /// sockets; short enough for a unix socket path inside each.
     pub fn session_dirs(&self) -> PathBuf {
         self.runtime_dir.join(SESSION_DIRS)
+    }
+
+    /// `$XDG_STATE_HOME/cockpit/tmp`: one temporary folder per session, its agent's `TMPDIR`.
+    /// On the main disk, not the host's `/tmp`, which may be a small shared tmpfs (#766).
+    pub fn session_temps(&self) -> PathBuf {
+        self.state_dir.join(SESSION_TEMPS)
     }
 
     /// `$XDG_RUNTIME_DIR/cockpit/mounts`: the folders sandboxes show at another path, one

@@ -3,7 +3,8 @@ mod common;
 mod scripted;
 
 use cockpit_protocol::{
-    CloneStorageView, Command, EndSweepView, Outcome, PruneVerdictView, Reply, TargetSizeView,
+    CloneStorageView, Command, EndSweepView, Outcome, PruneVerdictView, Reply,
+    SessionTempStorageView, TargetSizeView,
 };
 use common::TestHome;
 use std::os::unix::fs::DirBuilderExt;
@@ -117,6 +118,9 @@ async fn storage_preserves_measurement_status_and_exits_unsuccessfully_on_partia
                 }],
                 truncated,
                 end_sweeps: Vec::new(),
+                session_temps: Some(Vec::new()),
+                session_temps_truncated: false,
+                session_temps_unavailable: None,
             }),
         );
         let output = tokio::task::spawn_blocking(move || home.cockpit(&["storage"]))
@@ -187,6 +191,9 @@ async fn storage_shows_each_clone_prune_verdict_and_the_eligible_total() {
             ],
             truncated: false,
             end_sweeps: Vec::new(),
+            session_temps: Some(Vec::new()),
+            session_temps_truncated: false,
+            session_temps_unavailable: None,
         }),
     );
 
@@ -242,6 +249,9 @@ async fn storage_lists_what_each_session_end_removed_or_kept_and_why() {
         Outcome::Ok(Reply::Storage {
             clones: Vec::new(),
             truncated: false,
+            session_temps: Some(Vec::new()),
+            session_temps_truncated: false,
+            session_temps_unavailable: None,
             end_sweeps: vec![
                 sweep(5, None, None),
                 sweep(
@@ -450,4 +460,151 @@ async fn storage_outputs_fails_when_the_pass_left_outputs_out() {
 
     assert_eq!(code, Some(1), "{stdout}");
     assert!(stdout.contains("incomplete"), "{stdout}");
+}
+
+/// #766: each session's temporary folder is a row of its own, and a partial measurement of
+/// one makes the report incomplete as a clone's does.
+#[tokio::test]
+async fn storage_lists_each_sessions_temp_folder_size() {
+    for (measurement, truncated, status, row) in [
+        (
+            TargetSizeView::Complete {
+                apparent_bytes: 9_200,
+            },
+            false,
+            0,
+            "s1\t9200\tcomplete\t/state/tmp/s1\t",
+        ),
+        (
+            TargetSizeView::Incomplete {
+                apparent_bytes: 8,
+                reason: "symbolic links are not followed".to_owned(),
+            },
+            false,
+            1,
+            "s1\t8\tincomplete\t/state/tmp/s1\tsymbolic links are not followed",
+        ),
+        (
+            TargetSizeView::Complete { apparent_bytes: 0 },
+            true,
+            1,
+            "s1\t0\tcomplete\t/state/tmp/s1\t",
+        ),
+    ] {
+        let home = TestHome::new();
+        let socket = home.home().join("run/torlek-dev/daemon.sock");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(socket.parent().unwrap())
+            .unwrap();
+        let daemon = scripted::scripted_daemon(
+            &socket,
+            Outcome::Ok(Reply::Storage {
+                clones: Vec::new(),
+                truncated: false,
+                end_sweeps: Vec::new(),
+                session_temps: Some(vec![SessionTempStorageView {
+                    session: "s1".to_owned(),
+                    path: "/state/tmp/s1".to_owned(),
+                    measurement,
+                }]),
+                session_temps_truncated: truncated,
+                session_temps_unavailable: None,
+            }),
+        );
+        let output = tokio::task::spawn_blocking(move || home.cockpit(&["storage"]))
+            .await
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(status),
+            "{}",
+            scripted::text(&output.stderr)
+        );
+        let stdout = scripted::text(&output.stdout);
+        assert!(stdout.lines().any(|line| line == row), "{stdout}");
+        assert_eq!(
+            stdout.contains("further session temp folders omitted"),
+            truncated,
+            "{stdout}"
+        );
+        assert_eq!(daemon.await.unwrap(), Command::StorageReport);
+    }
+}
+
+/// A temp folder parent that cannot be listed is said, and the report is incomplete, while
+/// the clones are still shown.
+#[tokio::test]
+async fn storage_says_when_the_session_temp_folders_cannot_be_listed() {
+    let home = TestHome::new();
+    let socket = home.home().join("run/torlek-dev/daemon.sock");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(socket.parent().unwrap())
+        .unwrap();
+    let daemon = scripted::scripted_daemon(
+        &socket,
+        Outcome::Ok(Reply::Storage {
+            clones: vec![scripted_row(
+                2,
+                8,
+                PruneVerdictView::Kept {
+                    reason: "fixture".to_owned(),
+                },
+            )],
+            truncated: false,
+            end_sweeps: Vec::new(),
+            session_temps: Some(Vec::new()),
+            session_temps_truncated: false,
+            session_temps_unavailable: Some("cannot open /state/tmp: EACCES".to_owned()),
+        }),
+    );
+
+    let output = tokio::task::spawn_blocking(move || home.cockpit(&["storage"]))
+        .await
+        .unwrap();
+
+    let stdout = scripted::text(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("2\tapp\t1\t8\tcomplete\t"), "{stdout}");
+    assert!(
+        stdout.contains(
+            "incomplete report: session temp folders unavailable: cannot open /state/tmp: EACCES"
+        ),
+        "{stdout}"
+    );
+    assert_eq!(daemon.await.unwrap(), Command::StorageReport);
+}
+
+#[tokio::test]
+async fn storage_from_a_daemon_without_session_temp_folders_is_incomplete() {
+    let home = TestHome::new();
+    let socket = home.home().join("run/torlek-dev/daemon.sock");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(socket.parent().unwrap())
+        .unwrap();
+    let daemon = scripted::scripted_daemon(
+        &socket,
+        Outcome::Ok(Reply::Storage {
+            clones: Vec::new(),
+            truncated: false,
+            end_sweeps: Vec::new(),
+            session_temps: None,
+            session_temps_truncated: false,
+            session_temps_unavailable: None,
+        }),
+    );
+
+    let output = tokio::task::spawn_blocking(move || home.cockpit(&["storage"]))
+        .await
+        .unwrap();
+
+    let stdout = scripted::text(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
+    assert!(
+        stdout.contains("incomplete report: the daemon reported no session temp folders"),
+        "{stdout}"
+    );
+    assert_eq!(daemon.await.unwrap(), Command::StorageReport);
 }

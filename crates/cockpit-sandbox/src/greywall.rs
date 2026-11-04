@@ -393,15 +393,19 @@ impl Greywall {
             };
             enforced_by.push((rule, by));
         }
-        let read_write = [&profile.working_dir, &profile.session_dir]
-            .into_iter()
-            .chain(
-                profile
-                    .desktop_endpoints
-                    .iter()
-                    .filter(|endpoint| endpoint.kind == EndpointKind::Socket)
-                    .map(|endpoint| &endpoint.path),
-            );
+        let read_write = [
+            &profile.working_dir,
+            &profile.session_dir,
+            &profile.temp_dir,
+        ]
+        .into_iter()
+        .chain(
+            profile
+                .desktop_endpoints
+                .iter()
+                .filter(|endpoint| endpoint.kind == EndpointKind::Socket)
+                .map(|endpoint| &endpoint.path),
+        );
         for path in read_write {
             arguments.push("--allow-path".into());
             arguments.push(path.clone().into());
@@ -479,6 +483,7 @@ impl Greywall {
             settings: format!("{settings:#}\n"),
             enforced_by,
             reach,
+            seccomp_folder: profile.seccomp_folder.clone(),
         })
     }
 
@@ -570,6 +575,8 @@ pub struct Plan {
     pub enforced_by: Vec<(String, String)>,
     /// How the daemon reaches what the provider publishes in its folders.
     pub reach: ProviderReach,
+    /// [`Profile::seccomp_folder`], created by [`Plan::create_seccomp_folder`].
+    pub seccomp_folder: Option<PathBuf>,
 }
 
 /// How the daemon reaches the sockets a sandboxed provider publishes, such as Codex's
@@ -602,6 +609,22 @@ impl Plan {
             create_owned_folder(&mount.host).map_err(|error| (mount.host.clone(), error))?;
         }
         Ok(())
+    }
+
+    /// Creates [`Profile::seccomp_folder`] owner-only before the launch, so the engine's write
+    /// denial has a folder to apply to; one that exists is kept, and checked by the launch's
+    /// seccomp check (#628).
+    pub fn create_seccomp_folder(&self) -> Result<(), (PathBuf, std::io::Error)> {
+        use std::os::unix::fs::DirBuilderExt;
+        let Some(folder) = &self.seccomp_folder else {
+            return Ok(());
+        };
+        match std::fs::DirBuilder::new().mode(0o700).create(folder) {
+            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                Err((folder.clone(), error))
+            }
+            _ => Ok(()),
+        }
     }
 }
 

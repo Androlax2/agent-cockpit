@@ -266,6 +266,36 @@ fn a_launch_checks_its_own_seccomp_folder_and_leaves_nothing_in_it() {
     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
 }
 
+/// With `TMPDIR` in the session's temp folder, the launch creates greywall's seccomp folder
+/// owner-only before the engine starts, so its write denial applies to a real folder (#766).
+#[test]
+fn a_launch_creates_the_seccomp_folder_in_its_temp_folder_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let settings = tempfile::tempdir().unwrap();
+    let sandbox = Sandbox::new(
+        Platform::Linux,
+        Ok(linux_engine(settings.path())),
+        no_host_paths(),
+    );
+    let mut request = launch_with_temp(temp.path());
+    request.temp_dir = temp.path().to_path_buf();
+    let (program, arguments) = agent_words();
+    let plan = sandbox
+        .prepare(AgentSandbox::Required, &request, program, arguments)
+        .unwrap()
+        .settings
+        .unwrap();
+
+    plan.create_seccomp_folder().unwrap();
+    plan.create_seccomp_folder().unwrap();
+
+    let folder = temp.path().join("greywall-seccomp");
+    assert_eq!(plan.seccomp_folder.as_deref(), Some(folder.as_path()));
+    let mode = std::fs::metadata(&folder).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o700);
+}
+
 #[test]
 fn an_absent_seccomp_folder_lets_greywall_create_it() {
     let temp = tempfile::tempdir().unwrap();

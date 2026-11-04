@@ -128,6 +128,9 @@ async fn storage_uses_bulk_admission_and_leaves_control_capacity() {
             clones: Vec::new(),
             truncated: false,
             end_sweeps: Vec::new(),
+            session_temps: Some(Vec::new()),
+            session_temps_truncated: false,
+            session_temps_unavailable: None,
         }
     );
     drop(daemon);

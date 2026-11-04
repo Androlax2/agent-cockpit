@@ -46,6 +46,15 @@ pub enum PruneVerdictView {
     },
 }
 
+/// One session's temporary folder, its agent's `TMPDIR` (#766). Named by the folder, which
+/// carries the session's id: a folder whose session is gone is listed too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionTempStorageView {
+    pub session: String,
+    pub path: String,
+    pub measurement: TargetSizeView,
+}
+
 /// Apparent bytes sum regular-file lengths per directory entry, including hardlinks.
 /// They do not measure allocated or reclaimable space. Concurrent writes may change them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

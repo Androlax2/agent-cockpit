@@ -110,6 +110,8 @@ if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
 if [ "$*" = 'auth status' ]; then exit 2; fi
 printf '%s pid=%s\n' "$TORLEK_SESSION" "$$" >> '@LOG@'
 printf '%s %s\n' "$TORLEK_SESSION" "$*" >> '@LOG@.arguments'
+printf '%s %s %s\n' "$TORLEK_SESSION" "${TMPDIR-unset}" "${CLAUDE_CODE_TMPDIR-unset}" \
+  >> '@TEMP_LOG@'
 case "${PWD##*/}" in
   @FLOOD@) exec yes 'cockpit latency fixture: one build log line after another, without pause' ;;
   @STALL@) trap '' TERM; while :; do sleep 1; done ;;
@@ -224,6 +226,7 @@ impl Home {
             &claude,
             FAKE_CLAUDE
                 .replace("@LOG@", &utf8(&home.launch_log()))
+                .replace("@TEMP_LOG@", &utf8(&home.temp_log()))
                 .replace("@FLOOD@", FLOOD_PROJECT)
                 .replace("@STALL@", STALL_PROJECT)
                 .replace("@REPORT@", REPORT_PROJECT)
@@ -278,6 +281,16 @@ impl Home {
         }
         proxy::commands(&home.path());
         home
+    }
+
+    /// Each launched agent's session, `TMPDIR` and `CLAUDE_CODE_TMPDIR`, one line each.
+    pub fn temp_log(&self) -> PathBuf {
+        self.path().join("temp.log")
+    }
+
+    /// Session `id`'s temporary folder, its agent's `TMPDIR` (#766).
+    pub fn session_temp_dir(&self, id: &str) -> PathBuf {
+        self.state_dir().join("tmp").join(id)
     }
 
     /// The arguments of each launch the stand-in Greywall ran, one line each.

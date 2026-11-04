@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use cockpit_sandbox::{
     DesktopSession, EndpointKind, FolderMount, Platform, Profile, ProfileRequest, Refusal,
 };
-use common::{MOUNT_SOURCES, SESSION_DIR, profile_request, wsl2};
+use common::{MOUNT_SOURCES, SESSION_DIR, TEMP_DIR, profile_request, wsl2};
 
 fn refusal(request: ProfileRequest, platform: &Platform) -> Refusal {
     Profile::build(request, platform).expect_err("the profile is refused")
@@ -38,6 +38,69 @@ fn the_profile_denies_reading_everything_but_the_checkout_and_cockpits_folders()
             "{expected} missing from {rules:#?}"
         );
     }
+}
+
+/// #766: the agent's `TMPDIR` is a folder of the session's own on the main disk, and the
+/// only temporary folder it may write: another session's is neither granted nor below a grant.
+#[test]
+fn the_agent_writes_its_own_temp_folder_and_no_other_sessions() {
+    let profile = Profile::build(profile_request("/home/owner/app"), &Platform::Linux).unwrap();
+
+    let rules = profile.rules();
+
+    let own = format!("read-write {TEMP_DIR} (the session's temp folder)");
+    assert!(rules.contains(&own), "{own} missing from {rules:#?}");
+    let other_session = Path::new(TEMP_DIR).with_file_name("s2");
+    for granted in [
+        &profile.working_dir,
+        &profile.session_dir,
+        &profile.temp_dir,
+    ] {
+        assert!(
+            !other_session.starts_with(granted),
+            "{granted:?} grants s2's folder"
+        );
+    }
+}
+
+/// Greywall writes its seccomp filter in `$TMPDIR/greywall-seccomp`, which is now the
+/// session's temp folder: the agent may not write it, so it cannot plant a link greywall
+/// follows at the next launch (#628, #766).
+#[test]
+fn greywalls_seccomp_folder_in_the_temp_folder_is_denied_writes_on_linux() {
+    for platform in [Platform::Linux, wsl2()] {
+        let mut request = profile_request("/home/owner/app");
+        request.environment.push(("TMPDIR".into(), TEMP_DIR.into()));
+
+        let profile = Profile::build(request, &platform).unwrap();
+
+        let folder = Path::new(TEMP_DIR).join("greywall-seccomp");
+        assert_eq!(profile.seccomp_folder.as_deref(), Some(folder.as_path()));
+        let denial = format!("deny write {}", folder.display());
+        assert!(profile.rules().contains(&denial), "{:#?}", profile.rules());
+    }
+}
+
+#[test]
+fn a_seccomp_folder_the_agent_cannot_write_needs_no_denial() {
+    let mut request = profile_request("/home/owner/app");
+    request
+        .environment
+        .push(("TMPDIR".into(), "/var/tmp".into()));
+
+    let profile = Profile::build(request, &Platform::Linux).unwrap();
+
+    assert_eq!(profile.seccomp_folder, None);
+}
+
+#[test]
+fn macos_has_no_seccomp_folder_to_protect() {
+    let mut request = profile_request("/home/owner/app");
+    request.environment.push(("TMPDIR".into(), TEMP_DIR.into()));
+
+    let profile = Profile::build(request, &Platform::MacOs).unwrap();
+
+    assert_eq!(profile.seccomp_folder, None);
 }
 
 #[test]
@@ -447,10 +510,10 @@ fn a_desktop_endpoint_the_sandbox_cannot_reach_is_refused() {
 
 #[test]
 fn a_desktop_endpoint_inside_a_denied_folder_is_refused() {
-    let mut request = shared_desktop(&[("XAUTHORITY", "/home/owner/.local/state/cockpit/x")]);
-    request.denied = vec![PathBuf::from("/home/owner/.local/state/cockpit")];
+    let mut request = shared_desktop(&[("XAUTHORITY", "/home/owner/.config/cockpit/x")]);
+    request.denied = vec![PathBuf::from("/home/owner/.config/cockpit")];
 
     let refused = refusal(request, &Platform::Linux);
 
-    assert_eq!(refused.rule, "desktop /home/owner/.local/state/cockpit/x");
+    assert_eq!(refused.rule, "desktop /home/owner/.config/cockpit/x");
 }

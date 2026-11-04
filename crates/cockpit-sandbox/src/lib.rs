@@ -30,4 +30,4 @@ pub use profile::{
     SecretHandling,
 };
 pub use proxy::{ManagedProxy, ProxyError};
-pub use seccomp::FilterWriteFailure;
+pub use seccomp::{FilterWriteFailure, seccomp_filter_dir};

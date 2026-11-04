@@ -31,7 +31,8 @@ fn an_unavailable_measurement_is_not_a_complete_zero() {
     ] {
         let value = json!({"kind":"storage", "clones":[{"checkout":2,"project":"app","incarnation":1,
             "target":"/p/.parallel/app/feature/target","holder":null,"measurement":measurement,
-            "prune":{"kind":"kept","reason":"checkout is occupied"}}],"truncated":false});
+            "prune":{"kind":"kept","reason":"checkout is occupied"}}],"truncated":false,
+            "session_temps":[{"session":"s1","path":"/state/tmp/s1","measurement":measurement}]});
         let reply: Reply = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(reply).unwrap(), value);
     }

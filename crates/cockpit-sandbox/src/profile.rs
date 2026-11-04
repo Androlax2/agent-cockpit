@@ -106,6 +106,9 @@ pub struct ProfileRequest {
     /// its provider keeps what reaches the running agent, such as Codex's app-server socket:
     /// read and write.
     pub session_dir: PathBuf,
+    /// The session's own temporary folder (`TMPDIR`), on the main disk rather than the
+    /// host's shared `/tmp` (#766): read and write.
+    pub temp_dir: PathBuf,
     /// The session's folder in the daemon's mount sources: where the folders the sandbox
     /// shows at another path live. It and its parent must be outside every folder the agent
     /// writes (#446).
@@ -134,6 +137,7 @@ pub struct Profile {
     pub provider: String,
     pub working_dir: PathBuf,
     pub session_dir: PathBuf,
+    pub temp_dir: PathBuf,
     pub owner_uid: u32,
     pub read_only: Vec<PathBuf>,
     pub denied: Vec<PathBuf>,
@@ -150,6 +154,11 @@ pub struct Profile {
     /// Codex's socket folder. Never the host's folder at that path, which the owner's own
     /// Codex uses (#446).
     pub folder_mounts: Vec<FolderMount>,
+    /// The folder greywall writes its seccomp filter to before the agent starts, when the
+    /// agent could otherwise write it: it follows `TMPDIR`, the session's temp folder (#766).
+    /// Denied writes and created before the launch, so the denial has a folder to apply to
+    /// and the agent cannot plant a link greywall follows at its next launch.
+    pub seccomp_folder: Option<PathBuf>,
 }
 
 /// A host folder the sandbox shows at another path.
@@ -252,6 +261,7 @@ impl Profile {
         }
         check_absolute(&request.working_dir, "read-write")?;
         check_absolute(&request.session_dir, "read-write")?;
+        check_absolute(&request.temp_dir, "read-write")?;
         for path in request.read_only.iter() {
             check_absolute(path, "read-only")?;
         }
@@ -268,6 +278,7 @@ impl Profile {
             check_absolute(path, "denied")?;
             refuse_masked(&request.working_dir, path, "read-write")?;
             refuse_masked(&request.session_dir, path, "read-write")?;
+            refuse_masked(&request.temp_dir, path, "read-write")?;
             for allowed in &request.read_only {
                 refuse_masked(allowed, path, "read-only")?;
             }
@@ -278,18 +289,25 @@ impl Profile {
         for host in &request.allow_hosts {
             check_host(host)?;
         }
-        let writable: Vec<&Path> = [request.working_dir.as_path(), &request.session_dir]
-            .into_iter()
-            .chain(
-                desktop_endpoints
-                    .iter()
-                    .filter(|endpoint| endpoint.kind == EndpointKind::Socket)
-                    .map(|endpoint| endpoint.path.as_path()),
-            )
-            .collect();
+        let writable: Vec<&Path> = [
+            request.working_dir.as_path(),
+            &request.session_dir,
+            &request.temp_dir,
+        ]
+        .into_iter()
+        .chain(
+            desktop_endpoints
+                .iter()
+                .filter(|endpoint| endpoint.kind == EndpointKind::Socket)
+                .map(|endpoint| endpoint.path.as_path()),
+        )
+        .collect();
         for mount in &folder_mounts {
             refuse_writable_source(mount, &writable)?;
         }
+        let seccomp_folder = matches!(platform, Platform::Linux | Platform::Wsl2 { .. })
+            .then(|| crate::seccomp::seccomp_filter_dir(&environment))
+            .filter(|folder| writable.iter().any(|granted| folder.starts_with(granted)));
         for secret in &request.secrets {
             check_variable(&secret.variable)?;
         }
@@ -311,6 +329,7 @@ impl Profile {
             provider: request.provider,
             working_dir: request.working_dir,
             session_dir: request.session_dir,
+            temp_dir: request.temp_dir,
             owner_uid: request.owner_uid,
             read_only: request.read_only,
             denied,
@@ -325,6 +344,7 @@ impl Profile {
                     request
                         .denied_write
                         .iter()
+                        .chain(&seccomp_folder)
                         .map(|path| path.display().to_string()),
                 )
                 .collect(),
@@ -334,6 +354,7 @@ impl Profile {
             desktop: request.desktop,
             desktop_endpoints,
             folder_mounts,
+            seccomp_folder,
         })
     }
 
@@ -347,6 +368,10 @@ impl Profile {
             format!(
                 "read-write {} (the session's directory)",
                 self.session_dir.display()
+            ),
+            format!(
+                "read-write {} (the session's temp folder)",
+                self.temp_dir.display()
             ),
         ];
         rules.extend(self.folder_mounts.iter().map(|mount| {

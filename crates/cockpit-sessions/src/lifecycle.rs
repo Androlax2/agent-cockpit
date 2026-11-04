@@ -80,6 +80,9 @@ pub struct Sessions {
     /// Where each session gets its own directory, `<session dirs>/<session id>`, which its
     /// provider's launch and delivery use ([`LaunchRequest::session_dir`]).
     session_dirs: PathBuf,
+    /// Where each session gets its own temporary folder, `<session temps>/<session id>`, on
+    /// the main disk: its agent's `TMPDIR`, never the host's shared `/tmp` (#766).
+    session_temps: PathBuf,
     /// One lock per session, held by each owner operation and each periodic step on it, so
     /// the periodic pass never acts on a launch an owner operation just replaced. Entries
     /// stay for the daemon's life: one per session ever touched.
@@ -171,6 +174,7 @@ impl Sessions {
         providers: Vec<Arc<dyn Provider>>,
         settings: Settings,
         session_dirs: PathBuf,
+        session_temps: PathBuf,
         connect_socket: crate::ConnectSessionSocket,
     ) -> Sessions {
         assert!(
@@ -189,6 +193,7 @@ impl Sessions {
             owner_settings: Mutex::new(settings.owner),
             settings,
             session_dirs,
+            session_temps,
             operations: Mutex::new(HashMap::new()),
         }
     }
@@ -750,7 +755,7 @@ impl Sessions {
         .await?;
         give_up_on_end(&write, &ended).await?;
         write.commit().await?;
-        self.remove_session_dir(id).await?;
+        self.remove_session_folders(id).await?;
         Ok(ended)
     }
 
@@ -1004,7 +1009,7 @@ impl Sessions {
         for session in ended {
             let _operation = self.lock(&session.id).await;
             if self.get(&session.id).await?.state == SessionState::Ended
-                && let Err(error) = self.remove_session_dir(&session.id).await
+                && let Err(error) = self.remove_session_folders(&session.id).await
             {
                 report.errors.push((session.id, error.to_string()));
             }
@@ -1170,7 +1175,7 @@ impl Sessions {
         .await?;
         give_up_on_end(&write, &ended).await?;
         write.commit().await?;
-        self.remove_session_dir(id).await?;
+        self.remove_session_folders(id).await?;
         Ok(true)
     }
 
@@ -1296,7 +1301,7 @@ impl Sessions {
         // Read again: the snapshot the transition returned predates the exit.
         let over = store::session(&write, &over.id).await?;
         write.commit().await?;
-        self.remove_session_dir(&session.id).await?;
+        self.remove_session_folders(&session.id).await?;
         tracing::info!(
             session = %session.id,
             state = %over.state,
@@ -1530,7 +1535,7 @@ impl Sessions {
         }
         write.commit().await?;
         if to == StopTarget::Ended {
-            self.remove_session_dir(id).await?;
+            self.remove_session_folders(id).await?;
         }
         Ok(stopped)
     }
@@ -1649,12 +1654,15 @@ impl Sessions {
         self.wait_for_terminal_steps(id).await?;
         let session = self.get(id).await?;
         let session_dir = self.session_dir(id);
+        let temp_dir = self.session_temp_dir(id);
         {
             let session_dir = session_dir.clone();
+            let temp_dir = temp_dir.clone();
             let counted = TerminalStep::start(&self.session_lock(id));
-            self.blocking("create the session's directory", move || {
+            self.blocking("create the session's directories", move || {
                 let _counted = counted;
-                create_session_dir(&session_dir)
+                create_session_dir(&session_dir)?;
+                create_session_dir(&temp_dir)
             })
             .await?;
         }
@@ -1702,6 +1710,7 @@ impl Sessions {
         let delivery_launch = command.clone();
         let mut environment = self.launch_environment();
         environment.extend(command.environment);
+        let mut environment = with_temp_dir(environment, &temp_dir);
         environment.push(("TORLEK_SESSION".into(), id.as_str().into()));
         // Every launch goes through the sandbox (#61); a profile this host cannot enforce
         // fails the launch before anything is reserved. The agent gets its whole checkout,
@@ -1716,6 +1725,7 @@ impl Sessions {
             session.provider.as_str(),
             checkout.path,
             session_dir,
+            temp_dir,
             environment,
             command.program,
             command.arguments,
@@ -1744,6 +1754,12 @@ impl Sessions {
                 plan.create_mount_sources()
                     .map_err(|(path, source)| Error::Io {
                         action: "prepare the session's folder the sandbox mounts",
+                        path,
+                        source,
+                    })?;
+                plan.create_seccomp_folder()
+                    .map_err(|(path, source)| Error::Io {
+                        action: "prepare the sandbox engine's seccomp folder",
                         path,
                         source,
                     })
@@ -1937,6 +1953,7 @@ impl Sessions {
         provider: &str,
         checkout_root: PathBuf,
         session_dir: PathBuf,
+        temp_dir: PathBuf,
         environment: Vec<(OsString, OsString)>,
         program: PathBuf,
         arguments: Vec<OsString>,
@@ -1950,6 +1967,7 @@ impl Sessions {
                     provider: provider.to_owned(),
                     working_dir: checkout_root,
                     session_dir,
+                    temp_dir,
                     environment,
                     secrets: vec![cockpit_sandbox::Secret {
                         // The agent presents it on the local agent socket, never in an HTTP
@@ -1966,11 +1984,25 @@ impl Sessions {
     }
 
     /// Whether the sandbox engine can write the seccomp filter a launch loads (#628), in
-    /// the folder the agents' environment gives it. Blocking: it writes a file.
+    /// the folder a launch's environment gives it: under its own temp folder (#766), here
+    /// the dry run's, created as a launch creates it so the check writes where the engine
+    /// will. Blocking: it creates folders and writes a file.
     pub fn check_seccomp_filter(&self) -> Result<(), cockpit_sandbox::FilterWriteFailure> {
-        self.settings
-            .sandbox
-            .check_seccomp_filter(&self.launch_environment())
+        let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
+        let folder = cockpit_sandbox::seccomp_filter_dir(&environment);
+        create_session_dir(&folder).map_err(|error| cockpit_sandbox::FilterWriteFailure {
+            reason: format!("the sessions' temp folders cannot be created: {error}"),
+            next: format!(
+                "make {} a folder this user can write",
+                self.session_temps.display()
+            ),
+        })?;
+        self.settings.sandbox.check_seccomp_filter(&environment)
+    }
+
+    /// The temp folder the dry run and the seccomp check stand in for a session's with.
+    fn dry_run_temp_dir(&self) -> PathBuf {
+        self.session_temps.join(DRY_RUN_SESSION)
     }
 
     /// `cockpit sandbox show`: the sandbox a new session of `provider` in `dir` would get,
@@ -1991,7 +2023,8 @@ impl Sessions {
             &provider,
             checkout.path,
             self.session_dirs.join(DRY_RUN_SESSION),
-            self.launch_environment(),
+            self.dry_run_temp_dir(),
+            with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir()),
             PathBuf::from("<agent>"),
             Vec::new(),
         )
@@ -2209,25 +2242,34 @@ impl Sessions {
     }
 
     // The caller holds the operation lock; counted work also excludes a later launch
-    // if removal times out and continues on its blocking thread.
-    async fn remove_session_dir(&self, id: &SessionId) -> Result<(), Error> {
+    // if removal times out and continues on its blocking thread. Only an end removes them:
+    // an asleep or failed session's next launch finds its temp files again.
+    async fn remove_session_folders(&self, id: &SessionId) -> Result<(), Error> {
         if *self.session_lock(id).terminal_steps.borrow() != 0 {
             tracing::debug!(session = %id, "directory cleanup deferred until outstanding steps return");
             return Ok(());
         }
-        let path = self.session_dir(id);
+        let paths = [self.session_dir(id), self.session_temp_dir(id)];
         let counted = TerminalStep::start(&self.session_lock(id));
-        self.blocking("remove the session's directory", move || {
+        self.blocking("remove the session's directories", move || {
             let _counted = counted;
-            match std::fs::remove_dir_all(&path) {
-                Ok(()) => Ok(()),
-                Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(source) => Err(Error::Io {
-                    action: "remove",
-                    path,
-                    source,
-                }),
+            // Each removal is tried, so a stuck runtime directory never keeps a large temp
+            // folder on the disk; the first failure is returned.
+            let mut failure = None;
+            for path in paths {
+                match std::fs::remove_dir_all(&path) {
+                    Ok(()) => {}
+                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(source) => {
+                        failure.get_or_insert(Error::Io {
+                            action: "remove",
+                            path,
+                            source,
+                        });
+                    }
+                }
             }
+            failure.map_or(Ok(()), Err)
         })
         .await
     }
@@ -2235,6 +2277,17 @@ impl Sessions {
     /// The session's own directory ([`LaunchRequest::session_dir`]); its launch creates it.
     pub fn session_dir(&self, id: &SessionId) -> PathBuf {
         self.session_dirs.join(id.as_str())
+    }
+
+    /// The session's own temporary folder, its agent's `TMPDIR`; its launch creates it and
+    /// its end removes it.
+    pub fn session_temp_dir(&self, id: &SessionId) -> PathBuf {
+        self.session_temps.join(id.as_str())
+    }
+
+    /// The folder holding every session's temporary folder, which the storage report measures.
+    pub fn session_temps(&self) -> &Path {
+        &self.session_temps
     }
 
     /// Runs a blocking step off the async workers, holding one of the capability's permits
@@ -2511,18 +2564,34 @@ pub(crate) fn agent_pane_info(tmux: &Server, name: &SessionName) -> Result<PaneI
         })
 }
 
-/// Creates `dir` and its parents, private to the owner; one that exists is kept.
+/// `environment` with every temporary file in `temp_dir`, a session's own (#766): Claude
+/// Code reads its own variable; every other program, OpenCode and Codex included, follows
+/// `TMPDIR`, and so does the sandbox engine's seccomp filter (#628).
+fn with_temp_dir(
+    mut environment: Vec<(OsString, OsString)>,
+    temp_dir: &Path,
+) -> Vec<(OsString, OsString)> {
+    environment.retain(|(name, _)| name != "TMPDIR" && name != "CLAUDE_CODE_TMPDIR");
+    environment.push(("TMPDIR".into(), temp_dir.into()));
+    environment.push(("CLAUDE_CODE_TMPDIR".into(), temp_dir.into()));
+    environment
+}
+
+/// Creates `dir` and its parents, private to the owner. One that exists is kept and made
+/// owner-only again: its agent, which writes it, may have widened it.
 fn create_session_dir(dir: &Path) -> Result<(), Error> {
-    use std::os::unix::fs::DirBuilderExt;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let failed = |source| Error::Io {
+        action: "create",
+        path: dir.to_path_buf(),
+        source,
+    };
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)
-        .map_err(|source| Error::Io {
-            action: "create",
-            path: dir.to_path_buf(),
-            source,
-        })
+        .map_err(failed)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(failed)
 }
 
 /// The trust check and write of [`Sessions::trust_clone`], blocking: it reads the owner's

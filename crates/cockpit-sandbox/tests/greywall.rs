@@ -15,8 +15,8 @@ use cockpit_sandbox::{
     parse_greywall_version,
 };
 use common::{
-    LINUX_CAPABILITIES, MOUNT_SOURCES, SESSION_DIR, capabilities, engine_with, linux_engine,
-    pinned_greyproxy, pinned_greywall, profile_request, programs,
+    LINUX_CAPABILITIES, MOUNT_SOURCES, SESSION_DIR, TEMP_DIR, capabilities, engine_with,
+    linux_engine, pinned_greyproxy, pinned_greywall, profile_request, programs,
 };
 
 const GREYWALL_VERSION_OUTPUT: &str = "greywall - lightweight, container-free sandbox
@@ -383,6 +383,8 @@ fn the_plan_runs_the_agent_under_greywall_as_a_proxy_client_of_its_own() {
             "/home/owner/app",
             "--allow-path",
             SESSION_DIR,
+            "--allow-path",
+            TEMP_DIR,
             "--allow-read-path",
             "/run/user/1000/cockpit/agent",
             "--ignore-secret",
@@ -680,7 +682,7 @@ fn no_codex_launch_shares_the_hosts_codex_socket_folder() {
 
         assert_eq!(
             values_of(&plan, "--allow-path"),
-            ["/home/owner/app", SESSION_DIR]
+            ["/home/owner/app", SESSION_DIR, TEMP_DIR]
         );
     }
 }
