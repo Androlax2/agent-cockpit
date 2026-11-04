@@ -21,6 +21,8 @@ fn a_session_new_round_trips_with_only_the_options_it_was_given() {
             agent: None,
             prompt: None,
             clone: Some("feature/x".to_owned()),
+            model: None,
+            effort: None,
         }
     );
     assert_eq!(serde_json::to_value(request).unwrap(), wire);

@@ -189,7 +189,9 @@ async fn target_prune_active_bulk_step_keeps_control_responsive_and_refuses_dupl
                         dir: root.display().to_string(),
                         agent: Some("fake".into()),
                         prompt: None,
-                        clone: None
+                        clone: None,
+                        model: None,
+                        effort: None,
                     }
                 )
                 .await
@@ -414,6 +416,8 @@ async fn target_prune_guard_refuses_unrelated_session_start_before_any_launch_in
             agent: Some("fake".into()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;
@@ -689,6 +693,8 @@ async fn target_prune_recovery_releases_global_guard_but_keeps_candidate_exclude
                 agent: Some("fake".into()),
                 prompt: None,
                 clone: None,
+                model: None,
+                effort: None,
             },
         )
         .await,

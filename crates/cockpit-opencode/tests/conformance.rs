@@ -71,6 +71,7 @@ fn a_launched_server_answers_its_password_and_lists_commands() {
             conversation: &Conversation::New,
             first_message: None,
             effort: None,
+            model: None,
             remote_control: false,
         })
         .unwrap();

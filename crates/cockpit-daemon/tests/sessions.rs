@@ -36,19 +36,27 @@ struct Variant {
     names_conversation: bool,
     /// The status its agent exits with at once, after printing the line to stderr.
     exits_with: Option<(u8, &'static str)>,
+    /// It reports `model` and `effort`, so a start may choose them (#701).
+    chooses: bool,
 }
 
 const BASELINE: Variant = Variant {
     can_resume: true,
     names_conversation: true,
     exits_with: None,
+    chooses: false,
 };
 
 /// A provider that resumes but never names the conversation, so a restore cannot reopen it.
 const UNNAMED: Variant = Variant {
-    can_resume: true,
     names_conversation: false,
-    exits_with: None,
+    ..BASELINE
+};
+
+/// A provider a start may choose the model and effort of.
+const CHOOSING: Variant = Variant {
+    chooses: true,
+    ..BASELINE
 };
 
 /// A provider that names its conversations but cannot resume one, so a restart cannot
@@ -117,6 +125,11 @@ impl Home {
         }
         if let Some((status, line)) = variant.exits_with {
             provider = provider.exiting(status, line);
+        }
+        if variant.chooses {
+            provider = provider
+                .reporting(cockpit_provider_api::Capability::Model)
+                .reporting(cockpit_provider_api::Capability::Effort);
         }
         let mut wiring = common::wiring_in(&self.path(), vec![Arc::new(provider)]);
         wiring.sessions = settings;
@@ -418,9 +431,22 @@ async fn new_session(client: &Connection, dir: &Path, prompt: Option<&str>) -> S
             agent: Some("fake".to_owned()),
             prompt: prompt.map(str::to_owned),
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await
+}
+
+fn new_session_choosing(dir: &Path, model: Option<&str>, effort: Option<&str>) -> Command {
+    Command::SessionNew {
+        dir: dir.display().to_string(),
+        agent: Some("fake".to_owned()),
+        prompt: None,
+        clone: None,
+        model: model.map(str::to_owned),
+        effort: effort.map(str::to_owned),
+    }
 }
 
 async fn sessions(client: &Connection, ended: bool) -> Vec<SessionView> {
@@ -545,6 +571,8 @@ async fn a_new_session_in_a_clone_occupies_a_parallel_clone_on_its_branch() {
             agent: None,
             prompt: None,
             clone: Some("feature/x".to_owned()),
+            model: None,
+            effort: None,
         },
     )
     .await;
@@ -578,6 +606,8 @@ async fn a_directory_in_no_registered_project_is_refused() {
             agent: None,
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;
@@ -622,6 +652,116 @@ async fn restart_stops_the_agent_and_resumes_the_same_conversation_in_place() {
     assert!(is_alive(launches[1].pid));
     assert_ne!(launches[0].token, launches[1].token);
     assert_eq!(std::fs::read_to_string(marker).unwrap(), "kept");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chosen_model_and_effort_reach_the_first_launch_and_a_restart() {
+    let home = Home::new();
+    let daemon = home.start(CHOOSING, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = session_reply(
+        &client,
+        new_session_choosing(&root, Some("fake-large"), Some("high")),
+    )
+    .await;
+    home.launches(1).await;
+
+    session_reply(
+        &client,
+        Command::SessionRestart {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    let launches = home.launches(2).await;
+    assert_eq!(launches[1].mode, "resume");
+    assert_eq!(launches[1].conversation, launches[0].conversation);
+    for launch in &launches {
+        assert_eq!(
+            (launch.model.as_deref(), launch.effort.as_deref()),
+            (Some("fake-large"), Some("high")),
+            "{launch:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_without_a_choice_leaves_model_and_effort_to_the_harness() {
+    let home = Home::new();
+    let daemon = home.start(CHOOSING, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    new_session(&client, &root, None).await;
+
+    let launch = &home.launches(1).await[0];
+    assert_eq!(
+        (launch.model.as_deref(), launch.effort.as_deref()),
+        (None, None)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provider_without_the_model_capability_refuses_the_start_and_records_nothing() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let refused = refusal(request(&client, new_session_choosing(&root, Some("opus"), None)).await);
+
+    assert_eq!(refused.code, ErrorCode::Refused);
+    assert!(
+        refused
+            .message
+            .contains("it does not report the `model` capability"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(sessions(&client, true).await, []);
+    home.still_logged(0).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_model_is_refused_as_an_invalid_argument() {
+    let home = Home::new();
+    let daemon = home.start(CHOOSING, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let refused = refusal(request(&client, new_session_choosing(&root, Some(""), None)).await);
+
+    assert_eq!(
+        refused.code,
+        ErrorCode::InvalidArgument,
+        "{}",
+        refused.message
+    );
+    assert_eq!(sessions(&client, true).await, []);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_effort_the_provider_does_not_know_refuses_the_start_and_records_nothing() {
+    let home = Home::new();
+    let daemon = home.start(CHOOSING, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let refused =
+        refusal(request(&client, new_session_choosing(&root, None, Some("extreme"))).await);
+
+    assert_eq!(refused.code, ErrorCode::Refused);
+    assert!(
+        refused
+            .message
+            .contains("effort \"extreme\" is not one of low, medium, high"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(sessions(&client, true).await, []);
+    home.still_logged(0).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1118,6 +1258,8 @@ async fn without_tmux_the_daemon_starts_and_refuses_new_sessions_naming_tmux() {
             agent: None,
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;
@@ -1322,6 +1464,8 @@ async fn end_stops_the_agent_and_releases_the_clone() {
             agent: None,
             prompt: None,
             clone: Some("work".to_owned()),
+            model: None,
+            effort: None,
         },
     )
     .await;
@@ -1566,6 +1710,8 @@ async fn the_agent_socket_refuses_every_session_command() {
             agent: None,
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
         Command::SessionList { ended: false },
         Command::SessionRestart {

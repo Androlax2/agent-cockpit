@@ -62,7 +62,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek agent sessions [--watch]
        torlek agent message SESSION TEXT
        torlek agent inbox
-       torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]
+       torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL]
        torlek agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] [--component NAME] [--steps TEXT] [--requested-by-owner]
        torlek bug-report new DESCRIPTION [--title TEXT] [--steps TEXT] [--since 2h|RFC3339]
        torlek bug-report list [--all] | show ID | discard ID
@@ -86,7 +86,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek approval edit ID --revision REVISION COMMAND
        torlek guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID
        torlek session send ID MESSAGE | cancel ID
-       torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]
+       torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL]
        torlek session list [--ended]
        torlek session restart SESSION|--all
        torlek session sleep|wake|resume|end|show SESSION

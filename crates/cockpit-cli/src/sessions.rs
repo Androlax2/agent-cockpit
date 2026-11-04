@@ -105,15 +105,18 @@ pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
     })
 }
 
-/// `new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]`.
+/// `new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL]`.
 fn session_new(dir: &str, options: &[&str]) -> Result<Command, String> {
     let (mut agent, mut prompt, mut clone) = (None, None, None);
+    let (mut model, mut effort) = (None, None);
     let mut options = options.iter();
     while let Some(flag) = options.next() {
         let slot = match *flag {
             "--agent" => &mut agent,
             "--prompt" => &mut prompt,
             "--clone" => &mut clone,
+            "--model" => &mut model,
+            "--effort" => &mut effort,
             _ => return Err(format!("unknown argument {flag}")),
         };
         let value = options
@@ -128,6 +131,8 @@ fn session_new(dir: &str, options: &[&str]) -> Result<Command, String> {
         agent,
         prompt,
         clone,
+        model,
+        effort,
     })
 }
 

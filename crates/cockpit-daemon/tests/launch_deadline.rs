@@ -243,6 +243,8 @@ async fn new_session(client: &Connection, root: &Path) -> Result<Reply, ClientEr
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await

@@ -159,6 +159,8 @@ pub(crate) fn route_agent(
                 agent,
                 prompt,
                 clone,
+                model,
+                effort,
             } => {
                 start(
                     &context,
@@ -169,6 +171,8 @@ pub(crate) fn route_agent(
                         prompt,
                         clone,
                         agent,
+                        model,
+                        effort,
                     },
                 )
                 .await
@@ -494,6 +498,15 @@ async fn start(
 ) -> Answer {
     let dir = cockpit_approvals::resolve_cwd(dir)?;
     cockpit_approvals::validate_start(&dir, &start)?;
+    // Refused before the owner is asked: an approval must not start a launch that fails.
+    context
+        .sessions
+        .check_launch_choices(
+            start.agent.as_deref(),
+            start.model.as_deref(),
+            start.effort.as_deref(),
+        )
+        .await?;
     let write = context.database.write().await?;
     let coordinator = sender.identify(&write, launch_token).await?;
     let at = now();
@@ -686,6 +699,8 @@ fn start_request(dir: PathBuf, start: StartSession) -> StartRequest {
         provider: start.agent,
         first_message: start.prompt,
         clone_branch: start.clone,
+        model: start.model,
+        effort: start.effort,
     }
 }
 

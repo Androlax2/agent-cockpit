@@ -44,6 +44,8 @@ fn each_coordinator_command_round_trips_with_only_the_fields_it_was_given() {
                 agent: None,
                 prompt: Some("fix it".to_owned()),
                 clone: None,
+                model: None,
+                effort: None,
             },
         ),
         (
@@ -54,6 +56,8 @@ fn each_coordinator_command_round_trips_with_only_the_fields_it_was_given() {
                 agent: Some("codex".to_owned()),
                 prompt: None,
                 clone: None,
+                model: None,
+                effort: None,
             },
         ),
         (

@@ -113,6 +113,10 @@ Setup refuses an occupied endpoint. A separate profile does not provide separate
    ```
 
    Replace `claude` with `codex` or `opencode` if that is your provider.
+   For a Claude session, `--model MODEL` (an alias such as `opus` or a model id) and
+   `--effort LEVEL` (`low`, `medium`, `high`, `xhigh` or `max`) choose its model and effort;
+   every restart, wake and resume of the session keeps them. Without them, Claude Code's own
+   settings apply. A provider that cannot set them refuses the start.
    In the TUI, use its help for available keys. From the CLI, `torlek session show ID` opens a session; replace `ID` with the identifier from `session list`.
    `torlek session end ID` stops it. `torlek init` shows when the first-session step is complete.
 

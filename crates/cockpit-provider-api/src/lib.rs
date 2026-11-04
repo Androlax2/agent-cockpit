@@ -111,6 +111,9 @@ pub struct LaunchRequest<'request> {
     pub first_message: Option<&'request str>,
     /// The reasoning effort, in the provider's own words; needs [`Capability::Effort`].
     pub effort: Option<&'request str>,
+    /// The model, in the provider's own words (an alias or a full id); needs
+    /// [`Capability::Model`].
+    pub model: Option<&'request str>,
     /// Turn the provider's own remote control on; needs [`Capability::RemoteControl`].
     pub remote_control: bool,
 }
@@ -124,6 +127,9 @@ impl LaunchRequest<'_> {
         }
         if self.effort.is_some() {
             needed.push(Capability::Effort);
+        }
+        if self.model.is_some() {
+            needed.push(Capability::Model);
         }
         if self.remote_control {
             needed.push(Capability::RemoteControl);

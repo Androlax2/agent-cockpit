@@ -150,6 +150,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE approvals_runs ADD COLUMN decided_through TEXT
                 CHECK (decided_through IN ('tui', 'cli'));",
         },
+        // #701: a start chooses its model and effort.
+        Migration {
+            version: 8,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN start_model TEXT CHECK (start_model <> '');
+            ALTER TABLE approvals_runs ADD COLUMN start_effort TEXT
+                CHECK (start_effort <> '');",
+        },
     ],
 };
 pub use runs::maintenance_runs;

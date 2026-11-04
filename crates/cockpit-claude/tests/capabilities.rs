@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use cockpit_claude::{CONFORMANCE_VERSION, ClaudeCode};
 use cockpit_provider_api::{Availability, Capability, Provenance, Provider};
 
-const REPORTED: [Capability; 10] = [
+const REPORTED: [Capability; 11] = [
     Capability::Resume,
     Capability::Submit,
     Capability::Events,
@@ -15,6 +15,7 @@ const REPORTED: [Capability; 10] = [
     Capability::Inbox,
     Capability::Cancel,
     Capability::Effort,
+    Capability::Model,
     Capability::Compact,
     Capability::RemoteControl,
     Capability::ScreenReading,

@@ -14,6 +14,7 @@ fn request(conversation: &Conversation) -> LaunchRequest<'_> {
         conversation,
         first_message: None,
         effort: None,
+        model: None,
         remote_control: false,
     }
 }
@@ -289,6 +290,36 @@ fn an_effort_level_claude_code_does_not_have_is_refused() {
         error.reason,
         "effort \"extreme\" is not one of low, medium, high, xhigh, max"
     );
+}
+
+#[test]
+fn a_model_is_passed_to_the_program() {
+    let launch = LaunchRequest {
+        model: Some("claude-opus-5-5[1m]"),
+        ..request(&Conversation::New)
+    };
+    let words = words(&common::claude().launch(&launch).unwrap().arguments);
+
+    assert_eq!(value_after(&words, "--model"), Some("claude-opus-5-5[1m]"));
+}
+
+#[test]
+fn a_model_that_would_read_as_a_flag_or_holds_a_space_is_refused() {
+    for model in ["--settings", "opus plan", ""] {
+        let launch = LaunchRequest {
+            model: Some(model),
+            ..request(&Conversation::New)
+        };
+        let error = common::claude().launch(&launch).unwrap_err();
+
+        assert!(
+            error
+                .reason
+                .starts_with(&format!("model {model:?} is not a Claude Code model name")),
+            "{model:?}: {}",
+            error.reason
+        );
+    }
 }
 
 #[test]

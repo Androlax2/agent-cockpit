@@ -210,6 +210,12 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 CHECK ((ended_by = 'code') = (code IS NOT NULL))
             );",
         },
+        // #701: the model and effort chosen at the start, which every launch passes again.
+        Migration {
+            version: 10,
+            sql: "ALTER TABLE sessions ADD COLUMN model TEXT CHECK (model <> '');
+            ALTER TABLE sessions ADD COLUMN effort TEXT CHECK (effort <> '');",
+        },
     ],
 };
 
@@ -236,7 +242,7 @@ const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout
     s.changed_at, l.id, l.kind, l.execution_id, l.launched_at,
     EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id),
     (SELECT max(w.working_order) FROM session_launches w WHERE w.session_id = s.id),
-    e.ended_by, e.code, e.output";
+    e.ended_by, e.code, e.output, s.model, s.effort";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
     (SELECT max(id) FROM session_launches WHERE session_id = s.id)
     LEFT JOIN session_exits e ON e.launch_id = l.id";
@@ -321,6 +327,8 @@ pub(crate) struct NewSession<'values> {
     pub(crate) checkout: CheckoutId,
     pub(crate) holds_checkout: bool,
     pub(crate) working_dir: &'values Path,
+    pub(crate) model: Option<&'values str>,
+    pub(crate) effort: Option<&'values str>,
 }
 
 /// Records a new session, `launching` its first launch.
@@ -334,8 +342,8 @@ pub(crate) async fn insert_session(
     write
         .execute(
             "INSERT INTO sessions (id, provider, checkout_id, holds_checkout, working_dir,
-                 state, revision, created_at, changed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'launching', 1, ?6, ?6)",
+                 state, revision, created_at, changed_at, model, effort)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'launching', 1, ?6, ?6, ?7, ?8)",
             (
                 new.id.as_str(),
                 new.provider.as_str(),
@@ -343,6 +351,8 @@ pub(crate) async fn insert_session(
                 i64::from(new.holds_checkout),
                 path_text(new.working_dir)?,
                 at,
+                optional_text(new.model),
+                optional_text(new.effort),
             ),
         )
         .await?;
@@ -776,6 +786,8 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
         holds_checkout: row.get::<i64>(3)? == 1,
         working_dir: PathBuf::from(row.get::<String>(4)?),
         conversation,
+        model: row.get(22)?,
+        effort: row.get(23)?,
         design_link: row.get(6)?,
         state,
         reason: row.get(9)?,

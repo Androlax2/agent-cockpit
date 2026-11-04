@@ -25,6 +25,16 @@ fn start(prompt: Option<&str>, clone: Option<&str>) -> StartSession {
         prompt: prompt.map(str::to_owned),
         clone: clone.map(str::to_owned),
         agent: None,
+        model: None,
+        effort: None,
+    }
+}
+
+fn start_choosing(model: &str, effort: &str) -> StartSession {
+    StartSession {
+        model: Some(model.to_owned()),
+        effort: Some(effort.to_owned()),
+        ..start(None, None)
     }
 }
 
@@ -89,6 +99,29 @@ async fn a_start_request_reads_as_the_session_new_command_it_stands_for() {
         "the returned request is the stored one"
     );
     assert_eq!(open_runs(&read, NOW).await.unwrap(), vec![run]);
+}
+
+#[tokio::test]
+async fn a_start_choosing_its_model_and_effort_shows_them_and_keeps_them_for_the_start() {
+    let fixture = Fixture::new().await;
+
+    let run = asked_start(
+        &fixture,
+        &session("coordinator"),
+        start_choosing("sonnet", "low"),
+    )
+    .await;
+
+    assert_eq!(
+        run.command,
+        format!(
+            "torlek session new '{}' --model 'sonnet' --effort 'low'",
+            fixture.cwd().display()
+        )
+    );
+    let read = fixture.database.read().await.unwrap();
+    let stored = run_request(&read, run.id, NOW).await.unwrap().unwrap();
+    assert_eq!(stored.start, Some(start_choosing("sonnet", "low")));
 }
 
 #[tokio::test]
@@ -230,7 +263,7 @@ async fn an_approved_start_a_restart_finds_is_not_run_never_started_again() {
 }
 
 #[tokio::test]
-async fn a_start_prompt_branch_and_agent_are_validated_before_filing() {
+async fn a_start_prompt_branch_agent_model_and_effort_are_validated_before_filing() {
     let fixture = Fixture::new().await;
     let coordinator = session("coordinator");
     let write = fixture.database.write().await.unwrap();
@@ -247,6 +280,8 @@ async fn a_start_prompt_branch_and_agent_are_validated_before_filing() {
         (start(Some("  "), None), "prompt"),
         (start(None, Some("two words")), "clone"),
         (start_with_agent("two words"), "agent"),
+        (start_choosing("opus plan", "high"), "model"),
+        (start_choosing("opus", ""), "effort"),
     ] {
         let refused = refusal(
             ask_start(

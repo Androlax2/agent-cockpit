@@ -51,6 +51,8 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
             agent,
             prompt,
             clone,
+            model,
+            effort,
         } => job(async move {
             let inputs = card_inputs(&sessions).await?;
             let started = sessions
@@ -59,6 +61,8 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
                     provider: agent,
                     first_message: prompt,
                     clone_branch: clone,
+                    model,
+                    effort,
                 })
                 .await?;
             reply(&sessions, &started, &inputs).await

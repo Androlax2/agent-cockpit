@@ -312,6 +312,8 @@ exec sleep 60
                 agent: Some("fake".into()),
                 prompt: Some("prompt-canary-137".into()),
                 clone: None,
+                model: None,
+                effort: None,
             },
             GENEROUS,
         )

@@ -256,6 +256,8 @@ async fn new_session(home: &Home, client: &Connection, dir: &Path) -> SessionVie
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;

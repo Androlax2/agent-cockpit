@@ -47,6 +47,8 @@ fn a_fresh_install_starts_a_session_from_the_form_and_its_card_appears_under_the
             agent: Some("fake".to_owned()),
             prompt: Some("fix the build".to_owned()),
             clone: None,
+            model: None,
+            effort: None,
         }
     );
     app.answer(
@@ -86,6 +88,8 @@ fn a_new_clone_needs_a_branch_and_sends_it() {
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: Some("feature/x".to_owned()),
+            model: None,
+            effort: None,
         }]
     );
 }

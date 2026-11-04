@@ -162,6 +162,8 @@ async fn probe(provider: &str, variable: &str, version: &str) {
                 agent: Some(provider.to_owned()),
                 prompt: Some(PROMPT.to_owned()),
                 clone: None,
+                model: None,
+                effort: None,
             },
             Duration::from_secs(15),
         )

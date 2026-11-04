@@ -16,6 +16,7 @@ fn request(conversation: &Conversation) -> LaunchRequest<'_> {
         conversation,
         first_message: None,
         effort: None,
+        model: None,
         remote_control: false,
     }
 }

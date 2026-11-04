@@ -215,6 +215,8 @@ async fn target_prune_abandon_preserves_files_other_guards_and_terminal_history(
                 agent: Some("fake".into()),
                 prompt: None,
                 clone: None,
+                model: None,
+                effort: None,
             },
         )
         .await,

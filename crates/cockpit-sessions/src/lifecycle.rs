@@ -304,6 +304,12 @@ impl Sessions {
     pub async fn start(&self, request: StartRequest) -> Result<Session, Error> {
         self.tmux()?;
         let provider = self.provider(request.provider.as_deref())?;
+        self.check_launch_choices(
+            Some(provider.name().as_str()),
+            request.model.as_deref(),
+            request.effort.as_deref(),
+        )
+        .await?;
         let dir = self
             .blocking("resolve the directory", move || canonical_dir(request.dir))
             .await?;
@@ -336,6 +342,8 @@ impl Sessions {
                 checkout: checkout.id,
                 holds_checkout,
                 working_dir: &working_dir,
+                model: request.model.as_deref(),
+                effort: request.effort.as_deref(),
             },
         )
         .await?;
@@ -355,6 +363,45 @@ impl Sessions {
             )
             .await?;
         self.after_early_exit(launched).await
+    }
+
+    /// Refuses a model or effort `provider` would not launch, before a session is recorded or
+    /// the owner is asked to start one (#701): the provider reports the capability and knows
+    /// the value. [`Provider::launch`] only builds words, so a trial build is the provider's
+    /// own check; the paths it is given are never used.
+    pub async fn check_launch_choices(
+        &self,
+        provider: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), Error> {
+        if model.is_none() && effort.is_none() {
+            return Ok(());
+        }
+        for (kind, value) in [("model", model), ("effort", effort)] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                return Err(Error::InvalidValue(cockpit_provider_api::InvalidValue {
+                    kind,
+                    value: value.unwrap_or_default().to_owned(),
+                    rule: "leave it out to use the harness's own setting",
+                }));
+            }
+        }
+        let provider = Arc::clone(self.provider(provider)?);
+        let (model, effort) = (model.map(str::to_owned), effort.map(str::to_owned));
+        self.blocking("check the model and effort", move || {
+            provider.launch(&LaunchRequest {
+                working_dir: Path::new("/"),
+                session_dir: Path::new("/"),
+                conversation: &Conversation::New,
+                first_message: None,
+                effort: effort.as_deref(),
+                model: model.as_deref(),
+                remote_control: false,
+            })?;
+            Ok(())
+        })
+        .await
     }
 
     /// Stops the agent and launches the same conversation again, in place. A session whose
@@ -1496,6 +1543,7 @@ impl Sessions {
             let session_dir = session_dir.clone();
             let conversation = conversation.clone();
             let first_message = first_message.map(str::to_owned);
+            let (model, effort) = (session.model.clone(), session.effort.clone());
             // Off the async workers and bounded: the contract says it does not block, but
             // a provider that does would otherwise hold the launch forever (#272).
             let counted = TerminalStep::start(&self.session_lock(id));
@@ -1506,7 +1554,8 @@ impl Sessions {
                     session_dir: &session_dir,
                     conversation: &conversation,
                     first_message: first_message.as_deref(),
-                    effort: None,
+                    effort: effort.as_deref(),
+                    model: model.as_deref(),
                     remote_control: false,
                 })?)
             })

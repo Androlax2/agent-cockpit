@@ -113,6 +113,8 @@ impl Home {
                     agent: Some(agent.into()),
                     prompt: None,
                     clone: None,
+                    model: None,
+                    effort: None,
                 },
                 GENEROUS,
             )

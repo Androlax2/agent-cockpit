@@ -25,6 +25,8 @@ pub enum Capability {
     Evidence,
     /// Launch at a chosen reasoning effort ([`crate::LaunchRequest::effort`]).
     Effort,
+    /// Launch on a chosen model ([`crate::LaunchRequest::model`]).
+    Model,
     /// Report which billing (subscription or API credits) a session runs on. No contract
     /// method yet: account routing (report 18) brings it.
     Billing,
@@ -43,7 +45,7 @@ pub enum Capability {
 }
 
 impl Capability {
-    pub const ALL: [Capability; 13] = [
+    pub const ALL: [Capability; 14] = [
         Capability::Resume,
         Capability::Submit,
         Capability::Events,
@@ -52,6 +54,7 @@ impl Capability {
         Capability::Commands,
         Capability::Evidence,
         Capability::Effort,
+        Capability::Model,
         Capability::Billing,
         Capability::Compact,
         Capability::RemoteControl,
@@ -69,6 +72,7 @@ impl Capability {
             Capability::Commands => "commands",
             Capability::Evidence => "evidence",
             Capability::Effort => "effort",
+            Capability::Model => "model",
             Capability::Billing => "billing",
             Capability::Compact => "compact",
             Capability::RemoteControl => "remote-control",

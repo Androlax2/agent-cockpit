@@ -26,14 +26,19 @@ pub const CONFORMANCE_VERSION: &str = "2.1.316";
 /// Claude Code's `--effort` levels.
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
+/// Longest `--model` value: an alias (`opus`), a model id (`claude-opus-5-5[1m]`) or a cloud
+/// provider's id or ARN.
+const MAX_MODEL_BYTES: usize = 200;
+
 /// Every flag a launch may pass; the conformance test finds each in `claude --help`.
-pub const LAUNCH_FLAGS: [&str; 7] = [
+pub const LAUNCH_FLAGS: [&str; 8] = [
     "--remote-control",
     "--session-id",
     "--resume",
     "--settings",
     "--mcp-config",
     "--effort",
+    "--model",
     "--add-dir",
 ];
 
@@ -286,6 +291,7 @@ impl Provider for ClaudeCode {
             Capability::Submit,
             Capability::Cancel,
             Capability::Effort,
+            Capability::Model,
             Capability::Compact,
             Capability::RemoteControl,
             Capability::ScreenReading,
@@ -325,6 +331,10 @@ impl Provider for ClaudeCode {
                 });
             }
             arguments.extend(["--effort".into(), effort.into()]);
+        }
+        if let Some(model) = request.model {
+            check_model(model)?;
+            arguments.extend(["--model".into(), model.into()]);
         }
         // Variadic too: a flag or the `--` before the first message follows it.
         if let Some(root) = &self.instruction_skills {
@@ -428,6 +438,25 @@ fn is_dotted_version(word: &str) -> bool {
 /// `path` as one POSIX shell word: Claude Code runs hook commands through a shell.
 fn shell_quoted(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
+}
+
+/// Claude Code takes an alias or any model id, and itself refuses one the account cannot use,
+/// so only its shape is checked here: one word that cannot read as a flag.
+fn check_model(model: &str) -> Result<(), ProviderError> {
+    let is_plain = model.len() <= MAX_MODEL_BYTES
+        && model.starts_with(|first: char| first.is_ascii_alphanumeric())
+        && model
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-._:/@[]".contains(character));
+    if is_plain {
+        return Ok(());
+    }
+    Err(ProviderError {
+        reason: format!(
+            "model {model:?} is not a Claude Code model name: 1 to {MAX_MODEL_BYTES} ASCII \
+             letters, digits and `-._:/@[]`, starting with a letter or digit"
+        ),
+    })
 }
 
 /// A random (version 4) UUID, the form `--session-id` takes.

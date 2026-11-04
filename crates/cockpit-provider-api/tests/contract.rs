@@ -44,6 +44,7 @@ fn request(conversation: &Conversation) -> LaunchRequest<'_> {
         conversation,
         first_message: None,
         effort: None,
+        model: None,
         remote_control: false,
     }
 }
@@ -70,6 +71,16 @@ fn a_resumed_launch_with_effort_and_remote_control_needs_each_capability() {
             Capability::RemoteControl
         ]
     );
+}
+
+#[test]
+fn a_launch_on_a_chosen_model_needs_the_model_capability() {
+    let launch = LaunchRequest {
+        model: Some("opus"),
+        ..request(&Conversation::New)
+    };
+
+    assert_eq!(launch.needed_capabilities(), [Capability::Model]);
 }
 
 #[test]
