@@ -151,10 +151,11 @@ impl Sessions {
                     TerminalInput::Key(Key::Control(letter)) => Keystroke::Control(*letter),
                 })
                 .collect();
-            tmux.send_keys(&pane, &keys).map_err(|error| match error {
-                cockpit_tmux::Error::CommandFailed { .. }
-                | cockpit_tmux::Error::InvalidArgument { .. } => Error::Tmux(error),
-                other => Error::TypingUnconfirmed {
+            refuse_before_typing(&keys).map_err(Error::Tmux)?;
+            type_in_separate_writes(&tmux, &pane, &keys).map_err(|failure| match failure {
+                (0, error @ cockpit_tmux::Error::CommandFailed { .. })
+                | (0, error @ cockpit_tmux::Error::InvalidArgument { .. }) => Error::Tmux(error),
+                (_, other) => Error::TypingUnconfirmed {
                     session: session_id,
                     reason: format!("tmux: {other}"),
                 },
@@ -169,6 +170,51 @@ impl Sessions {
             other => other,
         })
     }
+}
+
+/// How long typed text settles before the keys after it are written. Claude Code reads a
+/// burst of text as a paste and drops an Enter that arrives in it: on 2.1.318, a message of
+/// about 150 characters or more stayed unsent in its input box when text and Enter came in
+/// one write, and was submitted by an Enter written separately 50 ms later or more (#730).
+/// Twice that, and no longer: a dialog the agent opens meanwhile would take the keys.
+const TEXT_SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The check tmux makes of a control chord, made before anything is typed: with the text and
+/// its keys in separate writes, tmux would refuse the chord only after the text was typed.
+fn refuse_before_typing(keys: &[Keystroke<'_>]) -> Result<(), cockpit_tmux::Error> {
+    match keys.iter().find_map(|key| match key {
+        Keystroke::Control(letter) if !letter.is_ascii_lowercase() => Some(*letter),
+        _ => None,
+    }) {
+        Some(letter) => Err(cockpit_tmux::Error::InvalidArgument {
+            what: "control key (a lower-case ASCII letter)",
+            value: letter.to_string(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Writes `keys` to `pane` with each run of text and each run of keys as its own tmux
+/// command, [`TEXT_SETTLE`] apart, so no key reaches the agent inside the burst of the text
+/// before it, and a chord such as Ctrl-X Enter still arrives whole. A failure names the
+/// index of the write that failed: the writes before it were typed.
+fn type_in_separate_writes(
+    tmux: &cockpit_tmux::Server,
+    pane: &cockpit_tmux::PaneId,
+    keys: &[Keystroke<'_>],
+) -> Result<(), (usize, cockpit_tmux::Error)> {
+    let is_text = |key: &Keystroke<'_>| matches!(key, Keystroke::Text(_));
+    for (index, write) in keys
+        .chunk_by(|before, after| is_text(before) == is_text(after))
+        .enumerate()
+    {
+        if index > 0 {
+            std::thread::sleep(TEXT_SETTLE);
+        }
+        tmux.send_keys(pane, write)
+            .map_err(|error| (index, error))?;
+    }
+    Ok(())
 }
 
 /// `text` as one line a card can show: controls become spaces, and invisible or
