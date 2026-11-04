@@ -128,8 +128,8 @@ pub use target_prune::paused_automatic_prunes;
 pub use target_prune::require_working_directory_available;
 pub use target_prune::reserve_target_prune;
 pub use target_prune::{
-    PruneEvidence, PrunePolicy, PrunePreview, PruneStatus, prepare_target_prune,
-    preview_target_prune, prune_status, require_checkout_available,
+    PruneEvidence, PrunePolicy, PrunePreview, PruneStatus, PruneVerdict, prepare_target_prune,
+    preview_target_prune, prune_status, prune_verdict, require_checkout_available,
     require_execution_start_allowed,
 };
 pub use target_prune::{

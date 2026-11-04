@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cockpit_protocol::{CloneStorageView, Command, Reply, TargetSizeView};
+use cockpit_protocol::{CloneStorageView, Command, PruneVerdictView, Reply, TargetSizeView};
 
 use crate::daemon::{BULK_DEADLINE, request, unexpected};
 
@@ -21,10 +21,11 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     outln!(
         "target/ apparent bytes: regular-file lengths per entry, including hardlinks; not allocated or reclaimable space; concurrent changes may affect results"
     );
-    outln!("checkout\tproject\tincarnation\tbytes\tstatus\tholder\ttarget\treason");
+    outln!("checkout\tproject\tincarnation\tbytes\tstatus\tholder\tprune\ttarget\treason");
     for clone in clones {
         outln!("{}", row(clone));
     }
+    outln!("{}", eligible_total(clones));
     if *truncated {
         outln!("incomplete report: further registered clones omitted by the row limit");
     }
@@ -52,14 +53,42 @@ fn row(clone: &CloneStorageView) -> String {
         } => (apparent_bytes.to_string(), "incomplete", reason.as_str()),
         TargetSizeView::Unavailable { reason } => ("-".to_owned(), "unavailable", reason.as_str()),
     };
+    let (prune, reason) = match &clone.prune {
+        Some(PruneVerdictView::Eligible {
+            confirmation_required: true,
+        }) => ("eligible", reason),
+        Some(PruneVerdictView::Eligible { .. }) => ("eligible-auto", reason),
+        Some(PruneVerdictView::Kept { reason }) => ("kept", reason.as_str()),
+        None => ("-", "the daemon reported no prune verdict"),
+    };
     format!(
-        "{}\t{}\t{}\t{bytes}\t{status}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{bytes}\t{status}\t{}\t{prune}\t{}\t{}",
         clone.checkout,
         cell(&clone.project),
         clone.incarnation,
         cell(clone.holder.as_deref().unwrap_or("-")),
         cell(&clone.target),
         cell(reason)
+    )
+}
+
+/// Only complete measurements count: a partial size is not what prune would free.
+fn eligible_total(clones: &[CloneStorageView]) -> String {
+    let eligible: Vec<u64> = clones
+        .iter()
+        .filter_map(|clone| match (&clone.prune, &clone.measurement) {
+            (
+                Some(PruneVerdictView::Eligible { .. }),
+                TargetSizeView::Complete { apparent_bytes },
+            ) => Some(*apparent_bytes),
+            _ => None,
+        })
+        .collect();
+    format!(
+        "eligible for prune: {} of {} clones, {} apparent bytes",
+        eligible.len(),
+        clones.len(),
+        eligible.iter().sum::<u64>()
     )
 }
 
@@ -198,10 +227,13 @@ mod tests {
             measurement: TargetSizeView::Unavailable {
                 reason: "permission denied".to_owned(),
             },
+            prune: Some(PruneVerdictView::Kept {
+                reason: "permission denied".to_owned(),
+            }),
         };
         assert_eq!(
             row(&clone),
-            "2\tapp\t1\t-\tunavailable\tlive\\t\\u{1b}\\n\t/clone/target\tpermission denied"
+            "2\tapp\t1\t-\tunavailable\tlive\\t\\u{1b}\\n\tkept\t/clone/target\tpermission denied"
         );
     }
 }

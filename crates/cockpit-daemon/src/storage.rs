@@ -1,9 +1,11 @@
 //! Storage orchestration; projects owns cleanup state and filesystem rules.
 use crate::routes::{Route, WorkClass};
-use cockpit_projects::{CheckoutId, PruneEvidence, PrunePolicy, PruneStatus, TargetSize};
+use cockpit_projects::{
+    CheckoutId, CloneStorage, PruneEvidence, PrunePolicy, PruneStatus, PruneVerdict, TargetSize,
+};
 use cockpit_protocol::{
-    Command, ErrorCode, Outcome, ProtocolError, Reply, StoragePrunePlanView,
-    StoragePrunePreviewView, StoragePruneStatusView, TargetSizeView,
+    CloneStorageView, Command, ErrorCode, Outcome, ProtocolError, PruneVerdictView, Reply,
+    StoragePrunePlanView, StoragePrunePreviewView, StoragePruneStatusView, TargetSizeView,
 };
 use cockpit_turso::{Database, sql::Connection};
 use std::sync::Arc;
@@ -147,6 +149,7 @@ pub(crate) fn route(command: Command, context: Context) -> Route {
         class,
         job: Box::pin(async move {
             let answer = match command {
+                Command::StorageReport => report(&context).await,
                 Command::StoragePrunePreview { checkout, prepare } => {
                     preview(&context, checkout, prepare).await
                 }
@@ -363,6 +366,74 @@ async fn drive(context: &Context, operation: i64) -> Result<PruneStatus, Protoco
     }
 }
 
+/// Each clone's verdict uses the evidence and policy prune itself would use, applied to the
+/// report's measurement. Prune measures again with its own limits (mount boundaries, manifest
+/// size), so it can still refuse a clone the report called eligible.
+async fn report(context: &Context) -> Result<Reply, ProtocolError> {
+    let report = cockpit_projects::clone_storage(&context.database)
+        .await
+        .map_err(project)?;
+    let observed = {
+        let read = context.database.read().await.map_err(internal)?;
+        let mut observed = Vec::with_capacity(report.clones.len());
+        for clone in &report.clones {
+            observed.push(evidence(&read, clone.checkout.id).await);
+        }
+        observed
+    };
+    let mut clones = Vec::with_capacity(report.clones.len());
+    for (clone, observed) in report.clones.into_iter().zip(observed) {
+        let undecided = |error: String| PruneVerdict::Kept {
+            reason: format!("could not decide: {error}"),
+        };
+        let prune = match observed {
+            Ok(observed) => cockpit_projects::prune_verdict(
+                &context.database,
+                &context.git,
+                &clone,
+                &context.policy,
+                &observed,
+            )
+            .await
+            .unwrap_or_else(|error| undecided(error.to_string())),
+            Err(error) => undecided(error.message),
+        };
+        clones.push(clone_view(clone, prune));
+    }
+    Ok(Reply::Storage {
+        clones,
+        truncated: report.truncated,
+    })
+}
+
+fn clone_view(clone: CloneStorage, prune: PruneVerdict) -> CloneStorageView {
+    CloneStorageView {
+        checkout: clone.checkout.id.0,
+        project: clone.checkout.project.to_string(),
+        incarnation: clone.checkout.incarnation,
+        target: clone
+            .checkout
+            .path
+            .join("target")
+            .to_string_lossy()
+            .into_owned(),
+        holder: clone
+            .checkout
+            .occupancy
+            .map(|occupancy| occupancy.holder.to_string()),
+        measurement: measurement(clone.measurement),
+        prune: Some(match prune {
+            PruneVerdict::Eligible {
+                confirmation_required,
+                ..
+            } => PruneVerdictView::Eligible {
+                confirmation_required,
+            },
+            PruneVerdict::Kept { reason } => PruneVerdictView::Kept { reason },
+        }),
+    }
+}
+
 async fn preview(context: &Context, checkout: i64, prepare: bool) -> Result<Reply, ProtocolError> {
     if checkout <= 0 {
         return Err(ProtocolError::new(
@@ -423,7 +494,7 @@ async fn preview(context: &Context, checkout: i64, prepare: bool) -> Result<Repl
     })
 }
 
-pub(crate) fn measurement(size: TargetSize) -> TargetSizeView {
+fn measurement(size: TargetSize) -> TargetSizeView {
     match size {
         TargetSize::Complete { apparent_bytes } => TargetSizeView::Complete { apparent_bytes },
         TargetSize::Missing => TargetSizeView::Missing,

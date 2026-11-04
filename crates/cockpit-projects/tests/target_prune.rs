@@ -561,3 +561,192 @@ async fn cancelled_cleanup_future_keeps_database_exclusive_until_blocking_step_r
         b"123"
     );
 }
+
+/// A clone with a fixture `target/` that Git ignores, so only the guard under test can refuse.
+#[cfg(target_os = "linux")]
+async fn clone_with_ignored_target(
+    database: &cockpit_turso::Database,
+    scratch: &Scratch,
+) -> cockpit_projects::Checkout {
+    let (project, _) = register(database, &scratch.repository("app")).await;
+    let clone = create_parallel_clone(
+        database,
+        &Git::from_path(),
+        project.name.as_str(),
+        "feature",
+    )
+    .await
+    .unwrap();
+    std::fs::create_dir(clone.path.join("target")).unwrap();
+    std::fs::write(clone.path.join("target/output"), b"keep").unwrap();
+    std::fs::write(clone.path.join(".git/info/exclude"), "/target/\n").unwrap();
+    clone
+}
+
+#[cfg(target_os = "linux")]
+fn ended_sessions() -> PruneEvidence {
+    PruneEvidence {
+        ended_sessions: Some("observed-fixture-termination".into()),
+        busy: None,
+    }
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn prune_keeps_a_clone_with_unpushed_commits_after_its_sessions_ended() {
+    let scratch = Scratch::new();
+    let database = scratch.open().await;
+    let clone = clone_with_ignored_target(&database, &scratch).await;
+    common::git(
+        &clone.path,
+        &["commit", "--quiet", "--allow-empty", "-m", "local only"],
+    );
+
+    let preview = preview_target_prune(
+        &database,
+        &Git::from_path(),
+        clone.id,
+        &PrunePolicy::default(),
+        &ended_sessions(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(preview.eligibility, None);
+    let reason = preview.kept_reason.unwrap();
+    assert!(reason.contains("unpushed commits"), "{reason}");
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn prune_step_refuses_when_a_commit_on_no_remote_appears_after_the_plan() {
+    use std::sync::Arc;
+    let scratch = Scratch::new();
+    let database = Arc::new(scratch.open().await);
+    let clone = clone_with_ignored_target(&database, &scratch).await;
+    let policy = PrunePolicy::default();
+    let evidence = ended_sessions();
+    let preview = preview_target_prune(&database, &Git::from_path(), clone.id, &policy, &evidence)
+        .await
+        .unwrap();
+    let write = database.write().await.unwrap();
+    let plan = prepare_target_prune(&write, database.epoch(), &preview, &evidence)
+        .await
+        .unwrap();
+    reserve_target_prune(
+        &write,
+        database.epoch(),
+        plan.operation,
+        plan.revision,
+        &preview,
+        &evidence,
+        false,
+    )
+    .await
+    .unwrap();
+    let step = cockpit_projects::begin_prune_step(
+        &write,
+        database.epoch(),
+        plan.operation,
+        &policy,
+        &evidence,
+    )
+    .await
+    .unwrap();
+    write.commit().await.unwrap();
+    common::git(
+        &clone.path,
+        &[
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "made after the plan",
+        ],
+    );
+
+    let receipt = step
+        .run(Arc::clone(&database), Git::from_path())
+        .await
+        .unwrap();
+    let write = database.write().await.unwrap();
+    let status = cockpit_projects::complete_prune_step(&write, database.epoch(), receipt)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(status.phase, "needs-owner");
+    assert!(
+        status
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("unpushed commits"),
+        "{status:?}"
+    );
+    assert_eq!(
+        std::fs::read(clone.path.join("target/output")).unwrap(),
+        b"keep"
+    );
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn prune_verdict_reports_an_eligible_clone_without_preparing_a_plan() {
+    let scratch = Scratch::new();
+    let database = scratch.open().await;
+    let clone = clone_with_ignored_target(&database, &scratch).await;
+    let report = cockpit_projects::clone_storage(&database).await.unwrap();
+
+    let verdict = cockpit_projects::prune_verdict(
+        &database,
+        &Git::from_path(),
+        &report.clones[0],
+        &PrunePolicy::default(),
+        &ended_sessions(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(
+            verdict,
+            cockpit_projects::PruneVerdict::Eligible {
+                confirmation_required: true,
+                ..
+            }
+        ),
+        "{verdict:?}"
+    );
+    let read = database.read().await.unwrap();
+    cockpit_projects::require_checkout_available(&read, clone.id)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn prune_verdict_keeps_a_clone_whose_target_is_absent() {
+    let scratch = Scratch::new();
+    let database = scratch.open().await;
+    let clone = clone_with_ignored_target(&database, &scratch).await;
+    std::fs::remove_dir_all(clone.path.join("target")).unwrap();
+    let report = cockpit_projects::clone_storage(&database).await.unwrap();
+
+    let verdict = cockpit_projects::prune_verdict(
+        &database,
+        &Git::from_path(),
+        &report.clones[0],
+        &PrunePolicy::default(),
+        &ended_sessions(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        verdict,
+        cockpit_projects::PruneVerdict::Kept {
+            reason: "target is already absent".to_owned()
+        }
+    );
+}

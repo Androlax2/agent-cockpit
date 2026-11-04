@@ -1,11 +1,11 @@
 //! Read-only manifest and local ancestry proof. No path-based recursive deletion.
 use super::{
-    PruneEvidence, PrunePolicy, PrunePreview,
+    PruneEvidence, PrunePolicy, PrunePreview, PruneVerdict,
     manifest::{self, Entry, Snapshot},
     mount,
 };
 use crate::store::StoredCheckout;
-use crate::{CheckoutKind, CheckoutState, Git, TargetSize};
+use crate::{Checkout, CheckoutKind, CheckoutState, Git, TargetSize};
 use rustix::fs::Dir;
 use std::ffi::{CString, OsStr};
 use std::os::fd::OwnedFd;
@@ -27,9 +27,7 @@ pub(super) fn preview(
         snapshot: None,
         policy,
     };
-    if matches!(stored.checkout.kind, CheckoutKind::Main)
-        || stored.checkout.state != CheckoutState::Live
-    {
+    if !is_candidate(&stored) {
         let reason = "only live registered clones are candidates; target was not measured";
         result.measurement = TargetSize::Unavailable {
             reason: reason.to_owned(),
@@ -56,61 +54,116 @@ pub(super) fn preview(
             return result;
         }
     }
-    let eligibility = (|| {
-        if stored.checkout.occupancy.is_some() {
-            return Err("checkout is occupied".to_owned());
-        }
-        if let Some(reason) = evidence.busy {
-            return Err(reason);
-        }
-        let output = git
-            .output(
-                &stored.checkout.path,
-                &[
-                    "ls-files".as_ref(),
-                    "--cached".as_ref(),
-                    "--others".as_ref(),
-                    "--exclude-standard".as_ref(),
-                    "-z".as_ref(),
-                    "--".as_ref(),
-                    "target".as_ref(),
-                ],
-            )
-            .map_err(|error| error.to_string())?;
-        if !output.status.success() || !output.stdout.is_empty() {
-            return Err(
-                "target contains tracked or nonignored user files, or Git could not verify it"
-                    .to_owned(),
-            );
-        }
-        if let Some(ended) = evidence.ended_sessions {
-            return Ok(format!("observed ended sessions: {ended}"));
-        }
-        let base = result
-            .policy
-            .base_ref
-            .as_deref()
-            .ok_or("no observed ended session or configured LOCAL ancestry proof")?;
-        local_ancestry(git, &stored, &main, base)
-    })();
-    match eligibility {
+    match eligibility(&stored, &main, git, &result.policy, evidence) {
         Ok(proof) => {
-            result.eligibility = Some(proof);
             let size = result
                 .snapshot
                 .as_ref()
                 .map_or(0, |snapshot| snapshot.bytes);
-            result.confirmation_required = !(result.policy.automatic
-                && result
-                    .policy
-                    .projects
-                    .iter()
-                    .any(|name| name == result.checkout.project.as_str())
-                && size <= result.policy.confirm_above_bytes);
+            result.eligibility = Some(proof);
+            result.confirmation_required =
+                confirmation_required(&result.policy, &result.checkout, size);
         }
         Err(reason) => result.kept_reason = Some(reason),
     }
     result
+}
+
+/// What [`preview`] would decide for a target the storage report already measured.
+pub(super) fn verdict(
+    stored: StoredCheckout,
+    main: StoredCheckout,
+    git: &Git,
+    policy: &PrunePolicy,
+    evidence: PruneEvidence,
+    measurement: &TargetSize,
+) -> PruneVerdict {
+    let kept = |reason: &str| PruneVerdict::Kept {
+        reason: reason.to_owned(),
+    };
+    if !is_candidate(&stored) {
+        return kept("only live registered clones are candidates");
+    }
+    let size = match measurement {
+        TargetSize::Complete { apparent_bytes } => *apparent_bytes,
+        TargetSize::Missing => return kept("target is already absent"),
+        TargetSize::Incomplete { reason, .. } | TargetSize::Unavailable { reason } => {
+            return kept(&format!("target measurement is not complete: {reason}"));
+        }
+    };
+    match eligibility(&stored, &main, git, policy, evidence) {
+        Ok(proof) => PruneVerdict::Eligible {
+            proof,
+            confirmation_required: confirmation_required(policy, &stored.checkout, size),
+        },
+        Err(reason) => PruneVerdict::Kept { reason },
+    }
+}
+
+fn is_candidate(stored: &StoredCheckout) -> bool {
+    !matches!(stored.checkout.kind, CheckoutKind::Main)
+        && stored.checkout.state == CheckoutState::Live
+}
+
+fn confirmation_required(policy: &PrunePolicy, checkout: &Checkout, size: u64) -> bool {
+    !(policy.automatic
+        && policy
+            .projects
+            .iter()
+            .any(|name| name == checkout.project.as_str())
+        && size <= policy.confirm_above_bytes)
+}
+
+fn eligibility(
+    stored: &StoredCheckout,
+    main: &StoredCheckout,
+    git: &Git,
+    policy: &PrunePolicy,
+    evidence: PruneEvidence,
+) -> Result<String, String> {
+    if stored.checkout.occupancy.is_some() {
+        return Err("checkout is occupied".to_owned());
+    }
+    if let Some(reason) = evidence.busy {
+        return Err(reason);
+    }
+    let output = git
+        .output(
+            &stored.checkout.path,
+            &[
+                "ls-files".as_ref(),
+                "--cached".as_ref(),
+                "--others".as_ref(),
+                "--exclude-standard".as_ref(),
+                "-z".as_ref(),
+                "--".as_ref(),
+                "target".as_ref(),
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() || !output.stdout.is_empty() {
+        return Err(
+            "target contains tracked or nonignored user files, or Git could not verify it"
+                .to_owned(),
+        );
+    }
+    // Owner rule (#406): nothing of a clone whose commits are on no remote is pruned.
+    if crate::sweep::has_unpushed_commits(git, &stored.checkout.path)
+        .map_err(|error| error.to_string())?
+    {
+        return Err(
+            "the clone has unpushed commits (on no remote-tracking branch; fetch if they were pushed)"
+                .to_owned(),
+        );
+    }
+    if let Some(ended) = evidence.ended_sessions {
+        return Ok(format!("observed ended sessions: {ended}"));
+    }
+    let base = policy
+        .base_ref
+        .as_deref()
+        .ok_or("no observed ended session or configured LOCAL ancestry proof")?;
+    local_ancestry(git, stored, main, base)
 }
 
 pub(super) fn local_ancestry(

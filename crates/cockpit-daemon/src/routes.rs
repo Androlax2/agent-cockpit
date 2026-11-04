@@ -270,7 +270,8 @@ impl Handler for Routes {
                 UnblockedBy::Agent,
             )),
             (
-                command @ (Command::StoragePrunePreview { .. }
+                command @ (Command::StorageReport
+                | Command::StoragePrunePreview { .. }
                 | Command::StoragePruneApply { .. }
                 | Command::StoragePruneAbandon { .. }
                 | Command::StoragePruneStatus { .. }),
@@ -281,7 +282,6 @@ impl Handler for Routes {
             },
             (
                 command @ (Command::ProjectAdd { .. }
-                | Command::StorageReport
                 | Command::ProjectList
                 | Command::ProjectRemove { .. }
                 | Command::CheckoutList { .. }
