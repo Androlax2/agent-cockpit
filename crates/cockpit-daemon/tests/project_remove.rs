@@ -104,6 +104,8 @@ async fn a_live_sessions_own_clone_is_not_offered_for_release() {
                 agent: Some("fake".to_owned()),
                 prompt: None,
                 clone: Some("feature".to_owned()),
+                model: None,
+                effort: None,
             },
             GENEROUS,
         )
