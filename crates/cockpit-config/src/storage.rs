@@ -18,6 +18,8 @@ pub struct StorageSettings {
     pub output_prune_automatic: Sourced<bool>,
     pub output_prune_projects: Sourced<Vec<String>>,
     pub output_prune_interval_minutes: Sourced<u32>,
+    /// Sweep a clone when the session that occupied it ends (#767); on by default.
+    pub sweep_on_session_end: Sourced<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +36,7 @@ pub(super) struct StorageTable {
     output_prune_automatic: Option<Spanned<bool>>,
     output_prune_projects: Option<Spanned<Vec<String>>>,
     output_prune_interval_minutes: Option<Spanned<u32>>,
+    sweep_on_session_end: Option<Spanned<bool>>,
 }
 
 pub(super) fn settings(layers: &[Layer]) -> Result<StorageSettings, ConfigError> {
@@ -49,6 +52,7 @@ pub(super) fn settings(layers: &[Layer]) -> Result<StorageSettings, ConfigError>
         output_prune_automatic: Sourced::new(false, Source::ProductDefault),
         output_prune_projects: Sourced::new(Vec::new(), Source::ProductDefault),
         output_prune_interval_minutes: Sourced::new(60, Source::ProductDefault),
+        sweep_on_session_end: Sourced::new(true, Source::ProductDefault),
     };
     for layer in layers {
         let Some(table) = &layer.settings.storage else {
@@ -94,6 +98,10 @@ pub(super) fn settings(layers: &[Layer]) -> Result<StorageSettings, ConfigError>
         }
         if let Some(value) = &table.output_prune_interval_minutes {
             result.output_prune_interval_minutes =
+                Sourced::new(*value.get_ref(), layer.source_at(value.span()));
+        }
+        if let Some(value) = &table.sweep_on_session_end {
+            result.sweep_on_session_end =
                 Sourced::new(*value.get_ref(), layer.source_at(value.span()));
         }
     }

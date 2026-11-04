@@ -67,6 +67,7 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             CREATE UNIQUE INDEX projects_one_name ON projects (name) WHERE removed_at IS NULL;
             CREATE UNIQUE INDEX projects_one_root ON projects (root) WHERE removed_at IS NULL;",
         },
+        crate::end_sweeps::MIGRATION,
     ],
 };
 

@@ -4,7 +4,8 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 use cockpit_protocol::{
-    CloneStorageView, Command, OutputRetentionView, PruneVerdictView, Reply, TargetSizeView,
+    CloneStorageView, Command, EndSweepView, OutputRetentionView, PruneVerdictView, Reply,
+    TargetSizeView,
 };
 
 use crate::daemon::{BULK_DEADLINE, request, unexpected};
@@ -23,7 +24,12 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
         Ok(reply) => reply,
         Err(code) => return Ok(code),
     };
-    let Reply::Storage { clones, truncated } = &reply else {
+    let Reply::Storage {
+        clones,
+        truncated,
+        end_sweeps,
+    } = &reply
+    else {
         return Ok(unexpected(&reply));
     };
     outln!(
@@ -36,6 +42,13 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     outln!("{}", eligible_total(clones));
     if *truncated {
         outln!("incomplete report: further registered clones omitted by the row limit");
+    }
+    if !end_sweeps.is_empty() {
+        outln!("swept at session end, newest first:");
+        outln!("swept at\tcheckout\tproject\tsession\tclone\tpath\treason\ttarget");
+        for sweep in end_sweeps {
+            outln!("{}", end_sweep_row(sweep));
+        }
     }
     let incomplete = *truncated
         || clones.iter().any(|clone| {
@@ -77,6 +90,30 @@ fn row(clone: &CloneStorageView) -> String {
         cell(clone.holder.as_deref().unwrap_or("-")),
         cell(&clone.target),
         cell(reason)
+    )
+}
+
+fn end_sweep_row(sweep: &EndSweepView) -> String {
+    let swept_at = chrono::DateTime::from_timestamp(sweep.swept_at, 0).map_or_else(
+        || sweep.swept_at.to_string(),
+        |at| {
+            at.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        },
+    );
+    let (clone, reason) = match &sweep.kept {
+        Some(reason) => ("kept", reason.as_str()),
+        None => ("removed", "-"),
+    };
+    format!(
+        "{swept_at}\t{}\t{}\t{}\t{clone}\t{}\t{}\t{}",
+        sweep.checkout,
+        cell(&sweep.project),
+        cell(&sweep.session),
+        cell(&sweep.path),
+        cell(reason),
+        cell(sweep.target.as_deref().unwrap_or("-"))
     )
 }
 

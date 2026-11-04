@@ -126,7 +126,8 @@ async fn storage_uses_bulk_admission_and_leaves_control_capacity() {
             .unwrap(),
         Reply::Storage {
             clones: Vec::new(),
-            truncated: false
+            truncated: false,
+            end_sweeps: Vec::new(),
         }
     );
     drop(daemon);

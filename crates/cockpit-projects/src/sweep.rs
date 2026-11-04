@@ -6,9 +6,11 @@ use std::path::Path;
 
 use cockpit_turso::Database;
 
-use crate::git::arg;
+use crate::git::{arg, git_failure};
 use crate::store::{self, GIT_DIR_MARKER_PREFIX, StoredCheckout};
-use crate::{Checkout, CheckoutId, CheckoutState, Error, Git, Holder, blocking, clones_dir};
+use crate::{
+    Checkout, CheckoutId, CheckoutKind, CheckoutState, Error, Git, Holder, blocking, clones_dir,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SweepReport {
@@ -25,7 +27,8 @@ pub enum Kept {
     },
     /// `git status` lists changes not committed, or a stash holds some.
     UncommittedChanges,
-    /// A local branch or HEAD has commits no remote-tracking branch has.
+    /// A local branch or HEAD has commits no remote-tracking branch has, and their changes are
+    /// not in `origin/HEAD` either (not squash-merged).
     UnpushedCommits,
     /// The working copy is not the recorded incarnation; the owner decides what it is.
     Replaced {
@@ -49,31 +52,57 @@ pub async fn sweep(database: &Database, git: &Git, dry_run: bool) -> Result<Swee
     };
     let mut report = SweepReport::default();
     for stored in clones {
-        let available = {
-            let read = database.read().await?;
-            crate::require_checkout_available(&read, stored.checkout.id).await
-        };
-        match available {
-            Err(Error::Refused { reason }) => {
-                report
-                    .kept
-                    .push((stored.checkout, Kept::Unreadable { reason }));
-                continue;
-            }
-            Err(error) => return Err(error),
-            Ok(()) => {}
-        }
-        let kept = if dry_run {
-            inspect(git, &stored).await?
-        } else {
-            sweep_one(database, git, &stored).await?
-        };
+        let kept = sweep_stored(database, git, &stored, dry_run).await?;
         match kept {
             None => report.removed.push(stored.checkout),
             Some(kept) => report.kept.push((stored.checkout, kept)),
         }
     }
     Ok(report)
+}
+
+/// [`sweep`] of the one clone `checkout`, as a session's end asks for it (#767): the clone as
+/// it was before the sweep and why it was kept, `None` when it was deleted. A main checkout is
+/// refused.
+pub async fn sweep_clone(
+    database: &Database,
+    git: &Git,
+    checkout: CheckoutId,
+) -> Result<(Checkout, Option<Kept>), Error> {
+    let stored = {
+        let read = database.read().await?;
+        store::stored_checkout(&read, checkout).await?
+    };
+    if stored.checkout.kind == CheckoutKind::Main {
+        return Err(Error::Refused {
+            reason: format!("checkout {checkout} is a project's main checkout, not a clone"),
+        });
+    }
+    let kept = sweep_stored(database, git, &stored, false).await?;
+    Ok((stored.checkout, kept))
+}
+
+/// Deletes one clone, or with `dry_run` says whether it would; `Some` says why it was kept.
+async fn sweep_stored(
+    database: &Database,
+    git: &Git,
+    stored: &StoredCheckout,
+    dry_run: bool,
+) -> Result<Option<Kept>, Error> {
+    let available = {
+        let read = database.read().await?;
+        crate::require_checkout_available(&read, stored.checkout.id).await
+    };
+    match available {
+        Err(Error::Refused { reason }) => return Ok(Some(Kept::Unreadable { reason })),
+        Err(error) => return Err(error),
+        Ok(()) => {}
+    }
+    if dry_run {
+        inspect(git, stored).await
+    } else {
+        sweep_one(database, git, stored).await
+    }
 }
 
 /// What the sweep knows about a clone before asking Git.
@@ -267,8 +296,9 @@ fn leftovers_now(git: &Git, clone: &Path) -> Option<Kept> {
     }
 }
 
-/// Whether HEAD or a local branch has a commit no remote-tracking branch has. HEAD too:
-/// commits made on a detached HEAD are on no branch.
+/// Whether HEAD or a local branch has a commit no remote-tracking branch has, unless the
+/// changes of each such tip are already in the remote's default branch. HEAD too: commits made
+/// on a detached HEAD are on no branch.
 pub(crate) fn has_unpushed_commits(git: &Git, clone: &Path) -> Result<bool, Error> {
     let commits = git.run(
         clone,
@@ -282,7 +312,116 @@ pub(crate) fn has_unpushed_commits(git: &Git, clone: &Path) -> Result<bool, Erro
             arg("--remotes"),
         ],
     )?;
-    Ok(!commits.trim().is_empty())
+    if commits.trim().is_empty() {
+        return Ok(false);
+    }
+    Ok(!is_merged_into_default_branch(git, clone)?)
+}
+
+/// Whether every local branch and HEAD holding a commit no remote-tracking branch has changes
+/// nothing `origin/HEAD` lacks: merging it into `origin/HEAD` gives `origin/HEAD`'s own tree.
+/// That is a pull request squash-merged (or rebased) after which its remote branch was deleted
+/// and pruned by a fetch (#767). Only the commits' messages and history are lost, never a line
+/// of content. Without `origin/HEAD`, once that branch changed the same lines again, or when a
+/// tip changes nothing at all, the answer is `false`: kept on doubt. `merge-tree` writes the
+/// objects of the merge it tried into the clone, unreachable, as any merge would.
+fn is_merged_into_default_branch(git: &Git, clone: &Path) -> Result<bool, Error> {
+    let default = git.output(
+        clone,
+        &[
+            arg("rev-parse"),
+            arg("--verify"),
+            arg("--quiet"),
+            arg("refs/remotes/origin/HEAD^{commit}"),
+        ],
+    )?;
+    if !default.status.success() {
+        return Ok(false);
+    }
+    let default = String::from_utf8_lossy(&default.stdout).trim().to_owned();
+    let default_tree = git.run(
+        clone,
+        &[
+            arg("rev-parse"),
+            arg("--verify"),
+            arg(&format!("{default}^{{tree}}")),
+        ],
+    )?;
+    let branch_tips = git.run(
+        clone,
+        &[
+            arg("for-each-ref"),
+            arg("--format=%(objectname)"),
+            arg("refs/heads"),
+        ],
+    )?;
+    let head = git.run(clone, &[arg("rev-parse"), arg("--verify"), arg("HEAD")])?;
+    let mut tips: Vec<&str> = branch_tips.lines().chain(head.lines()).collect();
+    tips.sort_unstable();
+    tips.dedup();
+    for tip in tips {
+        let unpushed = git.run(
+            clone,
+            &[
+                arg("rev-list"),
+                arg("-1"),
+                arg(tip),
+                arg("--not"),
+                arg("--remotes"),
+            ],
+        )?;
+        if unpushed.trim().is_empty() {
+            continue;
+        }
+        if !changes_anything(git, clone, &default, tip)? {
+            return Ok(false);
+        }
+        let arguments = [
+            arg("merge-tree"),
+            arg("--write-tree"),
+            arg("--no-messages"),
+            arg(&default),
+            arg(tip),
+        ];
+        let merged = git.output(clone, &arguments)?;
+        match merged.status.code() {
+            Some(0) => {}
+            // A conflict: the branch changes lines the default branch changed otherwise.
+            Some(1) => return Ok(false),
+            _ => return Err(git_failure(&arguments, &merged)),
+        }
+        let merged_tree = String::from_utf8_lossy(&merged.stdout);
+        if merged_tree.lines().next() != Some(default_tree.trim()) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether `tip` changes any content since its merge base with `default`. An empty commit, or
+/// commits that undo each other, merge into anything without a change, yet nothing was merged:
+/// they stay unpushed commits.
+fn changes_anything(git: &Git, clone: &Path, default: &str, tip: &str) -> Result<bool, Error> {
+    let arguments = [arg("merge-base"), arg(default), arg(tip)];
+    let base = git.output(clone, &arguments)?;
+    match base.status.code() {
+        Some(0) => {}
+        // No common history: nothing to compare, so not a merge either.
+        Some(1) => return Ok(false),
+        _ => return Err(git_failure(&arguments, &base)),
+    }
+    let base = String::from_utf8_lossy(&base.stdout).trim().to_owned();
+    let tree = |commit: &str| {
+        git.run(
+            clone,
+            &[
+                arg("rev-parse"),
+                arg("--verify"),
+                arg(&format!("{commit}^{{tree}}")),
+            ],
+        )
+    };
+    Ok(tree(&base)? != tree(tip)?)
 }
 
 /// Deletes `clone` only when it is a real directory directly inside its project's clones

@@ -5,6 +5,7 @@
 extern crate self as cockpit_projects;
 
 mod clones;
+mod end_sweeps;
 mod error;
 mod git;
 mod model;
@@ -20,6 +21,7 @@ mod target_prune;
 use std::path::{Path, PathBuf};
 
 pub use clones::{create_parallel_clone, create_review_clone};
+pub use end_sweeps::{EndSweep, end_sweep_recorded, end_sweeps, record_end_sweep};
 pub use error::Error;
 pub use git::{Git, SAFE_CONFIG};
 pub use model::{
@@ -35,7 +37,7 @@ pub use store::{
     MIGRATIONS, checkouts, claim, project_checkouts, project_named, project_named_or_numbered,
     projects, release,
 };
-pub use sweep::{Kept, SweepReport, sweep};
+pub use sweep::{Kept, SweepReport, sweep, sweep_clone};
 
 /// Where a project's clones live: `<parent of the root>/.parallel/<project>/`, beside the
 /// project, as the current `cockpit` script lays out `~/IdeaProjects/.parallel`.

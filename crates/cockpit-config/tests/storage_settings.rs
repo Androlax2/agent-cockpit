@@ -21,6 +21,7 @@ fn storage_defaults_are_inert_and_report_each_threshold() {
         "storage.target_prune_confirm_above_mib = 1024  # product default",
         "storage.target_prune_interval_minutes = 60  # product default",
         "storage.target_prune_base_ref = <unset>  # product default",
+        "storage.sweep_on_session_end = true  # product default",
     ] {
         assert!(shown.contains(line), "missing {line}: {shown}");
     }
@@ -122,4 +123,16 @@ fn output_retention_invalid_bounds_are_rejected() {
             "{setting}"
         );
     }
+}
+#[test]
+fn storage_owner_turns_the_session_end_sweep_off() {
+    let home = tempfile::tempdir().unwrap();
+    owner(home.path(), "[storage]\nsweep_on_session_end = false\n");
+    let config = cockpit_config::load(&environment(home.path()), None, &[]).unwrap();
+    assert!(!config.storage.sweep_on_session_end.value);
+    let shown = cockpit_config::render(&config);
+    assert!(
+        shown.contains("storage.sweep_on_session_end = false  # user config"),
+        "{shown}"
+    );
 }

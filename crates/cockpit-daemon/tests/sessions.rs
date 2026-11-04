@@ -1838,6 +1838,8 @@ fn a_clean_owner_configuration_keeps_the_sessions_product_defaults() {
 }
 
 #[cfg(target_os = "linux")]
+#[path = "sessions/end_sweep.rs"]
+mod end_sweep;
 #[path = "sessions/target_prune.rs"]
 mod target_prune;
 

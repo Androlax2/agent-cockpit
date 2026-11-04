@@ -4,8 +4,8 @@ use cockpit_projects::{
     CheckoutId, CloneStorage, PruneEvidence, PrunePolicy, PruneStatus, PruneVerdict, TargetSize,
 };
 use cockpit_protocol::{
-    CloneStorageView, Command, ErrorCode, Outcome, ProtocolError, PruneVerdictView, Reply,
-    StoragePrunePlanView, StoragePrunePreviewView, StoragePruneStatusView, TargetSizeView,
+    CloneStorageView, Command, EndSweepView, ErrorCode, Outcome, ProtocolError, PruneVerdictView,
+    Reply, StoragePrunePlanView, StoragePrunePreviewView, StoragePruneStatusView, TargetSizeView,
 };
 use cockpit_turso::{Database, sql::Connection};
 use std::sync::Arc;
@@ -16,6 +16,8 @@ pub(crate) struct Context {
     pub(crate) database: Arc<Database>,
     pub(crate) git: cockpit_projects::Git,
     pub(crate) policy: Arc<PrunePolicy>,
+    /// `storage.sweep_on_session_end` (#767).
+    pub(crate) sweeps_on_session_end: bool,
     pub(crate) stopping: Arc<AtomicBool>,
     pub(crate) supervisor: cockpit_processes::Supervisor,
     pub(crate) outputs: Arc<crate::output_retention::OutputPolicy>,
@@ -408,10 +410,33 @@ async fn report(context: &Context) -> Result<Reply, ProtocolError> {
         };
         clones.push(clone_view(clone, prune));
     }
+    let end_sweeps = {
+        let read = context.database.read().await.map_err(internal)?;
+        cockpit_projects::end_sweeps(&read, END_SWEEPS_SHOWN)
+            .await
+            .map_err(project)?
+    };
     Ok(Reply::Storage {
         clones,
         truncated: report.truncated,
+        end_sweeps: end_sweeps.into_iter().map(end_sweep_view).collect(),
     })
+}
+
+/// How many of the latest session-end sweeps the report lists.
+const END_SWEEPS_SHOWN: i64 = 20;
+
+fn end_sweep_view(sweep: cockpit_projects::EndSweep) -> EndSweepView {
+    EndSweepView {
+        checkout: sweep.checkout.0,
+        incarnation: sweep.incarnation,
+        session: sweep.session,
+        project: sweep.project,
+        path: sweep.path.to_string_lossy().into_owned(),
+        kept: sweep.kept,
+        target: sweep.target,
+        swept_at: sweep.swept_at,
+    }
 }
 
 fn clone_view(clone: CloneStorage, prune: PruneVerdict) -> CloneStorageView {
@@ -621,7 +646,7 @@ async fn automatic_pass(
         let checkout = candidate.id;
         let work = Box::pin(async move {
             match automatic_one(&worker, checkout).await {
-                Ok(()) => Outcome::Ok(Reply::Pong),
+                Ok(_) => Outcome::Ok(Reply::Pong),
                 Err(error) => Outcome::Error(error),
             }
         });
@@ -643,7 +668,12 @@ async fn automatic_pass(
     Ok(())
 }
 
-async fn automatic_one(context: &Context, checkout: CheckoutId) -> Result<(), ProtocolError> {
+/// Prunes `checkout`'s `target/` when the owner's policy allows it without a confirmation, and
+/// says what became of it.
+pub(crate) async fn automatic_one(
+    context: &Context,
+    checkout: CheckoutId,
+) -> Result<String, ProtocolError> {
     if context.stopping.load(Ordering::Acquire) {
         return Err(ProtocolError::new(ErrorCode::Busy, "daemon is stopping"));
     }
@@ -665,12 +695,15 @@ async fn automatic_one(context: &Context, checkout: CheckoutId) -> Result<(), Pr
     .map_err(project)?;
     if let Some(reason) = &preview.kept_reason {
         tracing::info!(checkout = checkout.0, %reason, "automatic target pruning kept the target");
-        return Ok(());
+        return Ok(format!("kept: {reason}"));
     }
     if preview.confirmation_required {
         tracing::info!(checkout = checkout.0, size = ?preview.measurement,
             "target pruning needs exact-plan owner confirmation: torlek storage prune CHECKOUT");
-        return Ok(());
+        return Ok(format!(
+            "kept: owner policy needs a confirmation: torlek storage prune {}",
+            checkout.0
+        ));
     }
     let plan = {
         let write = context.database.write().await.map_err(internal)?;
@@ -692,6 +725,10 @@ async fn automatic_one(context: &Context, checkout: CheckoutId) -> Result<(), Pr
         apparent_bytes = plan.apparent_bytes,
         "recorded automatic target-prune size before consuming owner policy"
     );
-    apply(context, plan.operation, plan.revision, &plan.epoch, true).await?;
-    Ok(())
+    let status = apply(context, plan.operation, plan.revision, &plan.epoch, true).await?;
+    Ok(match (status.phase.as_str(), &status.reason) {
+        ("complete", _) => format!("pruned: {} apparent bytes", status.removed_apparent_bytes),
+        (phase, Some(reason)) => format!("kept: prune {} is {phase}: {reason}", status.operation),
+        (phase, None) => format!("kept: prune {} is {phase}", status.operation),
+    })
 }

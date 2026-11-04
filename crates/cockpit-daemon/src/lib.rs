@@ -7,6 +7,7 @@ mod bug_report_feed;
 mod bug_reports;
 mod coordination;
 mod coordinator_workers;
+mod end_sweep;
 mod error;
 mod feed;
 mod instance;
@@ -175,6 +176,7 @@ pub struct Daemon {
     detecting: tokio::task::JoinHandle<()>,
     pruning: tokio::task::JoinHandle<()>,
     retiring_outputs: tokio::task::JoinHandle<()>,
+    sweeping_ended: tokio::task::JoinHandle<()>,
     prune_stop: Arc<std::sync::atomic::AtomicBool>,
     _database: Arc<cockpit_turso::Database>,
     _instance: Instance,
@@ -265,6 +267,7 @@ impl Instance {
             database: Arc::clone(&database),
             git: wiring.git.clone(),
             policy: Arc::new(storage::prune_policy(&storage_settings)),
+            sweeps_on_session_end: storage_settings.sweep_on_session_end.value,
             stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             supervisor: processes.clone(),
             outputs: Arc::new(output_retention::OutputPolicy::from_settings(
@@ -520,12 +523,25 @@ impl Instance {
                 )
             },
         ));
+        let end_sweep_storage = storage.clone();
         let storage_shared = Arc::clone(&shared);
         let prune_stop = Arc::clone(&storage.stopping);
         let pruning = tokio::spawn(supervisor::supervise(
             "target-pruning",
             faults.clone(),
             move || storage::maintain_forever(storage.clone(), Arc::clone(&storage_shared)),
+        ));
+        let end_sweep_shared = Arc::clone(&shared);
+        let sweeping_ended = tokio::spawn(supervisor::supervise(
+            "clone-end-sweep",
+            faults.clone(),
+            move || {
+                end_sweep::sweep_forever(
+                    end_sweep_storage.clone(),
+                    Arc::clone(&end_sweep_shared),
+                    wiring.session_tick,
+                )
+            },
         ));
         let accepting_agents = accept(&agent_listener, &shared, server::Socket::Agent, &faults);
         tracing::info!(
@@ -548,6 +564,7 @@ impl Instance {
             detecting,
             pruning,
             retiring_outputs,
+            sweeping_ended,
             prune_stop,
             _database: database,
             _instance: self,
@@ -673,6 +690,7 @@ impl Drop for Daemon {
         self.detecting.abort();
         self.pruning.abort();
         self.retiring_outputs.abort();
+        self.sweeping_ended.abort();
         bug_reports::mark_stopped(&self._instance.options.state_dir);
     }
 }

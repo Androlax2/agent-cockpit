@@ -63,7 +63,7 @@ pub use sessions::{
     SandboxRuleView, SessionFailure, SessionStateView, SessionView, StopTargetView,
 };
 pub use storage::{
-    CloneStorageView, OutputRetentionView, PruneVerdictView, StoragePrunePlanView,
+    CloneStorageView, EndSweepView, OutputRetentionView, PruneVerdictView, StoragePrunePlanView,
     StoragePrunePreviewView, StoragePruneStatusView, TargetSizeView,
 };
 pub use tasks::{

@@ -377,13 +377,15 @@ fn a_dry_run_sweep_deletes_nothing() {
     );
 }
 
+const UNPUSHED: &str = "unpushed commits (on no remote branch, and not merged into origin/HEAD)";
+
 #[test]
 fn the_sweep_keeps_a_clone_that_holds_work_or_a_holder_naming_the_reason() {
     for (case, expected_reason) in [
         ("occupied", "occupied by session-a"),
         ("uncommitted", "uncommitted changes"),
-        ("unpushed", "unpushed commits"),
-        ("committed on a detached head", "unpushed commits"),
+        ("unpushed", UNPUSHED),
+        ("committed on a detached head", UNPUSHED),
         ("stashed", "uncommitted changes"),
     ] {
         let home = TestHome::new();
