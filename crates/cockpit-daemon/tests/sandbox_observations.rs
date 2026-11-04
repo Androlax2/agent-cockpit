@@ -62,6 +62,9 @@ async fn shown(home: &Home, session: &str) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn owner_observations_are_persistent_idempotent_and_bound_to_one_launch() {
+    if real_daemon::skip_without_pinned_engines() {
+        return;
+    }
     let home = Home::new();
     let daemon = home.start();
     let client = home.connect().await;
@@ -128,6 +131,9 @@ async fn owner_observations_are_persistent_idempotent_and_bound_to_one_launch() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn malformed_or_oversized_observations_never_change_launch_evidence() {
+    if real_daemon::skip_without_pinned_engines() {
+        return;
+    }
     let home = Home::new();
     let _daemon = home.start();
     let client = home.connect().await;
@@ -187,6 +193,9 @@ async fn malformed_or_oversized_observations_never_change_launch_evidence() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_agent_socket_cannot_record_owner_observations() {
+    if real_daemon::skip_without_pinned_engines() {
+        return;
+    }
     let home = Home::new();
     let _daemon = home.start();
     let agent = Connection::open(&home.agent_socket_path(), GENEROUS)

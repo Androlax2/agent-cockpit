@@ -41,6 +41,9 @@ fn text(bytes: &[u8]) -> String {
 #[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_macos_engine_without_public_ca_isolation_refuses_doctor_and_launch() {
+    if real_daemon::skip_without_pinned_engines() {
+        return;
+    }
     let home = Home::new();
     let wall = home.path().join("engine-fixtures/greywall");
     let script = std::fs::read_to_string(&wall).unwrap();
