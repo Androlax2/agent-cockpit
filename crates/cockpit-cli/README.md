@@ -41,7 +41,7 @@ the capability crates whose verbs must work without the daemon, listed in
 | `torlek session show ID` (in the manager's viewer, waking it when asleep; prints the session, and for an agent that exited by itself its exit status and last lines, #629; an ended or failed session is only described, with the command that resumes it, #630) | no | the daemon's manager session |
 | `torlek provider list` (the names `--agent` takes, whether each resumes and reports `events`) | no | the daemon's wiring |
 | `torlek tui` (opens the manager session with the `torlek-tui` installed beside `torlek`, then attaches to it) | no | the daemon's manager session |
-| `torlek todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...`, `list [--project P] [--all]`, `show ID`, `start ID`, `done ID [--summary TEXT]`, `delete ID` (agent socket in a launched session, else the owner's) | no | `cockpit-tasks` |
+| `torlek todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...`, `list [--project P] [--all]`, `show ID`, `start ID`, `done ID [--summary TEXT]`, `delete ID`, `edit ID [--revision R] [--title T] [--notes TEXT]` (agent socket in a launched session, else the owner's; a session edits only the title and notes of what it filed and nobody started, audited, #714) | no | `cockpit-tasks` |
 | `torlek todo propose TITLE --why TEXT [--project P]`, `blocked TITLE --why TEXT` (agent socket) | no | `cockpit-tasks` |
 | `torlek workflow presets`, `list [--project P] [--all]`, `show ID`, `packet ID`, `complete ID --changed T --checked T --outcome T [--needs-human T] [--evidence REF]... [--waive REQUIREMENT]...`, `release ID [handoff flags]`, `block ID ACTION --detail TEXT`, `unblock ID` (agent socket in a launched session, else the owner's) | no | `cockpit-workflows` |
 | `torlek workflow begin ID`, `checkpoint ID NOTE` (agent socket); `start ITEM [--preset NAME]`, `cancel ID` (the owner's) | no | `cockpit-workflows` |
@@ -49,7 +49,7 @@ the capability crates whose verbs must work without the daemon, listed in
 | `torlek queue explain [ITEM]` (why each open item waits), `dispatch` (a scheduling pass now) | no | `cockpit-scheduling` |
 | `torlek --skill` (the whole agent manual in one read), `torlek docs [TOPIC]` (the topics, or one), `torlek brief [--measure]` (a launched session's launch brief; `--measure` adds the context budget, agent socket) | no | `cockpit-agent-context`, served by the daemon |
 | `torlek mcp` (an MCP server on standard input and output: the topics as resources, the `torlek_docs` and `torlek_brief` tools) | no | `cockpit-agent-context`, served by the daemon |
-| `torlek todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]`, `priority ID LEVEL`, `queue`/`unqueue`/`approve`/`decline`/`reopen ID`, `after`/`unwait ID ON...`, `image add ID FILE`, `image get ID NUMBER FILE`, `draft save (ID \| --new PROJECT)`, `drafts`, `draft discard` | no | `cockpit-tasks` |
+| `torlek todo edit ID --kind KIND`, `priority ID LEVEL`, `queue`/`unqueue`/`approve`/`decline`/`reopen ID`, `after`/`unwait ID ON...`, `image add ID FILE`, `image get ID NUMBER FILE`, `draft save (ID \| --new PROJECT)`, `drafts`, `draft discard` | no | `cockpit-tasks` |
 
 `torlek todo` (and `docs`, `brief`, `mcp`, `--skill`) picks its socket from `TORLEK_LAUNCH_TOKEN`: a launched session's verbs go to
 the agent socket, where the daemon identifies it; without the token they are the owner's.

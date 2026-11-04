@@ -54,9 +54,10 @@ Item ids are never reused: a deleted item's id names nothing afterwards.
 The owner does everything. A session needs `change-state` over itself (granted at launch,
 `docs/decisions/2026-10-31-31-self-state-grant.md`); with it, it sees its own project's list
 and what it filed, files (`add`, `propose`, `report_blocker`), starts its project's items,
-finishes the one it is doing and deletes what it filed while it is `proposed` or `todo`.
-Approving, declining, editing, priorities, the queue, waits, images and drafts are the
-owner's.
+finishes the one it is doing, and edits the title and notes of what it filed or deletes it
+while it is `proposed` or `todo` (#714); each such edit is audited under that grant with the
+old and new values (`authorization_audit`, action `edited`). Approving, declining, an item's
+kind, priorities, the queue, waits, images and drafts are the owner's.
 
 ## Dependency edges
 

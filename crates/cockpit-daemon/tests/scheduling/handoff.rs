@@ -95,6 +95,7 @@ async fn stale_intent_state_and_session_launch_refuse_without_placement() {
     request(
         &client,
         Command::TaskEdit {
+            launch_token: None,
             item: id,
             intent_revision: Some(before.intent_revision),
             title: Some("Changed".into()),

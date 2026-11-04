@@ -131,6 +131,33 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             CREATE INDEX authorization_audit_by_target
                 ON authorization_audit (target, action, id);",
         },
+        // #714: a session's edit of a task item it filed is audited under its `change-state`
+        // grant. The same rebuild as versions 3 and 5; rows are copied unchanged.
+        Migration {
+            version: 6,
+            sql: "CREATE TABLE authorization_audit_with_edits (
+                id INTEGER PRIMARY KEY,
+                actor TEXT NOT NULL CHECK (actor <> ''),
+                permission TEXT NOT NULL,
+                grant_id INTEGER NOT NULL,
+                revision INTEGER NOT NULL,
+                action TEXT NOT NULL CHECK (action IN ('message', 'start', 'started',
+                    'approved', 'declined', 'ended', 'edited')),
+                target TEXT CHECK (target <> ''),
+                detail TEXT,
+                at INTEGER NOT NULL
+            );
+            INSERT INTO authorization_audit_with_edits (id, actor, permission, grant_id,
+                    revision, action, target, detail, at)
+                SELECT id, actor, permission, grant_id, revision, action, target, detail, at
+                FROM authorization_audit;
+            DROP TABLE authorization_audit;
+            ALTER TABLE authorization_audit_with_edits RENAME TO authorization_audit;
+            CREATE INDEX authorization_audit_by_actor
+                ON authorization_audit (actor, action, at);
+            CREATE INDEX authorization_audit_by_target
+                ON authorization_audit (target, action, id);",
+        },
     ],
 };
 
@@ -443,10 +470,10 @@ async fn grant_by_id(connection: &Connection, grant: GrantId) -> Result<Grant, E
     }
 }
 
-/// Records one use of a coordinator grant, in the caller's transaction, so the audit commits
-/// with the effect or not at all. Returns the entry's id.
+/// Records one use of an audited grant (`Permission::is_audited`), in the caller's
+/// transaction, so the audit commits with the effect or not at all. Returns the entry's id.
 pub async fn record_audit(write: &WriteTransaction<'_>, audit: &Audit) -> Result<i64, Error> {
-    if !audit.permission.is_coordinator() {
+    if !audit.permission.is_audited() {
         return Err(Error::NotAudited {
             permission: audit.permission,
         });

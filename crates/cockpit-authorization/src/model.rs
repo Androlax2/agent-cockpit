@@ -109,6 +109,12 @@ impl Permission {
         self == Permission::HostActions
     }
 
+    /// Whether uses of a grant of this permission go to the audit: the coordinator grants
+    /// (#410) and `change-state`, under which a session edits the task items it filed (#714).
+    pub fn is_audited(self) -> bool {
+        self.is_coordinator() || self == Permission::ChangeState
+    }
+
     pub fn is_coordinator(self) -> bool {
         Permission::COORDINATOR.contains(&self)
     }
@@ -260,16 +266,20 @@ pub enum AuditedAction {
     /// Ended a session it had started, once its work was done (#713); the target is the
     /// ended session, the detail names the item it finished.
     Ended,
+    /// Changed the title or notes of a task item it filed, under `change-state` (#714); no
+    /// target, the detail names the item with each field's old and new value.
+    Edited,
 }
 
 impl AuditedAction {
-    pub const ALL: [AuditedAction; 6] = [
+    pub const ALL: [AuditedAction; 7] = [
         AuditedAction::Message,
         AuditedAction::Start,
         AuditedAction::Started,
         AuditedAction::Approved,
         AuditedAction::Declined,
         AuditedAction::Ended,
+        AuditedAction::Edited,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -280,6 +290,7 @@ impl AuditedAction {
             AuditedAction::Approved => "approved",
             AuditedAction::Declined => "declined",
             AuditedAction::Ended => "ended",
+            AuditedAction::Edited => "edited",
         }
     }
 

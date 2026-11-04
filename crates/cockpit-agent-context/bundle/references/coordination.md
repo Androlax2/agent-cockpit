@@ -18,6 +18,11 @@ Tasks:
   owner approves or declines it.
 - `torlek todo blocked TITLE --why TEXT` reports something Torlek's setup kept you from
   doing, with the exact error.
+- `torlek todo edit ID [--title T] [--notes TEXT] [--revision R]` fixes the title or notes of
+  an item you filed yourself (`filed by` in `torlek todo show`) while nobody started it: a
+  proposal the owner has not decided, or a `todo`. Each edit is audited with your session,
+  the item and the old and new values. Another session's item, an item that started, and an
+  item's kind, priority, queue, waits and images stay the owner's.
 - `torlek todo start ID` and `torlek todo done ID [--summary TEXT]` around work on an item.
 
 Torlek's own bugs:

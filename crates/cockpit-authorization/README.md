@@ -18,8 +18,9 @@ whether its holder may start one now. The caller counts the holder's active sess
 the ones `started_sessions` names that are not ended, with its start requests still open.
 `end-sessions` covers only a session its holder started whose work is done; the daemon checks
 both, this crate records the grant and the audit. Each use is recorded with both sessions in
-the audit (`record_audit`, `audit_of`, `latest_audits_by_target`); only coordinator grants are
-audited.
+the audit (`record_audit`, `audit_of`, `latest_audits_by_target`). Besides the coordinator
+grants, `change-state` is audited: a session's edit of a task item it filed (`edited`, #714)
+is recorded under it with the item and each field's old and new value.
 
 Prose, payload fields, skills, team messages and plugin manifests request; they are not
 inputs to `evaluate` and cannot widen a grant (reports 11, 14, 17). Ids match exactly, and

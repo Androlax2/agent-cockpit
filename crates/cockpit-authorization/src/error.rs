@@ -30,7 +30,7 @@ pub enum Error {
     InvalidStartTerms {
         reason: &'static str,
     },
-    /// Only coordinator grants are audited (#410).
+    /// Only the coordinator grants (#410) and `change-state` (#714) are audited.
     NotAudited {
         permission: Permission,
     },
@@ -69,7 +69,7 @@ impl fmt::Display for Error {
             Error::NotAudited { permission } => {
                 write!(
                     formatter,
-                    "{permission} is not a coordinator grant; it is not audited"
+                    "{permission} is neither a coordinator grant nor change-state; it is not audited"
                 )
             }
             Error::InvalidStoredAudit { entry, reason } => {

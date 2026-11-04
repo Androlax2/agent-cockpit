@@ -3,8 +3,10 @@
 
 mod common;
 
-use cockpit_authorization::{Permission, Scope, SessionId};
-use cockpit_tasks::{Actor, Edit, ItemId, ListFilter, NextAction, Refusal, Settings, Status};
+use cockpit_authorization::{AuditedAction, Permission, Scope, SessionId};
+use cockpit_tasks::{
+    Actor, Edit, Item, ItemId, Kind, ListFilter, NextAction, Refusal, Settings, Status,
+};
 use common::{Fixture, NOW, new_item, refusal};
 
 #[tokio::test]
@@ -533,5 +535,211 @@ async fn the_owner_cannot_finish_an_item_that_still_waits() {
             item: second.id,
             on: vec![first.id]
         }
+    );
+}
+
+/// #714: a session fixes the title and notes of an item it filed while nobody started it.
+fn retitle(title: &str, notes: &str) -> Edit {
+    Edit {
+        title: Some(title.to_owned()),
+        notes: Some(notes.to_owned()),
+        kind: None,
+    }
+}
+
+async fn session_adds(fixture: &Fixture, session: &Actor, title: &str) -> Item {
+    fixture.add(session, new_item(None, title)).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_session_edits_the_title_and_notes_of_an_item_it_filed() {
+    let fixture = Fixture::new().await;
+    let filer = fixture.session("s1", "app").await;
+    let item = session_adds(&fixture, &filer, "#711? end the workers").await;
+    let write = fixture.database.write().await.unwrap();
+
+    let edited = cockpit_tasks::edit(
+        &write,
+        &filer,
+        item.id,
+        Some(1),
+        retitle("#713 end the workers", "Filed before the number existed."),
+        NOW,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        (
+            edited.title.as_str(),
+            edited.notes.as_str(),
+            edited.intent_revision
+        ),
+        (
+            "#713 end the workers",
+            "Filed before the number existed.",
+            2
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_sessions_edit_is_audited_with_the_old_and_new_values() {
+    let fixture = Fixture::new().await;
+    let filer = fixture.session("s1", "app").await;
+    let item = session_adds(&fixture, &filer, "#711? end the workers").await;
+    let write = fixture.database.write().await.unwrap();
+    cockpit_tasks::edit(
+        &write,
+        &filer,
+        item.id,
+        None,
+        Edit {
+            title: Some("#713 end the workers".to_owned()),
+            ..Edit::default()
+        },
+        NOW,
+    )
+    .await
+    .unwrap();
+    write.commit().await.unwrap();
+
+    let read = fixture.database.read().await.unwrap();
+    let audit = cockpit_authorization::audit_of(&read, &SessionId::new("s1").unwrap(), 10)
+        .await
+        .unwrap();
+
+    assert_eq!(audit.len(), 1);
+    let entry = &audit[0].audit;
+    assert_eq!(
+        (
+            entry.action,
+            entry.permission,
+            entry.target.as_ref(),
+            entry.at
+        ),
+        (AuditedAction::Edited, Permission::ChangeState, None, NOW)
+    );
+    assert_eq!(
+        entry.detail.as_deref(),
+        Some(&*format!(
+            "item {}: title \"#711? end the workers\" -> \"#713 end the workers\"",
+            item.id.0
+        ))
+    );
+}
+
+#[tokio::test]
+async fn a_session_edits_its_proposal_while_the_owner_has_not_decided() {
+    let fixture = Fixture::new().await;
+    let proposer = fixture.session("s1", "app").await;
+    let proposal = fixture
+        .propose(&proposer, None, "Cache the build")
+        .await
+        .unwrap();
+    let write = fixture.database.write().await.unwrap();
+
+    let edited = cockpit_tasks::edit(
+        &write,
+        &proposer,
+        proposal.id,
+        None,
+        retitle("Cache the build between runs", ""),
+        NOW,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(edited.title, "Cache the build between runs");
+    assert_eq!(edited.status, Status::Proposed);
+}
+
+#[tokio::test]
+async fn a_session_cannot_edit_an_item_another_session_filed() {
+    let fixture = Fixture::new().await;
+    let filer = fixture.session("s1", "app").await;
+    let other = fixture.session("s2", "app").await;
+    let item = session_adds(&fixture, &filer, "Schema").await;
+    let write = fixture.database.write().await.unwrap();
+
+    let refused = refusal(
+        cockpit_tasks::edit(&write, &other, item.id, None, retitle("Schema v2", ""), NOW).await,
+    );
+
+    assert_eq!(
+        refused,
+        Refusal::OwnerOnly {
+            action: "edit an item the session did not file"
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_session_cannot_edit_its_item_once_it_started() {
+    let fixture = Fixture::new().await;
+    let filer = fixture.session("s1", "app").await;
+    let item = session_adds(&fixture, &filer, "Schema").await;
+    let write = fixture.database.write().await.unwrap();
+    cockpit_tasks::start(&write, &filer, item.id, NOW)
+        .await
+        .unwrap();
+
+    let refused = refusal(
+        cockpit_tasks::edit(&write, &filer, item.id, None, retitle("Schema v2", ""), NOW).await,
+    );
+
+    assert_eq!(
+        refused,
+        Refusal::WrongStatus {
+            item: item.id,
+            status: Status::Doing,
+            action: "be edited by the session that filed it"
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_sessions_change_of_an_items_kind_is_refused() {
+    let fixture = Fixture::new().await;
+    let filer = fixture.session("s1", "app").await;
+    let item = session_adds(&fixture, &filer, "Schema").await;
+    let write = fixture.database.write().await.unwrap();
+
+    let refused = refusal(
+        cockpit_tasks::edit(
+            &write,
+            &filer,
+            item.id,
+            None,
+            Edit {
+                kind: Some(Kind::Bug),
+                ..Edit::default()
+            },
+            NOW,
+        )
+        .await,
+    );
+
+    assert_eq!(
+        refused,
+        Refusal::OwnerOnly {
+            action: "change an item's kind"
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_sessions_edit_naming_no_field_is_refused() {
+    let fixture = Fixture::new().await;
+    let filer = fixture.session("s1", "app").await;
+    let item = session_adds(&fixture, &filer, "Schema").await;
+    let write = fixture.database.write().await.unwrap();
+
+    let refused =
+        refusal(cockpit_tasks::edit(&write, &filer, item.id, None, Edit::default(), NOW).await);
+
+    assert!(
+        matches!(refused, Refusal::InvalidRequest { field: "edit", .. }),
+        "{refused:?}"
     );
 }

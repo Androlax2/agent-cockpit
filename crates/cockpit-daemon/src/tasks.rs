@@ -147,6 +147,7 @@ async fn dispatch(
             title,
             notes,
             item_kind,
+            ..
         } => {
             let edit = Edit {
                 title,
@@ -288,6 +289,7 @@ fn launch_token(command: &Command) -> Option<String> {
         | Command::TaskReportBlocker { launch_token, .. }
         | Command::TaskList { launch_token, .. }
         | Command::TaskShow { launch_token, .. }
+        | Command::TaskEdit { launch_token, .. }
         | Command::TaskStart { launch_token, .. }
         | Command::TaskDone { launch_token, .. }
         | Command::TaskDelete { launch_token, .. } => launch_token.clone(),
