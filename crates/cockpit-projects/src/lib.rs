@@ -10,6 +10,7 @@ mod git;
 mod model;
 mod push;
 mod register;
+mod remove;
 mod source;
 mod storage;
 mod store;
@@ -27,9 +28,12 @@ pub use model::{
 };
 pub use push::{Pushed, push};
 pub use register::register_project;
+pub use remove::remove_project;
 pub use source::SourceState;
 pub use storage::{CloneStorage, StorageReport, TargetSize, clone_storage};
-pub use store::{MIGRATIONS, checkouts, claim, project_named, projects, release};
+pub use store::{
+    MIGRATIONS, checkouts, claim, project_named, project_named_or_numbered, projects, release,
+};
 pub use sweep::{Kept, SweepReport, sweep};
 
 /// Where a project's clones live: `<parent of the root>/.parallel/<project>/`, beside the

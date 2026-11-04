@@ -919,3 +919,143 @@ fn a_push_url_rewritten_off_github_by_the_owners_configuration_is_refused() {
     assert!(refused.contains("https://example.com/"), "{refused}");
     assert!(!home.git_log().iter().any(|call| call.contains(" push ")));
 }
+
+#[test]
+fn removing_an_idle_project_drops_it_from_the_list() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+
+    let removed = home.cockpit_ok(&["project", "remove", "app"]);
+
+    assert_eq!(removed, format!("removed\tapp\t{}\n", root.display()));
+    assert_eq!(home.cockpit_ok(&["project", "list"]), "");
+}
+
+#[test]
+fn removing_a_project_leaves_its_directory_on_disk() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+
+    home.cockpit_ok(&["project", "remove", "app"]);
+
+    assert_eq!(
+        std::fs::read_to_string(root.join("README")).unwrap(),
+        "fixture\n"
+    );
+    assert!(root.join(".git").is_dir());
+}
+
+#[test]
+fn a_project_is_removed_by_its_id() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+
+    home.cockpit_ok(&["project", "remove", "1"]);
+
+    assert_eq!(home.cockpit_ok(&["project", "list"]), "");
+}
+
+#[test]
+fn removing_a_project_keeps_its_clones_on_disk_and_names_them() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+    home.cockpit_ok(&["checkout", "clone", "app", "feature/x"]);
+    let clone = home.home().join("projects/.parallel/app/feature-x");
+
+    let removed = home.cockpit_ok(&["project", "remove", "app"]);
+
+    assert!(
+        removed.contains(&format!("kept-on-disk\t{}\n", clone.display())),
+        "{removed}"
+    );
+    assert!(clone.join("README").is_file());
+    assert_eq!(home.cockpit_ok(&["checkout", "list"]), "");
+}
+
+#[test]
+fn removing_a_project_with_a_claimed_checkout_refuses_naming_it() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+    let clone = id_of(&home.cockpit_ok(&["checkout", "clone", "app", "feature/x"]));
+    home.cockpit_ok(&["checkout", "claim", &clone, "session-a"]);
+
+    let refused = home.cockpit_err(&["project", "remove", "app"]);
+
+    assert!(refused.contains("conflict"), "{refused}");
+    assert!(
+        refused.contains(&format!("checkout {clone} is occupied by session-a")),
+        "{refused}"
+    );
+    assert!(refused.contains("checkout release"), "{refused}");
+    assert_eq!(
+        home.cockpit_ok(&["project", "list"]),
+        format!("app\t{}\n", root.display())
+    );
+}
+
+#[test]
+fn removing_a_project_with_an_open_item_refuses_naming_it() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+    home.cockpit_ok(&["todo", "add", "Fix the login", "--project", "app"]);
+
+    let refused = home.cockpit_err(&["project", "remove", "app"]);
+
+    assert!(refused.contains("conflict"), "{refused}");
+    assert!(refused.contains("open item 1"), "{refused}");
+}
+
+#[test]
+fn a_finished_item_does_not_block_removal_and_stays_listed() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+    home.cockpit_ok(&["todo", "add", "Fix the login", "--project", "app"]);
+    home.cockpit_ok(&["todo", "done", "1", "--summary", "fixed"]);
+
+    home.cockpit_ok(&["project", "remove", "app"]);
+
+    assert!(
+        home.cockpit_ok(&["todo", "list", "--all"])
+            .contains("Fix the login"),
+    );
+}
+
+#[test]
+fn a_removed_project_can_be_added_again() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+    home.cockpit_ok(&["project", "remove", "app"]);
+
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+
+    assert_eq!(
+        home.cockpit_ok(&["project", "list"]),
+        format!("app\t{}\n", root.display())
+    );
+}
+
+#[test]
+fn removing_an_unknown_project_is_refused_as_not_found() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+
+    let refused = home.cockpit_err(&["project", "remove", "ghost"]);
+
+    assert!(refused.contains("not-found"), "{refused}");
+}

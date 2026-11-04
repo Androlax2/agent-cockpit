@@ -18,6 +18,7 @@ the capability crates whose verbs must work without the daemon, listed in
 | `torlek config show [--project DIR] [--set KEY=VALUE]...` | yes | `cockpit-config` |
 | `torlek config reload` (a running daemon applies the owner's changed session settings, #354) | no | `cockpit-sessions` |
 | `torlek project add DIR [--name NAME]`, `torlek project list` | no | `cockpit-projects` |
+| `torlek project remove PROJECT` (name or id): unregisters an idle project; deletes nothing on disk, keeps its ended sessions and finished items, prints its clones' paths | no | `cockpit-projects` |
 | `torlek checkout list [PROJECT]` | no | `cockpit-projects` |
 | `torlek checkout clone PROJECT BRANCH`, `torlek checkout review PROJECT PULL_REQUEST` | no | `cockpit-projects` |
 | `torlek checkout claim CHECKOUT HOLDER`, `torlek checkout release CHECKOUT HOLDER` | no | `cockpit-projects` |

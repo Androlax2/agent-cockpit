@@ -11,6 +11,7 @@ use crate::board::{Board, FeedError};
 use crate::bug_form::BugForm;
 use crate::form::{Form, FormOutcome};
 use crate::pane::{Pane, PaneOutcome};
+use crate::projects::{Projects, ProjectsOutcome};
 use crate::tasks::{TaskOutcome, Tasks};
 use crate::workflows::{Workflows, WorkflowsOutcome};
 
@@ -101,6 +102,7 @@ pub struct App {
     pub(crate) bug_form: Option<BugForm>,
     pub(crate) workflows: Option<Workflows>,
     pub(crate) tasks: Option<Tasks>,
+    pub(crate) projects: Option<Projects>,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) confirm: Option<Confirm>,
     pub(crate) log: VecDeque<String>,
@@ -249,6 +251,21 @@ impl App {
                 FormOutcome::Submit(command) => Step::sending("bug-report-new", command),
             };
         }
+        if let Some(projects) = &mut self.projects
+            && self.focus == Focus::List
+            && key != Key::Tab
+        {
+            return match projects.key(key, &self.board) {
+                ProjectsOutcome::Closed => {
+                    self.projects = None;
+                    Step::used("projects-close")
+                }
+                ProjectsOutcome::Handled { used, send } => Step {
+                    used: Some(used),
+                    send,
+                },
+            };
+        }
         if let Some(tasks) = &mut self.tasks
             && self.focus == Focus::List
             && (key != Key::Tab || tasks.is_typing())
@@ -356,6 +373,10 @@ impl App {
                     .collect();
                 self.form = Some(Form::new(roots));
                 Step::sending("new-session-form", Command::ProviderList)
+            }
+            Key::Char('P') => {
+                self.projects = Some(Projects::default());
+                Step::used("projects")
             }
             Key::Char('B') => self.open(Overlay::BugReports),
             Key::Char('b') => {
@@ -506,6 +527,21 @@ impl App {
                 // The answer to a workflow view closed since.
             }
             Reply::Projects { projects } => self.board.set_projects(projects),
+            Reply::ProjectRemoved {
+                project,
+                kept_on_disk,
+            } => {
+                self.board.remove_project(&project.name);
+                let clones = if kept_on_disk.is_empty() {
+                    String::new()
+                } else {
+                    format!("; clones kept on disk: {}", kept_on_disk.join(", "))
+                };
+                self.note(format!(
+                    "removed project {} ({} stays on disk){clones}",
+                    project.name, project.root
+                ));
+            }
             Reply::AgentReports { reports } => self.board.set_reports(reports),
             Reply::ApprovalQueue { runs, guides } => {
                 self.board.set_queue(runs, guides);
@@ -704,6 +740,7 @@ impl App {
             || self.confirm.is_some()
             || self.workflows.is_some()
             || self.tasks.is_some()
+            || self.projects.is_some()
             || self.overlay.is_some();
         if is_owner_in_column {
             self.keep_keys();

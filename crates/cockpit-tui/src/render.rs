@@ -33,6 +33,9 @@ Sessions
   r                  restart the selected session (confirm with y)
   x                  exit the selected session (confirm with y)
   X                  exit every finished session (confirm with y)
+Projects
+  P                  the registered projects; d removes the selected one (confirm
+                     with y): nothing on disk is deleted, its history stays
 Tasks
   T                  tasks; a add, e edit, h hand to session, Q queue, ? explanation
 Workflows
@@ -84,9 +87,10 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
         (Some(form), ..) => draw_form(form, frame, main),
         (None, Some(form), _) => draw_bug_form(form, frame, main),
         (None, None, Some(workflows)) => workflows.draw(frame, main),
-        (None, None, None) => match &app.tasks {
-            Some(tasks) => tasks.draw(frame, main),
-            None => draw_list(app, frame, main),
+        (None, None, None) => match (&app.projects, &app.tasks) {
+            (Some(projects), _) => projects.draw(app.board(), frame, main),
+            (None, Some(tasks)) => tasks.draw(frame, main),
+            (None, None) => draw_list(app, frame, main),
         },
     }
     if pane_height > 0 {
@@ -96,6 +100,13 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
 }
 
 fn status_line(app: &App) -> String {
+    if let Some(question) = app
+        .projects
+        .as_ref()
+        .and_then(|projects| projects.confirm_line())
+    {
+        return question;
+    }
     match (&app.confirm, &app.failure, &app.feed_problem) {
         (Some(Confirm::Restart(session)), ..) => format!("restart {session}? y to confirm"),
         (Some(Confirm::Exit(session)), ..) => format!("exit {session}? y to confirm"),

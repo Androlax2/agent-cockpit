@@ -19,6 +19,9 @@ pub fn parse(verb: &str, arguments: &[OsString]) -> Result<(Command, Duration), 
         ("project", ["add", dir]) => bulk(project_add(dir, None)?),
         ("project", ["add", dir, "--name", name]) => bulk(project_add(dir, Some(name))?),
         ("project", ["list"]) => control(Command::ProjectList),
+        ("project", ["remove", project]) => control(Command::ProjectRemove {
+            project: (*project).to_owned(),
+        }),
         ("checkout", ["list"]) => control(Command::CheckoutList { project: None }),
         ("checkout", ["list", project]) => control(Command::CheckoutList {
             project: Some((*project).to_owned()),
@@ -85,6 +88,16 @@ fn render(reply: &Reply) -> Option<String> {
         Reply::Projects { projects } => projects
             .iter()
             .map(|project| format!("{}\t{}\n", project.name, project.root))
+            .collect(),
+        Reply::ProjectRemoved {
+            project,
+            kept_on_disk,
+        } => std::iter::once(format!("removed\t{}\t{}\n", project.name, project.root))
+            .chain(
+                kept_on_disk
+                    .iter()
+                    .map(|path| format!("kept-on-disk\t{path}\n")),
+            )
             .collect(),
         Reply::Checkouts { checkouts } => checkouts.iter().map(checkout_line).collect(),
         Reply::Checkout { checkout } => checkout_line(checkout),

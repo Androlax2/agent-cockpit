@@ -49,6 +49,24 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             );",
         },
         crate::target_prune::MIGRATION,
+        // #727: a removed project keeps its row, so its id is never reused and its removed
+        // checkouts still name it; only a project not removed holds its name and root.
+        Migration {
+            version: 3,
+            sql: "CREATE TABLE projects_with_removal (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL CHECK (name <> ''),
+                root TEXT NOT NULL CHECK (root <> ''),
+                registered_at INTEGER NOT NULL,
+                removed_at INTEGER
+            );
+            INSERT INTO projects_with_removal (id, name, root, registered_at)
+                SELECT id, name, root, registered_at FROM projects;
+            DROP TABLE projects;
+            ALTER TABLE projects_with_removal RENAME TO projects;
+            CREATE UNIQUE INDEX projects_one_name ON projects (name) WHERE removed_at IS NULL;
+            CREATE UNIQUE INDEX projects_one_root ON projects (root) WHERE removed_at IS NULL;",
+        },
     ],
 };
 
@@ -167,10 +185,13 @@ pub(crate) fn path_text(path: &Path) -> Result<&str, Error> {
     })
 }
 
-/// Every registered project, by name.
+/// Every registered project not removed, by name.
 pub async fn projects(connection: &Connection) -> Result<Vec<Project>, Error> {
     let mut rows = connection
-        .query("SELECT id, name, root FROM projects ORDER BY name", ())
+        .query(
+            "SELECT id, name, root FROM projects WHERE removed_at IS NULL ORDER BY name",
+            (),
+        )
         .await?;
     let mut projects = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -183,7 +204,7 @@ pub async fn projects(connection: &Connection) -> Result<Vec<Project>, Error> {
 pub async fn project_named(connection: &Connection, name: &str) -> Result<Project, Error> {
     let mut rows = connection
         .query(
-            "SELECT id, name, root FROM projects WHERE name = ?1",
+            "SELECT id, name, root FROM projects WHERE name = ?1 AND removed_at IS NULL",
             [name],
         )
         .await?;
@@ -193,6 +214,70 @@ pub async fn project_named(connection: &Connection, name: &str) -> Result<Projec
             name: name.to_owned(),
         }),
     }
+}
+
+/// The project named `text` or, when none is, the one whose id `text` spells.
+pub async fn project_named_or_numbered(
+    connection: &Connection,
+    text: &str,
+) -> Result<Project, Error> {
+    match project_named(connection, text).await {
+        Err(Error::UnknownProject { .. }) => {}
+        found => return found,
+    }
+    let Ok(id) = text.parse::<i64>() else {
+        return Err(Error::UnknownProject {
+            name: text.to_owned(),
+        });
+    };
+    let mut rows = connection
+        .query(
+            "SELECT id, name, root FROM projects WHERE id = ?1 AND removed_at IS NULL",
+            [id],
+        )
+        .await?;
+    match rows.next().await? {
+        Some(row) => project_from_row(&row),
+        None => Err(Error::UnknownProject {
+            name: text.to_owned(),
+        }),
+    }
+}
+
+/// Every checkout of `project` not yet removed, by id.
+pub(crate) async fn project_checkouts(
+    connection: &Connection,
+    project: ProjectId,
+) -> Result<Vec<Checkout>, Error> {
+    let stored = query_checkouts(
+        connection,
+        "c.project_id = ?1 AND c.state <> 'removed'",
+        [project.0],
+    )
+    .await?;
+    Ok(stored.into_iter().map(|stored| stored.checkout).collect())
+}
+
+/// Marks `project` and its checkouts removed; the rows stay as history.
+pub(crate) async fn mark_project_removed(
+    write: &WriteTransaction<'_>,
+    project: ProjectId,
+) -> Result<(), Error> {
+    let removed_at = now();
+    write
+        .execute(
+            "UPDATE project_checkouts SET state = 'removed', removed_at = ?2
+             WHERE project_id = ?1 AND state <> 'removed'",
+            (project.0, removed_at),
+        )
+        .await?;
+    write
+        .execute(
+            "UPDATE projects SET removed_at = ?2 WHERE id = ?1 AND removed_at IS NULL",
+            (project.0, removed_at),
+        )
+        .await?;
+    Ok(())
 }
 
 const CHECKOUT_COLUMNS: &str = "c.id, p.name, p.root, c.kind, c.branch, c.pull_request, c.path,
@@ -299,7 +384,7 @@ pub(crate) async fn occupied_paths(
 ) -> Result<Vec<(ProjectName, PathBuf)>, Error> {
     let mut rows = connection
         .query(
-            "SELECT p.name, p.root FROM projects p
+            "SELECT p.name, p.root FROM projects p WHERE p.removed_at IS NULL
              UNION ALL
              SELECT p.name, c.path FROM project_checkouts c JOIN projects p ON p.id = c.project_id
              WHERE c.state <> 'removed'",
@@ -320,7 +405,10 @@ pub(crate) async fn insert_project(
     root: &Path,
 ) -> Result<Project, Error> {
     let mut taken = write
-        .query("SELECT 1 FROM projects WHERE name = ?1", [name.as_str()])
+        .query(
+            "SELECT 1 FROM projects WHERE name = ?1 AND removed_at IS NULL",
+            [name.as_str()],
+        )
         .await?;
     if taken.next().await?.is_some() {
         return Err(Error::NameTaken { name: name.clone() });

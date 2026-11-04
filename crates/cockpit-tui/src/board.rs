@@ -159,6 +159,11 @@ impl Board {
         self.guides = guides;
     }
 
+    /// Drops a project the daemon removed, ahead of the next project list.
+    pub fn remove_project(&mut self, name: &str) {
+        self.projects.retain(|project| project.name != name);
+    }
+
     pub fn projects(&self) -> &[ProjectView] {
         &self.projects
     }
