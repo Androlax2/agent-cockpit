@@ -130,7 +130,7 @@ gh api --hostname github.com --method GET repos/Androlax2/agent-cockpit/rulesets
 | Effective main rules | Active ruleset `26273395`, `~DEFAULT_BRANCH`, no exclusions; deletion and non-fast-forward prohibited | `/rulesets`, `/rulesets/26273395`, `/rules/branches/main` |
 | Pull requests | Required; allowed merge methods `["squash"]` | Ruleset's `pull_request.parameters` |
 | Reviews | Required approvals `0`; code-owner review, stale-review dismissal, last-push approval and conversation resolution all false | Same parameters; [CODEOWNERS](../../.github/CODEOWNERS) assigns Theo but does not enforce review |
-| Required checks | `changes`, `greenfield`, `greenfield-macos`, `greenfield-wsl2`, `docs`; strict/up-to-date false; enforcement on creation enabled | Ruleset's `required_status_checks.parameters`; no `integration_id` supplied for these contexts |
+| Required checks | `changes`, `greenfield`, `greenfield-wsl2`, `docs`; strict/up-to-date false; enforcement on creation enabled | Ruleset's `required_status_checks.parameters`; no `integration_id` supplied for these contexts |
 | Bypass | Explicit `bypass_actors: []`; caller bypass `never` | Ruleset detail; an **omitted** bypass field in a future response is unknown, not an empty list |
 | Classic protection | Scoped read 403; host read 404; additional classic rules remain unconfirmed | `/branches/main/protection` |
 | Release tags | No tag-targeted ruleset in the complete listing | `/rulesets?per_page=100`, follow each ID; no tag creation/update/deletion attempt was made |

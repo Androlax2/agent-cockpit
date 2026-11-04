@@ -10,10 +10,10 @@ set run every job: a gap in these lists must show up as extra work, never as ski
 The legacy apps/ suite has no CI job since 2026-10-31 (decided by Theo): it slowed every
 greenfield change and leaves at the cutover; `make ci` stays available locally.
 
-`platform` runs the macOS and WSL 2 jobs on a pull request only when it changes a crate those
-jobs build: the crates they test or run (PLATFORM_ROOTS) and every crate those depend on,
+`platform` runs the WSL 2 job on a pull request only when it changes a crate it builds:
+the crates it tests or run (PLATFORM_ROOTS) and every crate those depend on,
 read from the manifests, so no dependency reaches main untested on a platform (#127, #397).
-The root manifests, Makefile and ci.yml run them too, and every push to main does.
+The root manifests, Makefile and ci.yml run it too, and every push to main does.
 """
 
 import sys
