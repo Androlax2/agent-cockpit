@@ -593,6 +593,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                   torlek doctor [--project DIR]\n       \
                   torlek tui [--version]\n       \
                   torlek version [--all]\n       \
+                  torlek update [check | later | skip | checks on|off]\n       \
                   torlek daemon install\n       \
                   torlek todo add TITLE [--project P] [--notes TEXT] [--kind KIND] \
                  [--priority 1-6] [--after ID]...\n       \
