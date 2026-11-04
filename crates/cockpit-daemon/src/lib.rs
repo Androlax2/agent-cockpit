@@ -363,6 +363,8 @@ impl Instance {
             queued: Arc::clone(&messages_queued),
             // The delivery loop never collects for a hook.
             waiters: Arc::new(coordination::Waiters::new()),
+            // Nor starts a session.
+            launching: Arc::default(),
         };
         let delivering = tokio::spawn(supervisor::supervise(
             "coordinator-messages",

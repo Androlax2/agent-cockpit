@@ -170,6 +170,20 @@ async fn a_plain_start_sessions_grant_confirms_every_start() {
     ));
 }
 
+/// #739: the terms a grant given without any are eight sessions at once and twenty starts an
+/// hour, each confirmed.
+#[test]
+fn the_default_terms_are_eight_at_once_and_twenty_an_hour_confirmed() {
+    assert_eq!(
+        StartTerms::DEFAULT,
+        StartTerms {
+            per_hour: 20,
+            max_active: 8,
+            needs_confirmation: true,
+        }
+    );
+}
+
 #[tokio::test]
 async fn starts_beyond_the_hourly_cap_are_refused_until_the_oldest_leaves_the_hour() {
     let database = open("start-cap").await;

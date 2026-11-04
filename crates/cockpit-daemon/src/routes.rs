@@ -129,6 +129,7 @@ impl Routes {
                 runner: capabilities.runner.clone(),
                 queued: capabilities.messages_queued,
                 waiters: Arc::new(coordination::Waiters::new()),
+                launching: Arc::default(),
             },
             workflows: workflows::Context {
                 git: capabilities.git.clone(),

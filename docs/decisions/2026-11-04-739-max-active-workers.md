@@ -20,9 +20,16 @@ recommendation; the rest was decided by the implementing session.
 - **Defaults: 8 at once, 20 an hour.** Migration 4 gives every stored `start-sessions` grant
   `max_active` 8, so `session grants` shows the cap it works under; stored grants keep their
   own `per_hour`.
-- **Known window:** a session counts from its row, which `started_by` marks when the start
-  creates it. Between an unconfirmed start's audit and that row, a second start the same
-  coordinator asks is not counted against it. The hourly cap still bounds it.
+- **A start under way counts before its session exists.** A start without confirmation commits
+  its audit before `Sessions::start` creates the session's row, so parallel starts would all
+  read the same count. The daemon keeps those starts in memory (`Launching`), counted from
+  before the audit commits until `Sessions::start` returns; a start under way does not
+  outlive the daemon.
+- **Regranting replaces every term.** `session grant ... start-sessions` without
+  `--max-active` gives the default, as without `--per-hour`; the reply prints the terms now
+  in force.
+- **A refusal at capacity names the owner as the one who unblocks it.** Asleep and failed
+  sessions count until the owner ends them; a coordinator has no verb to end one.
 - **Rejected:** counting from the audit alone (`start` minus `declined` and ended `started`
   rows): a request that expires or is not run leaves no row to match, and the rows link only
   through their text.

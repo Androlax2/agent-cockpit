@@ -605,6 +605,43 @@ async fn a_start_at_max_active_is_refused_until_a_started_session_ends() {
     assert!(again.ends_with("exit=0\n"), "{again}");
 }
 
+/// #739: two starts asked at once, without confirmation, by a coordinator with one place:
+/// the second sees the first before its session exists, and only one session starts.
+#[tokio::test(flavor = "multi_thread")]
+async fn parallel_unconfirmed_starts_take_one_place_each() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (coordinator_root, _) = home.project(&owner, COMMANDED_PROJECT).await;
+    let (new_root, _) = home.project(&owner, "plain").await;
+    let coordinator = new_session(&owner, &coordinator_root).await;
+    grant_at_once(&owner, &coordinator.id, 1, true).await;
+    let start = cockpit_line(&[
+        "agent",
+        "start",
+        &new_root.display().to_string(),
+        "--agent",
+        "claude",
+    ]);
+
+    let line = home.command_agent(
+        &coordinator_root,
+        &format!(
+            "{start} > .agent/first 2>&1 & {start} > .agent/second 2>&1; wait; \
+             cat .agent/first .agent/second"
+        ),
+    );
+    let printed = home.agent_output(&coordinator_root, line).await;
+
+    assert_eq!(printed.matches("started session ").count(), 1, "{printed}");
+    assert_eq!(
+        printed.matches("is at its 1 sessions at once").count(),
+        1,
+        "{printed}"
+    );
+}
+
 /// #739: a start waiting for the owner's approval holds one of the sessions at once.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_start_waiting_for_the_owner_counts_against_max_active() {

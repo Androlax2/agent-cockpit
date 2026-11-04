@@ -76,6 +76,8 @@ pub(crate) struct Context {
     pub(crate) queued: Arc<Notify>,
     /// Each session's current inbox waiter.
     pub(crate) waiters: Arc<Waiters>,
+    /// Starts without confirmation whose session has no row yet (#739).
+    pub(crate) launching: Arc<crate::coordinator_workers::Launching>,
 }
 
 /// The current inbox waiter of each session (#703). A hook begins a waiter at each turn's
@@ -564,7 +566,8 @@ async fn start(
     let write = context.database.write().await?;
     let coordinator = sender.identify(&write, launch_token).await?;
     let at = now();
-    let active = crate::coordinator_workers::active_workers(&write, &coordinator, at).await?;
+    let active = crate::coordinator_workers::active_workers(&write, &coordinator, at).await?
+        + context.launching.count(&coordinator);
     let (grant, revision, needs_confirmation) =
         match cockpit_authorization::start_allowance(&write, &coordinator, at, active).await? {
             StartAllowance::Allowed {
@@ -591,8 +594,10 @@ async fn start(
                          started run or wait for the owner",
                         coordinator.as_str()
                     ),
-                    "start again once one of them ends or its start request is declined".to_owned(),
-                    UnblockedBy::Agent,
+                    "a place frees when one of them ends (its agent exits, or the owner ends \
+                     it with `torlek session end ID`) or the owner declines its start request"
+                        .to_owned(),
+                    UnblockedBy::Owner,
                 ));
             }
             StartAllowance::Refused(refusal) => return Err(not_granted(&coordinator, &refusal)),
@@ -632,11 +637,13 @@ async fn start(
     // An owner auditing the session must tell a start nobody confirmed from an owner's yes.
     audit.detail = Some("without confirmation".to_owned());
     cockpit_authorization::record_audit(&write, &audit).await?;
+    let launching = context.launching.begin(&coordinator);
     write.commit().await?;
     let started = context
         .sessions
         .start(start_request(dir, start, &coordinator)?)
         .await?;
+    drop(launching);
     tracing::info!(
         from = coordinator.as_str(),
         session = %started.id,
