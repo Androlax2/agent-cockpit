@@ -78,13 +78,14 @@ stopped in the middle of one finishes or repairs it at its next start.
   any hook runs. The agent's first report of what it does answers it, as any dialog.
 - **A session left with no agent** (#406). An agent can exit while processes it started
   keep running: its execution stays occupied, so the session stays `running` and never
-  ends by itself. When the periodic pass finds such a session with a dead agent pane, or
-  no terminal, for `agentless_after` (the owner's `memory.agentless_session_minutes`, 10),
-  it records an open dialog question naming `torlek session end ID`, which shows the
-  session as waiting on the owner. Nothing is stopped: what still runs may be work the
-  owner wants. A session the idle sleep takes first is not reported, since sleeping stops
-  everything it runs. Not seen: leftovers that keep the terminal open, because tmux then
-  shows the pane running. The window counts again from a daemon restart.
+  ends by itself. When every periodic pass found such a session with a dead agent pane for
+  `agentless_after` (the owner's `memory.agentless_session_minutes`, 10), the pass records
+  an open dialog question naming `torlek session end ID`, once, which shows the session as
+  waiting on the owner. Nothing is stopped: what still runs may be work the owner wants.
+  A session whose agent waited at its prompt is left to the idle sleep, which stops
+  everything it runs. Not seen: a terminal that is closed, and leftovers that keep the
+  pane open, because tmux then shows it running. The window counts again from a daemon
+  restart, from a new launch, and from a pass that could not see the pane dead.
 - **A clone inherits its harness trust** (#702). Before the agent runs in a parallel clone of
   a project in the owner's `projects.trusted` whose origin is its project's, the launch asks
   the provider to record its harness's trust of the clone (`Provider::trust_workspace`), so

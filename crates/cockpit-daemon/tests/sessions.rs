@@ -130,17 +130,24 @@ impl Home {
     /// A program that leaves a process behind: it ignores the hangup its terminal sends when
     /// the agent exits and holds none of the terminal, so tmux sees the pane's process end.
     /// The hangup is ignored before the process starts, which inherits it: set in the
-    /// process itself, the agent's exit could come first.
+    /// process itself, the agent's exit could come first. The agent exits once
+    /// [`Self::leaving_agent_hold`] does not exist, which is at once unless a test made it.
     fn leftover_program(&self) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let program = self.path().join("leave-a-process");
         std::fs::write(
             &program,
-            "#!/bin/sh\ntrap '' HUP\nsleep 120 </dev/null >/dev/null 2>&1 &\n",
+            "#!/bin/sh\ntrap '' HUP\nsleep 120 </dev/null >/dev/null 2>&1 &\n\
+             while [ -e \"$0.hold\" ]; do sleep 0.05; done\n",
         )
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         program
+    }
+
+    /// The file that, while it exists, keeps the agent of [`LEAVING_A_PROCESS`] running.
+    fn leaving_agent_hold(&self) -> PathBuf {
+        self.path().join("leave-a-process.hold")
     }
 
     /// Where the fake provider records the harness trust it is asked to keep (#702).

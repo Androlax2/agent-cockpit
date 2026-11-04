@@ -187,12 +187,16 @@ async fn changed_entities(
         let commits = read.commits_after(read_through, COMMITS_PER_READ).await?;
         let Some(last) = commits.last() else { break };
         read_through = last.revision;
+        let is_last_read = commits.len() < COMMITS_PER_READ;
         for commit in commits {
             for change in commit.changes {
                 if change.table == entities::TABLE && seen_rows.insert(change.row_id) {
                     changed_rows.push(change.row_id);
                 }
             }
+        }
+        if is_last_read {
+            break;
         }
     }
     let mut changes = Vec::with_capacity(changed_rows.len());

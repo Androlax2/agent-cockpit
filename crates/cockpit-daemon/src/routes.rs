@@ -44,7 +44,7 @@ pub type StreamJob = Pin<
 /// buffer until it is dropped, which the connection does once the line is written (#406).
 pub struct BufferedBatch {
     pub(crate) line: Vec<u8>,
-    pub(crate) room: tokio::sync::OwnedSemaphorePermit,
+    pub(crate) room: crate::feed::BufferRoom,
 }
 
 /// What the daemon does with one decoded request.

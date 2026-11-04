@@ -88,10 +88,10 @@ pub struct Sessions {
     /// nothing holds carries no state; the periodic pass drops those (#406), so the map
     /// holds the sessions being worked on, not every session ever touched.
     operations: Mutex<HashMap<SessionId, Arc<SessionLock>>>,
-    /// The running sessions last seen with no agent in their terminal: the launch it was,
-    /// and since when, in seconds since 1970 (#406). Kept to the running sessions by the
-    /// periodic pass; a daemon restart counts again from its start.
-    agentless_since: Mutex<HashMap<SessionId, (i64, i64)>>,
+    /// The running sessions whose agent the periodic pass has seen gone at every pass since
+    /// (#406). One the latest pass did not see so is dropped; a daemon restart counts again
+    /// from its start.
+    agentless: Mutex<HashMap<SessionId, Agentless>>,
     /// The owner's desktop session variables the next launch gets: none until the daemon
     /// imports its start's, then each owner import (#307).
     desktop_environment: Mutex<Vec<(OsString, OsString)>>,
@@ -121,6 +121,16 @@ struct SessionLock {
     /// timed-out ones included. A launch opens the terminal only at zero (#324): the terminal
     /// is named by the session alone, so a stale step would act on the new launch's.
     terminal_steps: tokio::sync::watch::Sender<usize>,
+}
+
+/// A running session seen with its agent gone while its execution is occupied (#406).
+struct Agentless {
+    /// The launch whose agent is gone; another launch counts from its own first pass.
+    launch: i64,
+    /// Seconds since 1970 of the first pass that saw it.
+    since: i64,
+    /// The owner was told, so later passes write nothing more.
+    is_reported: bool,
 }
 
 /// Whether anything but the sessions' own map holds `session`.
@@ -205,7 +215,7 @@ impl Sessions {
             session_dirs,
             session_temps,
             operations: Mutex::new(HashMap::new()),
-            agentless_since: Mutex::new(HashMap::new()),
+            agentless: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1025,11 +1035,9 @@ impl Sessions {
                 report.errors.push((session.id, error.to_string()));
             }
         }
-        let running_ids: std::collections::HashSet<SessionId> =
-            running.iter().map(|session| session.id.clone()).collect();
-        // Running sessions the pass left awake, with their launch: looked at for a missing
-        // agent once every session's lock is released.
-        let mut awake = Vec::new();
+        // Running sessions that will not go to sleep by themselves, with their launch:
+        // looked at for a missing agent once every session's lock is released.
+        let mut never_sleeping = Vec::new();
         for listed in running {
             let id = listed.id.clone();
             let operation = self.lock(&id).await;
@@ -1065,11 +1073,14 @@ impl Sessions {
                             continue;
                         }
                     }
-                    if self.idle_sleep_refusal(&session, agent_report).is_some() {
-                        // The idle sleep stops everything a session runs. One that will
-                        // not sleep may be left with no agent and never end by itself.
-                        if let Some(launch) = &session.launch {
-                            awake.push((id, launch.number));
+                    if let Some(refusal) = self.idle_sleep_refusal(&session, agent_report) {
+                        // The idle sleep stops everything a session runs, so one only
+                        // waiting for its idle window needs nothing more. Any other may
+                        // be left with no agent and never end by itself.
+                        if !matches!(refusal, SleepRefusal::Idle { .. })
+                            && let Some(launch) = &session.launch
+                        {
+                            never_sleeping.push((id, launch.number));
                         }
                         continue;
                     }
@@ -1101,11 +1112,7 @@ impl Sessions {
                 Err(error) => report.errors.push((session.id, error.to_string())),
             }
         }
-        self.flag_agentless(awake, &mut report).await;
-        self.agentless_since
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|id, _| running_ids.contains(id));
+        self.flag_agentless(never_sleeping, &mut report).await;
         self.drop_idle_session_locks();
         Ok(report)
     }
@@ -1121,17 +1128,20 @@ impl Sessions {
         operations.retain(|_, session| session_lock_is_held(session));
     }
 
-    /// Reports the `awake` launches left with no agent (#406). No session lock is held:
-    /// looking at terminals takes tmux calls, long enough that an owner's send or cancel
-    /// would find its session busy, and the report is written only for a session still
-    /// running that launch, read in the transaction that writes it.
-    async fn flag_agentless(&self, awake: Vec<(SessionId, i64)>, report: &mut TickReport) {
-        let terminals = self.look_at_terminals(&awake).await;
-        for (id, launch) in awake {
-            let Some(&has_agent) = terminals.get(&id) else {
-                continue;
-            };
-            match self.flag_if_agentless(&id, launch, has_agent).await {
+    /// Reports the `never_sleeping` launches whose agent is gone (#406). No session lock is
+    /// held: looking at terminals takes tmux calls, long enough that an owner's send or
+    /// cancel would find its session busy, and the report is written only for a session
+    /// still running that launch, read in the transaction that writes it.
+    async fn flag_agentless(&self, never_sleeping: Vec<(SessionId, i64)>, report: &mut TickReport) {
+        let gone = self.launches_with_agent_gone(never_sleeping).await;
+        // The window counts passes that saw the agent gone without a break: a session this
+        // pass did not see so starts again.
+        self.agentless
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|id, seen| gone.get(id) == Some(&seen.launch));
+        for (id, launch) in gone {
+            match self.flag_if_agentless(&id, launch).await {
                 Ok(true) => report.agentless.push(id),
                 Ok(false) => {}
                 Err(error) => report.errors.push((id, error.to_string())),
@@ -1139,12 +1149,21 @@ impl Sessions {
         }
     }
 
-    /// Whether each session's terminal is open with its agent's process running in it. A
-    /// look that fails is logged and answers nothing, so the pass reports no session.
-    async fn look_at_terminals(&self, sessions: &[(SessionId, i64)]) -> HashMap<SessionId, bool> {
-        let terminals: Vec<(SessionId, SessionName)> = sessions
-            .iter()
-            .filter_map(|(id, _)| Some((id.clone(), terminal_name(id).ok()?)))
+    /// The `sessions` whose terminal is open with the agent's pane dead, by launch: the
+    /// process tmux started there exited, which is certain, while the pass saw the
+    /// execution occupied. A terminal that is closed says nothing of its agent and is left
+    /// out, and so is one that cannot be read; a look that fails altogether is logged and
+    /// answers none.
+    async fn launches_with_agent_gone(
+        &self,
+        sessions: Vec<(SessionId, i64)>,
+    ) -> HashMap<SessionId, i64> {
+        let terminals: Vec<(SessionId, i64, SessionName)> = sessions
+            .into_iter()
+            .filter_map(|(id, launch)| {
+                let name = terminal_name(&id).ok()?;
+                Some((id, launch, name))
+            })
             .collect();
         let Ok(tmux) = self.tmux() else {
             return HashMap::new();
@@ -1155,13 +1174,23 @@ impl Sessions {
         let looked = self
             .blocking("look at the agents' terminals", move || {
                 let open = tmux.sessions()?;
-                let mut has_agent = HashMap::new();
-                for (id, name) in terminals {
-                    let is_running = open.contains(&name)
-                        && matches!(agent_pane_info(&tmux, &name)?.state, PaneState::Running);
-                    has_agent.insert(id, is_running);
+                let mut gone = HashMap::new();
+                for (id, launch, name) in terminals {
+                    if !open.contains(&name) {
+                        continue;
+                    }
+                    match agent_pane_info(&tmux, &name) {
+                        Ok(pane) if matches!(pane.state, PaneState::Exited { .. }) => {
+                            gone.insert(id, launch);
+                        }
+                        Ok(_) => {}
+                        // Closed since the list, or unreadable: the next pass looks again.
+                        Err(error) => {
+                            tracing::debug!(session = %id, %error, "a terminal could not be read");
+                        }
+                    }
                 }
-                Ok(has_agent)
+                Ok(gone)
             })
             .await;
         looked.unwrap_or_else(|error| {
@@ -1170,42 +1199,34 @@ impl Sessions {
         })
     }
 
-    /// Shows a running session with no agent in its terminal, while processes it started
-    /// still run, as waiting on the owner with the command that ends it (#406), once it has
-    /// been so for [`Settings::agentless_after`]; `true` when it did. Nothing is stopped:
-    /// what still runs may be work the owner wants. The pass observed `launch`'s execution
-    /// occupied; an agent's leftovers that keep its terminal open are not seen, since tmux
-    /// then shows the pane running.
-    async fn flag_if_agentless(
-        &self,
-        id: &SessionId,
-        launch: i64,
-        has_agent: bool,
-    ) -> Result<bool, Error> {
+    /// Shows a running session whose agent is gone, while processes it started still run,
+    /// as waiting on the owner with the command that ends it (#406), once every pass has
+    /// seen it so for [`Settings::agentless_after`]; `true` when it did. Told once: a later
+    /// pass writes nothing more. Nothing is stopped: what still runs may be work the owner
+    /// wants. An agent's leftovers that keep its terminal open are not seen, since tmux then
+    /// shows the pane running.
+    async fn flag_if_agentless(&self, id: &SessionId, launch: i64) -> Result<bool, Error> {
         let since = {
-            let mut agentless_since = self
-                .agentless_since
+            let mut agentless = self
+                .agentless
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if has_agent {
-                agentless_since.remove(id);
+            let seen = agentless.entry(id.clone()).or_insert(Agentless {
+                launch,
+                since: store::now(),
+                is_reported: false,
+            });
+            if seen.is_reported {
                 return Ok(false);
             }
-            let seen = agentless_since
-                .entry(id.clone())
-                .or_insert((launch, store::now()));
-            // An earlier launch's time says nothing about this one.
-            if seen.0 != launch {
-                *seen = (launch, store::now());
-            }
-            seen.1
+            seen.since
         };
         let window = i64::try_from(self.settings.agentless_after.as_secs()).unwrap_or(i64::MAX);
         if store::now().saturating_sub(since) < window {
             return Ok(false);
         }
         let reason = format!(
-            "no agent runs in its terminal, but processes it started still run; \
+            "its agent exited, but processes it started still run; \
              `torlek session end {id}` stops them"
         );
         let write = self.database.write().await?;
@@ -1222,6 +1243,14 @@ impl Sessions {
             write.commit().await?;
         } else {
             write.rollback().await?;
+        }
+        if let Some(seen) = self
+            .agentless
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(id)
+        {
+            seen.is_reported = true;
         }
         Ok(is_flagged)
     }

@@ -280,8 +280,8 @@ async fn a_subscriber_that_stopped_reading_is_owed_its_buffer_not_every_commit()
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // One batch is being written, one waits for the buffer, and the commits since are one
-    // more. Without the bound the eight batches of the channel wait too.
+    // The buffer holds its bytes and at most one batch beyond them, and the commits since
+    // are one more. Without the bound the eight batches of the channel wait too.
     let mut batches = 0;
     loop {
         let rounds = subscriber.next_rounds().await;

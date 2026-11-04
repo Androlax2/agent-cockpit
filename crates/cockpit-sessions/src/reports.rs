@@ -195,8 +195,8 @@ pub(crate) async fn flag_unreported_launch(
     Ok(true)
 }
 
-/// Records that `launch` has no agent in its terminal while processes it started still run
-/// (#406): an open dialog question saying `reason`. No agent is left to answer it, so it
+/// Records that `launch`'s agent exited while processes it started still run (#406): an
+/// open dialog question saying `reason`. No agent is left to answer it, so it
 /// stays until the owner ends or restarts the session. `false`, recording nothing, when the
 /// question is already open or a newer launch began.
 pub(crate) async fn flag_agentless_launch(

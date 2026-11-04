@@ -47,7 +47,7 @@ async fn a_session_left_with_no_agent_waits_on_the_owner_with_the_command_that_e
     assert_eq!(
         report.needs_input,
         Some(format!(
-            "no agent runs in its terminal, but processes it started still run; \
+            "its agent exited, but processes it started still run; \
              `torlek session end {}` stops them",
             started.id
         ))
@@ -104,4 +104,27 @@ async fn a_session_whose_agent_runs_is_never_reported_as_having_none() {
     let question = question_after_passes(&client, &started.id).await;
 
     assert_eq!(question, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_whose_agent_waited_at_its_prompt_is_left_to_the_idle_sleep() {
+    let home = Home::new();
+    std::fs::write(home.leaving_agent_hold(), "").unwrap();
+    let daemon = home
+        .start(LEAVING_A_PROCESS, short_agentless_window())
+        .await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    let launch = home.launches(1).await;
+    home.report_as_agent(&launch[0], cockpit_sessions::AgentState::Waiting)
+        .await;
+    std::fs::remove_file(home.leaving_agent_hold()).unwrap();
+
+    let question = question_after_passes(&client, &started.id).await;
+
+    // The idle sleep, an hour away, stops what the agent left: no question before it.
+    assert!(!is_alive(launch[0].pid), "the agent exited");
+    assert_eq!(question, None);
+    end_session(&client, &started.id).await;
 }
