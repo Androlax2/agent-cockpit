@@ -38,6 +38,18 @@ and each gets ceilings: the lowest CPU weight, a CPU quota no larger than its re
 the profile (decided 2026-10-31; the legacy cockpit's Option C stays legacy-only). Only the
 owner's socket changes the profile: agents cannot award themselves foreground priority.
 
+## Low-disk guard (#406)
+
+The daemon's disk guard reads the free space of the state directory's filesystem every 30
+seconds and records it with `Backend::set_disk_space`. While it is below
+`storage.low_disk_floor_mib` (default 10240; 0 turns the guard off), `Policy::low_disk` is set
+and `admit`, `hold` and `check` return `Hold::LowDisk` for agent turns and heavy jobs.
+Deliveries and approvals keep going. The hold shows in `queue explain` and the TUI queue
+(reason `low-disk`) and in `doctor` (requirement `disk`). Low space also wakes the
+target-pruning pass at once, which deletes only what `[storage]` allows; the guard deletes
+nothing itself. The owner is told through the daemon log and `doctor`; no push notifier exists
+yet (#62, #63).
+
 ## Three pause operations
 
 - **Pause queue** (`set_queue_paused`): nothing new is admitted; running work is untouched.

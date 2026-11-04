@@ -24,6 +24,8 @@ pub(crate) struct Context {
     pub(crate) outputs: Arc<crate::output_retention::OutputPolicy>,
     /// The sessions' temporary folders, one per session, which the report measures (#766).
     pub(crate) session_temps: std::path::PathBuf,
+    /// Woken by the low-disk guard to run the automatic pass before its next interval.
+    pub(crate) sweep_now: Arc<tokio::sync::Notify>,
 }
 
 pub(crate) async fn settings(
@@ -591,7 +593,10 @@ pub(crate) async fn maintain_forever(context: Context, shared: Arc<crate::server
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut after = CheckoutId(0);
     loop {
-        ticks.tick().await;
+        tokio::select! {
+            _ = ticks.tick() => {}
+            () = context.sweep_now.notified() => {}
+        }
         if let Err(error) = automatic_pass(&context, &shared, &mut after).await {
             tracing::warn!(error = %error.message, "automatic target pruning deferred");
         }

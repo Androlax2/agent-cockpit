@@ -31,7 +31,7 @@ pub(super) async fn handoff(
         &request,
         &inputs,
         &context.settings,
-        &Policy::for_budget(context.admission.capacity()),
+        &context.admission.policy(),
         &context.admission.support(),
     )
     .await

@@ -140,6 +140,11 @@ pub fn render(config: &EffectiveConfig) -> String {
         &storage.sweep_on_session_end.source,
     ));
     lines.push(line(
+        "storage.low_disk_floor_mib",
+        &storage.low_disk_floor_mib.value.to_string(),
+        &storage.low_disk_floor_mib.source,
+    ));
+    lines.push(line(
         "workflow.preset",
         &config
             .workflow_preset

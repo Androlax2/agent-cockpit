@@ -15,7 +15,7 @@ use cockpit_protocol::{
     QueueSessionNoteView, QueueStepView, Reply,
 };
 use cockpit_provider_api::Capabilities;
-use cockpit_resource_admission::{Backend, Policy};
+use cockpit_resource_admission::Backend;
 use cockpit_scheduling::{Candidate, Dispatched, Explanation, Inputs, Placement, Presence, Unit};
 use cockpit_sessions::{AgentState, Session, SessionReport, SessionState, Sessions};
 use cockpit_turso::Database;
@@ -93,7 +93,7 @@ pub(crate) async fn dispatch_forever(context: Context) {
 /// write transaction.
 async fn pass(context: &Context) -> Result<Dispatched, Failed> {
     let inputs = inputs(context).await?;
-    let policy = Policy::for_budget(context.admission.capacity());
+    let policy = context.admission.policy();
     let write = context.database.write().await?;
     let dispatched = cockpit_scheduling::dispatch(
         &write,

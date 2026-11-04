@@ -34,7 +34,7 @@ pub use remove::remove_project;
 pub use source::SourceState;
 pub use storage::{
     CloneStorage, FolderReport, FolderStorage, StorageReport, TargetSize, clone_storage,
-    folder_storage,
+    folder_storage, free_space_mib,
 };
 pub use store::{
     MIGRATIONS, checkouts, claim, project_checkouts, project_named, project_named_or_numbered,

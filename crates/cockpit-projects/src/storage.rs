@@ -13,6 +13,12 @@ use rustix::io::Errno;
 use crate::store::{StoredCheckout, stored_clones_limited};
 use crate::{Checkout, CheckoutState, Error, blocking};
 
+/// Free space, in MiB, for an unprivileged user on the filesystem holding `path`.
+pub fn free_space_mib(path: &Path) -> std::io::Result<u64> {
+    let stat = rustix::fs::statvfs(path)?;
+    Ok(stat.f_bavail.saturating_mul(stat.f_frsize) / (1024 * 1024))
+}
+
 const MAX_CLONES: usize = 128;
 // Per clone, not per report: a real Rust `target/` holds hundreds of thousands of entries,
 // and a shared allowance let the first clone starve every later one (#764).
