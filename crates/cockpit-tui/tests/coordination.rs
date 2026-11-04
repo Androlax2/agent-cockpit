@@ -76,7 +76,7 @@ fn the_selected_card_shows_the_whole_message_its_agent_received() {
 fn an_unselected_card_shows_an_undelivered_message_on_one_truncated_row() {
     let now = Instant::now();
     let text = "check PR 12, then rebase the branch on main and rerun the focused tests";
-    for delivery in ["queued", "held", "failed"] {
+    for delivery in ["queued", "submitting", "uncertain", "failed", "expired"] {
         let app = coordinator_and_worker(message(delivery, text), now);
 
         let rows = screen(&app, now, 60);

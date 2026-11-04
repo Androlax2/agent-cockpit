@@ -351,8 +351,7 @@ fn truncated(text: &str, width: usize) -> String {
         row.push(character);
         row_columns += character_columns;
     }
-    row.push('…');
-    row
+    format!("{}…", row.trim_end())
 }
 
 fn draw_form(form: &Form, frame: &mut Frame<'_>, area: Rect) {
