@@ -4,7 +4,8 @@
 use std::path::PathBuf;
 
 use cockpit_agent_context::{
-    BRIEF_TARGET_BYTES, Grants, LaunchFacts, WorkflowFacts, brief, context_budget, manifest,
+    BRIEF_TARGET_BYTES, GithubTokenFact, Grants, LaunchFacts, WorkflowFacts, brief, context_budget,
+    manifest,
 };
 
 fn facts() -> LaunchFacts {
@@ -25,6 +26,7 @@ fn facts() -> LaunchFacts {
         }),
         manifest_id: manifest().id,
         profile: "dev".to_owned(),
+        github_token: Some(GithubTokenFact::Configured),
     }
 }
 
@@ -98,6 +100,40 @@ fn a_session_without_grants_says_so() {
 }
 
 #[test]
+fn a_project_with_a_token_is_told_gh_token_is_its_own() {
+    let text = brief(&facts());
+
+    assert!(
+        text.contains("this project has its own token, set as `GH_TOKEN`"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_project_without_a_token_is_told_gh_token_is_unset() {
+    let text = brief(&LaunchFacts {
+        github_token: Some(GithubTokenFact::Missing),
+        ..facts()
+    });
+
+    assert!(
+        text.contains("this project has no token of its own, so Torlek sets no `GH_TOKEN`"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_session_in_no_project_gets_no_github_line() {
+    let text = brief(&LaunchFacts {
+        project: None,
+        github_token: None,
+        ..facts()
+    });
+
+    assert!(!text.contains("GitHub"), "{text}");
+}
+
+#[test]
 fn the_brief_fits_the_orientation_target_with_long_fields() {
     let long = LaunchFacts {
         project: Some("p".repeat(64)),
@@ -114,6 +150,7 @@ fn the_brief_fits_the_orientation_target_with_long_fields() {
             has_checkpoint: true,
         }),
         session: "s".repeat(64),
+        github_token: Some(GithubTokenFact::Unusable),
         ..facts()
     };
 

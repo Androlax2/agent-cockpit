@@ -55,6 +55,9 @@ pub struct LaunchRequest {
     pub environment: Vec<(OsString, OsString)>,
     /// Secrets the environment holds, and how each crosses into the sandbox.
     pub secrets: Vec<Secret>,
+    /// What this launch alone may not read, beside the host's denials: the owner's `gh`
+    /// login once the launch's project has a token of its own (#754).
+    pub denied: Vec<PathBuf>,
     pub desktop: DesktopSession,
 }
 
@@ -180,7 +183,7 @@ impl Sandbox {
                 mount_dir,
                 owner_uid: host.owner_uid,
                 read_only: host.read_only.clone(),
-                denied: host.denied.clone(),
+                denied: host.denied.iter().chain(&request.denied).cloned().collect(),
                 denied_write: host.denied_write.clone(),
                 allow_hosts: Vec::new(),
                 environment: request.environment.clone(),

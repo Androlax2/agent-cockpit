@@ -112,6 +112,8 @@ printf '%s pid=%s\n' "$TORLEK_SESSION" "$$" >> '@LOG@'
 printf '%s %s\n' "$TORLEK_SESSION" "$*" >> '@LOG@.arguments'
 printf '%s %s %s\n' "$TORLEK_SESSION" "${TMPDIR-unset}" "${CLAUDE_CODE_TMPDIR-unset}" \
   >> '@TEMP_LOG@'
+printf '%s %s %s\n' "$TORLEK_SESSION" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" \
+  >> '@GITHUB_LOG@'
 case "${PWD##*/}" in
   @FLOOD@) exec yes 'cockpit latency fixture: one build log line after another, without pause' ;;
   @STALL@) trap '' TERM; while :; do sleep 1; done ;;
@@ -227,6 +229,7 @@ impl Home {
             FAKE_CLAUDE
                 .replace("@LOG@", &utf8(&home.launch_log()))
                 .replace("@TEMP_LOG@", &utf8(&home.temp_log()))
+                .replace("@GITHUB_LOG@", &utf8(&home.github_log()))
                 .replace("@FLOOD@", FLOOD_PROJECT)
                 .replace("@STALL@", STALL_PROJECT)
                 .replace("@REPORT@", REPORT_PROJECT)
@@ -286,6 +289,34 @@ impl Home {
     /// Each launched agent's session, `TMPDIR` and `CLAUDE_CODE_TMPDIR`, one line each.
     pub fn temp_log(&self) -> PathBuf {
         self.path().join("temp.log")
+    }
+
+    /// Each launched agent's session, `GH_TOKEN` and `GITHUB_TOKEN`, one line each (#754).
+    pub fn github_log(&self) -> PathBuf {
+        self.path().join("github.log")
+    }
+
+    /// Writes project `project`'s GitHub token file with `mode`, where the owner keeps it
+    /// (#754); its folder is owner-only.
+    pub fn write_github_token(&self, project: &str, contents: &str, mode: u32) {
+        let dir = self
+            .path()
+            .join("config")
+            .join(BUILD_PROFILE_DIR)
+            .join(cockpit_config::GITHUB_TOKENS_DIR);
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .unwrap();
+        let file = dir.join(project);
+        std::fs::write(&file, contents).unwrap();
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// Every daemon's standard error so far.
+    pub fn stderr(&self) -> String {
+        std::fs::read_to_string(self.stderr_log()).unwrap_or_default()
     }
 
     /// Session `id`'s temporary folder, its agent's `TMPDIR` (#766).

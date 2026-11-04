@@ -147,6 +147,7 @@ pub fn launch_request(session: &str, working_dir: &str) -> LaunchRequest {
             ("TORLEK_LAUNCH_TOKEN".into(), "token-1".into()),
         ],
         secrets: vec![launch_token()],
+        denied: Vec::new(),
         desktop: DesktopSession::Withheld,
     }
 }

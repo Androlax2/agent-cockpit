@@ -126,6 +126,33 @@ fn a_hosts_denied_path_reaches_the_profile() {
     );
 }
 
+#[test]
+fn a_launch_requests_own_denied_path_reaches_its_profile_beside_the_hosts() {
+    let settings = tempfile::tempdir().unwrap();
+    let sandbox = Sandbox::new(
+        Platform::Linux,
+        Ok(linux_engine(settings.path())),
+        HostPaths {
+            read_only: vec![PathBuf::from("/run/user/1000/cockpit/agent")],
+            denied: vec![PathBuf::from("/run/user/1000/cockpit/daemon.sock")],
+            denied_write: Vec::new(),
+            owner_uid: OWNER_UID,
+            mount_sources: PathBuf::from(MOUNT_SOURCES),
+        },
+    );
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.denied = vec![PathBuf::from("/home/owner/.config/gh")];
+
+    let rules = sandbox.profile(&request).unwrap().rules();
+
+    for rule in [
+        "deny /run/user/1000/cockpit/daemon.sock",
+        "deny /home/owner/.config/gh",
+    ] {
+        assert!(rules.contains(&rule.to_owned()), "{rule} in {rules:?}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_evidence_is_read_back_as_recorded_for_the_sessions_latest_launch() {
     let dir = tempfile::tempdir().unwrap();

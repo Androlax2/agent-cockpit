@@ -45,7 +45,8 @@ pub use handshake::{
 };
 pub use instructions::{ContextBudgetView, InstructionTopicView};
 pub use projects::{
-    CheckoutKindView, CheckoutView, KeptCheckout, KeptReason, ProjectView, TrustView,
+    CheckoutKindView, CheckoutView, GithubTokenView, KeptCheckout, KeptReason, ProjectView,
+    TrustView,
 };
 pub use queue::{QueueExplanationView, QueuePlacementView, QueueSessionNoteView, QueueStepView};
 pub use readiness::{ReadinessStatusView, RequirementView};
