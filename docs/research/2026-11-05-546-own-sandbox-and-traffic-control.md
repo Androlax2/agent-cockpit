@@ -45,7 +45,9 @@ hundreds of milliseconds. The case rests on correctness, one lifecycle and owner
 
 - [x] D1 decided 2026-11-05: C, staged (A first, then selective interception).
 - [x] D2 decided 2026-11-05: A, the proxy runs in each session's launcher.
-- [ ] Theo decides [D3 to D6](#decisions-for-the-owner) and approves or declines each
+- [x] D3 decided 2026-11-05: A, bubblewrap as a required host program; Torlek applies Landlock
+  and seccomp.
+- [ ] Theo decides [D4 to D6](#decisions-for-the-owner) and approves or declines each
   [proposed issue](#proposed-issues-not-filed).
 
 ## What was measured
@@ -210,6 +212,8 @@ with a `userns` rule, or `kernel.apparmor_restrict_unprivileged_userns` set to 0
 for the owner (`torlek ask guide`). bubblewrap has had no setuid mode since 0.12.0, so there is
 no fallback; the launcher refuses and says why. Debian, Arch's default kernel and WSL2's kernel
 allow user namespaces ([sources](546/measurements.md#prior-art-and-platform-sources)).
+
+Decided (D3): A.
 
 ### M2. Landlock
 
@@ -406,6 +410,9 @@ survives daemon restarts and a session's identity needs no secret. **B:** inside
 required host program, Landlock and seccomp applied by Torlek (M1 A); revisit B only if
 bubblewrap blocks a measured need. **B:** Torlek's own setup code. **C:** Landlock and seccomp
 without namespaces.
+
+**Decided 2026-11-05: A.** bubblewrap is a required host program; Torlek applies Landlock and
+seccomp itself.
 
 **D4. Scope of "allow always".** **A (recommended):** the project; another project asks again,
 so one project's need never widens another's network. **B:** the whole Torlek profile, as the
