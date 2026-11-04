@@ -15,6 +15,10 @@ No message text, path or identifier was copied into the repository.
 
 - The logs hold all of Theo's sessions on this machine, not only Torlek-launched ones, over the
   harnesses' retention. Counts are per log file or database session.
+- The logs are live, so the numbers are a snapshot taken at 2026-11-04 14:17 UTC (334 Claude Code
+  sessions with usage); a re-run later gives slightly larger counts.
+- A Claude Code **model call** is one API response. The transcript writes one record per content
+  block with the same message id and usage; the scripts that count calls merge them.
 - Tokens are the providers' own counts. Bytes (the brief) and tokens are never converted.
 - "Mid-turn" for Claude Code means the record before the compaction boundary is a tool result;
   for Codex that a turn was open; for OpenCode that the last step before the compaction ended in
@@ -24,7 +28,8 @@ No message text, path or identifier was copied into the repository.
   (23,678 tokens) to the threshold of a 300,000-token window, with the measured medians for time
   (76 s) and the first call's cache write (48,864 tokens). It is not an observation.
 - Reference retention counts a reference as kept if its text appears again in the summary
-  (case-insensitive substring). References are `#` and two to five digits, branch-like words
+  (case-insensitive substring; an issue number only as `#N` not followed by another digit).
+  References are `#` and two to five digits, branch-like words
   (`word/123-slug`), commit-like hexadecimal words of seven to twelve characters containing a
   digit and a letter, and base names of files an `Edit`, `Write`, `MultiEdit` or `NotebookEdit`
   call touched. The regular expressions are in the script and are approximate.
@@ -34,23 +39,41 @@ No message text, path or identifier was copied into the repository.
 
 ## Results not shown in the report
 
-- Claude Code peak context by model (sessions, p50 / p90 / max): Opus 5.5 275, 175,179 / 273,299
-  / 966,801; Fable 5.1 23, 182,337 / 912,256 / 967,920; Haiku 5.5 24, 44,937 / 56,532 / 60,853;
-  Sonnet 5.5 7, 92,530 / 156,719 / 233,936.
+- Claude Code peak context by model (sessions, p50 / p90 / max): Opus 5.5 275, 177,781 / 273,299
+  / 966,801; Fable 5.1 23, 182,337 / 912,256 / 967,920; Sonnet 5.5 9, 205,286 / 249,272 / 262,510;
+  Haiku 5.5 24, 44,937 / 56,532 / 60,853.
 - Claude Code sessions with a peak of at least 100,000 / 200,000 / 250,000 / 400,000 / 800,000
-  tokens: 227 / 130 / 101 / 24 / 13 of 332.
-- Claude Code assistant calls between two compactions on the 300,000-token window: p50 190, p90
-  293. Eight manual compactions (5 followed by a model call): p50 65.1 s, post-compaction p50
+  tokens: 232 / 134 / 102 / 24 / 13 of 334.
+- Claude Code model calls between two compactions on the 300,000-token window: p50 99, p90 151.
+  Eight manual compactions (5 followed by a model call): p50 65.1 s, post-compaction p50
   15,731 tokens.
 - Codex sessions reaching 50 / 60 / 70 / 80 / 90 % of their window: 29 / 26 / 22 / 19 / 16 of 81.
 - OpenCode sessions with a peak of at least 100,000 / 150,000 / 200,000 / 300,000 tokens: 125 /
-  67 / 37 / 18 of 566. The wall time of compaction has outliers of weeks (interrupted and
-  resumed sessions); the median is used.
+  67 / 37 / 18 of 566. 13 of the 33 compactions show a wall time over an hour (interrupted and
+  resumed sessions); the median of all 33 is used, so it is the least certain figure in the report.
 - Installed binaries were searched for option names only (`grep -a -c`); no option was run.
 
 ## Scripts
 
 Run each with `python3 -I`. They are reproduced as run.
+
+### Claude Code: boundaries by trigger and size
+
+```python
+"""Claude Code compaction boundaries by trigger and by size of the context when they fired. Numbers only."""
+import json, glob, os, collections
+
+counts = collections.Counter(); sessions = set()
+for path in glob.glob(os.path.expanduser('~/.claude/projects/*/*.jsonl')):
+    for line in open(path, errors='replace'):
+        if 'compact_boundary' not in line: continue
+        d = json.loads(line)
+        if d.get('type') != 'system' or d.get('subtype') != 'compact_boundary' or d.get('isSidechain'): continue
+        meta = d['compactMetadata']
+        counts[meta['trigger'], 'below 500k' if meta['preTokens'] < 500_000 else 'above 500k'] += 1
+        sessions.add(path)
+print('boundaries by (trigger, context when fired):', dict(counts), 'sessions with one:', len(sessions))
+```
 
 ### Claude Code: how full, when it compacts, cost
 
@@ -129,7 +152,6 @@ for trig in ('auto', 'manual'):
     print('  position before boundary:', collections.Counter(e['prev'] for e in ev))
     nc = [e.get('next_create') for e in ev if e.get('next_create') is not None]; nr = [e.get('next_read') for e in ev if e.get('next_read') is not None]
     print('  first call after: cache_create p50/p90', pct(nc, 50), pct(nc, 90), 'cache_read p50', pct(nr, 50), 'n', len(nc))
-    pre_models = collections.Counter()
 auto_pre = sorted(e['pre'] for e in events if e['trigger'] == 'auto' and e['pre'])
 print('auto pre values (all):', auto_pre)
 print('boundaries by day:', sorted(collections.Counter(e['ts'][:10] for e in events).items()))
@@ -170,24 +192,33 @@ for path in glob.glob(os.path.expanduser('~/.claude/projects/*/*.jsonl')):
             if not u or msg.get('model') == '<synthetic>': continue
             ctx = u.get('input_tokens', 0) + u.get('cache_read_input_tokens', 0) + u.get('cache_creation_input_tokens', 0)
             if not ctx: continue
-            seg['calls'] += 1
-            seg['points'].append((ctx, ts(d['timestamp']), msg.get('stop_reason')))
+            # One API response is written as several records (one per content block) with the
+            # same message id and usage; the last one carries the stop reason.
+            if seg['points'] and seg.get('last_id') == msg.get('id'):
+                seg['points'][-1] = (ctx, ts(d['timestamp']), msg.get('stop_reason') or seg['points'][-1][2])
+            else:
+                seg['calls'] += 1
+                seg['points'].append((ctx, ts(d['timestamp']), msg.get('stop_reason')))
+            seg['last_id'] = msg.get('id')
 auto = [s for s in segments if s['trigger'] == 'auto' and s['pre'] < 500_000]
 print('auto segments on the 300k window:', len(auto))
-print('assistant calls per segment p50/p90:', pct([s['calls'] for s in auto], 50), pct([s['calls'] for s in auto], 90))
+print('model calls per segment p50/p90:', pct([s['calls'] for s in auto], 50), pct([s['calls'] for s in auto], 90))
 for frac in (0.5, 0.6, 0.7, 0.8):
-    thr = frac * WINDOW; have = 0; lag_tokens = []; lag_secs = []; remaining_calls = []
+    threshold_tokens = frac * WINDOW; have = 0; lag_tokens = []; lag_secs = []; remaining_calls = []; calls_without_stop = []
     for s in auto:
-        crossed = next((i for i, (c, _, _) in enumerate(s['points']) if c >= thr), None)
+        crossed = next((i for i, (c, _, _) in enumerate(s['points']) if c >= threshold_tokens), None)
         if crossed is None: continue
         tail = s['points'][crossed:]
         remaining_calls.append(len(tail))
         stop = next((p for p in tail if p[2] == 'end_turn'), None)
         if stop:
-            have += 1; lag_tokens.append(stop[0] - thr); lag_secs.append(stop[1] - tail[0][1])
+            have += 1; lag_tokens.append(stop[0] - threshold_tokens); lag_secs.append(stop[1] - tail[0][1])
+        else:
+            calls_without_stop.append(len(tail))
     n = len(remaining_calls)
-    print(f'{int(frac*100)}% ({int(thr)}): segments crossing {n}; with an end_turn before harness compaction {have}; '
-          f'calls between crossing and compaction p50/p90 {pct(remaining_calls, 50)}/{pct(remaining_calls, 90)}; '
+    print(f'{int(frac*100)}% ({int(threshold_tokens)}): segments crossing {n}; with an end_turn before harness compaction {have}; '
+          f'model calls between crossing and compaction p50/p90 {pct(remaining_calls, 50)}/{pct(remaining_calls, 90)}, '
+          f'in the {len(calls_without_stop)} cycles with no turn end p50/p90 {pct(calls_without_stop, 50)}/{pct(calls_without_stop, 90)}; '
           f'first idle point: tokens past threshold p50/p90 {pct(lag_tokens, 50)}/{pct(lag_tokens, 90)}, seconds after crossing p50/p90 {pct(lag_secs, 50)}/{pct(lag_secs, 90)}')
 ```
 
@@ -256,19 +287,26 @@ for path in glob.glob(os.path.expanduser('~/.claude/projects/*/*.jsonl')):
             awaiting_summary = True; continue
         if awaiting_summary and t == 'user' and d.get('isCompactSummary'):
             summary = text_of(d.get('message', {}).get('content'))
+            lowered = summary.lower()
+
+            def hit(kind, value):
+                # An issue number counts only as `#N` followed by a non-digit, never as a bare digit run.
+                if kind == 'issue':
+                    return re.search(r'#' + re.escape(value) + r'(?!\d)', summary) is not None
+                return value.lower() in lowered
             sizes.append(len(summary))
             counts = {}
             for kind, mentions in items.items():
                 if not mentions: continue
                 seen = len(mentions)
-                survived = sum(1 for value in mentions if value.lower() in summary.lower())
+                survived = sum(1 for value in mentions if hit(kind, value))
                 found[kind] += seen; kept[kind] += survived
                 # recency: split mentions by last-mention position
                 ordered = sorted(mentions.items(), key=lambda kv: kv[1])
                 half = len(ordered) // 2
                 for label, subset in (('older', ordered[:half]), ('newer', ordered[half:])):
                     found[(kind, label)] += len(subset)
-                    kept[(kind, label)] += sum(1 for value, _ in subset if value.lower() in summary.lower())
+                    kept[(kind, label)] += sum(1 for value, _ in subset if hit(kind, value))
             items = {k: {} for k in ('issue', 'branch', 'file', 'sha')}
             awaiting_summary = False
             continue
@@ -385,8 +423,6 @@ for sid, msgs in by_session.items():
             events.append(dict(pre=prev_ctx, finish_before=prev_finish, dur=(updated - created) / 1000, out=tout, model=model))
             compaction_seen += 1
             continue
-        if events and events[-1].get('post') is None and compaction_seen and events[-1].get('sid') is None:
-            pass
         peak = max(peak, ctx); prev_ctx = ctx; prev_finish = finish
     if peak: peaks.append(peak)
 print('sessions with usage:', len(peaks))
@@ -401,4 +437,6 @@ print('compaction wall s p50/p90/max:', pct(dur, 50), pct(dur, 90), max(dur) if 
 print('summary output tokens p50/p90:', pct([e['out'] for e in events if e['out']], 50), pct([e['out'] for e in events if e['out']], 90))
 print('finish of last step before compaction:', collections.Counter(e['finish_before'] for e in events))
 print('models at compaction:', collections.Counter(e['model'] for e in events))
+print('compaction parts by auto flag:', db.execute("select json_extract(data,'$.auto'), count(*) from part where json_extract(data,'$.type')='compaction' group by 1").fetchall())
+print('compaction durations over one hour (interrupted, kept in the median above):', sum(1 for e in events if e['dur'] > 3600))
 ```

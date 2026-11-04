@@ -13,7 +13,7 @@ a trigger which waits for a safe moment would leave about one cycle in three to 
 
 1. **Make a compaction harmless first.** Every harness already re-runs a hook (or plugin) after a
    compaction, and Torlek already uses it for the launch brief. Extend that answer with a bounded
-   task packet: goal, step, latest checkpoint, last handoff. The harness summary kept only 65 % of
+   task packet: goal, step, latest checkpoint, last handoff. The harness summary kept only 48 % of
    the issue and PR numbers, 51 % of the branch names and 36 % of the commit hashes it had
    seen (Claude Code, 120 summaries). Torlek holds those facts exactly and need not ask a model
    to remember them.
@@ -40,24 +40,25 @@ Until Theo decides, the harness defaults stay as they are.
 Method, scripts and limits are in [the measurement appendix](686/measurements.md). All figures
 come from the harnesses' own logs on this machine, read by script. Only token counts, timestamps,
 record types and counts of references were taken; no message text, path or identifier is
-recorded here. They are Theo's sessions of all kinds, not only Torlek-launched ones. They are
+recorded here, and nothing the harnesses stored as text was copied. They are Theo's sessions of all kinds, not only Torlek-launched ones. They are
 observations, not a benchmark; no live provider call was made for this research.
 
 ### How full sessions get, and when each harness compacts today
 
 | | Claude Code | Codex | OpenCode |
 | --- | --- | --- | --- |
-| Sessions with usage / period | 332, 2026-10-07 to 11-04 | 81, 2026-10-08 to 11-03 | 566, older models mostly |
-| Peak context, p50 / p90 / max (tokens) | 155,010 / 280,898 / 967,920 | 106,881 / 244,638 / 449,775 | 50,546 / 165,100 / 967,603 |
+| Sessions with usage / period | 334, 2026-10-07 to 11-04 | 81, 2026-10-08 to 11-03 | 566, older models mostly |
+| Peak context, p50 / p90 / max (tokens) | 165,116 / 280,885 / 967,920 | 106,881 / 244,638 / 449,775 | 50,546 / 165,100 / 967,603 |
 | Sessions that compacted | 82 (25 %) | 15 (19 %) | not counted per session |
 | Compactions | 120: 112 automatic, 8 manual | 55 | 33 (30 flagged automatic) |
 | Context when it fired, p50 | 269,001 tokens (automatic) | 243,752 tokens, 94.3 % of the window | 169,819 tokens |
-| Fired while work was running | 89 of 102 right after a tool result; 7 right after a user prompt | 54 of 55 inside a turn | 19 of 33 after a step that ended in tool calls; 14 unknown |
+| Fired while work was running | 89 of 102 right after a tool result; 7 right after a user prompt, 4 after assistant text, 2 unknown | 54 of 55 inside a turn | 19 of 33 after a step that ended in tool calls; 14 unknown |
 | Context after, p50 | 23,678 tokens | 30,525 tokens | summary of 1,686 output tokens |
 | Time, p50 | 76 s (p90 106 s) | not recorded | 86 s |
 
-- **The premise holds.** In 87 % of Claude Code's automatic compactions and 98 % of Codex's the
-  harness stopped work in the middle of a turn.
+- **The premise holds.** In 89 of the 102 Claude Code automatic compactions that a model call
+  followed (87 %; 10 of the 112 had none) the previous record was a tool result: the agent was
+  still working. In Codex a turn was open for 54 of 55 (98 %).
 - **Claude Code's threshold is Theo's setting.** 78 of the 112 automatic compactions fired between
   215,000 and 317,000 tokens, mostly at 266,000 to 273,000: 89 % of the `autoCompactWindow` of
   300,000 in `~/.claude/settings.json`. 34 fired above 760,000, mostly near 968,000, the documented
@@ -77,18 +78,21 @@ For the 78 automatic compactions on Claude Code's 300,000-token window, did an a
 (`end_turn`, the agent back at its prompt) after the context crossed a threshold and before the
 harness compacted anyway?
 
-| Threshold | Cycles with a turn end first | Tokens past the threshold at the first turn end, p50 / p90 | Seconds after crossing, p50 / p90 | Model calls left before the harness compacts, p50 |
+| Threshold | Cycles with a turn end first | Tokens past the threshold at the first turn end, p50 / p90 | Seconds after crossing, p50 / p90 | Model calls left before the harness compacts, p50: all cycles (cycles with no turn end) |
 | --- | --- | --- | --- | --- |
-| 50 % (150,000) | 52 of 78 | 41,140 / 88,934 | 503 / 1,627 | 129 |
-| 60 % (180,000) | 52 of 78 | 29,856 / 63,872 | 323 / 1,041 | 100 |
-| 70 % (210,000) | 52 of 78 | 16,970 / 40,950 | 185 / 714 | 65 |
-| 80 % (240,000) | 42 of 76 | 12,526 / 25,316 | 113 / 472 | 32 |
+| 50 % (150,000) | 52 of 78 | 41,140 / 88,934 | 502 / 1,627 | 63 (50) |
+| 60 % (180,000) | 52 of 78 | 29,856 / 63,872 | 323 / 1,037 | 50 (38) |
+| 70 % (210,000) | 52 of 78 | 16,970 / 40,950 | 183 / 713 | 34 (26) |
+| 80 % (240,000) | 42 of 76 | 12,526 / 25,316 | 113 / 472 | 16 (13) |
+
+A model call is one API response; the transcript writes several records for one response, which
+the script merges (a cycle is 99 calls at the median).
 
 - **A rule "at 60 %, compact when idle" would have caught 67 % of cycles** (52 of 78), at a median
-  of 70 % of the window, five minutes later. The other 26 cycles ran a median of 100 more model
-  calls inside one turn with no stop. Those still reach the harness's compaction mid-turn.
-- Of 2,496 turns that ended with at least 150,000 tokens of context and were followed by a user
-  prompt, 446 (18 %) waited five minutes or more for it, 50 an hour or more and 10 eight hours or
+  of 70 % of the window, five minutes later. The other 26 cycles ran a median of 38 more model
+  calls with no turn end. Those still reach the harness's compaction mid-turn.
+- Of 2,512 turns that ended with at least 150,000 tokens of context and were followed by a user
+  prompt, 449 (18 %) waited five minutes or more for it, 50 an hour or more and 10 eight hours or
   more. Claude
   Code's own idle compaction acts on the one-hour cases (below).
 
@@ -100,14 +104,14 @@ the summary (median summary: 19,032 characters)?
 
 | Reference | Mentioned before | Appear in the summary | Older half / newer half of the mentions |
 | --- | --- | --- | --- |
-| Issue and PR numbers (`#123`) | 1,939 | 1,268 (65 %) | 55 % / 75 % |
+| Issue and PR numbers (`#123`) | 1,939 | 934 (48 %) | 35 % / 61 % |
 | Branch names | 251 | 129 (51 %) | 47 % / 55 % |
 | Edited file names | 771 | 584 (76 %) | 69 % / 81 % |
 | Commit hashes | 752 | 270 (36 %) | 25 % / 45 % |
 
 This is a proxy: a reference missing from a summary may be one nobody needs again, and a present
-one may be misdescribed. It does show the shape of the loss: exact identifiers fade first, and
-older ones fade faster. The task, decisions and open questions the issue asks about live in prose,
+one may be misdescribed. It does show the shape of the loss: exact identifiers fade, and older
+ones fade faster. The task, decisions and open questions the issue asks about live in prose,
 so a count cannot grade them. Codex and OpenCode summaries were not counted: OpenCode keeps them
 in the same private database, and Codex's sit in a replacement-history field that was not parsed.
 The documented survival rules are the other half of the answer:
@@ -207,10 +211,11 @@ arithmetic over the medians above (Claude Code, window 300,000, post-compaction 
 | --- | --- | --- | --- | --- | --- |
 | 60 % | 6.4 | 8.1 min | 313,000 | 1.15 | 101,839 |
 | 70 % | 5.4 | 6.8 min | 264,000 | 1.13 | 116,839 |
-| 89 % (today) | 4.1 | 5.2 min | 200,000 | 1.10 | 145,339 |
+| 89 % (Theo's 300,000 window today) | 4.1 | 5.2 min | 200,000 | 1.10 | 145,339 |
 
 Earlier compaction costs about 2.9 more minutes and 113,000 more cache-written tokens per million
-new tokens, in exchange for a context about 30 % smaller on every call. Whether that is cheaper
+new tokens, in exchange for a context about 30 % smaller on every call: that mean carried context
+is what each call re-reads from the cache, so cache reads fall by about the same share. Whether that is cheaper
 depends on prices the research did not use, and whether the agent works better at 60 % than at
 89 % was **not measured**. Compacting while the cache is still warm avoids paying to re-read a
 cold prefix, which is why Claude Code ships its own idle compaction at the one-hour mark.
