@@ -401,12 +401,14 @@ impl Handler for Routes {
                 Peer::Agent { .. } => Route::Answer(owner_only()),
                 Peer::Owner => sessions::route(command, Arc::clone(&self.sessions)),
             },
-            // What an agent may do to tasks: file, read and work its own items. Whether it may
-            // touch a given item is `cockpit-tasks`' rule, not the socket's.
+            // What an agent may do to tasks: file, read and work its own items, and fix the
+            // title and notes of what it filed (#714). Whether it may touch a given item is
+            // `cockpit-tasks`' rule, not the socket's.
             (
                 command @ (Command::TaskAdd { .. }
                 | Command::TaskList { .. }
                 | Command::TaskShow { .. }
+                | Command::TaskEdit { .. }
                 | Command::TaskStart { .. }
                 | Command::TaskDone { .. }
                 | Command::TaskDelete { .. }),
@@ -433,10 +435,9 @@ impl Handler for Routes {
                     )),
                 }
             }
-            // Deciding, ordering, editing and attaching are the owner's.
+            // Deciding, ordering and attaching are the owner's.
             (
-                command @ (Command::TaskEdit { .. }
-                | Command::TaskPriority { .. }
+                command @ (Command::TaskPriority { .. }
                 | Command::TaskQueue { .. }
                 | Command::TaskApprove { .. }
                 | Command::TaskDecline { .. }

@@ -68,6 +68,7 @@ fn edit_keeps_its_revision_and_text_when_refresh_and_refusal_arrive() {
     assert_eq!(
         sent,
         vec![Command::TaskEdit {
+            launch_token: None,
             item: 7,
             intent_revision: Some(2),
             title: Some("Fix login safely".into()),

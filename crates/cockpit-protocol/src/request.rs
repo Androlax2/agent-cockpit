@@ -481,8 +481,11 @@ pub enum Command {
         launch_token: Option<String>,
         item: i64,
     },
-    /// Owner only: replace what is given. `intent_revision`, when given, must be current.
+    /// Replace what is given. `intent_revision`, when given, must be current. A session edits
+    /// only the title and notes of an item it filed that nobody started (#714).
     TaskEdit {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
         item: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         intent_revision: Option<i64>,

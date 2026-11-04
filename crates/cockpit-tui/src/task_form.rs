@@ -97,6 +97,7 @@ impl TaskForm {
         }
         let command = match self.item {
             Some((item, revision)) => Command::TaskEdit {
+                launch_token: None,
                 item,
                 intent_revision: Some(revision),
                 title: Some(self.title.clone()),

@@ -8,16 +8,19 @@
 //!
 //! The owner may do everything. A session needs `change-state` over itself, granted at
 //! launch, and acts only on its own project's items and those it filed; filing in another
-//! project's list counts against that pair's cap.
+//! project's list counts against that pair's cap. It may fix the title and notes of what it
+//! filed while nobody started it, each edit audited under that grant (#714).
 
 use std::collections::HashMap;
 
-use cockpit_authorization::{Permission, Scope, SessionId};
+use cockpit_authorization::{
+    Audit, AuditedAction, Basis, GrantId, Outcome, Permission, Revision, Scope, SessionId,
+};
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 
 use crate::error::invalid;
-use crate::text::{self, NOTES_MAX_CHARS, SUMMARY_MAX_CHARS, WHY_MAX_CHARS};
+use crate::text::{self, NOTES_MAX_CHARS, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, WHY_MAX_CHARS};
 use crate::{
     Actor, Edit, Error, Item, ItemId, Kind, NewItem, Priority, Refusal, SessionWork, Settings,
     Status, Wait,
@@ -404,8 +407,12 @@ async fn counts_by_session(
     Ok(counts)
 }
 
-/// The owner's change to what is asked. `expected_intent_revision`, when given, must be the
-/// current one, so an edit made on an older reading is refused instead of overwriting.
+/// A change to what is asked: the title, notes or kind, a new intent revision; an edit that
+/// changes nothing is none, so a retried edit does not move the revision.
+/// `expected_intent_revision`, when given, must be the current one, so an edit made on an
+/// older reading is refused instead of overwriting. The owner edits any item; a session only
+/// the title and notes of an item it filed that nobody started (`proposed` or `todo`), each
+/// such edit audited under its `change-state` grant with the old and new values (#714).
 pub async fn edit(
     write: &WriteTransaction<'_>,
     actor: &Actor,
@@ -414,8 +421,15 @@ pub async fn edit(
     edit: Edit,
     now: i64,
 ) -> Result<Item, Error> {
-    owner_only(actor, "edit an item")?;
-    let item = required(write, id).await?;
+    let (item, editor) = match actor {
+        Actor::Owner => (required(write, id).await?, None),
+        Actor::Session { session, .. } => {
+            let under = session_allowed(write, session).await?;
+            let item = visible(write, actor, id).await?;
+            session_may_edit(&item, session, &edit)?;
+            (item, Some((session, under)))
+        }
+    };
     if let Some(expected) = expected_intent_revision
         && expected != item.intent_revision
     {
@@ -428,13 +442,29 @@ pub async fn edit(
         .title
         .map(|title| text::title("title", &title))
         .transpose()?
-        .unwrap_or(item.title);
+        .filter(|title| *title != item.title);
     let notes = edit
         .notes
         .map(|notes| text::body("notes", &notes, NOTES_MAX_CHARS))
         .transpose()?
-        .unwrap_or(item.notes);
-    let kind = edit.kind.unwrap_or(item.kind);
+        .filter(|notes| *notes != item.notes);
+    let kind = edit.kind.filter(|kind| *kind != item.kind);
+    if title.is_none() && notes.is_none() && kind.is_none() {
+        return Ok(item);
+    }
+    let audit = editor.map(|(session, under)| Audit {
+        actor: session.clone(),
+        permission: Permission::ChangeState,
+        grant: under.grant,
+        revision: under.revision,
+        action: AuditedAction::Edited,
+        target: None,
+        detail: Some(edited_detail(&item, title.as_deref(), notes.as_deref())),
+        at: now,
+    });
+    let title = title.unwrap_or(item.title);
+    let notes = notes.unwrap_or(item.notes);
+    let kind = kind.unwrap_or(item.kind);
     write
         .execute(
             "UPDATE tasks_items SET title = ?2, title_key = ?3, notes = ?4, kind = ?5,
@@ -450,7 +480,69 @@ pub async fn edit(
             ),
         )
         .await?;
+    if let Some(audit) = audit {
+        cockpit_authorization::record_audit(write, &audit).await?;
+    }
     required(write, id).await
+}
+
+/// A session edits only the title and notes of what it filed and nobody started; the kind,
+/// like every other field, stays the owner's.
+fn session_may_edit(item: &Item, session: &SessionId, edit: &Edit) -> Result<(), Refusal> {
+    if item.filed_by.as_ref() != Some(session) {
+        return Err(Refusal::OwnerOnly {
+            action: "edit an item the session did not file",
+        });
+    }
+    if edit.kind.is_some() {
+        return Err(Refusal::OwnerOnly {
+            action: "change an item's kind",
+        });
+    }
+    if edit.title.is_none() && edit.notes.is_none() {
+        return Err(invalid("edit", "names neither a title nor notes"));
+    }
+    in_status(
+        item,
+        &[Status::Proposed, Status::Todo],
+        "be edited by the session that filed it",
+    )
+}
+
+/// How much of a value the audit keeps: a whole title; of notes, their head and their length.
+/// Audit rows are never removed, and `session grants` ships them whole.
+const AUDIT_EXCERPT_CHARS: usize = TITLE_MAX_CHARS;
+
+/// What a session's edit changed, for the audit: the item, then each field that changed with
+/// the old and the new value. Plain quotes, nothing escaped: the CLI escapes the line it
+/// prints.
+fn edited_detail(before: &Item, title: Option<&str>, notes: Option<&str>) -> String {
+    let mut detail = format!("item {}", before.id.0);
+    let mut separator = ": ";
+    for (field, old, new) in [
+        ("title", &before.title, title),
+        ("notes", &before.notes, notes),
+    ] {
+        let Some(new) = new else {
+            continue;
+        };
+        detail.push_str(&format!(
+            "{separator}{field} {} -> {}",
+            excerpt(old),
+            excerpt(new)
+        ));
+        separator = "; ";
+    }
+    detail
+}
+
+fn excerpt(value: &str) -> String {
+    let length = value.chars().count();
+    if length <= AUDIT_EXCERPT_CHARS {
+        return format!("\"{value}\"");
+    }
+    let head: String = value.chars().take(AUDIT_EXCERPT_CHARS).collect();
+    format!("\"{head}...\" ({length} chars)")
 }
 
 pub async fn set_priority(
@@ -747,9 +839,20 @@ async fn open_waiting_on(connection: &Connection, id: ItemId) -> Result<Vec<Item
 /// A session needs `change-state` over itself for anything on tasks; the owner holds every
 /// permission.
 async fn authorize(connection: &Connection, actor: &Actor) -> Result<(), Error> {
-    let Actor::Session { session, .. } = actor else {
-        return Ok(());
-    };
+    if let Actor::Session { session, .. } = actor {
+        session_allowed(connection, session).await?;
+    }
+    Ok(())
+}
+
+/// The grant a session's allowed action is decided under, and the revision it read: what the
+/// audit of the action records.
+struct Allowed {
+    grant: GrantId,
+    revision: Revision,
+}
+
+async fn session_allowed(connection: &Connection, session: &SessionId) -> Result<Allowed, Error> {
     let decision = cockpit_authorization::evaluate(
         connection,
         &cockpit_authorization::Actor::Session(session.clone()),
@@ -758,10 +861,14 @@ async fn authorize(connection: &Connection, actor: &Actor) -> Result<(), Error> 
     )
     .await?;
     match decision.outcome {
-        cockpit_authorization::Outcome::Allowed(_) => Ok(()),
-        cockpit_authorization::Outcome::Refused(refusal) => {
-            Err(Refusal::NotAuthorized(refusal).into())
+        Outcome::Allowed(Basis::Grant(grant)) => Ok(Allowed {
+            grant,
+            revision: decision.revision,
+        }),
+        Outcome::Allowed(Basis::Owner) => {
+            unreachable!("`evaluate` allows a session only by a grant, never as the owner")
         }
+        Outcome::Refused(refusal) => Err(Refusal::NotAuthorized(refusal).into()),
     }
 }
 

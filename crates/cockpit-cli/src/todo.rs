@@ -120,6 +120,7 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
             )?;
             flags.no_positional()?;
             let edit = Command::TaskEdit {
+                launch_token: token,
                 item: item_id(id)?,
                 intent_revision: flags.number("--revision", "a revision")?,
                 title: flags.take("--title"),

@@ -487,7 +487,7 @@ async fn the_audit_keeps_both_sessions_of_each_action() {
 }
 
 #[tokio::test]
-async fn only_coordinator_grants_are_audited() {
+async fn a_grant_that_is_neither_a_coordinators_nor_change_state_is_not_audited() {
     let database = open("audit-coordinator-only").await;
     let given = grant(
         &database,
@@ -883,5 +883,74 @@ async fn entries_audited_before_the_ended_action_survive_the_rebuild() {
         entry.audit.detail.as_deref(),
         Some("approval request 3, by the owner")
     );
+    assert_eq!(entry.audit.at, NOW);
+}
+
+/// #714: a session's edit of a task item it filed is audited under its `change-state` grant,
+/// with no target and the item in the detail.
+#[tokio::test]
+async fn an_edit_of_an_own_item_is_audited_under_change_state() {
+    let database = open("edit-audited").await;
+    let editor = session("worker");
+    let given = grant(
+        &database,
+        &editor,
+        Permission::ChangeState,
+        &Scope::Session(editor.clone()),
+    )
+    .await;
+    let write = database.write().await.unwrap();
+    let audited = Audit {
+        actor: editor.clone(),
+        permission: Permission::ChangeState,
+        grant: given.id,
+        revision: given.granted_at,
+        action: AuditedAction::Edited,
+        target: None,
+        detail: Some("item 36: title \"#711?\" -> \"#713\"".to_owned()),
+        at: NOW,
+    };
+    let id = record_audit(&write, &audited).await.unwrap();
+    write.commit().await.unwrap();
+
+    let read = database.read().await.unwrap();
+    let entries = audit_of(&read, &editor, 10).await.unwrap();
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, id);
+    assert_eq!(entries[0].audit, audited);
+}
+
+#[tokio::test]
+async fn entries_audited_before_the_edited_action_survive_the_rebuild() {
+    const BEFORE_EDITS: cockpit_turso::MigrationSet = cockpit_turso::MigrationSet {
+        owner: "authorization",
+        migrations: cockpit_authorization::MIGRATIONS.migrations.split_at(5).0,
+    };
+    let path = common::database_path("edited-audit-rebuild");
+    let before = Database::open(&path, &[BEFORE_EDITS]).await.unwrap();
+    let write = before.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO authorization_audit
+                (id, actor, permission, grant_id, revision, action, target, detail, at)
+             VALUES (9, 'coordinator', 'end-sessions', 2, 3, 'ended', 'worker',
+                'item 0a1b2c3d', ?1)",
+            [NOW],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(before);
+
+    let after = Database::open(&path, &[cockpit_authorization::MIGRATIONS])
+        .await
+        .unwrap();
+    let read = after.read().await.unwrap();
+
+    let entry = audit_entry(&read, 9).await.unwrap().unwrap();
+    assert_eq!(entry.audit.action, AuditedAction::Ended);
+    assert_eq!(entry.audit.target, Some(session("worker")));
+    assert_eq!(entry.audit.detail.as_deref(), Some("item 0a1b2c3d"));
     assert_eq!(entry.audit.at, NOW);
 }

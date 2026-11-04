@@ -13,7 +13,8 @@ use cockpit_agent_channel::{LaunchToken, identity_of};
 use cockpit_authorization::Permission;
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
-    Command, ErrorCode, HexBytes, Reply, TaskDraftTargetView, TaskStatusView, TaskView, UnblockedBy,
+    Command, ErrorCode, HexBytes, Reply, TaskDraftTargetView, TaskKindView, TaskStatusView,
+    TaskView, UnblockedBy,
 };
 use common::{GENEROUS, TestHome, refused};
 
@@ -140,6 +141,25 @@ impl Tasks {
             })
             .await,
         )
+    }
+
+    /// The agent fixes `item`'s title and notes, as `torlek todo edit` sends it.
+    async fn agent_edits(
+        &self,
+        item: i64,
+        title: Option<&str>,
+        notes: Option<&str>,
+        item_kind: Option<TaskKindView>,
+    ) -> Result<Reply, ClientError> {
+        self.as_agent(Command::TaskEdit {
+            launch_token: self.token(),
+            item,
+            intent_revision: None,
+            title: title.map(str::to_owned),
+            notes: notes.map(str::to_owned),
+            item_kind,
+        })
+        .await
     }
 
     async fn reported(&self, title: &str) -> Result<Reply, ClientError> {
@@ -340,13 +360,6 @@ async fn an_agent_finishes_an_item_and_the_item_waiting_on_it_shows_its_summary(
 async fn the_agent_socket_refuses_the_owners_task_commands() {
     let tasks = started(&["app"], "").await;
     let owner_commands = [
-        Command::TaskEdit {
-            item: 1,
-            intent_revision: None,
-            title: Some("x".to_owned()),
-            notes: None,
-            item_kind: None,
-        },
         Command::TaskPriority {
             item: 1,
             priority: 3,
@@ -452,4 +465,131 @@ async fn a_draft_of_a_project_that_is_not_registered_can_still_be_discarded() {
         .await;
 
     assert_eq!(discarded.unwrap(), Reply::TaskDraftDiscarded);
+}
+
+/// #714: an agent fixes the title and notes of an item it filed itself while nobody started
+/// it; the owner reads each edit in the session's audit.
+#[tokio::test]
+async fn an_agent_fixes_the_title_and_notes_of_an_item_it_filed_and_the_edit_is_audited() {
+    let tasks = started(&["app"], "").await;
+    let filed = task(
+        tasks
+            .agent_adds(None, "#711? coordinator can end the workers it started")
+            .await,
+    );
+
+    let edited = task(
+        tasks
+            .agent_edits(
+                filed.id,
+                Some("#713 coordinator can end the workers it started"),
+                Some("Filed before the issue number existed."),
+                None,
+            )
+            .await,
+    );
+    let audit = match tasks
+        .as_owner(Command::SessionGrants {
+            session: "s1".to_owned(),
+        })
+        .await
+    {
+        Ok(Reply::CoordinatorGrants { audit, .. }) => audit,
+        other => panic!("session-grants answered {other:?}"),
+    };
+
+    assert_eq!(
+        (
+            edited.title.as_str(),
+            edited.notes.as_str(),
+            edited.intent_revision
+        ),
+        (
+            "#713 coordinator can end the workers it started",
+            "Filed before the issue number existed.",
+            2
+        )
+    );
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert_eq!(
+        (
+            audit[0].actor.as_str(),
+            audit[0].permission.as_str(),
+            audit[0].action.as_str(),
+            audit[0].target.as_deref(),
+        ),
+        ("s1", "change-state", "edited", None)
+    );
+    assert_eq!(
+        audit[0].detail.as_deref(),
+        Some(&*format!(
+            "item {}: title \"#711? coordinator can end the workers it started\" -> \
+             \"#713 coordinator can end the workers it started\"; \
+             notes \"\" -> \"Filed before the issue number existed.\"",
+            filed.id
+        ))
+    );
+}
+
+#[tokio::test]
+async fn an_agent_cannot_edit_an_item_it_did_not_file() {
+    let tasks = started(&["app"], "").await;
+    let owners = tasks
+        .owner_adds("app", "Migrate the schema", Vec::new())
+        .await;
+
+    let refusal = refused(
+        tasks
+            .agent_edits(owners.id, Some("Migrate the schema v2"), None, None)
+            .await,
+    );
+
+    assert_eq!(
+        (refusal.code, refusal.unblock.map(|unblock| unblock.by)),
+        (ErrorCode::NotAuthorized, Some(UnblockedBy::Owner))
+    );
+}
+
+#[tokio::test]
+async fn an_agent_cannot_edit_its_item_once_it_started() {
+    let tasks = started(&["app"], "").await;
+    let filed = task(tasks.agent_adds(None, "Migrate the schema").await);
+    task(
+        tasks
+            .as_agent(Command::TaskStart {
+                launch_token: tasks.token(),
+                item: filed.id,
+            })
+            .await,
+    );
+
+    let refusal = refused(
+        tasks
+            .agent_edits(filed.id, Some("Migrate the schema v2"), None, None)
+            .await,
+    );
+
+    assert_eq!(refusal.code, ErrorCode::Conflict);
+    assert!(
+        refusal.message.contains("is doing"),
+        "names the status: {}",
+        refusal.message
+    );
+}
+
+#[tokio::test]
+async fn an_agents_change_of_its_items_kind_stays_the_owners() {
+    let tasks = started(&["app"], "").await;
+    let filed = task(tasks.agent_adds(None, "Migrate the schema").await);
+
+    let refusal = refused(
+        tasks
+            .agent_edits(filed.id, None, None, Some(TaskKindView::Bug))
+            .await,
+    );
+
+    assert_eq!(
+        (refusal.code, refusal.unblock.map(|unblock| unblock.by)),
+        (ErrorCode::NotAuthorized, Some(UnblockedBy::Owner))
+    );
 }
