@@ -86,3 +86,33 @@ async fn a_project_whose_sessions_all_ended_is_removed() {
     );
     assert!(project_names(&client).await.is_empty());
 }
+
+#[tokio::test]
+async fn a_live_sessions_own_clone_is_not_offered_for_release() {
+    let home = Home::new();
+    let provider = FakeProvider::new(
+        ProviderName::new("fake").unwrap(),
+        home.path().join("launches"),
+    );
+    let _daemon = home.start(vec![Arc::new(provider)]).await;
+    let client = home.connect().await;
+    let root = home.project(&client).await;
+    let reply = client
+        .request(
+            Command::SessionNew {
+                dir: root.display().to_string(),
+                agent: Some("fake".to_owned()),
+                prompt: None,
+                clone: Some("feature".to_owned()),
+            },
+            GENEROUS,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(reply, Reply::Session { .. }), "{reply:?}");
+
+    let refusal = refused(client.request(remove("project"), GENEROUS).await);
+
+    assert!(refusal.message.contains("has not ended"), "{refusal:?}");
+    assert!(!refusal.message.contains("checkout release"), "{refusal:?}");
+}

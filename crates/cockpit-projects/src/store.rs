@@ -245,7 +245,7 @@ pub async fn project_named_or_numbered(
 }
 
 /// Every checkout of `project` not yet removed, by id.
-pub(crate) async fn project_checkouts(
+pub async fn project_checkouts(
     connection: &Connection,
     project: ProjectId,
 ) -> Result<Vec<Checkout>, Error> {

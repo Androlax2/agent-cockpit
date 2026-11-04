@@ -1059,3 +1059,19 @@ fn removing_an_unknown_project_is_refused_as_not_found() {
 
     assert!(refused.contains("not-found"), "{refused}");
 }
+
+#[test]
+fn removing_a_project_with_a_running_workflow_refuses_naming_it() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+    home.cockpit_ok(&["todo", "add", "Fix the login", "--project", "app"]);
+    home.cockpit_ok(&["workflow", "start", "1"]);
+    home.cockpit_ok(&["todo", "done", "1", "--summary", "fixed"]);
+
+    let refused = home.cockpit_err(&["project", "remove", "app"]);
+
+    assert!(refused.contains("workflow 1 is running"), "{refused}");
+    assert!(refused.contains("workflow cancel"), "{refused}");
+}

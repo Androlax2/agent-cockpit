@@ -32,7 +32,8 @@ pub use remove::remove_project;
 pub use source::SourceState;
 pub use storage::{CloneStorage, StorageReport, TargetSize, clone_storage};
 pub use store::{
-    MIGRATIONS, checkouts, claim, project_named, project_named_or_numbered, projects, release,
+    MIGRATIONS, checkouts, claim, project_checkouts, project_named, project_named_or_numbered,
+    projects, release,
 };
 pub use sweep::{Kept, SweepReport, sweep};
 

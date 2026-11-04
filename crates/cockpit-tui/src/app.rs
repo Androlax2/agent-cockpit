@@ -66,6 +66,8 @@ pub enum Confirm {
     Exit(String),
     /// The sessions of the finished group as the owner saw it: `y` ends only these.
     ExitFinished(Vec<String>),
+    /// A project from the project list (#727).
+    RemoveProject(String),
 }
 
 /// What one key did: the command it counts as in diagnostics (decision 17: every command
@@ -251,21 +253,6 @@ impl App {
                 FormOutcome::Submit(command) => Step::sending("bug-report-new", command),
             };
         }
-        if let Some(projects) = &mut self.projects
-            && self.focus == Focus::List
-            && key != Key::Tab
-        {
-            return match projects.key(key, &self.board) {
-                ProjectsOutcome::Closed => {
-                    self.projects = None;
-                    Step::used("projects-close")
-                }
-                ProjectsOutcome::Handled { used, send } => Step {
-                    used: Some(used),
-                    send,
-                },
-            };
-        }
         if let Some(tasks) = &mut self.tasks
             && self.focus == Focus::List
             && (key != Key::Tab || tasks.is_typing())
@@ -311,7 +298,29 @@ impl App {
                         only: Some(sessions),
                     },
                 ),
+                (Key::Char('y'), Confirm::RemoveProject(project)) => {
+                    Step::sending("project-remove", Command::ProjectRemove { project })
+                }
                 _ => Step::used("confirm-cancel"),
+            };
+        }
+        if let Some(projects) = &mut self.projects
+            && self.focus == Focus::List
+            && key != Key::Tab
+        {
+            return match projects.key(key, &self.board) {
+                ProjectsOutcome::Closed => {
+                    self.projects = None;
+                    Step::used("projects-close")
+                }
+                ProjectsOutcome::AskToRemove(project) => {
+                    self.confirm = Some(Confirm::RemoveProject(project));
+                    Step::used("project-remove-ask")
+                }
+                ProjectsOutcome::Handled { used, send } => Step {
+                    used: Some(used),
+                    send,
+                },
             };
         }
         // While the owner types into the pane, every character is text, `?` and `L` too.

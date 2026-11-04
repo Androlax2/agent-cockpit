@@ -197,9 +197,10 @@ pub(crate) fn route(
     Route::Run { class, job }
 }
 
-/// Unregisters `project` in one write transaction, so no session starts, claim or task item
-/// lands between the checks and the removal; refused, naming each blocker and the step that
-/// clears it, while a session has not ended, a checkout is occupied or an item is open.
+/// Unregisters `project` in one write transaction, so no session starts, claim, task item or
+/// workflow run lands between the checks and the removal; refused, naming each blocker and the
+/// step that clears it, while a session has not ended, a checkout is occupied by someone else,
+/// an item is open or a workflow runs.
 async fn remove_project(database: &Database, project: &str) -> Result<Outcome, Outcome> {
     let write = database
         .write()
@@ -208,7 +209,7 @@ async fn remove_project(database: &Database, project: &str) -> Result<Outcome, O
     let project = cockpit_projects::project_named_or_numbered(&write, project)
         .await
         .map_err(project_refusal)?;
-    let checkouts = cockpit_projects::checkouts(&write, Some(&project.name))
+    let checkouts = cockpit_projects::project_checkouts(&write, project.id)
         .await
         .map_err(project_refusal)?;
     let sessions = cockpit_sessions::sessions(&write, false)
@@ -224,6 +225,16 @@ async fn remove_project(database: &Database, project: &str) -> Result<Outcome, O
     )
     .await
     .map_err(|error| internal("read the task items", &error))?;
+    let running_workflows = cockpit_workflows::runs(
+        &write,
+        &cockpit_workflows::Actor::Owner,
+        &cockpit_workflows::RunFilter {
+            project: Some(project.name.to_string()),
+            include_closed: false,
+        },
+    )
+    .await
+    .map_err(|error| internal("read the workflow runs", &error))?;
 
     let mut blockers = Vec::new();
     let mut steps = Vec::new();
@@ -244,14 +255,14 @@ async fn remove_project(database: &Database, project: &str) -> Result<Outcome, O
         );
         steps.push("end each session with `torlek session end SESSION`");
     }
+    // A live session's own clone is released when the session ends; telling the owner to
+    // release it would pull it out from under a running agent.
     let occupied: Vec<String> = checkouts
         .iter()
         .filter_map(|checkout| {
-            let occupancy = checkout.occupancy.as_ref()?;
-            Some(format!(
-                "checkout {} is occupied by {}",
-                checkout.id, occupancy.holder
-            ))
+            let holder = &checkout.occupancy.as_ref()?.holder;
+            let is_live_session = live_sessions.iter().any(|id| id == holder.as_str());
+            (!is_live_session).then(|| format!("checkout {} is occupied by {holder}", checkout.id))
         })
         .collect();
     if !occupied.is_empty() {
@@ -264,7 +275,18 @@ async fn remove_project(database: &Database, project: &str) -> Result<Outcome, O
                 .iter()
                 .map(|item| format!("open item {} ({})", item.id.0, item.title)),
         );
-        steps.push("finish, decline or delete each item with `torlek todo done|decline|delete ID`");
+        steps.push(
+            "finish or delete each item with `torlek todo done ID` or `torlek todo delete ID` \
+             (a proposal: `torlek todo decline ID`)",
+        );
+    }
+    if !running_workflows.is_empty() {
+        blockers.extend(
+            running_workflows
+                .iter()
+                .map(|run| format!("workflow {} is running", run.id.0)),
+        );
+        steps.push("cancel each workflow with `torlek workflow cancel ID`");
     }
     if !blockers.is_empty() {
         let next = format!("{}, then remove the project again", steps.join("; "));

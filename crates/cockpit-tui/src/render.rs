@@ -100,18 +100,14 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
 }
 
 fn status_line(app: &App) -> String {
-    if let Some(question) = app
-        .projects
-        .as_ref()
-        .and_then(|projects| projects.confirm_line())
-    {
-        return question;
-    }
     match (&app.confirm, &app.failure, &app.feed_problem) {
         (Some(Confirm::Restart(session)), ..) => format!("restart {session}? y to confirm"),
         (Some(Confirm::Exit(session)), ..) => format!("exit {session}? y to confirm"),
         (Some(Confirm::ExitFinished(sessions)), ..) => {
             format!("exit {} finished sessions? y to confirm", sessions.len())
+        }
+        (Some(Confirm::RemoveProject(project)), ..) => {
+            format!("remove project {project}? y to confirm")
         }
         (None, Some(failure), Some(problem)) => format!(
             "{}: {} · change feed: {problem}",
