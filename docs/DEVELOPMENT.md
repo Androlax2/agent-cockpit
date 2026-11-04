@@ -150,8 +150,8 @@ only: its CI job was removed on 2026-10-31 (it slowed every greenfield change an
 cutover). JavaScript's default warnings remain visible. The [CI workflow](../.github/workflows/ci.yml)
 splits by changed path ([tools/ci-jobs.py](../tools/ci-jobs.py)): `greenfield` runs
 `make greenfield-ci` for `crates/`, the root manifests, the Makefile and `.github/`; `docs` runs
-`make docs-ci` for `docs/` and any Markdown file; `greenfield-macos` and `greenfield-wsl2`
-run for the crates they build (`PLATFORM_ROOTS` and their dependencies), the root manifests,
+`make docs-ci` for `docs/` and any Markdown file; `greenfield-wsl2`
+runs for the crates they build (`PLATFORM_ROOTS` and their dependencies), the root manifests,
 the Makefile and `ci.yml`. A path no job claims (`apps/`, `config/`, `packaging/` included), and a
 push to `main`, run every job. A job the change does not need is skipped, and a skipped
 required check counts as passed. The Linux jobs run on Ubuntu 26.04 runners with pinned Rust,

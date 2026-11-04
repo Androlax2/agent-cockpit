@@ -95,7 +95,7 @@ class DraftWorkflowTests(unittest.TestCase):
         expected = {
             "codeql.yml": {"analyze"},
             "scorecard.yml": set(),
-            "ci.yml": {"changes", "greenfield", "greenfield-macos", "greenfield-wsl2", "docs"},
+            "ci.yml": {"changes", "greenfield", "greenfield-wsl2", "docs"},
             "docs.yml": {"catalog", "build", "assemble"},
             "release.yml": {
                 "plan",
@@ -121,7 +121,7 @@ class DraftWorkflowTests(unittest.TestCase):
             (
                 "ci.yml",
                 "push",
-                {"changes", "greenfield", "greenfield-macos", "greenfield-wsl2", "docs"},
+                {"changes", "greenfield", "greenfield-wsl2", "docs"},
             ),
             ("docs.yml", "push", {"catalog", "build", "assemble", "deploy"}),
             ("docs.yml", "release", {"catalog", "build", "assemble", "deploy"}),
