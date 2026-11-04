@@ -1,8 +1,9 @@
-//! `cockpit agent sessions|message|start`: a coordinator session observes, messages and
-//! starts other sessions on the agent socket, under the grants the owner gave it with
-//! `cockpit session grant` (#410). The daemon identifies the sender and refuses each verb
-//! without its grant. `cockpit agent inbox` is the other end: a session's hook waits there
-//! for the next message sent to it (#703).
+//! `cockpit agent sessions|message|start|escalate`: a coordinator session observes, messages
+//! and starts other sessions on the agent socket, under the grants the owner gave it with
+//! `cockpit session grant` (#410), and hands the question of a session it started to the
+//! owner (#710). The daemon identifies the sender and refuses each verb without its grant.
+//! `cockpit agent inbox` is the other end: a session's hook waits there for the next message
+//! sent to it (#703).
 //!
 //! Exit codes follow `cockpit ask run`: a start waiting for the owner exits 124 when the wait
 //! ends first (`cockpit ask run --wait ID` goes on), 125 when declined, 126 when the daemon
@@ -151,6 +152,31 @@ pub(crate) fn inbox(arguments: &[OsString]) -> Result<ExitCode, String> {
     }
 }
 
+/// `cockpit agent escalate SESSION`: the question of a session the sender started waits on
+/// the owner from now on (#710).
+pub(crate) fn escalate(arguments: &[OsString]) -> Result<ExitCode, String> {
+    let session = match utf8_words(arguments)?.as_slice() {
+        [session] => (*session).to_owned(),
+        _ => return Err("agent escalate takes SESSION".to_owned()),
+    };
+    let agent = match Agent::connect() {
+        Ok(agent) => agent,
+        Err(code) => return Ok(code),
+    };
+    Ok(
+        match agent.request(Command::AgentEscalate {
+            launch_token: crate::agent::launch_token(),
+            session,
+        }) {
+            Ok(Reply::AgentEscalated { session }) => {
+                outln!("session {session}'s question waits on the owner now");
+                ExitCode::SUCCESS
+            }
+            other => agent.failed(other),
+        },
+    )
+}
+
 /// `cockpit agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL]
 /// [--effort LEVEL]`: starts at once when the grant needs no confirmation, otherwise asks the
 /// owner and waits like `cockpit ask run`.
@@ -228,8 +254,9 @@ fn changes(shown: &[(String, String)], listed: &[(String, String)]) -> String {
 }
 
 /// `id  state  agent  agent-state  working-dir` then the report's `label=… doing=…
-/// needs-input=…` (or `dialog=…`) and the latest message this session queued to it,
-/// `message-from=… message=<delivery> message-note=…` (#703), tab-separated.
+/// needs-input=…` (or `dialog=…`), `held-by=…`, the coordinator its question waits on before
+/// the owner (#710), and the latest message this session queued to it, `message-from=…
+/// message=<delivery> message-note=…` (#703), tab-separated.
 fn session_line(session: &ObservedSessionView) -> String {
     let report = session.report.as_ref();
     let agent_state = report
@@ -248,6 +275,7 @@ fn session_line(session: &ObservedSessionView) -> String {
             ("label", &report.label),
             ("doing", &report.doing),
             (question_key, &report.needs_input),
+            ("held-by", &report.held_by),
         ] {
             if let Some(value) = value {
                 line.push_str(&format!("\t{key}={value:?}"));

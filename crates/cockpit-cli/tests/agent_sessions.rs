@@ -67,6 +67,7 @@ fn observed(id: &str, doing: &str) -> ObservedSessionView {
             outcome: None,
             question_source: None,
             covered_question: None,
+            held_by: None,
             reported_at: 1,
         }),
         inbound_message: None,

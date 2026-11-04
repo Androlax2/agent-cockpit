@@ -220,13 +220,20 @@ impl Board {
     }
 
     /// Whether the session waits on the owner: an approval or guide it asked for, a command
-    /// of its waiting for input, or a question it reported.
+    /// of its waiting for input, or a question it reported that no coordinator holds (#710).
     pub fn needs_you(&self, session: &str) -> bool {
         self.has_open_request(session)
             || self
                 .reports
                 .get(session)
-                .is_some_and(|report| report.needs_input.is_some())
+                .is_some_and(|report| report.needs_input.is_some() && report.held_by.is_none())
+    }
+
+    /// The coordinator session that holds the session's question before the owner (#710).
+    pub fn question_holder(&self, session: &str) -> Option<&str> {
+        self.reports
+            .get(session)
+            .and_then(|report| report.held_by.as_deref())
     }
 
     /// An approval or guide the session asked for, or a command of its waiting for input.

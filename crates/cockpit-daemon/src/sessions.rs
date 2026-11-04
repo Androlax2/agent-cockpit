@@ -63,6 +63,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
                     clone_branch: clone,
                     model,
                     effort,
+                    started_by: None,
                 })
                 .await?;
             reply(&sessions, &started, &inputs).await

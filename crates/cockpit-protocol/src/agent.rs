@@ -109,6 +109,11 @@ pub struct SessionReport {
     /// #250.
     #[serde(default)]
     pub covered_question: Option<String>,
+    /// The coordinator session that holds the agent's own question before the owner (#710):
+    /// it started this session, and the question is not yet escalated nor past its time.
+    /// Absent while the question waits on the owner, who may answer it either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_by: Option<String>,
     /// Seconds since 1970.
     pub reported_at: i64,
 }

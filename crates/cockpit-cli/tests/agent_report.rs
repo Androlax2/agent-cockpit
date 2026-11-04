@@ -67,6 +67,7 @@ fn session_report(session: &str) -> SessionReport {
         outcome: None,
         question_source: Some(QuestionSource::Agent),
         covered_question: None,
+        held_by: None,
         reported_at: 1,
     }
 }

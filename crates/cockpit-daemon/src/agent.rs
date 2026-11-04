@@ -6,8 +6,9 @@ use std::sync::Arc;
 use cockpit_agent_channel::{ProcessError, ProcessIdentity, Refusal};
 use cockpit_protocol::{ErrorCode, Outcome, ProtocolError, Reply, Unblock, UnblockedBy};
 use cockpit_provider_api::TurnOutcome;
-use cockpit_sessions::{AgentState, Error, QuestionSource, Report, SessionReport};
+use cockpit_sessions::{AgentState, Error, QuestionSource, Report, SessionId, SessionReport};
 use cockpit_turso::Database;
+use cockpit_turso::sql::Connection;
 
 use crate::approvals::Sender;
 use crate::routes::refusal;
@@ -33,10 +34,14 @@ pub(crate) async fn report(
         from_wire(report),
     )
     .await;
+    let recorded = match recorded {
+        Ok(recorded) => wire_report(&write, recorded, crate::approvals::now()).await,
+        Err(error) => Err(error),
+    };
     match recorded {
         Ok(recorded) => match write.commit().await {
             Ok(()) => Outcome::Ok(Reply::AgentReported {
-                report: Box::new(to_wire(recorded)),
+                report: Box::new(recorded),
             }),
             Err(error) => internal(&error),
         },
@@ -54,12 +59,36 @@ pub(crate) async fn reports(database: Arc<Database>) -> Outcome {
         Ok(read) => read,
         Err(error) => return internal(&error),
     };
-    match cockpit_sessions::latest_reports(&read).await {
-        Ok(reports) => Outcome::Ok(Reply::AgentReports {
-            reports: reports.into_iter().map(to_wire).collect(),
-        }),
+    let reports = match cockpit_sessions::latest_reports(&read).await {
+        Ok(reports) => wire_reports(&read, reports).await,
+        Err(error) => Err(error),
+    };
+    match reports {
+        Ok(reports) => Outcome::Ok(Reply::AgentReports { reports }),
         Err(error) => internal(&error),
     }
+}
+
+/// `reports` on the wire, each with the coordinator holding its question now (#710).
+pub(crate) async fn wire_reports(
+    connection: &Connection,
+    reports: Vec<SessionReport>,
+) -> Result<Vec<cockpit_protocol::SessionReport>, Error> {
+    let at = crate::approvals::now();
+    let mut wired = Vec::with_capacity(reports.len());
+    for report in reports {
+        wired.push(wire_report(connection, report, at).await?);
+    }
+    Ok(wired)
+}
+
+async fn wire_report(
+    connection: &Connection,
+    report: SessionReport,
+    at: i64,
+) -> Result<cockpit_protocol::SessionReport, Error> {
+    let held_by = cockpit_sessions::question_holder(connection, &report, at).await?;
+    Ok(to_wire(report, held_by.as_ref()))
 }
 
 fn internal(error: &dyn std::fmt::Display) -> Outcome {
@@ -116,7 +145,7 @@ fn from_wire(report: cockpit_protocol::AgentReport) -> Report {
     }
 }
 
-pub(crate) fn to_wire(report: SessionReport) -> cockpit_protocol::SessionReport {
+fn to_wire(report: SessionReport, held_by: Option<&SessionId>) -> cockpit_protocol::SessionReport {
     cockpit_protocol::SessionReport {
         session: report.session.as_str().to_owned(),
         state: report.state.map(|state| match state {
@@ -136,6 +165,7 @@ pub(crate) fn to_wire(report: SessionReport) -> cockpit_protocol::SessionReport 
             QuestionSource::Dialog => cockpit_protocol::QuestionSource::Dialog,
         }),
         covered_question: report.covered_question,
+        held_by: held_by.map(|coordinator| coordinator.as_str().to_owned()),
         reported_at: report.reported_at,
     }
 }

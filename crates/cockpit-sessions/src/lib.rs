@@ -6,6 +6,7 @@ mod error;
 mod exits;
 mod lifecycle;
 mod model;
+mod questions;
 mod reports;
 mod store;
 
@@ -18,6 +19,7 @@ pub use model::{
     Addressed, AgentExit, ExitStatus, Launch, LaunchKind, RestartAll, Restored, Session, SessionId,
     SessionState, Settings, SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,
 };
+pub use questions::{QUESTION_HOLD_SECONDS, escalate_question, question_holder};
 pub use reports::{
     AgentState, QuestionSource, Report, SessionReport, latest_report, latest_reports, report,
 };

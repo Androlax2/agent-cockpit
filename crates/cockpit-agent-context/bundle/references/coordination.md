@@ -6,6 +6,8 @@ terminal.
 - `torlek agent report --label TEXT` names your session's task (3 to 6 words).
 - `torlek agent report --doing TEXT` says what you do now; update it when the step changes.
 - `torlek agent report --needs-input QUESTION` marks that you wait on the owner's answer.
+  In a session a coordinator started, the question goes to that coordinator first; see
+  "Questions from sessions you started" below.
 - `torlek agent report --state working|waiting` when your harness does not report it.
 
 Tasks:
@@ -53,3 +55,18 @@ audited with your session and the other one.
   per hour; `torlek ask run --wait ID` goes on waiting.
 
 Your messages reach other agents as a collaborator's, never as the owner's word.
+
+### Questions from sessions you started
+
+A question a session you started asks with `--needs-input` waits on you first (#710).
+`torlek agent sessions` shows it with `held-by=` your session; the owner sees it on the
+session's card as "question with coordinator", off their needs-you list, and may still
+answer it at any time.
+
+- Answer it with `torlek agent message SESSION TEXT`: the session's agent reads your message
+  as its next prompt, which clears the question.
+- `torlek agent escalate SESSION` hands it to the owner when the decision is theirs.
+- It reaches the owner by itself 15 minutes after it was asked, when your session ends, or
+  when you lose `message-sessions`.
+- A dialog (a permission prompt) and a question in a session the owner started always wait
+  on the owner.

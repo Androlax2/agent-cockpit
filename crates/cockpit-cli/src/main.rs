@@ -62,6 +62,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek agent sessions [--watch]
        torlek agent message SESSION TEXT
        torlek agent inbox
+       torlek agent escalate SESSION
        torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL]
        torlek agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] [--component NAME] [--steps TEXT] [--requested-by-owner]
        torlek bug-report new DESCRIPTION [--title TEXT] [--steps TEXT] [--since 2h|RFC3339]
@@ -188,6 +189,8 @@ fn main() -> ExitCode {
         [Some("agent"), Some("message")] => coordination::message(&arguments[2..])
             .unwrap_or_else(|problem| usage_error(Some(problem))),
         [Some("agent"), Some("inbox")] => coordination::inbox(&arguments[2..])
+            .unwrap_or_else(|problem| usage_error(Some(problem))),
+        [Some("agent"), Some("escalate")] => coordination::escalate(&arguments[2..])
             .unwrap_or_else(|problem| usage_error(Some(problem))),
         [Some("agent"), Some("start")] => coordination::start(&arguments[2..])
             .unwrap_or_else(|problem| usage_error(Some(problem))),

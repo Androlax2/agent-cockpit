@@ -42,6 +42,7 @@ fn reported_doing(app: &mut App, session: &str, doing: &str, now: Instant) {
                 outcome: None,
                 question_source: None,
                 covered_question: None,
+                held_by: None,
                 reported_at: 1,
             }],
         },

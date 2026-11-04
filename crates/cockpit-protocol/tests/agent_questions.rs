@@ -68,6 +68,7 @@ fn a_session_report_names_its_questions_source() {
         needs_input: Some("Allow Bash?".to_owned()),
         question_source: Some(QuestionSource::Dialog),
         covered_question: None,
+        held_by: None,
         outcome: None,
         reported_at: 42,
     };

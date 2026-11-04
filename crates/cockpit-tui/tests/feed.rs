@@ -196,6 +196,7 @@ fn a_card_in_a_39_column_list_shows_that_it_needs_you_its_label_and_its_doing() 
                 outcome: None,
                 question_source: Some(QuestionSource::Agent),
                 covered_question: None,
+                held_by: None,
                 reported_at: 1,
             }],
         },
