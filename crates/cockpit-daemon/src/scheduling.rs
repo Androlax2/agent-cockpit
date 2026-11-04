@@ -229,6 +229,14 @@ impl Deliverer for Typist<'_> {
                 Err(error @ cockpit_sessions::Error::UnknownSession { .. }) => {
                     rejected(error.to_string())
                 }
+                // Another operation holds the session for a moment, such as the periodic
+                // session pass: that is no failed try (#816).
+                Err(error @ cockpit_sessions::Error::SessionBusy { .. }) => {
+                    Delivery::Failed(Failure::Busy {
+                        reason: error.to_string(),
+                        retry_at: retry_at(),
+                    })
+                }
                 // Nothing was sent: the agent was busy with a dialog, the session was
                 // between launches, tmux did not answer. A later pass tries again.
                 Err(error) => Delivery::Failed(Failure::NotSent {

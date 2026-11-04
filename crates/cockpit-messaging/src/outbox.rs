@@ -306,6 +306,9 @@ pub enum Failure {
     /// Nothing reached the receiver (it refused the connection, it was not running), so
     /// sending again is safe; retried at `retry_at` while attempts remain.
     NotSent { reason: String, retry_at: i64 },
+    /// Nothing was sent because the receiver was busy with another operation for a moment;
+    /// retried at `retry_at` without counting the try, so a busy moment never fails it.
+    Busy { reason: String, retry_at: i64 },
     /// The receiver refused the effect for good.
     Rejected { reason: String },
     /// It may have reached the receiver, but no receipt came back: a lost acknowledgement, a
@@ -512,6 +515,7 @@ async fn fail(
 ) -> Result<DeliveryState, Error> {
     let attempts_remain = envelope.attempts < envelope.max_attempts;
     let (state, note, retry_at) = match failure {
+        Failure::Busy { reason, retry_at } => (DeliveryState::Queued, reason, *retry_at),
         Failure::NotSent { reason, retry_at } if attempts_remain => {
             (DeliveryState::Queued, reason, *retry_at)
         }
@@ -538,12 +542,19 @@ async fn fail(
     }
     match state {
         DeliveryState::Queued => {
+            let given_back = u32::from(matches!(failure, Failure::Busy { .. }));
             write
                 .execute(
                     "UPDATE messaging_envelopes SET state = 'queued', due_at = ?2, note = ?3,
-                         updated_at = ?4
+                         attempts = attempts - ?5, updated_at = ?4
                      WHERE id = ?1",
-                    (envelope.id.0, retry_at, note.as_str(), now),
+                    (
+                        envelope.id.0,
+                        retry_at,
+                        note.as_str(),
+                        now,
+                        i64::from(given_back),
+                    ),
                 )
                 .await?;
         }

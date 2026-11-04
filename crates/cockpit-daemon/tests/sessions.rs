@@ -1150,6 +1150,45 @@ async fn an_asleep_session_past_the_expiry_ends() {
     assert!(ended.reason.unwrap().contains("expiry"));
 }
 
+/// #816: a pass at startup took the session locks the startup scheduling pass was typing
+/// through. Only the periodic pass expires an asleep session, so one past its expiry shows
+/// whether a pass ran.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_periodic_pass_first_runs_one_interval_after_the_daemon_starts() {
+    let home = Home::new();
+    let hourly_with_expiry_at_once = || {
+        let mut settings = settings();
+        settings.owner.asleep_expiry = Duration::ZERO;
+        let mut wiring = home.wiring(BASELINE, settings);
+        wiring.session_tick = Duration::from_secs(3600);
+        wiring
+    };
+    let daemon = home.start_wired(hourly_with_expiry_at_once).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    session_reply(
+        &client,
+        Command::SessionSleep {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+    drop(client);
+    home.stop(daemon);
+
+    let daemon = home.start_wired(hourly_with_expiry_at_once).await;
+    let client = connect(&daemon).await;
+
+    let settled = Instant::now() + common::SETTLE;
+    while Instant::now() < settled {
+        let listed = sessions(&client, true).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].state, SessionStateView::Asleep, "{listed:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_that_exits_ends_its_session_and_resume_reopens_the_conversation() {
     let home = Home::new();
