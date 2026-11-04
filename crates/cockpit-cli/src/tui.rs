@@ -26,8 +26,6 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     if let Some(extra) = arguments.first() {
         return Err(format!("unknown argument {}", extra.to_string_lossy()));
     }
-    // Before the hand-over: the screen replaces this process, so nothing can follow it.
-    crate::update::notice_if_due();
     let command = match manager_open() {
         Ok(command) => command,
         Err(code) => return Ok(code),

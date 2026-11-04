@@ -228,7 +228,7 @@ fn main() -> ExitCode {
             Ok(command) => {
                 let is_list = matches!(command, cockpit_protocol::Command::SessionList { .. });
                 let code = sessions::run(command);
-                if is_list {
+                if is_list && code == ExitCode::SUCCESS {
                     update::notice_if_due();
                 }
                 code

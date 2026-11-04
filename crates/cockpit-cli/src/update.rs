@@ -61,6 +61,9 @@ fn parse(arguments: &[OsString]) -> Result<Verb, String> {
 struct Installation {
     installed: Installed,
     prefix: PathBuf,
+    /// Where the README's archive route unpacks releases: the only place the printed commands
+    /// can replace an installation.
+    readme_unpack_dir: PathBuf,
     state_path: PathBuf,
 }
 
@@ -89,9 +92,11 @@ fn find_installation() -> Result<Option<Installation>, String> {
         .state_dir
         .value
         .join(STATE_FILE);
+    let readme_unpack_dir = home.join(".local/lib/torlek");
     Ok(Some(Installation {
         installed,
         prefix,
+        readme_unpack_dir,
         state_path,
     }))
 }
@@ -225,7 +230,10 @@ fn due_notice() -> Result<Option<String>, String> {
     let mut state = state::load(&installation.state_path)?;
     let now = now();
     if state.is_check_due(now) {
+        // Saved before the request: if the state cannot be written, no request is made, so
+        // an unwritable state directory cannot make every command wait for the network.
         state.last_attempt_at = Some(now);
+        state::save(&installation.state_path, &state)?;
         let found = fetch_release_list().and_then(|release_list| {
             release::latest_release(&release_list, &installation.installed)
         });
@@ -299,15 +307,22 @@ fn print_offer(installation: &Installation, offer: &Offer) {
 fn update_instructions(installation: &Installation, offer: &Offer) -> String {
     let installed = &installation.installed;
     let current_archive = installed.archive_name(&installed.version);
-    let is_archive_install = installation
+    let has_archive_name = installation
         .prefix
         .file_name()
         .is_some_and(|name| *name == *current_archive);
-    if !is_archive_install {
+    // The prefix is canonical, so the expected directory is too.
+    let unpack_dir = installation
+        .readme_unpack_dir
+        .canonicalize()
+        .unwrap_or_else(|_| installation.readme_unpack_dir.clone());
+    let is_unpacked_where_readme_says = installation.prefix.parent() == Some(unpack_dir.as_path());
+    if !(has_archive_name && is_unpacked_where_readme_says) {
         return format!(
-            "this installation ({}) is not an unpacked release archive, so torlek cannot say how \
+            "this installation ({}) is not a release archive unpacked in {}, so torlek cannot say how \
              to update it: update it the way you installed it, or install the archive from {}\n",
             installation.prefix.display(),
+            installation.readme_unpack_dir.display(),
             REPOSITORY_URL
         );
     }

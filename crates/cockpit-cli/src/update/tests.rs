@@ -259,6 +259,18 @@ fn release_notes_lose_control_characters_and_are_bounded() {
 }
 
 #[test]
+fn release_notes_lose_invisible_and_bidirectional_formatting_characters() {
+    let mut reordered = release("v0.1.0-alpha.4", &[PLATFORM]);
+    reordered["body"] = json!("safe\u{202E}txet\u{2066}x\u{200B}y\u{FEFF}");
+    let Latest::Available(offer) =
+        latest_release(&list(vec![reordered]), &installed("0.1.0-alpha.3")).unwrap()
+    else {
+        panic!("not offered");
+    };
+    assert_eq!(offer.notes, "safetxetxy");
+}
+
+#[test]
 fn an_installation_without_a_release_channel_cannot_check() {
     for text in ["0.1.0-dev.3", "0.1.0-rc.1"] {
         let manifest = json!({"version": text, "platform": PLATFORM}).to_string();

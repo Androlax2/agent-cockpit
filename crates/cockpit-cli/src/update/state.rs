@@ -110,8 +110,9 @@ pub(super) fn save(path: &Path, state: &UpdateState) -> Result<(), String> {
         .parent()
         .ok_or_else(|| format!("{}: has no directory", path.display()))?;
     fs::create_dir_all(directory).map_err(|error| format!("{}: {error}", directory.display()))?;
-    // Written beside the file and renamed over it, so a reader never sees half a file.
-    let temporary = path.with_extension("json.new");
+    // Written beside the file and renamed over it, so a reader never sees half a file; the
+    // process id keeps two commands running at once off each other's temporary file.
+    let temporary = path.with_extension(format!("json.{}.new", std::process::id()));
     let text = serde_json::to_string_pretty(&to_value(state))
         .map_err(|error| format!("{}: {error}", path.display()))?;
     fs::write(&temporary, format!("{text}\n"))

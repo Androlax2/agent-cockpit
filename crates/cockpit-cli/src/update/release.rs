@@ -284,11 +284,27 @@ fn read_release(entry: &Value) -> Option<ReadRelease> {
 }
 
 /// Release notes are text from outside: control characters other than the newline are
-/// dropped so they cannot drive the terminal, and the length is bounded.
+/// dropped so they cannot drive the terminal, invisible formatting characters so they cannot
+/// reorder what is shown, and the length is bounded.
 fn printable_excerpt(notes: &str) -> String {
     notes
         .chars()
-        .filter(|character| !character.is_control() || *character == '\n')
+        .filter(|character| {
+            *character == '\n' || !(character.is_control() || is_invisible_format(*character))
+        })
         .take(NOTES_LIMIT)
         .collect()
+}
+
+/// Zero-width and bidirectional formatting characters (Unicode category Cf, the ones that
+/// can hide or reverse text).
+fn is_invisible_format(character: char) -> bool {
+    matches!(
+        character,
+        '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{FEFF}'
+    )
 }

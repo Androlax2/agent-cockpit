@@ -28,12 +28,17 @@ struct Setup {
 impl Setup {
     /// An installation of `INSTALLED` unpacked where the README's archive route puts it.
     fn archive_install() -> Self {
-        Self::installed_at(&format!("torlek-v{INSTALLED}-{PLATFORM}"), true)
+        Self::installed_at(
+            ".local/lib/torlek",
+            &format!("torlek-v{INSTALLED}-{PLATFORM}"),
+            true,
+        )
     }
 
-    fn installed_at(directory_name: &str, has_manifest: bool) -> Self {
+    /// `directory_name` unpacked in `parent_below_home`, a path relative to the home.
+    fn installed_at(parent_below_home: &str, directory_name: &str, has_manifest: bool) -> Self {
         let home = tempfile::tempdir().expect("temporary home");
-        let prefix = home.path().join("lib").join(directory_name);
+        let prefix = home.path().join(parent_below_home).join(directory_name);
         fs::create_dir_all(prefix.join("bin")).unwrap();
         fs::copy(env!("CARGO_BIN_EXE_torlek"), prefix.join("bin/torlek")).unwrap();
         if has_manifest {
@@ -162,7 +167,7 @@ impl Setup {
                 self.runs(program)
             );
         }
-        let unpacked: Vec<_> = fs::read_dir(self.home.path().join("lib"))
+        let unpacked: Vec<_> = fs::read_dir(self.prefix.parent().unwrap())
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect();
@@ -340,7 +345,7 @@ fn malformed_release_metadata_fails_the_manual_check_with_a_reason() {
 
 #[test]
 fn a_build_outside_a_release_bundle_has_nothing_to_check() {
-    let setup = Setup::installed_at("checkout", false);
+    let setup = Setup::installed_at("lib", "checkout", false);
     newer_alpha_published(&setup);
     let output = setup.torlek(&["update", "check"]);
     assert!(output.status.success(), "{}", stderr(&output));
@@ -353,17 +358,23 @@ fn a_build_outside_a_release_bundle_has_nothing_to_check() {
 }
 
 #[test]
-fn an_installation_that_is_not_an_unpacked_archive_is_said_to_be_unsupported() {
-    let setup = Setup::installed_at("distribution-package", true);
-    newer_alpha_published(&setup);
-    let output = setup.torlek(&["update", "check"]);
-    let printed = stdout(&output);
-    assert!(printed.contains("0.1.0-alpha.4 is available"), "{printed}");
-    assert!(
-        printed.contains("not an unpacked release archive"),
-        "{printed}"
-    );
-    assert!(!printed.contains("curl -fLO"), "{printed}");
+fn an_installation_outside_the_readme_archive_route_is_said_to_be_unsupported() {
+    let installs = [
+        ("lib", "distribution-package"),
+        ("opt", "torlek-v0.1.0-alpha.3-linux-x86_64"),
+    ];
+    for (parent, directory_name) in installs {
+        let setup = Setup::installed_at(parent, directory_name, true);
+        newer_alpha_published(&setup);
+        let output = setup.torlek(&["update", "check"]);
+        let printed = stdout(&output);
+        assert!(printed.contains("0.1.0-alpha.4 is available"), "{printed}");
+        assert!(
+            printed.contains("is not a release archive unpacked in"),
+            "{printed}"
+        );
+        assert!(!printed.contains("curl -fLO"), "{printed}");
+    }
 }
 
 #[test]
