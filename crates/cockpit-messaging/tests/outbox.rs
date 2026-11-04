@@ -616,3 +616,79 @@ async fn an_earlier_queued_envelope_to_the_same_destination_holds_a_later_one() 
     assert!(!is_other_held);
     assert!(!is_first_held);
 }
+
+async fn claim_next_for(database: &Database, producer: &str, destination: &str) -> Option<Claim> {
+    let write = database.write().await.unwrap();
+    let claimed = cockpit_messaging::claim_next_for(&write, producer, destination, NOW)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    claimed
+}
+
+/// #703: a receiver that collects its own takes its oldest envelope, never another
+/// destination's or another producer's.
+#[tokio::test]
+async fn a_collecting_receiver_takes_only_its_own_oldest_envelope() {
+    let fixture = Fixture::new().await;
+    let database = &fixture.database;
+    let other_producer = Envelope {
+        producer: "scheduling".to_owned(),
+        ..envelope("theirs", "s1", "X")
+    };
+    enqueue(database, &other_producer).await;
+    enqueue(database, &envelope("other", "s2", "C")).await;
+    let first = queued_id(enqueue(database, &envelope("first", "s1", "A")).await);
+    enqueue(database, &envelope("second", "s1", "B")).await;
+
+    let claimed = claim_next_for(database, "teams", "s1").await.unwrap();
+
+    assert_eq!((claimed.id, claimed.payload.as_str()), (first, "A"));
+    assert_eq!(claimed.attempt, 1);
+    assert_eq!(state(database, first).await, DeliveryState::Submitting);
+}
+
+#[tokio::test]
+async fn a_collecting_receiver_with_nothing_queued_takes_nothing() {
+    let fixture = Fixture::new().await;
+    enqueue(&fixture.database, &envelope("other", "s2", "C")).await;
+
+    let claimed = claim_next_for(&fixture.database, "teams", "s1").await;
+
+    assert_eq!(claimed, None);
+}
+
+#[tokio::test]
+async fn a_collecting_receiver_never_takes_an_expired_envelope() {
+    let fixture = Fixture::new().await;
+    let mut stale = envelope("stale", "s1", "A");
+    stale.expires_at = Some(NOW - 1);
+    let id = queued_id(enqueue(&fixture.database, &stale).await);
+
+    let claimed = claim_next_for(&fixture.database, "teams", "s1").await;
+
+    assert_eq!(claimed, None);
+    assert_eq!(state(&fixture.database, id).await, DeliveryState::Expired);
+}
+
+/// #703: what a collecting receiver's poll asks on a read connection before it takes the
+/// writer.
+#[tokio::test]
+async fn a_collecting_receiver_sees_only_its_own_producers_queued_envelopes() {
+    let fixture = Fixture::new().await;
+    enqueue(&fixture.database, &envelope("other", "s1", "A")).await;
+    let read = fixture.database.read().await.unwrap();
+
+    let is_queued = |producer: &'static str, destination: &'static str| {
+        let read = &read;
+        async move {
+            cockpit_messaging::has_queued_for(read, producer, destination)
+                .await
+                .unwrap()
+        }
+    };
+
+    assert!(is_queued("teams", "s1").await);
+    assert!(!is_queued("teams", "s2").await);
+    assert!(!is_queued("coordinator", "s1").await);
+}

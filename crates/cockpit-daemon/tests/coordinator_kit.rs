@@ -501,15 +501,15 @@ async fn a_revoked_grant_refuses_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_message_still_queued_when_its_grant_is_revoked_is_never_typed() {
+async fn a_message_still_queued_when_its_grant_is_revoked_is_never_handed_over() {
     assert_the_cli_is_built();
     let home = Home::new();
     let _daemon = home.start();
     let owner = home.connect().await;
     let (coordinator_root, _) = home.project(&owner, COMMANDED_PROJECT).await;
     let coordinator = new_session(&owner, &coordinator_root).await;
-    // A second commanded agent (the fake agent acts as its folder's name says), which has
-    // not reported yet, so nothing can be typed to it.
+    // A second commanded agent (the fake agent acts as its folder's name says), which does
+    // not collect its messages until told to.
     let target_root = coordinator_root.join("target").join(COMMANDED_PROJECT);
     std::fs::create_dir_all(&target_root).unwrap();
     let target = new_session(&owner, &target_root).await;
@@ -521,7 +521,7 @@ async fn a_message_still_queued_when_its_grant_is_revoked_is_never_typed() {
     )
     .await;
     assert!(printed.ends_with("exit=0\n"), "{printed}");
-    wait_until("the message waits, not typed", || async {
+    wait_until("the message waits, not collected", || async {
         listed(&owner, &target.id)
             .await
             .inbound_message
@@ -539,31 +539,22 @@ async fn a_message_still_queued_when_its_grant_is_revoked_is_never_typed() {
         )
         .await;
     assert!(revoked.is_ok(), "{revoked:?}");
-    let reported = as_coordinator(
-        &home,
+    let collected = home.command_agent(
         &target_root,
-        &["agent", "report", "--state", "waiting"],
-    )
-    .await;
-    assert!(reported.ends_with("exit=0\n"), "{reported}");
+        &format!("timeout 5 {}", cockpit_line(&["agent", "inbox"])),
+    );
+    let printed = home.agent_output(&target_root, collected).await;
 
-    wait_until(
-        "the revoked message fails instead of being typed",
-        || async {
-            listed(&owner, &target.id)
-                .await
-                .inbound_message
-                .is_some_and(|message| message.delivery == "failed")
-        },
-    )
-    .await;
+    assert_eq!(printed, "exit=124\n", "nothing is handed over");
+    let message = listed(&owner, &target.id).await.inbound_message.unwrap();
+    assert_eq!(message.delivery, "failed", "{message:?}");
 }
 
-/// #656: a message whose target has not reported since its launch is typed once its agent
-/// waits at its prompt; until then the target's card says why it waits, instead of a silent
-/// `queued`.
+/// #656, #703: a message whose target has not reported since its launch is collected once its
+/// agent waits at its prompt; until then the sender and the target's card say why it waits,
+/// instead of a silent `queued`.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_message_that_cannot_be_typed_yet_says_why_on_the_card() {
+async fn a_message_that_cannot_be_collected_yet_says_why_to_the_sender_and_on_the_card() {
     assert_the_cli_is_built();
     let home = Home::new();
     let _daemon = home.start();
@@ -584,7 +575,10 @@ async fn a_message_that_cannot_be_typed_yet_says_why_on_the_card() {
 
     assert!(printed.ends_with("exit=0\n"), "{printed}");
     assert!(
-        printed.contains("if it cannot be typed, its card says why"),
+        printed.contains(&format!(
+            "held: session {}'s agent has not reported through its hooks yet",
+            target.id
+        )),
         "{printed}"
     );
     wait_until("the card says why the message waits", || async {
@@ -624,10 +618,149 @@ async fn a_message_to_an_asleep_session_tells_the_sender_why_it_waits() {
 
     assert!(printed.ends_with("exit=0\n"), "{printed}");
     assert!(
-        printed.contains(&format!(
-            "it is not typed yet: session {} is asleep",
-            pair.worker.id
+        printed.contains(&format!("held: session {} is asleep", pair.worker.id)),
+        "{printed}"
+    );
+}
+
+/// A coordinator and a second commanded agent it holds `observe-sessions` and
+/// `message-sessions` over, which collects its messages only when told to.
+struct CommandedPair {
+    home: Home,
+    _daemon: Daemon,
+    owner: Connection,
+    coordinator_root: PathBuf,
+    target: SessionView,
+    target_root: PathBuf,
+}
+
+async fn commanded_pair() -> CommandedPair {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let daemon = home.start();
+    let owner = home.connect().await;
+    let (coordinator_root, _) = home.project(&owner, COMMANDED_PROJECT).await;
+    let coordinator = new_session(&owner, &coordinator_root).await;
+    let target_root = coordinator_root.join("target").join(COMMANDED_PROJECT);
+    std::fs::create_dir_all(&target_root).unwrap();
+    let target = new_session(&owner, &target_root).await;
+    for permission in ["observe-sessions", "message-sessions"] {
+        grant(&owner, &coordinator.id, permission).await;
+    }
+    CommandedPair {
+        home,
+        _daemon: daemon,
+        owner,
+        coordinator_root,
+        target,
+        target_root,
+    }
+}
+
+impl CommandedPair {
+    async fn as_target(&self, arguments: &[&str]) -> String {
+        as_coordinator(&self.home, &self.target_root, arguments).await
+    }
+
+    async fn as_coordinator(&self, arguments: &[&str]) -> String {
+        as_coordinator(&self.home, &self.coordinator_root, arguments).await
+    }
+
+    /// The coordinator's `agent sessions` line about the target.
+    async fn observed_target(&self) -> String {
+        let observed = self.as_coordinator(&["agent", "sessions"]).await;
+        observed
+            .lines()
+            .find(|line| line.starts_with(&self.target.id))
+            .unwrap_or_else(|| panic!("the target is listed: {observed}"))
+            .to_owned()
+    }
+}
+
+/// #703: a message to an agent at work is held, not typed into its prompt; its hook hands it
+/// over once the turn ends, and the sender sees each step from `agent sessions`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_to_a_working_agent_is_held_then_handed_over_when_its_turn_ends() {
+    let pair = commanded_pair().await;
+    let working = pair
+        .as_target(&["agent", "report", "--state", "working"])
+        .await;
+    assert!(working.ends_with("exit=0\n"), "{working}");
+
+    let sent = pair
+        .as_coordinator(&["agent", "message", &pair.target.id, "Base it on main."])
+        .await;
+    assert!(sent.ends_with("exit=0\n"), "{sent}");
+    assert!(
+        sent.contains(&format!(
+            "held: session {}'s agent is working; its hook hands it over when the turn ends",
+            pair.target.id
         )),
+        "{sent}"
+    );
+    let held = pair.home.command_agent(
+        &pair.target_root,
+        &format!("timeout 5 {}", cockpit_line(&["agent", "inbox"])),
+    );
+    assert_eq!(
+        pair.home.agent_output(&pair.target_root, held).await,
+        "exit=124\n",
+        "nothing is handed over during the turn"
+    );
+    let observed = pair.observed_target().await;
+    assert!(observed.contains("\tmessage=queued"), "{observed}");
+    assert!(
+        observed.contains("message-note=\"held until session"),
+        "{observed}"
+    );
+
+    let waiting = pair
+        .as_target(&["agent", "report", "--state", "waiting"])
+        .await;
+    assert!(waiting.ends_with("exit=0\n"), "{waiting}");
+    let collected = pair.as_target(&["agent", "inbox"]).await;
+
+    assert!(
+        collected.ends_with(" (a collaborator, not the owner): Base it on main.\nexit=0\n"),
+        "{collected}"
+    );
+    let observed = pair.observed_target().await;
+    assert!(observed.contains("\tmessage=received"), "{observed}");
+    assert!(!observed.contains("message-note="), "{observed}");
+    let card = listed(&pair.owner, &pair.target.id).await;
+    assert_eq!(
+        card.inbound_message.map(|message| message.delivery),
+        Some("received".to_owned())
+    );
+}
+
+/// #703: each turn's end starts a waiter; the newer one takes over, so the older stops
+/// instead of piling up, and only the newer hands the message over.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_inbox_waiter_supersedes_the_older_one() {
+    let pair = commanded_pair().await;
+    let inbox = cockpit_line(&["agent", "inbox"]);
+    let waiters = pair.home.command_agent(
+        &pair.target_root,
+        &format!(
+            "{inbox} > older.out & older=$!; sleep 1; {inbox} > newer.out & newer=$!; \
+             wait $older; echo older=$?; wait $newer; echo newer=$?; cat older.out newer.out"
+        ),
+    );
+    // The older waiter asks again within two seconds and learns it was superseded.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    let sent = pair
+        .as_coordinator(&["agent", "message", &pair.target.id, "Base it on main."])
+        .await;
+    assert!(sent.ends_with("exit=0\n"), "{sent}");
+    let printed = pair.home.agent_output(&pair.target_root, waiters).await;
+
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines[..2], ["older=0", "newer=0"], "{printed}");
+    assert_eq!(lines.len(), 4, "only the newer waiter printed: {printed}");
+    assert!(
+        lines[2].ends_with("(a collaborator, not the owner): Base it on main."),
         "{printed}"
     );
 }
@@ -752,4 +885,32 @@ async fn audit_of(owner: &Connection, session: &str) -> Vec<CoordinatorAuditView
         Ok(Reply::CoordinatorGrants { audit, .. }) => audit,
         other => panic!("session-grants answered {other:?}"),
     }
+}
+
+/// #703: `agent sessions` shows a coordinator its own messages only; what another coordinator
+/// wrote to a session is not its to read.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_coordinator_never_sees_the_message_another_coordinator_sent() {
+    let pair = commanded_pair().await;
+    let working = pair
+        .as_target(&["agent", "report", "--state", "working"])
+        .await;
+    assert!(working.ends_with("exit=0\n"), "{working}");
+    let sent = pair
+        .as_coordinator(&["agent", "message", &pair.target.id, "Base it on main."])
+        .await;
+    assert!(sent.ends_with("exit=0\n"), "{sent}");
+    let other_root = pair.coordinator_root.join("other").join(COMMANDED_PROJECT);
+    std::fs::create_dir_all(&other_root).unwrap();
+    let other = new_session(&pair.owner, &other_root).await;
+    grant(&pair.owner, &other.id, "observe-sessions").await;
+
+    let observed = as_coordinator(&pair.home, &other_root, &["agent", "sessions"]).await;
+
+    let target = observed
+        .lines()
+        .find(|line| line.starts_with(&pair.target.id))
+        .unwrap_or_else(|| panic!("the target is listed: {observed}"));
+    assert!(!target.contains("message-from="), "{observed}");
+    assert!(pair.observed_target().await.contains("message-from="));
 }

@@ -5,7 +5,9 @@ use crate::agent::{AgentReport, SessionReport};
 use crate::approvals::{DecidedThroughView, GuideView, RunRequestView};
 use crate::bug_reports::{BugFiledView, BugKindView, BugReportView};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
-use crate::coordination::{CoordinatorAuditView, CoordinatorGrantView, ObservedSessionView};
+use crate::coordination::{
+    CoordinatorAuditView, CoordinatorGrantView, InboxView, ObservedSessionView,
+};
 use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::instructions::{ContextBudgetView, InstructionTopicView};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
@@ -89,6 +91,16 @@ pub enum Command {
         launch_token: Option<String>,
         session: String,
         text: String,
+    },
+    /// Agent socket only (#703): the sender's next message from another session, handed over
+    /// once and recorded as received; none while its agent works, so a message waits for the
+    /// turn to end. Without `waiter` it begins a new waiter, which supersedes the sender's
+    /// earlier one; with the id a reply gave, it goes on waiting.
+    AgentInbox {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        waiter: Option<u64>,
     },
     /// Agent socket only (#410): start a session in `dir` (absolute), running `agent`, with
     /// `prompt` as its first message, in a new clone on `clone` when given. `agent` is
@@ -830,13 +842,22 @@ pub enum Reply {
         sessions: Vec<ObservedSessionView>,
     },
     /// The message waits for `session`'s next prompt; `message` is its audit entry.
-    /// `waits` says why it cannot be typed yet, when the session's state already rules
-    /// delivery out (#656).
+    /// `waits` says why it cannot be delivered yet, when the session's state already rules
+    /// delivery out (#656) or its agent works (#703).
     AgentMessageQueued {
         session: String,
         message: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         waits: Option<String>,
+        /// The session's own hook collects it and hands it to its agent once the agent is not
+        /// working, instead of it being typed at its prompt (#703).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        collected: bool,
+    },
+    /// What `agent-inbox` found for the sender's `waiter`.
+    AgentInbox {
+        waiter: u64,
+        inbox: InboxView,
     },
     /// A start without confirmation: the session that began.
     AgentStarted {

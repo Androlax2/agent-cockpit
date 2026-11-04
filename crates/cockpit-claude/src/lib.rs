@@ -214,17 +214,33 @@ impl ClaudeCode {
         }
     }
 
-    /// `--settings` JSON that runs `bridge` on every hook event it normalizes.
+    /// `--settings` JSON that runs `bridge` on every hook event it normalizes, and, after
+    /// each [`hooks::INBOX_EVENTS`] event, its inbox waiter in the background (#703).
     fn hook_settings(bridge: &Bridge) -> String {
         let command = format!(
             "{} {}",
             shell_quoted(&bridge.hook_program),
             shell_quoted(&bridge.cockpit_program)
         );
-        let hook = serde_json::json!([{ "hooks": [{ "type": "command", "command": command }] }]);
+        let report = serde_json::json!({ "type": "command", "command": command });
+        let inbox = serde_json::json!({
+            "type": "command",
+            "command": format!("{command} {}", hooks::INBOX_FLAG),
+            "asyncRewake": true,
+            "timeout": hooks::INBOX_TIMEOUT_SECONDS,
+        });
         let events: serde_json::Map<String, serde_json::Value> = hooks::HOOK_EVENTS
             .iter()
-            .map(|event| ((*event).to_owned(), hook.clone()))
+            .map(|event| {
+                let mut commands = vec![report.clone()];
+                if hooks::INBOX_EVENTS.contains(event) {
+                    commands.push(inbox.clone());
+                }
+                (
+                    (*event).to_owned(),
+                    serde_json::json!([{ "hooks": commands }]),
+                )
+            })
             .collect();
         serde_json::json!({ "hooks": events }).to_string()
     }
@@ -258,11 +274,12 @@ impl Provider for ClaudeCode {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // Events and outcomes both reach Cockpit only through the hook bridge.
-        let bridged = self
-            .bridge
-            .is_some()
-            .then_some([Capability::Events, Capability::Outcome]);
+        // Events, outcomes and collected messages all go through the hook bridge.
+        let bridged = self.bridge.is_some().then_some([
+            Capability::Events,
+            Capability::Outcome,
+            Capability::Inbox,
+        ]);
         let provenance = self.provenance();
         [
             Capability::Resume,

@@ -5,8 +5,11 @@
 //! (a start waiting for the owner) and `cockpit-messaging` (the outbox); this file maps and
 //! wires.
 //!
-//! Message delivery types into the target's terminal through `Sessions::submit`, the input
-//! path sessions have until provider delivery (#431): the agent reads it at its next prompt.
+//! A message reaches its target one of two ways. An agent whose bridge collects its own
+//! ([`Capability::Inbox`], Claude Code) takes it with `agent-inbox` from a hook, which hands it
+//! to the model as input of its own once the agent is not working (#703). Any other is typed
+//! into the target's terminal through `Sessions::submit`, the input path sessions have until
+//! provider delivery (#431), and read at its next prompt.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,12 +26,13 @@ use cockpit_messaging::{
     Claim, Coalescing, Deliverer, Delivery, DeliveryState, Envelope, Failure, Redelivery,
 };
 use cockpit_protocol::{
-    Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, InboundMessageView,
+    Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, InboundMessageView, InboxView,
     ObservedSessionView, ProtocolError, Reply, Unblock, UnblockedBy,
 };
 use cockpit_provider_api::Capability;
 use cockpit_sessions::{
-    Addressed, QuestionSource, Session, SessionId, SessionState, Sessions, StartRequest,
+    Addressed, AgentState, QuestionSource, Session, SessionId, SessionReport, SessionState,
+    Sessions, StartRequest,
 };
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
@@ -37,8 +41,14 @@ use tokio::sync::Notify;
 use crate::approvals::{Answer, Failed, Sender, internal, job, now};
 use crate::routes::{Route, WorkClass};
 
-/// The outbox producer whose envelopes are coordinator messages.
+/// The outbox producer whose envelopes are coordinator messages the delivery loop types.
 const PRODUCER: &str = "coordinator";
+/// The outbox producer whose envelopes are coordinator messages the target's own hook
+/// collects with `agent-inbox` (#703); the delivery loop never claims them.
+const INBOX_PRODUCER: &str = "coordinator-inbox";
+/// How long a collected message may wait while its target's agent waits at its prompt before
+/// the sender is told it is stuck: the hook polls every two seconds.
+const STUCK_AFTER_SECONDS: i64 = 60;
 /// Longest message, in characters: a line an agent reads, not a document.
 const MESSAGE_MAX_CHARS: usize = 2000;
 /// A message not delivered within a day is stale; the sender learns so from the card.
@@ -64,6 +74,61 @@ pub(crate) struct Context {
     pub(crate) runner: Runner,
     /// Wakes the delivery loop when a message is queued.
     pub(crate) queued: Arc<Notify>,
+    /// Each session's current inbox waiter.
+    pub(crate) waiters: Arc<Waiters>,
+}
+
+/// The current inbox waiter of each session (#703). A hook begins a waiter at each turn's
+/// end; only the newest one goes on waiting, so they never pile up. Kept in memory: after the
+/// daemon restarts, the first waiter that asks again becomes its session's current one.
+pub(crate) struct Waiters {
+    state: std::sync::Mutex<WaiterState>,
+}
+
+struct WaiterState {
+    last: u64,
+    current: HashMap<String, u64>,
+}
+
+impl Waiters {
+    /// Ids start from the clock, so a waiter left by an earlier run of the daemon does not
+    /// share its id with a new one.
+    pub(crate) fn new() -> Waiters {
+        let last = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| {
+                u64::try_from(since.as_micros()).unwrap_or(u64::MAX / 2)
+            });
+        Waiters {
+            state: std::sync::Mutex::new(WaiterState {
+                last,
+                current: HashMap::new(),
+            }),
+        }
+    }
+
+    /// A new waiter for `session`, which supersedes its earlier one.
+    fn begin(&self, session: &str) -> u64 {
+        let mut state = self.lock();
+        state.last += 1;
+        let waiter = state.last;
+        state.current.insert(session.to_owned(), waiter);
+        waiter
+    }
+
+    /// Whether `waiter` is still `session`'s current one.
+    fn is_current(&self, session: &str, waiter: u64) -> bool {
+        let mut state = self.lock();
+        let current = *state.current.entry(session.to_owned()).or_insert(waiter);
+        current == waiter
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, WaiterState> {
+        // The map holds plain ids: one a panicking holder left is still consistent.
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 /// The route for a coordinator verb from the agent socket. Agent requests run in the bulk
@@ -84,6 +149,10 @@ pub(crate) fn route_agent(
                 session,
                 text,
             } => message(&context, &sender, launch_token, session, text).await,
+            Command::AgentInbox {
+                launch_token,
+                waiter,
+            } => collect(&context, &sender, launch_token, waiter).await,
             Command::AgentStart {
                 launch_token,
                 dir,
@@ -171,6 +240,7 @@ async fn observe(context: &Context, sender: &Sender, launch_token: Option<String
             .into_iter()
             .map(|report| (report.session.as_str().to_owned(), report))
             .collect();
+    let notes = notes(&read).await?;
     drop(read);
     let sessions = context
         .sessions
@@ -179,6 +249,10 @@ async fn observe(context: &Context, sender: &Sender, launch_token: Option<String
         .into_iter()
         .filter(|session| session.id.as_str() != coordinator.as_str())
         .map(|session| ObservedSessionView {
+            // Its own message only: what other coordinators wrote is not this one's to read.
+            inbound_message: notes
+                .inbound_message_of(session.id.as_str())
+                .filter(|inbound| inbound.from == coordinator.as_str()),
             report: reports
                 .remove(session.id.as_str())
                 .map(crate::agent::to_wire),
@@ -237,12 +311,22 @@ async fn message(
     // Read in this transaction, so the sender learns the state the message is queued in.
     let target_session = cockpit_sessions::session(&write, &target_id).await?;
     refuse_if_over(&target_session)?;
-    let waits = context
-        .sessions
-        .delivery_target(&target_session, Capability::Submit)
-        .err()
-        .map(|error| error.to_string());
     let report = cockpit_sessions::latest_report(&write, &target_holder).await?;
+    // An unknown provider is not refused here: `delivery_target` below names it to the sender.
+    let is_collected = context
+        .sessions
+        .collects_messages(&target_session)
+        .is_ok_and(|collects| collects);
+    let channel = if is_collected {
+        Capability::Inbox
+    } else {
+        Capability::Submit
+    };
+    let waits = match context.sessions.delivery_target(&target_session, channel) {
+        Err(error) => Some(error.to_string()),
+        Ok(_) if is_collected => collection_wait(&target, report.as_ref()),
+        Ok(_) => None,
+    };
     if report.is_some_and(|report| report.question_source == Some(QuestionSource::Dialog)) {
         return Err(refused(
             ErrorCode::Conflict,
@@ -270,7 +354,12 @@ async fn message(
         &write,
         &Envelope {
             effect_key: message_key(entry),
-            producer: PRODUCER.to_owned(),
+            producer: if is_collected {
+                INBOX_PRODUCER
+            } else {
+                PRODUCER
+            }
+            .to_owned(),
             destination: target.clone(),
             payload: message_line(&coordinator, &text),
             // Typing it twice would say it twice.
@@ -283,18 +372,114 @@ async fn message(
     )
     .await?;
     write.commit().await?;
-    context.queued.notify_one();
+    if !is_collected {
+        context.queued.notify_one();
+    }
     tracing::info!(
         from = coordinator.as_str(),
         to = target.as_str(),
         audit = entry,
+        is_collected,
         "a coordinator queued a message"
     );
     Ok(Reply::AgentMessageQueued {
         session: target,
         message: entry,
         waits,
+        collected: is_collected,
     })
+}
+
+/// `agent-inbox` (#703): hands the sender's agent its oldest message still queued, recorded
+/// as received in the same transaction, unless its agent works or has a dialog open: a
+/// message waits for the turn's end. A message whose sender lost `message-sessions` fails and
+/// the next one is tried. Hands over nothing to a waiter a newer one superseded.
+async fn collect(
+    context: &Context,
+    sender: &Sender,
+    launch_token: Option<String>,
+    waiter: Option<u64>,
+) -> Answer {
+    let session = identified(&context.database, sender, launch_token).await?;
+    let waiter = match waiter {
+        None => context.waiters.begin(session.as_str()),
+        Some(waiter) if context.waiters.is_current(session.as_str(), waiter) => waiter,
+        Some(waiter) => {
+            return Ok(Reply::AgentInbox {
+                waiter,
+                inbox: InboxView::Superseded,
+            });
+        }
+    };
+    let empty = Reply::AgentInbox {
+        waiter,
+        inbox: InboxView::Empty,
+    };
+    // Each idle session's waiter asks every 2 s: the single writer is taken only when a
+    // message waits and the agent can take it, which is checked again under the writer.
+    {
+        let read = context.database.read().await?;
+        if is_busy(&read, &session).await?
+            || !cockpit_messaging::has_queued_for(&read, INBOX_PRODUCER, session.as_str()).await?
+        {
+            return Ok(empty);
+        }
+    }
+    let write = context.database.write().await?;
+    if is_busy(&write, &session).await? {
+        return Ok(empty);
+    }
+    let at = now();
+    while let Some(claim) =
+        cockpit_messaging::claim_next_for(&write, INBOX_PRODUCER, session.as_str(), at).await?
+    {
+        let delivery = match authorship(&write, &claim).await.map_err(|reason| {
+            tracing::error!(%reason, "reading a collected message's sender failed");
+            internal(&reason)
+        })? {
+            Authorship::Rejected(reason) => Delivery::Failed(Failure::Rejected { reason }),
+            Authorship::Granted(from) => Delivery::Received {
+                receipt: format!(
+                    "handed to session {}'s agent by its hook, from session {}",
+                    session.as_str(),
+                    from.as_str()
+                ),
+            },
+        };
+        let state =
+            cockpit_messaging::record_delivery(&write, claim.id, claim.attempt, &delivery, at)
+                .await?;
+        if state != DeliveryState::Received {
+            continue;
+        }
+        let message = audit_entry_of(&claim).ok_or_else(|| internal(&claim.effect_key))?;
+        write.commit().await?;
+        tracing::info!(
+            to = session.as_str(),
+            audit = message,
+            "a session's hook collected a coordinator message"
+        );
+        return Ok(Reply::AgentInbox {
+            waiter,
+            inbox: InboxView::Message {
+                message,
+                line: claim.payload,
+            },
+        });
+    }
+    // Expired messages are recorded.
+    write.commit().await?;
+    Ok(empty)
+}
+
+/// Whether `session`'s agent cannot take a message now: it works, or a dialog waits for the
+/// owner.
+async fn is_busy(connection: &Connection, session: &Holder) -> Result<bool, Failed> {
+    let report = cockpit_sessions::latest_report(connection, session).await?;
+    Ok(report.is_some_and(|report| {
+        report.state == Some(AgentState::Working)
+            || report.question_source == Some(QuestionSource::Dialog)
+    }))
 }
 
 /// `agent-start`: within the hourly cap, either files the start in the `ask run` queue or,
@@ -822,18 +1007,6 @@ impl Typist<'_> {
     /// holds `message-sessions` over it (a revoked grant, or a sender that ended, stops the
     /// messages it queued).
     async fn check(&self, claim: &Claim) -> Result<Holder, Delivery> {
-        let rejected = |reason: String| Delivery::Failed(Failure::Rejected { reason });
-        let Some(entry) = claim
-            .effect_key
-            .strip_prefix("coordinator-message:")
-            .and_then(|id| id.parse::<i64>().ok())
-        else {
-            return Err(rejected(format!(
-                "{} names no audited message",
-                claim.effect_key
-            )));
-        };
-        let target = holder(&claim.destination).map_err(|Failed(error)| rejected(error.message))?;
         let read = self
             .database
             .read()
@@ -848,30 +1021,67 @@ impl Typist<'_> {
                 claim.destination
             )));
         }
-        let Some(entry) = cockpit_authorization::audit_entry(&read, entry)
-            .await
-            .map_err(|error| not_sent(error.to_string()))?
-        else {
-            tracing::error!(entry, "a queued coordinator message has no audit entry");
-            return Err(rejected(format!("audit entry {entry} is missing")));
-        };
-        let sender = entry.audit.actor;
-        let decision = cockpit_authorization::evaluate(
-            &read,
-            &Actor::Session(sender.clone()),
-            Permission::MessageSessions,
-            &Scope::Session(target),
-        )
-        .await
-        .map_err(|error| not_sent(error.to_string()))?;
-        match decision.outcome {
-            Outcome::Allowed(_) => Ok(sender),
-            Outcome::Refused(_) => Err(rejected(format!(
-                "session {} no longer holds message-sessions",
-                sender.as_str()
-            ))),
+        match authorship(&read, claim).await.map_err(not_sent)? {
+            Authorship::Granted(sender) => Ok(sender),
+            Authorship::Rejected(reason) => Err(Delivery::Failed(Failure::Rejected { reason })),
         }
     }
+}
+
+/// Who sent a claimed coordinator message, as its audit entry says, and whether it may still
+/// reach its destination.
+enum Authorship {
+    /// The sender still holds `message-sessions` over the destination.
+    Granted(Holder),
+    /// Never delivered: the grant is gone, or the message names no audit entry.
+    Rejected(String),
+}
+
+/// The [`Authorship`] of `claim`; `Err` when it could not be read, so nothing is decided.
+async fn authorship(connection: &Connection, claim: &Claim) -> Result<Authorship, String> {
+    let Some(entry) = audit_entry_of(claim) else {
+        return Ok(Authorship::Rejected(format!(
+            "{} names no audited message",
+            claim.effect_key
+        )));
+    };
+    let target = match holder(&claim.destination) {
+        Ok(target) => target,
+        Err(Failed(error)) => return Ok(Authorship::Rejected(error.message)),
+    };
+    let Some(entry) = cockpit_authorization::audit_entry(connection, entry)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        tracing::error!(entry, "a queued coordinator message has no audit entry");
+        return Ok(Authorship::Rejected(format!(
+            "audit entry {entry} is missing"
+        )));
+    };
+    let sender = entry.audit.actor;
+    let decision = cockpit_authorization::evaluate(
+        connection,
+        &Actor::Session(sender.clone()),
+        Permission::MessageSessions,
+        &Scope::Session(target),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(match decision.outcome {
+        Outcome::Allowed(_) => Authorship::Granted(sender),
+        Outcome::Refused(_) => Authorship::Rejected(format!(
+            "session {} no longer holds message-sessions",
+            sender.as_str()
+        )),
+    })
+}
+
+/// The audit entry a coordinator message's outbox key names.
+fn audit_entry_of(claim: &Claim) -> Option<i64> {
+    claim
+        .effect_key
+        .strip_prefix("coordinator-message:")
+        .and_then(|id| id.parse::<i64>().ok())
 }
 
 /// Nothing was typed; the loop tries again.
@@ -903,6 +1113,9 @@ impl Notes {
 
 pub(crate) async fn notes(connection: &Connection) -> Result<Notes, Failed> {
     let mut notes = Notes::default();
+    // Read only when a collected message still waits: most listings have none.
+    let mut reports: Option<HashMap<String, SessionReport>> = None;
+    let at = now();
     for grant in cockpit_authorization::active_coordinator_grants(connection).await? {
         notes
             .grants
@@ -925,6 +1138,35 @@ pub(crate) async fn notes(connection: &Connection) -> Result<Notes, Failed> {
             tracing::error!(key, "a coordinator message's audit names no target or text");
             continue;
         };
+        let is_collected = envelope.producer == INBOX_PRODUCER;
+        let note = if is_collected && envelope.state == DeliveryState::Queued {
+            let reports = match reports {
+                Some(ref reports) => reports,
+                None => reports.insert(
+                    cockpit_sessions::latest_reports(connection)
+                        .await?
+                        .into_iter()
+                        .map(|report| (report.session.as_str().to_owned(), report))
+                        .collect(),
+                ),
+            };
+            Some(collection_note(
+                target.as_str(),
+                reports.get(target.as_str()),
+                audit.at,
+                at,
+            ))
+        } else {
+            // A stored note says why the last attempt failed: stale once the message is in
+            // flight or delivered.
+            (!matches!(
+                envelope.state,
+                DeliveryState::Submitting | DeliveryState::Received
+            ))
+            .then_some(envelope.note)
+            .flatten()
+            .map(|note| cockpit_sessions::visible_line(&note))
+        };
         notes.inbound.insert(
             target.as_str().to_owned(),
             InboundMessageView {
@@ -932,19 +1174,49 @@ pub(crate) async fn notes(connection: &Connection) -> Result<Notes, Failed> {
                 text,
                 delivery: envelope.state.as_str().to_owned(),
                 sent_at: audit.at,
-                // A stored note says why the last attempt failed: stale once the message is
-                // in flight or delivered.
-                note: (!matches!(
-                    envelope.state,
-                    DeliveryState::Submitting | DeliveryState::Received
-                ))
-                .then_some(envelope.note)
-                .flatten()
-                .map(|note| cockpit_sessions::visible_line(&note)),
+                note,
             },
         );
     }
     Ok(notes)
+}
+
+/// Why a message to `target`, whose hook collects it, cannot be handed over at once, as its
+/// agent's latest `report` says; `None` when its hook takes it within seconds.
+fn collection_wait(target: &str, report: Option<&SessionReport>) -> Option<String> {
+    let Some(report) = report else {
+        return Some(format!(
+            "session {target}'s agent has not reported through its hooks yet; its hook \
+             collects it once the agent waits at its prompt"
+        ));
+    };
+    (report.state == Some(AgentState::Working)).then(|| {
+        format!("session {target}'s agent is working; its hook hands it over when the turn ends")
+    })
+}
+
+/// Why a message `target`'s hook collects still waits, from its agent's latest `report`
+/// (#703): held while the agent works or a dialog is open, stuck once it has waited at its
+/// prompt for [`STUCK_AFTER_SECONDS`] without the hook taking it.
+fn collection_note(target: &str, report: Option<&SessionReport>, sent_at: i64, now: i64) -> String {
+    let Some(report) = report else {
+        return format!("waits for session {target}'s agent to report through its hooks");
+    };
+    if report.question_source == Some(QuestionSource::Dialog) {
+        return format!("held: session {target} has a dialog open for the owner");
+    }
+    if report.state == Some(AgentState::Working) {
+        return format!("held until session {target}'s turn ends; its hook then hands it over");
+    }
+    let waited = now - sent_at.max(report.reported_at);
+    if waited > STUCK_AFTER_SECONDS {
+        return format!(
+            "stuck: session {target} waits at its prompt, but its hook has not collected it \
+             for {waited} s: its Claude Code may not run asyncRewake hooks, or it started \
+             before Torlek collected messages; restarting the session starts its hook"
+        );
+    }
+    format!("session {target}'s hook collects it within seconds")
 }
 
 /// The outbox key of the message audited as `entry`: one envelope per audited message.

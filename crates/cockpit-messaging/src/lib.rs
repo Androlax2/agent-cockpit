@@ -13,9 +13,9 @@ pub use error::{Error, Refusal, ResnapshotReason};
 pub use feed::{Feed, FeedBatch, FeedCursor, FeedPosition, discard_history};
 pub use outbox::{
     Claim, Coalescing, Deliverer, Delivery, DeliveryState, Enqueued, Envelope, EnvelopeId, Failure,
-    Redelivery, Resolution, StoredEnvelope, claim_due, deliver_due, enqueue, envelope,
-    envelope_by_key, has_earlier_queued, reconcile_deliveries, record_delivery, resolve_uncertain,
-    uncertain_envelopes,
+    Redelivery, Resolution, StoredEnvelope, claim_due, claim_next_for, deliver_due, enqueue,
+    envelope, envelope_by_key, has_earlier_queued, has_queued_for, reconcile_deliveries,
+    record_delivery, resolve_uncertain, uncertain_envelopes,
 };
 pub use receipts::{ReceiptId, Received, receive};
 

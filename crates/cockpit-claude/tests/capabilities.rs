@@ -7,11 +7,12 @@ use std::path::PathBuf;
 use cockpit_claude::{CONFORMANCE_VERSION, ClaudeCode};
 use cockpit_provider_api::{Availability, Capability, Provenance, Provider};
 
-const REPORTED: [Capability; 9] = [
+const REPORTED: [Capability; 10] = [
     Capability::Resume,
     Capability::Submit,
     Capability::Events,
     Capability::Outcome,
+    Capability::Inbox,
     Capability::Cancel,
     Capability::Effort,
     Capability::Compact,
@@ -88,4 +89,23 @@ fn the_adapter_names_itself_claude_with_its_running_version() {
 
     assert_eq!(claude.name().as_str(), "claude");
     assert_eq!(claude.version(), Some(CONFORMANCE_VERSION));
+}
+
+/// #703: messages are collected through the hook bridge, so without it they are typed.
+#[test]
+fn without_its_bridge_it_reports_no_events_outcomes_or_inbox() {
+    let capabilities = ClaudeCode::new(
+        PathBuf::from("/usr/bin/claude"),
+        Some(CONFORMANCE_VERSION.to_owned()),
+        None,
+    )
+    .capabilities();
+
+    for capability in [Capability::Events, Capability::Outcome, Capability::Inbox] {
+        assert_eq!(
+            capabilities.availability(capability),
+            Availability::Unavailable,
+            "{capability:?}"
+        );
+    }
 }

@@ -1,6 +1,7 @@
 //! The wire form of the coordinator kit's commands and replies (#410).
 use cockpit_protocol::{
-    Command, CoordinatorAuditView, CoordinatorGrantView, InboundMessageView, Reply, decode_request,
+    Command, CoordinatorAuditView, CoordinatorGrantView, InboundMessageView, InboxView, Reply,
+    decode_request,
 };
 use serde_json::json;
 
@@ -19,6 +20,20 @@ fn each_coordinator_command_round_trips_with_only_the_fields_it_was_given() {
                 launch_token: Some("t".to_owned()),
                 session: "s1".to_owned(),
                 text: "rebase".to_owned(),
+            },
+        ),
+        (
+            json!({"id": 1, "command": {"kind": "agent-inbox"}}),
+            Command::AgentInbox {
+                launch_token: None,
+                waiter: None,
+            },
+        ),
+        (
+            json!({"id": 1, "command": {"kind": "agent-inbox", "launch_token": "t", "waiter": 7}}),
+            Command::AgentInbox {
+                launch_token: Some("t".to_owned()),
+                waiter: Some(7),
             },
         ),
         (
@@ -151,5 +166,61 @@ fn an_inbound_message_names_its_sender_and_delivery() {
     assert_eq!(
         serde_json::to_value(&view).unwrap(),
         json!({"from": "s1", "text": "rebase on main", "delivery": "queued", "sent_at": 1_700_000_000})
+    );
+}
+
+/// #703: what one `agent-inbox` found, tagged by `state`.
+#[test]
+fn an_inbox_reply_names_its_state() {
+    let cases = [
+        (
+            InboxView::Message {
+                message: 7,
+                line: "[Torlek] Message from session s1".to_owned(),
+            },
+            json!({"kind": "agent-inbox", "waiter": 3, "inbox": {
+                "state": "message", "message": 7, "line": "[Torlek] Message from session s1"
+            }}),
+        ),
+        (
+            InboxView::Empty,
+            json!({"kind": "agent-inbox", "waiter": 3, "inbox": {"state": "empty"}}),
+        ),
+        (
+            InboxView::Superseded,
+            json!({"kind": "agent-inbox", "waiter": 3, "inbox": {"state": "superseded"}}),
+        ),
+    ];
+    for (inbox, wire) in cases {
+        let reply = Reply::AgentInbox { waiter: 3, inbox };
+
+        assert_eq!(serde_json::to_value(&reply).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<Reply>(wire).unwrap(), reply);
+    }
+}
+
+/// #703: a message the target's hook collects says so; one typed at its prompt leaves the
+/// field out, as before.
+#[test]
+fn a_queued_message_says_whether_its_hook_collects_it() {
+    let collected = Reply::AgentMessageQueued {
+        session: "s2".to_owned(),
+        message: 7,
+        waits: None,
+        collected: true,
+    };
+    let typed = Reply::AgentMessageQueued {
+        session: "s2".to_owned(),
+        message: 7,
+        waits: None,
+        collected: false,
+    };
+
+    assert_eq!(serde_json::to_value(&collected).unwrap()["collected"], true);
+    assert!(
+        serde_json::to_value(&typed)
+            .unwrap()
+            .get("collected")
+            .is_none()
     );
 }

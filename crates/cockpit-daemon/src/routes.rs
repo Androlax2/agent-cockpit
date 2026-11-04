@@ -128,6 +128,7 @@ impl Routes {
                 sessions: Arc::clone(&capabilities.sessions),
                 runner: capabilities.runner.clone(),
                 queued: capabilities.messages_queued,
+                waiters: Arc::new(coordination::Waiters::new()),
             },
             workflows: workflows::Context {
                 git: capabilities.git.clone(),
@@ -347,6 +348,7 @@ impl Handler for Routes {
             (
                 command @ (Command::AgentSessions { .. }
                 | Command::AgentMessage { .. }
+                | Command::AgentInbox { .. }
                 | Command::AgentStart { .. }),
                 peer,
             ) => match peer {

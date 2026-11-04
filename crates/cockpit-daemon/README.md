@@ -116,6 +116,12 @@ not share code.
   collaborator's message, while its sender still holds the grant and in the order sent, retrying while its agent cannot take input (a dialog, no report
   yet), for at most 24 hours. It uses the provider first, then terminal input only when
   delivery is unsupported (#431); an uncertain delivery is never retried as a fresh message.
+- A target whose provider reports `inbox` (#703) collects its messages instead: its hook asks
+  `agent-inbox`, which hands over the oldest one (producer `coordinator-inbox`) only while its
+  agent waits at its prompt with no dialog, and records it `received` in the same
+  transaction. A newer waiter supersedes an older one. `observe-sessions` shows each
+  session's inbound message with why it waits, `stuck` after 60 s idle. Decided in
+  `docs/decisions/2026-11-04-703-claude-message-inbox.md`.
 - A start that needs confirmation joins the `ask run` queue; approving it starts the session
   and records it. One without confirmation starts at once, within the grant's hourly cap.
 - Decided in `docs/decisions/2026-11-01-410-coordinator-kit.md`; proven end to end by

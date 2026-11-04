@@ -105,6 +105,39 @@ fn every_launch_loads_the_hook_bridge_settings() {
     );
 }
 
+/// #703: after a new context and each turn's end, the bridge waits in the background for a
+/// message from another session and wakes the model with it (`asyncRewake`).
+#[test]
+fn the_inbox_waiter_runs_in_the_background_after_a_new_context_and_each_turns_end() {
+    let words = words(
+        &common::claude()
+            .launch(&request(&Conversation::New))
+            .unwrap()
+            .arguments,
+    );
+    let settings: serde_json::Value =
+        serde_json::from_str(value_after(&words, "--settings").unwrap()).unwrap();
+    let hooks = settings["hooks"].as_object().unwrap();
+
+    for (event, commands) in hooks {
+        let commands = commands[0]["hooks"].as_array().unwrap();
+        if event != "SessionStart" && event != "Stop" {
+            assert_eq!(commands.len(), 1, "{event} only reports: {commands:?}");
+            continue;
+        }
+        assert_eq!(
+            commands[1],
+            serde_json::json!({
+                "type": "command",
+                "command": "'/opt/cockpit/bin/cockpit-claude-hook' '/opt/cockpit/bin/cockpit' --inbox",
+                "asyncRewake": true,
+                "timeout": 86400,
+            }),
+            "{event}"
+        );
+    }
+}
+
 /// #419: the agent reaches Cockpit's MCP server without configuring anything.
 #[test]
 fn every_launch_registers_cockpits_mcp_server() {

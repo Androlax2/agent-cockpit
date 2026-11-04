@@ -19,7 +19,8 @@ Nothing above this contract is keyed on a provider's name, only on its reported
 - **Capabilities with provenance** (report 08). Each reported [`Capability`] is `tested`
   against the exact harness version running, or `discovered` (shown as unverified); one not
   reported is unavailable. Resume, submit, events, cancel, outcome, effort, compact, remote
-  control, commands and screen reading have contract behavior; evidence and billing are
+  control, commands and screen reading have contract behavior; inbox says the adapter's
+  bridge collects messages from other sessions itself (#703); evidence and billing are
   named so a capability report can show them, and get their methods with their first caller.
 - **Launch.** A launch refuses a request that needs a capability the provider does not
   report ([`LaunchRequest::needed_capabilities`]): a resumed conversation, an effort level,

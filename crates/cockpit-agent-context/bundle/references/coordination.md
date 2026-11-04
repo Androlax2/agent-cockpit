@@ -40,8 +40,10 @@ audited with your session and the other one.
   doing-now and open question. Never their terminal or transcript. `--watch` prints that
   listing once, then only the line of a session that changed or appeared, and `ID ended`
   (tab-separated) for one that left the listing; an unchanged session is not printed again.
-- `torlek agent message SESSION TEXT` (`message-sessions`): one line, typed at that
-  session's next prompt with your session named. Refused while it has a dialog open.
+- `torlek agent message SESSION TEXT` (`message-sessions`): one line, with your session
+  named. An agent that collects messages gets it from its own hook when its turn ends, never
+  through its prompt; another has it typed at its next prompt. Refused while it has a dialog
+  open. `torlek agent sessions` shows its delivery and why it waits.
 - `torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]` (`start-sessions`):
   `--agent` names the agent to run when Torlek has more than one; waits for
   the owner's approval like `torlek ask run` unless the grant says otherwise, and is capped
