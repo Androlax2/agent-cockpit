@@ -140,3 +140,19 @@ fn secrets_in_the_output_are_redacted_and_counted() {
     assert_eq!(presented.shown, "token=[redacted]\nok");
     assert_eq!(presented.redacted, 1);
 }
+
+#[test]
+fn an_answer_is_bounded_to_16_kib_and_counts_the_bytes_it_leaves_out() {
+    let line = format!("{}\n", "x".repeat(10 * 1024 - 1));
+    let output = line.repeat(120);
+    let presented = present(output.as_bytes(), output.len() as u64, 120);
+    assert!(
+        presented.shown.len() <= 16 * 1024,
+        "{}",
+        presented.shown.len()
+    );
+    assert_eq!(
+        presented.truncated_bytes + presented.shown.len() as u64 + 1,
+        output.len() as u64
+    );
+}
