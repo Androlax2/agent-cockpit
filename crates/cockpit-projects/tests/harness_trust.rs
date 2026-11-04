@@ -120,7 +120,7 @@ fn a_clone_whose_origin_moved_is_refused() {
 
     let refused = fixture.source(parallel(), &[&fixture.main]).unwrap_err();
 
-    assert!(refused.contains("is not its project's"), "{refused}");
+    assert_eq!(refused, "its origin is not its project's");
 }
 
 #[test]

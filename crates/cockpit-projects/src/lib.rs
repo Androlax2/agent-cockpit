@@ -102,9 +102,8 @@ pub fn harness_trust_source(
     };
     let (clone_origin, trusted_origin) = (origin(&checkout.path)?, origin(&from)?);
     if clone_origin != trusted_origin {
-        return Err(format!(
-            "its origin {clone_origin} is not its project's {trusted_origin}"
-        ));
+        // Never the URLs themselves: an origin can carry credentials, and this reason is logged.
+        return Err("its origin is not its project's".to_owned());
     }
     Ok(from)
 }
