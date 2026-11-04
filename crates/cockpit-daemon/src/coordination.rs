@@ -1,9 +1,10 @@
-//! The coordinator kit (#410): an agent's `agent-sessions`, `agent-message` and `agent-start`
-//! from the agent socket, the owner's `session-grant`, `session-revoke` and `session-grants`,
-//! the delivery of queued messages, and the coordinator notes on session cards. The rules
-//! live in `cockpit-authorization` (grants, start terms and cap, audit), `cockpit-approvals`
-//! (a start waiting for the owner) and `cockpit-messaging` (the outbox); this file maps and
-//! wires.
+//! The coordinator kit (#410): an agent's `agent-sessions`, `agent-message`, `agent-start`
+//! and `agent-end` (#713) from the agent socket, the owner's `session-grant`,
+//! `session-revoke` and `session-grants`, the delivery of queued messages, and the
+//! coordinator notes on session cards. The rules live in `cockpit-authorization` (grants,
+//! start terms and cap, audit), `cockpit-approvals` (a start waiting for the owner),
+//! `cockpit-messaging` (the outbox) and, for the finished label an end needs,
+//! [`crate::sessions::is_finished`]; this file maps and wires.
 //!
 //! A message reaches its target one of two ways. An agent whose bridge collects its own
 //! ([`Capability::Inbox`], Claude Code) takes it with `agent-inbox` from a hook, which hands it
@@ -31,7 +32,7 @@ use cockpit_protocol::{
 };
 use cockpit_provider_api::Capability;
 use cockpit_sessions::{
-    Addressed, AgentState, QuestionSource, Session, SessionId, SessionReport, SessionState,
+    Addressed, AgentState, Ender, QuestionSource, Session, SessionId, SessionReport, SessionState,
     Sessions, StartRequest,
 };
 use cockpit_turso::Database;
@@ -134,12 +135,18 @@ impl Waiters {
 }
 
 /// The route for a coordinator verb from the agent socket. Agent requests run in the bulk
-/// lane, like every agent request (#32).
+/// lane, like every agent request (#32), except an end: it may wait out the worker's grace
+/// and kill wait, so it runs in the stop lane like the owner's (#217), never in control.
 pub(crate) fn route_agent(
     command: Command,
     connector: Result<ProcessIdentity, ProcessError>,
     context: Context,
 ) -> Route {
+    let class = if matches!(command, Command::AgentEnd { .. }) {
+        WorkClass::Stop
+    } else {
+        WorkClass::Bulk
+    };
     let work = job(async move {
         let sender = Sender::read(connector).await;
         match command {
@@ -159,6 +166,10 @@ pub(crate) fn route_agent(
                 launch_token,
                 session,
             } => escalate(&context, &sender, launch_token, session).await,
+            Command::AgentEnd {
+                launch_token,
+                session,
+            } => end(&context, &sender, launch_token, session).await,
             Command::AgentStart {
                 launch_token,
                 dir,
@@ -186,10 +197,7 @@ pub(crate) fn route_agent(
             other => unreachable!("routes.rs sends only coordinator verbs here, not {other:?}"),
         }
     });
-    Route::Run {
-        class: WorkClass::Bulk,
-        job: work,
-    }
+    Route::Run { class, job: work }
 }
 
 /// The route for the owner's coordinator grants; small and the owner's: the control lane.
@@ -540,6 +548,125 @@ async fn escalate(
         "a coordinator escalated a question to the owner"
     );
     Ok(Reply::AgentEscalated { session: target })
+}
+
+/// `agent-end` (#713): ends `target` for the coordinator that started it, once the task list
+/// says its work is done (the finished label, #157: doing no item, finished one since its
+/// latest working launch). Needs `end-sessions`; the audit names both sessions and the item.
+/// Any other session, finished or not, and every other lifecycle change stay the owner's:
+/// `routes.rs` never sends them here.
+async fn end(
+    context: &Context,
+    sender: &Sender,
+    launch_token: Option<String>,
+    target: String,
+) -> Answer {
+    let target_id = SessionId::parse(&target)?;
+    let target_holder = holder(&target)?;
+    let coordinator = identified(&context.database, sender, launch_token).await?;
+    if coordinator.as_str() == target {
+        return Err(refused(
+            ErrorCode::InvalidArgument,
+            "a session does not end itself".to_owned(),
+            "name a session you started, from `torlek agent sessions`".to_owned(),
+            UnblockedBy::Agent,
+        ));
+    }
+    // One transaction reads the grant, the target and its items, so the end is decided on
+    // one state; the end itself then runs under the session's own lock.
+    let read = context.database.read().await?;
+    let decision = cockpit_authorization::evaluate(
+        &read,
+        &Actor::Session(coordinator.clone()),
+        Permission::EndSessions,
+        &Scope::Session(target_holder.clone()),
+    )
+    .await?;
+    let grant = granted(&coordinator, decision.outcome)?;
+    let target_session = cockpit_sessions::session(&read, &target_id).await?;
+    if target_session.started_by.as_ref().map(SessionId::as_str) != Some(coordinator.as_str()) {
+        return Err(refused(
+            ErrorCode::NotAuthorized,
+            format!(
+                "session {} did not start session {target}; only the owner ends it",
+                coordinator.as_str()
+            ),
+            "end only a session you started with `torlek agent start`".to_owned(),
+            UnblockedBy::Owner,
+        ));
+    }
+    refuse_if_over(&target_session)?;
+    let work = cockpit_tasks::session_work(&read).await?;
+    if !crate::sessions::is_finished(&target_session, &work) {
+        let doing = work.get(&target_holder).map_or(0, |work| work.doing);
+        return Err(refused(
+            ErrorCode::Conflict,
+            format!(
+                "session {target} has not finished its work: it is doing {doing} item(s) and the task list records no item it finished since its launch"
+            ),
+            format!("end session {target} once `torlek todo done` marks its item done"),
+            UnblockedBy::Agent,
+        ));
+    }
+    let finished_item = cockpit_tasks::latest_finished_item(&read, &target_holder).await?;
+    drop(read);
+    let ended = context
+        .sessions
+        .end_by(
+            &target_id,
+            &Ender::Coordinator(SessionId::parse(coordinator.as_str())?),
+        )
+        .await?;
+    tracing::info!(
+        from = coordinator.as_str(),
+        session = %ended.id,
+        "a coordinator ended a session it started"
+    );
+    // The session is over: from here an error must not read as an end that did not happen.
+    let detail = finished_item.map_or_else(
+        || "finished its work".to_owned(),
+        |item| format!("item {}", item.0),
+    );
+    if let Err(Failed(error)) = record_ended(
+        &context.database,
+        &coordinator,
+        grant,
+        &target_holder,
+        detail,
+    )
+    .await
+    {
+        tracing::error!(session = %ended.id, ?error, "an end's `ended` entry was not audited");
+    }
+    Ok(Reply::AgentEnded { session: target })
+}
+
+/// Audits the end of `target` by `coordinator`, with the item it finished as the detail.
+async fn record_ended(
+    database: &Database,
+    coordinator: &Holder,
+    grant: GrantId,
+    target: &Holder,
+    detail: String,
+) -> Result<(), Failed> {
+    let write = database.write().await?;
+    let revision = cockpit_authorization::current_revision(&write).await?;
+    cockpit_authorization::record_audit(
+        &write,
+        &Audit {
+            actor: coordinator.clone(),
+            permission: Permission::EndSessions,
+            grant,
+            revision,
+            action: AuditedAction::Ended,
+            target: Some(target.clone()),
+            detail: Some(detail),
+            at: now(),
+        },
+    )
+    .await?;
+    write.commit().await?;
+    Ok(())
 }
 
 /// `agent-start`: below the sessions at once and within the hourly cap, either files the
@@ -1382,8 +1509,8 @@ fn coordinator_permission(name: &str) -> Result<Permission, Failed> {
         .filter(|permission| permission.is_coordinator())
         .ok_or_else(|| {
             invalid_argument(&format!(
-                "{name:?} is not a coordinator grant: observe-sessions, message-sessions or \
-                 start-sessions"
+                "{name:?} is not a coordinator grant: observe-sessions, message-sessions, \
+                 start-sessions or end-sessions"
             ))
         })
 }

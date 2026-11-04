@@ -16,8 +16,9 @@ pub use error::Error;
 pub use lifecycle::Sessions;
 pub use lifecycle::visible_line;
 pub use model::{
-    Addressed, AgentExit, ExitStatus, Launch, LaunchKind, RestartAll, Restored, Session, SessionId,
-    SessionState, Settings, SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,
+    Addressed, AgentExit, Ender, ExitStatus, Launch, LaunchKind, RestartAll, Restored, Session,
+    SessionId, SessionState, Settings, SleepRefusal, StartRequest, StopTarget, TickReport,
+    WakeCause,
 };
 pub use questions::{QUESTION_HOLD_SECONDS, answer_question, escalate_question, question_holder};
 pub use reports::{

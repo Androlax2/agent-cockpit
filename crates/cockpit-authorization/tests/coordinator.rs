@@ -777,3 +777,111 @@ async fn a_start_grant_stored_before_max_active_reads_with_the_default() {
         ]
     );
 }
+
+#[tokio::test]
+async fn end_sessions_is_a_coordinator_grant_no_other_grant_implies() {
+    let database = open("end-sessions-grant").await;
+    let holder = session("coordinator");
+    for other in [
+        Permission::ObserveSessions,
+        Permission::MessageSessions,
+        Permission::StartSessions,
+        Permission::ChangeState,
+    ] {
+        grant(&database, &holder, other, &Scope::Owner).await;
+    }
+    let read = database.read().await.unwrap();
+    let actor = Actor::Session(holder.clone());
+
+    let refused = evaluate(
+        &read,
+        &actor,
+        Permission::EndSessions,
+        &Scope::Session(session("worker")),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        refused.outcome,
+        Outcome::Refused(Refusal::NoGrant {
+            permission: Permission::EndSessions,
+            scope: Scope::Session(session("worker")),
+        })
+    );
+    assert!(Permission::EndSessions.is_coordinator());
+    assert_eq!(
+        "end-sessions".parse::<Permission>().ok(),
+        Some(Permission::EndSessions)
+    );
+}
+
+#[tokio::test]
+async fn an_end_is_audited_with_the_ended_session_and_its_item() {
+    let database = open("end-audited").await;
+    let holder = session("coordinator");
+    let given = grant(&database, &holder, Permission::EndSessions, &Scope::Owner).await;
+    let write = database.write().await.unwrap();
+    let audited = Audit {
+        actor: holder.clone(),
+        permission: Permission::EndSessions,
+        grant: given.id,
+        revision: given.granted_at,
+        action: AuditedAction::Ended,
+        target: Some(session("worker")),
+        detail: Some("item 0a1b2c3d".to_owned()),
+        at: NOW,
+    };
+    let id = record_audit(&write, &audited).await.unwrap();
+    write.commit().await.unwrap();
+
+    let read = database.read().await.unwrap();
+    let entries = audit_of(&read, &session("worker"), 10).await.unwrap();
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, id);
+    assert_eq!(entries[0].audit, audited);
+    assert_eq!(
+        latest_audit_on(&read, &session("worker"), AuditedAction::Ended)
+            .await
+            .unwrap()
+            .map(|entry| entry.id),
+        Some(id)
+    );
+}
+
+#[tokio::test]
+async fn entries_audited_before_the_ended_action_survive_the_rebuild() {
+    const BEFORE_ENDS: cockpit_turso::MigrationSet = cockpit_turso::MigrationSet {
+        owner: "authorization",
+        migrations: cockpit_authorization::MIGRATIONS.migrations.split_at(4).0,
+    };
+    let path = common::database_path("ended-audit-rebuild");
+    let before = Database::open(&path, &[BEFORE_ENDS]).await.unwrap();
+    let write = before.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO authorization_audit
+                (id, actor, permission, grant_id, revision, action, target, detail, at)
+             VALUES (7, 'coordinator', 'start-sessions', 2, 3, 'approved', NULL,
+                'approval request 3, by the owner', ?1)",
+            [NOW],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(before);
+
+    let after = Database::open(&path, &[cockpit_authorization::MIGRATIONS])
+        .await
+        .unwrap();
+    let read = after.read().await.unwrap();
+
+    let entry = audit_entry(&read, 7).await.unwrap().unwrap();
+    assert_eq!(entry.audit.action, AuditedAction::Approved);
+    assert_eq!(
+        entry.audit.detail.as_deref(),
+        Some("approval request 3, by the owner")
+    );
+    assert_eq!(entry.audit.at, NOW);
+}

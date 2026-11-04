@@ -25,7 +25,7 @@ pub use messaging::visible_line;
 use crate::model::{LaunchPurpose, validate_link};
 use crate::store::{self, NewSession};
 use crate::{
-    AgentExit, AgentState, Error, LaunchKind, QuestionSource, RestartAll, Restored, Session,
+    AgentExit, AgentState, Ender, Error, LaunchKind, QuestionSource, RestartAll, Restored, Session,
     SessionId, SessionReport, SessionState, Settings, SleepRefusal, StartRequest, StopTarget,
     TickReport, WakeCause,
 };
@@ -521,6 +521,7 @@ impl Sessions {
             &[SessionState::Running],
             StopTarget::Asleep,
             "sleep",
+            None,
         )
         .await
     }
@@ -672,11 +673,19 @@ impl Sessions {
         Ok(())
     }
 
-    /// Ends the session: stops its agent, releases the clone it occupies. A launch or a
-    /// stop left unfinished by an error is stopped as an end. A failed launch may have left
-    /// its agent running (#221), so a failed session's latest agent is stopped first, as
-    /// resume does; one not observed gone refuses the end and the session stays failed.
+    /// Ends the session for the owner: stops its agent, releases the clone it occupies. A
+    /// launch or a stop left unfinished by an error is stopped as an end. A failed launch may
+    /// have left its agent running (#221), so a failed session's latest agent is stopped
+    /// first, as resume does; one not observed gone refuses the end and the session stays
+    /// failed.
     pub async fn end(&self, id: &SessionId) -> Result<Session, Error> {
+        self.end_by(id, &Ender::Owner).await
+    }
+
+    /// [`Self::end`] for `ender`, whom the session's reason then names (#713). Who may end
+    /// which session is the caller's rule: this only records who did.
+    pub async fn end_by(&self, id: &SessionId, ender: &Ender) -> Result<Session, Error> {
+        let reason = ender.reason();
         let operation = self.lock_to_stop(id, "end").await?;
         let session = self.get(id).await?;
         if matches!(
@@ -685,7 +694,14 @@ impl Sessions {
         ) {
             self.tmux()?;
             return self
-                .stop(&operation, id, &[session.state], StopTarget::Ended, "end")
+                .stop(
+                    &operation,
+                    id,
+                    &[session.state],
+                    StopTarget::Ended,
+                    "end",
+                    Some(&reason),
+                )
                 .await;
         }
         // A session whose first launch failed before its agent was prepared has no launch
@@ -700,7 +716,7 @@ impl Sessions {
             id,
             &[SessionState::Asleep, SessionState::Failed],
             SessionState::Ended,
-            Some("ended by the owner"),
+            Some(&reason),
             "end",
         )
         .await?;
@@ -806,7 +822,12 @@ impl Sessions {
         };
         // Marked through its stop phase, as `stop` marks a restart.
         let _launching = (to == StopTarget::Restart).then(|| operation.launching());
-        let stopped = match self.finish_stop(&id, to).await {
+        // The stopping state does not keep who asked for an end; the restore names the owner,
+        // whose daemon it is, as before #713.
+        let stopped = match self
+            .finish_stop(&id, to, Some(&Ender::Owner.reason()))
+            .await
+        {
             Ok(stopped) => stopped,
             Err(error) if error.is_database() => return Err(error),
             Err(error) => return Ok(Restored::StopNotFinished(id, error.to_string())),
@@ -1005,6 +1026,7 @@ impl Sessions {
                             &[SessionState::Running],
                             StopTarget::Asleep,
                             "sleep",
+                            None,
                         )
                         .await
                     {
@@ -1405,6 +1427,7 @@ impl Sessions {
 
     /// Moves the session from one of `from` to stopping, then stops its agent; a restart
     /// goes through [`Self::restart_from`].
+    /// `ended_reason` is what an end leaves as the session's reason; a sleep has none.
     async fn stop(
         &self,
         _lock: &Operation,
@@ -1412,6 +1435,7 @@ impl Sessions {
         from: &[SessionState],
         to: StopTarget,
         operation: &'static str,
+        ended_reason: Option<&str>,
     ) -> Result<Session, Error> {
         assert!(
             to != StopTarget::Restart,
@@ -1419,7 +1443,7 @@ impl Sessions {
         );
         self.transition(id, from, SessionState::Stopping { to }, None, operation)
             .await?;
-        self.finish_stop(id, to).await
+        self.finish_stop(id, to, ended_reason).await
     }
 
     /// Moves the session from one of `from` to stopping, stops its agent and launches its
@@ -1436,16 +1460,21 @@ impl Sessions {
         self.transition(id, from, SessionState::Stopping { to }, None, "restart")
             .await?;
         let _launching = lock.launching();
-        let stopped = self.finish_stop(id, to).await?;
+        let stopped = self.finish_stop(id, to, None).await?;
         // Chosen again after the stop: the provider may have named it in between.
         let conversation = self.restart_conversation(&stopped);
         self.relaunch(lock, &stopped, purpose, conversation).await
     }
 
-    /// Stops a stopping session's agent and moves it on: asleep, ended, or `launching` for
-    /// a restart, which [`Self::relaunch`] then launches. An agent not observed gone puts
-    /// the session back to running.
-    async fn finish_stop(&self, id: &SessionId, to: StopTarget) -> Result<Session, Error> {
+    /// Stops a stopping session's agent and moves it on: asleep, ended (with `ended_reason`
+    /// as its reason), or `launching` for a restart, which [`Self::relaunch`] then launches.
+    /// An agent not observed gone puts the session back to running.
+    async fn finish_stop(
+        &self,
+        id: &SessionId,
+        to: StopTarget,
+        ended_reason: Option<&str>,
+    ) -> Result<Session, Error> {
         let session = self.get(id).await?;
         let stopping = SessionState::Stopping { to };
         if let Err(error) = self.stop_previous_agent(&session).await {
@@ -1463,7 +1492,7 @@ impl Sessions {
         }
         let (state, reason) = match to {
             StopTarget::Asleep => (SessionState::Asleep, None),
-            StopTarget::Ended => (SessionState::Ended, Some("ended by the owner")),
+            StopTarget::Ended => (SessionState::Ended, ended_reason),
             StopTarget::Restart => (SessionState::Launching, None),
         };
         let write = self.database.write().await?;

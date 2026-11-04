@@ -346,21 +346,23 @@ impl Handler for Routes {
                 ),
             },
             // The coordinator kit (#410): a session acts on others only through the owner's
-            // grants, which `cockpit-authorization` evaluates per request.
+            // grants, which `cockpit-authorization` evaluates per request. `agent-end` (#713)
+            // reaches only a session the sender started, once its work is done.
             (
                 command @ (Command::AgentSessions { .. }
                 | Command::AgentMessage { .. }
                 | Command::AgentInbox { .. }
                 | Command::AgentEscalate { .. }
-                | Command::AgentStart { .. }),
+                | Command::AgentStart { .. }
+                | Command::AgentEnd { .. }),
                 peer,
             ) => match peer {
                 Peer::Agent { connector } => {
                     coordination::route_agent(command, connector, self.coordination.clone())
                 }
                 Peer::Owner => Route::Answer(wrong_socket(
-                    "observing, messaging and starting sessions as a coordinator are a session's requests",
-                    "use `torlek session list` or `torlek session new` on the host",
+                    "observing, messaging, starting and ending sessions as a coordinator are a session's requests",
+                    "use `torlek session list`, `torlek session new` or `torlek session end` on the host",
                     UnblockedBy::Owner,
                 )),
             },
@@ -392,8 +394,9 @@ impl Handler for Routes {
                 | Command::SandboxShow { .. }),
                 peer,
             ) => match peer {
-                // Starting and stopping agents is the owner's; agents ask through their
-                // own verbs once those exist.
+                // Starting and stopping agents is the owner's. A coordinator has its own
+                // verbs, `agent-start` and `agent-end`, bounded by its grants; this route
+                // never opens to it.
                 Peer::Agent { .. } => Route::Answer(owner_only()),
                 Peer::Owner => sessions::route(command, Arc::clone(&self.sessions)),
             },

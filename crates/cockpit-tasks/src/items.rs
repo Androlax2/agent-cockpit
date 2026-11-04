@@ -336,6 +336,28 @@ pub async fn session_work(
     Ok(work)
 }
 
+/// The item `session` finished last, by commit order, if any: what a coordinator's audit of
+/// ending that session names (#713). The owner's `reopen` clears `finished_by`, so a reopened
+/// item is not it.
+pub async fn latest_finished_item(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Option<ItemId>, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT id FROM tasks_items
+             WHERE finished_by = ?1 AND status = 'done' AND finished_order IS NOT NULL
+             ORDER BY finished_order DESC
+             LIMIT 1",
+            [session.as_str()],
+        )
+        .await?;
+    match rows.next().await? {
+        Some(row) => Ok(Some(ItemId(row.get(0)?))),
+        None => Ok(None),
+    }
+}
+
 /// A grouped row's first column: the session it counts for.
 fn session_column(row: &Row) -> Result<SessionId, Error> {
     SessionId::new(row.get::<String>(0)?)

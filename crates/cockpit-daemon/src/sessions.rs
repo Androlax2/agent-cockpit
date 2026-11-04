@@ -346,7 +346,9 @@ pub(crate) async fn card_inputs(sessions: &Sessions) -> Result<CardInputs, Faile
 }
 
 /// Each session's items alone: what the finished label needs.
-async fn task_work(sessions: &Sessions) -> Result<HashMap<TaskSession, SessionWork>, Failed> {
+pub(crate) async fn task_work(
+    sessions: &Sessions,
+) -> Result<HashMap<TaskSession, SessionWork>, Failed> {
     let read = sessions.database().read().await.map_err(Error::from)?;
     Ok(cockpit_tasks::session_work(&read).await?)
 }
@@ -358,7 +360,7 @@ async fn task_work(sessions: &Sessions) -> Result<HashMap<TaskSession, SessionWo
 /// restart keeps the label. Both are ordered by their commits, never by the clock (#273). A
 /// session mid-launch, mid-stop, failed or ended is not labelled: the failed one needs the
 /// owner, the ended one has nothing left to exit.
-fn is_finished(session: &Session, items: &HashMap<TaskSession, SessionWork>) -> bool {
+pub(crate) fn is_finished(session: &Session, items: &HashMap<TaskSession, SessionWork>) -> bool {
     if matches!(
         session.state,
         SessionState::Launching

@@ -603,7 +603,20 @@ impl Home {
     /// A Git repository at `projects/<name>` registered through the daemon; returns its
     /// root and the project's name.
     pub async fn project(&self, client: &Connection, name: &str) -> (PathBuf, String) {
-        let root = self.path().join("projects").join(name);
+        self.project_at(client, name, None).await
+    }
+
+    /// A Git repository at `projects/<relative>` registered through the daemon as `name`
+    /// (the directory's name when `None`); returns its root and the project's name. The fake
+    /// agent acts as the root's last component says, so a second project can run the same
+    /// agent under another name, for example `worker/commanded` (#713).
+    pub async fn project_at(
+        &self,
+        client: &Connection,
+        relative: &str,
+        name: Option<&str>,
+    ) -> (PathBuf, String) {
+        let root = self.path().join("projects").join(relative);
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet", "--initial-branch=main"]);
         std::fs::write(root.join("README"), "fixture\n").unwrap();
@@ -613,14 +626,14 @@ impl Home {
             .request(
                 Command::ProjectAdd {
                     path: root.display().to_string(),
-                    name: None,
+                    name: name.map(str::to_owned),
                 },
                 GENEROUS,
             )
             .await;
         match added {
             Ok(Reply::ProjectAdded { project, .. }) => (root, project.name),
-            other => panic!("project-add {name}: {other:?}"),
+            other => panic!("project-add {relative}: {other:?}"),
         }
     }
 }

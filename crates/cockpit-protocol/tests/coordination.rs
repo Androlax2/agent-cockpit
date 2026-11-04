@@ -37,6 +37,13 @@ fn each_coordinator_command_round_trips_with_only_the_fields_it_was_given() {
             },
         ),
         (
+            json!({"id": 1, "command": {"kind": "agent-end", "launch_token": "t", "session": "s2"}}),
+            Command::AgentEnd {
+                launch_token: Some("t".to_owned()),
+                session: "s2".to_owned(),
+            },
+        ),
+        (
             json!({"id": 1, "command": {"kind": "agent-start", "dir": "/p/app", "prompt": "fix it"}}),
             Command::AgentStart {
                 launch_token: None,
@@ -231,4 +238,16 @@ fn a_queued_message_says_whether_its_hook_collects_it() {
             .get("collected")
             .is_none()
     );
+}
+
+/// #713: the end of a session a coordinator started answers with that session.
+#[test]
+fn an_ended_reply_names_the_session() {
+    let reply = Reply::AgentEnded {
+        session: "s2".to_owned(),
+    };
+    let wire = json!({"kind": "agent-ended", "session": "s2"});
+
+    assert_eq!(serde_json::to_value(&reply).unwrap(), wire);
+    assert_eq!(serde_json::from_value::<Reply>(wire).unwrap(), reply);
 }

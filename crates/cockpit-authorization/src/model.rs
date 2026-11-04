@@ -59,13 +59,16 @@ pub enum Permission {
     /// [`StartTerms`] say otherwise, and is capped per hour (#410) and by how many of the
     /// sessions it started still run (#739).
     StartSessions,
+    /// End a session the holder started, once the task list says its work is done (#713).
+    /// Any other session, and every other lifecycle change, stay the owner's.
+    EndSessions,
     /// Owner-only actions such as `handoff-install` and `system-install` (report 17). Never
     /// granted to a session.
     HostActions,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 9] = [
+    pub const ALL: [Permission; 10] = [
         Permission::ReadState,
         Permission::ChangeState,
         Permission::RunCommands,
@@ -74,15 +77,17 @@ impl Permission {
         Permission::ObserveSessions,
         Permission::MessageSessions,
         Permission::StartSessions,
+        Permission::EndSessions,
         Permission::HostActions,
     ];
 
-    /// The coordinator grants (#410): the one mechanism by which a session acts on other
-    /// sessions. Only the owner gives them, one at a time; no other grant implies them.
-    pub const COORDINATOR: [Permission; 3] = [
+    /// The coordinator grants (#410, #713): the one mechanism by which a session acts on
+    /// other sessions. Only the owner gives them, one at a time; no other grant implies them.
+    pub const COORDINATOR: [Permission; 4] = [
         Permission::ObserveSessions,
         Permission::MessageSessions,
         Permission::StartSessions,
+        Permission::EndSessions,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -95,6 +100,7 @@ impl Permission {
             Permission::ObserveSessions => "observe-sessions",
             Permission::MessageSessions => "message-sessions",
             Permission::StartSessions => "start-sessions",
+            Permission::EndSessions => "end-sessions",
             Permission::HostActions => "host-actions",
         }
     }
@@ -251,15 +257,19 @@ pub enum AuditedAction {
     Approved,
     /// The owner declined a start the session asked for (#657).
     Declined,
+    /// Ended a session it had started, once its work was done (#713); the target is the
+    /// ended session, the detail names the item it finished.
+    Ended,
 }
 
 impl AuditedAction {
-    pub const ALL: [AuditedAction; 5] = [
+    pub const ALL: [AuditedAction; 6] = [
         AuditedAction::Message,
         AuditedAction::Start,
         AuditedAction::Started,
         AuditedAction::Approved,
         AuditedAction::Declined,
+        AuditedAction::Ended,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -269,6 +279,7 @@ impl AuditedAction {
             AuditedAction::Started => "started",
             AuditedAction::Approved => "approved",
             AuditedAction::Declined => "declined",
+            AuditedAction::Ended => "ended",
         }
     }
 
