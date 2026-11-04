@@ -487,7 +487,10 @@ const EXIT_SWEEP: Duration = Duration::from_secs(1);
 /// The sessions' periodic pass: exits, idle sleep, asleep expiry, every `interval`; the exits
 /// also every [`EXIT_SWEEP`] when `interval` is longer. Runs until aborted.
 pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
-    let mut ticks = tokio::time::interval(interval);
+    // The first pass waits one interval: startup's restore has just reconciled every active
+    // session, and an immediate pass would take their locks while the startup scheduling
+    // pass types placed work to them, failing a delivery try as busy (#816).
+    let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Not at once: two ready intervals would push the first tick, which holds each session's
     // lock, past startup into the owner's first send or cancel.
