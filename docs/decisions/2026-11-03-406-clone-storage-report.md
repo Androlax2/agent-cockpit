@@ -20,9 +20,13 @@ the coordinator explicitly authorized reusing the existing exact `rustix =1.1.6`
   Missing targets are distinct from complete empty ones. Incomplete results retain observed
   bytes and a reason; unavailable results have no byte value. CLI exit 1 also covers a
   truncated report. Control characters in table cells are escaped.
-- **Bounded work.** At most 128 clone rows, 100,000 directory entries across the report
-  (including filesystem `.`/`..` entries), 64 target directory levels and a cooperative
-  five-second scan budget. Absolute checkout paths also have a 64-component bound. Entry
+- **Bounded work.** At most 128 clone rows, 500,000 directory entries per clone
+  (including filesystem `.`/`..` entries), 64 target directory levels, a cooperative
+  three-second scan budget per clone and 30 seconds for the report. Each clone gets the
+  smaller of three seconds and an equal share of the time left, so a huge `target/` ends as
+  `incomplete` with its observed bytes and "after N entries" in the reason, and never starves
+  the clones after it (#764; the first limits, 100,000 entries and five seconds shared by the
+  whole report, left every clone but one unavailable on real 17 to 38 GB targets). Absolute checkout paths also have a 64-component bound. Entry
   and time limits are checked between entries/clones; the bounded identity recheck still
   runs after traversal. A stalled kernel filesystem call cannot be forcibly interrupted.
   Existing Bulk containment retains admission until the work actually ends, including

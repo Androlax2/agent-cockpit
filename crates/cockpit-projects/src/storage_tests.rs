@@ -201,3 +201,90 @@ async fn the_report_caps_registry_rows_and_does_not_modify_them() {
     let read = database.read().await.unwrap();
     assert_eq!(crate::checkouts(&read, None).await.unwrap().len(), 131);
 }
+
+async fn stored_clones_with_files(
+    clone_names: &[&str],
+    files_per_target: usize,
+) -> Vec<StoredCheckout> {
+    let scratch = Scratch::new();
+    let database = scratch.open().await;
+    let root = scratch.repository("app");
+    register(&database, &root).await;
+    let mut stored = Vec::new();
+    for name in clone_names {
+        let clone = crate::create_parallel_clone(&database, &crate::Git::from_path(), "app", name)
+            .await
+            .unwrap();
+        disk::create_dir(clone.path.join("target")).unwrap();
+        for number in 0..files_per_target {
+            disk::write(clone.path.join(format!("target/{number}")), b"abc").unwrap();
+        }
+        stored.push(
+            crate::store::stored_checkout(&database.read().await.unwrap(), clone.id)
+                .await
+                .unwrap(),
+        );
+    }
+    // The scratch directory must outlive the walk; leaking it keeps the fixture alive for this test process.
+    std::mem::forget(scratch);
+    stored
+}
+
+#[tokio::test]
+async fn every_clone_over_the_entry_limit_reports_its_own_partial_size() {
+    let stored = stored_clones_with_files(&["first", "second", "third"], 30).await;
+
+    let clones = measure_all(stored, 10, SCAN_BUDGET, REPORT_BUDGET);
+
+    assert_eq!(clones.len(), 3);
+    for clone in &clones {
+        assert!(
+            matches!(&clone.measurement, TargetSize::Incomplete { apparent_bytes, reason }
+            if *apparent_bytes > 0 && reason.contains("entry limit reached after")),
+            "{:?}",
+            clone.measurement
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_incomplete_count_names_how_many_entries_the_walk_visited() {
+    let (_scratch, _database, stored) = fixture().await;
+    for number in 0..20 {
+        disk::write(
+            stored.checkout.path.join(format!("target/{number}")),
+            b"abc",
+        )
+        .unwrap();
+    }
+
+    let size = measure(&stored, &mut Budget::new(8, SCAN_BUDGET), &mut || {});
+
+    assert!(
+        matches!(&size, TargetSize::Incomplete { reason, .. }
+        if reason == "report directory-entry limit reached after 8 entries"),
+        "{size:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_clone_under_the_limits_stays_complete_next_to_one_over_them() {
+    let small = stored_clones_with_files(&["small"], 3).await;
+    let large = stored_clones_with_files(&["large"], 30).await;
+
+    let clones = measure_all(
+        large.into_iter().chain(small).collect(),
+        10,
+        SCAN_BUDGET,
+        REPORT_BUDGET,
+    );
+
+    assert!(matches!(
+        clones[0].measurement,
+        TargetSize::Incomplete { .. }
+    ));
+    assert_eq!(
+        clones[1].measurement,
+        TargetSize::Complete { apparent_bytes: 9 }
+    );
+}
