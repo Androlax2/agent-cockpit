@@ -150,8 +150,11 @@ async fn run(
     let mut unanswered_refreshes = 0_usize;
     let mut refresh = tokio::time::interval(REFRESH);
     loop {
+        // One clock reading for the frame and its deadline: a grace that ends in between
+        // would otherwise leave its hint on screen with nothing armed to remove it.
+        let now = Instant::now();
         terminal
-            .draw(|frame| draw(&app, frame, Instant::now()))
+            .draw(|frame| draw(&app, frame, now))
             .map_err(|error| format!("cannot draw: {error}"))?;
         tokio::select! {
             _ = refresh.tick(), if unanswered_refreshes == 0 => {
@@ -161,7 +164,7 @@ async fn run(
                 }
             }
             // The one redraw nothing else wakes: the pane's grace hint going away.
-            () = sleep_until(app.pane().grace_ends_at(Instant::now())) => {}
+            () = sleep_until(app.pane().grace_ends_at(now)) => {}
             event = feed.recv() => match event {
                 None => return Err("the change feed task stopped".to_owned()),
                 Some(event) => follow(&mut app, event),
