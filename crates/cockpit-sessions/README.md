@@ -79,8 +79,10 @@ stopped in the middle of one finishes or repairs it at its next start.
 - **A clone inherits its harness trust** (#702). Before the agent runs in a parallel clone of
   a project in the owner's `projects.trusted` whose origin is its project's, the launch asks
   the provider to record its harness's trust of the clone (`Provider::trust_workspace`), so
-  Claude Code does not stop on its folder-trust dialog. A refusal is logged and the launch goes
-  on; the dialog then shows (`docs/decisions/2026-11-04-702-claude-folder-trust.md`).
+  Claude Code does not stop on its folder-trust dialog; a clone whose harness settings differ
+  from its project's has a trust kept from an earlier launch revoked. A refusal is logged and
+  the launch goes on; the dialog then shows
+  (`docs/decisions/2026-11-04-702-claude-folder-trust.md`).
 - **Self grants.** Each launch grants the session `change-state` and `run-commands` over
   itself (`SELF_PERMISSIONS`), in the transaction that mints its launch token, so its
   agent's reports and asks are accepted; every move to `ended` or `failed` revokes both in

@@ -412,24 +412,41 @@ impl Provider for ClaudeCode {
         self.bridge.is_some()
     }
 
+    /// A clone whose settings differ from the trusted checkout's, or cannot be compared, has
+    /// any trust recorded earlier revoked: a reused clone never keeps the trust a previous
+    /// branch earned.
     fn trust_workspace(&self, request: &TrustRequest<'_>) -> Result<WorkspaceTrust, ProviderError> {
         let refused = |reason: String| ProviderError { reason };
-        let unexpected = trust::unexpected_settings(request.workspace, request.trusted_checkout)
-            .map_err(refused)?;
-        if !unexpected.is_empty() {
+        let config = trust::config_file(request.environment).map_err(refused)?;
+        let vetted = trust::unexpected_settings(
+            request.workspace,
+            request.trusted_checkout,
+            request.working_dir,
+        )
+        .and_then(|unexpected| {
+            if unexpected.is_empty() {
+                return Ok(());
+            }
             let names: Vec<String> = unexpected
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect();
-            return Err(refused(format!(
+            Err(format!(
                 "the clone's harness settings differ from {}: {}",
                 request.trusted_checkout.display(),
                 names.join(", ")
-            )));
+            ))
+        });
+        if let Err(reason) = vetted {
+            let revoked = match trust::record(&config, request.workspace, false) {
+                Ok(trust::Recorded::Written) => "; its earlier trust is revoked".to_owned(),
+                Ok(trust::Recorded::Unchanged) => String::new(),
+                Err(error) => format!("; its earlier trust, if any, could not be revoked: {error}"),
+            };
+            return Err(refused(format!("{reason}{revoked}")));
         }
-        let config = trust::config_file(request.environment).map_err(refused)?;
-        match trust::record(&config, request.workspace).map_err(refused)? {
-            trust::Recorded::AlreadyTrusted => Ok(WorkspaceTrust::AlreadyTrusted),
+        match trust::record(&config, request.workspace, true).map_err(refused)? {
+            trust::Recorded::Unchanged => Ok(WorkspaceTrust::AlreadyTrusted),
             trust::Recorded::Written => Ok(WorkspaceTrust::Recorded),
         }
     }

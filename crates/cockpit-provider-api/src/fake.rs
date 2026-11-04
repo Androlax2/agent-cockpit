@@ -115,7 +115,7 @@ impl FakeProvider {
     }
 
     /// Keeps a harness trust: each [`Provider::trust_workspace`] is recorded and appends
-    /// `<workspace> <trusted checkout>` to `log` ([`FakeProvider::trusted`]).
+    /// `<workspace>\t<trusted checkout>` to `log` ([`FakeProvider::trusted`]).
     pub fn keeping_trust(mut self, log: PathBuf) -> FakeProvider {
         self.trusted = Some(log);
         self
@@ -127,7 +127,7 @@ impl FakeProvider {
         std::fs::read_to_string(log)
             .unwrap_or_default()
             .lines()
-            .filter_map(|line| line.split_once(' '))
+            .filter_map(|line| line.split_once('\t'))
             .map(|(workspace, trusted)| (workspace.into(), trusted.into()))
             .collect()
     }
@@ -179,7 +179,7 @@ impl Provider for FakeProvider {
             return Ok(WorkspaceTrust::NotKept);
         };
         let line = format!(
-            "{} {}\n",
+            "{}\t{}\n",
             request.workspace.display(),
             request.trusted_checkout.display()
         );

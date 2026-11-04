@@ -277,8 +277,9 @@ pub trait Provider: Send + Sync + 'static {
     /// Records the harness's own trust of `request.workspace` before a launch there, so the
     /// harness does not stop on its folder-trust dialog before its agent runs (#702). Torlek
     /// calls it only for a parallel clone it checked may inherit its project's trust; the
-    /// adapter refuses, writing nothing, when the clone brings harness settings the trusted
-    /// checkout lacks or the harness's record cannot be written safely. A refusal does not
+    /// adapter refuses when the clone brings harness settings the trusted checkout lacks,
+    /// revoking a trust it kept from an earlier launch, or when the harness's record cannot
+    /// be written safely, writing nothing. A refusal does not
     /// stop the launch: the dialog then shows, and the session waits on the owner. Reads and
     /// writes files: run it off the async workers. The default keeps no trust.
     fn trust_workspace(&self, request: &TrustRequest<'_>) -> Result<WorkspaceTrust, ProviderError> {
@@ -299,6 +300,8 @@ pub trait Provider: Send + Sync + 'static {
 pub struct TrustRequest<'a> {
     /// The parallel clone's root.
     pub workspace: &'a Path,
+    /// Where the agent starts, inside the clone: the harness reads settings there too.
+    pub working_dir: &'a Path,
     /// The project's main checkout, whose trust the clone inherits.
     pub trusted_checkout: &'a Path,
     /// The environment the agent launches with, which locates the harness's own files.

@@ -40,8 +40,8 @@ const LOCK_RETRY: Duration = Duration::from_millis(25);
 /// What [`record`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Recorded {
-    /// The workspace was already trusted; the file is unchanged.
-    AlreadyTrusted,
+    /// The workspace's trust already was the one asked for; the file is unchanged.
+    Unchanged,
     /// The trust key was written.
     Written,
 }
@@ -86,14 +86,33 @@ pub fn config_file(environment: &[(OsString, OsString)]) -> Result<PathBuf, Stri
 }
 
 /// The harness settings `clone` brings that `trusted_checkout` lacks or holds otherwise:
-/// each file under [`PROJECT_SETTINGS`] in the clone must exist with the same bytes in the
-/// trusted checkout. Files only the trusted checkout has, such as the owner's own local
-/// settings, are fine: the clone applies fewer settings, never other ones. Paths relative to
-/// the clone, sorted.
-pub fn unexpected_settings(clone: &Path, trusted_checkout: &Path) -> Result<Vec<PathBuf>, String> {
+/// each file under [`PROJECT_SETTINGS`] in the clone, in every directory from `start` (where
+/// the agent starts, inside the clone) up to the clone's root, must exist with the same bytes
+/// at the same place in the trusted checkout. Files only the trusted checkout has, such as the
+/// owner's own local settings, are fine: the clone applies fewer settings, never other ones.
+/// Paths relative to the clone, sorted.
+pub fn unexpected_settings(
+    clone: &Path,
+    trusted_checkout: &Path,
+    start: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let below = start.strip_prefix(clone).map_err(|_| {
+        format!(
+            "the agent starts in {}, outside the clone {}",
+            start.display(),
+            clone.display()
+        )
+    })?;
     let mut unexpected = Vec::new();
-    for name in PROJECT_SETTINGS {
-        compare(clone, trusted_checkout, Path::new(name), &mut unexpected)?;
+    for directory in below.ancestors() {
+        for name in PROJECT_SETTINGS {
+            compare(
+                clone,
+                trusted_checkout,
+                &directory.join(name),
+                &mut unexpected,
+            )?;
+        }
     }
     unexpected.sort();
     Ok(unexpected)
@@ -141,11 +160,12 @@ fn compare(
     Ok(())
 }
 
-/// Records Claude Code's trust of `workspace` in `config`: under Claude Code's own lock, from
-/// the file as it is then, changing only that project's trust key. Refuses, writing nothing,
+/// Records Claude Code's trust of `workspace` in `config` as `trusted`: under Claude Code's
+/// own lock, from the file as it is then, changing only that project's trust key. Revoking
+/// only turns an existing `true` to `false`; it never adds an entry. Refuses, writing nothing,
 /// when the file is missing, is a link, cannot be parsed, has an unexpected shape or stays
 /// locked.
-pub fn record(config: &Path, workspace: &Path) -> Result<Recorded, String> {
+pub fn record(config: &Path, workspace: &Path, trusted: bool) -> Result<Recorded, String> {
     let workspace = workspace
         .canonicalize()
         .map_err(|error| format!("resolve {}: {error}", workspace.display()))?;
@@ -160,16 +180,18 @@ pub fn record(config: &Path, workspace: &Path) -> Result<Recorded, String> {
     let _lock = ConfigLock::acquire(config)?;
     let text = fs::read_to_string(config)
         .map_err(|error| format!("read {}: {error}", config.display()))?;
-    let Some(trusted) = with_trust(&text, key)? else {
-        return Ok(Recorded::AlreadyTrusted);
+    let Some(edited) = with_trust(&text, key, trusted)? else {
+        return Ok(Recorded::Unchanged);
     };
-    replace(config, &metadata, &trusted)?;
+    replace(config, &metadata, &edited)?;
     Ok(Recorded::Written)
 }
 
-/// `text` with `projects[key].hasTrustDialogAccepted` set to `true`, every other byte kept;
-/// `None` when it already is. The edit is checked by parsing the result.
-pub fn with_trust(text: &str, key: &str) -> Result<Option<String>, String> {
+/// `text` with `projects[key].hasTrustDialogAccepted` set to `trusted`, every other byte
+/// kept; `None` when nothing changes: already trusted, or, to revoke, not trusted (a missing
+/// entry or key reads as untrusted, so none is added). The edit is checked by parsing the
+/// result.
+pub fn with_trust(text: &str, key: &str, trusted: bool) -> Result<Option<String>, String> {
     let unparsable = |error: serde_json::Error| format!("the config is not JSON: {error}");
     let mut expected: Value = serde_json::from_str(text).map_err(unparsable)?;
     let top = expected
@@ -180,21 +202,26 @@ pub fn with_trust(text: &str, key: &str) -> Result<Option<String>, String> {
         .or_insert_with(|| Value::Object(serde_json::Map::new()))
         .as_object_mut()
         .ok_or("the config's `projects` is not an object")?;
-    if let Some(entry) = projects.get(key) {
-        let entry = entry
-            .as_object()
-            .ok_or("the workspace's project entry is not an object")?;
-        if entry.get(TRUST_KEY) == Some(&Value::Bool(true)) {
-            return Ok(None);
+    let is_trusted = match projects.get(key) {
+        Some(entry) => {
+            entry
+                .as_object()
+                .ok_or("the workspace's project entry is not an object")?
+                .get(TRUST_KEY)
+                == Some(&Value::Bool(true))
         }
+        None => false,
+    };
+    if is_trusted == trusted {
+        return Ok(None);
     }
-    let edited = splice(text, key)?;
+    let edited = splice(text, key, trusted)?;
     match projects.get_mut(key) {
         Some(entry) => {
             entry
                 .as_object_mut()
                 .ok_or("the workspace's project entry is not an object")?
-                .insert(TRUST_KEY.to_owned(), Value::Bool(true));
+                .insert(TRUST_KEY.to_owned(), Value::Bool(trusted));
         }
         None => {
             let entry = serde_json::from_str(NEW_PROJECT_ENTRY).map_err(unparsable)?;
@@ -208,9 +235,10 @@ pub fn with_trust(text: &str, key: &str) -> Result<Option<String>, String> {
     Ok(Some(edited))
 }
 
-/// The textual edit: the trust key's value replaced, or a member inserted first in the
-/// innermost object that exists on the path `projects` → `key` → trust key.
-fn splice(text: &str, key: &str) -> Result<String, String> {
+/// The textual edit: the trust key's value replaced, or, to trust, a member inserted first in
+/// the innermost object that exists on the path `projects` → `key` → trust key. Revoking
+/// reaches here only for a key that is `true`, so it only replaces.
+fn splice(text: &str, key: &str, trusted: bool) -> Result<String, String> {
     let bytes = text.as_bytes();
     let top = skip_whitespace(bytes, 0);
     let top_members = members(bytes, top)?;
@@ -235,7 +263,7 @@ fn splice(text: &str, key: &str) -> Result<String, String> {
     let entry_members = members(bytes, entry.value)?;
     match find(&entry_members, TRUST_KEY)? {
         Some(flag) => Ok(format!(
-            "{}true{}",
+            "{}{trusted}{}",
             &text[..flag.value],
             &text[flag.value_end..]
         )),
@@ -414,7 +442,11 @@ fn replace(config: &Path, metadata: &fs::Metadata, text: &str) -> Result<(), Str
         .ok_or_else(|| format!("{} has no file name", config.display()))?;
     let mut temporary_name = OsString::from(".");
     temporary_name.push(file_name);
-    temporary_name.push(format!(".torlek-{}", std::process::id()));
+    // The time too: a file a killed daemon left must not block a later one with its pid.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    temporary_name.push(format!(".torlek-{}-{nanos}", std::process::id()));
     let temporary = dir.join(temporary_name);
     let written = (|| {
         let mut file = fs::OpenOptions::new()

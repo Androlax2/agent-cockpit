@@ -78,6 +78,12 @@ pub fn harness_trust_source(
 ) -> Result<PathBuf, String> {
     let from = match (&checkout.kind, trust(checkout, trusted_roots)) {
         (CheckoutKind::Parallel { .. }, Trust::Inherited { from }) => from,
+        (CheckoutKind::Parallel { .. }, Trust::Trusted) => {
+            return Err(
+                "the clone itself is in projects.trusted, so it has no trusted checkout to match"
+                    .to_owned(),
+            );
+        }
         (CheckoutKind::Parallel { .. }, _) => {
             return Err(format!(
                 "its project {} is not in projects.trusted",

@@ -1650,10 +1650,9 @@ impl Sessions {
         // not just the folder it starts in: Git and the project's own files live at its root.
         let (checkout, _) = self.checkout_containing(&session.working_dir).await?;
         let output_project = checkout.project.as_str().to_owned();
-        if matches!(checkout.kind, CheckoutKind::Parallel { .. }) {
-            self.trust_clone(id, session.provider.as_str(), &checkout, &environment)
-                .await;
-        }
+        // Kept for the clone's harness trust, recorded once the launch passed its gates.
+        let clone_trust = matches!(checkout.kind, CheckoutKind::Parallel { .. })
+            .then(|| (checkout.clone(), environment.clone()));
         let prepared = self.prepare_sandbox(
             id.as_str(),
             session.provider.as_str(),
@@ -1724,6 +1723,16 @@ impl Sessions {
             write.commit().await?;
             (token, execution)
         };
+        if let Some((checkout, agent_environment)) = &clone_trust {
+            self.trust_clone(
+                id,
+                session.provider.as_str(),
+                checkout,
+                &session.working_dir,
+                agent_environment,
+            )
+            .await;
+        }
         let mut environment = prepared.environment;
         environment.push((LAUNCH_TOKEN_VARIABLE.into(), token.as_str().into()));
         let spec = LaunchSpec {
@@ -1795,6 +1804,7 @@ impl Sessions {
         id: &SessionId,
         provider: &str,
         checkout: &Checkout,
+        working_dir: &Path,
         environment: &[(OsString, OsString)],
     ) {
         let provider = match self.provider(Some(provider)) {
@@ -1807,6 +1817,7 @@ impl Sessions {
         let owner_environment = self.settings.owner_environment.clone();
         let git = self.git.clone();
         let checkout = checkout.clone();
+        let working_dir = working_dir.to_path_buf();
         let environment = environment.to_vec();
         let counted = TerminalStep::start(&self.session_lock(id));
         let recorded = self
@@ -1817,6 +1828,7 @@ impl Sessions {
                     &owner_environment,
                     &git,
                     &checkout,
+                    &working_dir,
                     &environment,
                 ))
             })
@@ -2457,6 +2469,7 @@ fn record_clone_trust(
     owner_environment: &cockpit_config::Environment,
     git: &Git,
     checkout: &Checkout,
+    working_dir: &Path,
     environment: &[(OsString, OsString)],
 ) -> Result<WorkspaceTrust, String> {
     let config = cockpit_config::load(owner_environment, None, &[])
@@ -2466,6 +2479,7 @@ fn record_clone_trust(
     provider
         .trust_workspace(&TrustRequest {
             workspace: &checkout.path,
+            working_dir,
             trusted_checkout: &trusted_checkout,
             environment,
         })
