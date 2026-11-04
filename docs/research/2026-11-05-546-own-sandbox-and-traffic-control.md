@@ -44,7 +44,8 @@ Performance does not decide this. On the research host a native launch prototype
 hundreds of milliseconds. The case rests on correctness, one lifecycle and owner control.
 
 - [x] D1 decided 2026-11-05: C, staged (A first, then selective interception).
-- [ ] Theo decides [D2 to D6](#decisions-for-the-owner) and approves or declines each
+- [x] D2 decided 2026-11-05: A, the proxy runs in each session's launcher.
+- [ ] Theo decides [D3 to D6](#decisions-for-the-owner) and approves or declines each
   [proposed issue](#proposed-issues-not-filed).
 
 ## What was measured
@@ -285,6 +286,8 @@ Decided (D1): B is the target, after A ships.
 | B. Inside the daemon | Direct access to grants and the change feed | A daemon restart cuts every agent's open streams; untrusted traffic parsed in the control process (report 03) |
 | C. One shared service (today) | One process | A second lifecycle (#495), fixed ports, a client-identity scheme, one profile per host |
 
+Decided (D2): A.
+
 ### M8. Resource limits
 
 The daemon already starts commands in transient systemd user scopes (#29, decided
@@ -396,6 +399,8 @@ with the in-memory per-session CA is the next issue (proposed issue 4).
 **D2. Where the proxy runs.** **A (recommended):** in each session's launcher (M7 A): traffic
 survives daemon restarts and a session's identity needs no secret. **B:** inside the daemon.
 **C:** one shared service, as today.
+
+**Decided 2026-11-05: A.** The egress proxy runs in each session's launcher.
 
 **D3. Namespace and mount setup.** **A (recommended for the first release):** bubblewrap as a
 required host program, Landlock and seccomp applied by Torlek (M1 A); revisit B only if
