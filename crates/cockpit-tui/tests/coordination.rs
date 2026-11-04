@@ -6,31 +6,97 @@ mod common;
 use std::time::Instant;
 
 use cockpit_protocol::InboundMessageView;
-use common::{app_with, screen_text, session};
+use cockpit_tui::{App, Key};
+use common::{app_with, press, screen, screen_text, session};
 
-#[test]
-fn a_card_shows_its_coordinator_grants_and_the_message_queued_to_it() {
-    let now = Instant::now();
+fn message(delivery: &str, text: &str) -> Option<InboundMessageView> {
+    Some(InboundMessageView {
+        from: "s00000000000a".to_owned(),
+        text: text.to_owned(),
+        delivery: delivery.to_owned(),
+        sent_at: 3,
+        note: None,
+    })
+}
+
+/// The coordinator's card comes first and is selected; the worker's card is not.
+fn coordinator_and_worker(worker_message: Option<InboundMessageView>, now: Instant) -> App {
     let mut coordinator = session("s00000000000a", 1, 1);
     coordinator.coordinator_grants =
         vec!["observe-sessions".to_owned(), "message-sessions".to_owned()];
     let mut worker = session("s00000000000b", 1, 2);
-    worker.inbound_message = Some(InboundMessageView {
-        from: "s00000000000a".to_owned(),
-        text: "check PR 12".to_owned(),
-        delivery: "received".to_owned(),
-        sent_at: 3,
-        note: None,
-    });
-    let app = app_with(&["app"], vec![coordinator, worker], now);
+    worker.inbound_message = worker_message;
+    app_with(&["app"], vec![coordinator, worker], now)
+}
+
+#[test]
+fn a_card_shows_its_coordinator_grants() {
+    let now = Instant::now();
+    let app = coordinator_and_worker(None, now);
 
     let screen = screen_text(&app, now);
 
     assert!(screen.contains("grants observe,message"), "{screen}");
+}
+
+/// #728: once the agent has the message, nothing waits on the owner.
+#[test]
+fn an_unselected_card_hides_a_message_its_agent_received() {
+    let now = Instant::now();
+    let app = coordinator_and_worker(message("received", "check PR 12"), now);
+
+    let screen = screen_text(&app, now);
+
+    assert!(!screen.contains('✉'), "{screen}");
+}
+
+/// #728: the full text stays reachable on the selected card.
+#[test]
+fn the_selected_card_shows_the_whole_message_its_agent_received() {
+    let now = Instant::now();
+    let text = "check PR 12, then rebase the branch on main and rerun the focused tests";
+    let mut app = coordinator_and_worker(message("received", text), now);
+
+    press(&mut app, &[Key::Char('j')], now);
+
+    let rows = screen(&app, now, 60);
+    let unwrapped = rows
+        .iter()
+        .map(|row| row.trim_matches('│').trim())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
-        screen.contains("✉ s00000000000a (received): \"check PR 12\""),
-        "{screen}"
+        unwrapped.contains(&format!("✉ s00000000000a (received): \"{text}\"")),
+        "{rows:#?}"
     );
+}
+
+/// #728: a message still waiting to be typed stays, on one row, cut where the row ends.
+#[test]
+fn an_unselected_card_shows_an_undelivered_message_on_one_truncated_row() {
+    let now = Instant::now();
+    let text = "check PR 12, then rebase the branch on main and rerun the focused tests";
+    for delivery in ["queued", "submitting", "uncertain", "failed", "expired"] {
+        let app = coordinator_and_worker(message(delivery, text), now);
+
+        let rows = screen(&app, now, 60);
+
+        let message_rows: Vec<&String> = rows.iter().filter(|row| row.contains('✉')).collect();
+        assert_eq!(message_rows.len(), 1, "{delivery}: {rows:#?}");
+        let message_row = message_rows[0];
+        assert!(
+            message_row.contains(&format!("✉ s00000000000a ({delivery}): \"check PR 12")),
+            "{delivery}: {rows:#?}"
+        );
+        assert!(
+            message_row.trim_end_matches('│').trim_end().ends_with('…'),
+            "{delivery}: {rows:#?}"
+        );
+        assert!(
+            !rows.join("\n").contains("focused tests"),
+            "{delivery}: {rows:#?}"
+        );
+    }
 }
 
 /// #656: a message that cannot be typed yet says why on its target's card.
