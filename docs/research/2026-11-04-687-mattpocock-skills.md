@@ -15,8 +15,9 @@ the owner, pinned to one commit**, and start it with three skills:
 [`tdd`](https://github.com/mattpocock/skills/blob/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/skills/engineering/tdd/SKILL.md)
 and [`writing-for-agents`](https://github.com/mattpocock/skills/blob/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/skills/productivity/writing-for-agents/SKILL.md).
 They fit the `code-change` workflow's implement and check steps and the people who write
-Torlek's instruction text, need no change to run under Torlek's rules, and add 444 bytes
-to a session's always-loaded context (Torlek's own is 1389 bytes).
+Torlek's instruction text, need no change to run under Torlek's rules, and add 504 bytes
+of frontmatter to a session's always-loaded context, counted the way `torlek brief --measure`
+counts (Torlek's own is 1389 bytes).
 
 Take the **ideas** of `chief-of-staff`, `handoff`, `retro` and `research` into Torlek-owned
 instructions (the Chief, compaction [#686](https://github.com/Androlax2/agent-cockpit/issues/686),
@@ -85,19 +86,22 @@ Four rules from Torlek's own design decide most rows below.
    [#619](https://github.com/Androlax2/agent-cockpit/issues/619)). A skill's description is
    paid for in every session whether or not the skill fires.
 
-Torlek already delivers its own skill this way. The daemon writes the `torlek` skill under
-`$XDG_STATE_HOME/cockpit/agent-context`, and the Claude adapter adds that folder with
-`--add-dir` so Claude Code lists it from `.claude/skills`
-(`crates/cockpit-claude/src/lib.rs`, `crates/cockpit-daemon/src/agent_context.rs`). The
-OpenCode adapter adds the folder to its skill paths (`crates/cockpit-opencode/src/lib.rs`).
-A pack would reuse that route, so no new delivery channel is needed.
+Torlek already delivers its own skill this way. The daemon writes the `torlek` skill into
+`agent-context` under its state folder, and writes a second copy into `claude-skills`, laid out
+as `.claude/skills/torlek`; the Claude adapter adds that folder with `--add-dir` so Claude Code
+lists it (`crates/cockpit-claude/src/lib.rs`, `crates/cockpit-daemon/src/agent_context.rs`).
+The OpenCode adapter adds a folder to its `skills.paths` (`crates/cockpit-opencode/src/lib.rs`;
+its code comment still calls the skill `cockpit`, the bundle's name is `torlek`). A pack would
+reuse the same two routes, written in each adapter's layout, so no new delivery channel is
+needed. Not run: a launch of either adapter to confirm what the harness then lists.
 
 ## Measured: what each skill costs in every session
 
 Method: for each `SKILL.md`, the bytes of its YAML frontmatter, the same quantity
 `torlek brief --measure` reports as the catalog entry
 (`context_budget` in `crates/cockpit-agent-context/src/brief.rs`), and the bytes of
-`name` plus `description`, which is what a harness lists. Bytes are measured. Tokens are not:
+`name` plus `description`, which is what a harness lists. Compare Torlek's figure with the
+frontmatter column; the name-plus-description column is the lower bound a harness lists. Bytes are measured. Tokens are not:
 no tokenizer was run, and a count from a provider's tokenizer would need a live call. Where this
 page says "about N tokens" it divides bytes by 4, an estimate for English prose that differs by
 provider.
@@ -112,7 +116,8 @@ Torlek today, from `torlek brief --measure` in this session:
 | All 27 promoted skills (the Claude Code plugin) | 27 | 5515 | 4161 | 1040 |
 | All 39 skills in the repository | 39 | 7952 | 5984 | 1500 |
 
-Three results follow.
+Three results follow. The first rests on documentation, not a run; the other two are measured
+bytes or quoted limits.
 
 - **User-invoked skills cost nothing on Claude Code and Codex, and full price on OpenCode.**
   16 of the 27 promoted skills set `disable-model-invocation: true`. For those, Claude Code's
@@ -155,7 +160,7 @@ turns it on. **Adapt** = ship nothing; take the idea into a Torlek-owned instruc
 | --- | --- | --- |
 | [`diagnosing-bugs`](https://github.com/mattpocock/skills/blob/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/skills/engineering/diagnosing-bugs/SKILL.md) | Keep | Builds a failing, fast, repeatable check before any theory, then a regression test. That is the `check` step's evidence rule in other words. It asks the user only when no loop can be built ("stop and say so"), which is a `--needs-input` report under Torlek's worker rule. It redacts secrets before showing output. Its `scripts/hitl-loop.template.sh` is a template the agent writes; nothing runs it. |
 | [`tdd`](https://github.com/mattpocock/skills/blob/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/skills/engineering/tdd/SKILL.md) | Keep | Tests through public seams, red before green, one vertical slice at a time. Matches the repo's rule that tests drive real entry points. It says to "confirm [seams] with the user"; a worker does that with `torlek agent report --needs-input`, so no edit is needed. It names `codebase-design` and `code-review` only as references, and works without them. |
-| [`pr`](https://github.com/mattpocock/skills/blob/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/skills/engineering/pr/SKILL.md) | Optional | A PR-body template (summary visual, before/after evidence, one-way or two-way door). This repository already has [a PR template](../../.github/pull_request_template.md) and the skill does not defer to one, so both would apply here. Useful in a project that has none. Smallest description in the pack. |
+| [`pr`](https://github.com/mattpocock/skills/blob/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/skills/engineering/pr/SKILL.md) | Optional | A PR-body template (summary visual, before/after evidence, one-way or two-way door). This repository already has [a PR template](../../.github/pull_request_template.md) and the skill does not defer to one, so both would apply here. Useful in a project that has none. The smallest model-invoked description in the pack (29 name-plus-description bytes). |
 | [`codebase-design`](https://github.com/mattpocock/skills/blob/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/skills/engineering/codebase-design/SKILL.md) | Optional | Deep-module vocabulary that `tdd` consults. 280 bytes always loaded for a vocabulary a worker mostly does not need. |
 | [`research`](https://github.com/mattpocock/skills/blob/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/skills/engineering/research/SKILL.md) | Adapt | Its three rules (primary sources, one cited Markdown file, match the repo's convention) are what the `research` workflow preset's steps already ask. It also tells the agent to start a background agent, which a Torlek session may not be able to do, and its name equals the preset's. Fold the rules into the preset step text; ship no skill. |
 | [`code-review`](https://github.com/mattpocock/skills/blob/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/skills/engineering/code-review/SKILL.md) | Skip | The name is the harness's own `/code-review`, which this repository's review gate names. The pack's author [declines to rename](https://github.com/mattpocock/skills/blob/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/.out-of-scope/harness-name-collisions.md) and tells users to reach theirs as `/mattpocock-skills:code-review`. [Report 08](../design/greenfield/08-agent-onboarding-context.md) records a gate by the resolved command identity and version; a same-named skill makes that identity ambiguous. It also needs the tracker setup that `setup-matt-pocock-skills` writes. The two-axis idea (Standards, Spec) is worth lifting into a review prompt; see follow-up 4. |
@@ -266,18 +271,23 @@ Rules for option B, each with the reason:
 1. **Pin by commit and tree hash, never a branch.** The upstream keeps changing (its
    changelog is 66 KB and it is at version 1.3.2), and a skill can gain `allowed-tools` in a
    later commit. Moving the pin is an owner decision that shows the diff of the skill text.
-2. **One snapshot of the whole pinned tree minus what the owner leaves off.** The licence text
-   (`LICENSE`, "Copyright (c) 2026 Matt Pocock") stays in the pack folder; MIT only requires the
-   notice to travel with copies.
+2. **The pack holds only the keep and optional skills.** It is a selection of the pinned tree
+   (the three starter skills plus `pr`, `codebase-design` and `wait-what`), not the tree. A skill
+   this document skips never reaches a folder a harness reads, so OpenCode's missing per-skill
+   flag and Claude Code's `skillOverrides` gap for plugin skills cannot expose one. The licence
+   text (`LICENSE`, "Copyright (c) 2026 Matt Pocock") stays in the pack folder; MIT only
+   requires the notice to travel with copies.
 3. **Never modify a skill.** A changed skill is a fork nobody reviews. A needed change is a
    Torlek-owned instruction in the role prompt or brief. Product invariants are reserved and
    cannot be shadowed by a skill ([report 08](../design/greenfield/08-agent-onboarding-context.md)).
 4. **Per harness, include only what that harness hides.** Claude Code and Codex hide a
    user-invoked skill from the model; OpenCode has no flag, so Torlek must omit user-invoked
    skills from the folder it gives OpenCode or deny them in its `permission.skill`.
-5. **Show what loaded.** Report the pack's name-plus-description bytes next to Torlek's own in
+5. **Show what loaded.** Report the pack's frontmatter bytes next to Torlek's own in
    `torlek brief --measure`, and list a name collision or a purpose overlap with the owner's
-   skills instead of picking one silently.
+   skills instead of picking one silently. A name check cannot see two skills that answer the
+   same prompts under different names, so the listing shows the owner's installed skills beside
+   the pack's and the owner decides which to keep.
 6. **The owner's and the project's skill wins on a name.** Design 08 and 09 already say project
    skills load only for trusted projects and collisions are shown.
 7. **The pack never edits files in the project or the owner's home.** This excludes
@@ -294,10 +304,11 @@ None starts until Theo records the decision above. Milestone for each is for The
 
 1. **An optional skill pack, owner-installed and pinned.** Scope: manifest with source URL,
    commit, tree hash and licence file; per-skill on/off by name in owner config; written to the
-   folder the adapters already load; a listing with collision and overlap notes; refuse a pin
+   folder the adapters already load; a listing that shows the owner's installed skills beside the pack's, with name collisions marked; refuse a pin
    whose skills use `allowed-tools` or `hooks` without the owner's confirmation. Acceptance:
    a launch test per adapter shows only enabled skills; a test shows an owner skill with the same
-   name wins; `torlek brief --measure` reports the pack's bytes separately. Owner: the
+   name wins; `torlek brief --measure` reports the pack's bytes separately. Purpose overlap (for
+   example `tdd` beside the owner's `test-driven-development`) is shown, not detected. Owner: the
    agent-context crate; depends on [#419](https://github.com/Androlax2/agent-cockpit/issues/419).
 2. **Hide user-invoked skills from the model on every adapter.** Claude Code and Codex honour
    the pack's own flags; OpenCode does not. Acceptance: a fixture per adapter proves a
@@ -333,7 +344,7 @@ re-attachment. Not run: any tokenizer, any live harness session, any with/withou
 trial, any launch of a pack. Judgments about fit (the "Why" column) are reasoned from the
 skill text and Torlek's rules, not from watching a worker use the skill.
 
-Verification for this pull request is the repository's docs gate run directly
-(`python3 tools/quality.py markdown`, `links` and `typos`), diff inspection, a check of
-each cited quotation against the source, and one `/code-review` at `medium`. Broad Rust
-suites are not proof for prose and were not run. Theo's decision remains open.
+Verification for this pull request is the repository's docs gate (`markdown`, `links` and
+`typos` of `tools/quality.py`) and one `/code-review` at `medium`; their actual results are
+in the pull request description. Broad Rust suites are not proof for prose and were not run.
+Theo's decision remains open.
