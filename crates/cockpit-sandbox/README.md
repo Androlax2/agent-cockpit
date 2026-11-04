@@ -32,6 +32,12 @@ Decision (#61, option C): Cockpit owns the policy, the engine enforces it.
    `record_observations` appends one bounded owner-measured batch for that exact launch;
    output labels it `owner probe` to distinguish an attestation from engine capabilities.
 
+With `agents.sandbox = "off"`, an unsandboxed agent can reach the owner socket and act as
+the owner, so Torlek's grants only hold under the sandbox. Inside a session `torlek` sends
+every verb on the agent socket, so an owner verb typed there is refused, not run as the owner
+(#729); that stops accidents, not a same-user process that opens the owner socket itself.
+The daemon's start, every unsandboxed launch, `torlek doctor` and `torlek init` say so.
+
 Edges: `cockpit-config` (the owner's `DesktopSession` and `AgentSandbox` values) and
 `cockpit-turso` (the evidence table, behind the default `persistence` feature).
 `cockpit-sessions` calls it for every launch; the CLI's offline installer uses it without

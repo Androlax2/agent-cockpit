@@ -415,6 +415,13 @@ fn an_unsandboxed_owner_is_reported_as_such() {
     let sandbox = requirement(&report, "sandbox");
     assert_eq!(sandbox.status, Status::Available);
     assert!(sandbox.detail.contains("UNSANDBOXED"), "{sandbox:#?}");
+    assert!(
+        sandbox.detail.contains(
+            "an unsandboxed agent can reach the owner socket and act as the owner, so Torlek's \
+             grants only hold under the sandbox"
+        ),
+        "{sandbox:#?}"
+    );
     assert!(sandbox.next.is_some(), "{sandbox:#?}");
 }
 

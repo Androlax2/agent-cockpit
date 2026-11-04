@@ -52,6 +52,18 @@ impl Home {
     /// Runs `cockpit` with `arguments` and `stdin`, as an agent launched with `the-token`
     /// that waits at most `TORLEK_ASK_WAIT_SECONDS=2`.
     async fn cockpit(&self, arguments: &[&str], stdin: &str) -> Output {
+        let mut command = self.command(arguments);
+        command.env("TORLEK_LAUNCH_TOKEN", "the-token");
+        Self::output(command, stdin).await
+    }
+
+    /// Runs `cockpit` with `arguments` and `stdin` from the owner's own shell, outside any
+    /// session.
+    async fn cockpit_as_owner(&self, arguments: &[&str], stdin: &str) -> Output {
+        Self::output(self.command(arguments), stdin).await
+    }
+
+    fn command(&self, arguments: &[&str]) -> std::process::Command {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
         command
             .args(arguments)
@@ -59,12 +71,15 @@ impl Home {
             .env_clear()
             .env("HOME", self.dir.path())
             .env("XDG_RUNTIME_DIR", self.runtime_dir())
-            .env("TORLEK_LAUNCH_TOKEN", "the-token")
             .env("TORLEK_ASK_WAIT_SECONDS", "2")
             .env("TZ", "UTC")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        command
+    }
+
+    async fn output(mut command: std::process::Command, stdin: &str) -> Output {
         let stdin = stdin.to_owned();
         tokio::task::spawn_blocking(move || {
             let mut child = command.spawn().unwrap();
@@ -352,7 +367,7 @@ async fn the_owner_approves_naming_the_revision_and_digest_read() {
     );
 
     let output = home
-        .cockpit(
+        .cockpit_as_owner(
             &[
                 "approval",
                 "approve",
@@ -395,7 +410,7 @@ async fn the_owner_reads_a_request_with_its_warnings() {
         })],
     );
 
-    let output = home.cockpit(&["approval", "show", "7"], "").await;
+    let output = home.cockpit_as_owner(&["approval", "show", "7"], "").await;
 
     let shown = text(&output.stdout);
     assert!(shown.contains("command:\nrm -rf /\\u{202e}\n"), "{shown}");
@@ -434,7 +449,7 @@ async fn the_owner_reads_a_guides_directory_escaped_and_placed_against_the_proje
         })],
     );
 
-    let output = home.cockpit(&["guide", "show", "3"], "").await;
+    let output = home.cockpit_as_owner(&["guide", "show", "3"], "").await;
 
     let shown = text(&output.stdout);
     assert!(shown.contains("directory: /tmp/x\\u{202e}\n"), "{shown}");
@@ -456,7 +471,9 @@ async fn the_owner_types_input_from_standard_input_not_the_command_line() {
         vec![run_reply(request(RunStateView::Running))],
     );
 
-    let output = home.cockpit(&["approval", "input", "7"], "hunter2\n").await;
+    let output = home
+        .cockpit_as_owner(&["approval", "input", "7"], "hunter2\n")
+        .await;
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
@@ -472,7 +489,7 @@ async fn the_owner_types_input_from_standard_input_not_the_command_line() {
 async fn empty_standard_input_is_refused_rather_than_pressing_enter() {
     let home = Home::new();
 
-    let output = home.cockpit(&["approval", "input", "7"], "").await;
+    let output = home.cockpit_as_owner(&["approval", "input", "7"], "").await;
 
     assert!(!output.status.success());
     assert!(
@@ -488,7 +505,7 @@ async fn guide_steps_count_from_one_for_the_owner() {
     let daemon = scripted_conversation(&home.owner_socket(), vec![guide(GuideStateView::Done)]);
 
     let output = home
-        .cockpit(&["guide", "answer", "3", "2", "1234"], "")
+        .cockpit_as_owner(&["guide", "answer", "3", "2", "1234"], "")
         .await;
 
     assert!(output.status.success(), "{}", text(&output.stderr));
@@ -505,7 +522,7 @@ async fn guide_steps_count_from_one_for_the_owner() {
 async fn shown_to_owner(request: RunRequestView) -> String {
     let home = Home::new();
     let _daemon = scripted_conversation(&home.owner_socket(), vec![run_reply(request)]);
-    let output = home.cockpit(&["approval", "show", "7"], "").await;
+    let output = home.cockpit_as_owner(&["approval", "show", "7"], "").await;
     assert!(output.status.success(), "{}", text(&output.stderr));
     text(&output.stdout)
 }
@@ -560,7 +577,9 @@ async fn the_cli_names_itself_when_the_owner_declines() {
         vec![run_reply(request(RunStateView::Declined))],
     );
 
-    let output = home.cockpit(&["approval", "decline", "7"], "").await;
+    let output = home
+        .cockpit_as_owner(&["approval", "decline", "7"], "")
+        .await;
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
@@ -646,7 +665,7 @@ async fn the_queue_folds_a_long_command_behind_an_explicit_more() {
         })],
     );
 
-    let output = home.cockpit(&["approval", "list"], "").await;
+    let output = home.cockpit_as_owner(&["approval", "list"], "").await;
 
     assert_eq!(
         text(&output.stdout),
@@ -700,7 +719,12 @@ async fn queue_line(shown_command: ShownText, folded_command: Option<FoldedView>
             guides: Vec::new(),
         })],
     );
-    text(&home.cockpit(&["approval", "list"], "").await.stdout)
+    text(
+        &home
+            .cockpit_as_owner(&["approval", "list"], "")
+            .await
+            .stdout,
+    )
 }
 
 #[tokio::test]

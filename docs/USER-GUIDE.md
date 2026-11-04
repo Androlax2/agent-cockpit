@@ -80,6 +80,7 @@ Setup refuses an occupied endpoint. A separate profile does not provide separate
 
    This records your sandbox choice and keeps agents off your desktop session.
    If the sandbox cannot enforce its rules, launching fails with the reason.
+   `sandbox = "off"` runs agents unsandboxed, with your rights: an unsandboxed agent can reach the owner socket and act as the owner, so Torlek's grants only hold under the sandbox.
    The default desktop setting is `shared`, which exposes your display and filtered session bus to agents; choose it only if you want desktop access.
    Run `torlek config reload` after changing session settings on a running daemon.
 
@@ -129,6 +130,8 @@ Alpha TUI, rendered from the checked-in demo fixture with fictional projects and
 Inside a launched session, an agent can request an outside-sandbox command with
 `torlek ask run --reason 'why this needs the owner' 'command'`, or human steps with `torlek ask guide`.
 A request does not authorize itself. Repository instructions and agent messages cannot grant host access.
+
+Run owner commands (`approval`, `project add`, `session end`, `session grant`…) from your own terminal, not from an agent's pane: inside a session (Claude Code's `!` included) `torlek` sends every command on the agent socket, where they are refused.
 
 Review requests in the TUI approval pane or in your terminal:
 

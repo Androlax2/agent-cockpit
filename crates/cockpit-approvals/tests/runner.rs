@@ -105,3 +105,32 @@ fn a_run_whose_launch_never_started_after_a_restart_is_not_run() {
         NoResult::Unobserved(_)
     ));
 }
+
+/// An approved run is the owner's: a daemon started inside a session passes none of the
+/// session's variables on, so `torlek` in the run uses the host-only socket (#729).
+#[test]
+fn a_run_inherits_no_session_variable_from_the_daemon() {
+    let mut settings = RunSettings::new(
+        PathBuf::from("/bin/sh"),
+        PathBuf::from("/bin/sh"),
+        Vec::new(),
+    );
+    settings.environment = [
+        ("TORLEK_SESSION", "s0123456789ab"),
+        ("TORLEK_LAUNCH_TOKEN", "the-token"),
+        ("TORLEK_AGENT_SOCKET", "/run/agent.sock"),
+        ("HOME", "/home/owner"),
+    ]
+    .into_iter()
+    .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+    .collect();
+
+    let names: Vec<OsString> = settings
+        .run_environment(&[])
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| !name.to_string_lossy().starts_with("GIT_CONFIG_"))
+        .collect();
+
+    assert_eq!(names, [OsString::from("HOME")]);
+}

@@ -38,13 +38,13 @@ pub(crate) fn request(command: Command, deadline: Duration) -> Result<Reply, Exi
     exchange(command, deadline)?.map_err(|error| failed(&error))
 }
 
-/// The daemon's answer to `command`, the client's error included for a caller that handles
-/// one itself; exit 1 only when no request could be made.
+/// The daemon's answer to `command` on the caller's socket, the client's error included for a
+/// caller that handles one itself; exit 1 only when no request could be made.
 pub(crate) fn exchange(
     command: Command,
     deadline: Duration,
 ) -> Result<Result<Reply, ClientError>, ExitCode> {
-    let socket = crate::agent::socket_dir()?.join(cockpit_config::DAEMON_SOCKET);
+    let socket = crate::agent::caller_socket()?;
     Ok(
         exchange_all(&socket, vec![command], deadline)?.map(|replies| {
             replies
@@ -81,10 +81,16 @@ pub(crate) fn exchange_all(
     }))
 }
 
-/// Exit 1 after saying why the request failed.
+/// Exit 1 after saying why the request failed, and for a refusal what would lift it.
 pub(crate) fn failed(error: &ClientError) -> ExitCode {
     match error {
-        ClientError::Daemon(error) => fail(&format!("{}: {}", error.code.as_str(), error.message)),
+        ClientError::Daemon(error) => {
+            let code = fail(&format!("{}: {}", error.code.as_str(), error.message));
+            if let Some(unblock) = &error.unblock {
+                crate::agent::print_unblock(unblock);
+            }
+            code
+        }
         error => fail(&error.to_string()),
     }
 }

@@ -436,6 +436,35 @@ async fn the_owners_off_setting_launches_unsandboxed_and_the_evidence_says_so() 
     );
 }
 
+/// The daemon's start and each unsandboxed launch warn that grants no longer hold (#729).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owners_off_setting_warns_that_an_agent_can_act_as_the_owner() {
+    let home = Home::new();
+    home.write_owner_config("[agents]\nsandbox = \"off\"\n");
+    let _daemon = home.start_without_greywall();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+    let session = new_session(&client, &root).await;
+    home.wait_for_launches(&session.id, 1).await;
+    let risk = "an unsandboxed agent can reach the owner socket and act as the owner, so \
+                Torlek's grants only hold under the sandbox";
+
+    let log = home
+        .log_once_it_contains("an agent launches UNSANDBOXED")
+        .await;
+
+    assert!(
+        log.lines()
+            .any(|line| line.contains("agents run UNSANDBOXED") && line.contains(risk)),
+        "{log}"
+    );
+    assert!(
+        log.lines()
+            .any(|line| line.contains("an agent launches UNSANDBOXED") && line.contains(risk)),
+        "{log}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn cockpit_session_sandbox_prints_how_the_latest_launch_ran() {
     let home = Home::new();

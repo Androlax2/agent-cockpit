@@ -209,6 +209,11 @@ impl DesktopSession {
     }
 }
 
+/// What `agents.sandbox = "off"` gives up, said wherever Torlek warns about it (#729). The
+/// sandbox is what keeps an agent off the host-only socket.
+pub const UNSANDBOXED_RISK: &str = "an unsandboxed agent can reach the owner socket and act \
+    as the owner, so Torlek's grants only hold under the sandbox";
+
 /// Whether a launched agent runs in the sandbox (#61). The product runs every agent in it;
 /// the owner's `agents.sandbox = "off"` is the one named opt-out, logged at every launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]

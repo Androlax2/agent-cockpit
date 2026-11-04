@@ -10,7 +10,7 @@ use std::time::Duration;
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
     AGENT_SOCKET_VARIABLE, AgentReport, AgentState, Command, LAUNCH_TOKEN_VARIABLE, QuestionSource,
-    Reply, SessionReport, TurnOutcome, UnblockedBy,
+    Reply, SessionReport, TurnOutcome, Unblock, UnblockedBy,
 };
 
 /// Long enough for a busy daemon, short enough that a hook never hangs its agent.
@@ -45,8 +45,8 @@ pub(crate) fn reports(flags: &[OsString]) -> Result<ExitCode, String> {
     if let Some(flag) = flags.first() {
         return Err(format!("unknown argument {}", flag.to_string_lossy()));
     }
-    let socket = match socket_dir() {
-        Ok(dir) => dir.join(cockpit_config::DAEMON_SOCKET),
+    let socket = match caller_socket() {
+        Ok(socket) => socket,
         Err(code) => return Ok(code),
     };
     Ok(match exchange(&socket, Command::AgentReports) {
@@ -177,12 +177,28 @@ pub(crate) fn launch_token() -> Option<String> {
 }
 
 /// Whether this process runs in a session Torlek launched: every launch sets `TORLEK_SESSION`
-/// (`cockpit-sessions`' lifecycle) and a sandbox the agent socket's path, with or without a
-/// launch token.
+/// (`cockpit-sessions`' lifecycle) and a launch token, and a sandbox the agent socket's path;
+/// any one of them is enough.
 pub(crate) fn is_in_a_session() -> bool {
-    ["TORLEK_SESSION", AGENT_SOCKET_VARIABLE]
-        .into_iter()
-        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+    [
+        "TORLEK_SESSION",
+        LAUNCH_TOKEN_VARIABLE,
+        AGENT_SOCKET_VARIABLE,
+    ]
+    .into_iter()
+    .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
+/// The socket of whoever runs this command: the agent socket inside a session, the host-only
+/// socket from the owner's own terminal. The daemon takes any peer on the host-only socket
+/// for the owner, and an agent launched with `agents.sandbox = "off"` can reach it, so a
+/// session never uses it: its owner verbs get the agent socket's `owner_only` refusal (#729).
+pub(crate) fn caller_socket() -> Result<PathBuf, ExitCode> {
+    if is_in_a_session() {
+        agent_socket()
+    } else {
+        Ok(socket_dir()?.join(cockpit_config::DAEMON_SOCKET))
+    }
 }
 
 /// The daemon's socket directory, or exit 1 when the environment cannot place it.
@@ -226,14 +242,8 @@ pub(crate) fn failed(socket: &Path, outcome: Result<Reply, ClientError>) -> Exit
     match outcome {
         Err(ClientError::Daemon(error)) => {
             eprintln!("torlek: refused: {}", error.message);
-            if let Some(unblock) = error.unblock {
-                let by = match unblock.by {
-                    UnblockedBy::Owner => "the owner",
-                    UnblockedBy::Agent => "you",
-                    UnblockedBy::Cockpit => "Torlek",
-                    UnblockedBy::Unknown(ref party) => party.as_str(),
-                };
-                eprintln!("torlek: to unblock ({by}): {}", unblock.action);
+            if let Some(unblock) = &error.unblock {
+                print_unblock(unblock);
             }
         }
         Err(ClientError::Connect { source, .. }) => {
@@ -246,6 +256,17 @@ pub(crate) fn failed(socket: &Path, outcome: Result<Reply, ClientError>) -> Exit
         Ok(reply) => eprintln!("torlek: the daemon answered with an unexpected {reply:?}"),
     }
     ExitCode::FAILURE
+}
+
+/// Says on stderr who lifts a refusal and how.
+pub(crate) fn print_unblock(unblock: &Unblock) {
+    let by = match &unblock.by {
+        UnblockedBy::Owner => "the owner",
+        UnblockedBy::Agent => "you",
+        UnblockedBy::Cockpit => "Torlek",
+        UnblockedBy::Unknown(party) => party.as_str(),
+    };
+    eprintln!("torlek: to unblock ({by}): {}", unblock.action);
 }
 
 /// `session state label="…" doing="…" needs-input="…" outcome=… outcome-reason="…"`, leaving

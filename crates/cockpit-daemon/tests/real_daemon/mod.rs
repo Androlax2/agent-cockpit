@@ -342,6 +342,19 @@ impl Home {
         self.path().join("state").join(BUILD_PROFILE_DIR)
     }
 
+    /// The daemon's log once it holds `needle`, or as it is after [`GENEROUS`].
+    pub async fn log_once_it_contains(&self, needle: &str) -> String {
+        let file = self.state_dir().join("logs/daemon/cockpit.log");
+        let deadline = std::time::Instant::now() + GENEROUS;
+        loop {
+            let log = std::fs::read_to_string(&file).unwrap_or_default();
+            if log.contains(needle) || std::time::Instant::now() > deadline {
+                return log;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     /// Writes the owner's `config.toml`, which the next daemon start reads.
     pub fn write_owner_config(&self, contents: &str) {
         let dir = self.path().join("config").join(BUILD_PROFILE_DIR);

@@ -107,7 +107,10 @@ pub(crate) fn sandbox(
             };
             Requirement::available(
                 "sandbox",
-                format!("agents run UNSANDBOXED: the owner set agents.sandbox = \"off\"; {engine}"),
+                format!(
+                    "agents run UNSANDBOXED: the owner set agents.sandbox = \"off\"; {}; {engine}",
+                    cockpit_config::UNSANDBOXED_RISK
+                ),
             )
             .with_advice(
                 "to sandbox agents, remove agents.sandbox = \"off\" from the owner config and run `torlek config reload`",

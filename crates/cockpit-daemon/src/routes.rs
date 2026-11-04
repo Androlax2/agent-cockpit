@@ -612,7 +612,7 @@ pub fn refusal(code: ErrorCode, message: &str) -> Outcome {
 fn owner_only() -> Outcome {
     wrong_socket(
         "this command is the owner's alone",
-        "ask the owner to run it on the host",
+        "the owner runs it from their own terminal, not from a session",
         UnblockedBy::Owner,
     )
 }

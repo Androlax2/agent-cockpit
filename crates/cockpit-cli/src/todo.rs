@@ -1,9 +1,8 @@
-//! `torlek todo`: the task list (#38). A launched session (one with `TORLEK_LAUNCH_TOKEN`)
-//! files, reads and works items on the agent socket, where the daemon identifies it; everyone
-//! else is the owner, on the host-only socket. Proposals and blocker reports are a session's
-//! only: they go to the agent socket also from a session whose token is spent (its launch's
-//! `TORLEK_SESSION` or `TORLEK_AGENT_SOCKET` says it runs in one); from the owner's own shell
-//! they go to the host-only socket, whose refusal points at `todo add` (#648). The daemon
+//! `torlek todo`: the task list (#38). Inside a session (`TORLEK_SESSION`, a launch token or
+//! `TORLEK_AGENT_SOCKET` says so) every verb goes to the agent socket, where the daemon
+//! identifies the session and refuses the owner's verbs (#729); from the owner's own shell
+//! they go to the host-only socket. Proposals and blocker reports are a session's only; from
+//! the owner's shell the host-only socket's refusal points at `todo add` (#648). The daemon
 //! decides what each may do.
 
 use std::ffi::OsString;
@@ -15,7 +14,7 @@ use cockpit_protocol::{
     TaskView,
 };
 
-use crate::agent::{agent_socket, exchange, failed, is_in_a_session, launch_token, socket_dir};
+use crate::agent::{agent_socket, caller_socket, exchange, failed, is_in_a_session, launch_token};
 use crate::daemon::utf8_words;
 
 /// What a verb sends, and whether it is a session's request by its nature.
@@ -241,11 +240,13 @@ pub(crate) fn run(request: Request) -> ExitCode {
     }
 }
 
+/// The agent socket for a session's request, else [`caller_socket`]: the agent socket still
+/// inside a session.
 pub(crate) fn socket(is_session: bool) -> Result<PathBuf, ExitCode> {
     if is_session {
         agent_socket()
     } else {
-        Ok(socket_dir()?.join(cockpit_config::DAEMON_SOCKET))
+        caller_socket()
     }
 }
 

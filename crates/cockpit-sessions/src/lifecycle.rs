@@ -1664,7 +1664,12 @@ impl Sessions {
         )?;
         if let cockpit_sandbox::Enforcement::Unsandboxed { reason } = &prepared.evidence.enforcement
         {
-            tracing::warn!(session = %id, %reason, "an agent launches UNSANDBOXED");
+            tracing::warn!(
+                session = %id,
+                %reason,
+                "an agent launches UNSANDBOXED: {}",
+                cockpit_config::UNSANDBOXED_RISK
+            );
         }
         if let Some(plan) = prepared.settings.clone() {
             let sandbox = self.settings.sandbox.clone();

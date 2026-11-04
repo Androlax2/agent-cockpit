@@ -91,10 +91,11 @@ fn step_of(text: &str) -> Result<usize, String> {
     }
 }
 
-/// Sends `command` on the host-only socket and prints the answer.
+/// Sends `command` on the caller's socket and prints the answer: the owner's verbs, refused
+/// inside a session so that no agent decides its own request.
 pub(crate) fn run(command: Command) -> ExitCode {
-    let socket = match crate::agent::socket_dir() {
-        Ok(dir) => dir.join(cockpit_config::DAEMON_SOCKET),
+    let socket = match crate::agent::caller_socket() {
+        Ok(socket) => socket,
         Err(code) => return code,
     };
     match crate::agent::exchange(&socket, command) {
