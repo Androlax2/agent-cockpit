@@ -163,67 +163,63 @@ fn main() -> ExitCode {
         eprintln!("torlek: {problem}");
         return ExitCode::from(2);
     }
+    let verb_name = arguments
+        .first()
+        .map(|word| word.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let verb: Vec<Option<&str>> = arguments.iter().take(2).map(|word| word.to_str()).collect();
     match verb[..] {
         [] => onboarding::first_run(),
-        [Some("init"), ..] => {
-            onboarding::init(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
-        }
+        [Some("init"), ..] => onboarding::init(&arguments[1..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("--skill"), ..] => instructions::skill(&arguments[1..])
-            .unwrap_or_else(|problem| usage_error(Some(problem))),
-        [Some("docs"), ..] => {
-            instructions::docs(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
-        }
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
+        [Some("docs"), ..] => instructions::docs(&arguments[1..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("brief"), ..] => instructions::brief(&arguments[1..])
-            .unwrap_or_else(|problem| usage_error(Some(problem))),
-        [Some("mcp"), ..] => {
-            mcp::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
-        }
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
+        [Some("mcp"), ..] => mcp::run(&arguments[1..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("config"), Some("show")] => config_show(&arguments[2..]),
         [Some("config"), Some("reload")] => config_reload(&arguments[2..]),
-        [Some("agent"), Some("report")] => {
-            agent::report(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
-        }
-        [Some("agent"), Some("reports")] => {
-            agent::reports(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
-        }
+        [Some("agent"), Some("report")] => agent::report(&arguments[2..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
+        [Some("agent"), Some("reports")] => agent::reports(&arguments[2..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("agent"), Some("sessions")] => coordination::sessions(&arguments[2..])
-            .unwrap_or_else(|problem| usage_error(Some(problem))),
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("agent"), Some("message")] => coordination::message(&arguments[2..])
-            .unwrap_or_else(|problem| usage_error(Some(problem))),
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("agent"), Some("inbox")] => coordination::inbox(&arguments[2..])
-            .unwrap_or_else(|problem| usage_error(Some(problem))),
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("agent"), Some("escalate")] => coordination::escalate(&arguments[2..])
-            .unwrap_or_else(|problem| usage_error(Some(problem))),
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("agent"), Some("start")] => coordination::start(&arguments[2..])
-            .unwrap_or_else(|problem| usage_error(Some(problem))),
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("agent"), Some("report-bug")] => bug_report::agent_report(&arguments[2..])
-            .unwrap_or_else(|problem| usage_error(Some(problem))),
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("bug-report"), ..] => match bug_report::parse(&arguments[1..]) {
             Ok(verb) => bug_report::run(verb),
-            Err(problem) => usage_error(Some(problem)),
+            Err(problem) => verb_usage_error(&verb_name, problem),
         },
-        [Some("ask"), Some("run")] => {
-            ask::run(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
-        }
-        [Some("ask"), Some("guide")] => {
-            ask::guide(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
-        }
+        [Some("ask"), Some("run")] => ask::run(&arguments[2..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
+        [Some("ask"), Some("guide")] => ask::guide(&arguments[2..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some(verb @ ("approval" | "guide")), ..] => {
             match approvals::parse(verb, &arguments[1..]) {
                 Ok(command) => approvals::run(command),
-                Err(problem) => usage_error(Some(problem)),
+                Err(problem) => verb_usage_error(&verb_name, problem),
             }
         }
         [Some(verb @ ("project" | "checkout")), ..] => {
             match projects::parse(verb, &arguments[1..]) {
                 Ok((command, deadline)) => projects::run(command, deadline),
-                Err(problem) => usage_error(Some(problem)),
+                Err(problem) => verb_usage_error(&verb_name, problem),
             }
         }
-        [Some("storage"), ..] => {
-            storage::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
-        }
+        [Some("storage"), ..] => storage::run(&arguments[1..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("session"), ..] => match sessions::parse(&arguments[1..]) {
             Ok(command) => {
                 let is_list = matches!(command, cockpit_protocol::Command::SessionList { .. });
@@ -233,68 +229,65 @@ fn main() -> ExitCode {
                 }
                 code
             }
-            Err(problem) => usage_error(Some(problem)),
+            Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("daemon"), Some("install")] => daemon_install::run(&arguments[2..])
-            .unwrap_or_else(|problem| usage_error(Some(problem))),
-        [Some("version"), ..] => {
-            version::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
-        }
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
+        [Some("version"), ..] => version::run(&arguments[1..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("todo"), ..] => match todo::parse(&arguments[1..]) {
             Ok(request) => todo::run(request),
-            Err(problem) => usage_error(Some(problem)),
+            Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("workflow"), ..] => match workflow::parse(&arguments[1..]) {
             Ok(request) => workflow::run(request),
-            Err(problem) => usage_error(Some(problem)),
+            Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("check"), ..] => match check::parse(&arguments[1..]) {
             Ok(request) => check::run(request),
-            Err(problem) => usage_error(Some(problem)),
+            Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("resources"), ..] => match resources::parse(&arguments[1..]) {
             Ok(command) => resources::run(command),
-            Err(problem) => usage_error(Some(problem)),
+            Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("queue"), ..] => match queue::parse(&arguments[1..]) {
             Ok(command) => queue::run(command),
-            Err(problem) => usage_error(Some(problem)),
+            Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("provider"), ..] => match sessions::parse_provider(&arguments[1..]) {
             Ok(command) => sessions::run(command),
-            Err(problem) => usage_error(Some(problem)),
+            Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("sandbox"), Some("install")] => sandbox_install::run(&arguments[2..])
-            .unwrap_or_else(|problem| usage_error(Some(problem))),
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [
             Some("sandbox"),
             Some(action @ ("status" | "restart" | "stop")),
         ] => sandbox_install::proxy(action, &arguments[2..])
-            .unwrap_or_else(|problem| usage_error(Some(problem))),
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("sandbox"), ..] => match sessions::parse_sandbox(&arguments[1..]) {
             Ok(command) => sessions::run(command),
-            Err(problem) => usage_error(Some(problem)),
+            Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("logs"), ..] => match logs::parse(&arguments[1..]) {
             Ok(command) => logs::run(command),
-            Err(problem) => usage_error(Some(problem)),
+            Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("desktop-session"), ..] => match desktop_session::parse(&arguments[1..]) {
             Ok(()) => desktop_session::import(),
-            Err(problem) => usage_error(Some(problem)),
+            Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("doctor"), ..] => {
-            let code =
-                doctor::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)));
+            let code = doctor::run(&arguments[1..])
+                .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem));
             update::notice_if_due();
             code
         }
-        [Some("update"), ..] => {
-            update::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
-        }
-        [Some("tui"), ..] => {
-            tui::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
-        }
+        [Some("update"), ..] => update::run(&arguments[1..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
+        [Some("tui"), ..] => tui::run(&arguments[1..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         _ => usage_error(None),
     }
 }
@@ -318,7 +311,8 @@ fn write_stdout(text: std::fmt::Arguments) {
     std::process::exit(1);
 }
 
-/// Exit 2 with the usage line, after naming the rejected argument when there is one.
+/// Exit 2 with the whole usage, after naming the rejected argument when there is one. For a
+/// mistake inside a known verb, [`verb_usage_error`] prints only that verb's lines (#770).
 fn usage_error(problem: Option<String>) -> ExitCode {
     if let Some(problem) = problem {
         eprintln!("torlek: {problem}");
@@ -327,14 +321,34 @@ fn usage_error(problem: Option<String>) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// Exit 2 naming the rejected argument, then only the lines of `USAGE` for `verb` and a pointer
+/// to the whole list: the whole usage is about 5 KB an agent pays for on every mistake (#770).
+/// A verb with no line of its own prints the whole usage, the safe default a human will notice.
+fn verb_usage_error(verb: &str, problem: String) -> ExitCode {
+    eprintln!("torlek: {problem}");
+    let verb_lines: Vec<&str> = USAGE
+        .lines()
+        .skip(1)
+        .filter(|line| line.split_whitespace().nth(1) == Some(verb))
+        .map(str::trim_start)
+        .collect();
+    if verb_lines.is_empty() {
+        eprintln!("{USAGE}");
+    } else {
+        eprintln!("usage: {}", verb_lines.join("\n       "));
+        eprintln!("`torlek` alone lists every verb");
+    }
+    ExitCode::from(2)
+}
+
 /// Has the running daemon re-read the owner's file and apply its session settings (#354);
 /// prints each one it applies, and the value it replaced when that differs.
 fn config_reload(arguments: &[OsString]) -> ExitCode {
     if let Some(argument) = arguments.first() {
-        return usage_error(Some(format!(
-            "unknown argument {}",
-            argument.to_string_lossy()
-        )));
+        return verb_usage_error(
+            "config",
+            format!("unknown argument {}", argument.to_string_lossy()),
+        );
     }
     match daemon::request(
         cockpit_protocol::Command::ConfigReload,
@@ -370,25 +384,25 @@ fn config_show(flags: &[OsString]) -> ExitCode {
         let is_project = match &*flag_name {
             "--project" => true,
             "--set" => false,
-            _ => return usage_error(Some(format!("unknown argument {flag_name}"))),
+            _ => return verb_usage_error("config", format!("unknown argument {flag_name}")),
         };
         let Some(value) = flags
             .next()
             .filter(|value| !value.to_string_lossy().starts_with("--"))
         else {
-            return usage_error(Some(format!("{flag_name} needs a value")));
+            return verb_usage_error("config", format!("{flag_name} needs a value"));
         };
         if is_project {
             if project_dir.is_some() {
-                return usage_error(Some("--project given twice".to_string()));
+                return verb_usage_error("config", "--project given twice".to_string());
             }
             project_dir = Some(PathBuf::from(value));
         } else {
             let Some(value) = value.to_str() else {
-                return usage_error(Some(format!(
-                    "--set {}: not UTF-8",
-                    value.to_string_lossy()
-                )));
+                return verb_usage_error(
+                    "config",
+                    format!("--set {}: not UTF-8", value.to_string_lossy()),
+                );
             };
             overrides.push(value.to_string());
         }
