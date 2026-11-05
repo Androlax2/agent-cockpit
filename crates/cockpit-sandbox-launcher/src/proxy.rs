@@ -425,6 +425,7 @@ impl<U: Upstream> Proxy<U> {
     ) -> std::io::Result<()> {
         let subject = match &self.subject {
             Subject::Session { session } => format!("session {session}"),
+            Subject::Check { run, check } => format!("check run {run} of check {check}"),
         };
         let target = if destination.is_empty() {
             String::new()

@@ -248,3 +248,13 @@ fn the_off_setting_runs_the_check_on_the_host_and_the_evidence_says_no_sandbox()
     );
     assert!(prepared.staged.is_none());
 }
+
+#[test]
+fn a_checks_proxy_names_the_check_and_allows_no_host() {
+    let spec = required_check().staged.unwrap().spec;
+
+    assert_eq!(
+        (spec.egress.program.as_str(), spec.egress.entries.len()),
+        ("check unit", 0)
+    );
+}

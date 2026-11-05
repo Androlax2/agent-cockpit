@@ -456,8 +456,8 @@ pub(crate) fn prepare(
         needs_source: launch.needs.source.clone(),
         forwards: Vec::new(),
         egress: Allowlist {
-            program: request.provider.clone(),
-            entries: request.needs.egress.clone(),
+            program: program_name(&launch.subject, profile),
+            entries: launch.needs.egress.clone(),
         },
     };
     spec.validate()
@@ -700,6 +700,15 @@ fn git_value(value: &str) -> String {
     }
     quoted.push('"');
     quoted
+}
+
+/// The program's name in what the proxy answers and the evidence says: the provider of a
+/// session, the check of a check run.
+fn program_name(subject: &Subject, profile: &Profile) -> String {
+    match subject {
+        Subject::Session { .. } => profile.provider.clone().unwrap_or_default(),
+        Subject::Check { check, .. } => format!("check {check}"),
+    }
 }
 
 /// Who the program runs for, as the evidence names it.
