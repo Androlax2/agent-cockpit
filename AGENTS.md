@@ -69,6 +69,7 @@ is ready for review.
 | Task | Skill |
 | --- | --- |
 | Coordinate and deliver repository work | [repo-workflow](.agents/skills/repo-workflow/SKILL.md) |
+| Coordinate Torlek workers: start, watch, close out | [coordinator](.agents/skills/coordinator/SKILL.md) |
 
 If the client does not discover `.agents/skills/`, read the linked skill explicitly.
 These workflows refer to canonical policy; they do not grant additional permissions.
