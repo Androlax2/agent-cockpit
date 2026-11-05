@@ -3,11 +3,17 @@ use crate::harness::Cockpit;
 
 /// Waits for the list view with the task's row: its help line and the `[ ]` of a row, neither
 /// of which the form draws. The daemon has answered by then. Waiting for the form to vanish
-/// instead matches a capture taken mid-redraw, with the pane blank.
-fn wait_for_task_row(cockpit: &Cockpit) {
-    cockpit.wait_until("the task list shows the row", |screen| {
-        screen.contains("a add; e edit") && screen.contains("[ ] Terminal task")
-    });
+/// instead matches a capture taken mid-redraw, with the pane blank. The pane is narrow, so a
+/// long title wraps: `title_tail` is the part of the title that lands on the next line.
+fn wait_for_task_row(cockpit: &Cockpit, title_tail: &str) {
+    cockpit.wait_until(
+        &format!("the task list shows the row ending in {title_tail:?}"),
+        |screen| {
+            screen.contains("a add; e edit")
+                && screen.contains("[ ] Terminal task")
+                && screen.contains(title_tail)
+        },
+    );
 }
 
 #[test]
@@ -22,7 +28,7 @@ fn tasks_add_edit_queue_and_explain_through_the_terminal() {
     cockpit.wait_for("> Notes:");
     cockpit.type_text("Keep this note");
     cockpit.press(&["Enter"]);
-    wait_for_task_row(&cockpit);
+    wait_for_task_row(&cockpit, "");
     let listed = cockpit.cockpit(&["todo", "list"]);
     assert!(listed.contains("Terminal task"), "{listed}");
     let id = listed.split_whitespace().next().unwrap();
@@ -33,7 +39,7 @@ fn tasks_add_edit_queue_and_explain_through_the_terminal() {
     cockpit.wait_for("> Title: Terminal task");
     cockpit.type_text(" edited");
     cockpit.press(&["Enter"]);
-    wait_for_task_row(&cockpit);
+    wait_for_task_row(&cockpit, "edited");
     let shown = cockpit.cockpit(&["todo", "show", id]);
     assert!(
         shown.contains("Terminal task edited") && shown.contains("Keep this note"),
