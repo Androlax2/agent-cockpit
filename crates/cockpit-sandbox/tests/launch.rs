@@ -249,16 +249,58 @@ fn a_required_sandbox_gives_git_only_torleks_configuration() {
     );
 }
 
-/// #859: the session's end removes its tool configuration, which holds the owner's Git
-/// identity.
+/// #482: the session's end removes its whole folder of the daemon's mount sources, which
+/// holds the launch spec, the egress files, the tool configuration and the folders it mounts.
 #[test]
-fn a_sessions_tool_configuration_is_the_folder_its_launch_writes() {
+fn a_sessions_mount_sources_are_the_folder_its_launch_writes() {
     let sandbox = Sandbox::new(Platform::Linux, no_host_paths(), native_backend());
-    let prepared = native_launch(&launch_request("s1", "/home/owner/app")).unwrap();
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.provider = "codex".to_owned();
+    let staged = native_launch(&request).unwrap().staged.unwrap();
 
-    let removed = sandbox.session_tool_config("s1").unwrap().unwrap();
+    let removed = sandbox.session_mount_sources("s1").unwrap().unwrap();
 
-    assert_eq!(removed, prepared.staged.unwrap().config_dir);
+    assert_eq!(removed, staged.mount_dir);
+    assert!(staged.config_dir.starts_with(&removed));
+    assert!(
+        staged
+            .folder_sources
+            .iter()
+            .all(|source| source.starts_with(&removed))
+    );
+}
+
+/// #482: a relaunch finds its mounted folder empty, so a stale `codex.sock` target never
+/// answers `ECONNREFUSED`; a link left in it is removed, never followed.
+#[test]
+fn a_launch_empties_the_folders_it_mounts_without_following_a_link() {
+    let host = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("owner-file"), "kept\n").unwrap();
+    let paths = HostPaths {
+        mount_sources: host.path().join("mounts"),
+        homes: host.path().join("homes"),
+        ..no_host_paths()
+    };
+    let (program, arguments) = agent_words();
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.provider = "codex".to_owned();
+    let staged = Sandbox::new(Platform::Linux, paths, native_backend())
+        .prepare(AgentSandbox::Required, &request, program, arguments)
+        .unwrap()
+        .staged
+        .unwrap();
+    staged.write().unwrap();
+    let mounted = staged.folder_sources[0].clone();
+    std::fs::write(mounted.join("stale-entry"), "").unwrap();
+    std::fs::create_dir(mounted.join("stale-folder")).unwrap();
+    std::fs::write(mounted.join("stale-folder/entry"), "").unwrap();
+    std::os::unix::fs::symlink(outside.path(), mounted.join("link-to-outside")).unwrap();
+
+    staged.write().unwrap();
+
+    assert_eq!(std::fs::read_dir(&mounted).unwrap().count(), 0);
+    assert!(outside.path().join("owner-file").is_file());
 }
 
 /// A secret never crosses as a placeholder: a credential is bound to its hosts instead (#832).

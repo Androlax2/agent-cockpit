@@ -954,6 +954,38 @@ async fn ending_the_session_removes_its_git_configuration() {
     assert!(!configuration.exists(), "{}", configuration.display());
 }
 
+/// #482: the session's end removes its folder of the daemon's mount sources.
+#[tokio::test(flavor = "multi_thread")]
+async fn ending_the_session_removes_its_mount_source_folder() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    run_in_agent(&home, &agent.root, "true").await;
+    let mount_sources = home
+        .path()
+        .join("run")
+        .join(BUILD_PROFILE_DIR)
+        .join("mounts")
+        .join(&agent.session);
+    assert!(mount_sources.is_dir(), "{}", mount_sources.display());
+    let client = home.connect().await;
+
+    client
+        .request(
+            Command::SessionEnd {
+                session: agent.session.clone(),
+            },
+            GENEROUS,
+        )
+        .await
+        .expect("the owner ends the session");
+
+    let deadline = tokio::time::Instant::now() + GENEROUS;
+    while mount_sources.exists() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!mount_sources.exists(), "{}", mount_sources.display());
+}
+
 /// A raw `CONNECT target` to the session proxy from inside, with bash's `/dev/tcp`: the
 /// proxy's whole answer, then how many milliseconds it took.
 fn connect_line(target: &str) -> String {

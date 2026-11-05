@@ -252,7 +252,8 @@ pub(crate) const CONFIG_FOLDER: &str = "config";
 const GIT_CONFIG_FILE: &str = "gitconfig";
 
 /// What must exist on disk before the launcher runs: created by [`Staged::write`], the one
-/// place the daemon creates a sandboxed session's mount sources (#482 removes them).
+/// place the daemon creates a sandboxed session's mount sources; the session's end removes them
+/// (#482).
 #[derive(Debug, Clone)]
 pub struct Staged {
     /// The session's folder in the daemon's mount sources: the spec and folder mounts.
@@ -287,13 +288,16 @@ impl Staged {
     /// Creates the owner-only folders and writes the spec, the decisions and the bound
     /// credentials' values, owner-only, replacing what a failed launch left; removes the last
     /// launch's egress counters and refused destinations, so the evidence never shows them
-    /// as this launch's and the daemon files only this launch's requests.
+    /// as this launch's and the daemon files only this launch's requests. Each folder the
+    /// sandbox mounts starts empty, so an entry the last launch's provider left, such as
+    /// Codex's socket, never answers for this one (#482).
     pub fn write(&self) -> std::io::Result<()> {
         let mut folders = std::fs::DirBuilder::new();
         folders.recursive(true).mode(0o700);
         folders.create(&self.mount_dir)?;
         folders.create(&self.home_source)?;
         for source in &self.folder_sources {
+            remove_entry(source)?;
             folders.create(source)?;
         }
         folders.create(&self.config_dir)?;
@@ -318,6 +322,16 @@ impl Staged {
         }
         let text = serde_json::to_vec(&self.spec).map_err(std::io::Error::other)?;
         replace_owner_only(&self.spec_path(), &text)
+    }
+}
+
+/// Removes the folder, file or link at `path` and what is inside it, never following a link.
+fn remove_entry(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 

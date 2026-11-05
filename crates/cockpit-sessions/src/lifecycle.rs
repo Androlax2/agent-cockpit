@@ -2636,9 +2636,10 @@ impl Sessions {
         if let Some(home) = self.settings.sandbox.session_home(id.as_str()) {
             paths.push(home.map_err(Error::Sandbox)?);
         }
-        // Its tool configuration holds the owner's Git identity (#859).
-        if let Some(config) = self.settings.sandbox.session_tool_config(id.as_str()) {
-            paths.push(config.map_err(Error::Sandbox)?);
+        // Its folder of mount sources holds the owner's Git identity (#859) and the folders
+        // its sandbox mounted (#482).
+        if let Some(mount_sources) = self.settings.sandbox.session_mount_sources(id.as_str()) {
+            paths.push(mount_sources.map_err(Error::Sandbox)?);
         }
         let counted = TerminalStep::start(&self.session_lock(id));
         self.blocking("remove the session's directories", move || {
