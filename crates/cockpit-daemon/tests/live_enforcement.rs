@@ -72,12 +72,15 @@ async fn probe(home: &Home, root: &Path) -> Vec<String> {
         ("~/.ssh/id_ed25519", home.path().join(".ssh/id_ed25519")),
         ("the state database", home.state_dir().join("state.db")),
     ] {
+        // A missing path would be refused too: the probe proves nothing unless it is there.
+        assert!(path.is_file(), "{label} is not at {}", path.display());
         let printed = run_in_agent(home, root, &format!("cat '{}'", path.display())).await;
         assert!(!printed.contains("owner's key"), "{label}: {printed}");
         assert!(!printed.ends_with("exit=0\n"), "{label}: {printed}");
         let reason = printed
             .lines()
             .next()
+            .filter(|line| !line.starts_with("exit="))
             .and_then(|line| line.rsplit(": ").next());
         observed.push(format!(
             "read {label}: refused ({})",
@@ -102,23 +105,29 @@ async fn probe(home: &Home, root: &Path) -> Vec<String> {
     observed
 }
 
-/// Records `observed` as the owner's probe of the launch named `identity`, retrying while the
-/// daemon answers busy, and returns the evidence it now shows.
+/// What the owner's `cockpit` printed for `arguments`, asserting success, retried while the
+/// session's lifecycle answers busy.
+async fn owner_command(home: &Home, arguments: &[&str]) -> String {
+    let deadline = Instant::now() + GENEROUS;
+    loop {
+        let output = home.cockpit(arguments, &[]).await;
+        let busy = String::from_utf8_lossy(&output.stderr).starts_with("torlek: busy:");
+        if !busy || Instant::now() >= deadline {
+            assert!(output.status.success(), "{arguments:?}: {output:?}");
+            return String::from_utf8(output.stdout).unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Records `observed` as the owner's probe of the launch named `identity` and returns the
+/// evidence it now shows.
 async fn record(home: &Home, session: &str, identity: &str, observed: &[String]) -> String {
     let mut arguments = vec!["session", "sandbox-record", session, "--client", identity];
     for observation in observed {
         arguments.extend(["--observed", observation]);
     }
-    let deadline = Instant::now() + GENEROUS;
-    loop {
-        let output = home.cockpit(&arguments, &[]).await;
-        let busy = String::from_utf8_lossy(&output.stderr).starts_with("torlek: busy:");
-        if !busy || Instant::now() >= deadline {
-            assert!(output.status.success(), "{output:?}");
-            return String::from_utf8(output.stdout).unwrap();
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    owner_command(home, &arguments).await
 }
 
 /// The owner's home with a key the agent must not read, and `required` set.
@@ -171,8 +180,7 @@ async fn four_launches_in_a_row_of_one_session_each_reach_the_allowed_host() {
         if launch > 1 {
             // The next launch's agent numbers its lines from 0 again.
             std::fs::remove_dir_all(root.join(".agent")).unwrap();
-            let restarted = home.cockpit(&["session", "restart", &session], &[]).await;
-            assert!(restarted.status.success(), "{restarted:?}");
+            owner_command(&home, &["session", "restart", &session]).await;
         }
         let previous = identities.last().map(String::as_str);
         let identity = identity_of_a_new_launch(&home, &session, previous).await;

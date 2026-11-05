@@ -13,7 +13,8 @@ for how enforcement is measured; its observation bounds and storage stand.
   launch's identity, so `session sandbox` shows `observed: owner probe: ...`. A second test
   runs the probe on four launches in a row of one session, each a new launch identity.
 - **Ignored because they reach the internet.** Local and gate runs stay offline; CI runs them
-  with `--run-ignored only --no-capture`, so the evidence of each launch prints in the log.
+  with `--run-ignored only --no-capture`, so the evidence of each launch prints in the log,
+  and `--retries 2`, so a network blip on a required check is reported flaky, not failed.
   No credential is used: the request to the allowed host is a plain unauthenticated `GET /`.
 - **Steps in the jobs that already exist, no new runner or sudo.** The `greenfield` job runs
   the live tests after the gate, reusing its bubblewrap install and its existing user-namespace

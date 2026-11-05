@@ -4,7 +4,8 @@ Issue #27. Decided by Theo, who has no Windows machine: he moved the WSL2 proof 
 hand-recorded run to CI. The `greenfield-wsl2` job runs on `windows-2025`, which ships WSL 2 as
 the default; its first green run is on PR #128.
 
-- **`Vampire/setup-wsl`, pinned to v7.2.0's commit**, installs Ubuntu 24.04. A bare
+- **`Vampire/setup-wsl`, pinned to v7.2.0's commit**, installs Ubuntu 26.04 since #433
+  (its packaged tmux 3.6 runs sessions; 24.04 before). A bare
   `wsl --install -d Ubuntu --no-launch` leaves the distribution unregistered until a first
   launch whose account setup is interactive, which a hosted runner cannot answer; the action
   registers it non-interactively and provides the `wsl-bash` step shell. It is a new
