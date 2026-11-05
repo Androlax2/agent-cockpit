@@ -641,7 +641,9 @@ impl Cockpit {
         })
     }
 
-    /// Waits until the screen no longer shows `text`; returns that screen.
+    /// Waits until the screen no longer shows `text`; returns that screen. A capture can land
+    /// mid-redraw with a pane blank, so this also matches before the thing it waits on has
+    /// happened: wait for what replaces `text` instead when a later step depends on it.
     pub fn wait_for_gone(&self, text: &str) -> String {
         self.wait_until(&format!("the screen no longer shows {text:?}"), |screen| {
             !screen.contains(text)

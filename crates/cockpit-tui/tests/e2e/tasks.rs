@@ -1,6 +1,15 @@
 //! #44 through a real terminal and daemon in an isolated fixture.
 use crate::harness::Cockpit;
 
+/// Waits for the list view with the task's row: its help line and the `[ ]` of a row, neither
+/// of which the form draws. The daemon has answered by then. Waiting for the form to vanish
+/// instead matches a capture taken mid-redraw, with the pane blank.
+fn wait_for_task_row(cockpit: &Cockpit) {
+    cockpit.wait_until("the task list shows the row", |screen| {
+        screen.contains("a add; e edit") && screen.contains("[ ] Terminal task")
+    });
+}
+
 #[test]
 fn tasks_add_edit_queue_and_explain_through_the_terminal() {
     let cockpit = Cockpit::start();
@@ -13,16 +22,18 @@ fn tasks_add_edit_queue_and_explain_through_the_terminal() {
     cockpit.wait_for("> Notes:");
     cockpit.type_text("Keep this note");
     cockpit.press(&["Enter"]);
-    cockpit.wait_for("Terminal task");
-    cockpit.wait_for_gone("Add task");
+    wait_for_task_row(&cockpit);
     let listed = cockpit.cockpit(&["todo", "list"]);
     assert!(listed.contains("Terminal task"), "{listed}");
     let id = listed.split_whitespace().next().unwrap();
     cockpit.press(&["e"]);
     cockpit.wait_for("Edit task");
+    // Rows 0 to 2 are the form's: a capture of the form being drawn over the list can still
+    // show the list's help line and row.
+    cockpit.wait_for("> Title: Terminal task");
     cockpit.type_text(" edited");
     cockpit.press(&["Enter"]);
-    cockpit.wait_for_gone("Edit task");
+    wait_for_task_row(&cockpit);
     let shown = cockpit.cockpit(&["todo", "show", id]);
     assert!(
         shown.contains("Terminal task edited") && shown.contains("Keep this note"),
