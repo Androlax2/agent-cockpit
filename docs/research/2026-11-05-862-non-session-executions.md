@@ -12,7 +12,8 @@ D1 to D6, and the sibling decisions for
 [#857](2026-11-05-857-forge-credentials-and-push-policy.md),
 [#859](2026-11-05-859-session-folders-and-caches.md) and
 [#861](2026-11-05-861-unadapted-programs-and-adopted-sessions.md). **Research and proposal,
-2026-11-05; Theo's decisions are recorded under [Decisions](#decisions) as they are made.**
+2026-11-05; Theo's decisions were asked one at a time on 2026-11-05 and are recorded under
+[Decisions](#decisions).**
 Merging this document accepts research delivery and records those answers; it authorizes no
 product code, dependency or host setting, and it edits no issue. The issue texts under
 [Changes for each linked issue](#changes-for-each-linked-issue) are proposals; the owner's side
@@ -48,8 +49,8 @@ Code at this branch's base (`93646e8f`); paths are relative to the repository ro
 | `verification.rs:482-493` | A check is `/bin/sh -c <command>` in the checkout, started through `launch_reserved_with_output` as an execution of the daemon's supervisor (the run id is the execution's, #29) |
 | `crates/cockpit-daemon/src/serve.rs:96`, `crates/cockpit-approvals/src/pty.rs:554` | The check's environment is the daemon's whole environment, minus `GIT_*` and the three `TORLEK_*` session variables. Nothing else is withheld: an owner token set in the daemon's environment (for example `GH_TOKEN`) is in it |
 | `verification.rs:249`, `crates/cockpit-daemon/src/routes.rs:570-580` | Only the owner runs a check, and only in a trusted project; an untrusted or review checkout is refused (#649, #676). An agent can only claim a result |
-| `crates/cockpit-config/src/lib.rs:254`, `:1053` | A check's `command` and `environment` come from the project's `.torlek/config.toml`; only the project file declares checks. `.torlek` is in `BASELINE_DENIED_WRITE`, so a session cannot edit it, but a merged change can |
-| `crates/cockpit-config/src/lib.rs:167-181` | `ExecutionEnvironment::{Native, Sandbox, Docker}` exists as the project's *requirement*: "a project that expects `native` work still runs sandboxed until the owner turns the sandbox off" |
+| `crates/cockpit-config/src/lib.rs:254`, `:1053` | A check's `command` and `environment` come from the project's `.torlek/config.toml`; only the project file declares checks. `.torlek` and `.cockpit` are in `BASELINE_DENIED_WRITE` (`crates/cockpit-sandbox/src/profile.rs:36`), so a session cannot edit them, but a merged change can. The default environment is `native` (`lib.rs:262`) |
+| `crates/cockpit-config/src/lib.rs:167-181` | `ExecutionEnvironment::{Native, Sandbox, Docker}` exists as the project's *requirement* for sessions: "a project that expects `native` work still runs sandboxed until the owner turns the sandbox off". A check's `environment` accepts the same three names, but the daemon runs only `native` (above) |
 | `crates/cockpit-processes/src/systemd.rs` | Executions already run in transient systemd user scopes (#29), the placement #829's comment asks the launcher to keep for #834 |
 | #859 report, "What exists today" | The owner's `make test` or a #352 check "runs agent-chosen code" on the host, with the owner's `~/.cargo` and sccache; sessions now get caches of their own, so only the host side still shares them |
 | #313 / #352 text | A check's receipt must record the environment that actually ran; a missing environment is `unavailable`, not refused silently |
@@ -74,8 +75,10 @@ as the owner's OS user. A check adds that its input is the agent's output.
 5. **Shared host caches.** A check reads and writes the owner's `~/.cargo`, `~/.npm` and
    sccache, which #859 keeps out of sessions; a poisoned entry then reaches every other build.
 6. **A pass is not truer for being sandboxed.** The receipt records an exit code and the
-   fingerprint of the files taken before the run; agent code can exit 0 either way. A sandbox
-   bounds what the code can do, not whether the result is honest. Out of scope here.
+   fingerprint of the files taken before the run; agent code can exit 0 either way, and the
+   checkout is writable in a native run and a sandboxed one alike, so a check can change files
+   it covered. A sandbox bounds what the code can do, not whether the result is honest. Out of
+   scope here; whether to fingerprint again after the run is #313's matter.
 7. **Silent fallback.** A check that cannot start in its sandbox must not run on the host
    instead; the receipt names the environment that ran (#352).
 8. **Plugin exfiltration.** A plugin that reads pane contents or todo text and can call out
@@ -93,7 +96,7 @@ as the owner's OS user. A check adds that its input is the agent's output.
 | Option | Threats it leaves | Cost |
 | --- | --- | --- |
 | **A. No: checks stay `native`, on the host** (today) | 1 to 5 all open for every check; the sandbox protects the agent's session and the owner then runs the agent's code outside it | None |
-| **B. Yes, following the owner's switch** (recommended). Under `agents.sandbox = "required"` every check runs through `torlek-sandbox`; `environment = "sandbox"` is the default. A check that declares `native` is recorded `unavailable` with the reason, never run on the host. `agents.sandbox = "off"` keeps today's behaviour, the one named opt-out, with the risk logged | 6 and 8 are unchanged. 5 is closed for the check's own caches. If the sandbox cannot start the check is `unavailable` (7) | A project with a check that needs the host (a display, a system service) gets no receipt for it under `required` until the owner turns the sandbox off or the check moves to `docker` (#856). Every run starts with an empty cache of its own: dependencies are fetched and built again, not measured here |
+| **B. Yes, following the owner's switch** (recommended). Under `agents.sandbox = "required"` every check runs through `torlek-sandbox`; `environment = "sandbox"` is the default. A check that declares `native` is recorded `unavailable` with the reason, never run on the host. Under `agents.sandbox = "off"`, the one named opt-out, every check runs on the host as today (the receipt records `native` and that the sandbox was off) and the risk is logged; `docker` follows #856 either way | 6 and 8 are unchanged. 5 is closed for the check's own caches. If the sandbox cannot start the check is `unavailable` (7) | A project with a check that needs the host (a display, a system service) gets no receipt for it under `required` until the owner turns the sandbox off or the check moves to `docker` (#856). Every run starts with an empty cache of its own: dependencies are fetched and built again, not measured here. The default environment changes from `native` to `sandbox`; a project that declares `native` explicitly loses its receipts under `required` until it declares `sandbox` (the gate's next action says so) or the owner turns the sandbox off |
 | **C. Yes, per check.** `sandbox` is one more environment and the project file chooses; `native` keeps working under `required` for a trusted project | 1 to 5 stay open for every `native` check. The project file picks, so a merged change can switch a check back to the host | Least friction; two paths to keep, and the guarantee is only as good as the project file |
 
 B follows a rule the config already has: the project states a requirement, the owner's switch
@@ -110,7 +113,7 @@ when it ends. The open part is the network and credentials.
 | Option | Threats it leaves | Cost |
 | --- | --- | --- |
 | **A. No network** | 4 closed, 9 none | Caches start empty, so a check that needs a dependency fails unless the project vendors it. In practice most checks cannot run |
-| **B. The project's grants plus the detected ecosystem's registry hosts** (recommended). The same allowlist sources as a session, minus a provider's hosts: a check never reaches the model API. An unknown host is refused at once and filed as a #674 request whose subject is the check (allow once, allow always for the project, deny). No bound credential (#832) for a check in this release | 4 reduced to the hosts the owner already granted the project; registries stay a read channel (#859 residual) | An owner decision when a check needs a host no session did. "Allow once" is meaningful because the run ends |
+| **B. The project's grants plus the detected ecosystem's registry hosts** (recommended). The same allowlist sources as a session, minus a provider's hosts: a check never reaches the model API. An unknown host is refused at once and filed as a #674 request whose subject is the check (allow once, allow always for the project, deny). No bound credential (#832) for a check in this release | 4 reduced to the hosts the owner already granted the project; registries stay a read channel (#859 residual). A check-filed "allow always" is a project grant, so sessions of the project reach that host too: the request must say so | An owner decision when a check needs a host no session did. "Allow once" is meaningful because the run ends |
 | **C. Everything a session of the project reaches**, including the provider's hosts | 4 reduced to the session's allowlist, which includes the model API | None extra; a check has no reason to call a model |
 
 A check declares hosts in the project file only as pre-filled requests, never as grants
@@ -122,11 +125,12 @@ A check declares hosts in the project file only as pre-filled requests, never as
 | --- | --- | --- |
 | **A. No plugin network in the first plugin release.** The vocabulary has no network permission; #372 waits | 8 and 10 closed | Plugins cannot call a webhook or an API at all |
 | **B. The plugin host performs the request in the daemon**, through the decision core of #831 used as a library (allowlist snapshot plus subject), no listener | 8 reduced to the declared hosts and best-effort taint (#372). 10 open: untrusted responses are parsed in the control process; one mistake in the core is the daemon reaching loopback or the LAN | No extra process |
-| **C. The plugin host sends the request to an egress-only instance of the launcher** (recommended): the same decision core and resolver rules as #831, confined with Landlock and seccomp, with no state, no owner socket and no namespace setup; the daemon never opens a plugin's connection | 8 reduced as in B. 10 closed: parsing and resolution happen in a confined process; a bug there reaches only the resolver files and the network it is granted | A second mode of the launcher and a request protocol to it; about a day more than B |
+| **C. The plugin host sends the request to an egress-only instance of the launcher** (recommended): the same decision core and resolver rules as #831, confined with Landlock and seccomp, with no state, no owner socket and no namespace setup; the daemon never opens a plugin's connection | 8 reduced as in B. 10 reduced, not closed: parsing and resolution happen in a confined process that holds no owner state and no owner socket, but it shares the host network and Landlock's network rules match ports, not addresses. A bug in its address rules (rebinding, IPv4-mapped IPv6, a redirect) still reaches loopback, the LAN or metadata. A destination filter outside the process (a network namespace with a filtered route, or firewall rules) is not decided here; the plugin runtime issue measures it | A second mode of the launcher and a request protocol to it; not estimated beyond that |
 
-An external-process plugin, if one ships before WASM (report 14), is an unadapted program
-(#861): launched through `torlek-sandbox` with the hosts the owner consented to at install as
-its owner entry, so it needs no rule of its own.
+An external-process plugin, if one ships before WASM (report 14), is launched through
+`torlek-sandbox` like an unadapted program (#861), with the hosts the owner consented to at
+install as its entry. Its subject is the plugin, not the program: it files no network request
+(Q4), and an undeclared host is refused, so #861's request path does not apply to it.
 
 ### Q4. Is a plugin a grant subject
 
@@ -156,6 +160,9 @@ Theo's answers, asked one at a time in his session.
 - [x] **Q3.** Decided 2026-11-05: **C**. A plugin's network requests go from the plugin host to
   an egress-only instance of the launcher, confined with Landlock and seccomp, with no state and
   no owner socket. The daemon never opens a plugin's connection.
+  (When asked, the table called threat 10 closed; review corrected it to reduced, because the
+  instance shares the host network. The answer stands as given; the destination filter is left to
+  the plugin runtime issue, #372.)
 - [x] **Q4.** Decided 2026-11-05: **A**. A plugin is a grant subject of its own. Its hosts are
   granted at install consent and again when an update adds one; it never inherits the project's
   hosts, and no session or check inherits a plugin's; it has no runtime request path.
@@ -165,12 +172,16 @@ the owner runs under the same launcher and the same grant store, whatever its su
 check, containers, plugin), and the only way out of the sandbox for any of them is the one named
 opt-out, `agents.sandbox = "off"`.
 
-### Residual risks the decisions accept
+### Residual risks (this report's reading of the decisions, not separately asked)
 
 - Every sandboxed check run starts with an empty cache of its own and fetches and builds its
   dependencies again. Not measured here. The later optimization is #859's: a read-only lower
   layer limited to a Torlek-managed per-project folder, never the owner's.
-- Registries stay a read channel for a check (#859's residual), counted per host.
+- Registries stay a read channel for a check (#859's residual), counted per host. Ecosystem
+  detection reads the checkout's manifests, which an agent edits, but it only enables the fixed
+  hosts of #830's table; any other host is a request.
+- A check-filed "allow always" is a project grant that sessions of the project also use. The
+  owner sees the request built by Torlek (never text from the check) and the card says so.
 - A check that needs the host (a display, a system service) has no receipt under `required`
   until its owner moves it to `docker` (#856) or turns the sandbox off.
 - A sandboxed check's pass is as honest as the code it ran (threat 6); the receipt still records
@@ -202,6 +213,9 @@ Replace the Scope's first bullet and add to Acceptance:
 >   hosts, never a provider's hosts. An unknown host is refused at once and filed as a #674
 >   request whose subject is the check. No bound credential (#832). A check's declared hosts are
 >   pre-filled requests and grant nothing (#861).
+> - Under `off`, a check of any environment but `docker` runs on the host and the receipt records
+>   `native` and that the sandbox was off. The gate's next action for a `native` check under
+>   `required` is "declare `environment = "sandbox"`, or set `agents.sandbox = "off"`".
 > - The receipt records the environment that ran and the sandbox evidence (backend, Landlock ABI).
 >   A sandbox that cannot start is `unavailable`, not a host run. An untrusted or review
 >   checkout is still refused before anything starts (#649, #676).
@@ -211,7 +225,9 @@ Replace the Scope's first bullet and add to Acceptance:
 > cannot reach the owner socket, does not see the daemon's variables (a `GH_TOKEN` set in the
 > daemon's environment is absent), reaches a granted host and not another, and writes nothing
 > into the owner's `~/.cargo`; a `native` check under `required` is recorded `unavailable`; the
-> same checks under `off` run on the host. **Depends on:** add #829, #830, #831, #674, #862.
+> same checks under `off` run on the host. For a `native` check under `required`, and for a
+> launcher that fails to start, no process of the check is spawned at all (asserted on the
+> supervisor, not only on the recorded status). **Depends on:** add #829, #830, #831, #674, #862.
 
 ### #829 native Linux sandbox launcher
 
@@ -249,7 +265,8 @@ Add:
 
 > **Subjects (#862).** A request names its subject. A **check run** files the same request as a
 > session; its choices are allow once, allow always for the project (D4) or deny. Allow once
-> is meaningful because the run ends. A **plugin** files none: its hosts are its own grants,
+> is meaningful because the run ends. The text says that "always" also applies to the project's
+> sessions. A **plugin** files none: its hosts are its own grants,
 > given at install and update consent (#371), never created by a request decision, so there is
 > no prompt a plugin can trigger and no text of its own in front of the owner. A project's grants
 > never apply to a plugin and a plugin's never to a session or check. The feed event carries the
@@ -270,7 +287,9 @@ bullet, with:
 > **Grants (#862, Q4).** The plugin is a grant subject (#371). A host is granted at install
 > consent and again whenever an update adds one. A plugin has no runtime request path: an
 > undeclared host is refused, counted and shown in diagnostics; only the manifest, through
-> consent, adds one. Every request is audited with the subject, host and size; revoking the grant
+> consent, adds one. The instance shares the host network and Landlock's network rules match
+> ports, not addresses, so this issue measures and decides a destination filter outside the process
+> (a filtered network namespace or firewall rules) beside the address rules. Every request is audited with the subject, host and size; revoking the grant
 > closes open requests at once.
 
 Add to Acceptance: "A plugin cannot reach a host the project's sessions can; a granted host is
