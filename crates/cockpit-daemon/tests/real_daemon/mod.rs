@@ -210,6 +210,15 @@ pub struct Launch {
 }
 
 impl Home {
+    /// A home whose `config/` folder holds nothing, for tests that assert on the folders the
+    /// daemon and its profiles create. The daemon then reads the host's free space against the
+    /// product default floor (#838), so such a test must not depend on the guard's outcome.
+    pub fn without_owner_config() -> Home {
+        let home = Home::new();
+        std::fs::remove_dir_all(home.path().join("config")).unwrap();
+        home
+    }
+
     pub fn new() -> Home {
         let dir = tempfile::tempdir().expect("a temporary home");
         let home = Home {

@@ -83,7 +83,7 @@ fn assert_cockpit_built(cockpit: &Path) {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_of_a_profile_reports_to_its_daemon_and_leaves_the_legacy_layout_untouched() {
     assert_cockpit_built(&cockpit_program());
-    let home = Home::new();
+    let home = Home::without_owner_config();
     let legacy = legacy_layout(&home);
     // `next` is neither this build's profile nor the default, so the agent's `torlek` (this
     // build) reaches the `next` daemon only through what its launch carries.
@@ -144,7 +144,7 @@ fn legacy_layout(home: &Home) -> Vec<(std::path::PathBuf, &'static str)> {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_default_profile_and_a_dev_build_run_side_by_side_each_with_its_own_sessions() {
     assert_cockpit_built(&cockpit_program());
-    let home = Home::new();
+    let home = Home::without_owner_config();
     // Fake managers prove profile routing here. They do not claim that two real
     // managed proxies can own the fixed ports at once.
     let _installed = home.start_profile("torlek");
