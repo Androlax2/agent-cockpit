@@ -41,7 +41,14 @@ fn each_closed_area_asks_for_its_own_request() {
 
     let mut asked = app.changed_view_commands();
     asked.sort_by_key(|command| format!("{command:?}"));
-    assert_eq!(asked, [Command::AgentReports, Command::ApprovalQueue]);
+    assert_eq!(
+        asked,
+        [
+            Command::AgentReports,
+            Command::ApprovalQueue,
+            Command::NetworkList
+        ]
+    );
 }
 
 #[test]
@@ -79,6 +86,7 @@ fn the_first_stamps_ask_for_every_area() {
         [
             Command::AgentReports,
             Command::ApprovalQueue,
+            Command::NetworkList,
             Command::ProjectList
         ]
     );
@@ -91,7 +99,10 @@ fn a_stamp_that_moved_during_an_outage_is_found_after_the_new_snapshot() {
     app.apply_changes(&snapshot(vec![stamp(ViewArea::Approvals, 9)]))
         .unwrap();
 
-    assert_eq!(app.changed_view_commands(), [Command::ApprovalQueue]);
+    assert_eq!(
+        app.changed_view_commands(),
+        [Command::ApprovalQueue, Command::NetworkList]
+    );
 }
 
 #[test]

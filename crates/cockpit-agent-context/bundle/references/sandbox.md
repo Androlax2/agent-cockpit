@@ -4,8 +4,10 @@ Torlek may run you inside a sandbox the owner configured. Its limits are deliber
 
 - **Denied path or command.** Do not probe for a way around it. If the task needs it, report
   it with `torlek todo blocked TITLE --why TEXT` and tell the owner.
-- **Blocked network host.** Name the host and ask the owner to allow it; never tunnel,
-  proxy or mirror around the block.
+- **Blocked network host.** The session proxy refuses it at once with `403`. When the
+  refusal says the owner is asked, the request is already in their list: say which host
+  and why you need it, then retry after they allow it. A denial stays a denial. Never
+  tunnel, proxy or mirror around the block.
 - **Host commands.** Anything that must run outside the sandbox (installs, system services,
   the owner's own programs) goes through `torlek ask run`.
 - **Docker.** Use only the engine your environment provides (`DOCKER_HOST` when set), never

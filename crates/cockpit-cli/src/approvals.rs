@@ -106,7 +106,16 @@ pub(crate) fn run(command: Command) -> ExitCode {
             for guide in &guides {
                 outln!("{}", guide_line(guide));
             }
-            ExitCode::SUCCESS
+            // The hosts sandboxed sessions were refused wait on the owner too (#674).
+            match crate::agent::exchange(&socket, Command::NetworkList) {
+                Ok(Reply::NetworkRequests { requests }) => {
+                    for request in &requests {
+                        outln!("{}", crate::network::request_line(request));
+                    }
+                    ExitCode::SUCCESS
+                }
+                other => crate::agent::failed(&socket, other),
+            }
         }
         Ok(Reply::RunRequest { request }) => {
             out!("{}", run_detail(&request));
@@ -302,20 +311,25 @@ fn decision_line(decision: &RunDecisionView) -> String {
         Some(DecidedThroughView::Cli) => " through the CLI",
         None => "",
     };
-    let at = DateTime::from_timestamp(decision.at, 0).map_or_else(
-        || format!("{} (seconds since 1970)", decision.at),
-        |at| {
-            at.with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M:%S %:z")
-                .to_string()
-        },
-    );
+    let at = local_time(decision.at);
     let unnamed = if decision.through.is_none() {
         " (the client did not name itself)"
     } else {
         ""
     };
     format!("decided: {verdict} by the owner{through} at {at}{unnamed}")
+}
+
+/// A decision's time in the owner's time zone.
+pub(crate) fn local_time(seconds: i64) -> String {
+    DateTime::from_timestamp(seconds, 0).map_or_else(
+        || format!("{seconds} (seconds since 1970)"),
+        |at| {
+            at.with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S %:z")
+                .to_string()
+        },
+    )
 }
 
 /// The directory a request works in, its hidden characters, and where it lies against the

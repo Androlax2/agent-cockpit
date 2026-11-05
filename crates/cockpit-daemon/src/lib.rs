@@ -17,6 +17,7 @@ mod instance;
 mod lanes;
 mod logs;
 mod manager;
+mod network;
 mod output_retention;
 mod projects;
 mod readiness;
@@ -175,6 +176,9 @@ pub struct Capabilities {
     pub messages_queued: Arc<tokio::sync::Notify>,
     /// Notified when the owner pauses or resumes the queue, to wake a scheduling pass (#646).
     pub queue_changed: Arc<tokio::sync::Notify>,
+    /// Notified when the owner decides a network request or revokes a grant, to rewrite the
+    /// launchers' decisions (#674).
+    pub network_decided: Arc<tokio::sync::Notify>,
     /// What every bug report draft carries about this daemon (#427).
     pub bug_report_facts: Arc<cockpit_bug_reports::Facts>,
     /// `$XDG_STATE_HOME/cockpit`, where bug report bundles are written beside the logs.
@@ -191,6 +195,7 @@ pub struct Daemon {
     publishing: tokio::task::JoinHandle<()>,
     publishing_drafts: tokio::task::JoinHandle<()>,
     publishing_view_stamps: tokio::task::JoinHandle<()>,
+    keeping_network: tokio::task::JoinHandle<()>,
     retaining: tokio::task::JoinHandle<()>,
     sweeping: tokio::task::JoinHandle<()>,
     dispatching: tokio::task::JoinHandle<()>,
@@ -435,6 +440,7 @@ impl Instance {
         let limits = options.limits;
         let messages_queued = Arc::new(tokio::sync::Notify::new());
         let queue_changed = Arc::new(tokio::sync::Notify::new());
+        let network_decided = Arc::new(tokio::sync::Notify::new());
         let delivered = coordination::Context {
             database: Arc::clone(&database),
             sessions: Arc::clone(&sessions),
@@ -491,6 +497,7 @@ impl Instance {
                 sign_in_providers,
                 messages_queued,
                 queue_changed: Arc::clone(&queue_changed),
+                network_decided: Arc::clone(&network_decided),
                 bug_report_facts: Arc::clone(&bug_report_facts),
                 state_dir: options.state_dir.clone(),
             }),
@@ -557,6 +564,19 @@ impl Instance {
             "view-stamp-feed",
             faults.clone(),
             move || view_stamp_feed::publish_forever(Arc::clone(&stamped_database)),
+        ));
+        let network_database = Arc::clone(&database);
+        let network_sandbox = sessions.sandbox().clone();
+        let keeping_network = tokio::spawn(supervisor::supervise(
+            "network-requests",
+            faults.clone(),
+            move || {
+                network::keep_forever(
+                    Arc::clone(&network_database),
+                    network_sandbox.clone(),
+                    Arc::clone(&network_decided),
+                )
+            },
         ));
         let ticking = tokio::spawn(supervisor::supervise(
             "sessions-tick",
@@ -655,6 +675,7 @@ impl Instance {
             publishing,
             publishing_drafts,
             publishing_view_stamps,
+            keeping_network,
             retaining,
             sweeping,
             dispatching,
@@ -784,6 +805,7 @@ impl Drop for Daemon {
         self.publishing.abort();
         self.publishing_drafts.abort();
         self.publishing_view_stamps.abort();
+        self.keeping_network.abort();
         self.retaining.abort();
         self.sweeping.abort();
         self.dispatching.abort();

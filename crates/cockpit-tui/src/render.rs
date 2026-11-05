@@ -5,7 +5,8 @@
 use std::time::Instant;
 
 use cockpit_protocol::{
-    GuideView, HiddenView, RunRequestView, SessionStateView, SessionView, ShownText,
+    GuideView, HiddenView, NetworkRequestView, RunRequestView, SessionStateView, SessionView,
+    ShownText,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -500,6 +501,12 @@ fn draw_pane(app: &App, frame: &mut Frame<'_>, area: Rect, now: Instant) {
             .find(|guide| guide.id == *id)
             .map(guide_lines)
             .unwrap_or_default(),
+        Some(Shown::Network { id }) => board
+            .network
+            .iter()
+            .find(|request| request.id == *id)
+            .map(network_lines)
+            .unwrap_or_default(),
         None => Vec::new(),
     };
     if let Some((typing, typed)) = pane.typing() {
@@ -541,8 +548,26 @@ pub(crate) fn pane_keys(shown: Option<&Shown>) -> &'static str {
         Some(Shown::Run { .. }) => "y approve   x decline   m more",
         Some(Shown::Guide { asks: true, .. }) => "y answer   s stuck   x close",
         Some(Shown::Guide { .. }) => "y done   s stuck   x close",
+        Some(Shown::Network { .. }) => "y allow once   a allow always   x deny",
         None => "",
     }
+}
+
+/// A network request's lines (#674): "allow once" lasts the rest of the asking session,
+/// "allow always" is a grant to the project the owner can revoke.
+pub(crate) fn network_lines(request: &NetworkRequestView) -> Vec<String> {
+    vec![
+        format!(
+            "Network request {} from {} (project {})",
+            request.id,
+            crate::board::network_session(request),
+            request.project
+        ),
+        format!("Host: {}  [refused: no entry allows it]", request.target),
+        "Allow once: for the rest of this session. Allow always: every session of the \
+         project, until `torlek network revoke`."
+            .to_owned(),
+    ]
 }
 
 /// A run request's lines; `is_expanded` shows the whole command instead of its folded start.

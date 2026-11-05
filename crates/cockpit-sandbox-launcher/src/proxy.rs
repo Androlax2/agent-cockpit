@@ -4,19 +4,29 @@
 //! here, every address checked, and on port 443 the TLS server name matched against the
 //! `CONNECT` host. No interception: after the check the bytes pass unchanged.
 //!
+//! The owner's decisions on network requests (#674) arrive in a file the daemon replaces
+//! (`cockpit_sandbox::DECISIONS_FILE`): read before serving and again each time it changes.
+//! A destination refused for want of an entry goes to a file the daemon reads
+//! (`cockpit_sandbox::REQUESTS_FILE`), which asks the owner; the refusal itself is at once. A
+//! revoked decision closes the tunnels it allowed.
+//!
 //! Answers tell policy from the network (#718): `403` with `Proxy-Status` error
 //! `http_request_denied` or `destination_ip_prohibited` is a refusal; `502` (`dns_error`,
 //! `destination_unavailable`) and `504` (`connection_timeout`) are an upstream the launcher
 //! could not reach. The counters keep them apart the same way.
 
+use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
-use cockpit_sandbox::{Allowlist, EgressRefusal, EgressReport, Subject, destination};
+use cockpit_sandbox::{
+    AllowEntry, Allowlist, AskedDestination, EgressDecisions, EgressRefusal, EgressReport,
+    EgressRequests, MAX_ASKED_DESTINATIONS, Subject, destination,
+};
 
 use crate::client_hello::{self, ServerName};
 
@@ -35,6 +45,9 @@ const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 /// How long the proxy waits before accepting again after a failed accept, such as when
 /// the launcher is out of file descriptors.
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
+/// How often the decisions file is read for a change: an owner's decision applies to the
+/// agent's next try within this.
+const DECISIONS_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Where the proxy resolves names and connects: the host's network in a launch, a fake in
 /// tests.
@@ -60,7 +73,17 @@ impl Upstream for Network {
 }
 
 pub struct Proxy<U> {
+    /// The spec's allowlist; the owner's decisions add to it, never take from it.
     allowlist: Allowlist,
+    /// The spec's allowlist with the owner's decisions, and the decisions themselves.
+    decided: RwLock<Arc<Decided>>,
+    /// Where refused destinations are listed for the daemon; none in tests that ask nothing.
+    requests_file: OnceLock<PathBuf>,
+    /// The destinations listed there, held while the file is written.
+    asked: Mutex<Asked>,
+    /// The tunnels open now, by number, so a revoked decision closes those it allowed.
+    tunnels: Mutex<HashMap<u64, OpenTunnel>>,
+    next_tunnel: AtomicU64,
     subject: Subject,
     upstream: U,
     report: Mutex<EgressReport>,
@@ -69,6 +92,19 @@ pub struct Proxy<U> {
     open: AtomicUsize,
     /// Held while the report file is written.
     writing: Mutex<()>,
+}
+
+/// The allowlist the proxy decides on, and the decisions that widened it.
+struct Decided {
+    allowlist: Allowlist,
+    decisions: EgressDecisions,
+}
+
+/// One open tunnel: the entry that allowed it and both ends, to close on a revocation.
+struct OpenTunnel {
+    entry: AllowEntry,
+    client: TcpStream,
+    upstream: TcpStream,
 }
 
 /// Why a connection ends without a tunnel: the status, the `Proxy-Status` error and the
@@ -109,10 +145,70 @@ impl Answer {
     }
 }
 
+/// The destinations listed in the requests file, and the revision it was last written at.
+#[derive(Debug)]
+struct Asked {
+    destinations: BTreeSet<AskedDestination>,
+    revision: u64,
+}
+
+/// The decisions file's bytes; `None` when it is missing, or unreadable, which is the error
+/// beside it.
+fn read_decisions(path: &Path) -> (Option<Vec<u8>>, Option<std::io::Error>) {
+    match std::fs::read(path) {
+        Ok(text) => (Some(text), None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, None),
+        Err(error) => (None, Some(error)),
+    }
+}
+
+/// Where this launch's revisions start: the clock's nanoseconds, so a relaunch of the
+/// session never writes a revision its last launch wrote.
+fn launch_revision() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
+        })
+}
+
+fn say_unreadable(path: &Path, error: &std::io::Error) {
+    eprintln!(
+        "torlek-sandbox: cannot read {}, so no decision applies: {error}",
+        path.display()
+    );
+}
+
+/// The decisions `read` from `path` holds: none when the file is missing or malformed, so
+/// the proxy fails closed.
+fn decisions_in(path: &Path, read: Option<&[u8]>) -> EgressDecisions {
+    let Some(text) = read else {
+        return EgressDecisions::default();
+    };
+    serde_json::from_slice(text).unwrap_or_else(|error| {
+        eprintln!(
+            "torlek-sandbox: {} is malformed, so no decision applies: {error}",
+            path.display()
+        );
+        EgressDecisions::default()
+    })
+}
+
 impl<U: Upstream> Proxy<U> {
     pub fn new(allowlist: Allowlist, subject: Subject, upstream: U) -> Arc<Proxy<U>> {
         Arc::new(Proxy {
+            decided: RwLock::new(Arc::new(Decided {
+                allowlist: allowlist.clone(),
+                decisions: EgressDecisions::default(),
+            })),
             allowlist,
+            requests_file: OnceLock::new(),
+            asked: Mutex::new(Asked {
+                destinations: BTreeSet::new(),
+                revision: launch_revision(),
+            }),
+            tunnels: Mutex::new(HashMap::new()),
+            next_tunnel: AtomicU64::new(0),
             report: Mutex::new(EgressReport::new(subject.clone())),
             subject,
             upstream,
@@ -120,6 +216,84 @@ impl<U: Upstream> Proxy<U> {
             open: AtomicUsize::new(0),
             writing: Mutex::new(()),
         })
+    }
+
+    /// Lists the destinations refused for want of an entry in `path`, for the daemon to ask
+    /// the owner about (#674).
+    pub fn ask_through(&self, path: PathBuf) {
+        let _ = self.requests_file.set(path);
+    }
+
+    /// Reads the owner's decisions from `path` and applies them. A missing or malformed file
+    /// is no decision: what the decisions allowed is refused again, never kept.
+    pub fn load_decisions(&self, path: &Path) {
+        let (read, problem) = read_decisions(path);
+        if let Some(error) = &problem {
+            say_unreadable(path, error);
+        }
+        self.apply_decisions(decisions_in(path, read.as_deref()));
+    }
+
+    /// Keeps the decisions current: `path` is read each [`DECISIONS_INTERVAL`] and applied
+    /// when it changed, until the process ends. The first read always applies: a file
+    /// replaced between [`Proxy::load_decisions`] and this thread's start is not missed.
+    pub fn keep_decisions(self: &Arc<Self>, path: PathBuf) {
+        let proxy = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("egress-decisions".to_owned())
+            .spawn(move || {
+                let mut applied: Option<Option<Vec<u8>>> = None;
+                let mut said: Option<String> = None;
+                loop {
+                    std::thread::sleep(DECISIONS_INTERVAL);
+                    let (read, problem) = read_decisions(&path);
+                    // Said once while it lasts, not at every poll.
+                    let problem_text = problem.as_ref().map(ToString::to_string);
+                    if let Some(error) = &problem
+                        && said != problem_text
+                    {
+                        say_unreadable(&path, error);
+                    }
+                    said = problem_text;
+                    if applied.as_ref() != Some(&read) {
+                        proxy.apply_decisions(decisions_in(&path, read.as_deref()));
+                        applied = Some(read);
+                    }
+                }
+            });
+        drop(spawned);
+    }
+
+    /// Decides on the spec's allowlist with `decisions` from now on, and closes every open
+    /// tunnel whose entry neither the spec nor `decisions` holds any more.
+    pub fn apply_decisions(&self, decisions: EgressDecisions) {
+        let decided = Arc::new(Decided {
+            allowlist: self.allowlist.with_decisions(&decisions),
+            decisions,
+        });
+        *self
+            .decided
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::clone(&decided);
+        // A decided destination is asked about again if a later decision takes it back. After
+        // the swap: a refusal decided on the old decisions that lists it after this sees the
+        // new ones in `ask` and does not.
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .destinations
+            .retain(|asked| !decided.decisions.covers(&asked.host, asked.port));
+        let tunnels = self
+            .tunnels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let revoked = tunnels
+            .values()
+            .filter(|tunnel| !decided.allowlist.entries.contains(&tunnel.entry));
+        for tunnel in revoked {
+            let _ = tunnel.client.shutdown(Shutdown::Both);
+            let _ = tunnel.upstream.shutdown(Shutdown::Both);
+        }
     }
 
     /// Serves `listener` until the process ends: one thread per connection.
@@ -235,7 +409,7 @@ impl<U: Upstream> Proxy<U> {
                 return;
             }
         };
-        let (mut upstream, source, expects_server_name) = opened;
+        let (mut upstream, entry, expects_server_name) = opened;
         if client
             .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
             .is_err()
@@ -258,22 +432,153 @@ impl<U: Upstream> Proxy<U> {
         }
         self.count(&destination, |counters| {
             counters.allowed += 1;
-            counters.source = Some(source);
+            counters.source = Some(entry.source.to_string());
         });
-        if upstream.write_all(&first_bytes).is_err() {
+        let Some(tunnel) = self.open_tunnel(entry, &client, &upstream) else {
             return;
+        };
+        if upstream.write_all(&first_bytes).is_ok() {
+            let _ = client.set_read_timeout(None);
+            self.splice(client, upstream, &destination, first_bytes.len() as u64);
         }
-        let _ = client.set_read_timeout(None);
-        self.splice(client, upstream, &destination, first_bytes.len() as u64);
+        self.tunnels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&tunnel);
+    }
+
+    /// The decisions as they stand now.
+    fn decided(&self) -> Arc<Decided> {
+        Arc::clone(
+            &self
+                .decided
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Registers the tunnel `entry` allowed, so a revocation closes it; None, closing both
+    /// ends, when the entry was revoked since the connection was decided.
+    fn open_tunnel(
+        &self,
+        entry: AllowEntry,
+        client: &TcpStream,
+        upstream: &TcpStream,
+    ) -> Option<u64> {
+        let (Ok(client_end), Ok(upstream_end)) = (client.try_clone(), upstream.try_clone()) else {
+            return None;
+        };
+        let number = self.next_tunnel.fetch_add(1, Ordering::Relaxed);
+        let mut tunnels = self
+            .tunnels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Checked under the lock `apply_decisions` closes tunnels under: a revocation is
+        // either seen here or closes this tunnel there.
+        if !self.decided().allowlist.entries.contains(&entry) {
+            let _ = client.shutdown(Shutdown::Both);
+            let _ = upstream.shutdown(Shutdown::Both);
+            return None;
+        }
+        tunnels.insert(
+            number,
+            OpenTunnel {
+                entry,
+                client: client_end,
+                upstream: upstream_end,
+            },
+        );
+        Some(number)
+    }
+
+    /// The answer to a policy refusal of `host` on `port`. One the owner can lift asks them,
+    /// through the requests file, unless they denied it; the answer says which.
+    fn refused(&self, decided: &Decided, refusal: &EgressRefusal, host: &str, port: u16) -> Answer {
+        if !refusal.is_askable() || !cockpit_sandbox::is_askable_destination(host, port) {
+            return Answer::policy(refusal);
+        }
+        if let Some(request) = decided.decisions.denial(host, port) {
+            return Answer::refused(
+                "http_request_denied",
+                format!(
+                    "{} is not allowed: the owner denied network request {request}",
+                    destination(host, port)
+                ),
+            );
+        }
+        // A proxy that files no requests (a check run's, #862) refuses as before #674.
+        if self.requests_file.get().is_none() {
+            return Answer::policy(refusal);
+        }
+        let asked = match self.ask(host, port) {
+            Ok(true) => "; the owner is asked: `torlek network list` shows the request, \
+                         `torlek network allow` lets it through"
+                .to_owned(),
+            Ok(false) => format!(
+                "; the owner was not asked: {MAX_ASKED_DESTINATIONS} destinations were asked \
+                 about already"
+            ),
+            Err(error) => format!("; the owner could not be asked: {error}"),
+        };
+        Answer::refused("http_request_denied", format!("{refusal}{asked}"))
+    }
+
+    /// Lists `host` on `port` in the requests file; false when the list is full. A
+    /// destination listed already is not written again.
+    fn ask(&self, host: &str, port: u16) -> Result<bool, String> {
+        let Some(path) = self.requests_file.get() else {
+            return Err("this proxy files no requests".to_owned());
+        };
+        let mut asked = self
+            .asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let destination = AskedDestination {
+            host: host.to_owned(),
+            port,
+        };
+        // Decided since this connection was refused: nothing to ask.
+        if asked.destinations.contains(&destination) || self.decided().decisions.covers(host, port)
+        {
+            return Ok(true);
+        }
+        if asked.destinations.len() >= MAX_ASKED_DESTINATIONS {
+            return Ok(false);
+        }
+        asked.destinations.insert(destination.clone());
+        asked.revision += 1;
+        let requests = EgressRequests {
+            subject: self.subject.clone(),
+            revision: asked.revision,
+            asked: asked.destinations.iter().cloned().collect(),
+        };
+        let written = serde_json::to_vec(&requests)
+            .map_err(|error| error.to_string())
+            .and_then(|text| {
+                let staged = path.with_extension("json.staged");
+                std::fs::write(&staged, text)
+                    .and_then(|()| std::fs::rename(&staged, path))
+                    .map_err(|error| format!("cannot write {}: {error}", path.display()))
+            });
+        if written.is_err() {
+            // Not listed: the next refusal tries again instead of saying the owner is asked.
+            asked.destinations.remove(&destination);
+        }
+        written.map(|()| true)
     }
 
     /// Decides, resolves, checks and connects: the upstream stream, the allowing entry's
     /// source and whether the server name is checked; or the answer to give.
-    fn open_upstream(&self, host: &str, port: u16) -> Result<(TcpStream, String, bool), Answer> {
-        let allowed = self
+    fn open_upstream(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<(TcpStream, AllowEntry, bool), Answer> {
+        let decided = self.decided();
+        let allowed = decided
             .allowlist
             .decide(host, port)
-            .map_err(|refusal| Answer::policy(&refusal))?;
+            .map_err(|refusal| self.refused(&decided, &refusal, host, port))?;
         let addresses = if allowed.is_name {
             let addresses = self.upstream.resolve(host, port).map_err(|error| {
                 Answer::unreachable(
@@ -282,7 +587,8 @@ impl<U: Upstream> Proxy<U> {
                     format!("{} does not resolve: {error}", destination(host, port)),
                 )
             })?;
-            self.allowlist
+            decided
+                .allowlist
                 .check_addresses(host, port, &addresses)
                 .map_err(|refusal| Answer::policy(&refusal))?;
             addresses
@@ -303,11 +609,7 @@ impl<U: Upstream> Proxy<U> {
                 .connect(SocketAddr::new(address, port), CONNECT_TIMEOUT)
             {
                 Ok(stream) => {
-                    return Ok((
-                        stream,
-                        allowed.entry.source.to_string(),
-                        allowed.expects_server_name,
-                    ));
+                    return Ok((stream, allowed.entry.clone(), allowed.expects_server_name));
                 }
                 Err(error) => last_error = Some(error),
             }
@@ -919,5 +1221,247 @@ mod tests {
 
         assert!(under.starts_with("HTTP/1.1 200 "), "{under}");
         assert!(apex.starts_with("HTTP/1.1 403 "), "{apex}");
+    }
+
+    fn decided_entry(host: &str, port: u16, request: i64) -> AllowEntry {
+        AllowEntry {
+            target: Target::Name(host.to_owned()),
+            port,
+            source: AllowSource::Request { request },
+        }
+    }
+
+    fn asked_in(path: &Path) -> Vec<AskedDestination> {
+        let text = std::fs::read(path).unwrap();
+        serde_json::from_slice::<EgressRequests>(&text)
+            .unwrap()
+            .asked
+    }
+
+    /// #674: the refusal is at once and asks the owner, once per destination.
+    #[test]
+    fn a_refused_name_is_listed_once_for_the_owner_and_the_answer_says_so() {
+        let folder = tempfile::tempdir().unwrap();
+        let requests = folder.path().join(cockpit_sandbox::REQUESTS_FILE);
+        let running = start(vec![name("api.anthropic.com", 443)], fake(&[], None));
+        running.proxy.ask_through(requests.clone());
+
+        let first = connect(running.address, "Unknown.Example.com:443", b"");
+        let second = connect(running.address, "unknown.example.com:443", b"");
+
+        for answer in [&first, &second] {
+            assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{answer}");
+            assert!(
+                answer.contains("the owner is asked: `torlek network list` shows the request"),
+                "{answer}"
+            );
+        }
+        assert_eq!(
+            asked_in(&requests),
+            vec![AskedDestination {
+                host: "unknown.example.com".to_owned(),
+                port: 443,
+            }]
+        );
+    }
+
+    /// #674: a grant revoked after it covered a destination makes the next refusal ask again,
+    /// in a file the daemon sees as changed.
+    #[test]
+    fn a_destination_refused_again_after_its_decision_was_taken_back_is_asked_again() {
+        let folder = tempfile::tempdir().unwrap();
+        let requests = folder.path().join(cockpit_sandbox::REQUESTS_FILE);
+        let running = start(Vec::new(), fake(&[], None));
+        running.proxy.ask_through(requests.clone());
+        connect(running.address, "git.example.com:22", b"");
+        let before = std::fs::read(&requests).unwrap();
+        running.proxy.apply_decisions(EgressDecisions {
+            allowed: vec![decided_entry("git.example.com", 22, 7)],
+            denied: Vec::new(),
+        });
+        running.proxy.apply_decisions(EgressDecisions::default());
+
+        let again = connect(running.address, "git.example.com:22", b"");
+
+        assert!(again.contains("the owner is asked"), "{again}");
+        assert_ne!(std::fs::read(&requests).unwrap(), before);
+        assert_eq!(
+            asked_in(&requests),
+            vec![AskedDestination {
+                host: "git.example.com".to_owned(),
+                port: 22,
+            }]
+        );
+    }
+
+    /// #674: the daemon files only names of two labels or more; the refusal says so.
+    #[test]
+    fn a_single_label_name_asks_nobody() {
+        let folder = tempfile::tempdir().unwrap();
+        let requests = folder.path().join(cockpit_sandbox::REQUESTS_FILE);
+        let running = start(Vec::new(), fake(&[], None));
+        running.proxy.ask_through(requests.clone());
+
+        let answer = connect(running.address, "intranet:443", b"");
+
+        assert!(answer.starts_with("HTTP/1.1 403 "), "{answer}");
+        assert!(!answer.contains("the owner is asked"), "{answer}");
+        assert!(!requests.exists());
+    }
+
+    #[test]
+    fn an_address_refusal_asks_nobody() {
+        let folder = tempfile::tempdir().unwrap();
+        let requests = folder.path().join(cockpit_sandbox::REQUESTS_FILE);
+        let running = start(vec![name("api.anthropic.com", 443)], fake(&[], None));
+        running.proxy.ask_through(requests.clone());
+
+        let answer = connect(running.address, "93.184.215.14:443", b"");
+
+        assert!(
+            answer.contains("error=destination_ip_prohibited"),
+            "{answer}"
+        );
+        assert!(!requests.exists());
+    }
+
+    #[test]
+    fn a_destination_the_owner_allowed_is_reached_on_the_next_try() {
+        let running = start(
+            vec![name("api.anthropic.com", 443)],
+            fake(
+                &[("git.example.com", PUBLIC)],
+                Some(echo_server(b"SSH-2.0-test\r\n")),
+            ),
+        );
+        let refused = connect(running.address, "git.example.com:22", b"");
+        assert!(refused.starts_with("HTTP/1.1 403 "), "{refused}");
+
+        running.proxy.apply_decisions(EgressDecisions {
+            allowed: vec![decided_entry("git.example.com", 22, 7)],
+            denied: Vec::new(),
+        });
+        let answer = connect(running.address, "git.example.com:22", b"");
+
+        assert_eq!(
+            answer,
+            "HTTP/1.1 200 Connection established\r\n\r\nSSH-2.0-test\r\n"
+        );
+        assert_eq!(
+            running.proxy.report().destinations["git.example.com:22"].source,
+            Some("network request 7, allowed for this session".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_denied_destination_is_refused_naming_the_denial_without_asking_again() {
+        let folder = tempfile::tempdir().unwrap();
+        let requests = folder.path().join(cockpit_sandbox::REQUESTS_FILE);
+        let running = start(vec![name("api.anthropic.com", 443)], fake(&[], None));
+        running.proxy.ask_through(requests.clone());
+        running.proxy.apply_decisions(EgressDecisions {
+            allowed: Vec::new(),
+            denied: vec![cockpit_sandbox::DeniedDestination {
+                host: "unknown.example.com".to_owned(),
+                port: 443,
+                request: 3,
+            }],
+        });
+        let started = Instant::now();
+
+        let answer = connect(running.address, "unknown.example.com:443", b"");
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{answer}");
+        assert!(
+            answer.contains(
+                "unknown.example.com:443 is not allowed: the owner denied network request 3"
+            ),
+            "{answer}"
+        );
+        assert!(!requests.exists());
+    }
+
+    /// #674: revoking what allowed a tunnel closes it, not only the next connection.
+    #[test]
+    fn a_revoked_decision_closes_the_tunnels_it_allowed() {
+        let running = start(
+            Vec::new(),
+            fake(&[("git.example.com", PUBLIC)], Some(echo_server(b""))),
+        );
+        running.proxy.apply_decisions(EgressDecisions {
+            allowed: vec![decided_entry("git.example.com", 22, 7)],
+            denied: Vec::new(),
+        });
+        let mut client = TcpStream::connect(running.address).unwrap();
+        client
+            .write_all(b"CONNECT git.example.com:22 HTTP/1.1\r\n\r\n")
+            .unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut established = [0_u8; 39];
+        client.read_exact(&mut established).unwrap();
+        assert_eq!(&established, b"HTTP/1.1 200 Connection established\r\n\r\n");
+        client.write_all(b"ping").unwrap();
+        let mut echoed = [0_u8; 4];
+        client.read_exact(&mut echoed).unwrap();
+
+        running.proxy.apply_decisions(EgressDecisions::default());
+
+        let mut rest = Vec::new();
+        let closed = client.read_to_end(&mut rest);
+        assert!(closed.is_ok(), "the tunnel stayed open: {closed:?}");
+        assert!(rest.is_empty(), "{rest:?}");
+        let answer = connect(running.address, "git.example.com:22", b"");
+        assert!(answer.starts_with("HTTP/1.1 403 "), "{answer}");
+    }
+
+    #[test]
+    fn a_malformed_decisions_file_applies_no_decision() {
+        let folder = tempfile::tempdir().unwrap();
+        let decisions = folder.path().join(cockpit_sandbox::DECISIONS_FILE);
+        let running = start(
+            Vec::new(),
+            fake(&[("git.example.com", PUBLIC)], Some(echo_server(b"hi"))),
+        );
+        let allowed = EgressDecisions {
+            allowed: vec![decided_entry("git.example.com", 22, 7)],
+            denied: Vec::new(),
+        };
+        std::fs::write(&decisions, serde_json::to_vec(&allowed).unwrap()).unwrap();
+        running.proxy.load_decisions(&decisions);
+        assert!(connect(running.address, "git.example.com:22", b"").starts_with("HTTP/1.1 200 "));
+
+        std::fs::write(&decisions, b"{").unwrap();
+        running.proxy.load_decisions(&decisions);
+
+        let answer = connect(running.address, "git.example.com:22", b"");
+        assert!(answer.starts_with("HTTP/1.1 403 "), "{answer}");
+    }
+
+    #[test]
+    fn a_changed_decisions_file_applies_while_the_proxy_runs() {
+        let folder = tempfile::tempdir().unwrap();
+        let decisions = folder.path().join(cockpit_sandbox::DECISIONS_FILE);
+        let running = start(
+            Vec::new(),
+            fake(&[("git.example.com", PUBLIC)], Some(echo_server(b"hi"))),
+        );
+        running.proxy.keep_decisions(decisions.clone());
+        let allowed = EgressDecisions {
+            allowed: vec![decided_entry("git.example.com", 22, 7)],
+            denied: Vec::new(),
+        };
+
+        std::fs::write(&decisions, serde_json::to_vec(&allowed).unwrap()).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut answer = connect(running.address, "git.example.com:22", b"");
+        while !answer.starts_with("HTTP/1.1 200 ") && Instant::now() < deadline {
+            std::thread::sleep(DECISIONS_INTERVAL);
+            answer = connect(running.address, "git.example.com:22", b"");
+        }
+        assert!(answer.starts_with("HTTP/1.1 200 "), "{answer}");
     }
 }

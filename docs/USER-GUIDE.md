@@ -149,6 +149,24 @@ An edit requires another review; stale approval details are refused.
 Use `torlek approval decline ID` to decline. Approval runs that command once with the daemon's host rights.
 Provider-native permission dialogs are separate and remain in the provider terminal.
 
+### Network requests
+
+Under `agents.sandbox = "required"`, a host no entry allows is refused at once (`403`) and becomes a request for you (#674).
+It shows in the TUI approval pane and in `torlek approval list`; `torlek network list` lists only these:
+
+```sh
+torlek network list
+torlek network allow ID            # for the rest of that session
+torlek network allow ID --always   # for every session of the project, until revoked
+torlek network deny ID             # refused at once from now on, without asking again
+torlek network grants [PROJECT]
+torlek network revoke GRANT        # closes the tunnels it carried
+```
+
+In the pane, `y` allows once, `a` allows always and `x` denies.
+"Allow once" lasts the rest of the asking session, not one connection; a new session asks again.
+"Allow always" covers only that host and port. Only names are asked about: IP addresses and names that resolve to private or loopback addresses stay refused.
+
 ## Phone status page
 
 `torlek status serve` shows your sessions on your phone, read-only: each session's project, state, label, what it is doing and its open question (flagged), the approvals waiting for you (reason and age, never the command), the daemon's readiness with the low-disk guard, and when the page was generated, so a stalled daemon shows.

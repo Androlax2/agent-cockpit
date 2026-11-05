@@ -1027,3 +1027,218 @@ async fn sandbox_evidence_once_it_contains(home: &Home, session: &str, expected:
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
+
+/// #674: a host no entry allows, under a reserved name no resolver sends anywhere (RFC 6761).
+const ASKED_HOST: &str = "unknown.invalid:443";
+
+/// `cockpit network list` once it prints `expected`: the daemon reads the launcher's
+/// requests file every quarter second.
+async fn network_list_once_it_contains(home: &Home, expected: &str) -> String {
+    let deadline = std::time::Instant::now() + GENEROUS;
+    loop {
+        let listed = home.cockpit(&["network", "list"], &[]).await;
+        assert!(listed.status.success(), "{}", text(&listed.stderr));
+        let printed = text(&listed.stdout);
+        if printed.contains(expected) || std::time::Instant::now() > deadline {
+            return printed;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The `cockpit network list` line of the first request, asking for [`ASKED_HOST`].
+fn asking_line(session: &str) -> String {
+    format!("network\t1\tasking\t{session}\t{COMMANDED_PROJECT}\t{ASKED_HOST}")
+}
+
+/// Refuses [`ASKED_HOST`] once and waits until the owner's list shows the request, then out
+/// of the grace in which an allow is refused (#156).
+async fn asked_and_listed(home: &Home, agent: &Sandboxed) {
+    run_in_agent(home, &agent.root, &connect_line(ASKED_HOST)).await;
+    let listed = network_list_once_it_contains(home, &asking_line(&agent.session)).await;
+    assert!(listed.contains(&asking_line(&agent.session)), "{listed}");
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+}
+
+/// What the owner's `cockpit network VERB...` printed; it must succeed.
+async fn owner_network(home: &Home, arguments: &[&str]) -> String {
+    let mut words = vec!["network"];
+    words.extend_from_slice(arguments);
+    let output = home.cockpit(&words, &[]).await;
+    assert!(
+        output.status.success(),
+        "{arguments:?}: {}",
+        text(&output.stderr)
+    );
+    text(&output.stdout)
+}
+
+/// The proxy's answer to [`ASKED_HOST`] once `is_done` accepts it: a decision reaches the
+/// launcher within its poll.
+async fn connect_until(home: &Home, root: &Path, is_done: impl Fn(&str) -> bool) -> String {
+    let deadline = std::time::Instant::now() + GENEROUS;
+    loop {
+        let printed = run_in_agent(home, root, &connect_line(ASKED_HOST)).await;
+        if is_done(&printed) || std::time::Instant::now() > deadline {
+            return printed;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn is_refused(printed: &str) -> bool {
+    printed.starts_with("HTTP/1.1 403 Forbidden\r\n")
+}
+
+/// #674: the refusal comes at once and says the owner is asked and how it is unblocked; the
+/// request is in the owner's network list and approval list.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_host_is_asked_of_the_owner_and_listed_for_them() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    let printed = run_in_agent(&home, &agent.root, &connect_line(ASKED_HOST)).await;
+
+    assert!(is_refused(&printed), "{printed}");
+    assert!(
+        printed.contains(
+            "unknown.invalid:443 is not allowed: no entry of the allowlist names it; the owner \
+             is asked: `torlek network list` shows the request, `torlek network allow` lets it \
+             through"
+        ),
+        "{printed}"
+    );
+    assert!(milliseconds(&printed) < 1000, "{printed}");
+    let listed = network_list_once_it_contains(&home, &asking_line(&agent.session)).await;
+    assert!(listed.contains(&asking_line(&agent.session)), "{listed}");
+    let approvals = home.cockpit(&["approval", "list"], &[]).await;
+    assert!(
+        text(&approvals.stdout).contains(&asking_line(&agent.session)),
+        "{}{}",
+        text(&approvals.stdout),
+        text(&approvals.stderr)
+    );
+}
+
+/// #674: "allow once" lets the session's retry through: the proxy goes to the host instead
+/// of refusing it, for the rest of this session.
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_once_lets_the_retry_through() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    asked_and_listed(&home, &agent).await;
+
+    let allowed = owner_network(&home, &["allow", "1"]).await;
+    let printed = connect_until(&home, &agent.root, |printed| !is_refused(printed)).await;
+
+    assert!(
+        allowed.contains("allowed for the rest of this session by the owner through the CLI"),
+        "{allowed}"
+    );
+    assert!(!is_refused(&printed), "{printed}");
+    assert!(printed.contains("error=dns_error"), "{printed}");
+    assert_eq!(owner_network(&home, &["list"]).await, "");
+}
+
+/// #674: "allow always" is a project grant kept in the state database: after a daemon
+/// restart, a new session of the project is let through without asking.
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_always_survives_a_restart_into_a_new_session_of_the_project() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    asked_and_listed(&home, &agent).await;
+    owner_network(&home, &["allow", "1", "--always"]).await;
+    let Sandboxed {
+        _daemon: daemon,
+        root,
+        session,
+    } = agent;
+
+    daemon.kill();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let ended = client
+        .request(Command::SessionEnd { session }, GENEROUS)
+        .await;
+    assert!(ended.is_ok(), "{ended:?}");
+    std::fs::remove_dir_all(root.join(".agent")).unwrap();
+    new_session(&client, &root).await;
+    let printed = run_in_agent(&home, &root, &connect_line(ASKED_HOST)).await;
+
+    assert!(!is_refused(&printed), "{printed}");
+    let grants = owner_network(&home, &["grants"]).await;
+    assert!(
+        grants.contains(&format!(
+            "grant\t1\t{COMMANDED_PROJECT}\t{ASKED_HOST}\trequest 1"
+        )),
+        "{grants}"
+    );
+}
+
+/// #674: a denied host keeps being refused at once, naming the owner's denial, and is not
+/// asked about again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_host_keeps_being_refused_at_once() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    asked_and_listed(&home, &agent).await;
+
+    owner_network(&home, &["deny", "1"]).await;
+    let printed = connect_until(&home, &agent.root, |printed| {
+        printed.contains("the owner denied network request 1")
+    })
+    .await;
+
+    assert!(is_refused(&printed), "{printed}");
+    assert!(
+        printed.contains("unknown.invalid:443 is not allowed: the owner denied network request 1"),
+        "{printed}"
+    );
+    assert!(milliseconds(&printed) < 1000, "{printed}");
+    assert_eq!(owner_network(&home, &["list"]).await, "");
+}
+
+/// #674 regression: no path adds an entry without the owner. Every network verb is refused
+/// on the agents' socket; the request still asks, no grant is made, the host stays refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_network_verb_on_the_agent_socket_allows_a_host() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    asked_and_listed(&home, &agent).await;
+    let socket = Connection::open(&home.agent_socket_path(), GENEROUS)
+        .await
+        .unwrap();
+
+    for command in [
+        Command::NetworkList,
+        Command::NetworkAllow {
+            request: 1,
+            always: true,
+            through: None,
+        },
+        Command::NetworkDeny {
+            request: 1,
+            through: None,
+        },
+        Command::NetworkGrants { project: None },
+        Command::NetworkRevoke {
+            grant: 1,
+            through: None,
+        },
+    ] {
+        let refused = socket.request(command, GENEROUS).await;
+
+        assert!(
+            matches!(&refused, Err(ClientError::Daemon(error)) if error.code == ErrorCode::NotAuthorized),
+            "{refused:?}"
+        );
+    }
+    assert!(
+        owner_network(&home, &["list"])
+            .await
+            .contains(&asking_line(&agent.session))
+    );
+    assert_eq!(owner_network(&home, &["grants"]).await, "");
+    let still = run_in_agent(&home, &agent.root, &connect_line(ASKED_HOST)).await;
+    assert!(is_refused(&still), "{still}");
+}

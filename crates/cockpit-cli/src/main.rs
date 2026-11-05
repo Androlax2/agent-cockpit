@@ -35,6 +35,7 @@ mod installations;
 mod instructions;
 mod logs;
 mod mcp;
+mod network;
 mod old_sandbox;
 mod onboarding;
 mod profile;
@@ -94,6 +95,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek approval approve ID --revision REVISION --digest DIGEST
        torlek approval edit ID --revision REVISION COMMAND
        torlek guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID
+       torlek network list | allow ID [--always] | deny ID | grants [PROJECT] | revoke GRANT
        torlek session send ID MESSAGE | cancel ID
        torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL]
        torlek session list [--ended]
@@ -219,6 +221,10 @@ fn main() -> ExitCode {
                 Err(problem) => verb_usage_error(&verb_name, problem),
             }
         }
+        [Some("network"), ..] => match network::parse(&arguments[1..]) {
+            Ok(command) => network::run(command),
+            Err(problem) => verb_usage_error(&verb_name, problem),
+        },
         [Some("project"), Some("show"), ..] => projects::show(&arguments[2..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some(verb @ ("project" | "checkout")), ..] => {

@@ -35,6 +35,8 @@ fn area_of(table: &str) -> Option<ViewArea> {
         "sessions" | "authorization_grants" => Some(ViewArea::AgentReports),
         _ if table.starts_with("session_") => Some(ViewArea::AgentReports),
         _ if table.starts_with("approvals_") => Some(ViewArea::Approvals),
+        // Network requests wait in the owner's queue beside run requests (#674).
+        _ if table.starts_with("sandbox_network_") => Some(ViewArea::Approvals),
         _ if table.starts_with("tasks_") || table.starts_with("scheduling_") => {
             Some(ViewArea::Tasks)
         }

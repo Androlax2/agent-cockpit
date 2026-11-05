@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use crate::egress::{AllowEntry, Allowlist, PROXY_ADDRESS, Target};
+use crate::egress::{AllowEntry, Allowlist, EgressDecisions, PROXY_ADDRESS, Target};
 use crate::spec::{
     LANDLOCK_ABI_FLOOR, LaunchSpec, NeedsSource, Protected, SPEC_FILE, SPEC_VERSION,
     SYSTEM_READ_ONLY, Subject, WhenAbsent,
@@ -262,6 +262,9 @@ pub struct Staged {
     pub config_dir: PathBuf,
     pub config_files: Vec<(String, String)>,
     pub spec: LaunchSpec,
+    /// The owner's decisions on the subject's network requests when it launches (#674);
+    /// the caller reads them from the database, empty until it does.
+    pub decisions: EgressDecisions,
 }
 
 impl Staged {
@@ -269,9 +272,10 @@ impl Staged {
         self.mount_dir.join(SPEC_FILE)
     }
 
-    /// Creates the owner-only folders and writes the spec, owner-only, replacing one a failed
-    /// launch left; removes the last launch's egress counters, so the evidence never shows
-    /// them as this launch's.
+    /// Creates the owner-only folders and writes the spec and the decisions, owner-only,
+    /// replacing what a failed launch left; removes the last launch's egress counters and
+    /// refused destinations, so the evidence never shows them as this launch's and the
+    /// daemon files only this launch's requests.
     pub fn write(&self) -> std::io::Result<()> {
         let mut folders = std::fs::DirBuilder::new();
         folders.recursive(true).mode(0o700);
@@ -285,6 +289,9 @@ impl Staged {
             replace_owner_only(&self.config_dir.join(name), contents.as_bytes())?;
         }
         remove_if_present(&self.mount_dir.join(crate::EGRESS_FILE))?;
+        remove_if_present(&self.mount_dir.join(crate::REQUESTS_FILE))?;
+        let decisions = serde_json::to_vec(&self.decisions).map_err(std::io::Error::other)?;
+        replace_atomically(&self.mount_dir.join(crate::DECISIONS_FILE), &decisions)?;
         let text = serde_json::to_vec(&self.spec).map_err(std::io::Error::other)?;
         replace_owner_only(&self.spec_path(), &text)
     }
@@ -295,6 +302,16 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         removed => removed,
     }
+}
+
+/// Writes `contents` to `path`, owner-only, through a file beside it: a reader polling `path`
+/// sees the old contents or the new, never none (#674).
+pub(crate) fn replace_atomically(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let mut staged = path.as_os_str().to_owned();
+    staged.push(".staged");
+    let staged = PathBuf::from(staged);
+    replace_owner_only(&staged, contents)?;
+    std::fs::rename(&staged, path)
 }
 
 /// Writes `contents` to a new owner-only file at `path`, replacing one an earlier launch left.
@@ -494,6 +511,7 @@ pub(crate) fn prepare(
         config_dir,
         config_files: tool_environment.files,
         spec,
+        decisions: EgressDecisions::default(),
     };
     let evidence = evidence(native, profile, launch, &staged);
     let reach = if folder_mounts.is_empty() {

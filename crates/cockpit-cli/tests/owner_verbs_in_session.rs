@@ -24,6 +24,15 @@ const OWNER_VERBS: [&[&str]; 4] = [
     &["session", "grant", "s0123456789ab", "start-sessions"],
 ];
 
+/// #674: a sandboxed agent never reads or decides the hosts it was refused.
+const NETWORK_VERBS: [&[&str]; 5] = [
+    &["network", "list"],
+    &["network", "allow", "1", "--always"],
+    &["network", "deny", "1"],
+    &["network", "grants"],
+    &["network", "revoke", "1"],
+];
+
 fn arguments<'word>(verb: &[&'word str], project: &'word str) -> Vec<&'word str> {
     verb.iter()
         .map(|word| if *word == "DIR" { project } else { word })
@@ -70,6 +79,23 @@ fn inside_a_session_each_owner_verb_is_refused_on_the_agent_socket() {
 }
 
 #[test]
+fn inside_a_session_each_network_verb_is_refused_on_the_agent_socket() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+
+    for verb in NETWORK_VERBS {
+        let output = torlek(&home, verb, &SESSION_ENVIRONMENT);
+
+        let stderr = text(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{verb:?}: {stderr}");
+        assert!(
+            stderr.contains("refused: this command is the owner's alone"),
+            "{verb:?}: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn a_session_known_only_by_its_launch_token_is_refused_too() {
     let home = TestHome::new();
     let _daemon = home.start();
@@ -97,7 +123,7 @@ fn from_the_owners_shell_each_owner_verb_reaches_the_host_only_socket() {
     let project = home.project("app");
     let project = project.to_str().unwrap();
 
-    for verb in OWNER_VERBS {
+    for verb in OWNER_VERBS.iter().chain(&NETWORK_VERBS) {
         let output = torlek(&home, &arguments(verb, project), &[]);
 
         let stderr = text(&output.stderr);

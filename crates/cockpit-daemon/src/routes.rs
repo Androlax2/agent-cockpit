@@ -13,7 +13,8 @@ use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::{
     Capabilities, Manager, agent, agent_context, approvals, bug_reports, coordination, feed,
-    manager, projects, readiness, resources, scheduling, sessions, tasks, verification, workflows,
+    manager, network, projects, readiness, resources, scheduling, sessions, tasks, verification,
+    workflows,
 };
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
@@ -101,6 +102,8 @@ pub struct Routes {
     config_reloads: Arc<tokio::sync::Mutex<()>>,
     /// Runs what the owner approved, and holds the runs in progress.
     runner: cockpit_approvals::Runner,
+    /// Woken by each network decision, to rewrite the launchers' decisions (#674).
+    network_decided: Arc<tokio::sync::Notify>,
     resources: resources::Resources,
     workflows: workflows::Context,
     verification: verification::Context,
@@ -188,6 +191,7 @@ impl Routes {
             config_reloads: Arc::default(),
             log_level: None,
             runner: capabilities.runner,
+            network_decided: capabilities.network_decided,
         }
     }
 }
@@ -357,6 +361,22 @@ impl Handler for Routes {
                     Arc::clone(&self.database),
                     self.runner.clone(),
                     Arc::clone(&self.sessions),
+                ),
+            },
+            (
+                command @ (Command::NetworkList
+                | Command::NetworkAllow { .. }
+                | Command::NetworkDeny { .. }
+                | Command::NetworkGrants { .. }
+                | Command::NetworkRevoke { .. }),
+                peer,
+            ) => match peer {
+                // No agent decides a network request or holds a grant it widened (#674).
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => network::route(
+                    command,
+                    Arc::clone(&self.database),
+                    Arc::clone(&self.network_decided),
                 ),
             },
             // The coordinator kit (#410): a session acts on others only through the owner's

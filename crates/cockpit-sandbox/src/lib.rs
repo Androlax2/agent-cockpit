@@ -5,6 +5,8 @@ mod evidence;
 mod launch;
 mod native;
 #[cfg(feature = "persistence")]
+mod network;
+#[cfg(feature = "persistence")]
 mod observations;
 mod platform;
 mod profile;
@@ -12,9 +14,11 @@ mod spec;
 
 pub use cockpit_config::{AgentSandbox, DesktopSession};
 pub use egress::{
-    AllowEntry, AllowSource, Allowed, Allowlist, Counters as EgressCounters, EGRESS_FILE,
-    EgressReport, MAX_REPORTED_DESTINATIONS, PROXY_ADDRESS, Refusal as EgressRefusal, TLS_PORT,
-    Target, destination, non_public_class, normalized_name,
+    AllowEntry, AllowSource, Allowed, Allowlist, AskedDestination, Counters as EgressCounters,
+    DECISIONS_FILE, DeniedDestination, EGRESS_FILE, EgressDecisions, EgressReport, EgressRequests,
+    MAX_ASKED_DESTINATIONS, MAX_REPORTED_DESTINATIONS, PROXY_ADDRESS, REQUESTS_FILE,
+    Refusal as EgressRefusal, TLS_PORT, Target, destination, is_askable_destination,
+    non_public_class, normalized_name,
 };
 pub use evidence::{AppliedRule, Enforcement, Evidence};
 #[cfg(feature = "persistence")]
@@ -22,6 +26,13 @@ pub use evidence::{MIGRATIONS, latest_for_session, record};
 pub use launch::{CheckRequest, HostPaths, LaunchRequest, Prepared, Sandbox};
 pub use native::{
     Backend, GitIdentity, NativeBackend, ProviderNeeds, Staged, ToolNeeds, ToolSetting,
+};
+#[cfg(feature = "persistence")]
+pub use network::{
+    NETWORK_ALLOW_GRACE_SECONDS, NetworkError, NetworkGrant, NetworkRefusal, NetworkRequest,
+    NetworkRequestState, OwnerClient, OwnerDecision, allow_network_request,
+    asking_network_requests, deny_network_request, egress_decisions, file_network_request,
+    network_grants, network_request, revoke_network_grant,
 };
 #[cfg(feature = "persistence")]
 pub use observations::{ObservationError, record_observations};

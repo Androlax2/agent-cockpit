@@ -8,6 +8,7 @@ mod coordination;
 mod error;
 mod handshake;
 mod instructions;
+mod network;
 mod projects;
 mod queue;
 mod readiness;
@@ -45,6 +46,10 @@ pub use handshake::{
     Welcome, decode_hello, negotiate,
 };
 pub use instructions::{ContextBudgetView, InstructionTopicView};
+pub use network::{
+    NetworkDecisionView, NetworkGrantView, NetworkRequestStateView, NetworkRequestView,
+    NetworkSubjectView, NetworkTargetKindView,
+};
 pub use projects::{
     CheckoutKindView, CheckoutView, GithubTokenView, KeptCheckout, KeptReason, ProjectView,
     TrustView,

@@ -62,8 +62,16 @@ launch, `torlek doctor` and `torlek init` say so.
    launch (#433): 1–16 unique, nonblank observations of at most 512 bytes each, without
    control characters. Agent callers, stale identities and unsandboxed launches are
    refused; an identical retry is idempotent. Reports never change policy or grants.
+5. Network requests (#674, `network.rs`, migration 2): `file_network_request` files a
+   destination the launcher refused for want of an entry, once per session, host and port,
+   unless a decision or a grant already covers it. The owner's `allow_network_request`
+   (for the rest of the session, or `always`: a project grant for that host and port),
+   `deny_network_request` and `revoke_network_grant` record who decided, when and through
+   which client; an allow within `NETWORK_ALLOW_GRACE_SECONDS` of the request is refused.
+   `egress_decisions` is what the session's launcher is given: `Staged::write` writes it
+   as `egress-decisions.json`, the daemon rewrites it after each decision.
 
-Edges: `cockpit-config` (the owner's `DesktopSession` and `AgentSandbox` values) and `cockpit-turso` (the evidence table, behind the default `persistence`
+Edges: `cockpit-config` (the owner's `DesktopSession` and `AgentSandbox` values) and `cockpit-turso` (the evidence and network request tables, behind the default `persistence`
 feature). `cockpit-sessions` calls it for every launch.
 
 ## What the removed engines left

@@ -179,6 +179,7 @@ impl App {
             Command::ProjectList,
             Command::AgentReports,
             Command::ApprovalQueue,
+            Command::NetworkList,
         ]
     }
 
@@ -191,7 +192,9 @@ impl App {
             match area {
                 ViewArea::Projects => commands.push(Command::ProjectList),
                 ViewArea::AgentReports => commands.push(Command::AgentReports),
-                ViewArea::Approvals => commands.push(Command::ApprovalQueue),
+                ViewArea::Approvals => {
+                    commands.extend([Command::ApprovalQueue, Command::NetworkList]);
+                }
                 ViewArea::Tasks => {
                     if let Some(tasks) = &self.tasks {
                         commands.extend(tasks.refresh_commands());
@@ -738,6 +741,10 @@ impl App {
                 self.board.set_queue(runs, guides);
                 send = self.follow_queue(now);
             }
+            Reply::NetworkRequests { requests } => {
+                self.board.set_network(requests);
+                send = self.follow_queue(now);
+            }
             Reply::ManagerFocused { took_from_viewer } => {
                 send = self.keys_moved(command, took_from_viewer, now);
             }
@@ -828,6 +835,13 @@ impl App {
             }
             Reply::Guide { guide } => {
                 self.note(format!("guide {} is {:?}", guide.id, guide.state));
+                self.failure = None;
+            }
+            Reply::NetworkRequest { request } => {
+                self.note(format!(
+                    "network request {} for {} is {:?}",
+                    request.id, request.target, request.state
+                ));
                 self.failure = None;
             }
             other => self.note(format!("unexpected answer {other:?}")),

@@ -14,7 +14,8 @@
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
-    Command, DecidedThroughView, GuideStateView, GuideView, RunRequestView, RunStateView,
+    Command, DecidedThroughView, GuideStateView, GuideView, NetworkRequestStateView,
+    RunRequestView, RunStateView,
 };
 
 use crate::Key;
@@ -40,6 +41,10 @@ pub enum Shown {
         id: i64,
         step: usize,
         asks: bool,
+    },
+    /// A host a sandboxed session was refused (#674).
+    Network {
+        id: i64,
     },
 }
 
@@ -225,6 +230,25 @@ impl Pane {
             (Shown::Guide { id, .. }, Key::Char('x')) => {
                 handled("guide-close", Some(Command::GuideClose { guide: *id }))
             }
+            (Shown::Network { id }, Key::Char(key @ ('y' | 'a'))) => handled(
+                if key == 'y' {
+                    "network-allow-once"
+                } else {
+                    "network-allow-always"
+                },
+                Some(Command::NetworkAllow {
+                    request: *id,
+                    always: key == 'a',
+                    through: Some(DecidedThroughView::Tui),
+                }),
+            ),
+            (Shown::Network { id }, Key::Char('x')) => handled(
+                "network-deny",
+                Some(Command::NetworkDeny {
+                    request: *id,
+                    through: Some(DecidedThroughView::Tui),
+                }),
+            ),
             _ => PaneOutcome::NotMine,
         }
     }
@@ -285,7 +309,7 @@ fn handled(used: &'static str, send: Option<Command>) -> PaneOutcome {
 }
 
 /// What waits on the owner, in the daemon's queue order (a command waiting for input, then
-/// asking requests oldest first), then guides.
+/// asking requests oldest first), then guides, then network requests oldest first.
 pub(crate) fn waiting(board: &Board) -> impl Iterator<Item = Shown> + '_ {
     board
         .runs
@@ -298,6 +322,13 @@ pub(crate) fn waiting(board: &Board) -> impl Iterator<Item = Shown> + '_ {
                 .iter()
                 .filter(|guide| guide.state == GuideStateView::Asking)
                 .map(shown_guide),
+        )
+        .chain(
+            board
+                .network
+                .iter()
+                .filter(|request| request.state == NetworkRequestStateView::Asking)
+                .map(|request| Shown::Network { id: request.id }),
         )
 }
 

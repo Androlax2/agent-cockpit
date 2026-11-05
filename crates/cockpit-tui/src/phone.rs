@@ -22,8 +22,8 @@ use crate::app::{App, Focus};
 use crate::board::Board;
 use crate::pane::Shown;
 use crate::render::{
-    bug_reports_card, columns, guide_lines, pane_keys, run_lines, scroll_to_show, status_line,
-    truncated, typing_line, wrapped,
+    bug_reports_card, columns, guide_lines, network_lines, pane_keys, run_lines, scroll_to_show,
+    status_line, truncated, typing_line, wrapped,
 };
 
 /// Typing stops after this long without a key: a phone left in a pocket reads only again.
@@ -361,6 +361,12 @@ fn card_lines(board: &Board, shown: &Shown) -> Vec<String> {
             .iter()
             .find(|guide| guide.id == *id)
             .map(guide_lines)
+            .unwrap_or_default(),
+        Shown::Network { id } => board
+            .network
+            .iter()
+            .find(|request| request.id == *id)
+            .map(network_lines)
             .unwrap_or_default(),
     }
 }
