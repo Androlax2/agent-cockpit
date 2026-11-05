@@ -16,7 +16,7 @@ start and runs it in the agent's place under `agents.sandbox = "required"`.
   validates it, then runs bubblewrap with new user, mount, PID, network, IPC, UTS and cgroup
   namespaces and a mount view of only what the spec names, and waits. The program's exit
   status is the launcher's; 125 means the launcher refused or failed before the program ran.
-- `torlek-sandbox stage2 POLICY` (internal): inside the namespaces, checks that each folder
+- `torlek-sandbox stage2 POLICY ARGUMENT...` (internal): inside the namespaces, checks that each folder
   the plan pinned is still the one it saw (device and inode), applies Landlock at the probed
   ABI with `HardRequirement`, installs the seccomp filters, then runs the program in its
   place.
@@ -30,8 +30,11 @@ System folders (`cockpit_sandbox::SYSTEM_READ_ONLY`) read-only; the session's ow
 owner's `HOME` path; the checkout, the session's folder and its temporary folder read-write;
 the bridge programs, the instruction bundle and the agent socket's folder read-only; a fresh
 `/tmp`, `/proc` and `/dev`. Inside the checkout, `.git/hooks`, `.git/config`, `.torlek` and
-`.cockpit` are read-only (an empty read-only folder when absent); `.envrc` and the editors'
-task files are read-only when present; `.env` files and the host's denied paths are masked.
+`.cockpit` are read-only (an empty read-only folder when absent), and so is a `.git` file
+(a worktree's or submodule's); `.git/modules`, `.envrc` and the editors' task files are
+read-only when present; `.env` files and the host's denied paths are masked, a link's
+target with it. The terminal or file each standard stream already is can be reopened
+through `/dev/stdout` and `/dev/stderr`.
 There is no network but `lo` until the session proxy (#831).
 
 ## seccomp

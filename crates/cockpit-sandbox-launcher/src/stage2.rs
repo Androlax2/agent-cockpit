@@ -6,9 +6,9 @@
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::ffi::OsString;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use landlock::{
     ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, LandlockStatus, PathBeneath, PathFd,
@@ -32,7 +32,7 @@ const SCOPES_ABI: u8 = 6;
 /// The Landlock ABI from which connecting to a named Unix socket is a file right.
 const RESOLVE_UNIX_ABI: u8 = 9;
 
-pub fn run(policy_argument: &OsString) -> Result<Infallible, String> {
+pub fn run(policy_argument: &OsString, arguments: &[OsString]) -> Result<Infallible, String> {
     let policy_text = policy_argument
         .to_str()
         .ok_or("stage 2's policy is not UTF-8")?;
@@ -43,7 +43,7 @@ pub fn run(policy_argument: &OsString) -> Result<Infallible, String> {
     restrict_system_calls()?;
     let error = std::process::Command::new(&policy.program)
         .arg0(&policy.program_name)
-        .args(&policy.arguments)
+        .args(arguments)
         .exec();
     Err(format!("cannot run {}: {error}", policy.program.display()))
 }
@@ -126,6 +126,14 @@ fn restrict_files(policy: &Policy) -> Result<(), String> {
                 .map_err(landlock_error)?;
         }
     }
+    for stream in inherited_streams() {
+        created = created
+            .add_rule(rule(
+                &stream,
+                AccessFs::from_read(abi) | AccessFs::from_write(abi),
+            )?)
+            .map_err(landlock_error)?;
+    }
     let status = created.restrict_self().map_err(landlock_error)?;
     if status.ruleset != RulesetStatus::FullyEnforced {
         return Err(format!(
@@ -134,6 +142,19 @@ fn restrict_files(policy: &Policy) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// The terminal or file each standard stream already is: tools reopen it by name through
+/// `/dev/stdout`, and the pane's terminal is on the host's devpts, outside the
+/// view's `/dev`. The program holds each open already, so reopening it gives nothing more.
+fn inherited_streams() -> Vec<PathBuf> {
+    (0..=2)
+        .map(|descriptor| PathBuf::from(format!("/proc/self/fd/{descriptor}")))
+        .filter(|stream| {
+            std::fs::metadata(stream)
+                .is_ok_and(|metadata| metadata.file_type().is_char_device() || metadata.is_file())
+        })
+        .collect()
 }
 
 fn rule(path: &Path, access: BitFlags<AccessFs>) -> Result<PathBeneath<PathFd>, String> {
@@ -161,10 +182,9 @@ fn landlock_error(error: landlock::RulesetError) -> String {
 fn restrict_system_calls() -> Result<(), String> {
     let arch = target_arch()?;
     let denied = denied_calls();
-    let unknown_clone = BTreeMap::from([(libc::SYS_clone3, Vec::new())]);
     let filters = [
         SeccompFilter::new(
-            unknown_clone,
+            unreadable_clones(),
             SeccompAction::Allow,
             SeccompAction::Errno(libc::ENOSYS.cast_unsigned()),
             arch,
@@ -282,6 +302,14 @@ const X32_OWN_NUMBERS: [(i64, i64); 5] = [
     (libc::SYS_process_vm_writev, 540),
 ];
 
+/// `clone3`, under x32's number too.
+fn unreadable_clones() -> BTreeMap<i64, Vec<SeccompRule>> {
+    let mut calls = BTreeMap::from([(libc::SYS_clone3, Vec::new())]);
+    #[cfg(target_arch = "x86_64")]
+    calls.insert(libc::SYS_clone3 | X32_BIT, Vec::new());
+    calls
+}
+
 fn denied_calls() -> BTreeMap<i64, Vec<SeccompRule>> {
     let mut calls: BTreeMap<i64, Vec<SeccompRule>> = DENIED_ALWAYS
         .iter()
@@ -380,5 +408,11 @@ mod tests {
         assert!(calls[&(libc::SYS_ptrace | X32_BIT)].is_empty());
         assert!(calls[&(521 | X32_BIT)].is_empty());
         assert_eq!(calls[&(514 | X32_BIT)].len(), 2);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x32_clone3_fails_like_clone3() {
+        assert!(unreadable_clones().contains_key(&(libc::SYS_clone3 | X32_BIT)));
     }
 }

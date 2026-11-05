@@ -95,6 +95,7 @@ pub fn launch_request(session: &str, working_dir: &str) -> LaunchRequest {
         session: session.to_owned(),
         provider: "claude".to_owned(),
         working_dir: PathBuf::from(working_dir),
+        start_dir: PathBuf::from(working_dir),
         session_dir: PathBuf::from(format!("/run/user/1000/cockpit/sessions/{session}")),
         temp_dir: PathBuf::from(format!("/home/owner/.local/state/cockpit/tmp/{session}")),
         environment: vec![

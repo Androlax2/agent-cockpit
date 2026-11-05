@@ -29,7 +29,6 @@ pub struct Policy {
     /// The name the spec gave it, its `argv[0]`: a link's name selects some programs'
     /// behaviour.
     pub program_name: PathBuf,
-    pub arguments: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,7 +190,6 @@ pub fn plan(spec: &LaunchSpec, launcher: &Path) -> Result<Plan, String> {
             verify: masks.verify,
             program,
             program_name: spec.program.clone(),
-            arguments: spec.arguments.clone(),
         },
     })
 }
@@ -222,6 +220,14 @@ fn protect(spec: &LaunchSpec) -> Result<Masks, String> {
     let mut emptied: Vec<PathBuf> = Vec::new();
     let mut verify = Vec::new();
     for Protected { path, when_absent } in &spec.protected {
+        // Pinning the folders of a path left unprotected when absent would only make them
+        // impossible to remove.
+        if *when_absent == WhenAbsent::Unprotected
+            && std::fs::symlink_metadata(path)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        {
+            continue;
+        }
         let folder = spec
             .read_write
             .iter()
@@ -264,19 +270,24 @@ fn protect(spec: &LaunchSpec) -> Result<Masks, String> {
                         device: metadata.dev(),
                         inode: metadata.ino(),
                     };
-                    if is_last {
-                        read_only.push(current.clone());
-                    } else if metadata.is_dir() && !pinned.contains(&current) {
+                    // A file where the path needs a folder, such as a worktree's `.git` that
+                    // names its Git folder: nothing exists under it, and rewriting it would
+                    // point the owner's Git at a folder of the agent's, so it is read-only.
+                    let is_file_on_the_way = !is_last && !metadata.is_dir();
+                    if is_last || is_file_on_the_way {
+                        if !read_only.contains(&current) {
+                            read_only.push(current.clone());
+                        }
+                    } else if !pinned.contains(&current) {
                         pinned.push(current.clone());
-                    } else if !metadata.is_dir() {
-                        // A file where the path needs a folder: nothing can be created under
-                        // it, and the file itself stays writable.
-                        break;
                     } else {
                         continue;
                     }
                     if !verify.contains(&expected) {
                         verify.push(expected);
+                    }
+                    if is_file_on_the_way {
+                        break;
                     }
                 }
             }
@@ -301,32 +312,49 @@ fn protect(spec: &LaunchSpec) -> Result<Masks, String> {
 
 /// Each hidden path that exists inside a bound folder, masked: a folder by an empty
 /// read-only one, anything else by `/dev/null`. One outside every bound folder is not in
-/// the view at all; a link resolves inside the view, where its target is bound or not on its
-/// own terms.
+/// the view at all. A link is masked where it leads, when that is in the view: a `.env`
+/// that links to `config/secrets.env` hides the secrets, not only the link's name.
 fn hide(spec: &LaunchSpec, mounts: &[Mount]) -> Result<Vec<OsString>, String> {
-    let mut arguments = Vec::new();
-    for pattern in &spec.hidden {
-        let is_bound = mounts.iter().any(|mount| match mount {
-            Mount::ReadOnly(folder) | Mount::ReadWrite(folder) => pattern.starts_with(folder),
+    let is_bound = |path: &Path| {
+        mounts.iter().any(|mount| match mount {
+            Mount::ReadOnly(folder) | Mount::ReadWrite(folder) => path.starts_with(folder),
             // Shows the session's own folder, not the host's at that path.
             Mount::Elsewhere { .. } => false,
-        });
-        if !is_bound {
+        })
+    };
+    let mut masked: Vec<PathBuf> = Vec::new();
+    for pattern in &spec.hidden {
+        if !is_bound(pattern) {
             continue;
         }
         for path in matching(pattern)? {
-            match std::fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.is_dir() => {
-                    arguments.extend(["--perms", "0000", "--tmpfs"].map(OsString::from));
-                    arguments.push(path.as_os_str().to_owned());
-                    arguments.push("--remount-ro".into());
-                    arguments.push(path.into_os_string());
+            let target = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    match std::fs::canonicalize(&path) {
+                        Ok(target) if is_bound(&target) => target,
+                        _ => continue,
+                    }
                 }
-                Ok(metadata) if !metadata.file_type().is_symlink() => {
-                    arguments.extend(words("--ro-bind", Path::new("/dev/null"), &path));
-                }
-                _ => {}
+                Ok(_) => path,
+                Err(_) => continue,
+            };
+            if !masked.contains(&target) {
+                masked.push(target);
             }
+        }
+    }
+    let mut arguments = Vec::new();
+    for path in masked {
+        let is_folder = std::fs::metadata(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?
+            .is_dir();
+        if is_folder {
+            arguments.extend(["--perms", "0000", "--tmpfs"].map(OsString::from));
+            arguments.push(path.as_os_str().to_owned());
+            arguments.push("--remount-ro".into());
+            arguments.push(path.into_os_string());
+        } else {
+            arguments.extend(words("--ro-bind", Path::new("/dev/null"), &path));
         }
     }
     Ok(arguments)

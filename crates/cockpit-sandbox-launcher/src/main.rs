@@ -3,9 +3,10 @@
 //! - `torlek-sandbox run SPEC`: reads and removes the daemon's launch spec, then starts its
 //!   program under bubblewrap (new user, mount, PID, network, IPC, UTS and cgroup
 //!   namespaces, a mount view of only what the spec names) through stage 2, and waits.
-//! - `torlek-sandbox stage2 POLICY`: inside the namespaces, checks the folders the launcher
+//! - `torlek-sandbox stage2 POLICY ARGUMENT...`: inside the namespaces, checks the folders the launcher
 //!   pinned are the ones it saw, applies Landlock and the seccomp filter from memory, then
-//!   runs the program in its place. Never run by hand.
+//!   runs the program in its place with the arguments. Never run by hand. Each argument
+//!   travels on its own, so each keeps the kernel's per-argument limit it has unsandboxed.
 //! - `torlek-sandbox probe BWRAP`: a short probe launch the daemon runs at its start; prints
 //!   the bubblewrap version and the Landlock ABI the kernel gives a sandboxed process.
 
@@ -37,8 +38,8 @@ fn main() -> ExitCode {
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     let outcome = match arguments.split_first() {
         Some((verb, rest)) if verb == "run" && rest.len() == 1 => run(PathBuf::from(&rest[0])),
-        Some((verb, rest)) if verb == "stage2" && rest.len() == 1 => {
-            stage2::run(&rest[0]).map(|never| match never {})
+        Some((verb, [policy, program_arguments @ ..])) if verb == "stage2" => {
+            stage2::run(policy, program_arguments).map(|never| match never {})
         }
         Some((verb, rest)) if verb == "probe" && rest.len() == 1 => {
             probe::run(PathBuf::from(&rest[0])).map(|()| ExitCode::SUCCESS)
@@ -72,6 +73,7 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
         .arg(&launcher)
         .arg("stage2")
         .arg(plan.policy_argument()?)
+        .args(&spec.arguments)
         .status()
         .map_err(|error| {
             format!(

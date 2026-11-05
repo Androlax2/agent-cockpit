@@ -32,6 +32,8 @@ const PROTECTED_FOLDERS: &[&str] = &[".git/hooks", ".git/config", ".torlek", ".c
 /// them: protected when present at launch, left creatable when absent, where an empty folder
 /// would break the owner's tools.
 const PROTECTED_WHEN_PRESENT: &[&str] = &[
+    // Submodules' Git folders, with their own hooks and configuration.
+    ".git/modules",
     ".envrc",
     ".vscode/tasks.json",
     ".vscode/launch.json",
@@ -317,7 +319,7 @@ pub(crate) fn prepare(
         landlock_abi: native.landlock_abi,
         program,
         arguments,
-        working_dir: request.working_dir.clone(),
+        working_dir: request.start_dir.clone(),
         home,
         home_source: home_source.clone(),
         read_only: host.read_only.clone(),
@@ -457,9 +459,11 @@ fn evidence(
             &mount_and_landlock,
         ));
     }
+    // The launcher binds only the system folders this host has.
     for path in SYSTEM_READ_ONLY
         .iter()
         .map(PathBuf::from)
+        .filter(|folder| folder.exists())
         .chain(spec.read_only.iter().cloned())
         .chain(spec.sockets.iter().cloned())
     {

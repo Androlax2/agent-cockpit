@@ -105,6 +105,20 @@ fn a_required_sandbox_runs_the_launcher_with_the_sessions_spec() {
     );
 }
 
+/// A session working in a folder of its checkout starts there, as it does unsandboxed.
+#[test]
+fn a_required_sandbox_starts_the_agent_in_the_sessions_working_folder() {
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.start_dir = PathBuf::from("/home/owner/app/packages/api");
+
+    let spec = native_launch(&request).unwrap().staged.unwrap().spec;
+
+    assert_eq!(
+        spec.working_dir,
+        PathBuf::from("/home/owner/app/packages/api")
+    );
+}
+
 /// #858: the agent's home is the session's own folder, standing in at the owner's `HOME`.
 #[test]
 fn a_required_sandbox_gives_the_session_its_own_home() {

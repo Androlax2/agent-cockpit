@@ -2002,6 +2002,7 @@ impl Sessions {
             id.as_str(),
             session.provider.as_str(),
             checkout.path,
+            session.working_dir.clone(),
             session_dir,
             temp_dir,
             environment,
@@ -2215,9 +2216,10 @@ impl Sessions {
         .await
     }
 
-    /// How `program` runs for a launch of `provider` in `checkout_root`, with the session's
-    /// own `session_dir` and the project's `github` access: unchanged under
-    /// `agents.sandbox = "off"`, refused under `"required"` while no backend exists (#828).
+    /// How `program` runs for a launch of `provider` in `checkout_root`, started in
+    /// `start_dir`, with the session's own `session_dir` and the project's `github` access:
+    /// unchanged under `agents.sandbox = "off"`; under `"required"`, the native sandbox's
+    /// launcher in its place, or refused on a host without it (#829).
     #[allow(
         clippy::too_many_arguments,
         reason = "one launch's facts, each passed straight into the sandbox's request"
@@ -2227,6 +2229,7 @@ impl Sessions {
         session: &str,
         provider: &str,
         checkout_root: PathBuf,
+        start_dir: PathBuf,
         session_dir: PathBuf,
         temp_dir: PathBuf,
         environment: Vec<(OsString, OsString)>,
@@ -2265,6 +2268,7 @@ impl Sessions {
                     session: session.to_owned(),
                     provider: provider.to_owned(),
                     working_dir: checkout_root,
+                    start_dir,
                     session_dir,
                     temp_dir,
                     environment: with_github_token(environment, token),
@@ -2302,6 +2306,7 @@ impl Sessions {
         self.prepare_sandbox(
             DRY_RUN_SESSION,
             &provider,
+            checkout.path.clone(),
             checkout.path,
             self.session_dirs.join(DRY_RUN_SESSION),
             self.dry_run_temp_dir(),

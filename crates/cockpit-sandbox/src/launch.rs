@@ -55,6 +55,8 @@ pub struct LaunchRequest {
     pub provider: String,
     /// The checkout the agent works in, whole: read and write.
     pub working_dir: PathBuf,
+    /// The folder the agent starts in: the session's working folder, inside the checkout.
+    pub start_dir: PathBuf,
     /// The session's private directory, where its provider keeps what reaches the running
     /// agent: read and write.
     pub session_dir: PathBuf,
