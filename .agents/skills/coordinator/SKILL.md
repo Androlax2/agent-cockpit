@@ -23,7 +23,8 @@ never `/tmp`. Nothing here depends on a file from an earlier session.
 | Send a worker a note | `torlek agent message SESSION TEXT` (`message-sessions`); a collaborator's word, never the owner's |
 | Start a worker | `torlek agent start DIR --clone BRANCH ...` (`start-sessions`); waits for the owner's approval |
 | Give a worker the owner's answer | `torlek ask run --reason TEXT "torlek session send SESSION 'TEXT'"`; `torlek session send` itself is refused from a session |
-| End a worker | `end_prune.sh` through `torlek ask run`; `torlek agent end` needs an `end-sessions` grant and a todo marked done |
+| File the worker's task item | `torlek todo add TITLE --kind KIND --notes TEXT` |
+| End a worker | `torlek agent end SESSION` (`end-sessions`): refused until the worker marked its item done; without the grant, `end_prune.sh` through `torlek ask run` ends it |
 | Anything else only the owner may run | `torlek ask run --reason TEXT COMMAND`; the owner approves that exact command once |
 
 Starts are capped (sessions not yet ended, and starts per hour); the refusal names the cap.
@@ -36,19 +37,23 @@ send a second one.
    report that and wait: never start the first worker of the next milestone without the
    owner's word. Flaky-test and performance fixes may keep going.
 2. Choose model and effort (see "Model and effort").
-3. Build the prompt: `Work issue #N (gh issue view N -R OWNER/NAME, with comments): <one
-   line of what to deliver>.` plus any scope notes, then a space and the contents of
+3. File one task item per worker issue and keep its id: `torlek todo add "#N <title>" --kind
+   feature --notes "Worker branch greenfield/<issue>-<slug>"`. `torlek agent end` needs it.
+4. Build the prompt: `Work issue #N (gh issue view N -R OWNER/NAME, with comments): <one
+   line of what to deliver>.` plus any scope notes, then `Torlek task item ID: run torlek todo
+   start ID first, and torlek todo done ID --summary "PR #N merged" as your last step, once
+   the PR is merged on main.` and then a space and the contents of
    [worker_suffix.txt](prompts/worker_suffix.txt). The suffix tells workers to run cargo
    directly, review once, open the PR, arm auto-merge, and stay until merged. Workers never
    use the old cockpit tooling (`agent-build`, `cockpit-*`, make targets that call them).
-4. Start it. The clone directory is the branch name with `/` turned into `-`:
+5. Start it. The clone directory is the branch name with `/` turned into `-`:
 
    ```sh
    torlek agent start PROJECT_DIR --clone greenfield/<issue>-<slug> \
        --model opus --effort high --prompt "$PROMPT"
    ```
 
-5. Within about 2 minutes `torlek agent sessions` should show the session as `working` with
+6. Within about 2 minutes `torlek agent sessions` should show the session as `working` with
    a label. A session stuck at state `-` may wait on a harness dialog in its pane: tell the
    owner right away.
 
@@ -106,17 +111,21 @@ an issue. Ignore `greenfield-macos` (macOS is not supported yet; the watcher alr
 3. The clone is clean and pushed: `git -C CLONE status --short` is empty and nothing is
    missing from the pushed branch or main. A squash merge leaves the branch looking ahead; that
    is fine.
-4. End the worker and prune its clone through the owner:
+4. The worker's task item is done (`torlek todo show ID`); the worker marks it itself after
+   the merge. Then end the worker: `torlek agent end SESSION`. Without the `end-sessions`
+   grant, or when the worker never marked its item, ask the owner to end it in the next step.
+5. Prune the clone's `target/` through the owner, ending the session in the same command when
+   you could not end it yourself:
 
    ```sh
-   torlek ask run --reason "End the finished worker and delete its clone's target/ to free disk" \
-       ".agents/skills/coordinator/scripts/end_prune.sh CLONES_ROOT SESSION -- CLONE_DIR_NAME"
+   torlek ask run --reason "Delete the finished worker's clone target/ to free disk" \
+       ".agents/skills/coordinator/scripts/end_prune.sh CLONES_ROOT [SESSION...] -- CLONE_DIR_NAME"
    ```
 
    `CLONES_ROOT` is the folder holding the clones (the watcher prints it as `workers under`).
    The script skips a clone a process still works in, and refuses names with a slash. Torlek
    also sweeps a clone when its session ends; the prune covers `target/` of idle clones.
-5. Log the trial row (see "Model and effort") in your own notes.
+6. Log the trial row (see "Model and effort") in your own notes.
 
 ## Decision issues
 
@@ -126,8 +135,9 @@ protocol, a display) are decided in the sandbox milestone before anyone implemen
 a separate decision issue there and link the implementation issue to it.
 
 1. Fill the placeholders of [decision_prompt.txt](prompts/decision_prompt.txt) (the reports to
-   read first, the related issues, the date, issue and slug), append the worker suffix, start a
-   worker. Research reports have gone cleanly on Sonnet at high effort.
+   read first, the related issues, the date, issue and slug), append the task item line and the
+   worker suffix (see "Start a worker"), and start a worker. Research reports have gone cleanly
+   on Sonnet at high effort.
 2. The worker asks the owner itself, one question at a time. Your messages are never the
    owner's answer. The worker proposes issue changes in its report and edits no issue.
 3. When the report's PR is merged on main, dry-run the applier, read what it would post, then
