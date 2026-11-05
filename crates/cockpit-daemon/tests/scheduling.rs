@@ -565,6 +565,27 @@ async fn resuming_the_queue_places_the_work_it_held_without_waiting_for_the_inte
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn queue_explain_of_an_item_queued_since_the_last_pass_says_the_next_pass_considers_it() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    home.project(&client).await;
+    request(&client, Command::QueueDispatch).await.unwrap();
+    let item = queued_item(&client, "Fix the login").await;
+
+    let error = refused(request(&client, Command::QueueExplain { item: Some(item) }).await);
+
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert_eq!(
+        error.message,
+        format!(
+            "item {item} has no explanation yet: no pass has considered it; the next one \
+             will, within 3600 seconds, or now with `torlek queue dispatch`"
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn queue_explain_of_an_item_the_last_pass_did_not_explain_is_not_found() {
     let home = Home::new();
     let daemon = home.start().await;

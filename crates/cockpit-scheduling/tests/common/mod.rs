@@ -161,6 +161,11 @@ impl Fixture {
         cockpit_scheduling::explanations(&read).await.unwrap()
     }
 
+    pub async fn awaits_pass(&self, item: ItemId) -> bool {
+        let read = self.database.read().await.unwrap();
+        cockpit_scheduling::awaits_pass(&read, item).await.unwrap()
+    }
+
     /// Starts `preset` on `item`, as the owner does.
     pub async fn run(&self, item: ItemId, preset: &'static Preset) -> Run {
         let write = self.database.write().await.unwrap();

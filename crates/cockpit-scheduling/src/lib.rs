@@ -11,6 +11,6 @@ pub use model::{
     Role, SessionNote, Settings, Unit,
 };
 pub use store::{
-    DELIVERY_PRODUCER, Handoff, MIGRATIONS, active_placement, delivery_failed, delivery_key,
-    dispatch, explanations, handoff, placement_of_delivery, placements,
+    DELIVERY_PRODUCER, Handoff, MIGRATIONS, active_placement, awaits_pass, delivery_failed,
+    delivery_key, dispatch, explanations, handoff, placement_of_delivery, placements,
 };
