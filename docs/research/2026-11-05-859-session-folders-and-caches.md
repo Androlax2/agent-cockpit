@@ -4,11 +4,11 @@ Issue [#859](https://github.com/Androlax2/agent-cockpit/issues/859), a decision 
 product code. Covers [#716](https://github.com/Androlax2/agent-cockpit/issues/716) (shared
 build cache across clones) and [#406](https://github.com/Androlax2/agent-cockpit/issues/406)
 (storage hygiene). Background: the [native sandbox report](2026-11-05-546-own-sandbox-and-traffic-control.md)
-and its decisions D1 to D6. **Research and proposal, 2026-11-05; Theo's decisions are
-recorded under [Decisions](#decisions) as they are made.** Merging this document accepts
-research delivery only: it authorizes no product code, dependency or host setting, and it
-edits no issue; the changes proposed under [Changes per issue](#changes-per-issue) are applied
-by the owner's side.
+and its decisions D1 to D6. **Research and proposal, 2026-11-05. Theo's three decisions of that day
+are recorded under [Decisions](#decisions); they are the owner's answers on #859 and bind the
+issues listed under [Changes per issue](#changes-per-issue) once the owner's side applies the
+proposed text.** Merging this document accepts research and records those answers; it
+authorizes no product code, dependency or host setting, and it edits no issue.
 
 ## The question
 
@@ -93,6 +93,11 @@ runs under this clone's gitignored `target/`, deleted afterwards.
 | Owner's `~/.cargo/config.toml` sets `rustc-wrapper = "sccache"`; build with `RUSTC_WRAPPER=` in the environment | The wrapper is not invoked (0 of 1 invocations) |
 | Build with `SCCACHE_DIR` pointing at a read-only folder | Passes (sccache falls back to compiling) |
 
+Only Cargo was measured for download size and time. npm, pip, uv, Bun and Go were not, so
+the cost figure in the recommendation is Cargo's; Go's module cache is created read-only, so
+the session environment sets `GOFLAGS=-modcacherw` and the session-end removal is tested
+with a populated Go cache.
+
 Not measured: overlayfs inside a user namespace on Ubuntu (AppArmor) or WSL2; npm, pip, uv
 and Go behaviour with a read-only or empty cache; the download size of a project that is not
 this one.
@@ -119,6 +124,13 @@ fetched, threats 3 and 4 open.
 | **B. One writable cache per project** (#716's option A) | 2 open: a compiled object one session stored is reused by the next, with no check on the contents. 1 open if the owner's host builds share it | Hits across clones, needing `SCCACHE_BASEDIRS` on the server (#716) |
 | **C. Overlay of the owner's cache** | 1 and 2 closed. 3 open and larger: the owner's sccache holds compiled objects of every project, 9.0 GB here | Warm builds; the overlay costs of the package option A |
 
+The wrapper claim is narrower than "off": the measurement covers the owner's global
+`~/.cargo/config.toml`. A checkout's `.cargo/config.toml` (agent-writable),
+`CARGO_BUILD_RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` were not tested. The environment
+sets all three, and because `SCCACHE_DIR` and `CCACHE_DIR` point into the session's own
+folder, a wrapper the agent switches back on shares nothing with the host or another session.
+The acceptance of issue #829 tests the environment variables, not this report's one run.
+
 Whether a compiled cache can be protected by content addressing: not as far as measured here.
 A key hashes the inputs of a compilation and the stored output is what the compiler produced
 then; whether it is re-checked on read was not tested, so this report does not rely on it.
@@ -127,15 +139,16 @@ then; whether it is re-checked on read was not tested, so this report does not r
 
 | Option | Threats left | Cost |
 | --- | --- | --- |
-| **A. Installs read-only; nothing else of the home; extra folders only by a project grant** (recommended). The mount view binds the directories holding `cargo`, `rustc`, `node`, `python`, `go` (found on the launch `PATH`, read-only), including `~/.cargo/bin` and `~/.rustup` when the owner uses them. No tool configuration or credential file is mounted: Torlek writes any needed configuration into the session folder and names it in the environment (`CARGO_HOME`, `npm_config_userconfig`, `PIP_CONFIG_FILE`). A project can ask for another folder, read-only unless it names write; the owner decides per project, as hosts do (D4, #674), revocably. Some paths can never be granted: the credential and persistence paths of `BASELINE_DENIED_READ` and `BASELINE_DENIED_WRITE` | 1 closed for tool folders, 4 closed. A toolchain the project needs but the owner has not installed fails with a clear error; `rustup` cannot install a pinned toolchain from inside | The adapter-style table of toolchain detection to write and keep (seeded from Greywall's, as #830 does for providers) |
+| **A. Installs read-only; nothing else of the home; extra folders only by a project grant** (recommended). The mount view binds read-only the install roots a toolchain table names for each detected ecosystem (for example `~/.cargo/bin`, `~/.rustup`, the active `~/.nvm` or Volta version, `~/go/bin`), only where the launch `PATH` resolves the tool there. A `PATH` entry that is not in the table (`~/.local/bin`, the owner's scripts, wrappers) is not mounted. No tool configuration or credential file is mounted: Torlek writes any needed configuration into the session folder and names it in the environment (`CARGO_HOME`, `npm_config_userconfig`, `PIP_CONFIG_FILE`). A project can ask for another folder, read-only unless it names write; the owner decides per project, as hosts do (D4, #674), revocably. Some paths can never be granted: the credential and persistence paths of `BASELINE_DENIED_READ` and `BASELINE_DENIED_WRITE` | 1 closed for tool folders; 3 and 4 closed for everything outside the table's roots. A root may still hold more than binaries (a Node version's `lib/node_modules` and its `.npmrc`), so each table entry names the narrowest root and the acceptance tests a token file placed beside one. A toolchain the project needs but the owner has not installed fails with a clear error; `rustup` cannot install a pinned toolchain from inside | The adapter-style table of toolchain detection to write and keep (seeded from Greywall's, as #830 does for providers) |
 | **B. Today's binds carried over**: `~/.cache`, `~/.npm`, `~/.cargo`, `~/.rustup`, `~/.local`, `~/.config` read-only, as Greywall mounts them | 3 and 4 open (credentials in `~/.cargo`, `~/.config`, the owner's caches). 1 closed while read-only | None; a tool that must write fails |
 | **C. Mount nothing of the home**: toolchains must come from system paths or the checkout | All closed | A rustup, nvm, Volta or pyenv install in the home is unusable; fails for a common developer setup |
 
 ## Recommendation (all three accepted, see Decisions)
 
 1. **Package caches: B**, a folder of the session's own. The cost is small against what
-   a clone already spends (485 MB and 6 s, measured), and it needs no kernel feature, no
-   fallback and no trusted writer. Revisit A only if a measured network or time cost appears;
+   a clone already spends (485 MB and 6 s, measured), and it needs nothing beyond the mount view D3 already
+   requires, no fallback and no trusted writer. Revisit A when a measured first fetch takes more than 60 s on the owner's link (a
+   proposed trigger, 10 times this host's) or the owner reports a metered link;
    the evidence line then names the cache mode.
 2. **Compiled caches: A**, not mounted, wrapper off. #716's own numbers say the shared cache
    does not pay for its threats on this project.
@@ -151,17 +164,26 @@ session reads is the toolchain, read-only.
 
 | Path | Mode | Why |
 | --- | --- | --- |
-| Checkout | read-write; `.git/hooks`, `.git/config`, `.torlek`, `.envrc`, IDE run configurations read-only | Existing baseline |
+| Checkout | read-write; every path of `BASELINE_DENIED_WRITE` read-only: `.git/hooks`, `.git/config`, `.cockpit`, `.torlek`, `.envrc`, `.vscode/tasks.json`, `.vscode/launch.json`, `.idea/runConfigurations` | Existing baseline (`profile.rs:36`); `.cockpit` holds the checks the daemon runs on the host |
 | Session folder, session temp folder (holding the session's `CARGO_HOME`, package and tool caches) | read-write | Created at launch, removed at end, counted by `torlek storage` |
-| System folders, toolchain directories found on `PATH` | read-only | Programs only |
+| System folders, toolchain install roots from the table that `PATH` resolves to | read-only | Programs only; a `PATH` entry outside the table is not mounted |
 | Agent socket folder, provider folders (#830) | as declared | Unchanged |
 | `~/.cargo` (except `bin`), `~/.npm`, `~/.cache/*`, `~/.config/*` of tools, `~/go`, `~/.npmrc`, `~/.pypirc` | not mounted | Threats 1 to 4 |
 | Granted extra folder | read-only, or read-write if the grant says | Project grant, revocable |
 
 Environment Torlek builds for the session (part of #829's "only the environment Torlek builds"):
-`CARGO_HOME`, `RUSTC_WRAPPER=`, `SCCACHE_DIR`, `npm_config_cache`, `PIP_CACHE_DIR`,
-`UV_CACHE_DIR`, `GOMODCACHE`, `GOCACHE`, `XDG_CACHE_HOME`, all under the session's temp
-folder. Landlock gets the same two sets (read-write: checkout, session folders; read-only:
+`CARGO_HOME`, `RUSTC_WRAPPER=`, `RUSTC_WORKSPACE_WRAPPER=`, `CARGO_BUILD_RUSTC_WRAPPER=`,
+`SCCACHE_DIR`, `CCACHE_DIR`, `npm_config_cache`, `npm_config_prefix`, `PIP_CACHE_DIR`,
+`UV_CACHE_DIR`, `GOMODCACHE`, `GOCACHE`, `GOFLAGS=-modcacherw`, `BUN_INSTALL_CACHE_DIR`,
+`TURBO_CACHE_DIR`, `MYPY_CACHE_DIR`, `RUFF_CACHE_DIR` and `XDG_CACHE_HOME`, all under the
+session's temp folder. The list is the seed of the toolchain table, not a closed set: a tool
+whose cache location Torlek has not set writes into an unmounted home and fails with a
+permission error, which is the intended default (fail loud). Git needs its own answer, which
+the mount view does not give: Torlek writes a minimal global Git configuration into the
+session folder and names it with `GIT_CONFIG_GLOBAL`, with the identity and `safe.directory`
+copied as values from the owner's configuration, never the file, and no credential helper or
+`core.sshCommand`. This is a proposed implementation detail for #829's acceptance, not an
+owner decision of this report. Landlock gets the same two sets (read-write: checkout, session folders; read-only:
 installs); everything absent is denied by omission.
 
 ## Decisions
@@ -186,7 +208,9 @@ owner's other projects is mounted.
 
 - Package registries become hosts on the allowlist (below). A registry is a read channel the
   session can also use to leak small amounts of data in request URLs; no registry token is
-  inside the sandbox, so it cannot publish.
+  inside the sandbox, so it cannot publish with the owner's account, but anonymous reads of an
+  allowed registry or Git host remain a channel for request URLs and sizes. The host counters
+  of #831 show it; no request-size limit is decided here.
 - A session's own `target/` and `node_modules` stay agent-writable and are executed if the
   owner builds in that checkout on the host. Unchanged by this decision.
 - A toolchain the project pins but the owner has not installed (a `rust-toolchain.toml` for a
@@ -204,28 +228,35 @@ Each block starts with the line to add to the issue.
 ### #829 native Linux sandbox launcher
 
 > Folders outside the checkout (#859, owner decisions 2026-11-05): the mount view binds
-> read-only only the system folders, the toolchain directories found on the launch `PATH`
-> (for example `~/.cargo/bin`, `~/.rustup`, `~/.nvm`, `~/go/bin`), the agent socket folder
-> and the provider folders of #830. Nothing else of the home is mounted: not `~/.cargo`
+> read-only only the system folders, the toolchain install roots named by #830's toolchain
+> table where the launch `PATH` resolves the tool (for example `~/.cargo/bin`, `~/.rustup`, the
+> active `~/.nvm` version, `~/go/bin`), the agent socket folder and the provider folders of
+> #830. A `PATH` entry outside the table, such as `~/.local/bin`, is not mounted. The
+> checkout's read-only paths are all of `BASELINE_DENIED_WRITE` (including `.cockpit`). Nothing else of the home is mounted: not `~/.cargo`
 > beyond `bin`, `~/.npm`, `~/.cache`, `~/.config`, `~/.local`, `~/.npmrc`, `~/.pypirc`. The
 > session's package and tool caches live in its temp folder (removed at session end, counted by
 > `torlek storage`). The environment Torlek builds sets `CARGO_HOME`, `RUSTC_WRAPPER=`,
 > `SCCACHE_DIR`, `npm_config_cache`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `GOMODCACHE`,
-> `GOCACHE` and `XDG_CACHE_HOME` to folders under it, and `npm_config_userconfig` and
-> `PIP_CONFIG_FILE` to files Torlek writes there. Landlock holds the same two sets.
+> `GOCACHE`, `GOFLAGS=-modcacherw`, `CCACHE_DIR`, `RUSTC_WORKSPACE_WRAPPER=`,
+> `CARGO_BUILD_RUSTC_WRAPPER=` and `XDG_CACHE_HOME` (and the other cache variables of the
+> toolchain table) to folders under it, `npm_config_userconfig`, `PIP_CONFIG_FILE` and
+> `GIT_CONFIG_GLOBAL` to files Torlek writes there (Git identity and `safe.directory` copied as
+> values, no credential helper). Landlock holds the same two sets.
 > A project's extra folder is a project grant (D4), read-only unless it says write, never
 > a path in `BASELINE_DENIED_READ` or `BASELINE_DENIED_WRITE`.
 
 Acceptance to add: through the daemon with a fake provider, `~/.cargo/credentials.toml`,
 `~/.config/*` and `~/.cache/sccache` are not visible; a second session does not see the first
 one's cache; the owner's `~/.cargo` is byte-identical after a session that built a crate;
-`~/.cargo/bin` cannot be written; the evidence names the cache mode (session-own).
+`~/.cargo/bin` cannot be written; a token file placed beside a toolchain root and `~/.local/bin`
+are not visible; `git commit` works in the checkout; session end removes a populated Go
+module cache; the evidence names the cache mode (session-own).
 
 ### #830 provider hosts and paths in the provider adapters
 
 > Also (#859): a toolchain table beside the provider adapters, seeded from Greywall's
 > `internal/profiles/toolchains` at the pinned commit with attribution, declares for each
-> ecosystem the install directories to find on `PATH` (read-only), the cache variables above
+> ecosystem the narrowest install roots to bind read-only where `PATH` resolves the tool, the cache variables above
 > and the registry hosts (for example `index.crates.io`, `static.crates.io`,
 > `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `proxy.golang.org`). An ecosystem
 > is detected from the checkout (`Cargo.lock`, `package-lock.json`, `pyproject.toml`,
