@@ -6,6 +6,7 @@ pub use sign_in::SIGN_IN_CONFORMANCE_VERSION;
 pub mod app_server;
 pub mod delivery;
 pub mod hooks;
+pub mod needs;
 pub mod reports;
 pub mod turns;
 
@@ -19,8 +20,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use cockpit_provider_api::{
-    Action, Capabilities, Capability, Conversation, ConversationId, Delivered, DeliveryTarget,
-    LaunchCommand, LaunchRequest, Provenance, Provider, ProviderError, ProviderName,
+    Action, Capabilities, Capability, Conversation, ConversationId, Credentials, Delivered,
+    DeliveryTarget, InvalidValue, LaunchCommand, LaunchRequest, Needs, Provenance, Provider,
+    ProviderError, ProviderName,
 };
 
 /// The Codex version this adapter's conformance tests pin; capabilities are `tested` only on
@@ -245,6 +247,14 @@ impl Provider for Codex {
             .fold(Capabilities::none(), |capabilities, capability| {
                 capabilities.with(capability, provenance.clone())
             })
+    }
+
+    fn needs(&self) -> Result<Needs, InvalidValue> {
+        needs::needs()
+    }
+
+    fn credentials(&self) -> Result<Credentials, InvalidValue> {
+        needs::credentials()
     }
 
     /// With the bridge, the session launcher: `cockpit-codex-session --cockpit <cockpit>

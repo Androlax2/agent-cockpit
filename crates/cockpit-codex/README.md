@@ -78,6 +78,16 @@ provider and nothing above the contract sees a Codex type (#48).
   requests of a delivered turn go is measured with a local fake model on 0.166.0 below;
   signed-in delivered-start acceptance passed on Linux with 0.166.0
   ([#436 receipt](../../docs/acceptance/436-codex-approval-routing.md)). Older versions are unverified.
+- **Sandbox needs** (`needs`, #830, #858). Hosts: `api.openai.com`, `chatgpt.com`,
+  `ab.chatgpt.com`. Nothing read from the owner's home; written into the session's own
+  folders: `~/.codex`, `~/.cache/codex`. Credential file `~/.codex/auth.json`;
+  `OPENAI_API_KEY` or `CODEX_API_KEY`, which Codex 0.166.0 names as its supported key
+  variables, take a bound credential, carried by `api.openai.com`. Whether its TUI takes a
+  placeholder there is #832's conformance test; if not, #832 writes a session-own
+  `auth.json` holding only the placeholder. Seeded from Greywall's `codex.go` at `a9ccc58c`
+  (`crates/cockpit-provider-api/NOTICE-greywall`); its macOS paths are left out (macOS is not
+  supported yet) and its read of `~/.codex` and `~/.cache/codex` becomes the session's own
+  folders.
 
 ## Dependency edges
 
@@ -89,6 +99,7 @@ provider and nothing above the contract sees a Codex type (#48).
 
 ## Tests
 
+- `tests/needs.rs`: the declared hosts, folders and credentials, through the contract.
 - `tests/launch.rs`, `tests/capabilities.rs`: the contract's words, and the app-server's and
   TUI's.
 - `tests/hooks.rs`: conformance with the payloads and hook input schemas pinned in

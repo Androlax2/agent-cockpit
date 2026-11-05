@@ -5,8 +5,10 @@ mod commands;
 mod events;
 #[cfg(feature = "fake")]
 pub mod fake;
+mod needs;
 mod sign_in;
 mod terminal;
+pub mod toolchains;
 
 use std::ffi::OsString;
 use std::fmt;
@@ -18,6 +20,7 @@ pub use commands::{CommandResult, NativeCommand};
 pub use events::{
     Activity, Confidence, EventKind, Observation, ObservedBy, ProviderEvent, TurnOutcome,
 };
+pub use needs::{CredentialBinding, Credentials, HomePath, Host, Needs};
 pub use sign_in::{SignIn, SignInStatus};
 pub use terminal::{Action, Delivered, Key, TerminalInput};
 
@@ -198,6 +201,19 @@ pub trait Provider: Send + Sync + 'static {
     }
 
     fn capabilities(&self) -> Capabilities;
+
+    /// The hosts and home folders its harness needs from the sandbox (#830). The default is
+    /// the floor: no host and no folder beyond the checkout and the session's own. Refuses a
+    /// malformed declaration instead of narrowing it.
+    fn needs(&self) -> Result<Needs, InvalidValue> {
+        Ok(Needs::none())
+    }
+
+    /// Where its harness keeps and takes credentials (#858), checked against
+    /// [`Provider::needs`]. The default declares none.
+    fn credentials(&self) -> Result<Credentials, InvalidValue> {
+        Ok(Credentials::none())
+    }
 
     /// The harness's current local sign-in status, not host authorization or proof of
     /// model access. May block for at most ten seconds; run off async workers. Never

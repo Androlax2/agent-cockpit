@@ -66,6 +66,16 @@ provider and nothing above the contract sees an OpenCode type (#47).
   labels and run through the same server, with a 10-second response deadline. Missing or
   malformed launch metadata and server refusals stay errors; no terminal fallback occurs
   inside this adapter. The daemon's delivery calls and launch retention are owned by #431.
+- **Sandbox needs** (`needs`, #830, #858). Hosts: `api.openai.com`,
+  `api.anthropic.com`. Read from the owner's home: `~/.opencode`, its program and packages.
+  Written into the session's own folders: `~/.opencode.json`, `~/.config/opencode`,
+  `~/.cache/opencode`, `~/.local/share/opencode`, `~/.local/share/opentui`,
+  `~/.local/state/opencode`. Credential files: `~/.local/share/opencode/auth.json` and
+  `account.json`, and the GitHub Copilot sign-in `~/.config/github-copilot`, which Greywall
+  let it read and which is no longer bound. `ANTHROPIC_API_KEY` is carried by
+  `api.anthropic.com`, `OPENAI_API_KEY` by `api.openai.com`. Seeded from Greywall's
+  `opencode.go` at `a9ccc58c` (`crates/cockpit-provider-api/NOTICE-greywall`); write access
+  to `~/.opencode` is left out, since nothing writes the owner's home (#859).
 
 ## Dependency edges
 
@@ -76,6 +86,7 @@ provider and nothing above the contract sees an OpenCode type (#47).
 
 ## Tests
 
+- `tests/needs.rs`: the declared hosts, folders and credentials, through the contract.
 - `tests/launch.rs`, `tests/capabilities.rs`, `tests/input.rs`: the contract's words.
 - `tests/events.rs`: conformance with the events pinned in `tests/fixtures/opencode-1.19.5/`,
   and the reports they become.

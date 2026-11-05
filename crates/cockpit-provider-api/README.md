@@ -59,6 +59,27 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   arrives as a turn-end event.
 - **Screen reading** ([`Provider::read_screen`]) is a fallback for missing events and records
   its confidence (`observed-by: event|screen`, report 05); it never proves a task complete.
+- **Sandbox needs** (#830, #861). [`Provider::needs`] declares the [`Needs`] of its harness:
+  the [`Host`]s it reaches, the [`HomePath`]s it reads from the owner's home (bound
+  read-only: its installed program, never a credential) and those it writes, which the
+  sandbox backs with a folder Torlek owns for the session, kept across its relaunches and
+  never the owner's (#858, #859). [`Provider::credentials`] names where the harness stores a
+  sign-in and which variable takes a bound credential on which of its hosts (#858); every
+  credential host is a declared host, and no read path covers a credential file. The default
+  is the floor: no host and no folder beyond the checkout and the session's own. The same
+  `Needs` is what the owner's entry for an unadapted program produces (#84, #294); a project
+  file's hosts are requests the owner decides (#674), never part of it. A malformed value is
+  refused, never narrowed: no bare `*`, no wildcard on one label, no IP address, no path
+  outside `~/`. The declarations request; the sandbox (#829, #831, #832) enforces and refuses
+  what its own rules forbid.
+- **Toolchain table** (`toolchains`, #859). For Rust, Node, Python and Go: the marker files
+  that detect the ecosystem in a checkout, the install roots bound read-only where the launch's
+  `PATH` names a folder inside them, the variables that keep caches and configuration in the
+  session's folders, and the registry hosts. It holds no write access to the owner's home and
+  no credential.
+- **Attribution.** The adapters' declarations and the toolchain table are seeded from
+  Greywall's profiles at its pinned commit, under the Apache License 2.0; `NOTICE-greywall`
+  carries its notice and what Torlek changed.
 - [`ProviderName`] and [`ConversationId`] are validated where they are made; the command's
   words are never parsed by a shell.
 
@@ -83,4 +104,6 @@ and marks the session's directory.
 - `tests/contract.rs`: the capabilities a launch needs; default refusals, delivery included.
 - `tests/events.rs`: the activity each normalized event proves.
 - `tests/fake.rs`: the fake provider and its agent's log.
+- `tests/needs.rs`: hosts, home paths, needs and credentials, and the floor by default.
+- `tests/toolchains.rs`: the toolchain table, detection and the roots a `PATH` binds.
 - `tests/dependencies.rs`: no dependency.
