@@ -263,10 +263,11 @@ pub(crate) fn columns(text: &str) -> usize {
 }
 
 /// One session's card: the id line, then whether it waits on you and what the agent reports
-/// on an indented line of their own. A running session whose agent waits with nothing in
-/// progress says `waiting`, the lifecycle kept in brackets (#864). The mark after the selection marker lets the eye find the
+/// on an indented line of their own. The mark after the selection marker lets the eye find the
 /// sessions that need you down the list's left edge: `!` blocked on you, `?` asked you and
-/// still works (#215). A question a coordinator holds is named with it instead (#710).
+/// still works (#215). A question a coordinator holds is named with it instead (#710). A running
+/// session whose agent waits with nothing in progress says `waiting`, the lifecycle kept in
+/// brackets (#864).
 fn card(board: &Board, session: &SessionView, is_selected: bool, width: usize) -> Vec<String> {
     let marker = if is_selected { ">" } else { " " };
     let (mark, waiting) = if !board.needs_you(&session.id) {
@@ -288,19 +289,20 @@ fn card(board: &Board, session: &SessionView, is_selected: bool, width: usize) -
     let held = board
         .question_holder(&session.id)
         .map(|coordinator| format!("question with coordinator {coordinator}"));
-    let resumed_note =
-        (idle == Some(Idle::Resumed)).then_some("resumed, idle until you send it something");
+    // A resumed session's report predates the resume: it says nothing of the agent that runs now.
+    let is_resumed = idle == Some(Idle::Resumed);
+    let resumed_note = is_resumed.then_some("resumed, idle until you send it something");
+    let reported = board
+        .report(&session.id)
+        .filter(|_| !is_resumed)
+        .into_iter()
+        .flat_map(|report| [report.label.as_deref(), report.doing.as_deref()])
+        .flatten();
     let details: Vec<&str> = waiting
         .into_iter()
         .chain(held.as_deref())
         .chain(resumed_note)
-        .chain(
-            board
-                .report(&session.id)
-                .into_iter()
-                .flat_map(|report| [report.label.as_deref(), report.doing.as_deref()])
-                .flatten(),
-        )
+        .chain(reported)
         .collect();
     if !details.is_empty() {
         card.push(format!("{CARD_INDENT}{}", details.join(" · ")));
