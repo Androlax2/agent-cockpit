@@ -112,9 +112,9 @@ reporting an unprotected default branch (#695) becomes part of the security stor
 extra. A project without such a ruleset lets its agent merge its own pull request.
 
 The "Closed" cells above hold only with `agents.sandbox = "required"`. Until the native sandbox is
-the default (#546, stages 1 to 5) sessions run unsandboxed, keep the pass-through `GH_TOKEN` of
-the issue 754 pass-through, and a plain `git push` bypasses the verb, the policy and the scan; the owner already accepts
-that interval.
+the default (#546, stages 1 to 5) sessions run unsandboxed, keep the `GH_TOKEN`
+pass-through of issue 754, and a plain `git push` bypasses the verb, the policy and the scan; the
+owner already accepts that interval.
 
 ### Recommendation: C
 
