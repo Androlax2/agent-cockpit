@@ -152,14 +152,12 @@ impl Sandbox {
         Some(session_folder(&host.homes, session))
     }
 
-    /// `session`'s tool configuration folder under the sandbox, with the owner's Git identity
-    /// in it, which its end removes (#859); None when the daemon read no host paths.
-    pub fn session_tool_config(&self, session: &str) -> Option<Result<PathBuf, Refusal>> {
+    /// `session`'s own folder of the daemon's mount sources, which its end removes (#482): the
+    /// launch spec, the egress files, the tool configuration with the owner's Git identity
+    /// (#859) and the folders its sandbox mounts. None when the daemon read no host paths.
+    pub fn session_mount_sources(&self, session: &str) -> Option<Result<PathBuf, Refusal>> {
         let host = self.host.as_ref()?;
-        Some(
-            session_folder(&host.mount_sources, session)
-                .map(|folder| folder.join(crate::native::CONFIG_FOLDER)),
-        )
+        Some(session_folder(&host.mount_sources, session))
     }
 
     /// What `session`'s launcher last reported letting out of the sandbox and refusing
