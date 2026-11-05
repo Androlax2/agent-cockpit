@@ -424,11 +424,11 @@ fn a_value_with_a_control_character_is_refused() {
 }
 
 #[test]
-fn base64_matches_the_rfc_4648_vectors() {
+fn base64_matches_known_encodings_with_each_padding() {
     for (plain, encoded) in [
         ("", ""),
         ("f", "Zg=="),
-        ("fo", "Zm8="),
+        ("ab", "YWI="),
         ("foo", "Zm9v"),
         ("foob", "Zm9vYg=="),
         ("fooba", "Zm9vYmE="),

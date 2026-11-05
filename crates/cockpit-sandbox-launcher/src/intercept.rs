@@ -329,14 +329,12 @@ enum Body {
 
 /// Whether `Transfer-Encoding` ends with `chunked`; None without the field.
 fn ends_chunked(headers: &Headers) -> Option<bool> {
+    values(headers, "transfer-encoding").next()?;
     let codings: Vec<&[u8]> = values(headers, "transfer-encoding")
         .flat_map(|value| value.split(|byte| *byte == b','))
         .map(<[u8]>::trim_ascii)
         .filter(|coding| !coding.is_empty())
         .collect();
-    if values(headers, "transfer-encoding").next().is_none() {
-        return None;
-    }
     Some(
         codings
             .last()

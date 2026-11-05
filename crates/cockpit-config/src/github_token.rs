@@ -14,6 +14,11 @@ use crate::{Environment, Layout};
 /// project is.
 pub const GITHUB_TOKENS_DIR: &str = "github-tokens";
 
+/// The folder of [`Layout::config_dir`] that holds one GitHub API token file per project
+/// (#857, #832): the credential the session proxy adds on GitHub's hosts, with no Contents
+/// write, read under the same rules as the token beside it but never given to an agent.
+pub const GITHUB_API_TOKENS_DIR: &str = "github-api-tokens";
+
 /// The variable a launch sets to its project's token, the one `gh` and its Git credential
 /// helper read first.
 pub const GITHUB_TOKEN_VARIABLE: &str = "GH_TOKEN";
@@ -34,15 +39,19 @@ const MAX_TOKEN_BYTES: u64 = 1024;
 /// environment is `environment`; `None` when it names no home, so no token is read. The project
 /// name is the registry's, which never holds a `/` or starts with `.`.
 pub fn github_token_file(environment: &Environment, project: &str) -> Option<PathBuf> {
+    token_file(environment, GITHUB_TOKENS_DIR, project)
+}
+
+/// Where project `project`'s GitHub API token lives, as [`github_token_file`] says for the
+/// other; read it with [`read_github_token`].
+pub fn github_api_token_file(environment: &Environment, project: &str) -> Option<PathBuf> {
+    token_file(environment, GITHUB_API_TOKENS_DIR, project)
+}
+
+fn token_file(environment: &Environment, folder: &str, project: &str) -> Option<PathBuf> {
     let home = environment.home_dir().ok()?;
     let layout = Layout::resolve(environment, &home);
-    Some(
-        layout
-            .config_dir
-            .value
-            .join(GITHUB_TOKENS_DIR)
-            .join(project),
-    )
+    Some(layout.config_dir.value.join(folder).join(project))
 }
 
 /// A token read from its file. It has no `Display`, and its `Debug` is redacted, so a log or

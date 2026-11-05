@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cockpit_sandbox::{
-    AllowEntry, AllowSource, Allowlist, EGRESS_FILE, EgressReport, LaunchSpec, NeedsSource,
-    Protected, SPEC_FILE, SPEC_VERSION, Subject, Target, WhenAbsent,
+    AllowEntry, AllowSource, Allowlist, CA_BUNDLE_FILE, CREDENTIALS_FILE, CredentialHost,
+    CredentialScheme, EGRESS_FILE, EgressReport, Interception, LaunchSpec, NeedsSource, Protected,
+    SESSION_CA_FILE, SPEC_FILE, SPEC_VERSION, SpecCredential, Subject, Target, WhenAbsent,
 };
 
 const LAUNCHER: &str = env!("CARGO_BIN_EXE_torlek-sandbox");
@@ -18,6 +19,7 @@ const LAUNCHER: &str = env!("CARGO_BIN_EXE_torlek-sandbox");
 struct Fixture {
     root: tempfile::TempDir,
     egress: Allowlist,
+    interception: Option<Interception>,
 }
 
 impl Fixture {
@@ -30,6 +32,7 @@ impl Fixture {
                 program: "sh".to_owned(),
                 entries: Vec::new(),
             },
+            interception: None,
         };
         for folder in ["checkout/.git/hooks", "home", "home-source", "mounts"] {
             std::fs::create_dir_all(fixture.path(folder)).unwrap();
@@ -68,7 +71,11 @@ impl Fixture {
             working_dir: checkout.clone(),
             home: self.path("home"),
             home_source: self.path("home-source"),
-            read_only: Vec::new(),
+            read_only: self
+                .interception
+                .iter()
+                .map(|_| self.path("config"))
+                .collect(),
             read_only_declared: Vec::new(),
             sockets: Vec::new(),
             read_write: vec![checkout.clone()],
@@ -78,7 +85,7 @@ impl Fixture {
             needs_source: NeedsSource::Floor,
             forwards: Vec::new(),
             egress: self.egress.clone(),
-            interception: None,
+            interception: self.interception.clone(),
         }
     }
 
@@ -351,4 +358,93 @@ fn the_launcher_reports_what_it_allowed_and_refused() {
     let refused = &report.destinations["unknown.example.com:80"];
     assert_eq!((refused.allowed, refused.refused), (0, 1));
     assert!(!fixture.path("mounts/proxy-handoff").exists());
+}
+
+const SECRET: &str = "github_pat_never_inside";
+
+impl Fixture {
+    /// Binds a credential to `api.github.com`, its trust files in a read-only `config`
+    /// folder, the host's roots a CA of the test's own.
+    fn bind_credential(&mut self) {
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let roots = params
+            .self_signed(&rcgen::KeyPair::generate().unwrap())
+            .unwrap()
+            .pem();
+        std::fs::create_dir_all(self.path("config")).unwrap();
+        write(&self.path("host-roots.pem"), &roots);
+        self.egress.entries.push(AllowEntry {
+            target: Target::Name("api.github.com".to_owned()),
+            port: 443,
+            source: AllowSource::Grant {
+                grant: "g1".to_owned(),
+            },
+        });
+        self.interception = Some(Interception {
+            credentials: vec![SpecCredential {
+                name: "the project's GitHub API token".to_owned(),
+                hosts: vec![CredentialHost {
+                    host: "api.github.com".to_owned(),
+                    scheme: CredentialScheme::Bearer,
+                }],
+            }],
+            system_bundle: self.path("host-roots.pem"),
+            ca_file: self.path("config").join(SESSION_CA_FILE),
+            bundle_file: self.path("config").join(CA_BUNDLE_FILE),
+        });
+    }
+
+    fn write_credentials(&self, values: &[&str]) {
+        write(
+            &self.path("mounts").join(CREDENTIALS_FILE),
+            &serde_json::to_string(values).unwrap(),
+        );
+    }
+}
+
+/// #832: the launcher reads the values and removes their file before the program starts;
+/// inside, only the session CA's certificate and the host's roots are readable.
+#[test]
+fn a_bound_credential_leaves_only_the_session_cas_certificate_inside() {
+    let mut fixture = Fixture::new();
+    fixture.bind_credential();
+    fixture.write_credentials(&[SECRET]);
+    let config = fixture.path("config");
+
+    let printed = fixture.run(&format!(
+        "head -1 {ca}; grep -c 'BEGIN CERTIFICATE' {bundle}; \
+         grep -rl {SECRET} {mounts} {config} /proc/self/environ 2>/dev/null; true",
+        ca = config.join(SESSION_CA_FILE).display(),
+        bundle = config.join(CA_BUNDLE_FILE).display(),
+        mounts = fixture.path("mounts").display(),
+        config = config.display(),
+    ));
+
+    assert_eq!(printed, "-----BEGIN CERTIFICATE-----\n2\nexit=0\n");
+    assert!(!fixture.path("mounts").join(CREDENTIALS_FILE).exists());
+}
+
+#[test]
+fn a_spec_binding_a_credential_without_its_value_is_refused() {
+    let mut fixture = Fixture::new();
+    fixture.bind_credential();
+
+    let printed = fixture.run("echo started");
+
+    assert!(!printed.contains("started"), "{printed}");
+    assert!(printed.contains("binds 1 credentials"), "{printed}");
+}
+
+/// A value left beside a spec that binds none is removed, never kept for a later launch.
+#[test]
+fn a_credentials_file_beside_a_spec_binding_none_is_removed_and_refused() {
+    let fixture = Fixture::new();
+    fixture.write_credentials(&[SECRET]);
+
+    let printed = fixture.run("echo started");
+
+    assert!(!printed.contains("started"), "{printed}");
+    assert!(!printed.contains(SECRET), "{printed}");
+    assert!(!fixture.path("mounts").join(CREDENTIALS_FILE).exists());
 }
