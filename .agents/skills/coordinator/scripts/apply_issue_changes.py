@@ -16,7 +16,7 @@ from pathlib import Path
 
 SECTION_HEADING = "## Changes for each linked issue"
 SECTION_END = re.compile(r"^(### Not changed|## )", re.MULTILINE)
-ISSUE_HEADING = re.compile(r"^### #(\d+)\b[^\n]*\n", re.MULTILINE)
+ISSUE_HEADING = re.compile(r"^### #(\d+)\b[^\n]*(?:\n|\Z)", re.MULTILINE)
 REPORT_ONLY_SENTENCE = "Proposed text; the owner applies it. Nothing here edits an issue. "
 
 
@@ -72,9 +72,15 @@ def main(argv):
     introduction, changes = split_changes(changes_section(arguments.report.read_text()))
     if not changes:
         sys.exit("apply_issue_changes: no '### #NUMBER' subsections under the changes section")
+    only = {number.lstrip("#") for number in arguments.only or []}
+    unknown = only - {number for number, _ in changes}
+    if unknown:
+        sys.exit(
+            f"apply_issue_changes: --only names issues the report does not list: {sorted(unknown)}"
+        )
     link = report_link(arguments.report, repo)
     for number, body in changes:
-        if arguments.only and number not in arguments.only:
+        if only and number not in only:
             continue
         message = (
             f"Decided in #{arguments.decision_issue} ({arguments.summary}; [report]({link})). "

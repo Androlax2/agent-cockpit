@@ -66,6 +66,31 @@ class EndPruneTests(FakeCommandsTestCase):
         self.assertFalse((clone / "target").exists())
         self.assertIn("pruned greenfield-1-first/target", result.stdout)
 
+    def test_it_still_ends_the_other_sessions_and_prunes_when_one_end_fails(self):
+        clone = self.clone_with_target("greenfield-4-after")
+        self.shim("torlek", 'echo "torlek $*" >> "$FAKE_CALLS"; [ "$3" != bad ]')
+
+        result = self.end_prune(str(self.clones), "bad", "good", "--", "greenfield-4-after")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            self.recorded_calls(), ["torlek session end bad", "torlek session end good"]
+        )
+        self.assertFalse((clone / "target").exists())
+
+    def test_it_keeps_the_target_when_the_clones_root_is_given_through_a_symlink(self):
+        clone = self.clone_with_target("greenfield-5-linked")
+        link = self.root / "link"
+        link.symlink_to(self.clones)
+        worker = subprocess.Popen(["sleep", "30"], cwd=clone)
+        self.addCleanup(worker.wait)
+        self.addCleanup(worker.kill)
+
+        result = self.end_prune(str(link), "s1", "--", "greenfield-5-linked")
+
+        self.assertTrue((clone / "target/artifact").exists())
+        self.assertIn("a process works in it", result.stdout)
+
     def test_it_keeps_the_target_of_a_clone_a_process_works_in(self):
         clone = self.clone_with_target("greenfield-2-busy")
         worker = subprocess.Popen(["sleep", "30"], cwd=clone / "target")
@@ -179,6 +204,22 @@ printf '%s' "$7" > "$FAKE_CALLS.body.$3"
         body = self.comment_body(11)
         self.assertIn("Decided in #9 (owner, Q1 A;", body)
         self.assertIn("[report](https://github.com/example/shop/blob/main/docs/report.md)", body)
+
+    def test_it_refuses_an_only_number_the_report_does_not_list(self):
+        result = self.apply("--go", "--only", "99")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not list", result.stderr)
+        self.assertEqual(self.recorded_calls(), [])
+
+    def test_it_reads_a_last_heading_without_a_trailing_newline(self):
+        self.report.write_text(
+            "## Changes for each linked issue\n\n### #11 First\n\n> One.\n\n### #12 Second"
+        )
+
+        result = self.apply()
+
+        self.assertIn("#12: 0 characters", result.stdout)
 
     def test_it_drops_the_report_only_sentence_and_the_blockquote_markers(self):
         result = self.apply()
@@ -328,6 +369,60 @@ esac
         self.assertIn(
             "PR #7 (greenfield/7-feature) head abcdef12: greenfield https://ci/job/1", failures[0]
         )
+
+    def test_it_reports_a_pr_merge_on_a_later_poll_after_an_empty_first_poll(self):
+        pull = {
+            "number": 8,
+            "state": "OPEN",
+            "headRefName": "greenfield/8-x",
+            "headRefOid": "1" * 16,
+        }
+        merged = {**pull, "state": "MERGED"}
+        # Poll 1 is empty and poll 2 sees the PR open, so the MERGED on poll 3 is a real event.
+        self.pulls_file.write_text(json.dumps([merged]))
+        pulls_open = json.dumps([pull])
+        self.shim(
+            "gh",
+            f"""
+case "$*" in
+*--search*)
+    count=$(cat "$FAKE_PULLS.count" 2>/dev/null || echo 0)
+    echo $((count + 1)) > "$FAKE_PULLS.count"
+    case $count in 0) echo '[]' ;; 1) echo '{pulls_open}' ;; *) cat "$FAKE_PULLS" ;; esac ;;
+esac
+""",
+        )
+
+        result = self.watch(self.session("greenfield-8-x", "working", "coding"))
+
+        self.assertIn("PR #8 MERGED (greenfield/8-x)", result.stdout)
+
+    def test_it_ignores_pull_requests_outside_the_branch_prefix(self):
+        stray = {**self.pull_with_failing_checks(self.HEAD), "headRefName": "feature/other"}
+        self.pulls_file.write_text(json.dumps([stray]))
+
+        result = self.watch(self.session("greenfield-7-feature", "working", "coding"))
+
+        self.assertNotIn("CI ", result.stdout)
+
+    def test_it_says_the_merge_state_is_unknown_when_gh_fails(self):
+        self.shim(
+            "gh",
+            """
+case "$*" in
+*--search*) echo '[]' ;;
+*) exit 1 ;;
+esac
+""",
+        )
+
+        result = self.watch(
+            self.session("greenfield-6-idle", "working", "coding"),
+            self.session("greenfield-6-idle", "waiting", "coding"),
+        )
+
+        self.assertIn("IDLE, merge state unknown", result.stdout)
+        self.assertNotIn("IDLE without merged PR", result.stdout)
 
     def test_it_exits_nonzero_and_says_why_when_the_session_watch_ends(self):
         result = self.watch(self.session("greenfield-8-gone", "working", "coding"))

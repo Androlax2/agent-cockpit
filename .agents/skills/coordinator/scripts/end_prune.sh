@@ -8,11 +8,16 @@ if [ "$#" -lt 2 ] || [ ! -d "$1" ]; then
     echo "usage: end_prune.sh CLONES_ROOT SESSION... -- CLONE_DIR_NAME..." >&2
     exit 2
 fi
-root=$1
+# /proc/PID/cwd is always a resolved path, so compare against the resolved root.
+root=$(cd "$1" && pwd -P)
 shift
+failed=0
 
 while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
-    torlek session end "$1"
+    torlek session end "$1" || {
+        echo "failed to end session $1" >&2
+        failed=1
+    }
     shift
 done
 [ "${1:-}" = "--" ] && shift
@@ -49,3 +54,4 @@ for name in "$@"; do
     echo "pruned $name/target"
 done
 df -h "$root" | tail -1
+exit "$failed"

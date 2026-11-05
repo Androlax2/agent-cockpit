@@ -13,11 +13,14 @@ Usage: coordinator_watch.py STATE_FILE [--repo OWNER/NAME] [--worker-root DIR]
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import traceback
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -64,7 +67,10 @@ class Watcher:
 
     def save(self):
         self.state["failures"] = sorted(self.reported_failures)
-        self.state_path.write_text(json.dumps(self.state))
+        # Replace atomically so a kill or reboot mid-write never leaves a truncated state file.
+        partial = self.state_path.with_name(self.state_path.name + ".partial")
+        partial.write_text(json.dumps(self.state))
+        os.replace(partial, self.state_path)
 
     def branch_of(self, path):
         name = Path(path).name
@@ -88,14 +94,17 @@ class Watcher:
         }
 
     def is_merged(self, branch):
+        """True or False; None when GitHub could not say."""
         if self.pr_states.get(branch, {}).get("state") == "MERGED":
             return True
-        count = subprocess.run(
-            ["gh", "pr", "list", "-R", self.repo, "--head", branch, "--state", "merged",
-             "--json", "number", "--jq", "length"],
-            capture_output=True, text=True,
-        ).stdout.strip()  # fmt: skip
-        return count not in ("", "0")
+        try:
+            count = run_text(
+                ["gh", "pr", "list", "-R", self.repo, "--head", branch, "--state", "merged",
+                 "--json", "number", "--jq", "length"],
+            )  # fmt: skip
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            return None
+        return count != "0"
 
     def on_session(self, current):
         session_id = current["id"]
@@ -113,10 +122,18 @@ class Watcher:
         if went_idle and not current["question"]:
             idle_key = f"{session_id}:{current['doing']}"
             reported_idle = self.state.setdefault("idle", [])
-            if idle_key not in reported_idle and not self.is_merged(current["branch"]):
-                reported_idle.append(idle_key)
-                print(f"IDLE without merged PR {tag}: doing={current['doing']!r}", flush=True)
-                return
+            if idle_key not in reported_idle:
+                merged = self.is_merged(current["branch"])
+                if merged is None:
+                    print(
+                        f"IDLE, merge state unknown (gh failed) {tag}: doing={current['doing']!r}",
+                        flush=True,
+                    )
+                    return
+                if not merged:
+                    reported_idle.append(idle_key)
+                    print(f"IDLE without merged PR {tag}: doing={current['doing']!r}", flush=True)
+                    return
         if (
             previous is None
             or previous["doing"] != current["doing"]
@@ -125,9 +142,11 @@ class Watcher:
             batched.append(f"{tag} {current['state']}: {current['doing']}")
 
     def follow_sessions(self):
+        # A file, not a pipe: a chatty stderr must never block the watch while stdout is read.
+        errors = tempfile.TemporaryFile(mode="w+")
         process = subprocess.Popen(
             ["torlek", "agent", "sessions", "--watch"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
+            stdout=subprocess.PIPE, stderr=errors, text=True, bufsize=1,
         )  # fmt: skip
         for raw in process.stdout:
             line = raw.rstrip("\n")
@@ -144,7 +163,8 @@ class Watcher:
                 self.on_session(current)
                 self.save()
         exit_status = process.wait()
-        reason = process.stderr.read().strip()
+        errors.seek(0)
+        reason = errors.read().strip()
         print(
             f"WATCH ENDED: torlek agent sessions --watch exited {exit_status}: {reason}", flush=True
         )
@@ -153,7 +173,7 @@ class Watcher:
     def poll_prs(self):
         query = [
             "gh", "pr", "list", "-R", self.repo, "--state", "all", "--search",
-            f"head:{self.branch_prefix} updated:>={self.since}", "--limit", "60",
+            f"updated:>={self.since}", "--limit", "200",
             "--json", "number,state,headRefName,headRefOid,statusCheckRollup",
         ]  # fmt: skip
         while True:
@@ -169,9 +189,12 @@ class Watcher:
             time.sleep(self.poll_seconds)
 
     def on_pulls(self, pulls):
-        first_poll = not self.pr_states
+        first_poll = not self.state.get("polled")
+        self.state["polled"] = True
         for pull in pulls:
             branch = pull["headRefName"]
+            if not branch.startswith(self.branch_prefix):
+                continue
             known = self.pr_states.get(branch, {}).get("state")
             self.pr_states[branch] = {"number": pull["number"], "state": pull["state"]}
             if not first_poll and known != pull["state"] and pull["state"] in ("MERGED", "CLOSED"):
@@ -231,11 +254,21 @@ def parse_arguments(argv):
     return arguments
 
 
+def run_or_exit(target):
+    """Runs a helper thread; if it dies, take the whole watcher down so the monitor wakes."""
+    try:
+        target()
+    except BaseException:
+        traceback.print_exc()
+        print(f"WATCH ENDED: {target.__name__} crashed", flush=True)
+        os._exit(1)
+
+
 def main(argv):
     watcher = Watcher(parse_arguments(argv))
     print(f"WATCHING {watcher.repo}, workers under {watcher.worker_root}", flush=True)
-    threading.Thread(target=watcher.poll_prs, daemon=True).start()
-    threading.Thread(target=watcher.summarize, daemon=True).start()
+    for helper in (watcher.poll_prs, watcher.summarize):
+        threading.Thread(target=run_or_exit, args=(helper,), daemon=True).start()
     return watcher.follow_sessions()
 
 
