@@ -67,8 +67,8 @@ export XDG_RUNTIME_DIR="$scratch/runtime"
 # A profile of its own on top of the scratch directories: every file, socket and tmux server
 # is named torlek-acceptance, never torlek, whatever TORLEK_PROFILE the caller had.
 export TORLEK_PROFILE=acceptance
-# The daemon's tmux server is `-L torlek-<profile>` in tmux's per-user directory: a private one
-# here.
+# The daemon's tmux server is $TMUX_TMPDIR/tmux-<uid>/torlek-<profile>, which the daemon names
+# by path and refuses to start without (#845): a private one here.
 export TMUX_TMPDIR="$scratch/tmux"
 # Agents inherit the daemon's PATH: their `torlek` must be this clone's, not the installed one,
 # and their `claude` the one start linked into $scratch/bin (see link_claude).
