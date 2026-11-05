@@ -99,13 +99,16 @@ fn typing_into_a_pane_that_is_gone_fails() {
     );
 }
 
+const PASTE_READY: &str = "paste-ready";
+
 /// A pane whose program asked for bracketed paste (as Claude Code does) and writes the raw
-/// bytes it reads, `count` of them, to `typed`.
+/// bytes it reads, `count` of them, to `typed`. It prints [`PASTE_READY`] once its terminal
+/// is raw and the request is out: tmux reads a pane's output in order.
 fn pasting_pane(fixture: &TestServer, count: usize) -> (PaneId, std::path::PathBuf) {
     let typed = fixture.home.path().join("typed");
     let script = format!(
-        "printf '\\033[?2004h'; stty raw -echo; dd bs=1 count={count} of='{}.part' 2>/dev/null; \
-         mv '{0}.part' '{0}'; sleep 60",
+        "stty raw -echo; printf '\\033[?2004h{PASTE_READY}'; \
+         dd bs=1 count={count} of='{}.part' 2>/dev/null; mv '{0}.part' '{0}'; sleep 60",
         typed.display()
     );
     let (_, pane) = fixture.start_shell("agent-1", &script);
@@ -118,14 +121,11 @@ fn pasted_text_arrives_as_one_bracketed_paste() {
     let path = "/state/tmp/s1/clipboard-1.png";
     let expected = format!("\u{1b}[200~{path}\u{1b}[201~");
     let (pane, typed) = pasting_pane(&fixture, expected.len());
+    // Not `#{bracket_paste_flag}`: on CI's tmux 3.6 it never read 1 (PR #924).
     eventually("the program asked for bracketed paste", || {
-        fixture.tmux(&[
-            "display-message",
-            "-p",
-            "-t",
-            pane.as_str(),
-            "#{bracket_paste_flag}",
-        ]) == "1\n"
+        fixture
+            .tmux(&["capture-pane", "-p", "-t", pane.as_str()])
+            .contains(PASTE_READY)
     });
 
     fixture.server.paste(&pane, path).expect("pasted");
