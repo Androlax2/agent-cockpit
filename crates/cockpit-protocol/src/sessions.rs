@@ -251,7 +251,7 @@ pub struct SandboxEvidenceView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SandboxEnforcementView {
-    /// `client_identity`: the proxy client this launch alone used.
+    /// `client_identity`: this launch's own name, which owner observations attach to (#433).
     Sandboxed {
         backend: String,
         engine: String,
@@ -278,7 +278,7 @@ impl SandboxEvidenceView {
             } => vec![
                 format!("sandbox: enforced by {backend} on {}", self.platform),
                 format!("engine: {engine}"),
-                format!("proxy client: {client_identity}"),
+                format!("launch identity: {client_identity}"),
             ],
             SandboxEnforcementView::Unsandboxed { reason } => vec![format!(
                 "sandbox: NONE on {}, unsandboxed: {reason}",

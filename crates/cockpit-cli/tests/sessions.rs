@@ -602,7 +602,7 @@ async fn session_sandbox_prints_the_evidence_of_the_latest_launch() {
         text(&output.stdout),
         "sandbox: enforced by fixture-backend on linux\n\
          engine: fixture-backend 1.0 (abc1234)\n\
-         proxy client: cockpit-s0123456789ab-0a1b2c3d4e5f\n\
+         launch identity: cockpit-s0123456789ab-0a1b2c3d4e5f\n\
          rule: read-write /p/app <- fixture mount view\n\
          observed: landlock: yes\n"
     );
@@ -673,7 +673,7 @@ async fn a_refused_sandbox_show_exits_1_with_the_rule_and_reason() {
         &home.daemon_socket(),
         Outcome::Error(ProtocolError::new(
             ErrorCode::Refused,
-            "the sandbox refuses `agents.sandbox = \"required\"`: this release has no sandbox backend",
+            "the sandbox refuses `agents.sandbox = \"required\"`: no sandbox backend on this host",
         )),
     );
 
@@ -684,7 +684,7 @@ async fn a_refused_sandbox_show_exits_1_with_the_rule_and_reason() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "torlek: refused: the sandbox refuses `agents.sandbox = \"required\"`: this release has no sandbox backend\n"
+        "torlek: refused: the sandbox refuses `agents.sandbox = \"required\"`: no sandbox backend on this host\n"
     );
 }
 

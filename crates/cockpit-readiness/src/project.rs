@@ -155,36 +155,46 @@ fn execution_environment(config: &EffectiveConfig, host: &HostFacts) -> Option<R
         (ExecutionEnvironment::Native, AgentSandbox::Off) => {
             Requirement::available(name, "native: the owner runs agents unsandboxed")
         }
-        (ExecutionEnvironment::Native, AgentSandbox::Required) => Requirement::needs(
-            name,
-            Status::MissingPrerequisite,
-            format!(
-                "the project expects native work ({source}); agents.sandbox = \"required\" refuses every launch"
+        (ExecutionEnvironment::Native, AgentSandbox::Required) => match &host.sandbox_backend {
+            Ok(backend) => Requirement::available(
+                name,
+                format!("native: agents run on this host, in {backend}"),
             ),
-            format!(
-                "if you accept unsandboxed agents everywhere, set agents.sandbox = \"off\" in {owner_file}"
+            Err(reason) => Requirement::needs(
+                name,
+                Status::MissingPrerequisite,
+                format!(
+                    "the project expects native work ({source}); agents.sandbox = \"required\" refuses every launch: {reason}"
+                ),
+                format!(
+                    "fix what the detail names and restart the daemon, or, if you accept unsandboxed agents everywhere, set agents.sandbox = \"off\" in {owner_file}"
+                ),
             ),
-        ),
-        (ExecutionEnvironment::Sandbox, AgentSandbox::Required) => Requirement::needs(
-            name,
-            Status::MissingPrerequisite,
-            format!(
-                "the project expects the sandbox ({source}), and {}",
-                cockpit_config::NO_SANDBOX_BACKEND
+        },
+        (ExecutionEnvironment::Sandbox, AgentSandbox::Required) => match &host.sandbox_backend {
+            Ok(backend) => Requirement::available(
+                name,
+                format!("the project expects the sandbox ({source}); agents run in {backend}"),
             ),
-            format!(
-                "start no session in it until Torlek's own sandbox (#546) ships, or set agents.sandbox = \"off\" in {owner_file} to run its agents unsandboxed"
+            Err(reason) => Requirement::needs(
+                name,
+                Status::MissingPrerequisite,
+                format!(
+                    "the project expects the sandbox ({source}), and this host has none: {reason}"
+                ),
+                format!(
+                    "fix what the detail names and restart the daemon, or set agents.sandbox = \"off\" in {owner_file} to run its agents unsandboxed"
+                ),
             ),
-        ),
+        },
         (ExecutionEnvironment::Sandbox, AgentSandbox::Off) => Requirement::needs(
             name,
             Status::NeedsAuthorization,
             format!(
-                "the project expects the sandbox ({source}); agents run unsandboxed: {}",
-                cockpit_config::NO_SANDBOX_BACKEND
+                "the project expects the sandbox ({source}); agents run unsandboxed: agents.sandbox = \"off\""
             ),
             format!(
-                "start no session in it until Torlek's own sandbox (#546) ships, or start them knowing they run unsandboxed; agents.sandbox = \"required\" in {owner_file} refuses them instead"
+                "set agents.sandbox = \"required\" in {owner_file} to run its agents in Torlek's sandbox, or start them knowing they run unsandboxed"
             ),
         ),
     };

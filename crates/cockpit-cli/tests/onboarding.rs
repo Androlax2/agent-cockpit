@@ -46,7 +46,7 @@ impl Home {
         std::fs::write(path, contents).unwrap();
     }
 
-    /// The consent that lets agents launch while no sandbox backend exists (#828).
+    /// The consent that lets agents launch unsandboxed (#828).
     fn accept_sandbox(&self) {
         self.write_owner_config("[agents]\nsandbox = \"off\"\n");
     }
@@ -294,7 +294,7 @@ async fn a_blocking_host_requirement_is_the_first_action() {
 }
 
 #[tokio::test]
-async fn the_sandbox_step_says_there_is_no_sandbox_and_asks_for_consent() {
+async fn the_sandbox_step_says_what_each_setting_does_and_asks_for_consent() {
     let home = Home::new();
 
     let output = home.against(&Daemon::ready(), &["init"]).await;
@@ -304,7 +304,12 @@ async fn the_sandbox_step_says_there_is_no_sandbox_and_asks_for_consent() {
         step(&checklist, "Sandbox and approvals").starts_with("[todo"),
         "{checklist}"
     );
-    for topic in ["no sandbox: ", "needs you: ", "approvals: ", "desktop: "] {
+    for topic in [
+        "sandbox: agents.sandbox = ",
+        "needs you: ",
+        "approvals: ",
+        "desktop: ",
+    ] {
         assert!(checklist.contains(topic), "no {topic:?} in:\n{checklist}");
     }
     let next = final_next(&checklist);
@@ -350,8 +355,10 @@ async fn an_existing_config_folder_is_not_created_again() {
     assert!(!final_next(&checklist).contains("mkdir"), "{checklist}");
 }
 
+/// #829: `required` is the owner's recorded choice; whether this host has the sandbox is
+/// the readiness step's to say.
 #[tokio::test]
-async fn a_required_setting_keeps_the_step_open_because_every_launch_is_refused() {
+async fn a_required_setting_completes_the_step_and_points_at_readiness() {
     let home = Home::new();
     home.write_owner_config("[agents]\nsandbox = \"required\"\n");
 
@@ -359,15 +366,11 @@ async fn a_required_setting_keeps_the_step_open_because_every_launch_is_refused(
 
     let checklist = text(&output.stdout);
     assert!(
-        step(&checklist, "Sandbox and approvals").starts_with("[todo"),
+        step(&checklist, "Sandbox and approvals").starts_with("[done"),
         "{checklist}"
     );
     assert!(
-        checklist.contains("every agent launch is refused"),
-        "{checklist}"
-    );
-    assert!(
-        checklist.contains("set `sandbox = \"off\"` at "),
+        checklist.contains("the readiness step's `sandbox` line says whether this host has it"),
         "{checklist}"
     );
 }

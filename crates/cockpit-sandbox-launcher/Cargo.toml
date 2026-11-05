@@ -1,0 +1,30 @@
+[package]
+name = "cockpit-sandbox-launcher"
+description = "torlek-sandbox: starts one agent inside bubblewrap's namespaces, then applies Landlock and a seccomp filter from memory before running it (#829)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "torlek-sandbox"
+path = "src/main.rs"
+
+[dependencies]
+cockpit-sandbox = { path = "../cockpit-sandbox", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Pinned exactly (#546 D5): their unsafe code is reviewed upstream; this crate keeps
+# `unsafe_code = "deny"`.
+landlock = "=0.4.7"
+seccompiler = "=0.5.0"
+# Constants only (syscall numbers, ioctl requests); already in the tree through seccompiler.
+libc = "0.2.191"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

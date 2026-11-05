@@ -85,8 +85,7 @@ The server joins active HTTP handlers before exiting; Rust requires successful
 exit within ten seconds and checks the final error record. Timeout or failed
 shutdown fails the probe instead of publishing a receipt.
 
-The daemon fixture runs its agents unsandboxed: this release has no sandbox backend
-(#828). Application configuration controls are not proof of an OS network boundary or real sandbox
+The daemon fixture runs its agents unsandboxed, the default `agents.sandbox = "off"`. Application configuration controls are not proof of an OS network boundary or real sandbox
 mount behavior. These tests prove delivery into native model input, not model
 understanding, approval routing or persistent completion (#516).
 

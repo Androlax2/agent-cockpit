@@ -12,12 +12,17 @@ use cockpit_readiness::{
 };
 use tempfile::TempDir;
 
+const NATIVE_BACKEND: &str = "torlek-sandbox with bubblewrap 0.13.1 and Landlock ABI 9";
+
+const NO_BUBBLEWRAP: &str = "bubblewrap (`bwrap`) is not on the daemon's PATH";
+
 fn ready_host() -> HostFacts {
     HostFacts {
         platform: Platform::Linux,
         tmux: Ok("3.6".to_owned()),
-        // The product default while no backend exists (#828): `required` blocks.
+        // The product default; `required` runs agents in the native sandbox (#829).
         sandbox_setting: AgentSandbox::Off,
+        sandbox_backend: Ok(NATIVE_BACKEND.to_owned()),
         providers: vec![ProviderFacts {
             name: "claude".to_owned(),
             found: Ok(ProviderFound {
@@ -144,6 +149,7 @@ fn every_requirement_that_is_not_available_names_its_next_action() {
         platform: Platform::Unsupported("freebsd".to_owned()),
         tmux: Err("no tmux".to_owned()),
         sandbox_setting: AgentSandbox::Required,
+        sandbox_backend: Err(NO_BUBBLEWRAP.to_owned()),
         providers: vec![ProviderFacts {
             name: "claude".to_owned(),
             found: Err(ProviderUnusable::NotOnPath),
@@ -165,10 +171,38 @@ fn every_requirement_that_is_not_available_names_its_next_action() {
     assert!(!report.is_ready());
 }
 
-/// The security rule of #828: an explicit `required` blocks, since every launch is refused,
-/// and the report names the missing backend and the owner's one way to run agents anyway.
+/// The security rule of #828: an explicit `required` on a host without the sandbox blocks,
+/// since every launch is refused, and the report names why and the owner's one way to run
+/// agents anyway.
 #[test]
-fn a_required_sandbox_blocks_naming_the_missing_backend() {
+fn a_required_sandbox_without_a_backend_blocks_naming_why() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let host = HostFacts {
+        sandbox_setting: AgentSandbox::Required,
+        sandbox_backend: Err(NO_BUBBLEWRAP.to_owned()),
+        ..ready_host()
+    };
+
+    let report = fixture.report(&host, &fixture.facts());
+
+    let sandbox = requirement(&report, "sandbox");
+    assert_eq!(sandbox.status, Status::MissingPrerequisite);
+    assert!(sandbox.detail.starts_with("no sandbox: "), "{sandbox:?}");
+    assert!(sandbox.detail.contains(NO_BUBBLEWRAP), "{sandbox:?}");
+    assert!(
+        sandbox
+            .next
+            .as_deref()
+            .unwrap()
+            .contains("agents.sandbox = \"off\""),
+        "{sandbox:?}"
+    );
+    assert!(!report.is_ready());
+}
+
+#[test]
+fn a_required_sandbox_with_the_native_backend_is_available_naming_it() {
     let fixture = Fixture::new();
     fixture.configure("", None);
     let host = HostFacts {
@@ -179,21 +213,9 @@ fn a_required_sandbox_blocks_naming_the_missing_backend() {
     let report = fixture.report(&host, &fixture.facts());
 
     let sandbox = requirement(&report, "sandbox");
-    assert_eq!(sandbox.status, Status::MissingPrerequisite);
-    assert!(sandbox.detail.starts_with("no sandbox: "), "{sandbox:?}");
-    assert!(
-        sandbox.detail.contains(cockpit_config::NO_SANDBOX_BACKEND),
-        "{sandbox:?}"
-    );
-    assert!(
-        sandbox
-            .next
-            .as_deref()
-            .unwrap()
-            .contains("agents.sandbox = \"off\""),
-        "{sandbox:?}"
-    );
-    assert!(!report.is_ready());
+    assert_eq!(sandbox.status, Status::Available, "{sandbox:?}");
+    assert!(sandbox.detail.contains(NATIVE_BACKEND), "{sandbox:?}");
+    assert!(sandbox.detail.contains("loopback"), "{sandbox:?}");
 }
 
 /// Each case: host facts changed from a ready host, the requirement and the status it gets.
@@ -211,6 +233,7 @@ fn a_host_fact_decides_its_requirement_status() {
         (
             HostFacts {
                 sandbox_setting: AgentSandbox::Required,
+                sandbox_backend: Err(NO_BUBBLEWRAP.to_owned()),
                 ..ready_host()
             },
             "sandbox",
@@ -549,21 +572,37 @@ fn a_preset_needs_a_provider_that_reports_its_steps_capabilities() {
 /// sandbox is never available, and `required` blocks every project.
 #[test]
 fn the_execution_environment_the_project_expects_meets_what_the_owner_granted() {
+    let native: Result<String, String> = Ok(NATIVE_BACKEND.to_owned());
+    let missing: Result<String, String> = Err(NO_BUBBLEWRAP.to_owned());
     let cases = [
-        ("native", AgentSandbox::Off, Status::Available),
+        ("native", AgentSandbox::Off, &native, Status::Available),
+        ("native", AgentSandbox::Required, &native, Status::Available),
         (
             "native",
             AgentSandbox::Required,
+            &missing,
             Status::MissingPrerequisite,
         ),
         (
             "sandbox",
             AgentSandbox::Required,
+            &native,
+            Status::Available,
+        ),
+        (
+            "sandbox",
+            AgentSandbox::Required,
+            &missing,
             Status::MissingPrerequisite,
         ),
-        ("sandbox", AgentSandbox::Off, Status::NeedsAuthorization),
+        (
+            "sandbox",
+            AgentSandbox::Off,
+            &native,
+            Status::NeedsAuthorization,
+        ),
     ];
-    for (environment, setting, status) in cases {
+    for (environment, setting, backend, status) in cases {
         let fixture = Fixture::new();
         fixture.configure(
             &format!("[execution]\nenvironment = \"{environment}\"\n"),
@@ -571,6 +610,7 @@ fn the_execution_environment_the_project_expects_meets_what_the_owner_granted() 
         );
         let host = HostFacts {
             sandbox_setting: setting,
+            sandbox_backend: backend.clone(),
             ..ready_host()
         };
 
@@ -579,7 +619,7 @@ fn the_execution_environment_the_project_expects_meets_what_the_owner_granted() 
         let requirement = requirement(&report, "execution environment");
         assert_eq!(
             requirement.status, status,
-            "{environment} {setting:?}: {requirement:#?}"
+            "{environment} {setting:?} {backend:?}: {requirement:#?}"
         );
     }
 }

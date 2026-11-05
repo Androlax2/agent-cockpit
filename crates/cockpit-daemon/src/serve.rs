@@ -145,6 +145,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     let sandbox = sandbox(
         &instance,
         &environment,
+        &serve.programs_dir,
         &[
             Some(serve.programs_dir.clone()),
             opencode_plugin_dir,
@@ -237,16 +238,22 @@ const STOP_WAIT: Duration = Duration::from_secs(5);
 
 /// The sandbox every launch goes through (#61), with the paths the daemon's layout gives
 /// every agent and keeps from it; `bridge_dirs` hold what the adapters' bridges run and load
-/// inside it, and the instruction bundle. No backend enforces it in this release (#828): the
-/// start says how the owner's setting treats launches.
+/// inside it, and the instruction bundle. The native backend is `torlek-sandbox` in
+/// `programs_dir`, probed once here, before the runtime, since it starts a process (#829);
+/// the start says how the owner's setting treats launches.
 fn sandbox(
     instance: &Instance,
     environment: &cockpit_config::Environment,
+    programs_dir: &Path,
     bridge_dirs: &[PathBuf],
     config: &cockpit_config::EffectiveConfig,
 ) -> cockpit_sandbox::Sandbox {
     let options = instance.options();
-    log_sandbox_setting(&config.agents_sandbox);
+    let backend = cockpit_sandbox::Backend::probe(
+        &programs_dir.join("torlek-sandbox"),
+        std::env::var_os("PATH").as_deref(),
+    );
+    log_sandbox_setting(&config.agents_sandbox, &backend);
     let layout_config_dir = environment
         .home_dir()
         .map(|home| {
@@ -276,33 +283,45 @@ fn sandbox(
     cockpit_sandbox::Sandbox::new(
         cockpit_sandbox::Platform::detect(),
         cockpit_sandbox::HostPaths {
-            read_only: std::iter::once(
+            read_only: bridge_dirs.to_vec(),
+            sockets: vec![
                 options
                     .agent_socket_path()
                     .parent()
                     .expect("the agent socket is in its own folder")
                     .to_path_buf(),
-            )
-            .chain(bridge_dirs.iter().cloned())
-            .collect(),
+            ],
             denied,
             denied_write: Vec::new(),
             owner_uid: instance.owner_uid,
             mount_sources: options.mount_sources(),
+            homes: options.session_homes(),
         },
+        backend,
     )
 }
 
-/// How `agents.sandbox` treats every launch while no backend exists (#828), logged at the
-/// start and again by a reload that changes it.
-pub(crate) fn log_sandbox_setting(setting: &cockpit_config::Sourced<cockpit_config::AgentSandbox>) {
-    match setting.value {
-        cockpit_config::AgentSandbox::Required => tracing::error!(
-            source = %setting.source,
-            "agents.sandbox = \"required\": {}; every agent launch is refused until the owner sets agents.sandbox = \"off\"",
-            cockpit_config::NO_SANDBOX_BACKEND
-        ),
-        cockpit_config::AgentSandbox::Off => tracing::warn!(
+/// How `agents.sandbox` treats every launch with the `backend` the start probed, logged at
+/// the start and again by a reload that changes it.
+pub(crate) fn log_sandbox_setting(
+    setting: &cockpit_config::Sourced<cockpit_config::AgentSandbox>,
+    backend: &cockpit_sandbox::Backend,
+) {
+    match (setting.value, backend) {
+        (cockpit_config::AgentSandbox::Required, cockpit_sandbox::Backend::Native(native)) => {
+            tracing::info!(
+                source = %setting.source,
+                backend = %native.describe(),
+                "agents.sandbox = \"required\": every agent launches in the native sandbox, with no network but loopback until the session proxy exists (#831)"
+            );
+        }
+        (cockpit_config::AgentSandbox::Required, cockpit_sandbox::Backend::Missing { reason }) => {
+            tracing::error!(
+                source = %setting.source,
+                "agents.sandbox = \"required\": no sandbox backend on this host: {reason}; every agent launch is refused until it is fixed or the owner sets agents.sandbox = \"off\""
+            );
+        }
+        (cockpit_config::AgentSandbox::Off, _) => tracing::warn!(
             source = %setting.source,
             "agents run UNSANDBOXED: agents.sandbox = \"off\"; {}",
             cockpit_config::UNSANDBOXED_RISK

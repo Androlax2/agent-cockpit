@@ -1,19 +1,29 @@
-//! This release has no sandbox backend (#828), through the real daemon binary: by default
-//! every launch runs unsandboxed, the evidence says so and the risk is logged at the start
-//! and at each launch; an explicit `agents.sandbox = "required"` refuses every launch naming
-//! the missing backend and never runs an agent. `cockpit session sandbox` and
-//! `cockpit sandbox show` print the evidence and the command.
+//! The sandbox through the real daemon binary (#828, #829). By default every launch runs
+//! unsandboxed, the evidence says so and the risk is logged at the start and at each launch.
+//! `agents.sandbox = "required"` runs the agent in Torlek's native sandbox (`torlek-sandbox`
+//! under bubblewrap, Landlock and seccomp) and, on a host without it, refuses every launch
+//! naming why and never runs an agent. `cockpit session sandbox` and `cockpit sandbox show`
+//! print the evidence and the command.
+//!
+//! The sandboxed tests drive the [`COMMANDED_PROJECT`] agent: each line it runs shows what
+//! the agent sees from inside the sandbox.
 
 mod candidate;
 mod real_daemon;
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{Command, ErrorCode};
-use real_daemon::{GENEROUS, Home, SETTLE, new_session, session_new_command};
+use real_daemon::{
+    BUILD_PROFILE_DIR, COMMANDED_PROJECT, Daemon, GENEROUS, Home, SETTLE, new_session,
+    session_new_command,
+};
 
 const REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
+/// What [`cockpit_sandbox::Backend::probe`] names on a host without bubblewrap.
+const NO_BUBBLEWRAP: &str = "bubblewrap (`bwrap`)";
 
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
@@ -31,6 +41,39 @@ async fn sandbox_show(home: &Home, root: &std::path::Path) -> std::process::Outp
         &[],
     )
     .await
+}
+
+/// A sandboxed agent under `required`: the daemon, the agent's checkout and its session.
+struct Sandboxed {
+    _daemon: Daemon,
+    root: PathBuf,
+    session: String,
+}
+
+/// Starts the daemon with `required` and launches the [`COMMANDED_PROJECT`] agent, after
+/// `prepare` set up the owner's home.
+async fn sandboxed_agent(home: &Home, prepare: impl FnOnce(&Home)) -> Sandboxed {
+    assert!(
+        candidate::program("torlek-sandbox").is_file(),
+        "the launcher is built beside the daemon: run the workspace's tests"
+    );
+    home.write_owner_config(REQUIRED);
+    prepare(home);
+    let daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    let session = new_session(&client, &root).await;
+    Sandboxed {
+        _daemon: daemon,
+        root,
+        session: session.id,
+    }
+}
+
+/// What `line` printed in the sandboxed agent, ending `exit=<code>`.
+async fn run_in_agent(home: &Home, root: &Path, line: &str) -> String {
+    let number = home.command_agent(root, line);
+    home.agent_output(root, number).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -61,10 +104,10 @@ async fn by_default_a_launch_runs_unsandboxed_and_the_evidence_says_no_sandbox()
 
 /// The security rule of #828: `required` never degrades to an unsandboxed launch.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_explicit_required_setting_refuses_the_launch_naming_the_missing_backend() {
+async fn a_required_setting_without_bubblewrap_refuses_the_launch_naming_why() {
     let home = Home::new();
     home.write_owner_config(REQUIRED);
-    let _daemon = home.start();
+    let _daemon = home.start_without_bubblewrap();
     let client = home.connect().await;
     let (root, _) = home.project(&client, "app").await;
 
@@ -74,8 +117,7 @@ async fn an_explicit_required_setting_refuses_the_launch_naming_the_missing_back
 
     assert!(
         matches!(&refused, Err(ClientError::Daemon(error))
-            if error.code == ErrorCode::Refused
-                && error.message.contains(cockpit_config::NO_SANDBOX_BACKEND)),
+            if error.code == ErrorCode::Refused && error.message.contains(NO_BUBBLEWRAP)),
         "{refused:?}"
     );
     tokio::time::sleep(SETTLE).await;
@@ -83,10 +125,10 @@ async fn an_explicit_required_setting_refuses_the_launch_naming_the_missing_back
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_required_setting_logs_at_start_that_every_launch_is_refused() {
+async fn a_required_setting_without_bubblewrap_logs_at_start_that_every_launch_is_refused() {
     let home = Home::new();
     home.write_owner_config(REQUIRED);
-    let _daemon = home.start();
+    let _daemon = home.start_without_bubblewrap();
 
     let log = home
         .log_once_it_contains("every agent launch is refused")
@@ -95,7 +137,7 @@ async fn a_required_setting_logs_at_start_that_every_launch_is_refused() {
     assert!(
         log.lines()
             .any(|line| line.contains("every agent launch is refused")
-                && line.contains(cockpit_config::NO_SANDBOX_BACKEND)),
+                && line.contains(NO_BUBBLEWRAP)),
         "{log}"
     );
 }
@@ -141,10 +183,10 @@ async fn cockpit_sandbox_show_prints_no_sandbox_and_the_bare_command_without_lau
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn cockpit_sandbox_show_with_a_required_setting_fails_naming_the_missing_backend() {
+async fn cockpit_sandbox_show_with_a_required_setting_without_bubblewrap_fails_naming_why() {
     let home = Home::new();
     home.write_owner_config(REQUIRED);
-    let _daemon = home.start();
+    let _daemon = home.start_without_bubblewrap();
     let client = home.connect().await;
     let (root, _) = home.project(&client, "app").await;
 
@@ -152,10 +194,239 @@ async fn cockpit_sandbox_show_with_a_required_setting_fails_naming_the_missing_b
 
     assert!(!shown.status.success());
     assert!(
-        text(&shown.stderr).contains(cockpit_config::NO_SANDBOX_BACKEND),
+        text(&shown.stderr).contains(NO_BUBBLEWRAP),
         "{}",
         text(&shown.stderr)
     );
+}
+
+/// #829: the evidence names the backend, bubblewrap's version and the Landlock ABI.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_required_launch_runs_in_the_native_sandbox_and_the_evidence_names_it() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    run_in_agent(&home, &agent.root, "true").await;
+
+    let shown = home
+        .cockpit(&["session", "sandbox", &agent.session], &[])
+        .await;
+
+    assert!(shown.status.success(), "{}", text(&shown.stderr));
+    let printed = text(&shown.stdout);
+    assert!(
+        printed.starts_with("sandbox: enforced by torlek-sandbox on "),
+        "{printed}"
+    );
+    assert!(printed.contains("\nengine: bubblewrap "), "{printed}");
+    assert!(printed.contains("\nobserved: landlock abi: "), "{printed}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_writes_its_checkout() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    let printed = run_in_agent(&home, &agent.root, "echo written > written && cat written").await;
+
+    assert_eq!(printed, "written\nexit=0\n");
+    assert_eq!(
+        std::fs::read_to_string(agent.root.join("written")).unwrap(),
+        "written\n"
+    );
+}
+
+/// #829: hooks and Git's configuration run code on the owner's next Git command, and
+/// `.torlek` holds what the owner configured for the project.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_may_not_write_git_hooks_git_config_or_torlek() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    for protected in [
+        ".git/hooks/pre-commit",
+        ".git/config",
+        ".torlek/project.toml",
+    ] {
+        let printed = run_in_agent(
+            &home,
+            &agent.root,
+            &format!("echo planted >> {protected} || echo refused"),
+        )
+        .await;
+
+        assert!(
+            printed.ends_with("refused\nexit=0\n"),
+            "{protected}: {printed}"
+        );
+        assert!(
+            !std::fs::read_to_string(agent.root.join(protected))
+                .unwrap_or_default()
+                .contains("planted"),
+            "{protected}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_may_not_read_the_owners_ssh_keys_or_the_state_database() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        let ssh = home.path().join(".ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        std::fs::write(ssh.join("id_ed25519"), "owner's key\n").unwrap();
+    })
+    .await;
+    let database = home.state_dir().join("state.db");
+    assert!(database.is_file());
+
+    for unreadable in [home.path().join(".ssh/id_ed25519"), database] {
+        let printed = run_in_agent(
+            &home,
+            &agent.root,
+            &format!("cat '{}' || echo refused", unreadable.display()),
+        )
+        .await;
+
+        assert!(
+            printed.ends_with("refused\nexit=0\n"),
+            "{unreadable:?}: {printed}"
+        );
+        assert!(!printed.contains("owner's key"), "{printed}");
+    }
+}
+
+/// Until the session proxy (#831), a sandboxed agent has no network but loopback.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_sees_only_the_loopback_interface() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' '",
+    )
+    .await;
+
+    assert_eq!(printed, "lo\nexit=0\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_runs_under_a_seccomp_filter() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    let printed = run_in_agent(&home, &agent.root, "grep '^Seccomp:' /proc/self/status").await;
+
+    assert_eq!(printed, "Seccomp:\t2\nexit=0\n");
+}
+
+/// #857: under `required` the project's token stays with the daemon; the owner's `gh`
+/// sign-in is in a home the agent does not see.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_gets_no_github_token_or_gh_sign_in() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        home.write_github_token(COMMANDED_PROJECT, "ghp_project_token\n", 0o600);
+        let gh = home.path().join(".config/gh");
+        std::fs::create_dir_all(&gh).unwrap();
+        std::fs::write(gh.join("hosts.yml"), "oauth_token: owner\n").unwrap();
+    })
+    .await;
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "echo \"${GH_TOKEN-unset} ${GITHUB_TOKEN-unset}\"; cat ~/.config/gh/hosts.yml || echo refused",
+    )
+    .await;
+
+    assert!(printed.starts_with("unset unset\n"), "{printed}");
+    assert!(printed.ends_with("refused\nexit=0\n"), "{printed}");
+}
+
+/// #857: with no network but loopback, a push from inside cannot reach any forge.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agents_git_push_fails() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "GIT_TERMINAL_PROMPT=0 git push --quiet https://github.com/Androlax2/agent-cockpit.git \
+         HEAD:refs/heads/sandbox-test >/dev/null 2>&1; echo \"push=$?\"",
+    )
+    .await;
+
+    assert!(
+        printed.starts_with("push=") && !printed.starts_with("push=0\n"),
+        "{printed}"
+    );
+}
+
+/// #434: the launcher removes the spec it read, so no launch leaves one behind.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_launch_leaves_no_launch_spec() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    run_in_agent(&home, &agent.root, "true").await;
+
+    let spec = home
+        .path()
+        .join("run")
+        .join(BUILD_PROFILE_DIR)
+        .join("mounts")
+        .join(&agent.session)
+        .join(cockpit_sandbox::SPEC_FILE);
+
+    assert!(!spec.exists(), "{spec:?}");
+    assert!(spec.parent().unwrap().is_dir(), "{spec:?}");
+}
+
+/// #856: no container engine socket, nor the variables that point at one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_reaches_no_container_engine() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "for socket in /var/run/docker.sock /run/docker.sock /run/podman/podman.sock \
+         /run/containerd/containerd.sock \"${XDG_RUNTIME_DIR-/nonexistent}/docker.sock\" \
+         \"${XDG_RUNTIME_DIR-/nonexistent}/podman/podman.sock\"; do \
+         test -e \"$socket\" && echo \"present: $socket\"; done; \
+         env | grep '^DOCKER_' || echo 'no docker variables'",
+    )
+    .await;
+
+    assert_eq!(printed, "no docker variables\nexit=0\n");
+}
+
+/// #858: the agent's home is the session's own, kept across relaunches, never the owner's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agents_home_is_the_sessions_own_folder() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        std::fs::write(home.path().join("owner-file"), "owner\n").unwrap();
+    })
+    .await;
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "test -e ~/owner-file && echo visible; echo kept > ~/agent-file && echo written",
+    )
+    .await;
+
+    assert_eq!(printed, "written\nexit=0\n");
+    let session_home = home
+        .state_dir()
+        .join("homes")
+        .join(&agent.session)
+        .join("agent-file");
+    assert_eq!(std::fs::read_to_string(session_home).unwrap(), "kept\n");
 }
 
 /// #419: Claude Code lists the bundle's `torlek` skill because the launch adds the folder

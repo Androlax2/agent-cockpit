@@ -49,11 +49,12 @@ async fn a_reload_prints_each_session_setting_and_the_value_it_replaced() {
     );
 }
 
-/// #828: the start's sandbox log would be stale after a reload that changes the setting.
+/// #828: the start's sandbox log would be stale after a reload that changes the setting. The
+/// daemon starts without `bwrap` on its PATH, so the host has no sandbox.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reload_to_required_logs_that_every_launch_is_refused() {
     let home = Home::new();
-    let _daemon = home.start();
+    let _daemon = home.start_without_bubblewrap();
     home.write_owner_config("[agents]\nsandbox = \"required\"\n");
 
     let reloaded = reload(&home).await;
@@ -65,7 +66,7 @@ async fn a_reload_to_required_logs_that_every_launch_is_refused() {
     assert!(
         log.lines()
             .any(|line| line.contains("every agent launch is refused")
-                && line.contains(cockpit_config::NO_SANDBOX_BACKEND)),
+                && line.contains("bubblewrap (`bwrap`)")),
         "{log}"
     );
 }

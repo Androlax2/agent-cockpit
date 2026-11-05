@@ -1,18 +1,25 @@
 # cockpit-sandbox
 
-Owns the sandbox every launched agent runs in: the profile Cockpit requests, the platform it
-would be enforced on, the refusal while no backend enforces it and the evidence of what each
+Owns the sandbox every launched agent runs in: the profile Cockpit requests, the launch spec
+the native launcher enforces, the refusal on a host without it and the evidence of what each
 launch got.
 
-**This release has no sandbox backend.** Greywall and Greyproxy were removed (#828); Torlek's
-own native sandbox (#546, [research](../../docs/research/2026-11-05-546-own-sandbox-and-traffic-control.md))
-replaces them in later stages. Until it exists:
+**The backend is Torlek's native sandbox** (#829, [research](../../docs/research/2026-11-05-546-own-sandbox-and-traffic-control.md)):
+`torlek-sandbox` ([its crate](../cockpit-sandbox-launcher/README.md)) under bubblewrap, with
+Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
 
 - `agents.sandbox = "off"` (the product default) runs every agent unsandboxed, with the
   owner's rights. `Sandbox::prepare` returns the command unchanged with `Unsandboxed`
   evidence, reason `no sandbox: agents.sandbox = "off"`.
-- `agents.sandbox = "required"` refuses every launch: `Sandbox::prepare` returns a `Refusal`
-  naming the missing backend (`cockpit_config::NO_SANDBOX_BACKEND`). It never degrades to an
+- `agents.sandbox = "required"` with the native backend: `Sandbox::prepare` builds the
+  profile, then the `LaunchSpec` (`spec.rs`) the launcher reads, and returns the launcher in
+  the agent's place with `Sandboxed` evidence naming bubblewrap's version and the Landlock
+  ABI. `Staged::write` is the one place a sandboxed session's mount sources and own home are
+  created. The provider's declared credential variables are dropped and its credential files
+  masked (#858); no network but loopback until the session proxy (#831), so a placeholder
+  secret or a shared desktop session is refused.
+- `agents.sandbox = "required"` on a host without it (no `bwrap`, a failed probe, Landlock
+  below ABI 2): `Sandbox::prepare` returns a `Refusal` naming why. It never degrades to an
   unsandboxed launch.
 
 An unsandboxed agent can reach the owner socket and act as the owner, so Torlek's grants only
@@ -21,30 +28,27 @@ owner verb typed there is refused, not run as the owner (#729); that stops accid
 same-user process that opens the owner socket itself. The daemon's start, every unsandboxed
 launch, `torlek doctor` and `torlek init` say so.
 
-## What stays for the native backend
+## Profile, reach and evidence
 
 1. `Profile::build` turns what a launch asks for (working directory, the session's own
    directory, read-only mounts the daemon needs the agent to reach, Cockpit's own state it
    must never reach, extra hosts, environment, secrets, the owner's desktop session choice)
    into the effective profile, with Cockpit's baseline rules added. A rule the platform
    cannot enforce is a `Refusal` naming the rule and the reason; nothing is weakened
-   silently. `Sandbox::profile` builds it from the host paths the daemon read; no launch
-   uses it while no backend enforces it.
+   silently. `Sandbox::profile` builds it from the host paths the daemon read.
 2. `ProviderReach` says how the daemon reaches a provider's sockets in a launch: directly
    (every unsandboxed launch), through folders a backend mounts (`FolderMount`, Codex's
    `/tmp/codex-daemon-<uid>`, #446), or not at all, with the reason.
 3. `Evidence` says what one launch got: enforced or unsandboxed, the platform, every rule
    with what enforced it, and the host capabilities observed. `record` stores it in the
    launch's transaction; `latest_for_session` reads it back for `torlek session sandbox`.
-   Rows an earlier release recorded as `Sandboxed` still read back; this release records
-   none.
+   Rows an earlier release recorded as `Sandboxed` still read back.
 4. `record_observations` appends one bounded owner-measured batch to the latest sandboxed
    launch (#433): 1–16 unique, nonblank observations of at most 512 bytes each, without
    control characters. Agent callers, stale identities and unsandboxed launches are
    refused; an identical retry is idempotent. Reports never change policy or grants.
 
-Edges: `cockpit-config` (the owner's `DesktopSession` and `AgentSandbox` values and the
-no-backend text) and `cockpit-turso` (the evidence table, behind the default `persistence`
+Edges: `cockpit-config` (the owner's `DesktopSession` and `AgentSandbox` values) and `cockpit-turso` (the evidence table, behind the default `persistence`
 feature). `cockpit-sessions` calls it for every launch.
 
 ## What the removed engines left

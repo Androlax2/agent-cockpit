@@ -700,6 +700,7 @@ class PackageTests(PackagingTestCase):
                 "torlek-codex-hook": "0.1.0-alpha.7",
                 "torlek-codex-session": "0.1.0-alpha.7",
                 "torlek-opencode-bridge": "0.1.0-alpha.7",
+                "torlek-sandbox": "0.1.0-alpha.7",
             },
         )
         self.assertIsNone(manifest["instruction_bundle"])

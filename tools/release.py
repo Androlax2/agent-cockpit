@@ -71,6 +71,7 @@ HELPERS = (
     "torlek-codex-hook",
     "torlek-codex-session",
     "torlek-opencode-bridge",
+    "torlek-sandbox",
 )
 BINARIES = ("torlek", "torlek-daemon", "torlek-tui", *HELPERS)
 # No CHANGELOG.md: the committed file lags the tag (release-plz regenerates it, #101); the

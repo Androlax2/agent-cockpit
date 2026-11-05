@@ -290,12 +290,13 @@ async fn init_offers_only_the_providers_doctor_finds_usable() {
     );
 }
 
-/// #828: no backend exists, so `required` blocks and names it rather than run unsandboxed.
+/// #828, #829: on a host without the sandbox (no `bwrap` on the daemon's PATH), `required`
+/// blocks and names why rather than run unsandboxed.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_required_sandbox_blocks_doctor_and_init_naming_the_missing_backend() {
+async fn a_required_sandbox_without_bubblewrap_blocks_doctor_and_init_naming_why() {
     let home = Home::new();
     home.write_owner_config("[agents]\nsandbox = \"required\"\n");
-    let _daemon = home.start();
+    let _daemon = home.start_without_bubblewrap();
 
     let doctor = home.cockpit(&["doctor"], &[]).await;
 
@@ -303,17 +304,14 @@ async fn a_required_sandbox_blocks_doctor_and_init_naming_the_missing_backend() 
     assert_eq!(doctor.status.code(), Some(1), "{report}");
     let (sandbox, next) = requirement(&report, "sandbox");
     assert_eq!(status(sandbox), "missing-prerequisite", "{sandbox}");
-    assert!(
-        sandbox.contains(cockpit_config::NO_SANDBOX_BACKEND),
-        "{sandbox}"
-    );
+    assert!(sandbox.contains("bubblewrap (`bwrap`)"), "{sandbox}");
     assert!(
         next.unwrap().contains("agents.sandbox = \"off\""),
         "{report}"
     );
     let init = home.cockpit(&["init"], &[]).await;
     assert!(
-        text(&init.stdout).contains(cockpit_config::NO_SANDBOX_BACKEND),
+        text(&init.stdout).contains("bubblewrap (`bwrap`)"),
         "{}",
         text(&init.stdout)
     );

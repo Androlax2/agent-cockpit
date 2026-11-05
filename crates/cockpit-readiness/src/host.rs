@@ -72,30 +72,43 @@ pub(crate) fn tmux(tmux: &Result<String, String>) -> Requirement {
     }
 }
 
-/// No backend enforces a sandbox in this release (#828): `off` runs agents unsandboxed,
-/// and `required` refuses every launch, which blocks.
-pub(crate) fn sandbox(setting: AgentSandbox) -> Requirement {
-    match setting {
-        AgentSandbox::Required => Requirement::needs(
+/// How the owner's setting treats launches with the `backend` the daemon probed: `off` runs
+/// agents unsandboxed; `required` runs them in the native sandbox, or refuses every launch
+/// when the host has none, which blocks.
+pub(crate) fn sandbox(setting: AgentSandbox, backend: &Result<String, String>) -> Requirement {
+    match (setting, backend) {
+        (AgentSandbox::Required, Ok(backend)) => Requirement::available(
+            "sandbox",
+            format!(
+                "sandboxed: every agent runs in {backend}, with no network but loopback until \
+                 the session proxy exists (#831)"
+            ),
+        ),
+        (AgentSandbox::Required, Err(reason)) => Requirement::needs(
             "sandbox",
             Status::MissingPrerequisite,
             format!(
-                "no sandbox: {}; agents.sandbox = \"required\" refuses every agent launch",
-                cockpit_config::NO_SANDBOX_BACKEND
+                "no sandbox: {reason}; agents.sandbox = \"required\" refuses every agent launch"
             ),
-            "to run agents unsandboxed, with your rights, set agents.sandbox = \"off\" in the owner config and run `torlek config reload`",
+            "fix what the detail names and restart the daemon; to run agents unsandboxed, with your rights, set agents.sandbox = \"off\" in the owner config and run `torlek config reload`",
         ),
-        AgentSandbox::Off => Requirement::available(
+        (AgentSandbox::Off, backend) => Requirement::available(
             "sandbox",
             format!(
                 "no sandbox: agents run UNSANDBOXED (agents.sandbox = \"off\"); {}",
                 cockpit_config::UNSANDBOXED_RISK
             ),
         )
-        .with_advice(format!(
-            "{}; until it is, agents.sandbox = \"required\" refuses every launch",
-            cockpit_config::NO_SANDBOX_BACKEND
-        )),
+        .with_advice(match backend {
+            Ok(backend) => format!(
+                "agents.sandbox = \"required\" runs them in {backend}, with no network but \
+                 loopback until the session proxy exists (#831)"
+            ),
+            Err(reason) => format!(
+                "this host has no sandbox ({reason}); until it has, agents.sandbox = \
+                 \"required\" refuses every launch"
+            ),
+        }),
     }
 }
 
