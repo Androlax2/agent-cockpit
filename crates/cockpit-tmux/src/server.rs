@@ -33,17 +33,20 @@ set-option -g default-command 'unset TMUX TMUX_PANE; exec /bin/sh'
 set-option -g status off
 # The TUI runs in a pane: an Escape key must not wait for the rest of a sequence.
 set-option -s escape-time 0
-# Copy out (#848): the viewer is a client of this server nested in a pane, so a copy reaches
-# the owner's terminal only when tmux takes OSC 52 from that client too, which `external` refuses.
+# Copy out (#848): `on` answers a pane's OSC 52 query with the newest paste buffer, what the
+# owner copied, maybe from another session, unless `get-clipboard` turns that off. A tmux
+# without the option (3.6 has none) keeps `external`: copies stop at the viewer, nothing leaks.
+set-option -sq get-clipboard off
+%if \"#{{get-clipboard}}\"
+# The viewer is a client of this server nested in a pane, so a copy reaches the owner's
+# terminal only when tmux takes OSC 52 from that client too, which `external` refuses.
 set-option -s set-clipboard on
+%endif
 # The nested client's terminal is a pane of this server (default-terminal tmux-256color, or
 # screen): give it the clipboard feature by name rather than through its terminfo or tmux's
 # detection. Indexed, so applying the file again replaces these entries instead of adding more.
 set-option -s terminal-features[10] 'tmux*:clipboard'
 set-option -s terminal-features[11] 'screen*:clipboard'
-# `on` would answer a pane's OSC 52 query with the newest paste buffer: what the owner copied,
-# maybe from another session. No pane reads it.
-set-option -s get-clipboard off
 "
     )
 }

@@ -133,12 +133,55 @@ fn clients_with_clipboard(fixture: &TestServer) -> Vec<String> {
     sessions
 }
 
+/// Whether this tmux has `get-clipboard` (3.6 has none), the option Cockpit's config needs
+/// before it lets panes' OSC 52 through. Without it, the copy tests have nothing to prove.
+fn can_copy_out(fixture: &TestServer) -> bool {
+    let shown = fixture.tmux(&["show-options", "-sq", "get-clipboard"]);
+    if shown.is_empty() {
+        eprintln!(
+            "skipped: {} has no get-clipboard, so copy out stays off",
+            tmux_version()
+        );
+        return false;
+    }
+    true
+}
+
+fn tmux_version() -> String {
+    let printed = Command::new("tmux").arg("-V").output().expect("tmux runs");
+    String::from_utf8_lossy(&printed.stdout).trim().to_owned()
+}
+
+#[test]
+fn panes_osc_52_is_taken_only_where_tmux_can_refuse_clipboard_queries() {
+    let fixture = TestServer::new();
+    fixture.start_shell("agent-1", "sleep 60");
+
+    let get_clipboard = fixture.tmux(&["show-options", "-sqv", "get-clipboard"]);
+    let set_clipboard = fixture.tmux(&["show-options", "-sv", "set-clipboard"]);
+
+    let expected = if get_clipboard.is_empty() {
+        ("", "external\n")
+    } else {
+        ("off\n", "on\n")
+    };
+    assert_eq!(
+        (get_clipboard.as_str(), set_clipboard.as_str()),
+        expected,
+        "{}",
+        tmux_version()
+    );
+}
+
 #[test]
 fn text_an_agent_copies_with_osc_52_reaches_the_desktop_terminal() {
     let fixture = TestServer::new();
     let copy = "printf '\\033]52;c;%s\\007' \"$(printf agent-copied | base64)\"";
     let (desktop, _) =
         agent_shown_on_the_desktop(&fixture, &format!("{}; {copy}; sleep 60", wait_for("copy")));
+    if !can_copy_out(&fixture) {
+        return;
+    }
 
     fixture.release("copy");
 
@@ -152,6 +195,9 @@ fn a_line_copied_in_copy_mode_reaches_the_desktop_terminal() {
     let fixture = TestServer::new();
     let (desktop, agent_pane) =
         agent_shown_on_the_desktop(&fixture, "echo owner-selected; sleep 60");
+    if !can_copy_out(&fixture) {
+        return;
+    }
     eventually("the agent printed its line", || {
         fixture
             .tmux(&["capture-pane", "-p", "-t", agent_pane.as_str()])

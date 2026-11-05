@@ -10,6 +10,14 @@ Issue #848 (copy out of a session). Decided by Theo: copy out needs no new acces
   `crates/cockpit-tmux/tests/clipboard.rs` (an agent's OSC 52, and a copy in the agent's copy
   mode opened with the owner's keys, prefix twice then `[`, reach a stand-in terminal; both fail
   with `external`).
+- **Only where tmux has `get-clipboard`.** tmux 3.6 (the oldest supported, and CI's) has no
+  such option, and with `on` it answers every OSC 52 query with the newest paste buffer, with
+  nothing to turn that off. The config sets `get-clipboard` quietly (`-q`) and turns
+  `set-clipboard on` inside `%if "#{get-clipboard}"`: a tmux without the option keeps
+  `external`, copies stop at the viewer, and the file still loads (no version number to guess:
+  3.8 has the option, 3.6 does not). Proven by
+  `panes_osc_52_is_taken_only_where_tmux_can_refuse_clipboard_queries`; the two copy tests
+  print why they skip on a tmux without the option.
 - **`terminal-features` for `tmux*` and `screen*`.** tmux sends OSC 52 only to a client whose
   terminal has the clipboard feature. The nested client's terminal is a pane of this server;
   naming the feature keeps the copy from depending on the host's terminfo or on tmux's
