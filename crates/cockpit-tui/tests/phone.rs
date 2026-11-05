@@ -8,11 +8,12 @@ use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
     AgentState, Command, DecidedThroughView, ManagerPaneView, QuestionSource, Reply,
-    RunRequestView, SessionReport,
+    RunRequestView, SessionReport, SessionStateView,
 };
 use cockpit_tui::{App, HELP, INPUT_GRACE, Key, PHONE_TYPING_TIMEOUT};
 use common::{
     answer, app_with, folded, press, queue, run, screen, sent, session, sized_screen, typing,
+    waiting_run,
 };
 
 const SESSION: &str = "s00000000000a";
@@ -500,4 +501,81 @@ fn the_help_lists_the_phone_keys() {
     assert!(HELP.contains("Phone layout"));
     assert!(HELP.contains("full screen, read-only"));
     assert!(HELP.contains("i                  type into it"));
+}
+
+#[test]
+fn a_command_waiting_for_input_takes_no_line_until_the_end_of_its_tall_card_is_on_screen() {
+    let now = Instant::now();
+    let mut app = phone_app(40, 8, now);
+    let waiting = RunRequestView {
+        state: waiting_run(3, SESSION).state,
+        waiting_for_input: true,
+        decision: None,
+        ..run(3, SESSION, LONG_COMMAND)
+    };
+    asking(&mut app, vec![waiting], now);
+    let later = after_grace(now);
+
+    let mut unseen = press(&mut app, &[Key::Char('i')], later);
+    unseen.extend(typing(&mut app, "yes", later));
+    unseen.extend(press(&mut app, &[Key::Enter], later));
+
+    assert!(
+        !sent(&unseen)
+            .iter()
+            .any(|command| matches!(command, Command::ApprovalInput { .. })),
+        "{unseen:?}"
+    );
+}
+
+#[test]
+fn help_from_the_open_session_goes_back_to_the_list_and_shows_full_screen() {
+    let now = Instant::now();
+    let mut app = phone_app(40, 20, now);
+    opened(&mut app, now);
+
+    let step = press(&mut app, &[Key::Char('?')], now);
+    let rows = sized_screen(&app, now, 40, 20);
+
+    assert_eq!(sent(&step), [fit(false)]);
+    assert!(rows[0].starts_with("┌Help"), "{rows:#?}");
+}
+
+#[test]
+fn a_session_that_ends_while_open_says_so_and_any_key_goes_back() {
+    let now = Instant::now();
+    let mut app = phone_app(40, 3, now);
+    opened(&mut app, now);
+    let ended = cockpit_protocol::SessionView {
+        state: SessionStateView::Ended,
+        ..session(SESSION, 1, 1)
+    };
+    answer(
+        &mut app,
+        Command::SessionRestart {
+            session: SESSION.to_owned(),
+        },
+        Reply::Session {
+            session: Box::new(ended),
+        },
+        now,
+    );
+
+    let rows = sized_screen(&app, now, 40, 3);
+    let back = sent(&press(&mut app, &[Key::Char('i')], now));
+
+    assert_eq!(rows[0], format!("{SESSION} · app · no terminal"));
+    assert_eq!(rows[1], "Any key goes back");
+    assert_eq!(back, [fit(false)]);
+}
+
+#[test]
+fn the_projects_view_opened_on_the_phone_is_the_one_drawn() {
+    let now = Instant::now();
+    let mut app = phone_app(40, 20, now);
+
+    press(&mut app, &[Key::Char('P')], now);
+    let shown = sized_screen(&app, now, 40, 20).join("\n");
+
+    assert!(shown.contains("/p/app"), "{shown}");
 }

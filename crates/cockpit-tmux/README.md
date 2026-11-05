@@ -48,8 +48,9 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
   A [`Viewing::ReadOnly`] viewer has its pane input off (`select-pane -d`): keys typed into
   it reach no session, while `send-keys` to the session still works, which a client attached
   with `-f read-only` would refuse while it is tmux's latest client (#855).
-  [`Server::pane_geometry`], [`Server::toggle_zoom`], [`Server::stack_panes`] and
-  [`Server::place_side_by_side`] arrange the manager for its window's width.
+  [`Server::set_viewing`] turns that input alone on or off; [`Server::pane_geometry`],
+  [`Server::toggle_zoom`], [`Server::stack_panes`] and [`Server::place_side_by_side`]
+  arrange the manager for its window's width.
 - **Observation.** [`Server::observe`] attaches a `read-only,ignore-size` control-mode client
   (`-C`; `-CC` needs a terminal) and returns once tmux has attached it. Its reader thread
   always drains tmux, because a client that stops reading makes tmux stop reading the pane

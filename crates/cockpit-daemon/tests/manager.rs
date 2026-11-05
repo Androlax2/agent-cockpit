@@ -1019,6 +1019,47 @@ async fn on_the_phone_keys_typed_into_the_viewer_reach_no_pane_and_session_type_
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn on_the_phone_a_session_takes_the_size_of_the_viewer_below_the_bar_as_it_is_shown() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+
+    let started = shown_session(&home, &client, 45).await;
+
+    assert_eq!(column_geometry(&home), "45 3 0 1");
+    let window = home.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &format!("={}:", started.id),
+        "#{window_width} #{window_height}",
+    ]);
+    assert_eq!(window.trim(), "45 26");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_desktop_fit_undoes_a_phone_layout_the_daemon_does_not_remember() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    home.open_manager(&client).await.unwrap();
+    resize_manager(&home, 200);
+    // What a daemon that stopped on the phone leaves in tmux, which outlives it.
+    home.tmux(&["resize-pane", "-Z", "-t", "=torlek:.0"]);
+    home.tmux(&["select-pane", "-d", "-t", "=torlek:.1"]);
+
+    let phone = fitted(&client, false).await;
+
+    assert!(!phone);
+    assert_eq!(column_geometry(&home), "60 30 0 1");
+    assert!(!is_viewer_read_only(&home));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn on_the_desktop_a_session_is_shown_read_write() {
     let home = Home::new();
     let daemon = home.start().await;

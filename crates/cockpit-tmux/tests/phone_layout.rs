@@ -225,3 +225,31 @@ fn side_by_side_gives_the_first_pane_its_share_of_the_width_from_a_zoomed_stack(
     assert_eq!(geometry.pane_height, geometry.window_height);
     assert_eq!(geometry.pane_width, geometry.window_width * 30 / 100);
 }
+
+#[test]
+fn setting_the_viewing_turns_the_pane_s_input_off_and_on_and_leaves_the_keys_where_they_were() {
+    let fixture = TestServer::new();
+    let (column, viewer, _) = manager_and_agent(&fixture);
+    fixture.server.select_pane(&column).expect("selects");
+
+    fixture
+        .server
+        .set_viewing(&viewer, Viewing::ReadOnly)
+        .expect("turns it off");
+    let off = fixture.server.pane_geometry(&viewer).expect("reads");
+    fixture
+        .server
+        .set_viewing(&viewer, Viewing::ReadWrite)
+        .expect("turns it on");
+    let on = fixture.server.pane_geometry(&viewer).expect("reads");
+
+    assert!(off.is_input_off);
+    assert!(!on.is_input_off);
+    assert!(
+        fixture
+            .server
+            .pane_geometry(&column)
+            .expect("reads")
+            .is_active
+    );
+}

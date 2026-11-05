@@ -86,8 +86,8 @@ pub enum Viewing {
     ReadOnly,
 }
 
-/// A pane's size, its window's, whether the window is zoomed and whether the pane is the
-/// window's active one.
+/// A pane's size, its window's, whether the window is zoomed, whether the pane is the
+/// window's active one and whether its input is off ([`Viewing::ReadOnly`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PaneGeometry {
     pub pane_width: u16,
@@ -96,6 +96,7 @@ pub struct PaneGeometry {
     pub window_height: u16,
     pub is_window_zoomed: bool,
     pub is_active: bool,
+    pub is_input_off: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -452,13 +453,9 @@ impl Server {
         let (columns, rows) = self.pane_size(viewer)?;
         let (columns, rows) = (columns.to_string(), rows.to_string());
         let window = session.target();
-        let input = match viewing {
-            Viewing::ReadWrite => "-e",
-            Viewing::ReadOnly => "-d",
-        };
         let mut arguments = words(&[
             "select-pane",
-            input,
+            input_flag(viewing),
             "-t",
             viewer.as_str(),
             ";",
@@ -487,6 +484,18 @@ impl Server {
         self.run(&arguments).map(drop)
     }
 
+    /// Turns `pane`'s input on or off as [`Server::show_in_viewer`] does, without showing a
+    /// session in it again.
+    pub fn set_viewing(&self, pane: &PaneId, viewing: Viewing) -> Result<(), Error> {
+        self.run(&words(&[
+            "select-pane",
+            input_flag(viewing),
+            "-t",
+            pane.as_str(),
+        ]))
+        .map(drop)
+    }
+
     /// Where `pane` stands in its window, read in one tmux command.
     pub fn pane_geometry(&self, pane: &PaneId) -> Result<PaneGeometry, Error> {
         let arguments = words(&[
@@ -495,7 +504,7 @@ impl Server {
             "-t",
             pane.as_str(),
             "#{pane_width} #{pane_height} #{window_width} #{window_height} \
-             #{window_zoomed_flag} #{pane_active}",
+             #{window_zoomed_flag} #{pane_active} #{pane_input_off}",
         ]);
         let printed = self.run(&arguments)?;
         let printed = String::from_utf8_lossy(&printed);
@@ -512,14 +521,16 @@ impl Server {
                     window_height,
                     zoomed,
                     active,
+                    input_off,
                 ],
-            ) if zoomed <= 1 && active <= 1 => Ok(PaneGeometry {
+            ) if zoomed <= 1 && active <= 1 && input_off <= 1 => Ok(PaneGeometry {
                 pane_width,
                 pane_height,
                 window_width,
                 window_height,
                 is_window_zoomed: zoomed == 1,
                 is_active: active == 1,
+                is_input_off: input_off == 1,
             }),
             _ => Err(Error::UnexpectedOutput {
                 arguments,
@@ -824,4 +835,12 @@ fn write_private_file(path: &Path, contents: &str) -> Result<(), Error> {
     file.write_all(contents.as_bytes())
         .map_err(Error::io("write", &staging))?;
     fs::rename(&staging, path).map_err(Error::io("replace", path))
+}
+
+/// `select-pane`'s flag for a pane's input: `-e` on, `-d` off.
+fn input_flag(viewing: Viewing) -> &'static str {
+    match viewing {
+        Viewing::ReadWrite => "-e",
+        Viewing::ReadOnly => "-d",
+    }
 }

@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use cockpit_protocol::{ChangeBatch, Command, ManagerPaneView, Reply, ViewArea};
+use cockpit_protocol::{ChangeBatch, Command, ManagerPaneView, Reply, SessionStateView, ViewArea};
 
 use crate::attention::StartSource;
 use crate::board::{Board, FeedError};
@@ -241,6 +241,17 @@ impl App {
             && self.bug_form.is_none()
             && self.workflows.is_none()
             && self.tasks.is_none()
+            && self.projects.is_none()
+    }
+
+    /// Whether the session open on the phone still has a terminal to read and type into.
+    pub(crate) fn is_phone_session_running(&self) -> bool {
+        self.phone_open.as_ref().is_some_and(|open| {
+            self.board
+                .sessions
+                .get(&open.session)
+                .is_some_and(|session| session.state == SessionStateView::Running)
+        })
     }
 
     pub fn workflows(&self) -> Option<&Workflows> {
@@ -314,11 +325,23 @@ impl App {
                 _ => Step::used("unbound"),
             };
         }
+        // A session that ended, failed or fell asleep while open has no terminal: any key goes
+        // back to the list.
+        if self.phone_open.is_some() && !self.is_phone_session_running() {
+            return self.phone_back(now);
+        }
         // The open session keeps every key: none reaches the list or a card hidden behind it.
         if let Some(open) = &mut self.phone_open {
             return match open.key(key, now) {
                 OpenOutcome::Back => self.phone_back(now),
-                OpenOutcome::Help => self.open(Overlay::Help),
+                // The bar is three rows high: the help is read from the list, full screen.
+                OpenOutcome::Help => {
+                    let back = self.phone_back(now);
+                    Step {
+                        send: back.send,
+                        ..self.open(Overlay::Help)
+                    }
+                }
                 OpenOutcome::Handled { used, send } => Step {
                     used: Some(used),
                     send: send.into_iter().map(|command| *command).collect(),
@@ -440,8 +463,8 @@ impl App {
         self.list_key(key)
     }
 
-    /// On the phone, the card the keys decide scrolls with `j` and `k`, and `y` or `x` waits
-    /// until its end is on screen: its command is never decided on unseen (#855).
+    /// On the phone, the card the keys decide scrolls with `j` and `k`, and its keys (`y`, `x`,
+    /// `i` and `s`) wait until its end is on screen: nothing is decided on unseen text (#855).
     fn phone_card_key(&mut self, key: Key) -> Option<Step> {
         if !self.is_phone_view() || self.pane.typing().is_some() || self.pane.shown().is_none() {
             return None;
@@ -455,7 +478,7 @@ impl App {
                 self.phone_scroll = self.phone_scroll.saturating_sub(1);
                 Some(Step::used("phone-scroll"))
             }
-            Key::Char('y' | 'x') if !self.is_phone_card_seen() => {
+            Key::Char('y' | 'x' | 'i' | 's') if !self.is_phone_card_seen() => {
                 Some(Step::used("phone-read-to-the-end"))
             }
             _ => None,

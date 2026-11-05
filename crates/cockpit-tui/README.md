@@ -121,13 +121,15 @@ and when a session opens or closes; the daemon answers whether the window is a p
   needs the owner. The hint line picks the longest variant that fits.
 - **The same decision.** `y` and `x` are the pane's keys, so an approval names the same
   revision and digest and records the TUI as on the desktop. A card taller than the screen
-  scrolls with `j`/`k`, and `y`/`x` wait until its end has been on screen.
+  scrolls with `j`/`k`, and its keys (`y`, `x`, `i`, `s`) wait until its end has been on
+  screen.
 - **A session opens full screen and read-only.** Enter shows it under a three-row bar; the
   viewer's input is off, so keys reach no pane. `i` types one line in the bar and Enter sends
   it (`session-type`, refused unless that session is on screen); Esc, a minute without a key
   ([`PHONE_TYPING_TIMEOUT`]) or leaving the session returns to read-only. No key in the open
   view decides a request; the bar says how many wait, and Esc goes back to them, the pane's
-  grace starting again.
+  grace starting again. `?` goes back to the list for the help, full screen. A session that
+  ended or fell asleep while open says it has no terminal, and any key goes back.
 - Widening the window past the threshold puts the desktop layout back, the viewer
   read-write.
 

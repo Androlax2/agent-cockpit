@@ -22,7 +22,8 @@ use crate::app::{App, Focus};
 use crate::board::Board;
 use crate::pane::Shown;
 use crate::render::{
-    columns, guide_lines, pane_keys, run_lines, scroll_to_show, status_line, typing_line, wrapped,
+    columns, guide_lines, pane_keys, run_lines, scroll_to_show, status_line, truncated,
+    typing_line, wrapped,
 };
 
 /// Typing stops after this long without a key: a phone left in a pocket reads only again.
@@ -135,18 +136,19 @@ fn draw_bar(app: &App, open: &OpenSession, frame: &mut Frame<'_>, area: Rect, no
     let width = usize::from(area.width);
     let project = app
         .board
-        .groups()
-        .into_iter()
-        .find(|group| group.sessions.iter().any(|shown| shown.id == open.session))
-        .and_then(|group| group.project)
+        .sessions
+        .get(&open.session)
+        .and_then(|session| app.board.project_of(session))
         .unwrap_or("-");
     let typed = open.typed(now);
-    let mode = if typed.is_some() {
-        "TYPING"
-    } else {
-        "read-only"
+    let is_running = app.is_phone_session_running();
+    let mode = match (is_running, typed) {
+        (false, _) => "no terminal",
+        (true, Some(_)) => "TYPING",
+        (true, None) => "read-only",
     };
     let second = match typed {
+        _ if !is_running => "Any key goes back".to_owned(),
         None => "i type   Esc back   ? help".to_owned(),
         Some(typed) => {
             // The end of the line stays in sight as it grows past the width.
@@ -164,13 +166,13 @@ fn draw_bar(app: &App, open: &OpenSession, frame: &mut Frame<'_>, area: Rect, no
     };
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let lines = vec![
-        Line::from(cut(
+        Line::from(truncated(
             &format!("{} · {project} · {mode}", open.session),
             width,
         ))
         .style(bold),
-        Line::from(cut(&second, width)),
-        Line::from(cut(&third, width)),
+        Line::from(truncated(&second, width)),
+        Line::from(truncated(&third, width)),
     ];
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -201,7 +203,7 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect, now: Instant) {
         body,
     );
     if let Some(status) = status {
-        frame.render_widget(Paragraph::new(cut(&status, width)), status_area);
+        frame.render_widget(Paragraph::new(truncated(&status, width)), status_area);
     }
     let hint_text = fitting(&hints(app, width, usize::from(area.height), now), width);
     frame.render_widget(
@@ -246,7 +248,7 @@ fn hints(app: &App, width: usize, height: usize, now: Instant) -> Vec<String> {
         let is_seen = app.phone_scroll + body_height(app, height) >= head_card_rows(app, width);
         if !is_seen {
             return vec![
-                "j scrolls: y and x wait for the end".to_owned(),
+                "j scrolls: the keys wait for the end".to_owned(),
                 "j scrolls to the end".to_owned(),
             ];
         }
@@ -324,13 +326,13 @@ fn document(app: &App, width: usize) -> Document {
                 selected_rows = Some(lines.len()..lines.len() + 1);
             }
             let text = session_line(board, session, project, is_selected);
-            lines.push(Line::from(cut(&text, width)).style(style));
+            lines.push(Line::from(truncated(&text, width)).style(style));
         }
     }
     let finished = board.finished_sessions().len();
     if finished > 0 {
         let text = format!("Finished ({finished}), folded: X exits them");
-        lines.push(Line::from(cut(&text, width)));
+        lines.push(Line::from(truncated(&text, width)));
     }
     if listed.is_empty() && finished == 0 {
         push_card(
@@ -438,23 +440,5 @@ fn fitting(variants: &[String], width: usize) -> String {
         .iter()
         .find(|variant| columns(variant) <= width)
         .cloned()
-        .unwrap_or_else(|| cut(variants.last().map_or("", String::as_str), width))
-}
-
-/// `text` cut to `width` columns, ending in `…` when it was longer.
-fn cut(text: &str, width: usize) -> String {
-    if columns(text) <= width {
-        return text.to_owned();
-    }
-    let mut kept = String::new();
-    for character in text.chars() {
-        let mut next = kept.clone();
-        next.push(character);
-        if columns(&next) + 1 > width {
-            break;
-        }
-        kept = next;
-    }
-    kept.push('…');
-    kept
+        .unwrap_or_else(|| truncated(variants.last().map_or("", String::as_str), width))
 }

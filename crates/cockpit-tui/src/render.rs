@@ -360,7 +360,7 @@ fn coordination_line(session: &SessionView, is_selected: bool) -> Option<String>
 }
 
 /// `text` cut to one row of `width` columns, ending in `…` where it was cut.
-fn truncated(text: &str, width: usize) -> String {
+pub(crate) fn truncated(text: &str, width: usize) -> String {
     if columns(text) <= width {
         return text.to_owned();
     }
