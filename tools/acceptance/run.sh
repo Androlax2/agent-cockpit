@@ -1,24 +1,37 @@
 #!/usr/bin/env bash
-# Runs the new Cockpit for a live acceptance walk (docs/acceptance/m1.md, #135): the daemon,
-# CLI and TUI built in this clone's target/release, on scratch XDG directories and a private
-# tmux directory, so the installed (legacy) cockpit and its state are never touched.
+# Runs the new Cockpit for a live acceptance walk (docs/acceptance/m1.md #135, m2.md #136):
+# the daemon, CLI and TUI built in this clone's target/release, on scratch XDG directories, a
+# private tmux directory and the profile `acceptance`, so the installed Torlek, its state, its
+# daemon and its sessions are never touched.
 #
 #   run.sh start              start the daemon, register the scratch project `demo`
 #   run.sh tui                attach this terminal to the TUI
 #   run.sh tui-window         open the TUI in its own opaque kitty window (Hyprland)
 #   run.sh torlek ARGS...    run this clone's `torlek`, from the scratch projects directory
 #   run.sh session new ARGS   start a session in `demo` (`torlek session new` options), remember it
-#   run.sh session VERB       sleep|wake|resume|end|show the session `session new` remembered
+#   run.sh session VERB ARGS  sleep|wake|resume|end|show|send|grant|grants|revoke the session
+#                             `session new` remembered, with that verb's other arguments
+#   run.sh fill-target BRANCH write 24 MiB of stand-in build output into the demo clone BRANCH's
+#                             target/, for a storage report and a prune
+#   run.sh prune-prepare BRANCH  prepare a prune plan for the demo clone BRANCH (it looks up the
+#                             checkout number: removed clones keep theirs, so numbers vary)
+#   run.sh big-needs on|off   on: each demo agent reserves 40% of the CPU budget (60% with the
+#                             startup headroom), so one queued item fits at a time; off: none
+#   run.sh todo-image ITEM FILE  attach FILE (relative to this clone) to item ITEM as an image note
+#   run.sh code-change TITLE NOTES  file a demo item and start its code-change workflow
 #   run.sh kill-daemon        kill -9 the daemon, leaving its sessions running
 #   run.sh stop               stop the daemon and the scratch tmux server
 #   run.sh clean              stop, then delete the scratch directory
 #
 # The scratch directory is $COCKPIT_ACCEPTANCE_HOME, by default /tmp/torlek-acceptance-<uid>:
-# short, because the daemon's sockets live under it. HOME stays the owner's own, so the agent
+# short, because the daemon's sockets live under it. It holds the configuration, the sockets,
+# tmux and the scratch projects, all small. What grows (state, database, logs, run outputs,
+# backups, cache) goes to $COCKPIT_ACCEPTANCE_STATE, by default this clone's
+# target/acceptance: /tmp is a small shared tmpfs. HOME stays the owner's own, so the agent
 # uses the owner's Claude Code login.
 set -euo pipefail
 
-usage="usage: run.sh start|tui|tui-window|kill-daemon|stop|clean | torlek ARGS... | session new [OPTIONS] | session sleep|wake|resume|end|show"
+usage="usage: run.sh start|tui|tui-window|kill-daemon|stop|clean | torlek ARGS... | session new [OPTIONS] | session sleep|wake|resume|end|show|send|grant|grants|revoke [ARGS...] | fill-target BRANCH | prune-prepare BRANCH | big-needs on|off | todo-image ITEM FILE | code-change TITLE NOTES"
 
 clone=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 bin="$clone/target/release"
@@ -28,10 +41,16 @@ scratch=${COCKPIT_ACCEPTANCE_HOME:-/tmp/torlek-acceptance-$(id -u)}
     exit 2
 }
 scratch=$(realpath -m "$scratch")
+bulk=${COCKPIT_ACCEPTANCE_STATE:-$clone/target/acceptance}
+[[ $bulk == /* ]] || {
+    echo "COCKPIT_ACCEPTANCE_STATE must be an absolute path: $bulk" >&2
+    exit 2
+}
+bulk=$(realpath -m "$bulk")
 projects="$scratch/projects"
 demo="$projects/demo"
 pid_file="$scratch/daemon.pid"
-daemon_output="$scratch/daemon.out"
+daemon_output="$bulk/daemon.out"
 # `clean` deletes only a directory this script made.
 marker=.torlek-acceptance
 
@@ -42,16 +61,24 @@ if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} && -n $owner_runtime && -S $owner_runtime
     export DBUS_SESSION_BUS_ADDRESS="unix:path=$owner_runtime/bus"
 fi
 export XDG_CONFIG_HOME="$scratch/config"
-export XDG_STATE_HOME="$scratch/state"
-export XDG_CACHE_HOME="$scratch/cache"
+export XDG_STATE_HOME="$bulk/state"
+export XDG_CACHE_HOME="$bulk/cache"
 export XDG_RUNTIME_DIR="$scratch/runtime"
-# The daemon's tmux server is `-L torlek` in tmux's per-user directory: a private one here.
+# A profile of its own on top of the scratch directories: every file, socket and tmux server
+# is named torlek-acceptance, never torlek, whatever TORLEK_PROFILE the caller had.
+export TORLEK_PROFILE=acceptance
+# The daemon's tmux server is `-L torlek-<profile>` in tmux's per-user directory: a private one
+# here.
 export TMUX_TMPDIR="$scratch/tmux"
 # Agents inherit the daemon's PATH: their `torlek` must be this clone's, not the installed one,
 # and their `claude` the one start linked into $scratch/bin (see link_claude).
 owner_path=$PATH
 export PATH="$scratch/bin:$bin:$PATH"
 unset TMUX
+# A session of the installed Torlek (the facilitator's, or the owner's terminal inside one)
+# must not lend the walk its identity or its GitHub token: the walk acts as the owner of the
+# scratch daemon, and its agents get no token unless a step sets one.
+unset TORLEK_SESSION TORLEK_LAUNCH_TOKEN TORLEK_INSTRUCTIONS GH_TOKEN GITHUB_TOKEN
 
 require_binaries() {
     local name
@@ -82,22 +109,115 @@ daemon_pid() {
     echo "$pid"
 }
 
+# Refuses a directory that exists with something in it but no marker: `clean` would later
+# delete what the marker claimed.
+claim() {
+    local dir=$1 entries
+    [[ -e $dir && ! -f $dir/$marker ]] || return 0
+    entries=$(
+        shopt -s nullglob dotglob
+        echo "$dir"/*
+    )
+    [[ -z $entries ]] || {
+        echo "$dir exists and was not made by run.sh; choose another directory" >&2
+        exit 1
+    }
+}
+
 make_scratch() {
-    mkdir -p "$scratch" "$XDG_CONFIG_HOME/torlek" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" \
-        "$XDG_RUNTIME_DIR" "$TMUX_TMPDIR" "$projects"
-    chmod 700 "$scratch" "$XDG_RUNTIME_DIR" "$TMUX_TMPDIR"
-    touch "$scratch/$marker"
+    claim "$scratch"
+    claim "$bulk"
+    mkdir -p "$scratch" "$bulk" "$XDG_CONFIG_HOME/torlek-$TORLEK_PROFILE" "$XDG_STATE_HOME" \
+        "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR" "$TMUX_TMPDIR" "$projects"
+    chmod 700 "$scratch" "$bulk" "$XDG_RUNTIME_DIR" "$TMUX_TMPDIR"
+    touch "$scratch/$marker" "$bulk/$marker"
     # The shortest idle window the configuration accepts, so the walk can see a session sleep.
-    [[ -f $XDG_CONFIG_HOME/torlek/config.toml ]] ||
-        printf '[sessions]\nidle_sleep_after_minutes = 30\n' >"$XDG_CONFIG_HOME/torlek/config.toml"
+    # Agents run unsandboxed, as in the M1 walk: a sandbox would need this profile's own engines
+    # and a managed proxy, whose fixed ports the installed Torlek's proxy may hold. A clone whose
+    # branch main contains may have its target/ pruned, so the walk can prune one.
+    [[ -f $XDG_CONFIG_HOME/torlek-$TORLEK_PROFILE/config.toml ]] ||
+        printf '%s\n' '[sessions]' 'idle_sleep_after_minutes = 30' '' \
+            '[agents]' 'sandbox = "off"' '' \
+            '[storage]' 'target_prune_base_ref = "refs/heads/main"' \
+            >"$XDG_CONFIG_HOME/torlek-$TORLEK_PROFILE/config.toml"
     if [[ ! -d $demo/.git ]]; then
         mkdir -p "$demo"
         git -C "$demo" init --quiet --initial-branch=main
         printf '# demo\n\nA scratch project for the Cockpit acceptance walk.\n' >"$demo/README.md"
-        git -C "$demo" add README.md
+        # Ignored build output, as in a real project: prune refuses a target/ git would track.
+        printf 'target/\n' >"$demo/.gitignore"
+        git -C "$demo" add README.md .gitignore
         git -C "$demo" -c user.name=acceptance -c user.email=acceptance@localhost \
             commit --quiet -m "Scratch project for the acceptance walk"
+        # The walk's own project settings stay out of the agents' git status.
+        printf '.torlek/\n' >>"$demo/.git/info/exclude"
+        write_demo_config 0
     fi
+}
+
+# The demo project's .torlek/config.toml: the check the code-change preset's `checks`
+# requirement names (`review` is left undeclared, so only the owner can waive it), and, when
+# cpu_millis is not 0, what each agent's work reserves.
+write_demo_config() {
+    local cpu_millis=$1
+    mkdir -p "$demo/.torlek"
+    {
+        printf '[[checks]]\nname = "checks"\ncommand = "./greet.sh | grep -qi hello"\n'
+        if ((cpu_millis > 0)); then
+            printf '\n[needs]\ncpu_millis = %d\n' "$cpu_millis"
+        fi
+    } >"$demo/.torlek/config.toml"
+}
+
+# 40% of the budget `torlek resources status` reports: with the 50% startup headroom one item
+# takes 60%, so a second waits until the first is done.
+big_needs() {
+    local budget
+    budget=$("$bin/torlek" resources status | awk '$1 == "budget" { print $2; exit }')
+    [[ $budget =~ ^[0-9]+$ ]] || {
+        echo "torlek resources status printed no budget" >&2
+        exit 1
+    }
+    write_demo_config $((budget * 2 / 5))
+    echo "each demo agent now reserves $((budget * 2 / 5)) of $budget millicores"
+}
+
+# A clone's directory is its branch with / as - (cockpit-projects' clones.rs); anything else,
+# such as .. or a leading dot, is refused so the path stays under .parallel/demo.
+clone_directory() {
+    local name=${1//\//-}
+    [[ $name =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || {
+        echo "not a branch name run.sh accepts: $1" >&2
+        exit 2
+    }
+    echo "$projects/.parallel/demo/$name"
+}
+
+fill_target() {
+    local branch=$1 checkout index
+    checkout=$(clone_directory "$branch")
+    [[ -d $checkout/.git || -f $checkout/.git ]] || {
+        echo "no demo clone $branch at $checkout: run.sh torlek checkout clone demo $branch first" >&2
+        exit 1
+    }
+    mkdir -p "$checkout/target/debug"
+    for index in 1 2 3; do
+        head -c 8M /dev/urandom >"$checkout/target/debug/stand-in-$index"
+    done
+    echo "wrote 25165824 bytes into $checkout/target"
+}
+
+prune_prepare() {
+    local branch=$1 checkout
+    clone_directory "$branch" >/dev/null
+    checkout=$("$bin/torlek" checkout list demo |
+        awk -F '\t' -v kind="parallel:$branch" '$3 == kind { print $1 }')
+    [[ $checkout =~ ^[0-9]+$ ]] || {
+        echo "no single demo clone $branch in torlek checkout list demo" >&2
+        exit 1
+    }
+    echo "demo clone $branch is checkout $checkout"
+    exec "$bin/torlek" storage prune "$checkout"
 }
 
 start_daemon() {
@@ -111,7 +231,7 @@ start_daemon() {
     pid=$!
     echo "$pid" >"$pid_file"
     disown
-    for ((waited = 0; waited < 100; waited++)); do
+    for ((waited = 0; waited < 300; waited++)); do
         grep '^ready ' "$daemon_output" && return
         if ! kill -0 "$pid" 2>/dev/null; then
             echo "the daemon exited before it was ready:" >&2
@@ -120,7 +240,7 @@ start_daemon() {
         fi
         sleep 0.1
     done
-    echo "the daemon did not print ready within 10 s; its output is in $daemon_output" >&2
+    echo "the daemon did not print ready within 30 s; its output is in $daemon_output" >&2
     exit 1
 }
 
@@ -159,10 +279,21 @@ start() {
         "$bin/torlek" project add "$demo" --name demo
     fi
     echo "scratch:  $scratch"
+    echo "state:    $bulk"
+    echo "profile:  $TORLEK_PROFILE"
     echo "project:  $demo"
     echo "claude:   $(readlink "$scratch/bin/claude") (outside greywall)"
     echo "commit:   $(git -C "$clone" rev-parse HEAD)"
     echo "TUI:      bash $clone/tools/acceptance/run.sh tui"
+}
+
+# Kills the scratch tmux server NAME by its socket path. Never `tmux -L`: when TMUX_TMPDIR's
+# directory is missing, tmux falls back to /tmp, where the installed Torlek's server lives.
+stop_tmux() {
+    local socket
+    socket="$TMUX_TMPDIR/tmux-$(id -u)/$1"
+    [[ -S $socket ]] || return 0
+    tmux -S "$socket" kill-server 2>/dev/null || true
 }
 
 stop() {
@@ -179,7 +310,9 @@ stop() {
         fi
     fi
     rm -f "$pid_file"
-    tmux -L torlek kill-server 2>/dev/null || true
+    stop_tmux "torlek-$TORLEK_PROFILE"
+    # An M1-era scratch home's daemon had no profile: its server is named torlek.
+    stop_tmux torlek
 }
 
 # The owner's Hyprland draws windows at 0.95 / 0.9 opacity, too faint for the walk: the TUI gets
@@ -226,20 +359,79 @@ session)
         echo "$line"
         echo "${line%%$'\t'*}" >"$scratch/session"
         ;;
-    sleep | wake | resume | end | show)
+    sleep | wake | resume | end | show | send | grant | grants | revoke)
         require_binaries
         enter_projects
         [[ -s $scratch/session ]] || {
             echo "no session started with run.sh session new yet" >&2
             exit 1
         }
-        exec "$bin/torlek" session "$2" "$(<"$scratch/session")"
+        exec "$bin/torlek" session "$2" "$(<"$scratch/session")" "${@:3}"
         ;;
     *)
         echo "$usage" >&2
         exit 2
         ;;
     esac
+    ;;
+fill-target)
+    [[ $# -eq 2 ]] || {
+        echo "$usage" >&2
+        exit 2
+    }
+    enter_projects
+    fill_target "$2"
+    ;;
+prune-prepare)
+    [[ $# -eq 2 ]] || {
+        echo "$usage" >&2
+        exit 2
+    }
+    require_binaries
+    enter_projects
+    prune_prepare "$2"
+    ;;
+big-needs)
+    require_binaries
+    enter_projects
+    case ${2:-} in
+    on) big_needs ;;
+    off)
+        write_demo_config 0
+        echo "demo agents reserve nothing of their own"
+        ;;
+    *)
+        echo "$usage" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+todo-image)
+    [[ $# -eq 3 ]] || {
+        echo "$usage" >&2
+        exit 2
+    }
+    require_binaries
+    image=$3
+    [[ $image == /* ]] || image="$clone/$image"
+    enter_projects
+    exec "$bin/torlek" todo image add "$2" "$image"
+    ;;
+code-change)
+    [[ $# -eq 3 ]] || {
+        echo "$usage" >&2
+        exit 2
+    }
+    require_binaries
+    enter_projects
+    filed=$("$bin/torlek" todo add "$2" --project demo --kind feature --notes "$3")
+    echo "$filed"
+    item=$(awk 'NR == 1 && $1 == "item" { print $2 }' <<<"$filed")
+    [[ $item =~ ^[0-9]+$ ]] || {
+        echo "torlek todo add printed no item number" >&2
+        exit 1
+    }
+    exec "$bin/torlek" workflow start "$item" --preset code-change
     ;;
 kill-daemon)
     pid=$(daemon_pid) || {
@@ -252,13 +444,15 @@ kill-daemon)
     ;;
 stop) stop ;;
 clean)
-    [[ -f $scratch/$marker ]] || {
-        echo "$scratch was not made by run.sh; not deleting it" >&2
-        exit 1
-    }
+    for made in "$scratch" "$bulk"; do
+        [[ ! -e $made || -f $made/$marker ]] || {
+            echo "$made was not made by run.sh; not deleting it" >&2
+            exit 1
+        }
+    done
     stop
-    rm -rf -- "$scratch"
-    echo "removed $scratch"
+    rm -rf -- "$scratch" "$bulk"
+    echo "removed $scratch and $bulk"
     ;;
 *)
     echo "$usage" >&2
