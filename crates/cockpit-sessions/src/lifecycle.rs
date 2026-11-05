@@ -3087,8 +3087,8 @@ impl GithubApiCredential {
             .map(|host| cockpit_sandbox::AppliedRule {
                 rule: format!(
                     "credential: {GITHUB_API_TOKEN_NAME} is not added on {host}:443: the \
-                     session may not reach it, and a credential is bound only to a host the \
-                     session reaches (#857)"
+                     session's launch does not reach it, and a credential is bound at launch \
+                     only to a host the launch reaches (#857); a later allow (#674) adds none"
                 ),
                 enforced_by: "torlek".to_owned(),
             })

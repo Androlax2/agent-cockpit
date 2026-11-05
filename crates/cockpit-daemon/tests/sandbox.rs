@@ -467,7 +467,7 @@ async fn an_api_token_for_hosts_the_session_does_not_reach_is_named_and_not_adde
         assert!(
             evidence.contains(&format!(
                 "credential: the project's GitHub API token is not added on {host}:443: the \
-                 session may not reach it"
+                 session's launch does not reach it"
             )),
             "{evidence}"
         );

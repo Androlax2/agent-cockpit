@@ -37,9 +37,11 @@ upstream servers, 2026-11-05) and by the worker (the rest, reasons below).
 - **A binding never grants reach (#857 decision 3).** The spec refuses a credential bound to a
   host its allowlist does not let through on 443. The daemon binds the API token to the
   GitHub hosts the launch already reaches and names each other one in the evidence ("is not
-  added on github.com:443: the session may not reach it"), rather than refusing every launch
-  of a project that has the file. Today no adapter declares GitHub's hosts, so the token is
-  bound once the owner's grants (#674) let the session reach them.
+  added on github.com:443: the session's launch does not reach it"), rather than refusing
+  every launch of a project that has the file. Today no adapter declares GitHub's hosts, and
+  the binding counts only the launch's declared reach: a project grant or an allow of the
+  owner (#674) lets the session reach a GitHub host without the token, until the binding
+  counts them too (proposal, not implemented).
 - **Only the bound hosts are intercepted.** Every other host stays the plain tunnel of #831.
   A client that rejects the session CA (pinned, or trusting neither variable) ends the
   handshake with an alert; the proxy counts it (`ca_refused`) and names the host and the
