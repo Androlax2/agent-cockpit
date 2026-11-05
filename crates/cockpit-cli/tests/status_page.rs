@@ -433,6 +433,34 @@ fn a_wildcard_or_a_port_in_host_is_refused_at_start() {
 }
 
 #[test]
+fn a_client_that_trickles_its_request_is_dropped_within_five_seconds() {
+    let home = Home::new();
+    let _daemon = fixture_daemon(&home.daemon_socket());
+    let server = home.serve();
+    let mut trickler = TcpStream::connect(&server.address).unwrap();
+    let trickling = std::thread::spawn(move || {
+        for _ in 0..10 {
+            if trickler.write_all(b"G").is_err() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let started = std::time::Instant::now();
+    let answer = server.get("/status.json");
+
+    assert_eq!(answer.status, 200);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(8),
+        "waited {:?} behind a client sending a byte a second",
+        started.elapsed()
+    );
+    trickling.join().unwrap();
+}
+
+#[test]
 fn a_stopped_daemon_shows_on_the_page_without_its_socket_path() {
     let home = Home::new();
     let server = home.serve();

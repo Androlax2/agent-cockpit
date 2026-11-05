@@ -1,8 +1,9 @@
 //! `torlek status serve [--port N] [--host TAILNET_NAME]` (#850): one read-only status page for
 //! the owner's phone. It listens on 127.0.0.1 only; the owner exposes it to their tailnet with `tailscale serve`.
 //! It answers GET alone, refuses a foreign `Host` (DNS rebinding), and reads the daemon with
-//! the owner's existing observe verbs. It never shows terminal contents, commands, working
-//! directories or the daemon's own error messages, which can name paths.
+//! the owner's existing observe verbs. It never shows terminal contents, a run request's
+//! command or directory, a session's working directory, or the daemon's own error messages,
+//! which can name paths. What agents wrote (label, doing, question, reason) shows as written.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -28,9 +29,12 @@ const HEAD_LIMIT: usize = 16 * 1024;
 /// A slower daemon is shown as not answering: the page is for noticing a stall.
 const OBSERVE_DEADLINE: Duration = Duration::from_secs(10);
 /// The daemon probes sign-in and Docker for every readiness request; the page refreshes every
-/// 15 s, so one report serves this long.
+/// 15 s, so one report, or one failure to get it, serves this long.
 const READINESS_REUSE: Duration = Duration::from_secs(60);
-const READINESS_DEADLINE: Duration = Duration::from_secs(60);
+/// The daemon's Docker probe gives up within 10 s; the server answers no one meanwhile.
+const READINESS_DEADLINE: Duration = Duration::from_secs(20);
+/// How long a closed answer waits for the rest of a refused request's body.
+const DRAIN_DEADLINE: Duration = Duration::from_millis(250);
 const DISK_REQUIREMENT: &str = "disk";
 
 pub(crate) fn serve(arguments: &[OsString]) -> Result<ExitCode, String> {
@@ -156,12 +160,11 @@ struct Server {
     socket: PathBuf,
     /// `Host` values a request may carry; any other is refused against DNS rebinding.
     allowed_hosts: Vec<String>,
-    readiness: Option<(Instant, Readiness)>,
+    readiness: Option<(Instant, Result<Readiness, String>)>,
 }
 
 impl Server {
     fn answer(&mut self, mut stream: TcpStream) -> std::io::Result<()> {
-        stream.set_read_timeout(Some(CLIENT_DEADLINE))?;
         stream.set_write_timeout(Some(CLIENT_DEADLINE))?;
         let response = match read_head(&mut stream)? {
             None => Response::refusal(400, "this request head cannot be read"),
@@ -186,8 +189,7 @@ impl Server {
             },
         };
         stream.write_all(&response.to_bytes())?;
-        finish(stream);
-        Ok(())
+        finish(stream)
     }
 
     fn snapshot(&mut self) -> Snapshot {
@@ -210,20 +212,27 @@ impl Server {
         if let Some((fetched, readiness)) = &self.readiness
             && fetched.elapsed() < READINESS_REUSE
         {
-            return Ok(readiness.clone());
+            return readiness.clone();
         }
-        let readiness = fetch_readiness(&self.socket)?;
+        let readiness = fetch_readiness(&self.socket);
         self.readiness = Some((Instant::now(), readiness.clone()));
-        Ok(readiness)
+        readiness
     }
 }
 
 /// The request head up to its blank line, or `None` when it is not UTF-8, too long, or the
-/// client closed first.
+/// client closed first. The whole head must arrive within [`CLIENT_DEADLINE`]: one slow client
+/// holds every other.
 fn read_head(stream: &mut TcpStream) -> std::io::Result<Option<String>> {
+    let deadline = Instant::now() + CLIENT_DEADLINE;
     let mut head = Vec::new();
     let mut chunk = [0; 2048];
     loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        stream.set_read_timeout(Some(remaining))?;
         if let Some(end) = head.windows(4).position(|window| window == b"\r\n\r\n") {
             head.truncate(end);
             return Ok(String::from_utf8(head).ok());
@@ -303,11 +312,23 @@ fn route(head: &str, allowed_hosts: &[String]) -> Route {
 }
 
 /// Stops writing, then drains what the client still sends (a refused POST's body), so closing
-/// does not reset the connection before the client reads the answer.
-fn finish(stream: TcpStream) {
-    let _ = stream.shutdown(Shutdown::Write);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
-    let _ = std::io::copy(&mut stream.take(64 * 1024), &mut std::io::sink());
+/// does not reset the connection before the client reads the answer. The answer is already
+/// written: a failure here can only cost the client that answer, so it is reported, not raised.
+fn finish(stream: TcpStream) -> std::io::Result<()> {
+    stream.shutdown(Shutdown::Write)?;
+    stream.set_read_timeout(Some(DRAIN_DEADLINE))?;
+    match std::io::copy(&mut stream.take(64 * 1024), &mut std::io::sink()) {
+        Ok(_) => Ok(()),
+        Err(error) if is_timeout(&error) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_timeout(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    )
 }
 
 struct Response {
@@ -699,10 +720,11 @@ fn approvals_section(approvals: &[WaitingApproval], now: i64) -> String {
     );
     for approval in approvals {
         section.push_str(&format!(
-            "<li><strong>{}</strong><p class=\"muted\">{} &middot; {} &middot; asked {}</p></li>\n",
+            "<li><strong>{}</strong><p class=\"muted\">{} &middot; {} &middot; session {} &middot; asked {}</p></li>\n",
             escaped(&approval.reason),
             approval.kind,
-            escaped(approval.project.as_deref().unwrap_or(&approval.session)),
+            escaped(approval.project.as_deref().unwrap_or("unknown project")),
+            escaped(&approval.session),
             age(now - approval.asked_at)
         ));
     }

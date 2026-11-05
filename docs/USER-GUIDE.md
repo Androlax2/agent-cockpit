@@ -152,7 +152,8 @@ Provider-native permission dialogs are separate and remain in the provider termi
 `torlek status serve` shows your sessions on your phone, read-only: each session's project, state, label, what it is doing and its open question (flagged), the approvals waiting for you (reason and age, never the command), the daemon's readiness with the low-disk guard, and when the page was generated, so a stalled daemon shows.
 It refreshes itself every 15 s; `/status.json` returns the same data.
 Nothing on it approves, answers or changes anything: decide from the TUI or your terminal.
-It is an owner verb: a session cannot start it.
+What agents wrote (label, doing, question, reason) shows as written, so whatever they put in it shows too.
+It is an owner verb: a session cannot start it, but it has no login: any process on this machine and anyone you share it with on your tailnet can read it.
 
 It listens on `127.0.0.1` only (port 8850 unless you pass `--port N`). Reach it from your phone through [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve), which keeps it inside your tailnet over HTTPS:
 
