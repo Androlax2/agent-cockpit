@@ -24,11 +24,12 @@ use cockpit_authorization::{
     SessionId as Holder, StartAllowance, StartTerms,
 };
 use cockpit_messaging::{
-    Claim, Coalescing, Deliverer, Delivery, DeliveryState, Envelope, Failure, Redelivery,
+    Claim, Coalescing, Deliverer, Delivery, DeliveryState, Envelope, EnvelopeId, Failure,
+    Redelivery,
 };
 use cockpit_protocol::{
-    Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, InboundMessageView, InboxView,
-    ObservedSessionView, ProtocolError, Reply, Unblock, UnblockedBy,
+    Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, HeldMessageView,
+    InboundMessageView, InboxView, ObservedSessionView, ProtocolError, Reply, Unblock, UnblockedBy,
 };
 use cockpit_provider_api::Capability;
 use cockpit_sessions::{
@@ -477,7 +478,8 @@ async fn collect(
         // A collected message starts no prompt, so nothing else clears the question the
         // coordinator that started the session answers with it (#710); a typed one does.
         cockpit_sessions::answer_question(&write, &session, &from).await?;
-        let message = audit_entry_of(&claim).ok_or_else(|| internal(&claim.effect_key))?;
+        let message =
+            audit_entry_of(&claim.effect_key).ok_or_else(|| internal(&claim.effect_key))?;
         write.commit().await?;
         tracing::info!(
             to = session.as_str(),
@@ -1304,7 +1306,7 @@ enum Authorship {
 
 /// The [`Authorship`] of `claim`; `Err` when it could not be read, so nothing is decided.
 async fn authorship(connection: &Connection, claim: &Claim) -> Result<Authorship, String> {
-    let Some(entry) = audit_entry_of(claim) else {
+    let Some(entry) = audit_entry_of(&claim.effect_key) else {
         return Ok(Authorship::Rejected(format!(
             "{} names no audited message",
             claim.effect_key
@@ -1342,9 +1344,8 @@ async fn authorship(connection: &Connection, claim: &Claim) -> Result<Authorship
 }
 
 /// The audit entry a coordinator message's outbox key names.
-fn audit_entry_of(claim: &Claim) -> Option<i64> {
-    claim
-        .effect_key
+fn audit_entry_of(effect_key: &str) -> Option<i64> {
+    effect_key
         .strip_prefix("coordinator-message:")
         .and_then(|id| id.parse::<i64>().ok())
 }
@@ -1432,6 +1433,19 @@ pub(crate) async fn notes(connection: &Connection) -> Result<Notes, Failed> {
             .flatten()
             .map(|note| cockpit_sessions::visible_line(&note))
         };
+        let overtaken = envelope
+            .overtaken_at
+            .filter(|_| envelope.state == DeliveryState::Queued)
+            .map(|_| {
+                format!(
+                    "the owner's message to session {} was delivered while it waited",
+                    target.as_str()
+                )
+            });
+        let note = match (note, overtaken) {
+            (Some(note), Some(overtaken)) => Some(format!("{note}; {overtaken}")),
+            (note, overtaken) => note.or(overtaken),
+        };
         notes.inbound.insert(
             target.as_str().to_owned(),
             InboundMessageView {
@@ -1444,6 +1458,83 @@ pub(crate) async fn notes(connection: &Connection) -> Result<Notes, Failed> {
         );
     }
     Ok(notes)
+}
+
+/// A coordinator message to a session still waiting, and its outbox envelope.
+pub(crate) struct Held {
+    envelope: EnvelopeId,
+    pub(crate) view: HeldMessageView,
+}
+
+/// The coordinator messages to `session` its hook holds for the end of its agent's turn,
+/// oldest first: those an owner's message sent now overtakes (#897). None while the agent can
+/// take them: its hook collects them within seconds. A typed message is left out too: it is
+/// typed as soon as its session takes input, so it does not wait for the turn's end.
+pub(crate) async fn held_for(connection: &Connection, session: &str) -> Result<Vec<Held>, Failed> {
+    let target = holder(session)?;
+    if !is_busy(connection, &target).await? {
+        return Ok(Vec::new());
+    }
+    let mut held = Vec::new();
+    for envelope in cockpit_messaging::queued_for(connection, INBOX_PRODUCER, session).await? {
+        // The note never stops the owner's message: an inconsistent envelope is logged
+        // and left out, as on the card.
+        let Some(entry) = audit_entry_of(&envelope.effect_key) else {
+            tracing::error!(
+                key = envelope.effect_key,
+                "a queued coordinator message names no audit entry"
+            );
+            continue;
+        };
+        let Some(audited) = cockpit_authorization::audit_entry(connection, entry).await? else {
+            tracing::error!(entry, "a queued coordinator message has no audit entry");
+            continue;
+        };
+        held.push(Held {
+            envelope: envelope.id,
+            view: HeldMessageView {
+                message: entry,
+                from: audited.audit.actor.as_str().to_owned(),
+            },
+        });
+    }
+    Ok(held)
+}
+
+/// What the owner's `message` to an agent ends with while coordinator messages sent before it
+/// still wait, so the agent knows they exist when the owner's text refers to one (#897): one
+/// line, as a typed message must be. An empty message stays empty, to be refused as such.
+pub(crate) fn with_overtake_note(message: String, held: &[Held]) -> String {
+    if held.is_empty() || message.trim().is_empty() {
+        return message;
+    }
+    let named: Vec<String> = held
+        .iter()
+        .map(|held| {
+            format!(
+                "message {} from session {}",
+                held.view.message, held.view.from
+            )
+        })
+        .collect();
+    let them = if held.len() == 1 { "it" } else { "them" };
+    format!(
+        "{message} [Torlek] Sent to you before this message and still held: {}. Torlek hands \
+         {them} over when your turn ends.",
+        named.join(", ")
+    )
+}
+
+/// Records on each of `held` that the owner's message overtook it, for its card (#897).
+pub(crate) async fn record_overtaken(database: &Database, held: &[Held]) -> Result<(), Failed> {
+    if held.is_empty() {
+        return Ok(());
+    }
+    let envelopes: Vec<EnvelopeId> = held.iter().map(|held| held.envelope).collect();
+    let write = database.write().await?;
+    cockpit_messaging::record_overtaken(&write, &envelopes, now()).await?;
+    write.commit().await?;
+    Ok(())
 }
 
 /// Why a message to `target`, whose hook collects it, cannot be handed over at once, as its

@@ -1215,7 +1215,8 @@ async fn session_type_types_the_line_into_the_session_on_screen() {
     assert_eq!(
         typed,
         Reply::SessionAction {
-            session: started.id.clone()
+            session: started.id.clone(),
+            held: Vec::new(),
         }
     );
     eventually("the line reaches the agent's terminal", || {

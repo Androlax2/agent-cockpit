@@ -99,15 +99,45 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
         }),
         Command::SessionSend { session, message } => job(async move {
             let id = SessionId::parse(&session)?;
+            // The note never stops the owner's message: one that cannot be read is logged,
+            // and the message goes without it.
+            let held = match held_for(&sessions, &id).await {
+                Ok(held) => held,
+                Err(Failed(error)) => {
+                    tracing::error!(
+                        session = id.as_str(),
+                        error = error.message,
+                        "reading the coordinator messages held for a session failed"
+                    );
+                    Vec::new()
+                }
+            };
+            let message = coordination::with_overtake_note(message, &held);
             sessions
                 .submit(&id, &message, cockpit_sessions::Addressed::Owner)
                 .await?;
-            Ok(Reply::SessionAction { session })
+            // The message is delivered: failing the reply now would tell the owner it was not.
+            if let Err(Failed(error)) =
+                coordination::record_overtaken(sessions.database(), &held).await
+            {
+                tracing::error!(
+                    session = id.as_str(),
+                    error = error.message,
+                    "recording the coordinator messages an owner's message overtook failed"
+                );
+            }
+            Ok(Reply::SessionAction {
+                session,
+                held: held.into_iter().map(|held| held.view).collect(),
+            })
         }),
         Command::SessionCancel { session } => job(async move {
             let id = SessionId::parse(&session)?;
             sessions.cancel(&id).await?;
-            Ok(Reply::SessionAction { session })
+            Ok(Reply::SessionAction {
+                session,
+                held: Vec::new(),
+            })
         }),
         Command::SessionRestart { session } => one(session, sessions, |sessions, id| async move {
             sessions.restart(&id).await
@@ -335,6 +365,12 @@ async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Ans
 pub(crate) struct CardInputs {
     items: HashMap<TaskSession, SessionWork>,
     coordination: coordination::Notes,
+}
+
+/// The coordinator messages an owner's message to `id` sent now overtakes (#897).
+async fn held_for(sessions: &Sessions, id: &SessionId) -> Result<Vec<coordination::Held>, Failed> {
+    let read = sessions.database().read().await.map_err(Error::from)?;
+    coordination::held_for(&read, id.as_str()).await
 }
 
 pub(crate) async fn card_inputs(sessions: &Sessions) -> Result<CardInputs, Failed> {

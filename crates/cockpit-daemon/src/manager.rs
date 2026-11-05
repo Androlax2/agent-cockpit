@@ -495,7 +495,10 @@ async fn type_line(
         .type_line(&id, text)
         .await
         .map_err(|error| crate::sessions::protocol_error(&error))?;
-    Ok(Reply::SessionAction { session })
+    Ok(Reply::SessionAction {
+        session,
+        held: Vec::new(),
+    })
 }
 
 /// The manager's column and viewer panes, or why it has none: only reopening the manager

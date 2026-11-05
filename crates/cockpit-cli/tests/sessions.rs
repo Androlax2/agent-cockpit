@@ -10,9 +10,9 @@ mod scripted;
 
 use cockpit_protocol::{
     AgentExitView, Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, ExitStatusView,
-    LaunchKindView, LaunchView, Outcome, ProtocolError, Reply, SandboxEnforcementView,
-    SandboxEvidenceView, SandboxRuleView, SessionFailure, SessionStateView, SessionView,
-    StopTargetView,
+    HeldMessageView, LaunchKindView, LaunchView, Outcome, ProtocolError, Reply,
+    SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure, SessionStateView,
+    SessionView, StopTargetView,
 };
 use scripted::{scripted_daemon, text};
 
@@ -917,6 +917,38 @@ async fn malformed_grant_arguments_exit_2_before_any_connection() {
     }
 }
 
+/// #897: a send that overtook coordinator messages still held names each, oldest first.
+#[tokio::test]
+async fn session_send_names_the_held_messages_it_overtook() {
+    let home = Home::new();
+    let held = |message, from: &str| HeldMessageView {
+        message,
+        from: from.to_owned(),
+    };
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::SessionAction {
+            session: "s0123456789ab".to_owned(),
+            held: vec![held(223, "sf27f63e06fde"), held(224, "s1111111111aa")],
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "send", "s0123456789ab", "go"])
+        .await;
+    daemon.await.unwrap();
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "delivered to session s0123456789ab\n\
+         still held, sent before it: message 223 from session sf27f63e06fde; it reaches the \
+         agent when its turn ends, and the agent was told it waits\n\
+         still held, sent before it: message 224 from session s1111111111aa; it reaches the \
+         agent when its turn ends, and the agent was told it waits\n"
+    );
+}
+
 #[tokio::test]
 async fn session_send_and_cancel_preserve_the_message_and_acknowledge_delivery() {
     let id = "s0123456789ab";
@@ -937,7 +969,10 @@ async fn session_send_and_cancel_preserve_the_message_and_acknowledge_delivery()
         let home = Home::new();
         let daemon = scripted_daemon(
             &home.daemon_socket(),
-            Outcome::Ok(Reply::SessionAction { session: id.into() }),
+            Outcome::Ok(Reply::SessionAction {
+                session: id.into(),
+                held: Vec::new(),
+            }),
         );
         let output = home.cockpit(home.dir.path(), &args).await;
         assert!(output.status.success(), "{}", text(&output.stderr));

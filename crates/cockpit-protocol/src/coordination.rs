@@ -91,3 +91,13 @@ pub struct InboundMessageView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
+
+/// A coordinator message still waiting for its target's turn to end when the owner's later
+/// message reached the target (#897).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldMessageView {
+    /// Its audit entry, as `agent message` printed it.
+    pub message: i64,
+    /// The session that sent it.
+    pub from: String,
+}

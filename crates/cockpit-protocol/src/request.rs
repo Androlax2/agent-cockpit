@@ -6,7 +6,7 @@ use crate::approvals::{DecidedThroughView, GuideView, RunRequestView};
 use crate::bug_reports::{BugFiledView, BugKindView, BugReportView};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::coordination::{
-    CoordinatorAuditView, CoordinatorGrantView, InboxView, ObservedSessionView,
+    CoordinatorAuditView, CoordinatorGrantView, HeldMessageView, InboxView, ObservedSessionView,
 };
 use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::instructions::{ContextBudgetView, InstructionTopicView};
@@ -1019,6 +1019,10 @@ pub enum Reply {
     /// The provider accepted the send or cancellation action.
     SessionAction {
         session: String,
+        /// The coordinator messages sent to `session` before the owner's message that still
+        /// wait for its turn to end, oldest first: the owner's message overtook them (#897).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        held: Vec<HeldMessageView>,
     },
     Session {
         session: Box<SessionView>,

@@ -733,3 +733,73 @@ async fn a_collecting_receiver_sees_only_its_own_producers_queued_envelopes() {
     assert!(!is_queued("teams", "s2").await);
     assert!(!is_queued("coordinator", "s1").await);
 }
+
+async fn overtaken_at(database: &Database, id: EnvelopeId) -> Option<i64> {
+    let read = database.read().await.unwrap();
+    cockpit_messaging::envelope(&read, id)
+        .await
+        .unwrap()
+        .unwrap()
+        .overtaken_at
+}
+
+async fn record_overtaken(database: &Database, envelopes: &[EnvelopeId], at: i64) {
+    let write = database.write().await.unwrap();
+    cockpit_messaging::record_overtaken(&write, envelopes, at)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+}
+
+/// #897: what an owner's message sent another way overtakes: a producer's envelopes to one
+/// destination still queued, oldest first.
+#[tokio::test]
+async fn the_queued_envelopes_for_a_destination_are_listed_oldest_first() {
+    let fixture = Fixture::new().await;
+    let database = &fixture.database;
+    let other_producer = Envelope {
+        producer: "scheduling".to_owned(),
+        ..envelope("theirs", "s1", "X")
+    };
+    enqueue(database, &other_producer).await;
+    enqueue(database, &envelope("other", "s2", "C")).await;
+    // The oldest is taken: it no longer waits.
+    enqueue(database, &envelope("taken", "s1", "A")).await;
+    let second = queued_id(enqueue(database, &envelope("second", "s1", "B")).await);
+    let third = queued_id(enqueue(database, &envelope("third", "s1", "D")).await);
+    claim_next_for(database, "teams", "s1").await;
+    let read = database.read().await.unwrap();
+
+    let queued = cockpit_messaging::queued_for(&read, "teams", "s1")
+        .await
+        .unwrap();
+
+    let ids: Vec<EnvelopeId> = queued.iter().map(|envelope| envelope.id).collect();
+    assert_eq!(ids, [second, third]);
+}
+
+/// #897: an envelope still queued records the first time a later message overtook it.
+#[tokio::test]
+async fn a_queued_envelope_keeps_the_first_time_it_was_overtaken() {
+    let fixture = Fixture::new().await;
+    let database = &fixture.database;
+    let id = queued_id(enqueue(database, &envelope("first", "s1", "A")).await);
+
+    record_overtaken(database, &[id], NOW).await;
+    record_overtaken(database, &[id], NOW + 60).await;
+
+    assert_eq!(overtaken_at(database, id).await, Some(NOW));
+}
+
+/// #897: an envelope already handed over was not overtaken.
+#[tokio::test]
+async fn an_envelope_no_longer_queued_is_never_marked_overtaken() {
+    let fixture = Fixture::new().await;
+    let database = &fixture.database;
+    let id = queued_id(enqueue(database, &envelope("first", "s1", "A")).await);
+    claim_next_for(database, "teams", "s1").await;
+
+    record_overtaken(database, &[id], NOW).await;
+
+    assert_eq!(overtaken_at(database, id).await, None);
+}
