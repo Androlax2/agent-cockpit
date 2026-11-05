@@ -11,6 +11,7 @@ SKILL = REPO / ".agents/skills/coordinator"
 WATCHER = SKILL / "scripts/coordinator_watch.py"
 END_PRUNE = SKILL / "scripts/end_prune.sh"
 APPLIER = SKILL / "scripts/apply_issue_changes.py"
+START_WORKER = SKILL / "scripts/start_worker.sh"
 
 
 class FakeCommandsTestCase(unittest.TestCase):
@@ -250,6 +251,72 @@ printf '%s' "$7" > "$FAKE_CALLS.body.$3"
         self.assertEqual(self.recorded_calls(), [])
 
 
+class StartWorkerTests(FakeCommandsTestCase):
+    ITEM_TITLE = "#5 Add the thing"
+
+    def setUp(self):
+        super().setUp()
+        self.environment.update(PROJECT_DIR="/projects/shop", WORKER_REPO="example/shop")
+        self.shim("gh", 'echo "Add the thing"')
+        self.write_torlek(
+            list_rows=f"9\tshop\tdone\t2\tfeature\t{self.ITEM_TITLE}\n"
+            f"12\tshop\ttodo\t2\tfeature\t{self.ITEM_TITLE}\n"
+            "13\tshop\ttodo\t2\tfeature\t#5 Add the thing, later"
+        )
+
+    def write_torlek(self, list_rows):
+        self.shim(
+            "torlek",
+            f"""
+case "$1 $2" in
+"todo add") echo "$3|$4|$5|$6|$7" >> "$FAKE_CALLS" ;;
+"todo list") printf '{list_rows}\\n' ;;
+"agent start") shift; printf '%s\\n' "$@" > "$FAKE_CALLS.start"; echo started ;;
+esac
+""",
+        )
+
+    def start_worker(self, *arguments):
+        return subprocess.run(
+            [str(START_WORKER), *arguments], env=self.environment, capture_output=True, text=True
+        )
+
+    def test_it_files_an_item_then_starts_the_worker_with_the_item_id_in_its_prompt(self):
+        result = self.start_worker("5", "thing", "sonnet", "medium", "Work issue #5: add it.")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.recorded_calls(),
+            [f"{self.ITEM_TITLE}|--kind|feature|--notes|Worker branch greenfield/5-thing"],
+        )
+        start = Path(f"{self.calls}.start").read_text().splitlines()
+        self.assertEqual(start[:2], ["start", "/projects/shop"])
+        self.assertIn("--clone", start)
+        self.assertEqual(start[start.index("--clone") + 1], "greenfield/5-thing")
+        self.assertEqual(start[start.index("--model") + 1], "sonnet")
+        self.assertEqual(start[start.index("--effort") + 1], "medium")
+        prompt = start[start.index("--prompt") + 1]
+        self.assertTrue(prompt.startswith("Work issue #5: add it. Follow CLAUDE.md"))
+        self.assertIn("torlek todo start 12", prompt)
+        self.assertIn("torlek todo done 12 --summary", prompt)
+        self.assertNotIn("TODO_ID", prompt)
+
+    def test_it_fails_without_starting_when_no_item_with_that_title_exists(self):
+        self.write_torlek(list_rows="7\tshop\ttodo\t2\tfeature\tSomething else")
+
+        result = self.start_worker("5", "thing", "sonnet", "medium", "Work issue #5.")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no task item found", result.stderr)
+        self.assertFalse(Path(f"{self.calls}.start").exists())
+
+    def test_it_fails_with_usage_when_an_argument_is_missing(self):
+        result = self.start_worker("5", "thing")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage:", result.stderr)
+
+
 class WatcherTests(FakeCommandsTestCase):
     HEAD = "abcdef1234567890"
 
@@ -446,7 +513,7 @@ class SkillContentTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
 
     def test_the_scripts_are_executable(self):
-        for script in (WATCHER, END_PRUNE, APPLIER):
+        for script in (WATCHER, END_PRUNE, APPLIER, START_WORKER):
             self.assertTrue(os.access(script, os.X_OK), script)
 
 

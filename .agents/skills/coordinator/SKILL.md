@@ -21,9 +21,8 @@ never `/tmp`. Nothing here depends on a file from an earlier session.
 | --- | --- |
 | See workers, their state, doing-now and question | `torlek agent sessions [--watch]` (`observe-sessions`) |
 | Send a worker a note | `torlek agent message SESSION TEXT` (`message-sessions`); a collaborator's word, never the owner's |
-| Start a worker | `torlek agent start DIR --clone BRANCH ...` (`start-sessions`); waits for the owner's approval |
+| Start a worker | `start_worker.sh` (files its task item, then `torlek agent start DIR --clone BRANCH ...`, `start-sessions`); waits for the owner's approval |
 | Give a worker the owner's answer | `torlek ask run --reason TEXT "torlek session send SESSION 'TEXT'"`; `torlek session send` itself is refused from a session |
-| File the worker's task item | `torlek todo add TITLE --kind KIND --notes TEXT` |
 | End a worker | `torlek agent end SESSION` (`end-sessions`): refused until the worker marked its item done; without the grant, `end_prune.sh` through `torlek ask run` ends it |
 | Anything else only the owner may run | `torlek ask run --reason TEXT COMMAND`; the owner approves that exact command once |
 
@@ -37,23 +36,21 @@ send a second one.
    report that and wait: never start the first worker of the next milestone without the
    owner's word. Flaky-test and performance fixes may keep going.
 2. Choose model and effort (see "Model and effort").
-3. File one task item per worker issue and keep its id: `torlek todo add "#N <title>" --kind
-   feature --notes "Worker branch greenfield/<issue>-<slug>"`. `torlek agent end` needs it.
-4. Build the prompt: `Work issue #N (gh issue view N -R OWNER/NAME, with comments): <one
-   line of what to deliver>.` plus any scope notes, then `Torlek task item ID: run torlek todo
-   start ID first, and torlek todo done ID --summary "PR #N merged" as your last step, once
-   the PR is merged on main.` and then a space and the contents of
-   [worker_suffix.txt](prompts/worker_suffix.txt). The suffix tells workers to run cargo
-   directly, review once, open the PR, arm auto-merge, and stay until merged. Workers never
-   use the old cockpit tooling (`agent-build`, `cockpit-*`, make targets that call them).
-5. Start it. The clone directory is the branch name with `/` turned into `-`:
+3. Run [start_worker.sh](scripts/start_worker.sh). It files one task item for the issue
+   (`torlek agent end` needs it), puts its id into the prompt, and starts the worker. The
+   clone directory is the branch name with `/` turned into `-`:
 
    ```sh
-   torlek agent start PROJECT_DIR --clone greenfield/<issue>-<slug> \
-       --model opus --effort high --prompt "$PROMPT"
+   .agents/skills/coordinator/scripts/start_worker.sh ISSUE SLUG MODEL EFFORT "TASK TEXT"
    ```
 
-6. Within about 2 minutes `torlek agent sessions` should show the session as `working` with
+   The prompt is `TASK TEXT` plus [worker_suffix.txt](prompts/worker_suffix.txt). Write the
+   task as `Work issue #N (gh issue view N -R OWNER/NAME, with comments): <one line of what to
+   deliver>.` plus scope notes. The suffix tells workers to run cargo directly, review once,
+   open the PR, arm auto-merge, and stay until merged; to run `torlek todo start` on their
+   item first and `torlek todo done` as their last step, after the merge. Workers never use
+   the old cockpit tooling (`agent-build`, `cockpit-*`, make targets that call them).
+4. Within about 2 minutes `torlek agent sessions` should show the session as `working` with
    a label. A session stuck at state `-` may wait on a harness dialog in its pane: tell the
    owner right away.
 
@@ -76,7 +73,7 @@ It wakes you only for these lines; everything else is one `SUMMARY` every 10 min
 | `IDLE without merged PR` | Message the worker once; if it does not act by its next turn end, tell the owner |
 | `WATCH ENDED` | The monitor exited 1. Re-arm it; the state file keeps what was reported |
 
-State survives a re-arm. After a reboot, Torlek resumes workers but each sits idle until
+State survives a re-arm; keep the state file in your session temp folder, which may be swept when your session ends. After a reboot, Torlek resumes workers but each sits idle until
 messaged: re-arm the watcher, `torlek agent message` each worker to continue, and check which
 PRs merged meanwhile.
 
@@ -99,6 +96,8 @@ failing check's URL):
 gh api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/JOB_ID/logs > "$SESSION_TEMP/job.log"
 grep -naE 'FAIL \[|panicked at|Error [0-9]' "$SESSION_TEMP/job.log" | sed 's/\x1b\[[0-9;]*m//g'
 ```
+
+The project sets no `GH_TOKEN` for you: `gh` uses the login on the machine (`gh auth status`).
 
 Check whether the failure is the PR's or main's drift or a flaky test; file a flaky test as
 an issue. Ignore `greenfield-macos` (macOS is not supported yet; the watcher already does).
@@ -125,7 +124,7 @@ an issue. Ignore `greenfield-macos` (macOS is not supported yet; the watcher alr
    `CLONES_ROOT` is the folder holding the clones (the watcher prints it as `workers under`).
    The script skips a clone a process still works in, and refuses names with a slash. Torlek
    also sweeps a clone when its session ends; the prune covers `target/` of idle clones.
-6. Log the trial row (see "Model and effort") in your own notes.
+6. Add the trial row to [trials-log.md](trials-log.md) (see "Model and effort").
 
 ## Decision issues
 
@@ -135,8 +134,9 @@ protocol, a display) are decided in the sandbox milestone before anyone implemen
 a separate decision issue there and link the implementation issue to it.
 
 1. Fill the placeholders of [decision_prompt.txt](prompts/decision_prompt.txt) (the reports to
-   read first, the related issues, the date, issue and slug), append the task item line and the
-   worker suffix (see "Start a worker"), and start a worker. Research reports have gone cleanly
+   read first, the related issues, the date, issue and slug), append the worker
+   suffix (it carries the task item line, see "Start a worker"), and start the worker with
+   `start_worker.sh`. Research reports have gone cleanly
    on Sonnet at high effort.
 2. The worker asks the owner itself, one question at a time. Your messages are never the
    owner's answer. The worker proposes issue changes in its report and edits no issue.
@@ -167,15 +167,16 @@ a separate decision issue there and link the implementation issue to it.
 Rule in use, left to the coordinator by the owner (be ready to explain a choice in one line):
 
 - Model: Opus for security, data-loss and cross-crate routing work; Sonnet for research
-  reports and contained features with clear acceptance (up to about 500 lines); Fable on
+  reports and contained features with clear acceptance; Fable on
   about one non-trivial task in three, mixing risky and contained work.
 - Effort: medium for single-file or doc work; high for the rest; xhigh only when the owner
   asks or for a costly design call.
 
+Contained changes up to about 500 lines default to Sonnet at medium; Opus at high stays for
+risky work.
+
 Rotation: about one start in three deviates by one step (Fable instead of Opus or Sonnet,
 medium instead of high, low on a trivial docs change) so every cell collects samples. Never
-deviate downward on security or data-loss work. When a worker's PR merges, add one row to your
-own log: issue, PR, model, effort, kind (risky, contained, docs, research), lines added, CI
-fix rounds as the watcher saw them (`gh run view` overwrites failures on rerun), review passes,
-open-to-merge time, notes. Re-compare every ten new rows, update the rule and tell the owner
-the change in one line.
+deviate downward on security or data-loss work. When a worker's PR merges, add one row to
+[trials-log.md](trials-log.md), which lists the columns. Re-compare every ten new rows,
+update this rule and tell the owner the change in one line.
