@@ -245,7 +245,7 @@ const CACHE_FOLDER: &str = "caches";
 
 /// The session's tool configuration folder, inside its folder of the daemon's mount
 /// sources, bound read-only: no agent can replace a file the daemon writes there.
-pub(crate) const CONFIG_FOLDER: &str = "config";
+const CONFIG_FOLDER: &str = "config";
 
 /// The Git configuration Torlek writes for a sandboxed session, which `GIT_CONFIG_GLOBAL`
 /// names: the session's home holds none of the owner's.

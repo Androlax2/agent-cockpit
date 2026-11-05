@@ -29,7 +29,7 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   bound read-only; every cache variable points into `caches/` of the session's temp folder;
   tool configuration files, the session's Git configuration among them, are written by
   `Staged::write` into a folder of the mount sources bound read-only, which the session's
-  end removes (`Sandbox::session_tool_config`). Git reads no system configuration and no
+  end removes with the rest of its mount sources (`Sandbox::session_mount_sources`, #482). Git reads no system configuration and no
   `GIT_CONFIG*` variable of the launch. Nothing of the owner's caches or tool configuration
   is mounted.
 - Declarations (#861): the evidence names where the program's needs came from, its adapter,
