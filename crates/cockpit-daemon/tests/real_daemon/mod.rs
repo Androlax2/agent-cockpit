@@ -451,6 +451,16 @@ impl Home {
         self.spawn(search, extra, None)
     }
 
+    /// [`Home::start`] with `first` ahead of everything on the daemon's `PATH`, and its
+    /// agents' with it: the owner's toolchain folders (#859).
+    pub fn start_with_path_first(&self, first: &[PathBuf]) -> Daemon {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut search = first.to_vec();
+        search.push(self.path().join("bin"));
+        search.extend(std::env::split_paths(&path));
+        self.spawn(search, &[], None)
+    }
+
     /// [`Home::start`] on a host without bubblewrap (#829): each folder of the host's `PATH`
     /// that holds `bwrap` is replaced by one of links to everything else it holds, so the
     /// daemon finds its other programs but no sandbox.

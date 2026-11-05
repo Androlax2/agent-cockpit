@@ -83,8 +83,8 @@ pub struct LaunchSpec {
     /// Folders and files bound read-only at their own path, beside [`SYSTEM_READ_ONLY`]:
     /// the provider's declared reads, the bridge programs, the instruction bundle.
     pub read_only: Vec<PathBuf>,
-    /// Folders and files the provider declares it reads (#830), bound read-only at their
-    /// own path when present.
+    /// Folders and files the provider declares it reads (#830), and the install roots of
+    /// the checkout's toolchains (#859): bound read-only at their own path when present.
     pub read_only_declared: Vec<PathBuf>,
     /// Folders whose named sockets the program connects to, bound read-only: the agent
     /// socket's folder.

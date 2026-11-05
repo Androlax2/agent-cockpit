@@ -11,7 +11,7 @@ use cockpit_config::{AgentSandbox, DesktopSession};
 
 use crate::{
     Backend, Enforcement, Evidence, Platform, Profile, ProfileRequest, ProviderNeeds,
-    ProviderReach, Refusal, Secret, Staged,
+    ProviderReach, Refusal, Secret, Staged, ToolNeeds,
 };
 
 /// What the daemon's own layout asks of every profile.
@@ -71,6 +71,8 @@ pub struct LaunchRequest {
     pub desktop: DesktopSession,
     /// What the provider adapter declares for the sandbox.
     pub needs: ProviderNeeds,
+    /// What the checkout's toolchains and Git ask of a sandboxed launch (#859).
+    pub tools: ToolNeeds,
 }
 
 /// A launch ready to run: the program and arguments that start the agent and the evidence

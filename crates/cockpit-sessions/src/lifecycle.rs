@@ -1998,6 +1998,7 @@ impl Sessions {
             )
         });
         let needs = provider_needs(self.provider(Some(session.provider.as_str()))?.as_ref())?;
+        let tools = self.sandbox_tools(&checkout.path, &environment).await?;
         let prepared = self.prepare_sandbox(
             id.as_str(),
             session.provider.as_str(),
@@ -2008,6 +2009,7 @@ impl Sessions {
             environment,
             github,
             needs,
+            tools,
             command.program,
             command.arguments,
         )?;
@@ -2235,6 +2237,7 @@ impl Sessions {
         environment: Vec<(OsString, OsString)>,
         github: GithubAccess,
         needs: cockpit_sandbox::ProviderNeeds,
+        tools: cockpit_sandbox::ToolNeeds,
         program: PathBuf,
         arguments: Vec<OsString>,
     ) -> Result<cockpit_sandbox::Prepared, Error> {
@@ -2276,11 +2279,31 @@ impl Sessions {
                     denied: github.hidden_owner_login,
                     desktop: self.desktop_session(),
                     needs,
+                    tools,
                 },
                 program,
                 arguments,
             )
             .map_err(Error::Sandbox)
+    }
+
+    /// [`tool_needs`] for a launch in `checkout` with `environment` under
+    /// `agents.sandbox = "required"`, off the async workers; none under `"off"`, whose agent
+    /// keeps the owner's own caches and configuration.
+    async fn sandbox_tools(
+        &self,
+        checkout: &Path,
+        environment: &[(OsString, OsString)],
+    ) -> Result<cockpit_sandbox::ToolNeeds, Error> {
+        if self.owner_settings().sandbox == cockpit_config::AgentSandbox::Off {
+            return Ok(cockpit_sandbox::ToolNeeds::none());
+        }
+        let checkout = checkout.to_path_buf();
+        let environment = environment.to_vec();
+        self.blocking("read the checkout's toolchains", move || {
+            tool_needs(&checkout, &environment)
+        })
+        .await
     }
 
     /// The temp folder the dry run stands in for a session's with.
@@ -2303,6 +2326,8 @@ impl Sessions {
         let (checkout, _) = self.checkout_containing(&dir).await?;
         let github = self.github_access(checkout.project.as_str()).await?;
         let needs = provider_needs(self.provider(Some(&provider))?.as_ref())?;
+        let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
+        let tools = self.sandbox_tools(&checkout.path, &environment).await?;
         self.prepare_sandbox(
             DRY_RUN_SESSION,
             &provider,
@@ -2310,9 +2335,10 @@ impl Sessions {
             checkout.path,
             self.session_dirs.join(DRY_RUN_SESSION),
             self.dry_run_temp_dir(),
-            with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir()),
+            environment,
             github,
             needs,
+            tools,
             PathBuf::from("<agent>"),
             Vec::new(),
         )
@@ -2917,9 +2943,6 @@ fn owner_gh_config_dirs(environment: &cockpit_config::Environment, home: &Path) 
     dirs
 }
 
-/// `environment` with `token` as its only GitHub token (#754): none the daemon or a
-/// provider passed reaches the agent, so a project without one never gets another's or the
-/// owner's.
 /// What `provider`'s adapter declares for the sandbox (#830, #858); a malformed declaration
 /// refuses the launch rather than narrowing it.
 fn provider_needs(provider: &dyn Provider) -> Result<cockpit_sandbox::ProviderNeeds, Error> {
@@ -2962,6 +2985,135 @@ fn provider_needs(provider: &dyn Provider) -> Result<cockpit_sandbox::ProviderNe
     })
 }
 
+/// What the checkout at `checkout` and Git ask of a sandboxed launch with `environment`
+/// (#859): the ecosystems the toolchain table detects there, the owner's install roots the
+/// launch's `PATH` resolves their tools in, every cache variable of the table, so a tool of
+/// an ecosystem without a marker file still keeps its cache in the session's own folder,
+/// and the owner's Git identity.
+fn tool_needs(
+    checkout: &Path,
+    environment: &[(OsString, OsString)],
+) -> Result<cockpit_sandbox::ToolNeeds, Error> {
+    use cockpit_provider_api::toolchains::{self, COMMON_VARIABLES, TOOLCHAINS};
+
+    let detected = toolchains::detect(checkout).map_err(|source| Error::Io {
+        action: "detect the toolchains of",
+        path: checkout.to_path_buf(),
+        source,
+    })?;
+    let path_entries: Vec<PathBuf> = launch_variable(environment, "PATH")
+        .map(|path| std::env::split_paths(path).collect())
+        .unwrap_or_default();
+    let mut install_roots: Vec<PathBuf> = Vec::new();
+    // Without a HOME the sandbox refuses the launch itself.
+    if let Some(home) = launch_variable(environment, "HOME") {
+        for toolchain in &detected {
+            for root in toolchain.roots_to_bind(Path::new(home), &path_entries)? {
+                if !install_roots.contains(&root) {
+                    install_roots.push(root);
+                }
+            }
+        }
+    }
+    let mut variables: Vec<(String, cockpit_sandbox::ToolSetting)> = Vec::new();
+    for (name, setting) in COMMON_VARIABLES
+        .iter()
+        .chain(TOOLCHAINS.iter().flat_map(|toolchain| toolchain.variables))
+    {
+        if !variables.iter().any(|(known, _)| known == name) {
+            variables.push(((*name).to_owned(), tool_setting(*setting)));
+        }
+    }
+    Ok(cockpit_sandbox::ToolNeeds {
+        ecosystems: detected
+            .iter()
+            .map(|toolchain| toolchain.ecosystem.to_owned())
+            .collect(),
+        install_roots,
+        variables,
+        git_identity: owner_git_identity(environment),
+    })
+}
+
+fn tool_setting(
+    setting: cockpit_provider_api::toolchains::Setting,
+) -> cockpit_sandbox::ToolSetting {
+    use cockpit_provider_api::toolchains::Setting;
+
+    match setting {
+        Setting::CacheFolder(name) => cockpit_sandbox::ToolSetting::CacheFolder(name.to_owned()),
+        Setting::ConfigFile(name) => cockpit_sandbox::ToolSetting::ConfigFile(name.to_owned()),
+        Setting::Value(value) => cockpit_sandbox::ToolSetting::Value(value.to_owned()),
+    }
+}
+
+/// The last value `environment` gives `name`, as the launched program sees it.
+fn launch_variable<'a>(
+    environment: &'a [(OsString, OsString)],
+    name: &str,
+) -> Option<&'a std::ffi::OsStr> {
+    environment
+        .iter()
+        .rev()
+        .find(|(variable, _)| variable == name)
+        .map(|(_, value)| value.as_os_str())
+}
+
+/// The owner's `user.name` and `user.email`, read by Git with the launch's own `HOME`; an
+/// unset or unreadable one is left out, and Git inside the sandbox then asks for it.
+fn owner_git_identity(environment: &[(OsString, OsString)]) -> cockpit_sandbox::GitIdentity {
+    cockpit_sandbox::GitIdentity {
+        name: owner_git_value(environment, "user.name"),
+        email: owner_git_value(environment, "user.email"),
+    }
+}
+
+fn owner_git_value(environment: &[(OsString, OsString)], key: &str) -> Option<String> {
+    let mut command = std::process::Command::new("git");
+    command
+        .env_clear()
+        .args(["config", "--global", "--includes", "--get", key])
+        .stdin(std::process::Stdio::null());
+    for name in ["HOME", "PATH", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"] {
+        if let Some(value) = launch_variable(environment, name) {
+            command.env(name, value);
+        }
+    }
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => {
+            tracing::warn!(key, %error, "cannot run git to read the owner's identity for a sandboxed session");
+            return None;
+        }
+    };
+    // Git exits 1 for a key that is not set.
+    if output.status.code() == Some(1) {
+        return None;
+    }
+    if !output.status.success() {
+        tracing::warn!(
+            key,
+            status = %output.status,
+            stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+            "git could not read the owner's identity for a sandboxed session"
+        );
+        return None;
+    }
+    match String::from_utf8(output.stdout) {
+        Ok(value) => Some(value.trim_end_matches('\n').to_owned()),
+        Err(_) => {
+            tracing::warn!(
+                key,
+                "the owner's Git identity is not UTF-8; a sandboxed session gets none"
+            );
+            None
+        }
+    }
+}
+
+/// `environment` with `token` as its only GitHub token (#754): none the daemon or a
+/// provider passed reaches the agent, so a project without one never gets another's or the
+/// owner's.
 fn with_github_token(
     mut environment: Vec<(OsString, OsString)>,
     token: Option<&cockpit_config::GithubToken>,

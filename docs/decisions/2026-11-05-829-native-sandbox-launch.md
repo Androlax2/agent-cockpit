@@ -26,6 +26,18 @@ below by the worker, with the reasons. Q1 and Q2 on #829 are open with the owner
   `.vscode/launch.json` and `.idea/runConfigurations` are read-only when present and left
   creatable when absent: an empty folder there would break the owner's tools, and each runs
   only after the owner trusts it. The evidence states each rule.
+- **Toolchains, caches and Git (#859, decided by Theo: Q1 B, Q2 A, Q3 A).** The daemon detects
+  the checkout's ecosystems with the toolchain table and binds read-only the install roots
+  the launch's `PATH` resolves their tools in. Every cache variable of the table is set, not
+  only a detected ecosystem's, so a tool used without a marker file still caches in the
+  session's own `caches/` folder of its temp folder; the compiler wrappers are set empty.
+  Worker choices: tool configuration files and the session's Git configuration
+  (`GIT_CONFIG_GLOBAL`) are written into `config/` of the session's folder of the mount
+  sources and bound read-only, never into a folder the agent writes, so a link the agent
+  planted can never turn the daemon's write onto another file. The Git configuration holds
+  the owner's `user.name` and `user.email` as quoted values, the checkout as
+  `safe.directory` (not the owner's whole list) and an empty `credential.helper`, which
+  clears one `/etc/gitconfig` names. A launch under `off` gets none of this.
 - **The probe decides availability.** The daemon runs `torlek-sandbox probe` with the first
   `bwrap` on its `PATH` at its start; a failure, or Landlock below ABI 2, is the reason every
   launch under `required` is refused. Each launch enforces exactly the probed ABI's rights
