@@ -144,14 +144,13 @@ pub(crate) async fn evidence(
         return Ok(result);
     }
     // Placement charges remain live until their owner releases them; uncertainty is busy.
+    let by_id: HashMap<_, _> = sessions.iter().map(|s| (s.id.as_str(), s)).collect();
     for placement in cockpit_scheduling::placements(connection)
         .await
         .map_err(internal)?
     {
-        let session = sessions
-            .iter()
-            .find(|s| s.id.as_str() == placement.session.as_str());
-        if session.is_some_and(is_elsewhere) {
+        let session = by_id.get(placement.session.as_str());
+        if session.is_some_and(|session| is_elsewhere(session)) {
             continue;
         }
         result.busy = Some(format!(

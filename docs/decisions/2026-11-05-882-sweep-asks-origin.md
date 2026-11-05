@@ -9,14 +9,18 @@ naming the stale ref; asking origin sweeps it without weakening the keep rule.
   and every such clone was kept for good.
 - **Origin has the last word, and only reads.** When the clone's refs say a tip is unpushed,
   the sweep runs `git ls-remote --heads origin` and counts every commit a branch head origin
-  reported contains as pushed (`--ignore-missing`: a head the clone lacks the object of hides
-  nothing). The #767 squash-merge rule then applies to what is left. Nothing is fetched or
-  written, so `torlek checkout sweep --dry-run` stays read-only.
+  reported contains as pushed. Only heads the clone has the commit of count (`rev-list
+  --no-walk`); `--ignore-missing` on the queries themselves would also hide a missing HEAD or
+  branch. The #767 squash-merge rule then applies to what is left. Origin is asked before the
+  clone is marked removing, so a slow answer never refuses claims; a commit made after the
+  answer counts as unpushed. Nothing is fetched or written, so `torlek checkout sweep
+  --dry-run` stays read-only.
 - **Asked only of a trusted origin, with a deadline.** Origin is asked only when it has one URL
   (after `insteadOf`) that is a GitHub repository URL or the project's main checkout (a project
   without a remote), and the clone's own configuration has none of the push's redirect settings:
   whoever works in the clone writes that configuration. The call is killed after 20 s; ssh runs
-  in batch mode.
+  in batch mode. A helper that keeps Git's output open past the deadline (an ssh master) fails
+  the call too.
 - **A failed question keeps the clone, and says why.** Origin unreachable, refusing or silent:
   the clone is kept as `unreadable: its remote-tracking refs lack some of its commits, and
   origin could not be asked whether it has them: <error>`. A commit no branch of origin

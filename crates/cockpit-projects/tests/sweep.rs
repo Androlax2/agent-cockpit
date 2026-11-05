@@ -305,3 +305,26 @@ async fn a_clone_whose_origin_cannot_be_asked_is_kept_with_the_reason() {
     assert!(reason.contains("origin could not be asked"), "{reason}");
     assert!(clone.path.join("draft").exists());
 }
+
+#[tokio::test]
+async fn a_clone_with_a_branch_whose_commit_is_missing_is_kept_as_unreadable() {
+    let scratch = Scratch::new();
+    let database = scratch.open().await;
+    let root = scratch.repository("app");
+    register(&database, &root).await;
+    let clone = create_parallel_clone(&database, &Git::from_path(), "app", "feature")
+        .await
+        .unwrap();
+    std::fs::write(
+        clone.path.join(".git/refs/heads/lost"),
+        "0123456789012345678901234567890123456789\n",
+    )
+    .unwrap();
+
+    let (_, kept) = sweep_clone(&database, &Git::from_path(), clone.id)
+        .await
+        .unwrap();
+
+    assert!(matches!(kept, Some(Kept::Unreadable { .. })), "{kept:?}");
+    assert!(clone.path.exists());
+}
