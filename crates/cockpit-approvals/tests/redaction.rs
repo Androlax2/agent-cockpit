@@ -197,6 +197,14 @@ fn a_secret_after_its_name_is_still_redacted() {
             "aws.secret_access_key = [redacted]",
         ),
         ("--token=abc", "--token=[redacted]"),
+        ("--secret-key=abc", "--secret-key=[redacted]"),
+        (
+            "password-confirmation=abc",
+            "password-confirmation=[redacted]",
+        ),
+        ("jwt.secret.key=abc", "jwt.secret.key=[redacted]"),
+        ("Secret-Key: abc", "Secret-Key: [redacted]"),
+        ("secret_key_base: abc", "secret_key_base: [redacted]"),
     ];
     for (line, redacted) in cases {
         let presented = present(line.as_bytes(), line.len() as u64, 10);
