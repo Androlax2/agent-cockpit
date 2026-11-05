@@ -229,6 +229,15 @@ impl Sessions {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = variables;
     }
 
+    /// The owner's desktop session variables last imported, whether or not agents get them:
+    /// the daemon reads the owner's clipboard with them (#848).
+    pub fn desktop_environment(&self) -> Vec<(OsString, OsString)> {
+        self.desktop_environment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Whether launched agents get the owner's desktop session variables (#305).
     pub fn desktop_session(&self) -> crate::DesktopSession {
         self.owner_settings().desktop_session

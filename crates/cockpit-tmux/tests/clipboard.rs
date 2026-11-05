@@ -1,5 +1,7 @@
-//! Copy out of a session (#848): text copied in an agent's pane reaches the desktop terminal
-//! through the viewer's nested client, and no pane reads a paste buffer back.
+//! The clipboard and a session (#848). Copy out: text copied in an agent's pane reaches the
+//! desktop terminal through the viewer's nested client, and no pane reads a paste buffer back.
+//! Paste in: CMD+V (`C-v`) in the viewer runs the image paste command; anywhere else, or
+//! forwarded to the viewer, it reaches the program as before.
 //!
 //! The desktop terminal is a second private tmux server: its pane runs the owner's client of
 //! Cockpit's server, as kitty would, and it keeps every OSC 52 it receives as a paste buffer.
@@ -10,7 +12,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-use cockpit_tmux::{PaneId, Viewing};
+use cockpit_tmux::{Keystroke, PaneId, Split, Viewing};
 use common::{TestServer, eventually, wait_for};
 
 /// Kitty's `TERM` is `xterm-kitty`; tmux gives the clipboard feature to every `xterm*`.
@@ -174,6 +176,19 @@ fn panes_osc_52_is_taken_only_where_tmux_can_refuse_clipboard_queries() {
 }
 
 #[test]
+fn the_server_says_copies_go_out_only_where_tmux_can_refuse_clipboard_queries() {
+    let fixture = TestServer::new();
+    fixture.start_shell("agent-1", "sleep 60");
+    let has_get_clipboard = !fixture
+        .tmux(&["show-options", "-sqv", "get-clipboard"])
+        .is_empty();
+
+    let copies_out = fixture.server.passes_copies_out().unwrap();
+
+    assert_eq!(copies_out, has_get_clipboard, "{}", tmux_version());
+}
+
+#[test]
 fn text_an_agent_copies_with_osc_52_reaches_the_desktop_terminal() {
     let fixture = TestServer::new();
     let copy = "printf '\\033]52;c;%s\\007' \"$(printf agent-copied | base64)\"";
@@ -262,4 +277,128 @@ fn a_pane_asking_for_the_clipboard_gets_no_answer() {
         "the device attributes come back: {answer:?}"
     );
     assert!(!answer.contains("]52;"), "no clipboard answer: {answer:?}");
+}
+
+/// A shell line that writes the first byte the pane's program reads, raw, to `name`.
+fn first_byte_to(name: &str) -> String {
+    format!("stty raw -echo; dd bs=1 count=1 of={name}.part 2>/dev/null; mv {name}.part {name}")
+}
+
+fn read(fixture: &TestServer, name: &str) -> Option<String> {
+    fs::read_to_string(fixture.home.path().join(name)).ok()
+}
+
+/// The agent shown in the viewer of `cockpit`, the paste command bound, and the owner's
+/// terminal attached. Returns the terminal and the viewer.
+fn viewer_with_image_paste(fixture: &TestServer, command: &[&str]) -> (Desktop, PaneId) {
+    let (_, viewer) = fixture.start_shell("cockpit", "sleep 60");
+    let (agent, _) = fixture.start_shell(
+        "agent-1",
+        &format!("{}; sleep 60", first_byte_to("agent-read")),
+    );
+    fixture
+        .server
+        .show_in_viewer(&viewer, &agent, Viewing::ReadWrite)
+        .expect("respawns the viewer");
+    let command: Vec<std::ffi::OsString> = command.iter().map(Into::into).collect();
+    fixture
+        .server
+        .bind_image_paste(&viewer, &command)
+        .expect("binds the key");
+    let desktop = Desktop::attached_to_cockpit(fixture);
+    eventually("the owner and the viewer are attached", || {
+        fixture
+            .tmux(&["list-clients", "-F", "#{session_name}"])
+            .lines()
+            .count()
+            == 2
+    });
+    (desktop, viewer)
+}
+
+#[test]
+fn ctrl_v_in_the_viewer_runs_the_image_paste_command_instead_of_reaching_the_agent() {
+    let fixture = TestServer::new();
+    let (desktop, _) = viewer_with_image_paste(&fixture, &["sh", "-c", "echo ran > pasted"]);
+
+    desktop.type_keys(&["C-v"]);
+
+    eventually("the paste command ran", || {
+        read(&fixture, "pasted").is_some()
+    });
+    assert_eq!(read(&fixture, "agent-read"), None);
+}
+
+#[test]
+fn a_ctrl_v_forwarded_to_the_viewer_reaches_the_agent() {
+    let fixture = TestServer::new();
+    let (_desktop, viewer) = viewer_with_image_paste(&fixture, &["sh", "-c", "echo ran > pasted"]);
+
+    fixture
+        .server
+        .send_keys(&viewer, &[Keystroke::Control('v')])
+        .expect("typed");
+
+    eventually("the agent read the key", || {
+        read(&fixture, "agent-read").as_deref() == Some("\u{16}")
+    });
+    assert_eq!(read(&fixture, "pasted"), None);
+}
+
+#[test]
+fn ctrl_v_in_the_column_reaches_the_column() {
+    let fixture = TestServer::new();
+    let (_, column) = fixture.start_shell(
+        "cockpit",
+        &format!("{}; sleep 60", first_byte_to("column-read")),
+    );
+    let viewer = fixture
+        .server
+        .split_pane(
+            &column,
+            Split::SideBySide { percent: 70 },
+            &common::shell("sleep 60"),
+        )
+        .expect("splits");
+    fixture
+        .server
+        .bind_image_paste(
+            &viewer,
+            &["sh".into(), "-c".into(), "echo ran > pasted".into()],
+        )
+        .expect("binds the key");
+    let desktop = Desktop::attached_to_cockpit(&fixture);
+    eventually("the owner is attached", || {
+        !fixture.tmux(&["list-clients"]).is_empty()
+    });
+
+    desktop.type_keys(&["C-v"]);
+
+    eventually("the column read the key", || {
+        read(&fixture, "column-read").as_deref() == Some("\u{16}")
+    });
+    assert_eq!(read(&fixture, "pasted"), None);
+}
+
+#[test]
+fn the_image_paste_command_gets_its_words_unchanged() {
+    let fixture = TestServer::new();
+    let word = "it's one word; $HOME `id`";
+    let (desktop, _) = viewer_with_image_paste(
+        &fixture,
+        &[
+            "sh",
+            "-c",
+            "printf %s \"$1\" > pasted.part; mv pasted.part pasted",
+            "sh",
+            word,
+        ],
+    );
+
+    desktop.type_keys(&["C-v"]);
+
+    eventually("the paste command ran", || {
+        read(&fixture, "pasted").is_some()
+    });
+    assert_eq!(read(&fixture, "pasted").as_deref(), Some(word));
 }
