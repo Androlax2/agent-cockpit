@@ -15,20 +15,19 @@ jobs:
       (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
     timeout-minutes: 15
+    # Publishing to api.scorecard.dev (the README badge) proves the run's identity via OIDC.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Same upstream v2.5.0 image; explicit metadata defaults avoid a mutable tag lookup.
-      - uses: docker://ghcr.io/ossf/scorecard-action@sha256:1e1481c65fc2407d3fd6ab18a23c741eb4d1c0d9359ebafc4b3ab13aa61d8627
-        env:
-          INPUT_RESULTS_FILE: scorecard.json
-          INPUT_RESULTS_FORMAT: json
-          INPUT_PUBLISH_RESULTS: 'false'
-          INPUT_FILE_MODE: archive
-          INPUT_REPO_TOKEN: ${{ github.token }}
-          INPUT_INTERNAL_DEFAULT_TOKEN: ${{ github.token }}
-          INPUT_INTERNAL_PUBLISH_BASE_URL: https://api.scorecard.dev
+      - uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: scorecard.json
+          results_format: json
+          publish_results: true
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scorecard
