@@ -46,6 +46,18 @@ below by the worker, with the reasons. Q1 and Q2 on #829 are open with the owner
   `/etc/gitconfig`, whose host-scoped helpers an empty generic one does not clear, out, and
   every other `GIT_CONFIG*` variable of the launch is dropped. A launch under `off`, or one
   refused for want of a backend, gets none of this and runs no `git`.
+- **Declarations refused at load (#861, decided by Theo: Q1 A, Q2 A, Q3 B).** The daemon
+  checks every provider's `Needs` when it loads its providers, before any launch: a path a
+  program reads or writes that overlaps a `~/` entry of `BASELINE_DENIED_READ` or
+  `BASELINE_DENIED_WRITE`, or a folder another program declares `write`, refuses that
+  program's declaration whole (`cockpit_sessions::refused_declarations`). The provider is
+  then not wired: no session names it, and `torlek doctor` says why. Worker choice: the
+  check runs at the daemon's start, where providers load, rather than at each launch, so a
+  refused declaration shows before anything is launched; the owner's entries for unadapted
+  programs (#84, #294) will call the same check when they load. Their source,
+  `NeedsSource::OwnerEntry`, is in the spec for them; the program's hosts reach the spec
+  with the proxy (#831). The executable is bound as its resolved file. `Unsandboxed`
+  evidence is the owner's own act only: the `off` setting, or an adoption (#296).
 - **The probe decides availability.** The daemon runs `torlek-sandbox probe` with the first
   `bwrap` on its `PATH` at its start; a failure, or Landlock below ABI 2, is the reason every
   launch under `required` is refused. Each launch enforces exactly the probed ABI's rights

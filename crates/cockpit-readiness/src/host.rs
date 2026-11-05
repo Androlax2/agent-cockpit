@@ -175,6 +175,15 @@ fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
                     )),
             ];
         }
+        Err(ProviderUnusable::DeclarationRefused { reason }) => {
+            return vec![
+                Requirement::available(
+                    name,
+                    format!("not usable, optional: its sandbox declaration is refused: {reason}"),
+                )
+                .with_advice("the declaration is Torlek's adapter's own: report a Torlek bug"),
+            ];
+        }
     };
     let version = found.version.as_deref().unwrap_or("of an unknown version");
     let provenance = if found.tested { "tested" } else { "unverified" };
