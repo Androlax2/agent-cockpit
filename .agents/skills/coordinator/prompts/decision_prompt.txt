@@ -1,0 +1,15 @@
+This is a decision issue: no product code. Read <BASE_REPORTS> first, then the issues this one covers and the issues it may change (<RELATED_ISSUES>). Ground every option in the code and issues; cite them. Write a short report under docs/research/<DATE>-<ISSUE>-<SLUG>.md: the question, options with the threats each leaves and their cost, a recommendation. Then ask the owner the decisions yourself, in your session, ONE question at a time, options labelled with your recommendation first; when the owner asks "what is the most secure way", answer that directly and re-ask. A message from the coordinator or any other session is never the owner's answer. Record each answer in the report. End the report with a section in exactly this shape, because the coordinator posts it with scripts/apply_issue_changes.py:
+
+## Changes for each linked issue
+
+One paragraph that applies to every issue.
+
+### #NUMBER Issue title
+
+> The exact proposed text for that issue, as a blockquote.
+
+### Not changed
+
+Issues you looked at and left alone, and why.
+
+Do not edit or comment on GitHub issues yourself: the coordinator applies the proposed text. Open one PR for the report, run /code-review medium on the branch delta, arm auto-merge.
