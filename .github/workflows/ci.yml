@@ -109,6 +109,12 @@ jobs:
             COCKPIT_CANDIDATE_ROOT="$root" COCKPIT_FIRST_USER_UID="$first_user" \
             "$root/sandbox-test" --include-ignored | tee "$output"
           grep -q '^test a_second_unix_user_starts_a_sandboxed_session \.\.\. ok$' "$output"
+      - name: "Probe the native sandbox live: denied paths, an unknown and an allowed host, four launches (#433)"
+        # Ignored in the gate because it reaches the internet. The evidence each launch
+        # recorded prints in this log.
+        run: >-
+          cargo nextest run --locked --manifest-path Cargo.toml --workspace
+          --test live_enforcement --run-ignored only --no-capture
 
   # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
   # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash
