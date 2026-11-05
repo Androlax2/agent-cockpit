@@ -72,7 +72,7 @@ It wakes you only for these lines; everything else is one `SUMMARY` every 10 min
 | `QUESTION` | Relay it (below) |
 | `CI ... PR` on a new head commit | Read the failure (below); tell the worker only if it has not moved within one turn |
 | `PR ... MERGED` or `CLOSED` | Close out (below) |
-| `IDLE without merged PR` | Message the worker once; if it does not act by its next turn end, tell the owner. Reported once per idle spell: a second idle after the worker worked again is a new line |
+| `IDLE without merged PR` | Message the worker once; if it does not act by its next turn end, tell the owner. Reported once per idle spell. A second idle with the same doing text is a new line only after the worker worked for at least 2 minutes (`--working-seconds`, default 120); a shorter working blip, such as a CI-wait poll, is not a new spell |
 | `IDLE, merge state unknown` | `gh` failed or timed out, so the merge could not be checked: run `gh pr list --head BRANCH --state merged` yourself, then treat it as the line above or ignore it |
 | `PR POLL FAILED` | `gh` cannot list PRs (network, login, rate limit), so no CI or merge line can arrive. Reported once, then every 30 minutes; check `gh auth status` and the network |
 | `WATCH ENDED` | The monitor exited non-zero (the status of `torlek agent sessions --watch`, else 1) after killing its watch. The text after the colon says why (a missing grant, a crash). Fix that, then re-arm; the state file keeps what was reported |

@@ -1,7 +1,7 @@
 """Coordinator event filter: wakes the coordinator only for events that need action.
 
 Immediate: a worker question appears or changes, a worker goes idle without a merged PR (once
-per idle spell), a CI failure on a PR's current head commit (once per commit and check), a PR
+per idle spell; a short working blip does not end it), a CI failure on a PR's current head commit (once per commit and check), a PR
 merged or closed. Everything else that changed is batched into one summary every 10 minutes.
 State persists in the state file so a re-armed monitor does not repeat what it already reported.
 
@@ -31,6 +31,8 @@ KNOWN_FAILING_ON_MAIN = {"greenfield-macos"}
 FAILED_CONCLUSIONS = ("FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE")
 FIELD = re.compile(r'(\w[\w-]*)="((?:[^"\\]|\\.)*)"')
 POLL_FAILURE_REPORT_SECONDS = 1800
+# A worker waiting on CI wakes on every poll; a working spell shorter than this is a blip.
+DEFAULT_WORKING_SECONDS = 120
 
 lock = threading.Lock()
 batched = []
@@ -62,6 +64,7 @@ class Watcher:
         self.since = arguments.since
         self.seed_seconds = arguments.seed_seconds
         self.poll_seconds = arguments.poll_seconds
+        self.working_seconds = arguments.working_seconds
         self.summary_seconds = arguments.summary_seconds
         self.state_path = arguments.state_file
         self.is_first_run = not self.state_path.exists()
@@ -70,10 +73,15 @@ class Watcher:
         self.sessions = self.state.setdefault("sessions", {})
         self.reported_failures = set(self.state.setdefault("failures", []))
         self.pr_states = self.state.setdefault("prs", {})
-        # session id -> the doing-text of the idle spell already reported; cleared when it works.
+        # session id -> the doing-text of the idle spell already reported; cleared when the
+        # session works for at least `working_seconds`.
         if not isinstance(self.state.get("idle"), dict):
             self.state["idle"] = {}
         self.reported_idle = self.state["idle"]
+        # session id -> when a working spell that began after this watcher saw the session idle
+        # started. Not persisted: a spell of unknown start counts as long, so an idle is
+        # reported again rather than silently dropped.
+        self.working_since = {}
         self.saved_text = None
         self.process = None
         self.last_poll_failure_report = None
@@ -128,6 +136,17 @@ class Watcher:
         if changed or previous["state"] != current["state"]:
             batched.append(f"{tag} {current['state']}: {current['doing']}")
 
+    def track_working_spell(self, session_id, previous, state):
+        if state != "waiting":
+            if (previous or {}).get("state") == "waiting":
+                self.working_since[session_id] = time.monotonic()
+            return
+        if (previous or {}).get("state") == "waiting":
+            return
+        started = self.working_since.pop(session_id, None)
+        if started is None or time.monotonic() - started >= self.working_seconds:
+            self.reported_idle.pop(session_id, None)
+
     def on_session(self, current):
         """Handles one session line. The merge check runs gh, so the lock is not held for it."""
         session_id = current["id"]
@@ -137,8 +156,7 @@ class Watcher:
             self.sessions[session_id] = current
             if previous == current:
                 return
-            if current["state"] != "waiting":
-                self.reported_idle.pop(session_id, None)
+            self.track_working_spell(session_id, previous, current["state"])
             # The first look at a fresh start fills the summary with history; a question or an
             # idle worker found then is still news.
             seeding = self.is_first_run and time.monotonic() - self.started_at < self.seed_seconds
@@ -173,6 +191,7 @@ class Watcher:
         with lock:
             self.sessions.pop(session_id, None)
             self.reported_idle.pop(session_id, None)
+            self.working_since.pop(session_id, None)
             self.save()
 
     def handle_line(self, line):
@@ -303,6 +322,12 @@ def parse_arguments(argv):
     )
     parser.add_argument("--seed-seconds", type=float, default=5)
     parser.add_argument("--poll-seconds", type=float, default=120)
+    parser.add_argument(
+        "--working-seconds",
+        type=float,
+        default=DEFAULT_WORKING_SECONDS,
+        help="a working spell shorter than this does not start a new idle spell",
+    )
     parser.add_argument("--summary-seconds", type=float, default=600)
     parser.add_argument("--gh-timeout-seconds", type=float, default=60)
     arguments = parser.parse_args(argv)
