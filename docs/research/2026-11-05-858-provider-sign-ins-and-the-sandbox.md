@@ -157,7 +157,7 @@ binding the proxy could swap a token mid-session; that is the open choice.
 
 ### Q3. What alpha.4 ships before #59
 
-#59 is in v0.1.0-beta.2; Theo's rule of 2026-11-05 keeps implementation in its own milestone.
+Issue #59 is in v0.1.0-beta.2; Theo's rule of 2026-11-05 keeps implementation in its own milestone.
 But #833 turns the sandbox on in alpha.4, and under #859 Q3 a sandboxed session then has no
 provider credential at all unless alpha.4 brings one.
 
@@ -194,8 +194,8 @@ alpha.4. **B:** one login folder per provider mounted as a stopgap. **C:** #833 
 Most secure: A.
 
 **Decided 2026-11-05: A.** Alpha.4 binds one account per provider at the proxy (#832): the
-credential the owner sets for that provider. Several accounts, login grants and routing stay in
-#59 (beta.2). Until then a sandboxed session on Codex's ChatGPT plan or an OpenCode OAuth login
+credential the owner sets for that provider. Several accounts, login grants and routing stay
+in #59 (beta.2). Until then a sandboxed session on Codex's ChatGPT plan or an OpenCode OAuth login
 is not available, and a Claude session bound with a `setup-token` token has no Remote Control and
 no claude.ai connectors; the owner's `agents.sandbox = "off"` remains the named opt-out.
 
