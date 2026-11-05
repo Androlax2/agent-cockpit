@@ -124,6 +124,16 @@ impl Sandbox {
         Some(session_folder(&host.homes, session))
     }
 
+    /// `session`'s tool configuration folder under the sandbox, with the owner's Git identity
+    /// in it, which its end removes (#859); None when the daemon read no host paths.
+    pub fn session_tool_config(&self, session: &str) -> Option<Result<PathBuf, Refusal>> {
+        let host = self.host.as_ref()?;
+        Some(
+            session_folder(&host.mount_sources, session)
+                .map(|folder| folder.join(crate::native::CONFIG_FOLDER)),
+        )
+    }
+
     /// The host's platform, as the daemon detected it.
     pub fn platform(&self) -> &Platform {
         &self.platform

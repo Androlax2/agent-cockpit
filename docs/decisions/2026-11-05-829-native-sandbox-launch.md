@@ -27,17 +27,25 @@ below by the worker, with the reasons. Q1 and Q2 on #829 are open with the owner
   creatable when absent: an empty folder there would break the owner's tools, and each runs
   only after the owner trusts it. The evidence states each rule.
 - **Toolchains, caches and Git (#859, decided by Theo: Q1 B, Q2 A, Q3 A).** The daemon detects
-  the checkout's ecosystems with the toolchain table and binds read-only the install roots
-  the launch's `PATH` resolves their tools in. Every cache variable of the table is set, not
-  only a detected ecosystem's, so a tool used without a marker file still caches in the
-  session's own `caches/` folder of its temp folder; the compiler wrappers are set empty.
-  Worker choices: tool configuration files and the session's Git configuration
+  the ecosystems whose markers sit at the checkout's root or in the session's start folder,
+  and binds read-only the install roots the launch's `PATH` resolves their tools in. A marker
+  it cannot read, such as a link loop an agent left, detects nothing and is logged rather
+  than failing every later launch. Every cache variable of the table is set, not only a
+  detected ecosystem's, so a tool used without a marker file still caches in the session's
+  own `caches/` folder of its temp folder; the compiler wrappers are set empty and
+  `GOFLAGS` gets `-modcacherw` added to the owner's own flags. The session's end removes
+  read-only trees too, making their folders writable first, since the agent can unset that
+  flag. Worker choices: tool configuration files and the session's Git configuration
   (`GIT_CONFIG_GLOBAL`) are written into `config/` of the session's folder of the mount
   sources and bound read-only, never into a folder the agent writes, so a link the agent
-  planted can never turn the daemon's write onto another file. The Git configuration holds
-  the owner's `user.name` and `user.email` as quoted values, the checkout as
-  `safe.directory` (not the owner's whole list) and an empty `credential.helper`, which
-  clears one `/etc/gitconfig` names. A launch under `off` gets none of this.
+  planted can never turn the daemon's write onto another file; the session's end removes
+  that folder. The Git configuration holds the owner's `user.name` and `user.email` as
+  quoted values, read by one `git -C <checkout> config --global --includes` so an
+  `includeIf` on the checkout applies, the checkout as `safe.directory` (not the owner's
+  whole list) and an empty `credential.helper`. `GIT_CONFIG_NOSYSTEM=1` keeps
+  `/etc/gitconfig`, whose host-scoped helpers an empty generic one does not clear, out, and
+  every other `GIT_CONFIG*` variable of the launch is dropped. A launch under `off`, or one
+  refused for want of a backend, gets none of this and runs no `git`.
 - **The probe decides availability.** The daemon runs `torlek-sandbox probe` with the first
   `bwrap` on its `PATH` at its start; a failure, or Landlock below ABI 2, is the reason every
   launch under `required` is refused. Each launch enforces exactly the probed ABI's rights

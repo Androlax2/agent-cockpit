@@ -219,6 +219,8 @@ pub enum ToolSetting {
     ConfigFile(String),
     /// This value as it is; an empty one turns a wrapper off.
     Value(String),
+    /// This flag added, after a space, to the value the launch already gives the variable.
+    Flag(String),
 }
 
 /// `user.name` and `user.email` of the owner's Git configuration, each absent when unset.
@@ -234,7 +236,7 @@ const CACHE_FOLDER: &str = "caches";
 
 /// The session's tool configuration folder, inside its folder of the daemon's mount
 /// sources, bound read-only: no agent can replace a file the daemon writes there.
-const CONFIG_FOLDER: &str = "config";
+pub(crate) const CONFIG_FOLDER: &str = "config";
 
 /// The Git configuration Torlek writes for a sandboxed session, which `GIT_CONFIG_GLOBAL`
 /// names: the session's home holds none of the owner's.
@@ -357,6 +359,7 @@ pub(crate) fn prepare(
     let config_dir = mount_dir.join(CONFIG_FOLDER);
     let tool_environment = tool_environment(
         &request.tools,
+        &request.environment,
         &profile.temp_dir.join(CACHE_FOLDER),
         &config_dir,
         &profile.working_dir,
@@ -440,7 +443,10 @@ pub(crate) fn prepare(
                 .variables
                 .iter()
                 .any(|(variable, _)| variable == name);
-            !is_credential && !is_replaced
+            // `GIT_CONFIG_COUNT` and its pairs, or `GIT_CONFIG_PARAMETERS`, could name a
+            // credential helper again.
+            let is_git_configuration = name.to_string_lossy().starts_with("GIT_CONFIG");
+            !is_credential && !is_replaced && !is_git_configuration
         })
         .cloned()
         .collect();
@@ -513,14 +519,20 @@ struct ToolEnvironment {
 
 fn tool_environment(
     tools: &ToolNeeds,
+    launch_environment: &[(OsString, OsString)],
     cache_dir: &Path,
     config_dir: &Path,
     checkout: &Path,
 ) -> Result<ToolEnvironment, Refusal> {
-    let mut variables: Vec<(OsString, OsString)> = vec![(
-        "GIT_CONFIG_GLOBAL".into(),
-        config_dir.join(GIT_CONFIG_FILE).into_os_string(),
-    )];
+    let mut variables: Vec<(OsString, OsString)> = vec![
+        (
+            "GIT_CONFIG_GLOBAL".into(),
+            config_dir.join(GIT_CONFIG_FILE).into_os_string(),
+        ),
+        // `/etc/gitconfig` may name credential helpers, scoped to a host where an empty
+        // generic helper does not reach.
+        ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+    ];
     let mut files = vec![(
         GIT_CONFIG_FILE.to_owned(),
         git_config(&tools.git_identity, checkout)?,
@@ -540,6 +552,22 @@ fn tool_environment(
                 config_dir.join(file).into()
             }
             ToolSetting::Value(value) => value.into(),
+            ToolSetting::Flag(flag) => {
+                let launch_value = launch_environment
+                    .iter()
+                    .rev()
+                    .find(|(variable, _)| variable == name.as_str())
+                    .map(|(_, value)| value.clone())
+                    .filter(|value| !value.is_empty());
+                match launch_value {
+                    Some(mut value) => {
+                        value.push(" ");
+                        value.push(flag);
+                        value
+                    }
+                    None => flag.into(),
+                }
+            }
         };
         variables.push((name.into(), value));
     }
@@ -559,7 +587,9 @@ fn plain_name(name: &str) -> Result<&str, Refusal> {
 }
 
 /// The session's Git configuration: the owner's identity as values, the checkout as a safe
-/// directory, and no credential helper, not even one `/etc/gitconfig` names.
+/// directory, and no generic credential helper. `GIT_CONFIG_NOSYSTEM` keeps
+/// `/etc/gitconfig` out, so only the checkout's own configuration, which the agent cannot
+/// change, may name a helper for a host.
 fn git_config(identity: &GitIdentity, checkout: &Path) -> Result<String, Refusal> {
     let checkout = checkout.to_str().ok_or_else(|| {
         Refusal::new(
@@ -579,7 +609,6 @@ fn git_config(identity: &GitIdentity, checkout: &Path) -> Result<String, Refusal
         }
     }
     text.push_str(&format!("[safe]\n\tdirectory = {}\n", git_value(checkout)));
-    // An empty helper clears the list the system configuration started.
     text.push_str("[credential]\n\thelper = \"\"\n");
     Ok(text)
 }
@@ -851,6 +880,7 @@ mod tests {
 
             let refused = tool_environment(
                 &tools,
+                &[],
                 Path::new("/tmp/s1/caches"),
                 Path::new("/run/mounts/s1/config"),
                 Path::new("/work/app"),
@@ -858,6 +888,35 @@ mod tests {
 
             assert!(refused.is_err(), "{name:?}");
         }
+    }
+
+    #[test]
+    fn a_flag_joins_the_launch_value_of_its_variable() {
+        let tools = ToolNeeds {
+            variables: vec![(
+                "GOFLAGS".to_owned(),
+                ToolSetting::Flag("-modcacherw".to_owned()),
+            )],
+            ..ToolNeeds::none()
+        };
+        let launch = [("GOFLAGS".into(), "-mod=vendor".into())];
+
+        let environment = tool_environment(
+            &tools,
+            &launch,
+            Path::new("/tmp/s1/caches"),
+            Path::new("/run/mounts/s1/config"),
+            Path::new("/work/app"),
+        )
+        .unwrap();
+
+        assert!(
+            environment
+                .variables
+                .contains(&("GOFLAGS".into(), "-mod=vendor -modcacherw".into())),
+            "{:?}",
+            environment.variables
+        );
     }
 
     #[test]

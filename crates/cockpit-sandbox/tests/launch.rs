@@ -213,6 +213,53 @@ fn a_required_sandbox_drops_declared_credential_variables_and_hides_credential_f
     );
 }
 
+/// #859: Git inside reads Torlek's configuration only: no system file, and no configuration
+/// the launch's environment would add, can name a credential helper again.
+#[test]
+fn a_required_sandbox_gives_git_only_torleks_configuration() {
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.environment.extend([
+        ("GIT_CONFIG_COUNT".into(), "1".into()),
+        ("GIT_CONFIG_KEY_0".into(), "credential.helper".into()),
+        ("GIT_CONFIG_VALUE_0".into(), "store".into()),
+        (
+            "GIT_CONFIG_PARAMETERS".into(),
+            "'credential.helper'='store'".into(),
+        ),
+    ]);
+
+    let prepared = native_launch(&request).unwrap();
+
+    let git_variables: Vec<_> = prepared
+        .environment
+        .iter()
+        .filter(|(name, _)| name.to_string_lossy().starts_with("GIT_CONFIG"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        git_variables,
+        vec![
+            (
+                OsString::from("GIT_CONFIG_GLOBAL"),
+                OsString::from(format!("{MOUNT_SOURCES}/s1/config/gitconfig"))
+            ),
+            (OsString::from("GIT_CONFIG_NOSYSTEM"), OsString::from("1")),
+        ]
+    );
+}
+
+/// #859: the session's end removes its tool configuration, which holds the owner's Git
+/// identity.
+#[test]
+fn a_sessions_tool_configuration_is_the_folder_its_launch_writes() {
+    let sandbox = Sandbox::new(Platform::Linux, no_host_paths(), native_backend());
+    let prepared = native_launch(&launch_request("s1", "/home/owner/app")).unwrap();
+
+    let removed = sandbox.session_tool_config("s1").unwrap().unwrap();
+
+    assert_eq!(removed, prepared.staged.unwrap().config_dir);
+}
+
 /// Without the session proxy (#831) nothing swaps a placeholder for the secret.
 #[test]
 fn a_required_sandbox_refuses_a_placeholder_secret() {

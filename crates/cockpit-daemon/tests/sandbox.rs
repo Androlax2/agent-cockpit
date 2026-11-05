@@ -689,14 +689,25 @@ async fn a_second_session_does_not_see_the_first_ones_cache() {
 }
 
 /// #859: Git works in the checkout from the configuration Torlek writes, with the owner's
-/// identity copied as values.
+/// identity for that checkout copied as values: an `includeIf` on its folder applies.
 #[tokio::test(flavor = "multi_thread")]
 async fn git_commits_in_the_checkout_with_the_owners_identity() {
     let home = Home::new();
     let agent = sandboxed_agent(&home, |home| {
+        let projects = home.path().join("projects");
         std::fs::write(
             home.path().join(".gitconfig"),
-            "[user]\n\tname = Owner Fixture\n\temail = owner@example.com\n",
+            format!(
+                "[user]\n\tname = Owner Fixture\n\temail = owner@personal.example\n\
+                 [includeIf \"gitdir:{}/\"]\n\tpath = {}\n",
+                projects.display(),
+                home.path().join("work.gitconfig").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            home.path().join("work.gitconfig"),
+            "[user]\n\temail = owner@example.com\n",
         )
         .unwrap();
     })
@@ -715,7 +726,8 @@ async fn git_commits_in_the_checkout_with_the_owners_identity() {
     );
 }
 
-/// #859: Go's module cache is created writable, so the session's end removes it.
+/// #859: the session's end removes its Go module cache, even as Go leaves it without
+/// `-modcacherw`: read-only folders.
 #[tokio::test(flavor = "multi_thread")]
 async fn ending_the_session_removes_its_populated_go_module_cache() {
     let home = Home::new();
@@ -731,7 +743,8 @@ async fn ending_the_session_removes_its_populated_go_module_cache() {
         &home,
         &agent.root,
         "module=\"$GOMODCACHE/example.com/dependency@v1.0.0\" && mkdir -p \"$module\" && \
-         echo 'module example.com/dependency' > \"$module/go.mod\" && echo \"flags: $GOFLAGS\"",
+         echo 'module example.com/dependency' > \"$module/go.mod\" && \
+         chmod -R a-w \"$GOMODCACHE/example.com\" && echo \"flags: $GOFLAGS\"",
     )
     .await;
     assert!(printed.contains("flags: -modcacherw\n"), "{printed}");
@@ -780,4 +793,42 @@ async fn the_evidence_names_the_session_own_cache_mode_and_the_detected_toolchai
         )),
         "{printed}"
     );
+}
+
+/// #859: the session's end removes its tool configuration, which holds the owner's Git
+/// identity.
+#[tokio::test(flavor = "multi_thread")]
+async fn ending_the_session_removes_its_git_configuration() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "echo \"git config: $GIT_CONFIG_GLOBAL\"",
+    )
+    .await;
+    let configuration = PathBuf::from(
+        printed
+            .lines()
+            .find_map(|line| line.strip_prefix("git config: "))
+            .unwrap_or_else(|| panic!("{printed}")),
+    );
+    assert!(configuration.is_file(), "{}", configuration.display());
+    let client = home.connect().await;
+
+    client
+        .request(
+            Command::SessionEnd {
+                session: agent.session.clone(),
+            },
+            GENEROUS,
+        )
+        .await
+        .expect("the owner ends the session");
+
+    let deadline = tokio::time::Instant::now() + GENEROUS;
+    while configuration.exists() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!configuration.exists(), "{}", configuration.display());
 }
