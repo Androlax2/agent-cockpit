@@ -448,3 +448,23 @@ fn a_credentials_file_beside_a_spec_binding_none_is_removed_and_refused() {
     assert!(!printed.contains(SECRET), "{printed}");
     assert!(!fixture.path("mounts").join(CREDENTIALS_FILE).exists());
 }
+
+/// #832, #434: a spec the launcher refuses, one an older launcher wrote or a malformed one,
+/// still leaves no value behind.
+#[test]
+fn a_refused_spec_leaves_no_credentials_file() {
+    let fixture = Fixture::new();
+    fixture.write_credentials(&[SECRET]);
+    let spec_path = fixture.path("mounts").join(SPEC_FILE);
+    write(&spec_path, "{\"version\": 0}");
+
+    let output = Command::new(LAUNCHER)
+        .arg("run")
+        .arg(&spec_path)
+        .env_clear()
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(125));
+    assert!(!fixture.path("mounts").join(CREDENTIALS_FILE).exists());
+}

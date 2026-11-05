@@ -79,14 +79,13 @@ pub fn read_spec(path: &Path) -> Result<LaunchSpec, String> {
     Ok(spec)
 }
 
-/// The bound credentials' values in `mount_dir`'s credentials file, which is removed before
-/// anything else, as the spec is (#832, #434): one per credential `spec` binds. A file
-/// beside a spec that binds none is removed and refused, never left for a later launch.
-pub fn read_credentials(mount_dir: &Path, spec: &LaunchSpec) -> Result<Vec<String>, String> {
+/// Reads and removes `mount_dir`'s credentials file (#832), as the spec is (#434): first of
+/// all, so no refusal of the spec leaves a value behind. None when there is none.
+pub fn take_credentials(mount_dir: &Path) -> Result<Option<Vec<u8>>, String> {
     let path = mount_dir.join(cockpit_sandbox::CREDENTIALS_FILE);
     let text = match std::fs::read(&path) {
-        Ok(text) => Some(text),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(format!(
                 "cannot read the credentials file {}: {error}",
@@ -94,14 +93,20 @@ pub fn read_credentials(mount_dir: &Path, spec: &LaunchSpec) -> Result<Vec<Strin
             ));
         }
     };
-    if text.is_some() {
-        std::fs::remove_file(&path).map_err(|error| {
-            format!(
-                "cannot remove the credentials file {}: {error}",
-                path.display()
-            )
-        })?;
-    }
+    std::fs::remove_file(&path).map_err(|error| {
+        format!(
+            "cannot remove the credentials file {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(Some(text))
+}
+
+/// The bound credentials' values in the credentials file's `text`, one per credential `spec`
+/// binds. A file beside a spec that binds none is refused, as is a missing one beside a spec
+/// that binds some.
+pub fn credential_values(text: Option<Vec<u8>>, spec: &LaunchSpec) -> Result<Vec<String>, String> {
+    let file = cockpit_sandbox::CREDENTIALS_FILE;
     let bound = spec
         .interception
         .as_ref()
@@ -109,21 +114,19 @@ pub fn read_credentials(mount_dir: &Path, spec: &LaunchSpec) -> Result<Vec<Strin
     let Some(text) = text else {
         if bound > 0 {
             return Err(format!(
-                "the spec binds {bound} credentials, and {} is missing",
-                path.display()
+                "the spec binds {bound} credentials, and {file} is missing"
             ));
         }
         return Ok(Vec::new());
     };
     if bound == 0 {
         return Err(format!(
-            "{} is present, and the spec binds no credential",
-            path.display()
+            "{file} is present, and the spec binds no credential"
         ));
     }
     // The values never appear in an error: serde's message could quote them.
     let values: Vec<String> = serde_json::from_slice(&text)
-        .map_err(|_| format!("the credentials file {} is malformed", path.display()))?;
+        .map_err(|_| format!("the credentials file {file} is malformed"))?;
     if values.len() != bound {
         return Err(format!(
             "the credentials file holds {} values for {bound} bound credentials",

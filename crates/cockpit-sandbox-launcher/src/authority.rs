@@ -114,7 +114,8 @@ impl Authority {
     }
 }
 
-/// A CA allowed to sign certificates for `hosts` and their subdomains alone, one level deep.
+/// A CA allowed to sign server certificates for `hosts` and names under them alone (a DNS
+/// name constraint covers every depth below its name), and no intermediate CA.
 fn generate_ca(
     session: &str,
     hosts: &[&str],

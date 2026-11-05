@@ -729,7 +729,14 @@ impl<U: Upstream> Proxy<U> {
                      NODE_EXTRA_CA_CERTS, cannot use {} on {host}",
                     bound.credential.name
                 ),
-                None => format!("the client left the TLS handshake for {host}: {error}"),
+                // A client that pins may close without an alert; one that offers no
+                // `http/1.1` gets the proxy's own.
+                None => format!(
+                    "the TLS handshake with the client for {host} failed ({error}): a client \
+                     that pins its certificates, offers no http/1.1, or trusts neither \
+                     SSL_CERT_FILE nor NODE_EXTRA_CA_CERTS, cannot use {} on {host}",
+                    bound.credential.name
+                ),
             };
             self.count(destination, |counters| {
                 if refused_by_client {
@@ -824,7 +831,8 @@ impl<U: Upstream> Proxy<U> {
             };
             return Err((code, reason));
         }
-        let _ = stream.sock.set_read_timeout(None);
+        // A stalled upstream never holds the tunnel's thread longer than an idle client does.
+        let _ = stream.sock.set_read_timeout(Some(IDLE_TIMEOUT));
         Ok(stream)
     }
 

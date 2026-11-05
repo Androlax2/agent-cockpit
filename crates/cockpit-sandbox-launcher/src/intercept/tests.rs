@@ -89,6 +89,8 @@ fn relay_through(host: &str, credential: &Credential, requests: &str, responses:
 }
 
 const OK_EMPTY: &str = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+/// [`OK_EMPTY`] as the client gets it: every tunnel carries one exchange.
+const OK_EMPTY_CLOSING: &str = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
 fn basic() -> String {
     format!(
@@ -111,35 +113,43 @@ fn bearer_replaces_whatever_authorization_the_client_sent() {
     assert_eq!(
         relayed.sent,
         format!(
-            "GET /user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer {SECRET}\r\n\r\n"
+            "GET /user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer {SECRET}\r\n\
+             Connection: close\r\n\r\n"
         )
     );
     assert_eq!(
         relayed.answered,
-        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
     );
     assert_eq!(relayed.credentials_added, 1);
 }
 
+/// A server may close a kept-alive connection while it sits idle, and a client cannot
+/// retry a request that met the close: each tunnel carries one exchange, both heads saying so.
 #[test]
-fn bearer_is_added_to_each_request_of_a_kept_alive_connection() {
+fn a_tunnel_carries_one_exchange_and_both_sides_are_told_it_closes() {
     let relayed = relay_through(
         "api.github.com",
         &bearer(),
-        "GET /a HTTP/1.1\r\nHost: api.github.com\r\n\r\n\
+        "GET /a HTTP/1.1\r\nHost: api.github.com\r\nConnection: keep-alive\r\n\r\n\
          GET /b HTTP/1.1\r\nHost: api.github.com\r\n\r\n",
-        "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nA\
+        "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nKeep-Alive: timeout=5\r\n\r\nA\
          HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nB",
     );
 
     assert_eq!(relayed.ended, Ended::Closed);
-    assert_eq!(relayed.sent.matches("Bearer github_pat_secret").count(), 2);
-    assert!(
-        relayed.answered.ends_with("\r\n\r\nB"),
-        "{}",
-        relayed.answered
+    assert_eq!(
+        relayed.sent,
+        format!(
+            "GET /a HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer {SECRET}\r\n\
+             Connection: close\r\n\r\n"
+        )
     );
-    assert_eq!(relayed.credentials_added, 2);
+    assert_eq!(
+        relayed.answered,
+        "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\nA"
+    );
+    assert_eq!(relayed.credentials_added, 1);
 }
 
 /// #857: a fetch's discovery gets the credential; the query decides, not the path alone.
@@ -155,7 +165,7 @@ fn a_git_fetch_discovery_gets_basic_credentials() {
 
     assert_eq!(relayed.ended, Ended::Closed);
     assert!(relayed.sent.contains(&basic()), "{}", relayed.sent);
-    assert_eq!(relayed.answered, OK_EMPTY);
+    assert_eq!(relayed.answered, OK_EMPTY_CLOSING);
 }
 
 #[test]
@@ -227,7 +237,10 @@ fn another_request_on_the_git_host_passes_without_the_credential() {
     let relayed = relay_through("github.com", &git_reads(), request, OK_EMPTY);
 
     assert_eq!(relayed.ended, Ended::Closed);
-    assert_eq!(relayed.sent, request);
+    assert_eq!(
+        relayed.sent,
+        request.replace("\r\n\r\n", "\r\nConnection: close\r\n\r\n")
+    );
     assert_eq!(relayed.credentials_added, 0);
 }
 
@@ -335,69 +348,69 @@ fn an_expectation_of_100_continue_is_answered_by_the_proxy() {
     assert!(!relayed.sent.contains("Expect"), "{}", relayed.sent);
     assert_eq!(
         relayed.answered,
-        format!("HTTP/1.1 100 Continue\r\n\r\n{OK_EMPTY}")
+        format!("HTTP/1.1 100 Continue\r\n\r\n{OK_EMPTY_CLOSING}")
     );
 }
 
 #[test]
 fn an_interim_response_passes_before_the_final_one() {
-    let responses = format!("HTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\n{OK_EMPTY}");
+    let interim = "HTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\n";
     let relayed = relay_through(
         "api.github.com",
         &bearer(),
         "GET /x HTTP/1.1\r\nHost: api.github.com\r\n\r\n",
-        &responses,
+        &format!("{interim}{OK_EMPTY}"),
     );
 
     assert_eq!(relayed.ended, Ended::Closed);
-    assert_eq!(relayed.answered, responses);
+    assert_eq!(relayed.answered, format!("{interim}{OK_EMPTY_CLOSING}"));
 }
 
 #[test]
 fn a_response_without_a_length_runs_until_the_upstream_closes() {
-    let response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: 1\n\n";
     let relayed = relay_through(
         "api.github.com",
         &bearer(),
-        "GET /x HTTP/1.1\r\nHost: api.github.com\r\n\r\n\
-         GET /y HTTP/1.1\r\nHost: api.github.com\r\n\r\n",
-        response,
+        "GET /x HTTP/1.1\r\nHost: api.github.com\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: 1\n\n",
     );
 
     assert_eq!(relayed.ended, Ended::Closed);
-    assert_eq!(relayed.answered, response);
+    assert_eq!(
+        relayed.answered,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+         data: 1\n\n"
+    );
     assert_eq!(relayed.credentials_added, 1);
 }
 
 #[test]
 fn a_head_response_has_no_body_whatever_its_length_says() {
-    let response = "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n";
     let relayed = relay_through(
         "api.github.com",
         &bearer(),
-        "HEAD /x HTTP/1.1\r\nHost: api.github.com\r\n\r\n\
-         GET /y HTTP/1.1\r\nHost: api.github.com\r\n\r\n",
-        &format!("{response}{OK_EMPTY}"),
+        "HEAD /x HTTP/1.1\r\nHost: api.github.com\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n",
     );
 
     assert_eq!(relayed.ended, Ended::Closed);
-    assert_eq!(relayed.answered, format!("{response}{OK_EMPTY}"));
-    assert_eq!(relayed.credentials_added, 2);
+    assert_eq!(
+        relayed.answered,
+        "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n"
+    );
 }
 
 #[test]
-fn a_request_asking_to_close_ends_the_connection_after_its_response() {
+fn an_ambiguous_response_body_breaks_the_exchange_before_its_head_reaches_the_client() {
     let relayed = relay_through(
         "api.github.com",
         &bearer(),
-        "GET /x HTTP/1.1\r\nHost: api.github.com\r\nConnection: close\r\n\r\n\
-         GET /y HTTP/1.1\r\nHost: api.github.com\r\n\r\n",
-        &format!("{OK_EMPTY}{OK_EMPTY}"),
+        "GET /x HTTP/1.1\r\nHost: api.github.com\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n0\r\n\r\n",
     );
 
-    assert_eq!(relayed.ended, Ended::Closed);
-    assert_eq!(relayed.credentials_added, 1);
-    assert_eq!(relayed.answered, OK_EMPTY);
+    assert!(matches!(relayed.ended, Ended::Broken(_)));
+    assert_eq!(relayed.answered, "");
 }
 
 #[test]

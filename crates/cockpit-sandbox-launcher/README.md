@@ -76,7 +76,7 @@ the bound hosts, issues one certificate per host, drops the CA's key and writes 
 certificate and the host's bundle with it into the session's read-only tool configuration
 folder (`authority.rs`). On a bound host the proxy completes TLS with the client itself,
 opens TLS to the upstream server verified against the host's CA bundle, and relays HTTP/1.1
-one exchange at a time, adding the credential (`intercept.rs`): Bearer on every request, or
+one exchange per tunnel, adding the credential (`intercept.rs`): Bearer on every request, or
 Basic on Git fetches alone with any `git-receive-pack` request refused naming `torlek push`.
 Every other host stays a plain tunnel. A client that refuses the session CA is counted
 (`ca_refused`) and named with the host in the report. See

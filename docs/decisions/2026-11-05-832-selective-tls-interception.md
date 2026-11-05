@@ -27,7 +27,8 @@ upstream servers, 2026-11-05) and by the worker (the rest, reasons below).
 - **Two tokens per project.** `github-tokens/<project>` (#754) stays the push token: an
   unsandboxed agent's `GH_TOKEN`, never a sandboxed one's (#857 decision 1, pushes go through
   `torlek push`). `github-api-tokens/<project>` is the API token (Pull requests and Issues
-  write, Contents read), read under the same rules by `cockpit_config::read_github_token`.
+  write, Contents read), read under the same rules by `cockpit_config::read_github_token`,
+  and only for a sandboxed launch: an unsandboxed one has no proxy to add it.
   Under `agents.sandbox = "required"` the proxy adds it as Bearer on `api.github.com` and as
   Basic `x-access-token:<token>` on `github.com` for `git-upload-pack` alone; anything naming
   `git-receive-pack` (both halves of a push, after percent-decoding) is answered 403 naming
@@ -43,12 +44,20 @@ upstream servers, 2026-11-05) and by the worker (the rest, reasons below).
   A client that rejects the session CA (pinned, or trusting neither variable) ends the
   handshake with an alert; the proxy counts it (`ca_refused`) and names the host and the
   credential in the report's last reason.
-- **One HTTP/1.1 exchange at a time, framing checked.** ALPN offers `http/1.1` alone on both
-  sides. A request with both `Transfer-Encoding` and `Content-Length`, differing lengths, or a
-  last coding other than `chunked` is refused 400 (request smuggling). `Upgrade` requests are
-  refused, and a `101` ends the tunnel: a WebSocket or HTTP/2 over a credential host is not
-  carried. The request's `Host` (or absolute-form authority) must name the tunnel's host.
-  `Expect: 100-continue` is answered by the proxy.
+- **One HTTP/1.1 exchange per tunnel, framing checked.** ALPN offers `http/1.1` alone on both
+  sides. Both heads say `Connection: close`, and the client opens a new tunnel for its next
+  request: a kept-alive upstream connection the server closed while idle would fail the next
+  request with nothing sent back, and a client cannot retry a `POST` that met the close. A
+  request with both `Transfer-Encoding` and `Content-Length`, differing lengths, or a last
+  coding other than `chunked` is refused 400 (request smuggling); a response framed that way
+  ends the tunnel before its head reaches the client. `Upgrade` requests are refused, and a
+  `101` ends the tunnel: a WebSocket or HTTP/2 over a credential host is not carried. The
+  request's `Host` (or absolute-form authority) must name the tunnel's host. Each side's read
+  waits at most the idle timeout (300 s). `Expect: 100-continue` is answered by the proxy.
+- **The credentials file never outlives its launch.** The launcher removes it before it parses
+  the spec, so a spec it refuses leaves none behind; the daemon removes it when the launch
+  returns, so a launch that failed before its launcher ran, or a launcher too old to know the
+  file, leaves none either.
 - **Upstream servers are verified against the host's CA bundle.** The owner's `SSL_CERT_FILE`
   when the daemon's environment sets one, else the first of the usual distribution bundles;
   no bundle refuses the launch. A failed upstream handshake is a 502 naming the TLS error.
@@ -56,6 +65,8 @@ upstream servers, 2026-11-05) and by the worker (the rest, reasons below).
   intercepting every allowed host (the issue intercepts credential hosts alone, and other
   hosts' pinning would break).
 - **Residual:** byte counters of an intercepted tunnel count the plaintext; Git LFS requests
-  get no credential, and WebSockets on a credential host are refused; whether `gh pr merge --auto` works with the API
-  token's permission set is to be tested on a real repository (#857). Provider sign-ins
-  (#858) and registry tokens (#859) are not bound yet.
+  get no credential, and WebSockets on a credential host are refused; an upstream that answers
+  a request expecting `100 Continue` early and closes is seen as a broken tunnel, not
+  relayed; whether `gh pr merge --auto` works with the API token's permission set is to be
+  tested on a real repository (#857). Provider sign-ins (#858) and registry tokens (#859) are
+  not bound yet.

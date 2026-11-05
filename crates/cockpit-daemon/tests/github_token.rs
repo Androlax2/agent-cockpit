@@ -154,6 +154,24 @@ async fn a_token_file_other_users_may_read_refuses_the_projects_launch() {
     assert!(home.launches().is_empty(), "{:?}", home.launches());
 }
 
+/// #832: the API token is the session proxy's, which only a sandboxed launch has; an
+/// unsandboxed one neither reads its file nor gets it, so a file it would refuse stops nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unsandboxed_launch_ignores_the_projects_api_token() {
+    let home = Home::new();
+    home.write_github_token("first", TOKEN, 0o600);
+    home.write_github_api_token("first", "github_pat_api_token", 0o644);
+    let _daemon = home.start();
+    let client = home.connect().await;
+
+    let first = launched_session(&home, &client, "first").await;
+
+    assert_eq!(
+        logged_github_variables(&home, &first).await,
+        (TOKEN.to_owned(), "unset".to_owned())
+    );
+}
+
 /// What the [`ONBOARD_PROJECT`] agent read, once it wrote it.
 async fn wait_for_onboarding(home: &Home) -> String {
     let deadline = Instant::now() + GENEROUS;

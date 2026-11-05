@@ -78,14 +78,14 @@ const HANDOFF_FOLDER: &str = "proxy-handoff";
 /// status is the launcher's, a signal's as the shell reports it (128 + the signal).
 #[cfg(target_os = "linux")]
 fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
-    let spec = plan::read_spec(&spec_path)?;
     let mount_dir = spec_path
         .parent()
         .ok_or("the launch spec has no folder")?
         .to_path_buf();
-    // Before the program starts: the credentials file is gone, and the trust files the
-    // program reads at its start are written.
-    let values = plan::read_credentials(&mount_dir, &spec)?;
+    let credentials = plan::take_credentials(&mount_dir)?;
+    let spec = plan::read_spec(&spec_path)?;
+    // Before the program starts: the trust files it reads at its start are written.
+    let values = plan::credential_values(credentials, &spec)?;
     let authority = match &spec.interception {
         Some(interception) => {
             let cockpit_sandbox::Subject::Session { session } = &spec.subject;

@@ -1989,7 +1989,8 @@ impl Sessions {
         // not just the folder it starts in: Git and the project's own files live at its root.
         let (checkout, _) = self.checkout_containing(&session.working_dir).await?;
         let output_project = checkout.project.as_str().to_owned();
-        let github = self.github_access(&output_project).await?;
+        let setting = self.owner_settings().sandbox;
+        let github = self.github_access(setting, &output_project).await?;
         // Kept for the clone's harness trust, recorded once the launch passed its gates.
         let clone_trust = matches!(checkout.kind, CheckoutKind::Parallel { .. }).then(|| {
             (
@@ -1997,7 +1998,6 @@ impl Sessions {
                 with_github_token(environment.clone(), None),
             )
         });
-        let setting = self.owner_settings().sandbox;
         let tools = self
             .sandbox_tools(setting, &checkout.path, &session.working_dir, &environment)
             .await?;
@@ -2020,6 +2020,13 @@ impl Sessions {
             command.program,
             command.arguments,
         )?;
+        // Dropped when this launch returns, whichever way it does.
+        let _staged_credentials = StagedCredentials(
+            prepared
+                .staged
+                .as_ref()
+                .and_then(cockpit_sandbox::Staged::credentials_path),
+        );
         if let Some(staged) = prepared.staged.as_mut() {
             // The project's grants and the session's earlier decisions (#674) hold from the
             // agent's first connection, not from the daemon's next write.
@@ -2228,13 +2235,17 @@ impl Sessions {
         environment
     }
 
-    /// What a launch in `project` gets of GitHub (#754), read now so a token the owner
-    /// replaced reaches the next launch.
-    async fn github_access(&self, project: &str) -> Result<GithubAccess, Error> {
+    /// What a launch in `project` under `setting` gets of GitHub (#754, #832), read now so a
+    /// token the owner replaced reaches the next launch.
+    async fn github_access(
+        &self,
+        setting: cockpit_config::AgentSandbox,
+        project: &str,
+    ) -> Result<GithubAccess, Error> {
         let environment = self.settings.owner_environment.clone();
         let project = project.to_owned();
         self.blocking("read the project's GitHub token", move || {
-            github_access(&environment, &project)
+            github_access(&environment, setting, &project)
         })
         .await
     }
@@ -2368,9 +2379,11 @@ impl Sessions {
             .blocking("resolve the directory", move || canonical_dir(dir))
             .await?;
         let (checkout, _) = self.checkout_containing(&dir).await?;
-        let github = self.github_access(checkout.project.as_str()).await?;
-        let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
         let setting = self.owner_settings().sandbox;
+        let github = self
+            .github_access(setting, checkout.project.as_str())
+            .await?;
+        let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
         let tools = self
             .sandbox_tools(setting, &checkout.path, &checkout.path, &environment)
             .await?;
@@ -2962,27 +2975,51 @@ fn with_temp_dir(
     environment
 }
 
+/// A launch's bound credentials file (#832), removed when the launch returns: the launcher
+/// removes it as it starts, so one still there belongs to a launch that failed before its
+/// launcher ran, or that a later start of the launcher must not find.
+struct StagedCredentials(Option<PathBuf>);
+
+impl Drop for StagedCredentials {
+    fn drop(&mut self) {
+        let Some(path) = &self.0 else {
+            return;
+        };
+        match std::fs::remove_file(path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => tracing::warn!(
+                path = %path.display(),
+                %error,
+                "a launch's credentials file could not be removed"
+            ),
+            _ => {}
+        }
+    }
+}
+
 /// What a launch in one project gets of GitHub (#754).
 #[derive(Debug, Default)]
 struct GithubAccess {
     /// The project's token, when the owner keeps one: the agent's `GH_TOKEN` when unsandboxed.
     /// It can push, so a sandboxed agent never gets it (#857).
     token: Option<cockpit_config::GithubToken>,
-    /// The project's API token, when the owner keeps one: what the session proxy adds on
-    /// GitHub's hosts for a sandboxed agent, which holds a placeholder (#832).
+    /// The project's API token, when the owner keeps one and the launch is sandboxed: what the
+    /// session proxy adds on GitHub's hosts, the agent holding a placeholder (#832).
     api_token: Option<cockpit_config::GithubToken>,
     /// The owner's own `gh` login, for the sandbox profile to hide from an agent that has its
     /// project's token, so `gh` and Git use that token alone. No backend enforces the profile
-    /// in this release (#828), so an unsandboxed agent can still read it. Empty without either
-    /// token: the owner decided agents may use their login until each project has one.
+    /// in this release (#828), so an unsandboxed agent can still read it. Empty without a
+    /// token: the owner decided agents may use their login until each project has one. A
+    /// sandboxed agent's home is its session's own, which holds no login either way.
     hidden_owner_login: Vec<PathBuf>,
 }
 
-/// [`GithubAccess`] for a launch in `project`, from the token file in the owner's
-/// configuration. Blocking: it reads the file. An owner environment that names no home
-/// (in-process tests) reads none.
+/// [`GithubAccess`] for a launch in `project` under `setting`, from the token files in the
+/// owner's configuration; the API token's only under `"required"`, the one setting that uses
+/// it. Blocking: it reads the files. An owner environment that names no home (in-process
+/// tests) reads none.
 fn github_access(
     environment: &cockpit_config::Environment,
+    setting: cockpit_config::AgentSandbox,
     project: &str,
 ) -> Result<GithubAccess, Error> {
     let (Ok(home), Some(path), Some(api_path)) = (
@@ -2999,11 +3036,13 @@ fn github_access(
         })
     };
     let token = read(&path)?;
-    let api_token = read(&api_path)?;
-    let hidden_owner_login = if token.is_some() || api_token.is_some() {
-        owner_gh_config_dirs(environment, &home)
-    } else {
-        Vec::new()
+    let api_token = match setting {
+        cockpit_config::AgentSandbox::Required => read(&api_path)?,
+        cockpit_config::AgentSandbox::Off => None,
+    };
+    let hidden_owner_login = match token {
+        Some(_) => owner_gh_config_dirs(environment, &home),
+        None => Vec::new(),
     };
     Ok(GithubAccess {
         token,

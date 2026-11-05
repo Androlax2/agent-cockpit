@@ -1,6 +1,8 @@
-//! What crosses an intercepted tunnel (#832): HTTP/1.1, one request and its response at a
-//! time, each request's head read, checked and rewritten before it goes upstream; bodies and
-//! responses pass as they arrive, framed but unchanged.
+//! What crosses an intercepted tunnel (#832): HTTP/1.1, one request and its response, the
+//! request's head read, checked and rewritten before it goes upstream; bodies and responses
+//! pass as they arrive, framed but unchanged. Both heads say `Connection: close`, so each
+//! request opens its own tunnel and never meets an upstream connection the server already
+//! closed while it sat idle, which the client could not retry.
 //!
 //! A request names the tunnel's host or is refused, so a credential never reaches another
 //! service behind the same front end. A protocol upgrade is refused: a WebSocket on a
@@ -256,7 +258,6 @@ struct Request {
 
 struct Response {
     status: u16,
-    version: u8,
     headers: Headers,
 }
 
@@ -292,7 +293,6 @@ fn parse_response(head: &[u8]) -> Result<Response, String> {
     }
     Ok(Response {
         status: response.code.unwrap_or_default(),
-        version: response.version.unwrap_or_default(),
         headers: owned(response.headers),
     })
 }
@@ -387,12 +387,16 @@ fn response_body(request: &Request, response: &Response) -> Result<Body, String>
     if has_no_body {
         return Ok(Body::None);
     }
-    match ends_chunked(&response.headers) {
-        Some(true) => return Ok(Body::Chunked),
-        Some(false) => return Ok(Body::UntilClose),
-        None => {}
+    let length = content_length(&response.headers)?;
+    match (ends_chunked(&response.headers), length) {
+        (Some(_), Some(_)) => {
+            return Err("a response carries both Transfer-Encoding and Content-Length".to_owned());
+        }
+        (Some(true), None) => return Ok(Body::Chunked),
+        (Some(false), None) => return Ok(Body::UntilClose),
+        (None, _) => {}
     }
-    Ok(match content_length(&response.headers)? {
+    Ok(match length {
         Some(0) => Body::None,
         Some(length) => Body::Length(length),
         None => Body::UntilClose,
@@ -554,7 +558,7 @@ fn rewritten_head(request: &Request, authorization: Option<&str>, drops_expect: 
     for (name, value) in &request.headers {
         let is_replaced = authorization.is_some() && name.eq_ignore_ascii_case("authorization");
         let is_answered = drops_expect && name.eq_ignore_ascii_case("expect");
-        if is_replaced || is_answered {
+        if is_replaced || is_answered || is_connection_field(name.as_bytes()) {
             continue;
         }
         head.extend_from_slice(name.as_bytes());
@@ -567,12 +571,44 @@ fn rewritten_head(request: &Request, authorization: Option<&str>, drops_expect: 
         head.extend_from_slice(authorization.as_bytes());
         head.extend_from_slice(b"\r\n");
     }
-    head.extend_from_slice(b"\r\n");
+    head.extend_from_slice(b"Connection: close\r\n\r\n");
     head
 }
 
-/// Carries requests from `client` to `upstream` and their responses back, adding
-/// `credential` as its scheme says, until either side closes or a request is refused.
+/// The fields that keep a connection open or name its hop-by-hop fields; an upgrade, which
+/// the `Connection` field also asks for, is refused before a head is rewritten.
+fn is_connection_field(name: &[u8]) -> bool {
+    ["connection", "keep-alive", "proxy-connection"]
+        .iter()
+        .any(|field| name.eq_ignore_ascii_case(field.as_bytes()))
+}
+
+/// A final response's `head` as the client gets it: unchanged but for `Connection: close` in
+/// place of whatever kept it open.
+fn closing_head(head: &[u8]) -> Vec<u8> {
+    let mut lines = head
+        .split(|byte| *byte == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+        .filter(|line| !line.is_empty());
+    let mut closing = Vec::with_capacity(head.len() + 19);
+    if let Some(status) = lines.next() {
+        closing.extend_from_slice(status);
+        closing.extend_from_slice(b"\r\n");
+    }
+    for line in lines {
+        let name = line.split(|byte| *byte == b':').next().unwrap_or_default();
+        if is_connection_field(name.trim_ascii()) {
+            continue;
+        }
+        closing.extend_from_slice(line);
+        closing.extend_from_slice(b"\r\n");
+    }
+    closing.extend_from_slice(b"Connection: close\r\n\r\n");
+    closing
+}
+
+/// Carries one request from `client` to `upstream` and its response back, adding
+/// `credential` as its scheme says; or refuses the request.
 pub fn relay<C: Read + Write, U: Read + Write>(
     client: &mut Wire<C>,
     upstream: &mut Wire<U>,
@@ -580,7 +616,7 @@ pub fn relay<C: Read + Write, U: Read + Write>(
     credential: &Credential,
     tally: &dyn Fn(Event),
 ) -> Ended {
-    loop {
+    {
         let head = match client.head() {
             Ok(Some(head)) => head,
             Ok(None) => return Ended::Closed,
@@ -620,8 +656,6 @@ pub fn relay<C: Read + Write, U: Read + Write>(
             Err(reason) => return Ended::BadRequest(reason),
         };
         let expects_continue = has_token(&request.headers, "expect", "100-continue");
-        let closes_after =
-            request.version == 0 || has_token(&request.headers, "connection", "close");
         let exchanged = exchange(
             client,
             upstream,
@@ -632,16 +666,10 @@ pub fn relay<C: Read + Write, U: Read + Write>(
             tally,
         );
         match exchanged {
-            Ok(Continue::Next) if !closes_after => {}
-            Ok(_) => return Ended::Closed,
-            Err(reason) => return Ended::Broken(reason),
+            Ok(()) => Ended::Closed,
+            Err(reason) => Ended::Broken(reason),
         }
     }
-}
-
-enum Continue {
-    Next,
-    Close,
 }
 
 /// Sends one request upstream and its response back.
@@ -653,7 +681,7 @@ fn exchange<C: Read + Write, U: Read + Write>(
     authorization: Option<&str>,
     expects_continue: bool,
     tally: &dyn Fn(Event),
-) -> Result<Continue, String> {
+) -> Result<(), String> {
     {
         let mut out = Counted {
             inner: upstream.get_mut(),
@@ -690,35 +718,30 @@ fn exchange<C: Read + Write, U: Read + Write>(
         direction: Direction::In,
         tally,
     };
-    let response = loop {
+    let body = loop {
         let head = upstream
             .head()?
             .ok_or("the upstream closed before it answered")?;
         let response = parse_response(&head)?;
-        back.write_all(&head).map_err(broke_off)?;
         if response.status == 101 {
             return Err("the upstream switched protocols unasked".to_owned());
         }
         if !(100..200).contains(&response.status) {
-            break response;
+            // Framed before the client sees a byte of it.
+            let body = response_body(request, &response)?;
+            back.write_all(&closing_head(&head)).map_err(broke_off)?;
+            break body;
         }
+        back.write_all(&head).map_err(broke_off)?;
         back.flush().map_err(broke_off)?;
     };
-    let body = response_body(request, &response)?;
     match body {
         Body::None => {}
         Body::Length(length) => upstream.copy_exact(&mut back, length)?,
         Body::Chunked => upstream.copy_chunked(&mut back)?,
-        Body::UntilClose => {
-            upstream.copy_to_end(&mut back)?;
-            return Ok(Continue::Close);
-        }
+        Body::UntilClose => upstream.copy_to_end(&mut back)?,
     }
-    back.flush().map_err(broke_off)?;
-    if response.version == 0 || has_token(&response.headers, "connection", "close") {
-        return Ok(Continue::Close);
-    }
-    Ok(Continue::Next)
+    back.flush().map_err(broke_off)
 }
 
 #[cfg(test)]

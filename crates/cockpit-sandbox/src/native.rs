@@ -278,6 +278,12 @@ impl Staged {
         self.mount_dir.join(SPEC_FILE)
     }
 
+    /// Where [`Staged::write`] puts the bound credentials' values; None when the launch binds
+    /// none. The launcher removes the file as it starts.
+    pub fn credentials_path(&self) -> Option<PathBuf> {
+        (!self.credential_values.is_empty()).then(|| self.mount_dir.join(CREDENTIALS_FILE))
+    }
+
     /// Creates the owner-only folders and writes the spec, the decisions and the bound
     /// credentials' values, owner-only, replacing what a failed launch left; removes the last
     /// launch's egress counters and refused destinations, so the evidence never shows them
