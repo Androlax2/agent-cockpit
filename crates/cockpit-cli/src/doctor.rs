@@ -1,7 +1,8 @@
 //! `cockpit doctor [--project DIR]`: the active profile and the other installations seen
 //! (#196, #134), then the daemon's readiness report (#50), one line per requirement with its
 //! status and, when it is not available, the action that makes it so.
-//! Exits 1 when a requirement blocks (missing-prerequisite or unsupported).
+//! Exits 1 when a requirement blocks (missing-prerequisite or unsupported). It also names
+//! what the removed sandbox engines left (#828); `--remove-old-sandbox` removes that instead.
 //!
 //! Without a daemon the report is what this command can read alone: the configuration, the
 //! daemon itself as a missing prerequisite, and the host as unknown. Assessing the rest needs
@@ -15,20 +16,30 @@ use cockpit_protocol::{Command, ReadinessStatusView, Reply, RequirementView};
 
 use crate::daemon;
 use crate::installations::{Legacy, ServiceManager, installed_units, is_answering, other_daemons};
+use crate::old_sandbox::{Leftovers, REMOVE_FLAG};
 
 /// The daemon probes Docker within 10 seconds; the rest is reads.
 const DOCTOR_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
-    let project = parse(arguments)?;
+    let request = parse(arguments)?;
+    let leftovers = match Leftovers::find(&crate::profile::environment()) {
+        Ok(leftovers) => leftovers,
+        Err(problem) => return Ok(daemon::fail(&problem)),
+    };
+    let project = match request {
+        Request::RemoveOldSandbox => return Ok(leftovers.remove()),
+        Request::Report { project } => project,
+    };
     if let Err(problem) = print_installations() {
         return Ok(daemon::fail(&problem));
     }
-    let requirements = match ask_daemon(project.clone()) {
+    let mut requirements = match ask_daemon(project.clone()) {
         Ok(requirements) => requirements,
         Err(Unanswered::Unreachable(reason)) => offline(project.as_deref(), reason),
         Err(Unanswered::Failed(code)) => return Ok(code),
     };
+    requirements.extend(leftovers.requirement());
     for requirement in &requirements {
         render(requirement);
     }
@@ -42,20 +53,29 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     })
 }
 
-fn parse(arguments: &[OsString]) -> Result<Option<String>, String> {
+enum Request {
+    Report {
+        project: Option<String>,
+    },
+    /// The owner's confirmation that the old sandbox's service and state go (#828).
+    RemoveOldSandbox,
+}
+
+fn parse(arguments: &[OsString]) -> Result<Request, String> {
     let words = daemon::utf8_words(arguments)?;
     match words[..] {
-        [] => Ok(None),
+        [] => Ok(Request::Report { project: None }),
+        [flag] if flag == REMOVE_FLAG => Ok(Request::RemoveOldSandbox),
         ["--project", dir] if !dir.starts_with("--") => {
             let dir = daemon::absolute_dir(dir)?;
             if !std::path::Path::new(&dir).is_dir() {
                 return Err(format!("--project {dir}: not a directory"));
             }
-            Ok(Some(dir))
+            Ok(Request::Report { project: Some(dir) })
         }
         ["--project"] => Err("--project needs a value".to_owned()),
         _ => Err(format!(
-            "doctor takes only --project DIR, not {}",
+            "doctor takes only --project DIR or {REMOVE_FLAG}, not {}",
             words.join(" ")
         )),
     }

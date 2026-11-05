@@ -1,13 +1,12 @@
 //! #766: each session's agent gets a temporary folder of its own on the main disk, under the
 //! daemon's state directory, instead of the host's shared `/tmp`. Through the real daemon
-//! binary, a stand-in Claude Code that logs its `TMPDIR` and `CLAUDE_CODE_TMPDIR`, and a
-//! stand-in Greywall that logs what it was asked to let the agent write.
+//! binary and a stand-in Claude Code that logs its `TMPDIR` and `CLAUDE_CODE_TMPDIR`.
 
 mod candidate;
 mod real_daemon;
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use cockpit_client::Connection;
@@ -48,40 +47,6 @@ async fn logged_temp_variables(home: &Home, id: &str) -> (String, String) {
     }
 }
 
-/// The folders the stand-in Greywall was asked to let session `id`'s agent write.
-fn writable_folders(home: &Home, id: &str) -> Vec<PathBuf> {
-    let log = std::fs::read_to_string(home.sandbox_log()).unwrap();
-    let launch = log
-        .lines()
-        .find(|line| line.contains(&format!("--proxy-user cockpit-{id}-")))
-        .unwrap_or_else(|| panic!("no launch of {id} in {log}"));
-    let words: Vec<&str> = launch.split(' ').collect();
-    words
-        .windows(2)
-        .filter(|pair| pair[0] == "--allow-path")
-        .map(|pair| PathBuf::from(pair[1]))
-        .collect()
-}
-
-/// The write denials of session `id`'s launch settings.
-fn denied_writes(home: &Home, id: &str) -> Vec<String> {
-    let log = std::fs::read_to_string(home.sandbox_log()).unwrap();
-    let launch = log
-        .lines()
-        .find(|line| line.contains(&format!("--proxy-user cockpit-{id}-")))
-        .unwrap();
-    let words: Vec<&str> = launch.split(' ').collect();
-    let at = words.iter().position(|word| *word == "--settings").unwrap();
-    let settings: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(words[at + 1]).unwrap()).unwrap();
-    settings["filesystem"]["denyWrite"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|rule| rule.as_str().unwrap().to_owned())
-        .collect()
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn two_sessions_start_with_temp_folders_of_their_own() {
     let home = Home::new();
@@ -106,49 +71,6 @@ async fn two_sessions_start_with_temp_folders_of_their_own() {
         home.session_temp_dir(&first),
         home.session_temp_dir(&second)
     );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_launch_may_write_its_own_temp_folder_and_not_another_sessions() {
-    let home = Home::new();
-    let _daemon = home.start();
-    let client = home.connect().await;
-    let first = launched_session(&home, &client, "first").await;
-    let second = launched_session(&home, &client, "second").await;
-
-    let writable = writable_folders(&home, &second);
-
-    assert!(
-        writable.contains(&home.session_temp_dir(&second)),
-        "{writable:?}"
-    );
-    let others = home.session_temp_dir(&first);
-    for granted in &writable {
-        assert!(
-            !others.starts_with(granted),
-            "{} lets {second} write {first}'s temp folder",
-            granted.display()
-        );
-    }
-}
-
-/// Greywall writes its seccomp filter under `TMPDIR`, now the agent's own folder: the agent
-/// may not write that one folder, which exists before greywall starts (#628).
-#[tokio::test(flavor = "multi_thread")]
-async fn the_agent_may_not_write_greywalls_seccomp_folder_in_its_temp_folder() {
-    let home = Home::new();
-    let _daemon = home.start();
-    let client = home.connect().await;
-    let id = launched_session(&home, &client, "app").await;
-
-    let seccomp = home.session_temp_dir(&id).join("greywall-seccomp");
-
-    assert!(
-        denied_writes(&home, &id).contains(&seccomp.display().to_string()),
-        "{:?}",
-        denied_writes(&home, &id)
-    );
-    assert!(seccomp.is_dir());
 }
 
 #[tokio::test(flavor = "multi_thread")]

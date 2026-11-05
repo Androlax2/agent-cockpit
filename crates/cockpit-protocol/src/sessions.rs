@@ -251,7 +251,7 @@ pub struct SandboxEvidenceView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SandboxEnforcementView {
-    /// `client_identity`: the greyproxy client this launch alone used.
+    /// `client_identity`: the proxy client this launch alone used.
     Sandboxed {
         backend: String,
         engine: String,

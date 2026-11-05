@@ -1,5 +1,5 @@
-//! Serves `readiness` (#50): gathers each fact from its owner (the tmux and sandbox engine
-//! the start found, the providers it wired, resource admission, the workflow presets, the
+//! Serves `readiness` (#50): gathers each fact from its owner (the tmux and platform the
+//! start found, the providers it wired, resource admission, the workflow presets, the
 //! project registry and the configuration), lets `cockpit-readiness` assess them, and converts
 //! the report to the wire. The statuses and next actions live in that crate; this file maps.
 
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use cockpit_protocol::{ErrorCode, Outcome, ReadinessStatusView, Reply, RequirementView};
 use cockpit_readiness::{
     CheckoutFacts, ControlFacts, HostFacts, PresetFacts, ProjectFacts, ProjectNeeds, ProviderFacts,
-    ProviderFound, Report, SandboxBlocked, SandboxEngine, SignInFacts, Status, Trust,
+    ProviderFound, Report, SignInFacts, Status, Trust,
 };
 use cockpit_resource_admission::{Availability, Backend};
 
@@ -21,7 +21,7 @@ pub(crate) struct Context {
     pub(crate) database: Arc<cockpit_turso::Database>,
     pub(crate) sessions: Arc<cockpit_sessions::Sessions>,
     pub(crate) admission: Arc<Backend>,
-    /// The sandbox launches go through, as the start detected its engine.
+    /// The sandbox launches go through, with the platform the start detected.
     pub(crate) sandbox: cockpit_sandbox::Sandbox,
     /// The tmux version the start found, or why it refused it.
     pub(crate) tmux: Result<String, String>,
@@ -118,34 +118,6 @@ pub(crate) async fn requirements(
 
 async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, String> {
     let mut host = host_facts(&context);
-    if host.sandbox_setting == cockpit_config::AgentSandbox::Required {
-        let sessions = context.sessions.clone();
-        let blocked = tokio::task::spawn_blocking(move || sessions.check_seccomp_filter().err())
-            .await
-            .map_err(|error| error.to_string())?;
-        if let (Ok(engine), Some(failure)) = (&mut host.sandbox_engine, blocked) {
-            engine.blocked = Some(SandboxBlocked {
-                detail: failure.reason,
-                next: failure.next,
-            });
-        }
-        let sandbox = context.sandbox.clone();
-        let profile = context.environment.profile.value.clone();
-        host.sandbox_proxy = tokio::task::spawn_blocking(move || match sandbox.proxy() {
-            Ok(proxy) => proxy.launch_health(sandbox.engine().ok()).map_err(|error| {
-                cockpit_readiness::ProxyUnavailable {
-                    detail: error.to_string(),
-                    next: error.next(&profile),
-                }
-            }),
-            Err(reason) => Err(cockpit_readiness::ProxyUnavailable {
-                detail: reason.to_owned(),
-                next: format!("run `torlek --profile {profile} sandbox install`"),
-            }),
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    }
     let providers = context.sign_in_providers.clone();
     host.providers = tokio::task::spawn_blocking(move || {
         let mut facts = host.providers;
@@ -178,8 +150,10 @@ async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, St
     .await
     .map_err(|error| error.to_string())?;
     let Some(dir) = dir else {
-        return with_engine_upgrades(cockpit_readiness::assess(&host, &config, None), &context)
-            .await;
+        return Ok(with_disk(
+            cockpit_readiness::assess(&host, &config, None),
+            &context,
+        ));
     };
     let checkout = match (&config, checkout) {
         (Ok(config), Some(checkout)) => Some(checkout_facts(config, checkout)),
@@ -204,47 +178,17 @@ async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, St
         },
         docker,
     };
-    with_engine_upgrades(
+    Ok(with_disk(
         cockpit_readiness::assess(&host, &config, Some(&project)),
         &context,
-    )
-    .await
+    ))
 }
 
-async fn with_engine_upgrades(mut report: Report, context: &Context) -> Result<Report, String> {
+fn with_disk(mut report: Report, context: &Context) -> Report {
     report
         .requirements
         .extend(disk_requirement(&context.admission));
-    let Ok(current) = context.sandbox.engine() else {
-        return Ok(report);
-    };
-    for session in context
-        .sessions
-        .list(false)
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        if session.launch.is_some()
-            && let Some(evidence) = context
-                .sessions
-                .sandbox_evidence(&session.id)
-                .await
-                .map_err(|error| error.to_string())?
-            && evidence.requires_engine_restart(&current.engine())
-        {
-            report.requirements.push(
-                cockpit_readiness::Requirement::available(
-                    format!("session {} sandbox", session.id),
-                    "restart required: this session still uses an earlier engine release",
-                )
-                .with_advice(format!(
-                    "run `torlek --profile {} session restart {}`",
-                    context.environment.profile.value, session.id
-                )),
-            );
-        }
-    }
-    Ok(report)
+    report
 }
 
 /// The low-disk guard's last reading (#406); nothing before its first reading or when the
@@ -283,20 +227,9 @@ fn sign_in_fact(fact: cockpit_provider_api::SignIn) -> SignInFacts {
 
 fn host_facts(context: &Context) -> HostFacts {
     HostFacts {
-        profile: context.environment.profile.value.clone(),
         platform: platform(context.sandbox.platform()),
         tmux: context.tmux.clone(),
-        sandbox_engine: context
-            .sandbox
-            .engine()
-            .map(|engine| SandboxEngine {
-                engine: engine.engine(),
-                observations: engine.observations(),
-                blocked: None,
-            })
-            .map_err(str::to_owned),
         sandbox_setting: context.sessions.owner_settings().sandbox,
-        sandbox_proxy: Ok("not required".into()),
         providers: context.providers.clone(),
         controls: context
             .admission

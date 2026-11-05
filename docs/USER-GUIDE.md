@@ -5,7 +5,7 @@ This guide is the detailed reference behind them.
 
 Torlek runs your coding agents in terminal sessions and keeps their work, questions and approvals together.
 One installation belongs to one person, with a CLI and terminal UI backed by a per-user daemon and tmux.
-Agents work inside a sandbox; you decide which requests may run outside it.
+This release has no sandbox: agents run with your rights until Torlek's own sandbox ([#546](https://github.com/Androlax2/agent-cockpit/issues/546)) is live. You still decide which requests an agent asks you to run.
 
 This is **Alpha 1 for Linux and WSL2**, built under `crates/` beside the running legacy product.
 Alpha state may reset between releases; keep your work in Git and do not rely on alpha state migrating to beta.
@@ -14,7 +14,6 @@ Existing desktop users can find their commands and demo screenshots in the [lega
 ## Install status
 
 Install a release archive as the [README](../README.md#install-from-the-command-line) shows.
-The managed Greywall/greyproxy installer and proxy service setup are described in the [sandbox guide](../crates/cockpit-sandbox/README.md#managed-installation-470).
 Alpha 1 uses archive installation; other packaging (#563/#565) is deferred to Alpha 2. The Arch AUR recipe (#562) is prepared in Alpha 1 beside the archive, not as its prerequisite ([decision](decisions/2026-11-03-562-arch-packaging-alpha1.md), [recipe](packaging/aur.md)). macOS delivery and Homebrew are deferred beyond Alpha 1 under [#568](https://github.com/Androlax2/agent-cockpit/issues/568), with no restoration milestone assigned.
 The root `make install` installs the legacy desktop setup; it is not the Alpha installer.
 
@@ -29,7 +28,7 @@ torlek doctor
 ```
 
 See [Development](DEVELOPMENT.md) for build prerequisites and checks.
-`doctor` names missing prerequisites and their next action; building alone does not install the sandbox engine or sign in to a provider.
+`doctor` names missing prerequisites and their next action; building alone does not sign in to a provider.
 The steps below start once those prerequisites are ready.
 
 ## Platforms and prerequisites
@@ -40,7 +39,7 @@ The steps below start once those prerequisites are ready.
 | macOS | Deferred beyond Alpha 1 | No Alpha 1 download, Homebrew package or macOS acceptance is promised. [#568](https://github.com/Androlax2/agent-cockpit/issues/568) tracks restoration, including unresolved [public CA isolation (#527)](https://github.com/Androlax2/agent-cockpit/issues/527); existing tests do not establish supported installation |
 | Windows | Inside WSL2, from Windows Terminal | Linux backend inside WSL2; platform checks run in CI for selected crates; no native Windows daemon |
 
-You need Git, tmux **3.6 or newer**, curl, a supported provider CLI, and the Torlek-pinned Greywall/greyproxy engines.
+You need Git, tmux **3.6 or newer**, curl and a supported provider CLI.
 Ubuntu 24.04 (including WSL2) ships tmux 3.4: upgrade tmux before using Torlek.
 An existing private tmux server also needs the supported version; upgrading its binary alone does not replace it.
 See [tmux prerequisites](DEVELOPMENT.md#tmux-prerequisite) for checks and upgrade guidance.
@@ -52,21 +51,17 @@ The platform checks are described in [Development](DEVELOPMENT.md#verification-p
 
 Run these commands in your own terminal. For a source build, the default profile is `dev`; release bundles default to `torlek`.
 `torlek config show` and `torlek doctor` show which profile and paths you are using.
-Use the same profile throughout. To isolate a preview's state from an existing installation, use `torlek --profile next VERB` for every command, including `sandbox install` and `daemon install`.
-The proxy uses fixed loopback ports (43080, 43051, 43052 and 43053); another profile or legacy proxy can occupy them.
-Setup refuses an occupied endpoint. A separate profile does not provide separate proxy ports; follow the reported next action without stopping another installation's service.
+Use the same profile throughout. To isolate a preview's state from an existing installation, use `torlek --profile next VERB` for every command, including `daemon install`.
 
-1. Install the pinned engines and start this profile's proxy, then start the daemon and read the checklist:
+1. Start the daemon and read the checklist:
 
    ```sh
-   torlek sandbox install
    torlek daemon install
    torlek doctor
    torlek init
    ```
 
-   `sandbox install` downloads and verifies the release's pinned engines into Torlek's state directory, then configures and starts a per-user proxy service.
-   It does not install host packages or change the OS trust store. `daemon install` writes and starts the daemon's user service.
+   `daemon install` writes and starts the daemon's user service.
    `init` writes nothing: it shows `done`, `todo`, `waits` or `unknown` and ends with the next action.
    Repeat it after completing that action. An `unknown` sign-in needs the manual check it names.
 
@@ -74,13 +69,14 @@ Setup refuses an occupied endpoint. A separate profile does not provide separate
 
    ```toml
    [agents]
-   sandbox = "required"
+   sandbox = "off"
    desktop_session = "withheld"
    ```
 
-   This records your sandbox choice and keeps agents off your desktop session.
-   If the sandbox cannot enforce its rules, launching fails with the reason.
-   `sandbox = "off"` runs agents unsandboxed, with your rights: an unsandboxed agent can reach the owner socket and act as the owner, so Torlek's grants only hold under the sandbox.
+   This records that you accept running agents unsandboxed, the only choice this release can run, and keeps agents off your desktop session.
+   An unsandboxed agent runs with your rights: it can reach the owner socket and act as the owner, so Torlek's grants do not bind it. The daemon logs that risk at its start and at every launch.
+   `sandbox = "required"` refuses every agent launch, naming the missing backend, until Torlek's own sandbox exists; it never runs an agent unsandboxed.
+   A profile used with Torlek's removed Greywall and Greyproxy engines may still hold their `torlek-greyproxy-<profile>` service and state: `torlek doctor` lists them, and once no session an earlier release launched in Greywall still runs, `torlek doctor --remove-old-sandbox` stops the service and deletes them.
    The default desktop setting is `shared`, which exposes your display and filtered session bus to agents; choose it only if you want desktop access.
    Run `torlek config reload` after changing session settings on a running daemon.
    The TUI rings the terminal bell when a session finishes, asks a question or fails; add `[tui]` with `attention_bell = false` to turn that off, then close the manager session and run `torlek tui` again.
@@ -134,7 +130,7 @@ turns it off.
 
 ## Approvals
 
-Inside a launched session, an agent can request an outside-sandbox command with
+Inside a launched session, an agent can request a command it needs you to run with
 `torlek ask run --reason 'why this needs the owner' 'command'`, or human steps with `torlek ask guide`.
 A request does not authorize itself. Repository instructions and agent messages cannot grant host access.
 
@@ -212,12 +208,10 @@ To let a project's agents push and open pull requests without your own `gh` logi
 fine-grained token limited to that repository (contents and pull requests: read and write)
 and save it alone in `~/.config/torlek/github-tokens/<project>` (`mkdir -p -m 700` the
 folder, then `chmod 600` the file).
-Its next sessions get it as `GH_TOKEN`, and your `~/.config/gh` login is hidden from them.
+Its next sessions get it as `GH_TOKEN`; a sandbox would hide your `~/.config/gh` login from them, but this release runs agents unsandboxed, so they can read it.
 A project without one gets no `GH_TOKEN`. `torlek project show PROJECT` says which, never the
 token. A file whose mode is not `0600` or `0400`, or one that holds anything but the token, stops the
 project's sessions from launching until you fix it.
-Managed engines live under the profile's state directory in `engines/`; proxy configuration, its private CA and data live in `greyproxy/`.
-`torlek sandbox status` checks proxy health without the daemon.
 
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` override their respective base directories.
 Named profiles replace the `torlek` directory component with `torlek-NAME` (for example `torlek-dev`).

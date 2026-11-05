@@ -342,7 +342,7 @@ pub async fn still_logged<T: std::fmt::Debug>(count: usize, read: impl Fn() -> V
 
 /// The sessions' product settings with the owner's one named opt-out, `agents.sandbox =
 /// "off"` (#61): in-process daemons launch the `fake` provider's shell agent, for which no
-/// sandbox engine has a profile. The binary's tests launch through a stand-in Greywall.
+/// sandbox has a profile.
 pub fn unsandboxed_settings() -> cockpit_sessions::Settings {
     let product = cockpit_sessions::Settings::default();
     cockpit_sessions::Settings {

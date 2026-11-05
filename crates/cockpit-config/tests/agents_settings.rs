@@ -104,26 +104,28 @@ fn config_show_prints_the_desktop_session_with_its_source() {
     );
 }
 
+/// No backend enforces a sandbox until the native one is live (#828): the product default
+/// runs agents unsandboxed, and says so at every launch.
 #[test]
-fn a_clean_home_requires_the_sandbox() {
+fn a_clean_home_runs_agents_unsandboxed_by_default() {
     let home = TempDir::new().unwrap();
 
     let config = load(home.path(), None).unwrap();
 
     assert_eq!(
         config.agents_sandbox,
-        cockpit_config::Sourced::new(AgentSandbox::Required, Source::ProductDefault)
+        cockpit_config::Sourced::new(AgentSandbox::Off, Source::ProductDefault)
     );
 }
 
 #[test]
-fn the_owner_file_turns_the_sandbox_off_with_its_line() {
+fn the_owner_file_requires_the_sandbox_with_its_line() {
     let home = TempDir::new().unwrap();
-    write_user_config(home.path(), "[agents]\nsandbox = \"off\"\n");
+    write_user_config(home.path(), "[agents]\nsandbox = \"required\"\n");
 
     let config = load(home.path(), None).unwrap();
 
-    assert_eq!(config.agents_sandbox.value, AgentSandbox::Off);
+    assert_eq!(config.agents_sandbox.value, AgentSandbox::Required);
     assert_eq!(
         config.agents_sandbox.source,
         Source::UserFile {
@@ -172,7 +174,7 @@ fn config_show_prints_the_sandbox_setting_with_its_source() {
     let shown = cockpit_config::render(&load(home.path(), None).unwrap());
 
     assert!(
-        shown.contains("agents.sandbox = \"required\"  # product default\n"),
+        shown.contains("agents.sandbox = \"off\"  # product default\n"),
         "{shown}"
     );
 }

@@ -239,7 +239,7 @@ async fn probe(provider: &str, variable: &str, version: &str) {
             .unwrap();
     let receipt = json!({
         "provider": provider, "observed": provenance, "mode": if provider == "claude" { "native-print" } else { "native-tui" },
-        "transport": "loopback canned model; real daemon and agent channel; fake sandbox engines",
+        "transport": "loopback canned model; real daemon and agent channel; unsandboxed",
         "brief": true, "mcp": captured["mcp_advertisement"], "native_cockpit_skill": captured["skill"],
         "signed_in_validation": "not run", "main_request_number": captured["number"],
         "main_request_sha256": captured["request_sha256"],

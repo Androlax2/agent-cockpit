@@ -45,7 +45,28 @@ async fn a_reload_prints_each_session_setting_and_the_value_it_replaced() {
         "sessions.idle_sleep_after_minutes = 45  # was 60\n\
          sessions.asleep_expiry_days = 7\n\
          agents.desktop_session = \"withheld\"  # was \"shared\"\n\
-         agents.sandbox = \"required\"\n"
+         agents.sandbox = \"off\"\n"
+    );
+}
+
+/// #828: the start's sandbox log would be stale after a reload that changes the setting.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_to_required_logs_that_every_launch_is_refused() {
+    let home = Home::new();
+    let _daemon = home.start();
+    home.write_owner_config("[agents]\nsandbox = \"required\"\n");
+
+    let reloaded = reload(&home).await;
+    let log = home
+        .log_once_it_contains("every agent launch is refused")
+        .await;
+
+    assert!(reloaded.status.success(), "{}", text(&reloaded.stderr));
+    assert!(
+        log.lines()
+            .any(|line| line.contains("every agent launch is refused")
+                && line.contains(cockpit_config::NO_SANDBOX_BACKEND)),
+        "{log}"
     );
 }
 
@@ -107,7 +128,7 @@ async fn an_invalid_owner_file_is_refused_and_the_settings_in_force_stay() {
         "sessions.idle_sleep_after_minutes = 60\n\
          sessions.asleep_expiry_days = 7\n\
          agents.desktop_session = \"withheld\"\n\
-         agents.sandbox = \"required\"\n"
+         agents.sandbox = \"off\"\n"
     );
 }
 

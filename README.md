@@ -25,7 +25,7 @@ Do not guess other commands, packages or download links.
    exact command, say why it is needed, and wait for my yes.
 3. Download the release archive, check its checksum, unpack it and link torlek
    into ~/.local/bin, exactly as the README shows.
-4. Run "torlek sandbox install", then "torlek daemon install", then "torlek init".
+4. Run "torlek daemon install", then "torlek init".
 5. Follow what "torlek init" says, one step at a time. Ask me before each step
    that changes my settings. Two things are mine to do, so tell me what to do
    and wait: writing the sandbox setting in my Torlek config file (that is my
@@ -59,7 +59,6 @@ Ubuntu 24.04 ships tmux 3.4: install a newer tmux first.
 2. Set it up:
 
    ```sh
-   torlek sandbox install
    torlek daemon install
    torlek init
    ```
@@ -67,8 +66,9 @@ Ubuntu 24.04 ships tmux 3.4: install a newer tmux first.
    `torlek init` changes nothing. It lists what is done and what is left, and ends with the one thing to do next.
    Do that, then run `torlek init` again.
 
-   One step asks you to write `sandbox = "required"` under `[agents]` in your Torlek config file.
-   Write it yourself: it records that you chose the sandbox.
+   This release has no sandbox: agents run with your rights, so Torlek's grants do not bind them.
+   One step asks you to write `sandbox = "off"` under `[agents]` in your Torlek config file.
+   Write it yourself: it records that you accept running agents unsandboxed.
    Add `desktop_session = "withheld"` on the next line to keep agents away from your screen and desktop session.
    Without it, agents can use them.
 

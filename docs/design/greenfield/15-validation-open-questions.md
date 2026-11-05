@@ -13,7 +13,7 @@ acceptance scenarios, and the questions still open.
 | Executions survive daemon restart and are reattached, orphans contained | Restart fixtures per walkthrough in report 04 |
 | Control path stays responsive under load | 30-minute run on named hardware with build + log flood + stalled provider + database contention; p95/p99 recorded |
 | Resource limits are enforced, not only requested | Controller/effective-limit inspection on Linux, WSL2, macOS; report the three values |
-| Greywall and Docker profiles per platform | Capability profile tests on each platform; macOS proxy-by-env and `.env` denial documented |
+| Native sandbox (#546) and Docker profiles per platform | Capability profile tests on each platform; the backend reports what it applied in each launch's evidence |
 | Provider contracts (Claude, Codex, OpenCode) | Conformance tests per adapter: receipts, resume, native command discovery, cancellation |
 | Clean-home onboarding | Scenario in report 09 on Linux, macOS, WSL2, with and without Docker |
 | Context budgets | Measured bytes/tokens of launch brief and Cockpit-added context, separate from total |

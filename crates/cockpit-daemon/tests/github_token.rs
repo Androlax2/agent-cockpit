@@ -1,12 +1,10 @@
-//! #754: a project whose owner keeps a GitHub token gives it to its sessions as `GH_TOKEN`,
-//! and hides the owner's own `gh` login from them; another project's sessions get no token.
-//! Through the real daemon binary, a stand-in Claude Code that logs its GitHub variables and
-//! a stand-in Greywall that logs what it was asked.
+//! #754: a project whose owner keeps a GitHub token gives it to its sessions as `GH_TOKEN`;
+//! another project's sessions get no token.
+//! Through the real daemon binary and a stand-in Claude Code that logs its GitHub variables.
 
 mod candidate;
 mod real_daemon;
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use cockpit_client::Connection;
@@ -53,45 +51,6 @@ async fn logged_github_variables(home: &Home, id: &str) -> (String, String) {
     }
 }
 
-/// The words the stand-in Greywall got for session `id`'s launch.
-fn sandbox_words(home: &Home, id: &str) -> Vec<String> {
-    let log = std::fs::read_to_string(home.sandbox_log()).unwrap();
-    log.lines()
-        .find(|line| line.contains(&format!("--proxy-user cockpit-{id}-")))
-        .unwrap_or_else(|| panic!("no launch of {id} in {log}"))
-        .split(' ')
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The settings file Greywall was given for session `id`'s launch.
-fn settings_file(home: &Home, id: &str) -> PathBuf {
-    let words = sandbox_words(home, id);
-    let at = words.iter().position(|word| word == "--settings").unwrap();
-    PathBuf::from(&words[at + 1])
-}
-
-/// The read denials of session `id`'s launch settings.
-fn denied_reads(home: &Home, id: &str) -> Vec<String> {
-    let settings: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(settings_file(home, id)).unwrap()).unwrap();
-    settings["filesystem"]["denyRead"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|rule| rule.as_str().unwrap().to_owned())
-        .collect()
-}
-
-/// Where the owner's `gh` keeps its login: `~/.config/gh`, and `$XDG_CONFIG_HOME/gh`, which
-/// the fixture daemon sets to `<home>/config`.
-fn owner_gh_logins(home: &Home) -> [String; 2] {
-    [
-        home.path().join(".config/gh").display().to_string(),
-        home.path().join("config/gh").display().to_string(),
-    ]
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_project_with_a_token_gives_it_to_its_sessions_and_another_projects_get_none() {
     let home = Home::new();
@@ -112,48 +71,7 @@ async fn a_project_with_a_token_gives_it_to_its_sessions_and_another_projects_ge
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn with_a_project_token_the_agent_may_not_read_the_owners_gh_login() {
-    let home = Home::new();
-    home.write_github_token("first", TOKEN, 0o600);
-    let _daemon = home.start();
-    let client = home.connect().await;
-    let first = launched_session(&home, &client, "first").await;
-    let second = launched_session(&home, &client, "second").await;
-
-    let with_token = denied_reads(&home, &first);
-    let without_token = denied_reads(&home, &second);
-
-    for login in owner_gh_logins(&home) {
-        assert!(with_token.contains(&login), "{login} in {with_token:?}");
-        // The owner decided agents may use their login until each project has a token.
-        assert!(
-            !without_token.contains(&login),
-            "{login} in {without_token:?}"
-        );
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_token_passes_through_the_engine_by_name_alone() {
-    let home = Home::new();
-    home.write_github_token("first", TOKEN, 0o600);
-    let _daemon = home.start();
-    let client = home.connect().await;
-    let first = launched_session(&home, &client, "first").await;
-    let second = launched_session(&home, &client, "second").await;
-
-    let pass_through = |id: &str| {
-        sandbox_words(&home, id)
-            .windows(2)
-            .any(|pair| pair[0] == "--ignore-secret" && pair[1] == "GH_TOKEN")
-    };
-
-    assert!(pass_through(&first));
-    assert!(!pass_through(&second));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn no_token_value_reaches_the_logs_the_engines_arguments_or_torlek_output() {
+async fn no_token_value_reaches_the_logs_or_torlek_output() {
     let home = Home::new();
     home.write_github_token(ONBOARD_PROJECT, TOKEN, 0o600);
     let _daemon = home.start();
@@ -171,14 +89,6 @@ async fn no_token_value_reaches_the_logs_the_engines_arguments_or_torlek_output(
     let outputs = [
         ("the daemon's log", daemon_log),
         ("the daemon's standard error", home.stderr()),
-        (
-            "the engine's arguments",
-            std::fs::read_to_string(home.sandbox_log()).unwrap(),
-        ),
-        (
-            "the engine's settings",
-            std::fs::read_to_string(settings_file(&home, &id)).unwrap(),
-        ),
         ("the brief", brief.clone()),
         (
             "project show",
@@ -202,10 +112,7 @@ async fn no_token_value_reaches_the_logs_the_engines_arguments_or_torlek_output(
         String::from_utf8_lossy(&shown.stdout).contains("github-token\tconfigured\t"),
         "{shown:?}"
     );
-    assert!(
-        String::from_utf8_lossy(&evidence.stdout).contains("GH_TOKEN"),
-        "{evidence:?}"
-    );
+    assert!(evidence.status.success(), "{evidence:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

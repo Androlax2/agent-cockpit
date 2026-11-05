@@ -43,7 +43,7 @@ branches. Importing default-branch HEAD would therefore be the wrong provenance.
 | Greywall | `v0.3.7-cockpit.1`, `a9ccc58c4e57f7ad7aaf7c2ab3779d71cf485baf` | `dotfiles` observed at `f44efb8296fe3d6802f08d15e7c13e1c48287849`; public-CA work remains separately owned |
 | Greyproxy | `v0.4.5-cockpit.1`, `1d1e518c59f130198eb57b3310e2db16f3353901` | PR #8 merged at `50e2fff5020a232afb903155931aebfa13653797`; PR #9 and `dotfiles` at `15ad5fbfd582d3d85fce79fec09f5a26bb18323e` |
 
-The [pin manifest](../../crates/cockpit-sandbox/engine-pins.json) records six explicit
+The [pin manifest](https://github.com/Androlax2/agent-cockpit/blob/3913a006b0a1c1eb893d5abf83cbb1b08557f71f/crates/cockpit-sandbox/engine-pins.json) records six explicit
 URLs/digests for Linux x86_64/arm64 and macOS arm64. Archive names differ between
 engines; consumers must not synthesize them from one shared naming convention.
 The releases API listed only `.1` for each engine at inspection. Greyproxy's existing
@@ -93,11 +93,11 @@ archives. It does not establish publication, macOS readiness or installed behavi
 
 | Boundary | Existing owner and contract to preserve |
 | --- | --- |
-| Cockpit → engines | [`cockpit-sandbox`](../../crates/cockpit-sandbox/src/greywall.rs) checks full commit identity and capability/help output, emits settings, environment and argv; no in-process engine calls |
-| Installation | [`install.rs`](../../crates/cockpit-sandbox/src/install.rs) verifies both assets before activation, bounds download/extraction, preserves licenses and safe `greywatch -> greywall`, and retains immutable digest-named engine pairs |
+| Cockpit → engines | [`cockpit-sandbox`](https://github.com/Androlax2/agent-cockpit/blob/3913a006b0a1c1eb893d5abf83cbb1b08557f71f/crates/cockpit-sandbox/src/greywall.rs) checks full commit identity and capability/help output, emits settings, environment and argv; no in-process engine calls |
+| Installation | [`install.rs`](https://github.com/Androlax2/agent-cockpit/blob/3913a006b0a1c1eb893d5abf83cbb1b08557f71f/crates/cockpit-sandbox/src/install.rs) verifies both assets before activation, bounds download/extraction, preserves licenses and safe `greywatch -> greywall`, and retains immutable digest-named engine pairs |
 | Launch policy | [`profile.rs`](../../crates/cockpit-sandbox/src/profile.rs) constructs path/network/desktop/secret policy; unsupported enforcement refuses launch; [`launch.rs`](../../crates/cockpit-sandbox/src/launch.rs) creates a fresh client identity per launch |
-| Service lifecycle | [`proxy.rs`](../../crates/cockpit-sandbox/src/proxy.rs) owns profile-local configuration, CA/token generation and service-manager startup; Linux/WSL2 use systemd, future macOS uses launchd |
-| Endpoint authentication | [`ownership.rs`](../../crates/cockpit-sandbox/src/proxy/ownership.rs) binds service PID/executable and listener ownership before sending the management token; a healthy unrelated port is insufficient |
+| Service lifecycle | [`proxy.rs`](https://github.com/Androlax2/agent-cockpit/blob/3913a006b0a1c1eb893d5abf83cbb1b08557f71f/crates/cockpit-sandbox/src/proxy.rs) owns profile-local configuration, CA/token generation and service-manager startup; Linux/WSL2 use systemd, future macOS uses launchd |
+| Endpoint authentication | [`ownership.rs`](https://github.com/Androlax2/agent-cockpit/blob/3913a006b0a1c1eb893d5abf83cbb1b08557f71f/crates/cockpit-sandbox/src/proxy/ownership.rs) binds service PID/executable and listener ownership before sending the management token; a healthy unrelated port is insufficient |
 | Network authorization | Greywall registers proxy sessions; Greyproxy owns its rule/credential database and HTTP/SOCKS authentication. `/api/sessions` supports registration, heartbeat and deletion; management authentication is distinct from per-session secrets |
 | Human authority | Cockpit's authenticated sender and host approval paths retain decisions. Engine APIs, agent labels, documentation and a common repository do not grant authority |
 | Evidence and persistence | [`observations.rs`](../../crates/cockpit-sandbox/src/observations.rs) validates immutable launch-bound owner attestations; caller retains transaction ownership. Requested policy, fixture results and live observations remain distinct |

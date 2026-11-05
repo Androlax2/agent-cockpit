@@ -2,9 +2,7 @@
 
 use cockpit_config::{AgentSandbox, ConfigFile, EffectiveConfig, KNOWN_PROVIDERS};
 
-use crate::{
-    ControlFacts, Platform, ProviderFacts, ProviderUnusable, Requirement, SandboxEngine, Status,
-};
+use crate::{ControlFacts, Platform, ProviderFacts, ProviderUnusable, Requirement, Status};
 
 const RESTART: &str = "then restart the daemon";
 
@@ -74,81 +72,31 @@ pub(crate) fn tmux(tmux: &Result<String, String>) -> Requirement {
     }
 }
 
-pub(crate) fn sandbox(
-    engine: &Result<SandboxEngine, String>,
-    setting: AgentSandbox,
-    profile: &cockpit_config::Profile,
-) -> Requirement {
-    match (setting, engine) {
-        (AgentSandbox::Required, Ok(engine)) => match &engine.blocked {
-            None => Requirement::available("sandbox", engine_detail(engine)),
-            Some(blocked) => Requirement::needs(
-                "sandbox",
-                Status::MissingPrerequisite,
-                format!(
-                    "{}: {}; every agent launch is refused",
-                    engine.engine, blocked.detail
-                ),
-                &blocked.next,
-            ),
-        },
-        (AgentSandbox::Required, Err(reason)) => Requirement::needs(
+/// No backend enforces a sandbox in this release (#828): `off` runs agents unsandboxed,
+/// and `required` refuses every launch, which blocks.
+pub(crate) fn sandbox(setting: AgentSandbox) -> Requirement {
+    match setting {
+        AgentSandbox::Required => Requirement::needs(
             "sandbox",
             Status::MissingPrerequisite,
-            format!("no sandbox engine: {reason}; every agent launch is refused"),
             format!(
-                "run `torlek --profile {profile} sandbox install` to install this release's verified engines, {RESTART}"
+                "no sandbox: {}; agents.sandbox = \"required\" refuses every agent launch",
+                cockpit_config::NO_SANDBOX_BACKEND
             ),
+            "to run agents unsandboxed, with your rights, set agents.sandbox = \"off\" in the owner config and run `torlek config reload`",
         ),
-        (AgentSandbox::Off, engine) => {
-            let engine = match engine {
-                Ok(engine) => engine_detail(engine),
-                Err(reason) => format!("no sandbox engine: {reason}"),
-            };
-            Requirement::available(
-                "sandbox",
-                format!(
-                    "agents run UNSANDBOXED: the owner set agents.sandbox = \"off\"; {}; {engine}",
-                    cockpit_config::UNSANDBOXED_RISK
-                ),
-            )
-            .with_advice(
-                "to sandbox agents, remove agents.sandbox = \"off\" from the owner config and run `torlek config reload`",
-            )
-        }
+        AgentSandbox::Off => Requirement::available(
+            "sandbox",
+            format!(
+                "no sandbox: agents run UNSANDBOXED (agents.sandbox = \"off\"); {}",
+                cockpit_config::UNSANDBOXED_RISK
+            ),
+        )
+        .with_advice(format!(
+            "{}; until it is, agents.sandbox = \"required\" refuses every launch",
+            cockpit_config::NO_SANDBOX_BACKEND
+        )),
     }
-}
-
-pub(crate) fn sandbox_proxy(
-    proxy: &Result<String, crate::ProxyUnavailable>,
-    setting: AgentSandbox,
-) -> Requirement {
-    if setting == AgentSandbox::Off {
-        return Requirement::available(
-            "sandbox proxy",
-            "not required: the owner disabled the sandbox",
-        );
-    }
-    match proxy {
-        Ok(detail) => Requirement::available("sandbox proxy", detail),
-        Err(failure) => Requirement::needs(
-            "sandbox proxy",
-            Status::MissingPrerequisite,
-            &failure.detail,
-            &failure.next,
-        ),
-    }
-}
-
-fn engine_detail(engine: &SandboxEngine) -> String {
-    if engine.observations.is_empty() {
-        return engine.engine.clone();
-    }
-    format!(
-        "{}; host: {}",
-        engine.engine,
-        engine.observations.join(", ")
-    )
 }
 
 /// One requirement per provider the daemon wires and one for each usable provider's sign-in.

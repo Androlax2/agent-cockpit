@@ -78,7 +78,8 @@ pub enum Error {
         reason: String,
     },
     AgentChannel(cockpit_agent_channel::Error),
-    /// The sandbox refused the launch: a rule this host cannot enforce, or no engine (#61).
+    /// The sandbox refused the launch: a rule this host cannot enforce, or no backend under
+    /// `agents.sandbox = "required"` (#61, #828).
     Sandbox(cockpit_sandbox::Refusal),
     SandboxObservations(cockpit_sandbox::ObservationError),
     /// The launch's project has a GitHub token file that cannot be used (#754); the launch

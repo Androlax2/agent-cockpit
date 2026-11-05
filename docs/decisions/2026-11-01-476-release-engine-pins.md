@@ -2,6 +2,8 @@
 
 Issue #476, preparing #470. Decided by Theo in #470 and its release comment.
 
+Superseded by `2026-11-05-828-remove-sandbox-engines.md`: the pins and engines are removed.
+
 - **The release record owns the pins.** `crates/cockpit-sandbox/engine-pins.json` copies the
   tags, commits, exact per-target URLs and SHA-256 values published in
   [the coordinator's comment](https://github.com/Androlax2/agent-cockpit/issues/470#issuecomment-6564069087).

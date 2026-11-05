@@ -166,7 +166,7 @@ impl Tasks {
         self.as_agent(Command::TaskReportBlocker {
             launch_token: self.token(),
             title: title.to_owned(),
-            why: "greywall hides the socket".to_owned(),
+            why: "the sandbox hides the socket".to_owned(),
             notes: String::new(),
         })
         .await
@@ -245,7 +245,7 @@ async fn a_blocker_report_goes_queued_to_the_project_the_owner_configured() {
             report.is_queued,
             report.why.as_deref(),
         ),
-        ("dotfiles", true, true, Some("greywall hides the socket"))
+        ("dotfiles", true, true, Some("the sandbox hides the socket"))
     );
 }
 

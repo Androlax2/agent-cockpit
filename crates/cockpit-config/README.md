@@ -105,7 +105,7 @@ installation-specific ones, and an entry whose label matches a default replaces 
 ```toml
 [[start_files]]
 label = "launcher"
-path = "~/.local/bin/greywall-agents/claude"
+path = "~/.local/bin/agent-launchers/claude"
 providers = ["claude"]
 ```
 

@@ -142,7 +142,6 @@ pub(crate) async fn read(
     let reach = match row.get::<String>(0)?.as_str() {
         "direct" => ProviderReach::Direct,
         "unreachable" => ProviderReach::Unreachable {
-            feature: cockpit_sandbox::MOUNT_FLAG,
             reason: row.get(1)?,
         },
         "mounted" => {

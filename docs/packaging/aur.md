@@ -38,7 +38,7 @@ checksums: there is no placeholder or `SKIP` checksum, and no `latest` URL.
   check. The license is linked to `/usr/share/licenses/torlek-bin/LICENSE`.
 - **Dependencies:** `glibc` and `gcc-libs` for the Rust programs, plus the
   [user guide](../USER-GUIDE.md#platforms-and-prerequisites)'s prerequisites: `git`, `curl` and `tmux>=3.6`. `systemd`
-  is optional and needed only for `torlek daemon install` and `torlek sandbox install`.
+  is optional and needed only for `torlek daemon install`.
   Provider CLIs are left out, because their AUR names are not owned here.
 - **License:** Apache-2.0, the archive's `LICENSE`.
 
@@ -54,8 +54,8 @@ renderer accepts only `X.Y.Z-alpha.N` and `X.Y.Z-beta.N` tags, the release tags 
 ### User state
 
 The package owns files under `/usr` only. A profile's configuration, state and user services
-(`torlek.service`, `torlek-greyproxy-*.service`) live in the user's home and are written by
-`torlek daemon install` and `torlek sandbox install`, not by pacman, so `pacman -R` keeps them.
+(`torlek.service`, and `torlek-greyproxy-*.service` from a release before #828) live in the
+user's home and are written by `torlek daemon install`, not by pacman, so `pacman -R` keeps them.
 Their units still point at `/usr/lib/torlek/bin`: stop them with `systemctl --user disable --now`
 before removing the package. An upgrade replaces the programs in place, and a running daemon
 keeps the old one until it restarts.
@@ -85,7 +85,7 @@ Run it on an Arch host, for each published `vX.Y.Z-alpha.N` tag.
    `verify-install` and `doctor`, and was removed on a clean Arch container.
 7. On a clean Arch machine or VM with a systemd user manager, which the container lacks,
    install the built package with `pacman -U` and walk the #97 onboarding scenario
-   (`torlek sandbox install`, `torlek daemon install`, a session). Also run
+   (`torlek daemon install`, a session). Also run
    `torlek --profile next daemon install`. When an earlier `torlek-bin` was published,
    upgrade from it too. Record the commands and their output on #562.
 8. Publish, only with Theo's approval: clone `ssh://aur@aur.archlinux.org/torlek-bin.git`, copy

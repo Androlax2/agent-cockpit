@@ -214,14 +214,14 @@ fn a_session_sandbox_and_a_sandbox_show_round_trip() {
 fn sandboxed_evidence() -> SandboxEvidenceView {
     SandboxEvidenceView {
         enforcement: SandboxEnforcementView::Sandboxed {
-            backend: "greywall".to_owned(),
-            engine: "greywall 0.3.7 (7c06d51), greyproxy 0.4.5 (cdd5cde)".to_owned(),
+            backend: "fixture-backend".to_owned(),
+            engine: "fixture-backend 1.0 (7c06d51)".to_owned(),
             client_identity: "cockpit-s1-0a1b2c3d4e5f".to_owned(),
         },
         platform: "linux".to_owned(),
         rules: vec![SandboxRuleView {
             rule: "read everything else: denied".to_owned(),
-            enforced_by: "greywall bubblewrap+Landlock (defaultDenyRead)".to_owned(),
+            enforced_by: "fixture-backend Landlock (defaultDenyRead)".to_owned(),
         }],
         observed: vec!["landlock: yes".to_owned()],
     }
@@ -239,14 +239,14 @@ fn sandbox_evidence_travels_with_its_enforcement_tagged() {
             "evidence": {
                 "enforcement": {
                     "kind": "sandboxed",
-                    "backend": "greywall",
-                    "engine": "greywall 0.3.7 (7c06d51), greyproxy 0.4.5 (cdd5cde)",
+                    "backend": "fixture-backend",
+                    "engine": "fixture-backend 1.0 (7c06d51)",
                     "client_identity": "cockpit-s1-0a1b2c3d4e5f"
                 },
                 "platform": "linux",
                 "rules": [{
                     "rule": "read everything else: denied",
-                    "enforced_by": "greywall bubblewrap+Landlock (defaultDenyRead)"
+                    "enforced_by": "fixture-backend Landlock (defaultDenyRead)"
                 }],
                 "observed": ["landlock: yes"]
             }
@@ -263,10 +263,10 @@ fn sandbox_evidence_prints_one_line_per_fact_in_a_fixed_order() {
     assert_eq!(
         sandboxed_evidence().lines(),
         [
-            "sandbox: enforced by greywall on linux",
-            "engine: greywall 0.3.7 (7c06d51), greyproxy 0.4.5 (cdd5cde)",
+            "sandbox: enforced by fixture-backend on linux",
+            "engine: fixture-backend 1.0 (7c06d51)",
             "proxy client: cockpit-s1-0a1b2c3d4e5f",
-            "rule: read everything else: denied <- greywall bubblewrap+Landlock (defaultDenyRead)",
+            "rule: read everything else: denied <- fixture-backend Landlock (defaultDenyRead)",
             "observed: landlock: yes",
         ]
     );

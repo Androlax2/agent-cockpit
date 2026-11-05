@@ -257,7 +257,7 @@ fn readiness_step(facts: &Facts) -> Step {
         }
     }
     if !blocks && lines.is_empty() {
-        lines.push("tmux, the sandbox engine, proxy and resource controls are ready".to_owned());
+        lines.push("tmux and resource controls are ready".to_owned());
     }
     lines.push("`torlek doctor` shows every requirement".to_owned());
     Step {
@@ -268,19 +268,21 @@ fn readiness_step(facts: &Facts) -> Step {
     }
 }
 
-/// What the sandbox restricts, what needs the owner and how approvals work; done once the
-/// owner wrote `agents.sandbox` in their own file, which is the recorded consent.
+/// That agents run unsandboxed while no backend exists (#828), what needs the owner and how
+/// approvals work; done once the owner wrote `agents.sandbox` in their own file, which is
+/// the recorded consent.
 fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
     let Ok(config) = config else {
         return Step::waiting(SANDBOX, "the configuration reads");
     };
     let setting = &config.agents_sandbox;
     let mut lines = vec![
-        "restricted: each agent runs in the greywall sandbox; it writes only inside its \
-         own checkout, cannot read Torlek's own files, and reaches the network through \
-         greyproxy"
-            .to_owned(),
-        "needs you: a command outside the sandbox (`torlek ask run`) or a step only a \
+        format!(
+            "no sandbox: {}; agents.sandbox = \"off\" runs agents UNSANDBOXED, with your \
+             rights, and \"required\" refuses every launch until it is",
+            cockpit_config::NO_SANDBOX_BACKEND
+        ),
+        "needs you: a command an agent asks you to run (`torlek ask run`) or a step only a \
          person can do (`torlek ask guide`); an agent cannot approve its own request"
             .to_owned(),
         "approvals: `torlek approval list` (or the approval pane of `torlek tui`) shows the \
@@ -294,14 +296,31 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
         ),
     ];
     if let Source::UserFile { path, line } = &setting.source {
-        lines.push(match setting.value {
-            AgentSandbox::Required => format!("you chose the sandbox ({}:{line})", path.display()),
-            AgentSandbox::Off => format!(
-                "you chose to run agents UNSANDBOXED, with your rights ({}:{line}): {}",
-                path.display(),
-                cockpit_config::UNSANDBOXED_RISK
-            ),
-        });
+        // An earlier release's init advised `required` as consent; it now refuses every
+        // launch, so the step stays open rather than count a setup that cannot start (#828).
+        if setting.value == AgentSandbox::Required {
+            lines.push(format!(
+                "you chose the sandbox ({}:{line}): every agent launch is refused until it exists",
+                path.display()
+            ));
+            return Step {
+                title: SANDBOX,
+                state: State::Open,
+                lines,
+                next: Some(format!(
+                    "to run agents now, set `sandbox = \"off\"` at {}:{line}: agents run \
+                     unsandboxed, with your rights ({}); otherwise start none until Torlek's own \
+                     sandbox (#546) ships",
+                    path.display(),
+                    cockpit_config::UNSANDBOXED_RISK
+                )),
+            };
+        }
+        lines.push(format!(
+            "you chose to run agents UNSANDBOXED, with your rights ({}:{line}): {}",
+            path.display(),
+            cockpit_config::UNSANDBOXED_RISK
+        ));
         return Step {
             title: SANDBOX,
             state: State::Done,
@@ -329,8 +348,8 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
         state: State::Open,
         lines,
         next: Some(format!(
-            "to accept, {create_folder}write `[agents]` and `sandbox = \"required\"` in {} \
-             (`sandbox = \"off\"` runs agents unsandboxed, with your rights: {})",
+            "to accept, {create_folder}write `[agents]` and `sandbox = \"off\"` in {}: agents \
+             run unsandboxed, with your rights ({})",
             shell_word(&file.to_string_lossy()),
             cockpit_config::UNSANDBOXED_RISK
         )),

@@ -227,12 +227,19 @@ impl DesktopSession {
 pub const UNSANDBOXED_RISK: &str = "an unsandboxed agent can reach the owner socket and act \
     as the owner, so Torlek's grants only hold under the sandbox";
 
-/// Whether a launched agent runs in the sandbox (#61). The product runs every agent in it;
-/// the owner's `agents.sandbox = "off"` is the one named opt-out, logged at every launch.
+/// Why `agents.sandbox = "required"` refuses every launch in this release (#828): the
+/// engines it used are removed and Torlek's native sandbox (#546) is not built yet.
+pub const NO_SANDBOX_BACKEND: &str =
+    "this release has no sandbox backend: Torlek's native sandbox (#546) is not built yet";
+
+/// Whether a launched agent runs in the sandbox (#61). The product default is `off` until
+/// the native sandbox is live (#546), logged at every launch; an explicit `required` refuses
+/// every launch while no backend exists, never runs one unsandboxed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentSandbox {
-    /// Every launch goes through `cockpit-sandbox`; one it cannot enforce is refused.
+    /// Every launch goes through a sandbox backend; one it cannot enforce is refused, and
+    /// with no backend every launch is.
     Required,
     /// Agents run unsandboxed, with the owner's rights.
     Off,
@@ -930,7 +937,7 @@ fn agents_desktop_session(layers: &[Layer]) -> Sourced<DesktopSession> {
 }
 
 fn agents_sandbox(layers: &[Layer]) -> Sourced<AgentSandbox> {
-    let mut resolved = Sourced::new(AgentSandbox::Required, Source::ProductDefault);
+    let mut resolved = Sourced::new(AgentSandbox::Off, Source::ProductDefault);
     for layer in layers {
         let Some(value) = layer
             .settings

@@ -47,8 +47,8 @@ fn install() -> Result<ExitCode, String> {
         let legacy = Legacy::find(&unit_dir, std::env::var_os("PATH").as_deref(), &program);
         if legacy.is_found() {
             return Err(format!(
-                "a legacy Cockpit is installed ({}): the default profile is refused until the \
-                 cutover because greyproxy endpoints are shared; install this one beside it with \
+                "a legacy Cockpit is installed ({}): the default profile stays the legacy \
+                 Cockpit's until the cutover (#134); install this one beside it with \
                  `torlek --profile {COEXISTING_PROFILE} daemon install`, which also installs \
                   the command torlek-{COEXISTING_PROFILE} where it can",
                 legacy.describe()
@@ -307,7 +307,7 @@ fn write_unit(unit_dir: &Path, unit: &Path, text: &str) -> Result<(), String> {
     fs::rename(&partial, unit).map_err(|error| format!("{}: {error}", unit.display()))
 }
 
-fn service_manager(program: &str, arguments: &[&str]) -> Result<(), String> {
+pub(crate) fn service_manager(program: &str, arguments: &[&str]) -> Result<(), String> {
     let shown = format!("{program} {}", arguments.join(" "));
     let status = Command::new(program)
         .args(arguments)

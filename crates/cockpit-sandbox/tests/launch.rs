@@ -1,111 +1,93 @@
 //! `Sandbox::prepare`, the one entry every launch goes through, and the evidence it records:
-//! sandboxed by default, refused without an engine, unsandboxed only by the owner's setting.
+//! with no backend in this release (#828), `agents.sandbox = "off"` runs the agent unchanged
+//! and says so, and `"required"` refuses the launch naming the missing backend.
 
 mod common;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use cockpit_sandbox::{AgentSandbox, Enforcement, HostPaths, MIGRATIONS, Platform, Sandbox};
-use common::{MOUNT_SOURCES, OWNER_UID, launch_request, linux_engine, no_host_paths};
+use cockpit_sandbox::{
+    AgentSandbox, AppliedRule, Enforcement, Evidence, HostPaths, MIGRATIONS, Platform, Sandbox,
+};
+use common::{MOUNT_SOURCES, OWNER_UID, launch_request, no_host_paths};
 
 fn agent_words() -> (PathBuf, Vec<OsString>) {
     (PathBuf::from("/usr/bin/claude"), vec!["--resume".into()])
 }
 
+fn sandboxes() -> [(&'static str, Sandbox); 3] {
+    [
+        ("linux", Sandbox::new(Platform::Linux, no_host_paths())),
+        ("macos", Sandbox::new(Platform::MacOs, no_host_paths())),
+        ("host paths unread", Sandbox::unavailable()),
+    ]
+}
+
+/// The security rule of #828: an explicit `required` never falls back to running the agent
+/// unsandboxed, whatever the host.
 #[test]
-fn a_required_sandbox_wraps_the_agent_in_greywall() {
-    let settings = tempfile::tempdir().unwrap();
-    let sandbox = Sandbox::new(
-        Platform::Linux,
-        Ok(linux_engine(settings.path())),
-        no_host_paths(),
-    );
-    let (program, arguments) = agent_words();
+fn a_required_sandbox_refuses_every_launch_naming_the_missing_backend() {
+    for (case, sandbox) in sandboxes() {
+        let (program, arguments) = agent_words();
 
-    let prepared = sandbox
-        .prepare(
-            AgentSandbox::Required,
-            &launch_request("s1", "/home/owner/app"),
-            program,
-            arguments,
-        )
-        .unwrap();
+        let refused = sandbox
+            .prepare(
+                AgentSandbox::Required,
+                &launch_request("s1", "/home/owner/app"),
+                program,
+                arguments,
+            )
+            .unwrap_err();
 
-    assert_eq!(prepared.program, PathBuf::from("/opt/sandbox/greywall"));
-    let tail: Vec<&OsString> = prepared.arguments.iter().rev().take(3).collect();
-    assert_eq!(
-        tail,
-        [
-            &OsString::from("--resume"),
-            &"/usr/bin/claude".into(),
-            &"--".into()
-        ]
-    );
-    let Enforcement::Sandboxed {
-        backend,
-        client_identity,
-        ..
-    } = &prepared.evidence.enforcement
-    else {
-        panic!("expected sandboxed evidence: {:?}", prepared.evidence);
-    };
-    assert_eq!(backend, "greywall");
-    assert!(client_identity.starts_with("cockpit-s1-"));
-    assert_eq!(prepared.evidence.platform, "linux");
+        assert_eq!(refused.rule, "agents.sandbox = \"required\"", "{case}");
+        assert!(
+            refused.reason.contains(cockpit_config::NO_SANDBOX_BACKEND),
+            "{case}: {refused}"
+        );
+        assert!(
+            refused
+                .reason
+                .contains("refused rather than run unsandboxed"),
+            "{case}: {refused}"
+        );
+    }
 }
 
 #[test]
-fn without_an_engine_a_required_sandbox_refuses_the_launch_with_the_reason() {
-    let sandbox = Sandbox::unavailable("no `greywall` on PATH");
+fn the_off_setting_runs_the_agent_unchanged_and_the_evidence_says_no_sandbox() {
+    let sandbox = Sandbox::new(Platform::Linux, no_host_paths());
     let (program, arguments) = agent_words();
-
-    let refused = sandbox
-        .prepare(
-            AgentSandbox::Required,
-            &launch_request("s1", "/home/owner/app"),
-            program,
-            arguments,
-        )
-        .unwrap_err();
-
-    assert_eq!(refused.rule, "sandbox");
-    assert!(
-        refused.reason.contains("no `greywall` on PATH"),
-        "{refused}"
-    );
-}
-
-#[test]
-fn the_owners_off_setting_runs_the_agent_unchanged_and_the_evidence_says_so() {
-    let sandbox = Sandbox::unavailable("no `greywall` on PATH");
-    let (program, arguments) = agent_words();
+    let request = launch_request("s1", "/home/owner/app");
 
     let prepared = sandbox
         .prepare(
             AgentSandbox::Off,
-            &launch_request("s1", "/home/owner/app"),
+            &request,
             program.clone(),
             arguments.clone(),
         )
         .unwrap();
 
     assert_eq!((prepared.program, prepared.arguments), (program, arguments));
-    assert!(prepared.settings.is_none());
+    assert_eq!(prepared.environment, request.environment);
     assert_eq!(
-        prepared.evidence.enforcement,
-        Enforcement::Unsandboxed {
-            reason: "the owner set agents.sandbox = \"off\"".to_owned()
+        prepared.evidence,
+        Evidence {
+            enforcement: Enforcement::Unsandboxed {
+                reason: "no sandbox: agents.sandbox = \"off\"".to_owned()
+            },
+            platform: "linux".to_owned(),
+            rules: Vec::new(),
+            observed: Vec::new(),
         }
     );
 }
 
 #[test]
 fn a_hosts_denied_path_reaches_the_profile() {
-    let settings = tempfile::tempdir().unwrap();
     let sandbox = Sandbox::new(
         Platform::Linux,
-        Ok(linux_engine(settings.path())),
         HostPaths {
             read_only: vec![PathBuf::from("/run/user/1000/cockpit/agent")],
             denied: vec![PathBuf::from("/run/user/1000/cockpit/daemon.sock")],
@@ -128,10 +110,8 @@ fn a_hosts_denied_path_reaches_the_profile() {
 
 #[test]
 fn a_launch_requests_own_denied_path_reaches_its_profile_beside_the_hosts() {
-    let settings = tempfile::tempdir().unwrap();
     let sandbox = Sandbox::new(
         Platform::Linux,
-        Ok(linux_engine(settings.path())),
         HostPaths {
             read_only: vec![PathBuf::from("/run/user/1000/cockpit/agent")],
             denied: vec![PathBuf::from("/run/user/1000/cockpit/daemon.sock")],
@@ -153,19 +133,23 @@ fn a_launch_requests_own_denied_path_reaches_its_profile_beside_the_hosts() {
     }
 }
 
+#[test]
+fn a_sandbox_that_read_no_host_paths_refuses_a_profile() {
+    let refused = Sandbox::unavailable()
+        .profile(&launch_request("s1", "/home/owner/app"))
+        .unwrap_err();
+
+    assert_eq!(refused.rule, "sandbox");
+}
+
+/// A launch an earlier release sandboxed keeps its evidence readable after the upgrade.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_evidence_is_read_back_as_recorded_for_the_sessions_latest_launch() {
     let dir = tempfile::tempdir().unwrap();
     let database = cockpit_turso::Database::open(&dir.path().join("state.db"), &[MIGRATIONS])
         .await
         .unwrap();
-    let settings = tempfile::tempdir().unwrap();
-    let sandbox = Sandbox::new(
-        Platform::Linux,
-        Ok(linux_engine(settings.path())),
-        no_host_paths(),
-    );
-    let unsandboxed = sandbox
+    let unsandboxed = Sandbox::new(Platform::Linux, no_host_paths())
         .prepare(
             AgentSandbox::Off,
             &launch_request("s1", "/home/owner/app"),
@@ -174,20 +158,27 @@ async fn the_evidence_is_read_back_as_recorded_for_the_sessions_latest_launch() 
         )
         .unwrap()
         .evidence;
-    let sandboxed = sandbox
-        .prepare(
-            AgentSandbox::Required,
-            &launch_request("s1", "/home/owner/app"),
-            "/usr/bin/claude".into(),
-            Vec::new(),
-        )
-        .unwrap()
-        .evidence;
+    let earlier_release = Evidence {
+        enforcement: Enforcement::Sandboxed {
+            backend: "an earlier backend".to_owned(),
+            engine: "engine 1.0".to_owned(),
+            client_identity: "cockpit-s1-0001".to_owned(),
+        },
+        platform: "linux".to_owned(),
+        rules: vec![AppliedRule {
+            rule: "read-write /home/owner/app".to_owned(),
+            enforced_by: "the earlier backend".to_owned(),
+        }],
+        observed: vec!["landlock".to_owned()],
+    };
     let write = database.write().await.unwrap();
-    cockpit_sandbox::record(&write, 1, "s1", &unsandboxed)
+    cockpit_sandbox::record(&write, 1, "s1", &earlier_release)
         .await
         .unwrap();
-    cockpit_sandbox::record(&write, 2, "s1", &sandboxed)
+    cockpit_sandbox::record(&write, 2, "s1", &unsandboxed)
+        .await
+        .unwrap();
+    cockpit_sandbox::record(&write, 3, "s2", &earlier_release)
         .await
         .unwrap();
     write.commit().await.unwrap();
@@ -196,138 +187,14 @@ async fn the_evidence_is_read_back_as_recorded_for_the_sessions_latest_launch() 
     let latest = cockpit_sandbox::latest_for_session(&read, "s1")
         .await
         .unwrap();
-    let none = cockpit_sandbox::latest_for_session(&read, "s2")
+    let earlier = cockpit_sandbox::latest_for_session(&read, "s2")
+        .await
+        .unwrap();
+    let none = cockpit_sandbox::latest_for_session(&read, "s3")
         .await
         .unwrap();
 
-    assert_eq!(latest, Some(sandboxed));
+    assert_eq!(latest, Some(unsandboxed));
+    assert_eq!(earlier, Some(earlier_release));
     assert_eq!(none, None);
-}
-
-/// A launch whose greywall writes its temporary files in `temp`.
-fn launch_with_temp(temp: &std::path::Path) -> cockpit_sandbox::LaunchRequest {
-    let mut request = launch_request("s1", "/home/owner/app");
-    request
-        .environment
-        .push(("TMPDIR".into(), temp.as_os_str().to_owned()));
-    request
-}
-
-fn prepare_in(
-    temp: &std::path::Path,
-) -> Result<cockpit_sandbox::Prepared, cockpit_sandbox::Refusal> {
-    let settings = tempfile::tempdir().unwrap();
-    let sandbox = Sandbox::new(
-        Platform::Linux,
-        Ok(linux_engine(settings.path())),
-        no_host_paths(),
-    );
-    let (program, arguments) = agent_words();
-    sandbox.prepare(
-        AgentSandbox::Required,
-        &launch_with_temp(temp),
-        program,
-        arguments,
-    )
-}
-
-#[test]
-fn a_seccomp_folder_greywall_cannot_write_refuses_the_launch_naming_the_cause() {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    if std::fs::metadata("/proc/self").unwrap().uid() == 0 {
-        eprintln!("skipped: root writes a read-only folder");
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    let folder = temp.path().join("greywall-seccomp");
-    std::fs::create_dir(&folder).unwrap();
-    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
-
-    let refused = prepare_in(temp.path()).unwrap_err();
-
-    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
-    assert_eq!(refused.rule, "seccomp filter");
-    assert!(
-        refused.reason.contains(&folder.display().to_string()),
-        "{refused}"
-    );
-    assert!(refused.reason.contains("cannot be written"), "{refused}");
-}
-
-#[test]
-fn a_seccomp_folder_other_users_can_write_refuses_the_launch() {
-    use std::os::unix::fs::PermissionsExt;
-    let temp = tempfile::tempdir().unwrap();
-    let folder = temp.path().join("greywall-seccomp");
-    std::fs::create_dir(&folder).unwrap();
-    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o777)).unwrap();
-
-    let refused = prepare_in(temp.path()).unwrap_err();
-
-    assert_eq!(refused.rule, "seccomp filter");
-    assert!(
-        refused.reason.contains("writable by other users"),
-        "{refused}"
-    );
-}
-
-#[test]
-fn a_seccomp_path_that_is_not_a_folder_refuses_the_launch() {
-    let temp = tempfile::tempdir().unwrap();
-    std::fs::write(temp.path().join("greywall-seccomp"), "").unwrap();
-
-    let refused = prepare_in(temp.path()).unwrap_err();
-
-    assert_eq!(refused.rule, "seccomp filter");
-    assert!(refused.reason.contains("not a folder"), "{refused}");
-}
-
-#[test]
-fn a_launch_checks_its_own_seccomp_folder_and_leaves_nothing_in_it() {
-    let temp = tempfile::tempdir().unwrap();
-    let folder = temp.path().join("greywall-seccomp");
-    std::fs::create_dir(&folder).unwrap();
-
-    prepare_in(temp.path()).unwrap();
-
-    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
-}
-
-/// With `TMPDIR` in the session's temp folder, the launch creates greywall's seccomp folder
-/// owner-only before the engine starts, so its write denial applies to a real folder (#766).
-#[test]
-fn a_launch_creates_the_seccomp_folder_in_its_temp_folder_owner_only() {
-    use std::os::unix::fs::PermissionsExt;
-    let temp = tempfile::tempdir().unwrap();
-    let settings = tempfile::tempdir().unwrap();
-    let sandbox = Sandbox::new(
-        Platform::Linux,
-        Ok(linux_engine(settings.path())),
-        no_host_paths(),
-    );
-    let mut request = launch_with_temp(temp.path());
-    request.temp_dir = temp.path().to_path_buf();
-    let (program, arguments) = agent_words();
-    let plan = sandbox
-        .prepare(AgentSandbox::Required, &request, program, arguments)
-        .unwrap()
-        .settings
-        .unwrap();
-
-    plan.create_seccomp_folder().unwrap();
-    plan.create_seccomp_folder().unwrap();
-
-    let folder = temp.path().join("greywall-seccomp");
-    assert_eq!(plan.seccomp_folder.as_deref(), Some(folder.as_path()));
-    let mode = std::fs::metadata(&folder).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o700);
-}
-
-#[test]
-fn an_absent_seccomp_folder_lets_greywall_create_it() {
-    let temp = tempfile::tempdir().unwrap();
-
-    prepare_in(temp.path()).unwrap();
-
-    assert!(!temp.path().join("greywall-seccomp").exists());
 }

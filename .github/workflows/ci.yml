@@ -78,8 +78,6 @@ jobs:
         run: python3 config/bin/.local/bin/cockpit-game-guard off
       - name: Run the greenfield gate
         run: make greenfield-ci
-      - name: Check enforcement-runner fixtures
-        run: make sandbox-enforcement-fixtures
 
   # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
   # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash

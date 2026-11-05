@@ -3,6 +3,9 @@
 Issue #61 (option C, decided). The points below were decided by the implementing session,
 within reports 11 and 17 and decision register item 15.
 
+Superseded in part by `2026-11-05-828-remove-sandbox-engines.md`: Greywall is removed, the
+product default is `off`, and `required` refuses every launch until the native backend exists.
+
 - **The daemon launches through the sandbox; no launcher script.** `cockpit-sessions` calls
   `cockpit_sandbox::Sandbox::prepare` for every launch, and the evidence is recorded in the
   launch's own transaction (`sandbox_launches`). That way a launch the database names always

@@ -1,19 +1,17 @@
-//! #450: the owner reaches the real Codex adapter through the sandbox's mapped socket.
+//! #450: the owner reaches the real Codex adapter through its app-server's socket in the
+//! session's directory, which an unsandboxed launch reaches directly (#828).
 #![cfg(target_os = "linux")]
 mod candidate;
 mod common;
 mod messaging_fixture;
-#[path = "real_daemon/proxy.rs"]
-mod proxy_fixture;
 use cockpit_client::{ClientError, Connection};
 use cockpit_codex::{Bridge, CONFORMANCE_VERSION, Codex};
 use cockpit_daemon::Wiring;
 use cockpit_protocol::{Command, ErrorCode};
-use cockpit_sandbox::{Greywall, GreywallPrograms, HostPaths, Platform, Sandbox};
 use common::{GENEROUS, refused};
 use messaging_fixture::Home;
 use serde_json::{Value, json};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,7 +23,7 @@ fn script(home: &Home, name: &str, body: &str) -> PathBuf {
     path
 }
 
-fn wiring(home: &Home, mounts: bool) -> Wiring {
+fn wiring(home: &Home) -> Wiring {
     let server = script(home, "app-server", APP_SERVER);
     let provider = Codex::new(
         "/unused-codex".into(),
@@ -36,78 +34,7 @@ fn wiring(home: &Home, mounts: bool) -> Wiring {
             cockpit_program: "/unused-cli".into(),
         }),
     );
-    let greywall = script(
-        home,
-        "greywall",
-        &format!(
-            r#"#!/bin/sh
-if [ "$1" = --version ]; then
-  printf 'greywall - fixture\n  Version: 0.3.7+dotfiles\n  Commit: {}\n'
-  for capability in bubblewrap landlock seccomp 'network isolation' 'D-Bus isolated'; do
-    printf '  ✓ %s\n' "$capability"
-  done
-  exit 0
-fi
-if [ "$1" = --help ]; then printf '%s\n' '{}'; exit 0; fi
-while [ "$1" != -- ]; do
-  if [ "$1" = --mount ]; then export FIXTURE_MOUNT="$2"; fi
-  shift
-done
-shift
-exec "$@"
-"#,
-            cockpit_sandbox::PINNED_GREYWALL_COMMIT,
-            if mounts {
-                "      --mount stringArray"
-            } else {
-                "no folder support"
-            }
-        ),
-    );
-    let greyproxy = script(
-        home,
-        "greyproxy",
-        &format!(
-            "#!/bin/sh\nprintf 'greyproxy 0.4.5 (fixture)\\n  commit: {}\\n'\n",
-            cockpit_sandbox::PINNED_GREYPROXY_COMMIT
-        ),
-    );
-    let owned = cockpit_sandbox::install::programs(&home.path().join("state/torlek-test")).unwrap();
-    std::fs::create_dir_all(owned.greyproxy.parent().unwrap()).unwrap();
-    std::fs::set_permissions(
-        home.path().join("state"),
-        std::fs::Permissions::from_mode(0o700),
-    )
-    .unwrap();
-    std::fs::copy(&greyproxy, owned.greyproxy).unwrap();
-    proxy_fixture::commands(home.path());
-    let proxy = proxy_fixture::configure(home.path(), "test")
-        .with_command_directory(&home.path().join("bin"));
-    let engine = Greywall::detect(
-        GreywallPrograms {
-            greywall,
-            greyproxy,
-        },
-        Platform::Linux,
-        home.path().join("settings"),
-    )
-    .unwrap();
-    assert_eq!(engine.can_mount_folders, mounts);
-    let mut wiring = common::wiring_in(home.path(), vec![Arc::new(provider)]);
-    wiring.sessions.owner.sandbox = cockpit_config::AgentSandbox::Required;
-    wiring.sessions.sandbox = Sandbox::new(
-        Platform::Linux,
-        Ok(engine),
-        HostPaths {
-            read_only: Vec::new(),
-            denied: Vec::new(),
-            denied_write: Vec::new(),
-            owner_uid: 1000,
-            mount_sources: home.path().join("mounts"),
-        },
-    )
-    .with_managed_proxy(Ok(proxy));
-    wiring
+    common::wiring_in(home.path(), vec![Arc::new(provider)])
 }
 
 async fn reported(home: &Home, id: &str) -> PathBuf {
@@ -169,17 +96,18 @@ async fn request_when_idle(
 }
 
 #[tokio::test]
-async fn owner_send_and_cancel_reach_the_mapped_codex_socket_after_daemon_restart() {
+async fn owner_send_and_cancel_reach_the_codex_socket_after_daemon_restart() {
     let home = Home::new();
-    let daemon = home.start_wired(wiring(&home, true)).await;
+    let daemon = home.start_wired(wiring(&home)).await;
     let client = home.connect().await;
     let root = home.project(&client).await;
     let session = home.session(&client, &root, "codex").await;
     let dir = reported(&home, &session.id).await;
     assert!(
-        std::fs::read_link(dir.join("codex.sock"))
+        std::fs::symlink_metadata(dir.join("codex.sock"))
             .unwrap()
-            .starts_with("/tmp/codex-daemon-1000")
+            .file_type()
+            .is_socket()
     );
     request_when_idle(
         &client,
@@ -192,8 +120,7 @@ async fn owner_send_and_cancel_reach_the_mapped_codex_socket_after_daemon_restar
     .unwrap();
     drop(client);
     home.stop(daemon).await;
-    // The next daemon sees an engine without --mount. The running launch retains its mapping.
-    let _daemon = home.start_wired(wiring(&home, false)).await;
+    let _daemon = home.start_wired(wiring(&home)).await;
     let client = home.connect().await;
     request_when_idle(
         &client,
@@ -231,46 +158,14 @@ async fn owner_send_and_cancel_reach_the_mapped_codex_socket_after_daemon_restar
     );
 }
 
-#[tokio::test]
-async fn owner_delivery_without_the_mount_feature_is_refused_without_connecting() {
-    let home = Home::new();
-    let _daemon = home.start_wired(wiring(&home, false)).await;
-    let client = home.connect().await;
-    let root = home.project(&client).await;
-    let session = home.session(&client, &root, "codex").await;
-    let dir = reported(&home, &session.id).await;
-    for command in [
-        Command::SessionSend {
-            session: session.id.clone(),
-            message: "hello".into(),
-        },
-        Command::SessionCancel {
-            session: session.id,
-        },
-    ] {
-        let error = refused(request_when_idle(&client, command).await);
-        assert_eq!(error.code, ErrorCode::Refused);
-        assert!(error.message.contains("--mount"), "{error:?}");
-    }
-    assert!(requests(&dir).is_empty());
-}
-
 // A listener in the launched process tree, speaking the adapter's WebSocket/JSON-RPC wire.
-// The fake engine exports its requested mapping; no real sandbox or host /tmp folder is used.
 const APP_SERVER: &str = r#"#!/usr/bin/python3
 import json, os, socket, struct, sys
 from pathlib import Path
 link = Path(sys.argv[sys.argv.index('--socket') + 1])
 folder = link.parent
-mapping = os.environ.get('FIXTURE_MOUNT')
-if mapping:
-    host, sandbox = mapping.split(':', 1)
-    os.chdir(host)
-    entry = 'a' * 64
-    link.symlink_to(sandbox + '/' + entry)
-else:
-    os.chdir(folder)
-    entry = 'codex.sock'
+os.chdir(folder)
+entry = link.name
 listener = socket.socket(socket.AF_UNIX)
 listener.bind(entry)
 listener.listen()
@@ -330,11 +225,9 @@ while True:
 "#;
 
 #[tokio::test]
-async fn unsandboxed_codex_delivery_uses_the_direct_socket_and_old_context_is_refused() {
+async fn a_launch_without_delivery_context_is_refused_rather_than_guessed() {
     let home = Home::new();
-    let mut setup = wiring(&home, false);
-    setup.sessions.owner.sandbox = cockpit_config::AgentSandbox::Off;
-    let _daemon = home.start_wired(setup).await;
+    let _daemon = home.start_wired(wiring(&home)).await;
     let client = home.connect().await;
     let root = home.project(&client).await;
     let session = home.session(&client, &root, "codex").await;

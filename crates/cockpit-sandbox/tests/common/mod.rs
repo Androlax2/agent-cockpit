@@ -1,5 +1,4 @@
-//! A checked engine and a launch request, without running greywall: the versions are the
-//! pinned builds as `--version` reports them on a host with every capability.
+//! The host paths, platforms and requests the sandbox tests build profiles and launches from.
 #![allow(
     dead_code,
     reason = "each test file uses a different part of the fixture"
@@ -8,18 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use cockpit_sandbox::{
-    DesktopSession, EngineBuild, Greywall, GreywallPrograms, HostCapability, HostPaths,
-    LaunchRequest, PINNED_GREYPROXY_COMMIT, PINNED_GREYWALL_COMMIT, Platform, ProfileRequest,
-    Secret, SecretHandling,
+    DesktopSession, HostPaths, LaunchRequest, Platform, ProfileRequest, Secret, SecretHandling,
 };
-
-pub const LINUX_CAPABILITIES: [&str; 5] = [
-    "bubblewrap",
-    "landlock",
-    "seccomp",
-    "network isolation",
-    "D-Bus isolated",
-];
 
 /// The user the fixtures' daemon runs as.
 pub const OWNER_UID: u32 = 1000;
@@ -42,65 +31,6 @@ pub fn no_host_paths() -> HostPaths {
         owner_uid: OWNER_UID,
         mount_sources: PathBuf::from(MOUNT_SOURCES),
     }
-}
-
-pub fn capabilities(available: &[&str], missing: &[&str]) -> Vec<HostCapability> {
-    let capability = |name: &&str, available: bool| HostCapability {
-        name: (*name).to_owned(),
-        available,
-        detail: None,
-    };
-    available
-        .iter()
-        .map(|name| capability(name, true))
-        .chain(missing.iter().map(|name| capability(name, false)))
-        .collect()
-}
-
-pub fn pinned_greywall() -> EngineBuild {
-    EngineBuild {
-        version: "0.3.7-cockpit.1".to_owned(),
-        commit: PINNED_GREYWALL_COMMIT.to_owned(),
-    }
-}
-
-pub fn pinned_greyproxy() -> EngineBuild {
-    EngineBuild {
-        version: "0.4.5".to_owned(),
-        commit: PINNED_GREYPROXY_COMMIT.to_owned(),
-    }
-}
-
-pub fn programs() -> GreywallPrograms {
-    GreywallPrograms {
-        greywall: PathBuf::from("/opt/sandbox/greywall"),
-        greyproxy: PathBuf::from("/opt/sandbox/greyproxy"),
-    }
-}
-
-/// The pinned engine on `platform` with `capabilities`, writing settings under `settings_dir`.
-pub fn engine_with(
-    platform: Platform,
-    capabilities: Vec<HostCapability>,
-    settings_dir: &Path,
-) -> Greywall {
-    Greywall::from_builds(
-        programs(),
-        pinned_greywall(),
-        pinned_greyproxy(),
-        capabilities,
-        platform,
-        settings_dir.to_owned(),
-    )
-    .unwrap()
-}
-
-pub fn linux_engine(settings_dir: &Path) -> Greywall {
-    engine_with(
-        Platform::Linux,
-        capabilities(&LINUX_CAPABILITIES, &[]),
-        settings_dir,
-    )
 }
 
 pub fn wsl2() -> Platform {
