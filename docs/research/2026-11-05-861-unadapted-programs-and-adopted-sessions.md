@@ -38,18 +38,18 @@ saw:
 2. **A program that declares nothing gets the floor and no network**: its checkout, session
    folder, temp folder and its own executable, nothing else of the home, no host. Every host is
    an owner decision (#674), worded by Torlek.
-3. **Adoption is allowed and carries no authority.** The process is already running with the
+3. **Adoption is allowed and Torlek gives it no authority.** The process is already running with the
    owner's rights and refusing it makes it invisible, not safer. Adopting adds a card that says
    `UNSANDBOXED, adopted`, takes messages from the owner only (never from another session), has
    no agent-channel identity and can be given no grant.
 
-- [x] Q1 decided 2026-11-05: A, only the owner's config entry on the host grants; a project file may only request, via #674.
-- [x] Q2 decided 2026-11-05: A, the floor and no host; each host is a #674 request.
-- [x] Q3 decided 2026-11-05: B, adopt as an observed card with an UNSANDBOXED badge, no identity, no grant, owner messages only.
+- [x] Q1 decided 2026-11-05: A (see [Decisions](#decisions)).
+- [x] Q2 decided 2026-11-05: A (see [Decisions](#decisions)).
+- [x] Q3 decided 2026-11-05: B (see [Decisions](#decisions)).
 
 ## What exists today
 
-Code at this branch's base (`2c89c7bd`); paths are relative to the repository root.
+Code at this branch's base (`56659a6b`); paths are relative to the repository root.
 
 | Where | Fact |
 | --- | --- |
@@ -103,19 +103,22 @@ add that Torlek knows nothing about the program's behaviour or its hosts.
 | **C. Both, the project file granting.** Union of the two | T2 open: a cloned repository's file widens the network with no decision | Least friction. Contradicts the #546 rule that project files request and never grant |
 
 Rules that apply to any option, from the code above: `hosts` are exact names with an optional
-port, or `*.domain`; a bare `*`, an IP literal and a private or metadata range are refused when
-the entry loads (the proxy refuses them anyway, #831). A `read` or `write` path inside
+port, or `*.domain`; a bare `*`, a wildcard on a public suffix (`*.com`, `*.co.uk`, `*.github.io`;
+the suffix list is the implementing issue's choice, a dependency this report does not make), an
+IP literal and a private or metadata range are refused when the entry loads (the proxy refuses
+the last two anyway, #831). A `read` or `write` path inside
 `BASELINE_DENIED_READ` / `BASELINE_DENIED_WRITE`, the owner's configuration, the state folder or
 a container socket is refused when the entry loads, the rule #859 sets for a project's extra
 folder. The program's executable is bound read-only **by itself** (its resolved file), not its
 folder: binding `~/.local/bin` is what #859 refuses. Its libraries and install tree must be named
-in `read`.
+in `read`. A folder one entry declares `write` (its sign-in state, T5) is refused in every other
+entry's `read` or `write` and in any project request, checked when entries load.
 
 ### Q2. What a program that declares nothing gets
 
 | Option | Threats it leaves | Cost |
 | --- | --- | --- |
-| **A. The floor, no host** (recommended). Checkout, session folder, temp folder, the executable, the environment Torlek builds, the checkout's ecosystem hosts from #830's table like any session; no other host or path. Every other host is a #674 request that names the program as "declares no hosts" | T4: the first launch asks for the program's model API and perhaps a few more | A program that needs the network stalls on its first request until the owner answers; the 403 body says so at once (#831) |
+| **A. The floor, no host** (recommended). Checkout, session folder, temp folder, the executable, the environment Torlek builds, no host and no other path. The registry hosts of #859 are treated like a provider's hosts, so a program that declares none gets none; it declares them in `hosts` or the owner decides the request. Every host is a #674 request that names the program as "declares no hosts" | T4: the first launch asks for the program's model API and perhaps a few more | A program that needs the network stalls on its first request until the owner answers; the 403 body says so at once (#831) |
 | **B. Refuse the launch** until the entry has a `hosts` key (an empty list says "needs none") | None beyond A's | A forced edit of the config for a program that needs no network or only a local model. Same outcome as A for owners who answer requests |
 | **C. Any public host on 443**, private ranges refused | T1: every unadapted program can send data to any host | No friction. The only option that adds a path out by default |
 
@@ -134,7 +137,7 @@ not build it.
 
 ## Decisions
 
-Recorded as Theo answers, one at a time.
+Theo's answers, asked one at a time in his session.
 
 - [x] **Q1.** Decided 2026-11-05: **A**. Only the owner's config entry for the program, on the host, declares its hosts and paths and so grants them. A project file may only request, through #674; it never grants.
 - [x] **Q2.** Decided 2026-11-05: **A**. A program that declares nothing gets the floor and no host; every host is a #674 request that names the program as "declares no hosts".
@@ -154,8 +157,8 @@ Add under Scope:
 > (command, args, env) also declares `hosts` (exact name with optional port, or `*.domain`),
 > `read` and `write` (paths). Only this host-side entry grants them; a project file may request
 > more through #674 and never grants. An entry that declares nothing gets the floor: the
-> checkout, session folder, temp folder, the executable's resolved file (not its folder) and the
-> checkout's ecosystem hosts, and no other host or path. A bare `*`, an IP literal, a private or
+> checkout, session folder, temp folder, the executable's resolved file (not its folder), and no host or other path
+> (registry hosts are declared in `hosts` like any other, or decided as requests). A bare `*`, an IP literal, a private or
 > metadata range, and a path in `BASELINE_DENIED_READ`/`BASELINE_DENIED_WRITE`, the owner's
 > configuration or state, or a container socket is refused when the entry loads. Baseline only
 > stays baseline: this issue adds no ACP client method that would move file or process work out of
@@ -166,7 +169,7 @@ nothing, the session starts with the floor only, and a request to any host gets 
 program as declaring no hosts (#831, #674). With `hosts = ["fixture.invalid:8443"]` that host
 connects and no other does."
 
-Depends on: add #829, #830, #831, #861.
+Depends on: add #674, #829, #830, #831, #861.
 
 ### #294 Generic terminal adapter from a template
 
@@ -190,7 +193,9 @@ Replace the second Scope bullet and the Acceptance with:
 >   Q3).** Adoption is an owner verb, answered `owner_only` on the agent socket. It creates a
 >   session with execution identity from the live process (report 04), no launch token, no
 >   agent-channel identity and no grant; no grant can be given to it, because an unsandboxed
->   process reaches the owner socket (#729) and a grant would read as a bound it is not. It
+>   process reaches the owner socket (#729) and a grant would read as a bound it is not. Torlek
+>   gives it no authority; it does not remove what the process already has, and the card and
+>   `session show` say so ("can reach the owner socket"). It
 >   reports (state from the hook bridge or OSC 7501), sleeps and ends like any session.
 > - **Messages:** the owner's reach it. A message from another session, including with
 >   `message-sessions`, is refused with the reason ("this session is unsandboxed and adopted;
@@ -206,8 +211,8 @@ Replace the second Scope bullet and the Acceptance with:
 > **Acceptance:** an agent started by hand appears on a card with its state, the badge and the
 > evidence line, and the owner can message it; with `required` set, a message from a sandboxed
 > session with `message-sessions` is refused; a grant request for it is refused; the audit log
-> shows the adoption; a process of another user or outside the private tmux server is refused.
-> **Depends on:** add #829, #833, #861.
+> shows the adoption; the card and `session show` state that it can reach the owner socket; a process of another user or outside the private tmux server is refused.
+> **Depends on:** add #672, #829, #833, #861.
 
 ### #829 native Linux sandbox launcher
 
@@ -215,7 +220,8 @@ Add to Acceptance:
 
 > - The launch spec carries the program's `Needs` and its source, either the adapter or the owner's
 >   config entry (#861). The evidence names the source; a program with none gets the floor. A
->   declared path in `BASELINE_DENIED_READ`/`BASELINE_DENIED_WRITE` is refused at load, and a
+>   declared path in `BASELINE_DENIED_READ`/`BASELINE_DENIED_WRITE` is refused at load, as is a
+>   folder another entry declares `write` (a program's sign-in state, readable by it alone), and a
 >   declared executable is bound as its resolved file.
 > - `Enforcement::Unsandboxed` is no longer "only by the owner's explicit setting" (its doc
 >   comments, `evidence.rs` and `cockpit-protocol/src/sessions.rs`): a second reason is an
@@ -237,7 +243,7 @@ Add:
 Add:
 
 > Allowlist sources are the adapter's or the owner entry's `hosts`, the detected ecosystem's
-> registry hosts, and project grants (#674). Evidence and counters name the source of each entry.
+> registry hosts (#859) for a session whose provider declares them, and project grants (#674). Evidence and counters name the source of each entry.
 > The `403` for a program that declares no hosts says so ("`<program>` declares no hosts") so the
 > owner knows to declare them or to decide the request.
 
@@ -262,7 +268,8 @@ Add to Acceptance:
 
 ### Not changed
 
-Issue #832 (an unadapted program has no bound credential unless the owner binds one
-explicitly), issue #103 (roles keep their grants separate from declarations), issue #293 (OSC 7501
+Issue #832 (a program's own sign-in folder, declared `write` in its entry, is a folder grant
+that only that program reads, not a credential bound to a proxy host; a host credential still
+needs #832's explicit binding), issue #103 (roles keep their grants separate from declarations), issue #293 (OSC 7501
 stays display-only, never trusted for authorization), and issues #156 and #155 (unaffected). `agents.sandbox = "off"` stays the
 one named opt-out for launches: there is no per-program bypass.
