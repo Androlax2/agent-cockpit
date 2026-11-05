@@ -58,6 +58,18 @@ below by the worker, with the reasons. Q1 and Q2 on #829 are open with the owner
   `NeedsSource::OwnerEntry`, is in the spec for them; the program's hosts reach the spec
   with the proxy (#831). The executable is bound as its resolved file. `Unsandboxed`
   evidence is the owner's own act only: the `off` setting, or an adoption (#296).
+- **A check as the program (#862, decided by Theo: Q1 B, Q2 B).** `Sandbox::prepare_check`
+  runs a project's check, its shell with `-c` and the command, through the same launcher:
+  the checkout and the run's own folder and temp folder read-write, its home in the run's
+  folder, the host's denials hidden, the toolchain roots and session-own caches of #859, and
+  the floor for its needs. It binds no agent socket folder, bridge program or instruction
+  bundle, carries no provider, launch token or session identity, and its spec's subject is
+  the check run, which the evidence names beside the backend and the Landlock ABI. The
+  caller passes the environment it builds, never the daemon's. Under `off` the check runs
+  as given, with `Unsandboxed` evidence; under `required` without a backend it is refused.
+  The launcher replaces the shell inside whatever execution the caller starts, so a check
+  run keeps the supervisor's systemd scope placement, as a session does (#834). Running
+  checks through it, their hosts (#831) and their receipts are #352's.
 - **The probe decides availability.** The daemon runs `torlek-sandbox probe` with the first
   `bwrap` on its `PATH` at its start; a failure, or Landlock below ABI 2, is the reason every
   launch under `required` is refused. Each launch enforces exactly the probed ABI's rights

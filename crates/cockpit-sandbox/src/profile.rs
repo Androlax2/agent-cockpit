@@ -96,8 +96,8 @@ pub struct Secret {
 #[derive(Debug, Clone)]
 pub struct ProfileRequest {
     /// The provider whose agent runs; its own data folders and hosts come from the backend's
-    /// reviewed profile of that name.
-    pub provider: String,
+    /// reviewed profile of that name. None for a program that is no agent: a check (#862).
+    pub provider: Option<String>,
     /// The checkout folder the agent works in: read and write.
     pub working_dir: PathBuf,
     /// The session's private directory (`sessions/<id>` in the daemon's socket folder), where
@@ -132,7 +132,7 @@ pub struct ProfileRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
     pub platform: Platform,
-    pub provider: String,
+    pub provider: Option<String>,
     pub working_dir: PathBuf,
     pub session_dir: PathBuf,
     pub temp_dir: PathBuf,
@@ -248,7 +248,9 @@ impl Profile {
                 format!("no sandbox backend enforces a profile on {name}"),
             ));
         }
-        check_provider(&request.provider)?;
+        if let Some(provider) = &request.provider {
+            check_provider(provider)?;
+        }
         let mut denied = request.denied;
         let mut environment = request.environment;
         if let Platform::Wsl2 {
@@ -276,7 +278,10 @@ impl Profile {
             check_absolute(path, "denied-write")?;
         }
         check_absolute(&request.mount_dir, "folder")?;
-        let folder_mounts = folder_mounts(&request.provider, &request.mount_dir, request.owner_uid);
+        let folder_mounts = match &request.provider {
+            Some(provider) => folder_mounts(provider, &request.mount_dir, request.owner_uid),
+            None => Vec::new(),
+        };
         let desktop_endpoints = match request.desktop {
             DesktopSession::Shared => desktop_endpoints(&environment)?,
             DesktopSession::Withheld => Vec::new(),
@@ -365,11 +370,18 @@ impl Profile {
     pub fn rules(&self) -> Vec<String> {
         let mut rules = vec![
             format!("platform {}", self.platform),
-            format!("provider {}", self.provider),
+            match &self.provider {
+                Some(provider) => format!("provider {provider}"),
+                None => "provider: none".to_owned(),
+            },
             format!("read-write {}", self.working_dir.display()),
             format!(
-                "read-write {} (the session's directory)",
-                self.session_dir.display()
+                "read-write {} ({})",
+                self.session_dir.display(),
+                match self.provider {
+                    Some(_) => "the session's directory",
+                    None => "the run's folder",
+                }
             ),
             format!(
                 "read-write {} (the session's temp folder)",
@@ -381,7 +393,7 @@ impl Profile {
                 "folder {} at {} ({}'s own, not the host's)",
                 mount.host.display(),
                 mount.sandbox.display(),
-                self.provider
+                self.provider.as_deref().unwrap_or("the program")
             )
         }));
         rules.extend(
