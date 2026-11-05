@@ -195,7 +195,18 @@ pub fn run(command: Command) -> ExitCode {
         Err(code) => return code,
     };
     match &reply {
-        Reply::SessionAction { session } => out!("delivered to session {session}\n"),
+        Reply::SessionAction { session, held } => {
+            out!("delivered to session {session}\n");
+            // The owner's message overtook these; its agent was told they wait (#897).
+            for held in held {
+                out!(
+                    "still held, sent before it: message {} from session {}; it reaches the \
+                     agent when its turn ends, and the agent was told it waits\n",
+                    held.message,
+                    held.from
+                );
+            }
+        }
         Reply::Session { session } if is_show => {
             out!("{}", session_line(session));
             out!("{}", exit_lines(session));

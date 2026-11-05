@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
-    Command, CoordinatorAuditView, DecidedThroughView, ErrorCode, Reply, RunRequestView,
-    RunStateView, SessionView,
+    Command, CoordinatorAuditView, DecidedThroughView, ErrorCode, HeldMessageView, Reply,
+    RunRequestView, RunStateView, SessionView,
 };
 use real_daemon::{
     ASKED_QUESTION, COMMANDED_PROJECT, Daemon, GENEROUS, Home, QUESTION_PROJECT, cockpit_program,
@@ -918,6 +918,7 @@ struct CommandedPair {
     home: Home,
     _daemon: Daemon,
     owner: Connection,
+    coordinator: SessionView,
     coordinator_root: PathBuf,
     target: SessionView,
     target_root: PathBuf,
@@ -940,6 +941,7 @@ async fn commanded_pair() -> CommandedPair {
         home,
         _daemon: daemon,
         owner,
+        coordinator,
         coordinator_root,
         target,
         target_root,
@@ -1020,6 +1022,145 @@ async fn a_message_to_a_working_agent_is_held_then_handed_over_when_its_turn_end
     assert_eq!(
         card.inbound_message.map(|message| message.delivery),
         Some("received".to_owned())
+    );
+}
+
+/// A [`CommandedPair`] whose target's agent works, with the coordinator's message held for its
+/// turn's end; the message's audit entry.
+async fn held_message() -> (CommandedPair, i64) {
+    let pair = commanded_pair().await;
+    let working = pair
+        .as_target(&["agent", "report", "--state", "working"])
+        .await;
+    assert!(working.ends_with("exit=0\n"), "{working}");
+    let sent = pair
+        .as_coordinator(&["agent", "message", &pair.target.id, "Apply the five fixes."])
+        .await;
+    assert!(sent.ends_with("exit=0\n"), "{sent}");
+    let message = sent
+        .strip_prefix("queued message ")
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("the message's number is printed: {sent}"));
+    (pair, message)
+}
+
+/// The owner's `session send` of `text` to the pair's target.
+async fn owner_sends(pair: &CommandedPair, text: &str) -> Reply {
+    pair.owner
+        .request(
+            Command::SessionSend {
+                session: pair.target.id.clone(),
+                message: text.to_owned(),
+            },
+            GENEROUS,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("session-send failed: {error:?}"))
+}
+
+/// What the target's terminal shows, wrapped lines joined.
+fn target_screen(pair: &CommandedPair) -> String {
+    let output = std::process::Command::new("tmux")
+        .env_remove("TMUX")
+        .arg("-S")
+        .arg(pair.home.tmux_socket_of(real_daemon::BUILD_PROFILE_DIR))
+        .args([
+            "capture-pane",
+            "-J",
+            "-p",
+            "-t",
+            &format!("={}:", pair.target.id),
+        ])
+        .output()
+        .expect("tmux runs");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// #897: the owner's message reaches a working agent at once, ahead of a coordinator's message
+/// held for the turn's end; the owner's reply names the held one.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owner_message_overtaking_a_held_one_names_it_to_the_owner() {
+    let (pair, message) = held_message().await;
+
+    let reply = owner_sends(&pair, "The fixes the coordinator sent are yours too.").await;
+
+    assert_eq!(
+        reply,
+        Reply::SessionAction {
+            session: pair.target.id.clone(),
+            held: vec![HeldMessageView {
+                message,
+                from: pair.coordinator.id.clone(),
+            }],
+        }
+    );
+}
+
+/// #897: the agent reads, with the owner's message, that a message sent before it waits, so
+/// a reference to it is not to something it never heard of.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owner_message_overtaking_a_held_one_tells_the_agent_it_waits() {
+    let (pair, message) = held_message().await;
+
+    owner_sends(&pair, "The fixes the coordinator sent are yours too.").await;
+
+    let told = format!(
+        "The fixes the coordinator sent are yours too. [Torlek] Sent to you before this \
+         message and still held: message {message} from session {}. Torlek hands it over \
+         when your turn ends.",
+        pair.coordinator.id
+    );
+    wait_until("the agent's terminal shows the owner's message", || async {
+        target_screen(&pair).contains(&told)
+    })
+    .await;
+}
+
+/// #897: once the owner's message overtook a held one, the coordinator's `agent sessions` line
+/// and the target's card say so while it waits.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_message_the_owner_overtook_says_so_in_agent_sessions_and_on_the_card() {
+    let (pair, _) = held_message().await;
+
+    owner_sends(&pair, "The fixes the coordinator sent are yours too.").await;
+
+    let overtaken = format!(
+        "held until session {0}'s turn ends; its hook then hands it over; the owner's later \
+         message reached session {0} first",
+        pair.target.id
+    );
+    let observed = pair.observed_target().await;
+    assert!(observed.contains("\tmessage=queued"), "{observed}");
+    assert!(
+        observed.contains(&format!("message-note={overtaken:?}")),
+        "{observed}"
+    );
+    let card = listed(&pair.owner, &pair.target.id).await;
+    assert_eq!(
+        card.inbound_message.and_then(|message| message.note),
+        Some(overtaken)
+    );
+}
+
+/// #897: an owner's message to a session with nothing held for it names nothing and says
+/// nothing more to the agent.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owner_message_with_nothing_held_names_nothing() {
+    let pair = commanded_pair().await;
+    let working = pair
+        .as_target(&["agent", "report", "--state", "working"])
+        .await;
+    assert!(working.ends_with("exit=0\n"), "{working}");
+
+    let reply = owner_sends(&pair, "Carry on.").await;
+
+    assert_eq!(
+        reply,
+        Reply::SessionAction {
+            session: pair.target.id.clone(),
+            held: Vec::new(),
+        }
     );
 }
 

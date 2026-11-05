@@ -50,7 +50,9 @@ audited with your session and the other one.
 - `torlek agent message SESSION TEXT` (`message-sessions`): one line, with your session
   named. An agent that collects messages gets it from its own hook when its turn ends, never
   through its prompt; another has it typed at its next prompt. Refused while it has a dialog
-  open. `torlek agent sessions` shows its delivery and why it waits.
+  open. `torlek agent sessions` shows its delivery and why it waits. An owner's message
+  reaches the agent at once: one sent while yours is still held tells the agent yours waits,
+  and your `agent sessions` line says the owner's message reached it first.
 - `torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL]
   [--effort LEVEL]` (`start-sessions`):
   `--agent` names the agent to run when Torlek has more than one; `--model` and `--effort`

@@ -18,7 +18,7 @@ use crate::error::{Error, Refusal, invalid, invalid_row};
 const TABLE: &str = "messaging_envelopes";
 const ENVELOPE_COLUMNS: &str = "id, effect_key, producer, destination, payload, redelivery, \
     replaceable_slot, state, attempts, max_attempts, due_at, expires_at, receipt, note, \
-    superseded_by";
+    superseded_by, overtaken_at";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EnvelopeId(pub i64);
@@ -442,6 +442,9 @@ pub struct StoredEnvelope {
     /// Why it failed, expired or is uncertain.
     pub note: Option<String>,
     pub superseded_by: Option<EnvelopeId>,
+    /// When a later message to the same destination, sent another way, reached it while this
+    /// one still waited (#897); the first such time.
+    pub overtaken_at: Option<i64>,
 }
 
 pub async fn envelope(
@@ -652,6 +655,40 @@ pub async fn has_queued_for(
     Ok(rows.next().await?.is_some())
 }
 
+/// `producer`'s envelopes to `destination` still `queued`, oldest first.
+pub async fn queued_for(
+    connection: &Connection,
+    producer: &str,
+    destination: &str,
+) -> Result<Vec<StoredEnvelope>, Error> {
+    envelopes_where(
+        connection,
+        "producer = ?1 AND destination = ?2 AND state = 'queued' ORDER BY id",
+        (producer, destination),
+    )
+    .await
+}
+
+/// Records that a message sent another way reached the destination of `envelopes` at `at`
+/// while they waited (#897). An envelope no longer `queued` was not overtaken; one overtaken
+/// before keeps its first time.
+pub async fn record_overtaken(
+    write: &WriteTransaction<'_>,
+    envelopes: &[EnvelopeId],
+    at: i64,
+) -> Result<(), Error> {
+    for envelope in envelopes {
+        write
+            .execute(
+                "UPDATE messaging_envelopes SET overtaken_at = COALESCE(overtaken_at, ?2)
+                 WHERE id = ?1 AND state = 'queued'",
+                (envelope.0, at),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
 /// The envelope of `effect_key`, in whatever state it is.
 pub async fn envelope_by_key(
     connection: &Connection,
@@ -722,6 +759,7 @@ fn stored(row: &Row) -> Result<StoredEnvelope, Error> {
         receipt: row.get(12)?,
         note: row.get(13)?,
         superseded_by: row.get::<Option<i64>>(14)?.map(EnvelopeId),
+        overtaken_at: row.get(15)?,
     })
 }
 

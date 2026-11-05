@@ -14,8 +14,9 @@ pub use feed::{Feed, FeedBatch, FeedCursor, FeedPosition, discard_history};
 pub use outbox::{
     Claim, Coalescing, Deliverer, Delivery, DeliveryState, Enqueued, Envelope, EnvelopeId, Failure,
     Redelivery, Resolution, StoredEnvelope, claim_due, claim_next_for, deliver_due, enqueue,
-    envelope, envelope_by_key, has_earlier_queued, has_queued_for, reconcile_deliveries,
-    record_delivery, resolve_uncertain, uncertain_envelopes,
+    envelope, envelope_by_key, has_earlier_queued, has_queued_for, queued_for,
+    reconcile_deliveries, record_delivery, record_overtaken, resolve_uncertain,
+    uncertain_envelopes,
 };
 pub use receipts::{ReceiptId, Received, receive};
 
@@ -23,9 +24,10 @@ pub use receipts::{ReceiptId, Received, receive};
 /// the envelope it belongs to, and an entity's tombstone keeps its revision increasing.
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "messaging",
-    migrations: &[Migration {
-        version: 1,
-        sql: "CREATE TABLE messaging_envelopes (
+    migrations: &[
+        Migration {
+            version: 1,
+            sql: "CREATE TABLE messaging_envelopes (
                 id INTEGER PRIMARY KEY,
                 effect_key TEXT NOT NULL UNIQUE CHECK (effect_key <> ''),
                 producer TEXT NOT NULL CHECK (producer <> ''),
@@ -73,5 +75,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 retained_after INTEGER NOT NULL CHECK (retained_after >= 0)
             );",
-    }],
+        },
+        Migration {
+            version: 2,
+            // #897: a queued message another one overtook says so on the card.
+            sql: "ALTER TABLE messaging_envelopes ADD COLUMN overtaken_at INTEGER;",
+        },
+    ],
 };
