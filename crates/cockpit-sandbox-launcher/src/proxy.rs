@@ -145,27 +145,38 @@ impl Answer {
     }
 }
 
-/// The destinations listed in the requests file, and how many times it was written.
-#[derive(Debug, Default)]
+/// The destinations listed in the requests file, and the revision it was last written at.
+#[derive(Debug)]
 struct Asked {
     destinations: BTreeSet<AskedDestination>,
     revision: u64,
 }
 
-/// The decisions file's bytes; `None` when it is missing or unreadable, said on stderr when
-/// it is there but cannot be read.
-fn read_decisions(path: &Path) -> Option<Vec<u8>> {
+/// The decisions file's bytes; `None` when it is missing, or unreadable, which is the error
+/// beside it.
+fn read_decisions(path: &Path) -> (Option<Vec<u8>>, Option<std::io::Error>) {
     match std::fs::read(path) {
-        Ok(text) => Some(text),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            eprintln!(
-                "torlek-sandbox: cannot read {}, so no decision applies: {error}",
-                path.display()
-            );
-            None
-        }
+        Ok(text) => (Some(text), None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, None),
+        Err(error) => (None, Some(error)),
     }
+}
+
+/// Where this launch's revisions start: the clock's nanoseconds, so a relaunch of the
+/// session never writes a revision its last launch wrote.
+fn launch_revision() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
+        })
+}
+
+fn say_unreadable(path: &Path, error: &std::io::Error) {
+    eprintln!(
+        "torlek-sandbox: cannot read {}, so no decision applies: {error}",
+        path.display()
+    );
 }
 
 /// The decisions `read` from `path` holds: none when the file is missing or malformed, so
@@ -192,7 +203,10 @@ impl<U: Upstream> Proxy<U> {
             })),
             allowlist,
             requests_file: OnceLock::new(),
-            asked: Mutex::new(Asked::default()),
+            asked: Mutex::new(Asked {
+                destinations: BTreeSet::new(),
+                revision: launch_revision(),
+            }),
             tunnels: Mutex::new(HashMap::new()),
             next_tunnel: AtomicU64::new(0),
             report: Mutex::new(EgressReport::new(subject.clone())),
@@ -213,7 +227,10 @@ impl<U: Upstream> Proxy<U> {
     /// Reads the owner's decisions from `path` and applies them. A missing or malformed file
     /// is no decision: what the decisions allowed is refused again, never kept.
     pub fn load_decisions(&self, path: &Path) {
-        let read = read_decisions(path);
+        let (read, problem) = read_decisions(path);
+        if let Some(error) = &problem {
+            say_unreadable(path, error);
+        }
         self.apply_decisions(decisions_in(path, read.as_deref()));
     }
 
@@ -226,9 +243,18 @@ impl<U: Upstream> Proxy<U> {
             .name("egress-decisions".to_owned())
             .spawn(move || {
                 let mut applied: Option<Option<Vec<u8>>> = None;
+                let mut said: Option<String> = None;
                 loop {
                     std::thread::sleep(DECISIONS_INTERVAL);
-                    let read = read_decisions(&path);
+                    let (read, problem) = read_decisions(&path);
+                    // Said once while it lasts, not at every poll.
+                    let problem_text = problem.as_ref().map(ToString::to_string);
+                    if let Some(error) = &problem
+                        && said != problem_text
+                    {
+                        say_unreadable(&path, error);
+                    }
+                    said = problem_text;
                     if applied.as_ref() != Some(&read) {
                         proxy.apply_decisions(decisions_in(&path, read.as_deref()));
                         applied = Some(read);
@@ -241,12 +267,6 @@ impl<U: Upstream> Proxy<U> {
     /// Decides on the spec's allowlist with `decisions` from now on, and closes every open
     /// tunnel whose entry neither the spec nor `decisions` holds any more.
     pub fn apply_decisions(&self, decisions: EgressDecisions) {
-        // A decided destination is asked about again if a later decision takes it back.
-        self.asked
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .destinations
-            .retain(|asked| !decisions.covers(&asked.host, asked.port));
         let decided = Arc::new(Decided {
             allowlist: self.allowlist.with_decisions(&decisions),
             decisions,
@@ -255,6 +275,14 @@ impl<U: Upstream> Proxy<U> {
             .decided
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::clone(&decided);
+        // A decided destination is asked about again if a later decision takes it back. After
+        // the swap: a refusal decided on the old decisions that lists it after this sees the
+        // new ones in `ask` and does not.
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .destinations
+            .retain(|asked| !decided.decisions.covers(&asked.host, asked.port));
         let tunnels = self
             .tunnels
             .lock()
@@ -509,7 +537,9 @@ impl<U: Upstream> Proxy<U> {
             host: host.to_owned(),
             port,
         };
-        if asked.destinations.contains(&destination) {
+        // Decided since this connection was refused: nothing to ask.
+        if asked.destinations.contains(&destination) || self.decided().decisions.covers(host, port)
+        {
             return Ok(true);
         }
         if asked.destinations.len() >= MAX_ASKED_DESTINATIONS {

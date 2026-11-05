@@ -89,8 +89,10 @@ impl EgressDecisions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EgressRequests {
     pub subject: Subject,
-    /// Counts the launcher's writes: a destination asked about again after a decision on it
-    /// was taken back makes the file differ from the one the daemon last read.
+    /// Increases with each write, across the session's launches: a destination asked about
+    /// again after a decision on it was taken back makes the file differ from the one the
+    /// daemon last read. Absent from a launcher before it: 0.
+    #[serde(default)]
     pub revision: u64,
     pub asked: Vec<AskedDestination>,
 }

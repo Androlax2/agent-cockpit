@@ -190,14 +190,29 @@ async fn collect(
     let listed = tokio::task::spawn_blocking(move || {
         let mut listed = Vec::new();
         for session in sessions {
-            if let Some(requests) = reading.egress_requests(&session)? {
-                listed.push((session, requests));
+            match reading.egress_requests(&session) {
+                Ok(requests) => listed.push((session, requests)),
+                // One bad file does not stop the others' requests.
+                Err(error) => {
+                    tracing::warn!(session, %error, "a requests file was not read");
+                }
             }
         }
-        Ok::<_, String>(listed)
+        listed
     })
     .await
-    .map_err(|error| error.to_string())??;
+    .map_err(|error| error.to_string())?;
+    // A relaunch removes the file: what was seen of the last launch is forgotten with it.
+    let listed: Vec<(String, EgressRequests)> = listed
+        .into_iter()
+        .filter_map(|(session, requests)| match requests {
+            Some(requests) => Some((session, requests)),
+            None => {
+                seen.remove(&session);
+                None
+            }
+        })
+        .collect();
     let changed: Vec<(String, EgressRequests)> = listed
         .into_iter()
         .filter(|(session, requests)| seen.get(session) != Some(requests))
@@ -206,6 +221,8 @@ async fn collect(
         return Ok(());
     }
     let write = database.write().await.map_err(|error| error.to_string())?;
+    // Again inside the write: a session that ended since asks nothing.
+    let live = live_sessions(&write).await?;
     let at = now();
     for (session, requests) in &changed {
         let Some(project) = live.get(session) else {
