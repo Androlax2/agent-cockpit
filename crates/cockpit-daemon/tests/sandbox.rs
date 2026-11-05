@@ -62,13 +62,22 @@ async fn sandboxed_agent_on_path(
     path_first: &[PathBuf],
     prepare: impl FnOnce(&Home),
 ) -> Sandboxed {
+    sandboxed_agent_started(home, |home| home.start_with_path_first(path_first), prepare).await
+}
+
+/// [`sandboxed_agent`] with the daemon started by `start`.
+async fn sandboxed_agent_started(
+    home: &Home,
+    start: impl FnOnce(&Home) -> Daemon,
+    prepare: impl FnOnce(&Home),
+) -> Sandboxed {
     assert!(
         candidate::program("torlek-sandbox").is_file(),
         "the launcher is built beside the daemon: run the workspace's tests"
     );
     home.write_owner_config(REQUIRED);
     prepare(home);
-    let daemon = home.start_with_path_first(path_first);
+    let daemon = start(home);
     let client = home.connect().await;
     let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
     let session = new_session(&client, &root).await;
@@ -375,19 +384,24 @@ async fn a_sandboxed_agent_gets_no_github_token_or_gh_sign_in() {
     assert!(printed.ends_with("refused\nexit=0\n"), "{printed}");
 }
 
-/// #858, and #830's daemon acceptance: no provider's sign-in file is in the view. The
-/// launched provider's folder is the session's own, where the launch also masks the file; the
-/// other providers' folders are not mounted.
+/// Every provider adapter's credential paths, `~/` stripped.
+fn providers_credential_files() -> Vec<&'static str> {
+    cockpit_claude::needs::CREDENTIAL_FILES
+        .iter()
+        .chain(&cockpit_codex::needs::CREDENTIAL_FILES)
+        .chain(&cockpit_opencode::needs::CREDENTIAL_FILES)
+        .map(|path| path.strip_prefix("~/").expect("a path in the home"))
+        .collect()
+}
+
+/// #858, and #830's daemon acceptance: no provider's sign-in written in the owner's home is
+/// in the view, the launched provider's included, whose folders are the session's own. The
+/// launch's masking of a credential file inside them is `cockpit-sandbox`'s test.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sandboxed_agent_sees_no_providers_credential_file() {
     let home = Home::new();
-    let credential_files = [
-        ".claude/.credentials.json",
-        ".codex/auth.json",
-        ".local/share/opencode/auth.json",
-    ];
     let agent = sandboxed_agent(&home, |home| {
-        for file in credential_files {
+        for file in providers_credential_files() {
             let path = home.path().join(file);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, "owner's sign-in\n").unwrap();
@@ -395,11 +409,11 @@ async fn a_sandboxed_agent_sees_no_providers_credential_file() {
     })
     .await;
 
-    for file in credential_files {
+    for file in providers_credential_files() {
         let printed = run_in_agent(
             &home,
             &agent.root,
-            &format!("cat ~/{file} 2>/dev/null || echo absent"),
+            &format!("test -e ~/{file} && echo present || echo absent"),
         )
         .await;
 
@@ -407,29 +421,26 @@ async fn a_sandboxed_agent_sees_no_providers_credential_file() {
     }
 }
 
-/// #858: the owner's provider keys stay with the daemon; until #832's placeholders, the
-/// agent gets none of them. The daemon passes only its base variables, and the launcher
-/// drops the launched provider's declared ones besides.
+/// #858: the owner's provider keys in the daemon's environment reach no agent; until #832's
+/// placeholders, it gets none. The daemon passes an agent only its base variables; the
+/// launcher's drop of a provider's declared variables is `cockpit-sandbox`'s test.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sandboxed_agent_gets_no_providers_credential_variable() {
     let home = Home::new();
-    home.write_owner_config(REQUIRED);
-    let credential_variables = [
-        "ANTHROPIC_API_KEY",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "OPENAI_API_KEY",
-        "CODEX_API_KEY",
-    ];
-    let owner_keys: Vec<(&str, &str)> = credential_variables
+    let owner_keys: Vec<(&str, &str)> = cockpit_claude::needs::CREDENTIAL_VARIABLES
         .iter()
-        .map(|variable| (*variable, "owner-key"))
+        .chain(&cockpit_codex::needs::CREDENTIAL_VARIABLES)
+        .copied()
+        .chain(
+            cockpit_opencode::needs::CREDENTIAL_BINDINGS
+                .iter()
+                .map(|(variable, _)| *variable),
+        )
+        .map(|variable| (variable, "owner-key"))
         .collect();
-    let _daemon = home.start_with(&owner_keys);
-    let client = home.connect().await;
-    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
-    new_session(&client, &root).await;
+    let agent = sandboxed_agent_started(&home, |home| home.start_with(&owner_keys), |_| {}).await;
 
-    let printed = run_in_agent(&home, &root, "env | grep -c owner-key").await;
+    let printed = run_in_agent(&home, &agent.root, "env | grep -c owner-key").await;
 
     assert_eq!(printed, "0\nexit=1\n");
 }
