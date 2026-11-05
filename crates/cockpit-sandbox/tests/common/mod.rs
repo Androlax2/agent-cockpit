@@ -74,7 +74,7 @@ pub fn launch_token() -> Secret {
 
 pub fn profile_request(working_dir: &str) -> ProfileRequest {
     ProfileRequest {
-        provider: "claude".to_owned(),
+        provider: Some("claude".to_owned()),
         working_dir: PathBuf::from(working_dir),
         session_dir: PathBuf::from(SESSION_DIR),
         temp_dir: PathBuf::from(TEMP_DIR),

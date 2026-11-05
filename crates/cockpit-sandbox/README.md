@@ -30,6 +30,9 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   the owner's entry for it, or none (the floor). `cockpit-sessions` refuses, when the daemon
   loads its providers, a declaration that reads or writes a baseline-denied path or another
   program's `write` folder.
+- Checks (#862): `Sandbox::prepare_check` gives a project's check the same launcher with
+  the check run as its subject, and no provider, agent socket, bridge program, launch token
+  or session identity.
 - `agents.sandbox = "required"` on a host without it (no `bwrap`, a failed probe, Landlock
   below ABI 2): `Sandbox::prepare` returns a `Refusal` naming why. It never degrades to an
   unsandboxed launch.

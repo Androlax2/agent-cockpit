@@ -34,6 +34,9 @@ pub const SYSTEM_READ_ONLY: &[&str] = &[
 pub enum Subject {
     /// An agent session's provider.
     Session { session: String },
+    /// A run of a project's check (#862): no provider, agent socket, launch token or session
+    /// identity.
+    Check { run: String, check: String },
 }
 
 /// Where the program's declared needs came from (#861): the evidence names it.

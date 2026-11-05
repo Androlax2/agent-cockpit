@@ -18,8 +18,8 @@ use crate::spec::{
     SYSTEM_READ_ONLY, Subject, WhenAbsent,
 };
 use crate::{
-    AppliedRule, Enforcement, Evidence, HostPaths, LaunchRequest, Prepared, Profile, ProviderReach,
-    Refusal, SecretHandling,
+    AppliedRule, Enforcement, Evidence, HostPaths, Prepared, Profile, ProviderReach, Refusal,
+    SecretHandling,
 };
 
 /// The backend name the evidence records.
@@ -314,7 +314,21 @@ fn replace_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     file.sync_all()
 }
 
-/// The launch of `program` with `arguments` for `request` through `native`: the launcher in
+/// One sandboxed program's own facts, beside its profile: a session's provider or a check
+/// (#862).
+pub(crate) struct Launch {
+    pub subject: Subject,
+    /// Where the program starts, inside the checkout.
+    pub start_dir: PathBuf,
+    pub environment: Vec<(OsString, OsString)>,
+    pub needs: ProviderNeeds,
+    pub tools: ToolNeeds,
+    /// Whether the program reaches Torlek's agent socket, bridge programs and instruction
+    /// bundle: a session's provider does, a check never.
+    pub reaches_agent: bool,
+}
+
+/// The launch of `program` with `arguments` for `launch` through `native`: the launcher in
 /// the program's place, the spec it reads, and the evidence.
 #[allow(
     clippy::too_many_arguments,
@@ -324,7 +338,7 @@ pub(crate) fn prepare(
     native: &NativeBackend,
     host: &HostPaths,
     profile: &Profile,
-    request: &LaunchRequest,
+    launch: &Launch,
     mount_dir: PathBuf,
     home_source: PathBuf,
     program: PathBuf,
@@ -351,7 +365,7 @@ pub(crate) fn prepare(
             "the session proxy swaps no placeholders yet (#832)",
         ));
     }
-    let home = home_folder(&request.environment)?;
+    let home = home_folder(&launch.environment)?;
     let arguments = arguments
         .into_iter()
         .map(|argument| {
@@ -363,22 +377,22 @@ pub(crate) fn prepare(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let read_only_declared = request
+    let read_only_declared = launch
         .needs
         .read
         .iter()
         .map(|path| in_home(&home, path))
-        .chain(request.tools.install_roots.iter().cloned().map(Ok))
+        .chain(launch.tools.install_roots.iter().cloned().map(Ok))
         .collect::<Result<Vec<_>, _>>()?;
     let config_dir = mount_dir.join(CONFIG_FOLDER);
     let tool_environment = tool_environment(
-        &request.tools,
-        &request.environment,
+        &launch.tools,
+        &launch.environment,
         &profile.temp_dir.join(CACHE_FOLDER),
         &config_dir,
         &profile.working_dir,
     )?;
-    let credential_files = request
+    let credential_files = launch
         .needs
         .credential_files
         .iter()
@@ -405,26 +419,27 @@ pub(crate) fn prepare(
         .chain(credential_files)
         .collect();
     let folder_mounts = profile.folder_mounts.clone();
+    let (agent_read_only, agent_sockets) = if launch.reaches_agent {
+        (host.read_only.clone(), host.sockets.clone())
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let spec = LaunchSpec {
         version: SPEC_VERSION,
-        subject: Subject::Session {
-            session: request.session.clone(),
-        },
+        subject: launch.subject.clone(),
         bubblewrap: native.bubblewrap.clone(),
         landlock_abi: native.landlock_abi,
         program,
         arguments,
-        working_dir: request.start_dir.clone(),
+        working_dir: launch.start_dir.clone(),
         home,
         home_source: home_source.clone(),
-        read_only: host
-            .read_only
-            .iter()
-            .cloned()
+        read_only: agent_read_only
+            .into_iter()
             .chain([config_dir.clone()])
             .collect(),
         read_only_declared,
-        sockets: host.sockets.clone(),
+        sockets: agent_sockets,
         read_write: vec![
             profile.working_dir.clone(),
             profile.session_dir.clone(),
@@ -439,7 +454,7 @@ pub(crate) fn prepare(
             .collect(),
         protected,
         hidden,
-        needs_source: request.needs.source.clone(),
+        needs_source: launch.needs.source.clone(),
         forwards: Vec::new(),
         egress: Allowlist {
             program: request.provider.clone(),
@@ -448,11 +463,11 @@ pub(crate) fn prepare(
     };
     spec.validate()
         .map_err(|error| Refusal::new("launch spec", error.to_string()))?;
-    let mut environment: Vec<(OsString, OsString)> = request
+    let mut environment: Vec<(OsString, OsString)> = launch
         .environment
         .iter()
         .filter(|(name, _)| {
-            let is_credential = request
+            let is_credential = launch
                 .needs
                 .credential_variables
                 .iter()
@@ -472,7 +487,10 @@ pub(crate) fn prepare(
     environment.extend(tool_environment.variables);
     let staged = Staged {
         mount_dir,
-        homes: host.homes.clone(),
+        homes: home_source
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| Refusal::new("home", "the program's own home has no parent folder"))?,
         home_source,
         folder_sources: folder_mounts
             .iter()
@@ -482,7 +500,7 @@ pub(crate) fn prepare(
         config_files: tool_environment.files,
         spec,
     };
-    let evidence = evidence(native, profile, request, &staged);
+    let evidence = evidence(native, profile, launch, &staged);
     let reach = if folder_mounts.is_empty() {
         ProviderReach::Direct
     } else {
@@ -689,10 +707,24 @@ fn git_value(value: &str) -> String {
     quoted
 }
 
+/// Who the program runs for, as the evidence names it.
+fn subject(subject: &Subject, profile: &Profile) -> String {
+    match subject {
+        Subject::Session { .. } => match &profile.provider {
+            Some(provider) => format!("provider {provider}"),
+            None => "provider: none".to_owned(),
+        },
+        Subject::Check { run, check } => format!(
+            "subject: check run {run} of check {check}; no provider, agent socket, launch token \
+             or session identity"
+        ),
+    }
+}
+
 fn evidence(
     native: &NativeBackend,
     profile: &Profile,
-    request: &LaunchRequest,
+    launch: &Launch,
     staged: &Staged,
 ) -> Evidence {
     let spec = &staged.spec;
@@ -704,7 +736,7 @@ fn evidence(
     };
     let mut rules = vec![
         rule(format!("platform {}", profile.platform), BACKEND_NAME),
-        rule(format!("provider {}", profile.provider), BACKEND_NAME),
+        rule(subject(&spec.subject, profile), BACKEND_NAME),
         rule(
             format!("needs: {}", spec.needs_source.describe()),
             BACKEND_NAME,
@@ -718,8 +750,12 @@ fn evidence(
     }
     rules.push(rule(
         format!(
-            "home {} is the session's own folder {}, kept across its relaunches",
+            "home {} is {} {}",
             spec.home.display(),
+            match spec.subject {
+                Subject::Session { .. } => "the session's own folder, kept across its relaunches,",
+                Subject::Check { .. } => "the run's own folder",
+            },
             spec.home_source.display()
         ),
         "bubblewrap mount view",
@@ -730,7 +766,7 @@ fn evidence(
                 "folder {} at {} ({}'s own, not the host's)",
                 folder.source.display(),
                 folder.destination.display(),
-                profile.provider
+                profile.provider.as_deref().unwrap_or("the program")
             ),
             &mount_and_landlock,
         ));
@@ -749,7 +785,7 @@ fn evidence(
         ));
     }
     for path in &spec.read_only_declared {
-        let source = if request.tools.install_roots.contains(path) {
+        let source = if launch.tools.install_roots.contains(path) {
             "toolchain install root"
         } else {
             "declared"
@@ -759,16 +795,16 @@ fn evidence(
             &mount_and_landlock,
         ));
     }
-    let ecosystems = if request.tools.ecosystems.is_empty() {
+    let ecosystems = if launch.tools.ecosystems.is_empty() {
         "none".to_owned()
     } else {
-        request.tools.ecosystems.join(", ")
+        launch.tools.ecosystems.join(", ")
     };
     rules.push(rule(
         format!("toolchains detected in the checkout: {ecosystems}"),
         BACKEND_NAME,
     ));
-    let cache_variables: Vec<&str> = request
+    let cache_variables: Vec<&str> = launch
         .tools
         .variables
         .iter()
@@ -784,7 +820,7 @@ fn evidence(
         ),
         "environment",
     ));
-    let wrappers_off: Vec<&str> = request
+    let wrappers_off: Vec<&str> = launch
         .tools
         .variables
         .iter()
@@ -845,7 +881,7 @@ fn evidence(
             "environment",
         )
     }));
-    for variable in &request.needs.credential_variables {
+    for variable in &launch.needs.credential_variables {
         rules.push(rule(
             format!("credential variable {variable} not passed"),
             "environment",
@@ -856,11 +892,15 @@ fn evidence(
         format!("desktop session {}", profile.desktop.as_str()),
         "environment",
     ));
+    let (identity, observed_subject) = match &spec.subject {
+        Subject::Session { session } => (session, format!("subject: session {session}")),
+        Subject::Check { run, .. } => (run, format!("subject: check run {run}")),
+    };
     Evidence {
         enforcement: Enforcement::Sandboxed {
             backend: BACKEND_NAME.to_owned(),
             engine: format!("bubblewrap {}", native.bubblewrap_version),
-            client_identity: launch_identity(&request.session),
+            client_identity: launch_identity(identity),
         },
         platform: profile.platform.name().to_owned(),
         rules,
@@ -868,7 +908,7 @@ fn evidence(
             format!("landlock abi: {}", native.landlock_abi),
             "seccomp: filter applied before the program runs".to_owned(),
             "namespaces: user, mount, pid, network, ipc, uts, cgroup".to_owned(),
-            format!("subject: session {}", request.session),
+            observed_subject,
         ],
     }
 }
@@ -910,11 +950,11 @@ fn egress_rules(allowlist: &Allowlist) -> Vec<AppliedRule> {
 }
 
 /// One launch's own name, which an owner's observations name to attach to it.
-fn launch_identity(session: &str) -> String {
+fn launch_identity(subject: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
-    format!("{session}-{nanos:x}")
+    format!("{subject}-{nanos:x}")
 }
 
 #[cfg(test)]

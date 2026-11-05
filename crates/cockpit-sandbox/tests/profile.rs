@@ -175,7 +175,7 @@ fn a_malformed_allowed_host_is_refused() {
 #[test]
 fn a_provider_name_outside_lowercase_letters_digits_and_dashes_is_refused() {
     let mut request = profile_request("/home/owner/app");
-    request.provider = "../claude".to_owned();
+    request.provider = Some("../claude".to_owned());
 
     let refused = refusal(request, &Platform::Linux);
 
@@ -250,7 +250,7 @@ fn a_session_directory_inside_a_denied_folder_is_refused() {
 #[test]
 fn a_codex_agent_gets_a_folder_of_its_sessions_own_at_codexs_socket_path() {
     let mut request = profile_request("/home/owner/app");
-    request.provider = "codex".to_owned();
+    request.provider = Some("codex".to_owned());
 
     let profile = Profile::build(request, &Platform::Linux).unwrap();
 
@@ -280,7 +280,7 @@ fn a_mount_source_the_agent_could_swap_is_refused() {
         "/run/user/1000/cockpit".to_owned(),
     ] {
         let mut request = profile_request("/home/owner/app/crate");
-        request.provider = "codex".to_owned();
+        request.provider = Some("codex".to_owned());
         request.mount_dir = PathBuf::from(&mount_dir);
 
         let refused = refusal(request, &Platform::Linux);
