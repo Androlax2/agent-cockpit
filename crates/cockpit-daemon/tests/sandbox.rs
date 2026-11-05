@@ -331,6 +331,26 @@ async fn a_sandboxed_agent_runs_under_a_seccomp_filter() {
     assert_eq!(printed, "Seccomp:\t2\nexit=0\n");
 }
 
+/// #628: a sandbox that kept its filter at a fixed path in the shared `/tmp` started for the
+/// first Unix user only. CI's greenfield job runs this as a second user after the gate ran
+/// sandboxed sessions as the runner's user, whose id `COCKPIT_FIRST_USER_UID` names.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "CI's greenfield job runs it as a second Unix user (#628)"]
+async fn a_second_unix_user_starts_a_sandboxed_session() {
+    let first_user: u32 = std::env::var("COCKPIT_FIRST_USER_UID")
+        .expect("COCKPIT_FIRST_USER_UID names the user who ran sandboxed sessions first")
+        .parse()
+        .expect("COCKPIT_FIRST_USER_UID is a user id");
+    let home = Home::new();
+    let user = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(home.path()).unwrap());
+    assert_ne!(user, first_user, "run as a second Unix user");
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    let printed = run_in_agent(&home, &agent.root, "grep '^Seccomp:' /proc/self/status").await;
+
+    assert_eq!(printed, "Seccomp:\t2\nexit=0\n");
+}
+
 /// #857: under `required` the project's token stays with the daemon; the owner's `gh`
 /// sign-in is in a home the agent does not see.
 #[tokio::test(flavor = "multi_thread")]

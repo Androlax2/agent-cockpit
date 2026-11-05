@@ -1,4 +1,5 @@
-//! Select the verified release archive for CI fixtures; ordinary tests use Cargo's build.
+//! Select the verified release archive for CI fixtures, or the gate's build copied where a
+//! second Unix user can run it (#628); ordinary tests use Cargo's build.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
