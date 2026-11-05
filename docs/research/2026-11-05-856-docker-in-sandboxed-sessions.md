@@ -3,11 +3,12 @@
 Decision issue [#856](https://github.com/Androlax2/agent-cockpit/issues/856), split from #390 by
 Theo on 2026-11-05. It builds on the
 [native sandbox plan](2026-11-05-546-own-sandbox-and-traffic-control.md) and its decisions
-(cited below as "#546 D1" to "#546 D6"). **Research and proposal; Theo's answers are recorded
-under [Decisions for the owner](#decisions-for-the-owner) as he gives them.** Merging this
-document accepts research delivery only: it authorizes no product code, dependency, host
-setting or issue edit. The [issue texts](#changes-to-the-linked-issues-proposed-text) at the
-end are proposals; Theo applies them.
+(cited below as "#546 D1" to "#546 D6"). **Research and proposal; Theo decided all six
+questions on 2026-11-05, recorded under [Decisions for the owner](#decisions-for-the-owner).**
+Merging this document accepts research delivery only: it authorizes no product code,
+dependency, host setting or issue edit. The
+[issue texts](#changes-to-the-linked-issues-proposed-text) at the end are proposals; Theo
+applies them.
 
 ## The question
 
@@ -28,12 +29,15 @@ engine's full API, and put the limits on the engine instead of on the requests:
 5. Until that engine exists (#390, beta.2), a sandboxed session has no Docker: the mount view
    shows no engine socket, and readiness says so.
 
-- [ ] Q1. What the session holds.
-- [ ] Q2. What bounds the engine.
-- [ ] Q3. One engine per project or per checkout.
-- [ ] Q4. Container egress.
-- [ ] Q5. Credentials and the CA in containers.
-- [ ] Q6. What alpha.4 ships, and when #390 lands.
+- [x] Q1 decided 2026-11-05: A, a socket to a Torlek-run engine of its own project, full API,
+  limits on the engine.
+- [x] Q2 decided 2026-11-05: A, a dedicated Unix user per project.
+- [x] Q3 decided 2026-11-05: A, one engine per project, shared by its clones.
+- [x] Q4 decided 2026-11-05: A, container egress only through a Torlek proxy with the
+  project's grants.
+- [x] Q5 decided 2026-11-05: A, no credential and no CA in builds, images or containers.
+- [x] Q6 decided 2026-11-05: A, no Docker in sandboxed sessions until #390, which stays in
+  beta.2.
 
 ## What exists today
 
@@ -167,41 +171,48 @@ The probe asks the engine a session would reach, not the daemon's `docker` (toda
 project, full API, limits on the engine. **B:** a filtered API proxy. **C:** no socket, ever.
 Most secure: C.
 
-*Pending.*
+**Decided 2026-11-05: A.** The session holds a socket to a Torlek-run engine of its own
+project, with the full API; the limits sit on the engine.
 
 **Q2. What bounds the engine.** **A (recommended):** a dedicated Unix user per project, one
 `sudo` step per project. **B:** the owner's user confined by Torlek's launcher, after a
 prototype. **C:** a microVM per project. Most secure: C, then A.
 
-*Pending.*
+**Decided 2026-11-05: A.** A dedicated Unix user per project, set up by one root step the owner
+runs. The owner's own engine is never handed to a sandboxed session.
 
 **Q3. Engine scope.** **A (recommended):** one per project, shared by its clones. **B:** one
 per checkout. Most secure: B.
 
-*Pending.*
+**Decided 2026-11-05: A.** One engine per project, shared by its parallel clones. Theo accepts
+T5 inside a project: a session reaches sibling clones' files and containers; the masks hold.
 
 **Q4. Container egress.** **A (recommended):** a Torlek proxy on the engine with the project's
 grants. **B:** the same with a separate container allowlist. **C:** no network for containers.
 Most secure: C, then B.
 
-*Pending.*
+**Decided 2026-11-05: A.** Containers, builds and pulls reach the network only through a Torlek
+proxy on the engine, with the project's grants.
 
 **Q5. Credentials and CA.** **A (recommended):** none in builds, images or containers.
 **B:** interception for the engine's own pulls, when a private registry needs it. **C:** secret
 mounts into builds and containers. Most secure: A.
 
-*Pending.*
+**Decided 2026-11-05: A.** Never: no credential and no CA in builds, images or containers.
+Option B is not planned; a project that needs a private registry files it then.
 
 **Q6. Alpha.4 and #390.** **A (recommended):** alpha.4 ships no Docker in sandboxed sessions,
 and #390 stays in beta.2. **B:** #390 moves into alpha.4, after #833. **C:** #390 gates #833.
 Most secure: A.
 
-*Pending.*
+**Decided 2026-11-05: A.** Alpha.4 ships with no Docker in sandboxed sessions; #390 stays in
+beta.2. Until then a project that needs containers uses `torlek ask run`, or the owner's
+`agents.sandbox = "off"`.
 
 ## Changes to the linked issues (proposed text)
 
-Written for the recommended answers; revised below each decision once Theo has answered.
-Nothing here is applied by this report.
+Theo chose the recommended answer on all six questions, so these texts follow his decisions as
+written. Nothing here is applied by this report: Theo applies them.
 
 ### #390 (covered; rewrite Scope and Acceptance)
 
