@@ -84,7 +84,7 @@ jobs:
         run: python3 config/bin/.local/bin/cockpit-game-guard off
       - name: Run the greenfield gate
         run: make greenfield-ci
-      - name: Run the daemon's sandbox tests, with the ignored one for #628, as a second Unix user
+      - name: "Run the daemon's sandbox tests, with the ignored one for #628, as a second Unix user"
         # The gate ran sandboxed sessions as the runner's user; a sandbox that keeps state at a
         # fixed shared path then fails for anyone else (#628). The second user runs the gate's
         # own build, copied to a root-owned folder it can read. sudo stays in this disposable
