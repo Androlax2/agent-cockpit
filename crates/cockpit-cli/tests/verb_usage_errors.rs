@@ -14,6 +14,7 @@ const MISTAKES: &[(&[&str], &str)] = &[
     (&["bug-report", "new"], "bug-report"),
     (&["project", "add"], "project"),
     (&["checkout", "list", "a", "b", "c"], "checkout"),
+    (&["status", "serve", "--bogus"], "status"),
     (&["storage", "prune"], "storage"),
     (&["ask", "run"], "ask"),
     (&["approval", "show"], "approval"),

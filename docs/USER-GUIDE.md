@@ -147,6 +147,23 @@ An edit requires another review; stale approval details are refused.
 Use `torlek approval decline ID` to decline. Approval runs that command once with the daemon's host rights.
 Provider-native permission dialogs are separate and remain in the provider terminal.
 
+## Phone status page
+
+`torlek status serve` shows your sessions on your phone, read-only: each session's project, state, label, what it is doing and its open question (flagged), the approvals waiting for you (reason and age, never the command), the daemon's readiness with the low-disk guard, and when the page was generated, so a stalled daemon shows.
+It refreshes itself every 15 s; `/status.json` returns the same data.
+Nothing on it approves, answers or changes anything: decide from the TUI or your terminal.
+It is an owner verb: a session cannot start it.
+
+It listens on `127.0.0.1` only (port 8850 unless you pass `--port N`). Reach it from your phone through [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve), which keeps it inside your tailnet over HTTPS:
+
+1. Run `tailscale serve status` to read your machine's tailnet name, such as `box.tailnet.ts.net`.
+2. Start the page with that name: `torlek status serve --host box.tailnet.ts.net`.
+3. In another terminal, run `tailscale serve --bg --https=443 http://127.0.0.1:8850`.
+4. On your phone, with Tailscale connected, open `https://box.tailnet.ts.net/`.
+
+The page refuses any request whose `Host` is not `127.0.0.1:PORT`, `localhost:PORT` or the `--host` name (bare or with `:443`), which blocks DNS rebinding. Tailscale Serve forwards your phone's `Host` unchanged, hence `--host`; it takes one exact name, no wildcard.
+Never expose the page with `tailscale funnel`, which publishes it to the internet. Stop sharing it with `tailscale serve --https=443 http://127.0.0.1:8850 off`.
+
 ## Providers and capability evidence
 
 `torlek provider list` shows installed provider names and whether each offers resume and events.
