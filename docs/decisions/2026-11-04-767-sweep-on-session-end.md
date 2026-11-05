@@ -18,7 +18,8 @@ reasons below).
   once per end, a failed sweep is recorded rather than retried every pass (a database
   failure records nothing, so a later pass retries), and a resumed session that ends again
   sweeps again; one clone's failure does not hold up the others. A `target/` prune deferred
-  because another session runs is recorded as `not pruned now`; the periodic automatic prune or `torlek storage prune` can still take it. `torlek storage` lists the latest 20.
+  because a session in that clone runs, or work no clone can be named for (#883), is recorded
+  as `not pruned now`; the periodic automatic prune or `torlek storage prune` can still take it. `torlek storage` lists the latest 20.
 - **A clone with unpushed commits keeps everything, `target/` included** (Theo, option A).
   The #758 rule wins over the issue's first acceptance ("prune only `target/`"). Only a
   clone kept for uncommitted changes alone goes through the existing automatic `target/`

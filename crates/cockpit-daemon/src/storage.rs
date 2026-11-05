@@ -9,6 +9,7 @@ use cockpit_protocol::{
     StoragePruneStatusView, TargetSizeView,
 };
 use cockpit_turso::{Database, sql::Connection};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -79,57 +80,83 @@ pub(crate) async fn evidence(
         result.busy = Some("session evidence bound reached".into());
         return Ok(result);
     }
+    // A session's agent works in its own checkout only, so work elsewhere does not hold this
+    // clone back (#883). Work no checkout can be named for still holds every clone, and says so.
+    let is_elsewhere = |session: &cockpit_sessions::Session| session.checkout != checkout;
     if let Some(session) = sessions.iter().find(|s| {
-        matches!(
-            s.state,
-            cockpit_sessions::SessionState::Launching
-                | cockpit_sessions::SessionState::Running
-                | cockpit_sessions::SessionState::Stopping { .. }
-        ) || s.restart_pending
+        !is_elsewhere(s)
+            && (matches!(
+                s.state,
+                cockpit_sessions::SessionState::Launching
+                    | cockpit_sessions::SessionState::Running
+                    | cockpit_sessions::SessionState::Stopping { .. }
+            ) || s.restart_pending)
     }) {
         result.busy = Some(format!(
-            "session {} has active or pending launch work",
+            "session {} works in this clone and has active or pending launch work",
             session.id
         ));
         return Ok(result);
     }
-    if let Some(execution) = cockpit_processes::occupying_executions_in(connection)
+    let launched_by: HashMap<_, _> = sessions
+        .iter()
+        .filter_map(|s| s.launch.as_ref().map(|launch| (launch.execution, s)))
+        .collect();
+    for execution in cockpit_processes::occupying_executions_in(connection)
         .await
         .map_err(internal)?
-        .first()
     {
-        result.busy = Some(format!(
-            "execution {} has not been observed ended",
-            execution.id.0
-        ));
+        result.busy = match launched_by.get(&execution.id) {
+            Some(session) if is_elsewhere(session) => continue,
+            Some(session) => Some(format!(
+                "session {}'s agent (execution {}) has not been observed ended",
+                session.id, execution.id.0
+            )),
+            None => Some(format!(
+                "execution {} has not been observed ended; it is no session's agent, so it may \
+                 work in any clone",
+                execution.id.0
+            )),
+        };
         return Ok(result);
     }
     let (pending, mut executions) = cockpit_approvals::maintenance_runs(connection)
         .await
         .map_err(internal)?;
-    if pending.is_some() {
-        result.busy = pending;
+    if let Some(pending) = pending {
+        result.busy = Some(format!("{pending}; a host command may work in any clone"));
         return Ok(result);
     }
     executions.extend(
         sessions
             .iter()
+            .filter(|s| !is_elsewhere(s))
             .filter_map(|s| s.launch.as_ref().map(|l| l.execution)),
     );
     if !cockpit_processes::observed_ended(connection, &executions)
         .await
         .map_err(internal)?
     {
-        result.busy = Some("a session/run execution identity has unknown termination".into());
+        result.busy = Some(
+            "an execution of this clone's sessions or of a host command has unknown termination"
+                .into(),
+        );
         return Ok(result);
     }
     // Placement charges remain live until their owner releases them; uncertainty is busy.
-    if !cockpit_scheduling::placements(connection)
+    let by_id: HashMap<_, _> = sessions.iter().map(|s| (s.id.as_str(), s)).collect();
+    for placement in cockpit_scheduling::placements(connection)
         .await
         .map_err(internal)?
-        .is_empty()
     {
-        result.busy = Some("scheduled work still holds a placement".into());
+        let session = by_id.get(placement.session.as_str());
+        if session.is_some_and(|session| is_elsewhere(session)) {
+            continue;
+        }
+        result.busy = Some(format!(
+            "scheduled work for session {} still holds a placement",
+            placement.session.as_str()
+        ));
         return Ok(result);
     }
     let associated: Vec<_> = sessions.iter().filter(|s| s.checkout == checkout).collect();

@@ -2,8 +2,11 @@
 //! environment inherited, no prompts.
 
 use std::ffi::OsStr;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 use crate::Error;
 
@@ -92,6 +95,61 @@ impl Git {
         self.output_resetting(dir, extra_config, &drivers_off, arguments)
     }
 
+    /// [`Git::output_with`] for a call that reaches the network, which can stall: Git is killed,
+    /// and the call fails, once `limit` passed, and so does a helper Git started (ssh) that
+    /// keeps its output open past the limit.
+    pub(crate) fn output_within(
+        &self,
+        dir: &Path,
+        extra_config: &[&str],
+        arguments: &[&OsStr],
+        limit: Duration,
+    ) -> Result<Output, Error> {
+        let drivers_off = self.drivers_off(dir)?;
+        let mut command = self.command_resetting(dir, extra_config, &drivers_off, arguments);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(Error::io("run git in", dir))?;
+        // Read while Git runs: a pipe it fills would otherwise stall it until the deadline.
+        let stdout = read_all(child.stdout.take());
+        let stderr = read_all(child.stderr.take());
+        let deadline = Instant::now() + limit;
+        let no_answer = || Error::Git {
+            arguments: arguments
+                .iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect(),
+            status: None,
+            stderr: format!("no answer within {} s", limit.as_secs()),
+        };
+        let status = loop {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(Error::io("wait for git in", dir))?
+            {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                // Kill fails only when Git exited meanwhile, which `wait` then reaps.
+                let _ = child.kill();
+                child.wait().map_err(Error::io("wait for git in", dir))?;
+                return Err(no_answer());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let collect = |reader: &Receiver<std::io::Result<Vec<u8>>>| {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match reader.recv_timeout(left) {
+                Ok(read) => read.map_err(Error::io("read git's output in", dir)),
+                Err(_) => Err(no_answer()),
+            }
+        };
+        Ok(Output {
+            status,
+            stdout: collect(&stdout)?,
+            stderr: collect(&stderr)?,
+        })
+    }
+
     /// [`Git::output_with`] with `drivers_off` already read, for a caller that runs several
     /// commands in one directory.
     fn output_resetting(
@@ -101,12 +159,26 @@ impl Git {
         drivers_off: &[String],
         arguments: &[&OsStr],
     ) -> Result<Output, Error> {
+        self.command_resetting(dir, extra_config, drivers_off, arguments)
+            .output()
+            .map_err(Error::io("run git in", dir))
+    }
+
+    /// The command running `arguments` in `dir` under [`SAFE_CONFIG`], `extra_config` and
+    /// `drivers_off`.
+    fn command_resetting(
+        &self,
+        dir: &Path,
+        extra_config: &[&str],
+        drivers_off: &[String],
+        arguments: &[&OsStr],
+    ) -> Command {
         let mut command = self.command(dir, extra_config);
         for setting in drivers_off {
             command.arg("-c").arg(setting);
         }
         command.args(arguments);
-        command.output().map_err(Error::io("run git in", dir))
+        command
     }
 
     /// The URL of the checkout at `dir`'s `origin` remote; `None` when it has none.
@@ -269,6 +341,22 @@ impl Git {
     }
 }
 
+/// Everything `pipe` yields until it closes, read on its own thread. The thread is never
+/// joined: a helper may hold the pipe open long after Git exits.
+fn read_all(pipe: Option<impl Read + Send + 'static>) -> Receiver<std::io::Result<Vec<u8>>> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let read = match pipe {
+            Some(mut pipe) => pipe.read_to_end(&mut bytes).map(|_| bytes),
+            None => Ok(bytes),
+        };
+        // The receiver is gone once the caller stopped waiting; nobody needs the bytes then.
+        let _ = sender.send(read);
+    });
+    receiver
+}
+
 pub(crate) fn git_failure(arguments: &[&OsStr], output: &Output) -> Error {
     Error::Git {
         arguments: arguments
@@ -302,4 +390,54 @@ pub(crate) fn is_github_url(url: &str) -> bool {
         && repository
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || "._/-".contains(character))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    use super::{Git, arg};
+    use crate::Error;
+
+    /// A fake Git that answers the driver lookup at once (`config` exits 1: nothing set), then
+    /// runs `then`.
+    fn fake_git(scratch: &std::path::Path, then: &str) -> Git {
+        let program = scratch.join("git");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\ncase \"$*\" in *--get-regexp*) exit 1;; esac\n{then}\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Git::with_program(program)
+    }
+
+    fn assert_no_answer_in_time(git: &Git, dir: &std::path::Path) {
+        let started = Instant::now();
+
+        let answer = git.output_within(dir, &[], &[arg("ls-remote")], Duration::from_millis(200));
+
+        assert!(
+            matches!(&answer, Err(Error::Git { status: None, stderr, .. }) if stderr.contains("no answer within")),
+            "{answer:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_git_call_that_does_not_answer_in_time_is_killed_and_fails() {
+        let scratch = tempfile::tempdir().unwrap();
+        let git = fake_git(scratch.path(), "exec sleep 30");
+
+        assert_no_answer_in_time(&git, scratch.path());
+    }
+
+    #[test]
+    fn a_helper_that_holds_gits_output_open_past_the_limit_fails_the_call() {
+        let scratch = tempfile::tempdir().unwrap();
+        let git = fake_git(scratch.path(), "sleep 30 &\nexit 0");
+
+        assert_no_answer_in_time(&git, scratch.path());
+    }
 }

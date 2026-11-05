@@ -121,8 +121,8 @@ fn eligibility(
     policy: &PrunePolicy,
     evidence: PruneEvidence,
 ) -> Result<String, String> {
-    if stored.checkout.occupancy.is_some() {
-        return Err("checkout is occupied".to_owned());
+    if let Some(occupancy) = &stored.checkout.occupancy {
+        return Err(format!("checkout is occupied by {}", occupancy.holder));
     }
     if let Some(reason) = evidence.busy {
         return Err(reason);
@@ -148,7 +148,7 @@ fn eligibility(
         );
     }
     // Owner rule (#406): nothing of a clone whose commits are on no remote is pruned.
-    if crate::sweep::has_unpushed_commits(git, &stored.checkout.path)
+    if crate::sweep::has_unpushed_commits(git, &stored.checkout.path, &[])
         .map_err(|error| error.to_string())?
     {
         return Err(

@@ -29,8 +29,8 @@ Issue #406. Decided by Theo on 2026-11-04 (option A of the
   kept with `could not decide: <error>` instead of failing the whole report. The wire field is
   optional, as additive fields are, so a client and daemon of different builds still read the
   report; the eligibility proof stays in `storage prune --dry-run`.
-  While any session runs, the global managed-idle evidence keeps every clone, and the report
-  says so.
+  While a session runs in a clone, or work no clone can be named for runs (#883), the
+  managed-idle evidence keeps that clone, and the report says so.
 - **Rejected:** running a full prune preview per clone in the report (a second walk of every
   `target/`), and a separate eligibility command (one more step before the owner sees what
   prune would free).
