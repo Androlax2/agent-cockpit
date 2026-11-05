@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use crate::database::{lock_for_single_opener, new_epoch, open_turso, path_text, sibling_path};
@@ -29,6 +30,119 @@ impl Database {
         linked?;
         sync_file(&parent_directory(destination))
     }
+
+    /// Takes a backup named for `taken_at` (seconds since the Unix epoch) in `directory`,
+    /// which is created private to the owner when missing. Refused like [`Database::backup_to`]
+    /// when a backup of that second exists.
+    pub async fn backup_into(&self, directory: &Path, taken_at: u64) -> Result<Backup, Error> {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(directory)
+            .map_err(Error::io(directory))?;
+        let path = directory.join(backup_name(taken_at));
+        self.backup_to(&path).await?;
+        let bytes = std::fs::metadata(&path).map_err(Error::io(&path))?.len();
+        Ok(Backup {
+            path,
+            taken_at,
+            bytes,
+        })
+    }
+}
+
+/// One backup [`Database::backup_into`] took: `state-<seconds>.db` in its directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Backup {
+    pub path: PathBuf,
+    /// Seconds since the Unix epoch, from the file's name.
+    pub taken_at: u64,
+    pub bytes: u64,
+}
+
+const BACKUP_PREFIX: &str = "state-";
+const BACKUP_SUFFIX: &str = ".db";
+const PARTIAL_MARK: &str = ".partial-";
+
+fn backup_name(taken_at: u64) -> String {
+    format!("{BACKUP_PREFIX}{taken_at}{BACKUP_SUFFIX}")
+}
+
+/// The `taken_at` of a file named as [`backup_name`] names one, or `None` for any other file.
+fn backup_time(name: &str) -> Option<u64> {
+    let digits = name
+        .strip_prefix(BACKUP_PREFIX)?
+        .strip_suffix(BACKUP_SUFFIX)?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let taken_at: u64 = digits.parse().ok()?;
+    (backup_name(taken_at) == name).then_some(taken_at)
+}
+
+/// Whether `name` is the private copy (or its WAL) of a backup that never got linked into
+/// place: what a crash during [`Database::backup_to`] leaves.
+fn is_partial_backup(name: &str) -> bool {
+    name.split_once(PARTIAL_MARK)
+        .is_some_and(|(backup, _)| backup_time(backup).is_some())
+}
+
+/// The backups in `directory`, newest first; other files are not backups and are left out.
+/// A missing directory holds none.
+pub fn backups(directory: &Path) -> Result<Vec<Backup>, Error> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(Error::io(directory)(source)),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(Error::io(directory))?;
+        let Some(taken_at) = entry.file_name().to_str().and_then(backup_time) else {
+            continue;
+        };
+        let metadata = entry.metadata().map_err(Error::io(&entry.path()))?;
+        if !metadata.is_file() {
+            continue;
+        }
+        found.push(Backup {
+            path: entry.path(),
+            taken_at,
+            bytes: metadata.len(),
+        });
+    }
+    found.sort_by_key(|backup| std::cmp::Reverse(backup.taken_at));
+    Ok(found)
+}
+
+/// Removes every backup in `directory` but the newest `keep`, and the partial copies an
+/// interrupted backup left; returns the backups removed. Only names [`Database::backup_into`]
+/// writes are touched. The caller takes no backup into `directory` meanwhile.
+pub fn remove_backups_beyond(directory: &Path, keep: usize) -> Result<Vec<Backup>, Error> {
+    let removed: Vec<Backup> = backups(directory)?.into_iter().skip(keep).collect();
+    for backup in &removed {
+        remove_if_present(&backup.path)?;
+    }
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(removed),
+        Err(source) => return Err(Error::io(directory)(source)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(Error::io(directory))?;
+        if entry.file_name().to_str().is_some_and(is_partial_backup)
+            && entry
+                .file_type()
+                .map_err(Error::io(&entry.path()))?
+                .is_file()
+        {
+            remove_if_present(&entry.path())?;
+        }
+    }
+    if !removed.is_empty() {
+        sync_file(directory)?;
+    }
+    Ok(removed)
 }
 
 /// Replaces the closed database at `target` with `backup`, under a new epoch.

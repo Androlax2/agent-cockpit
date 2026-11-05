@@ -165,6 +165,7 @@ fn a_finished_run_request_reply_round_trips() {
                 omitted_lines: 3,
                 truncated_bytes: 0,
                 redacted: 1,
+                output_retired: false,
             }),
             note: None,
         }),
@@ -234,4 +235,18 @@ fn the_owner_hints_round_trip_on_a_run_request() {
             more_chars: 7
         })
     );
+}
+
+#[test]
+fn a_run_result_marks_retired_output_and_reads_without_the_mark() {
+    let older = json!({"exit_code":0,"output":"ok","omitted_lines":0,"truncated_bytes":0,
+        "redacted":0});
+    let result: RunResultView = serde_json::from_value(older.clone()).unwrap();
+    assert!(!result.output_retired);
+    assert_eq!(serde_json::to_value(&result).unwrap(), older);
+    let retired = json!({"exit_code":0,"output":"","omitted_lines":0,"truncated_bytes":0,
+        "redacted":0,"output_retired":true});
+    let result: RunResultView = serde_json::from_value(retired.clone()).unwrap();
+    assert!(result.output_retired);
+    assert_eq!(serde_json::to_value(&result).unwrap(), retired);
 }

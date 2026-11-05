@@ -5,8 +5,8 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 use cockpit_protocol::{
-    CloneStorageView, Command, EndSweepView, OutputRetentionView, PruneVerdictView, Reply,
-    SessionTempStorageView, TargetSizeView,
+    CloneStorageView, Command, DatabaseStorageView, EndSweepView, OutputRetentionView,
+    PayloadRetentionView, PruneVerdictView, Reply, SessionTempStorageView, TargetSizeView,
 };
 
 use crate::daemon::{BULK_DEADLINE, request, unexpected};
@@ -17,6 +17,12 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
         .is_some_and(|argument| argument == "outputs")
     {
         return outputs(&arguments[1..]);
+    }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "database")
+    {
+        return database(&arguments[1..]);
     }
     if !arguments.is_empty() {
         return prune(arguments);
@@ -366,6 +372,102 @@ fn outputs(arguments: &[OsString]) -> Result<ExitCode, String> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// `storage database [prune]`: what database retention selects, and with `prune` retires it.
+/// Exit 1 when the pass stopped early or left sessions out.
+fn database(arguments: &[OsString]) -> Result<ExitCode, String> {
+    let apply = match arguments {
+        [] => false,
+        [prune] if prune == "prune" => true,
+        _ => return Err("storage database [prune]".to_owned()),
+    };
+    let reply = match request(Command::StorageDatabase { apply }, BULK_DEADLINE) {
+        Ok(reply) => reply,
+        Err(code) => return Ok(code),
+    };
+    let Reply::StorageDatabase { database, applied } = &reply else {
+        return Ok(unexpected(&reply));
+    };
+    print_database(database, *applied);
+    Ok(if database.truncated || !database.failures.is_empty() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn print_database(database: &DatabaseStorageView, applied: bool) {
+    outln!(
+        "database: {} bytes, WAL {} bytes (apparent sizes; freed pages are reused, the file does not shrink)",
+        database.file_bytes,
+        database.wal_bytes
+    );
+    outln!(
+        "retention: payloads of what ended over {} days ago; session, launch, transition, decision and audit rows stay",
+        database.retention_days
+    );
+    outln!("rule	selected	selected_bytes	retired	retired_bytes");
+    outln!(
+        "{}",
+        rule_row("ended sessions' launch context", &database.sessions)
+    );
+    outln!(
+        "{}",
+        rule_row("finished command runs' output", &database.run_outputs)
+    );
+    outln!(
+        "change feed: {} captured rows kept, at most {}",
+        database.feed_changes,
+        database.feed_changes_kept
+    );
+    if database.backups_kept == 0 {
+        outln!("backups: none taken (database_backups_kept = 0)");
+    } else {
+        outln!(
+            "backups: {} of the newest {} kept",
+            database.backups.len(),
+            database.backups_kept
+        );
+    }
+    for backup in &database.backups {
+        outln!(
+            "{}	{}	{}",
+            cell(&backup.path),
+            backup.taken_at,
+            backup.bytes
+        );
+    }
+    for failure in &database.failures {
+        outln!("{}", cell(failure));
+    }
+    if applied {
+        outln!(
+            "retired {} sessions' launch context and {} run outputs, {} apparent bytes",
+            database.sessions.retired,
+            database.run_outputs.retired,
+            database.sessions.retired_bytes + database.run_outputs.retired_bytes
+        );
+    } else {
+        outln!(
+            "dry run: nothing retired; `torlek storage database prune` retires the selected payloads"
+        );
+    }
+    if database.wal_checkpoint_busy {
+        outln!(
+            "WAL checkpoint busy: a reader held the WAL, so it did not shrink; the hourly checkpoint finishes it"
+        );
+    }
+    if database.truncated {
+        outln!("incomplete pass: its bound left sessions or run outputs for the next pass");
+    }
+}
+
+fn rule_row(rule: &str, view: &PayloadRetentionView) -> String {
+    format!(
+        "{rule}	{}	{}	{}	{}",
+        view.selected, view.selected_bytes, view.retired, view.retired_bytes
+    )
 }
 
 fn output_row(project: &OutputRetentionView) -> String {

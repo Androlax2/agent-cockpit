@@ -258,15 +258,23 @@ fn run_detail(run: &RunRequestView) -> String {
         );
     }
     if let Some(result) = &run.result {
-        let _ = writeln!(
-            text,
-            "exit {} ({} earlier lines and {} bytes not shown, {} secrets redacted)\n{}",
-            result.exit_code,
-            result.omitted_lines,
-            result.truncated_bytes,
-            result.redacted,
-            result.output
-        );
+        if result.output_retired {
+            let _ = writeln!(
+                text,
+                "exit {} (output removed by database retention)",
+                result.exit_code
+            );
+        } else {
+            let _ = writeln!(
+                text,
+                "exit {} ({} earlier lines and {} bytes not shown, {} secrets redacted)\n{}",
+                result.exit_code,
+                result.omitted_lines,
+                result.truncated_bytes,
+                result.redacted,
+                result.output
+            );
+        }
     }
     if let Some(note) = &run.note {
         let _ = writeln!(text, "note: {note}");

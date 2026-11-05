@@ -7,6 +7,7 @@ mod hints;
 mod pty;
 mod redact;
 mod restart;
+mod retention;
 mod rows;
 mod runs;
 
@@ -23,6 +24,7 @@ pub use hints::{build_files_run, timeout_without_foreground};
 pub use pty::{NoResult, Output, Ran, RunSettings, Runner, Syntax, present};
 pub use redact::{redact_secrets, strip_terminal_controls};
 pub use restart::ended_after_restart;
+pub use retention::{RunOutputs, retirable_run_outputs, retire_run_outputs};
 pub use rows::{EXPIRES_AFTER_SECONDS, Project, REFRESH_AFTER_SECONDS};
 pub use runs::{
     APPROVAL_GRACE_SECONDS, Approved, DecidedThrough, Interrupted, RunAsk, RunDecision, RunId,
@@ -156,6 +158,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE approvals_runs ADD COLUMN start_model TEXT CHECK (start_model <> '');
             ALTER TABLE approvals_runs ADD COLUMN start_effort TEXT
                 CHECK (start_effort <> '');",
+        },
+        // #406: when retention cleared a finished command's output; the rest of the row,
+        // its decision included, stays as the audit record.
+        Migration {
+            version: 9,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN output_retired_at INTEGER
+                CHECK (output_retired_at IS NULL OR (state = 'finished' AND output = ''));",
         },
     ],
 };

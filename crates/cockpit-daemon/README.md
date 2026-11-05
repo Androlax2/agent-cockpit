@@ -143,7 +143,8 @@ not share code.
   it, and a batch larger than the whole buffer still passes. The feed waits for room, and
   the commits made meanwhile reach the subscriber in the next batch, each entity once, so
   nothing is skipped and nothing accumulates per commit.
-- A supervised worker keeps the newest 100,000 change rows, hourly.
+- A supervised worker keeps the newest `storage.feed_history_changes` change rows
+  (100,000 by default), hourly.
 - Sessions and checkouts (#199): a supervised worker publishes their wire views
   (`session-list`, `checkout-list`) after every commit and every 5 s, and retracts ended
   sessions and removed checkouts. The daemon is the only producer of those kinds; a pass
@@ -203,6 +204,15 @@ not share code.
   provider's capabilities, and what its current launch's agent last reported. The session
   last shown in the manager's viewer is the one the owner views.
 - `queue-explain` reads the records the last pass wrote; nothing is computed on request.
+
+## Database maintenance (#406)
+
+A supervised task (`src/database_retention.rs`) checkpoints the WAL every
+`storage.database_maintenance_interval_minutes`, takes a `VACUUM INTO` backup under
+`<state>/backups` when the newest is older than `storage.database_backup_interval_hours` and
+keeps `storage.database_backups_kept`, and, only with `storage.database_prune_automatic`,
+runs the retention pass on the Bulk lane. The owner-only `storage-database` request reports
+the pass, and with `apply` runs it (`docs/decisions/2026-11-04-406-database-retention.md`).
 
 ## Requests
 

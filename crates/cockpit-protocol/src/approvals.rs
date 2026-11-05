@@ -144,6 +144,9 @@ pub struct RunResultView {
     pub truncated_bytes: u64,
     /// Secrets replaced in `output`.
     pub redacted: u64,
+    /// Retention cleared the output long after the run (#406); `output` is empty.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub output_retired: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

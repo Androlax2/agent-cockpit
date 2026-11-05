@@ -8,6 +8,7 @@ mod lifecycle;
 mod model;
 mod questions;
 mod reports;
+mod retention;
 mod store;
 
 pub use cockpit_config::DesktopSession;
@@ -29,4 +30,8 @@ pub use store::{MIGRATIONS, checkout_sessions, maintenance_sessions, session, se
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("cockpit-sessions supports Linux (WSL2 included) and macOS (report 01)");
 
+pub use retention::{
+    LaunchPayload, RetirablePayload, retirable_launch_payloads, retirable_sessions,
+    retire_launch_payload,
+};
 pub use store::protects_output;

@@ -320,6 +320,7 @@ impl Runner {
             result: RunResult {
                 exit_code,
                 output: present(tail, kept.total, self.settings.answer_lines),
+                output_retired: false,
             },
             terminal_held_open,
             leftover: is_left_running.then_some(execution),

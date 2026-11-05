@@ -42,7 +42,7 @@ const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, p
         project_root, reason, state, asked_at, expires_at, exit_code, output,
         output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant,
         kind, start_prompt, start_clone, start_agent, start_model, start_effort, decided_at,
-        decided_through";
+        decided_through, output_retired_at";
 const START_PROMPT_MAX_CHARS: usize = 4000;
 const START_KIND: &str = "start-session";
 
@@ -119,6 +119,8 @@ pub struct RunAsk {
 pub struct RunResult {
     pub exit_code: i32,
     pub output: Output,
+    /// Retention cleared the output long after the run (#406); `output.shown` is empty.
+    pub output_retired: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1161,6 +1163,7 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
                 truncated_bytes: count(15)?,
                 redacted: count(16)?,
             },
+            output_retired: row.get::<Option<i64>>(28)?.is_some(),
         }),
         None => None,
     };

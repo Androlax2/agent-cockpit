@@ -9,9 +9,9 @@ mod database;
 mod error;
 mod migrations;
 
-pub use backup::restore;
+pub use backup::{Backup, backups, remove_backups_beyond, restore};
 pub use changes::{Change, ChangeKind, Commit};
-pub use database::{Database, ReadTransaction, WriteTransaction};
+pub use database::{Checkpoint, Database, FileSizes, ReadTransaction, WriteTransaction};
 pub use error::Error;
 pub use migrations::{Migration, MigrationSet, validate_migrations};
 

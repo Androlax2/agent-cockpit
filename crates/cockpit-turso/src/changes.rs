@@ -60,6 +60,20 @@ impl ReadTransaction<'_> {
         Ok(change_id)
     }
 
+    /// How many captured change rows the history keeps, COMMIT rows included: what
+    /// [`WriteTransaction::discard_changes`] bounds.
+    pub async fn retained_changes(&self) -> Result<u64, Error> {
+        let mut rows = self.query("SELECT count(*) FROM turso_cdc", ()).await?;
+        let Some(row) = rows.next().await? else {
+            return Ok(0);
+        };
+        let count: i64 = row.get(0)?;
+        u64::try_from(count).map_err(|_| Error::UnexpectedChange {
+            change_id: 0,
+            reason: format!("a negative change count {count}"),
+        })
+    }
+
     /// Up to `max_commits` whole commits with a revision after `revision`, oldest first.
     /// Pass the last returned revision to continue.
     pub async fn commits_after(

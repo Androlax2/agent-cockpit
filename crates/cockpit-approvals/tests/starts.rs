@@ -318,3 +318,40 @@ fn a_start_whose_command_outgrows_the_limit_is_refused_with_or_without_confirmat
         "{refused:?}"
     );
 }
+
+/// #406: retention clears finished command output, never a start's: it names the session.
+#[tokio::test]
+async fn retention_keeps_the_output_of_a_finished_start() {
+    let fixture = Fixture::new().await;
+    let run = asked_start(&fixture, &session("coordinator"), start(None, None)).await;
+    let write = fixture.database.write().await.unwrap();
+    let (approved, _) = approve_run(
+        &write,
+        None,
+        run.id,
+        run.revision,
+        &run.digest(),
+        AFTER_GRACE,
+    )
+    .await
+    .unwrap();
+    finish_start(&write, &approved, "s9", AFTER_GRACE)
+        .await
+        .unwrap();
+
+    let retired =
+        cockpit_approvals::retire_run_outputs(&write, AFTER_GRACE + 1, AFTER_GRACE + 2, 10)
+            .await
+            .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(retired, cockpit_approvals::RunOutputs::default());
+    let read = fixture.database.read().await.unwrap();
+    let result = run_request(&read, run.id, AFTER_GRACE)
+        .await
+        .unwrap()
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(result.output.shown, "started session s9");
+}

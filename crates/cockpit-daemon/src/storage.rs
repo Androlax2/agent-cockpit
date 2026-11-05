@@ -26,6 +26,7 @@ pub(crate) struct Context {
     pub(crate) session_temps: std::path::PathBuf,
     /// Woken by the low-disk guard to run the automatic pass before its next interval.
     pub(crate) sweep_now: Arc<tokio::sync::Notify>,
+    pub(crate) retention: Arc<crate::database_retention::DatabasePolicy>,
 }
 
 pub(crate) async fn settings(
@@ -164,6 +165,9 @@ pub(crate) fn route(command: Command, context: Context) -> Route {
                 Command::StorageReport => report(&context).await,
                 Command::StorageOutputs { apply } => {
                     crate::output_retention::pass(&context, apply, None).await
+                }
+                Command::StorageDatabase { apply } => {
+                    crate::database_retention::pass(&context, apply).await
                 }
                 Command::StoragePrunePreview { checkout, prepare } => {
                     preview(&context, checkout, prepare).await
