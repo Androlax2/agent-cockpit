@@ -2724,9 +2724,10 @@ fn with_temp_dir(
 struct GithubAccess {
     /// The project's token, when the owner keeps one: the agent's `GH_TOKEN`.
     token: Option<cockpit_config::GithubToken>,
-    /// The owner's own `gh` login, hidden from an agent that has its project's token, so
-    /// `gh` and Git use that token alone. Empty without a token: the owner decided agents
-    /// may use their login until each project has one.
+    /// The owner's own `gh` login, for the sandbox profile to hide from an agent that has its
+    /// project's token, so `gh` and Git use that token alone. No backend enforces the profile
+    /// in this release (#828), so an unsandboxed agent can still read it. Empty without a
+    /// token: the owner decided agents may use their login until each project has one.
     hidden_owner_login: Vec<PathBuf>,
 }
 

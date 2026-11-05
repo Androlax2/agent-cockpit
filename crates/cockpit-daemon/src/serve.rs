@@ -245,18 +245,7 @@ fn sandbox(
     config: &cockpit_config::EffectiveConfig,
 ) -> cockpit_sandbox::Sandbox {
     let options = instance.options();
-    match config.agents_sandbox.value {
-        cockpit_config::AgentSandbox::Required => tracing::error!(
-            source = %config.agents_sandbox.source,
-            "agents.sandbox = \"required\": {}; every agent launch is refused until the owner sets agents.sandbox = \"off\"",
-            cockpit_config::NO_SANDBOX_BACKEND
-        ),
-        cockpit_config::AgentSandbox::Off => tracing::warn!(
-            source = %config.agents_sandbox.source,
-            "agents run UNSANDBOXED: agents.sandbox = \"off\"; {}",
-            cockpit_config::UNSANDBOXED_RISK
-        ),
-    }
+    log_sandbox_setting(&config.agents_sandbox);
     let layout_config_dir = environment
         .home_dir()
         .map(|home| {
@@ -301,6 +290,23 @@ fn sandbox(
             mount_sources: options.mount_sources(),
         },
     )
+}
+
+/// How `agents.sandbox` treats every launch while no backend exists (#828), logged at the
+/// start and again by a reload that changes it.
+pub(crate) fn log_sandbox_setting(setting: &cockpit_config::Sourced<cockpit_config::AgentSandbox>) {
+    match setting.value {
+        cockpit_config::AgentSandbox::Required => tracing::error!(
+            source = %setting.source,
+            "agents.sandbox = \"required\": {}; every agent launch is refused until the owner sets agents.sandbox = \"off\"",
+            cockpit_config::NO_SANDBOX_BACKEND
+        ),
+        cockpit_config::AgentSandbox::Off => tracing::warn!(
+            source = %setting.source,
+            "agents run UNSANDBOXED: agents.sandbox = \"off\"; {}",
+            cockpit_config::UNSANDBOXED_RISK
+        ),
+    }
 }
 
 /// Those of `names` the daemon's own environment sets, never invented (#303).

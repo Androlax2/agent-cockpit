@@ -296,17 +296,31 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
         ),
     ];
     if let Source::UserFile { path, line } = &setting.source {
-        lines.push(match setting.value {
-            AgentSandbox::Required => format!(
+        // An earlier release's init advised `required` as consent; it now refuses every
+        // launch, so the step stays open rather than count a setup that cannot start (#828).
+        if setting.value == AgentSandbox::Required {
+            lines.push(format!(
                 "you chose the sandbox ({}:{line}): every agent launch is refused until it exists",
                 path.display()
-            ),
-            AgentSandbox::Off => format!(
-                "you chose to run agents UNSANDBOXED, with your rights ({}:{line}): {}",
-                path.display(),
-                cockpit_config::UNSANDBOXED_RISK
-            ),
-        });
+            ));
+            return Step {
+                title: SANDBOX,
+                state: State::Open,
+                lines,
+                next: Some(format!(
+                    "to run agents now, set `sandbox = \"off\"` at {}:{line}: agents run \
+                     unsandboxed, with your rights ({}); otherwise start none until Torlek's own \
+                     sandbox (#546) ships",
+                    path.display(),
+                    cockpit_config::UNSANDBOXED_RISK
+                )),
+            };
+        }
+        lines.push(format!(
+            "you chose to run agents UNSANDBOXED, with your rights ({}:{line}): {}",
+            path.display(),
+            cockpit_config::UNSANDBOXED_RISK
+        ));
         return Step {
             title: SANDBOX,
             state: State::Done,

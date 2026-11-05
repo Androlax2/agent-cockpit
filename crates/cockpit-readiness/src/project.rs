@@ -157,7 +157,7 @@ fn execution_environment(config: &EffectiveConfig, host: &HostFacts) -> Option<R
         }
         (ExecutionEnvironment::Native, AgentSandbox::Required) => Requirement::needs(
             name,
-            Status::NeedsAuthorization,
+            Status::MissingPrerequisite,
             format!(
                 "the project expects native work ({source}); agents.sandbox = \"required\" refuses every launch"
             ),
@@ -172,7 +172,9 @@ fn execution_environment(config: &EffectiveConfig, host: &HostFacts) -> Option<R
                 "the project expects the sandbox ({source}), and {}",
                 cockpit_config::NO_SANDBOX_BACKEND
             ),
-            "make the `sandbox` requirement available",
+            format!(
+                "start no session in it until Torlek's own sandbox (#546) ships, or set agents.sandbox = \"off\" in {owner_file} to run its agents unsandboxed"
+            ),
         ),
         (ExecutionEnvironment::Sandbox, AgentSandbox::Off) => Requirement::needs(
             name,
@@ -182,7 +184,7 @@ fn execution_environment(config: &EffectiveConfig, host: &HostFacts) -> Option<R
                 cockpit_config::NO_SANDBOX_BACKEND
             ),
             format!(
-                "accept unsandboxed agents for this project, or keep its sessions stopped until the native sandbox ships; agents.sandbox in {owner_file} decides"
+                "start no session in it until Torlek's own sandbox (#546) ships, or start them knowing they run unsandboxed; agents.sandbox = \"required\" in {owner_file} refuses them instead"
             ),
         ),
     };

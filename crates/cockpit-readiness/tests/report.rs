@@ -546,12 +546,16 @@ fn a_preset_needs_a_provider_that_reports_its_steps_capabilities() {
 
 /// Each case: the project's environment, the owner's sandbox setting and the status of the
 /// project's execution environment. No backend exists (#828), so a project expecting the
-/// sandbox is never available.
+/// sandbox is never available, and `required` blocks every project.
 #[test]
 fn the_execution_environment_the_project_expects_meets_what_the_owner_granted() {
     let cases = [
         ("native", AgentSandbox::Off, Status::Available),
-        ("native", AgentSandbox::Required, Status::NeedsAuthorization),
+        (
+            "native",
+            AgentSandbox::Required,
+            Status::MissingPrerequisite,
+        ),
         (
             "sandbox",
             AgentSandbox::Required,

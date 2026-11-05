@@ -256,6 +256,9 @@ pub(crate) fn reload_config(
                 ?applied,
                 "the owner's session settings were reloaded"
             );
+            if before.sandbox != applied.sandbox {
+                crate::serve::log_sandbox_setting(&config.agents_sandbox);
+            }
             let settings = applied
                 .rendered()
                 .into_iter()

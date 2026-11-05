@@ -88,8 +88,8 @@ fn a_project_directory_that_does_not_exist_is_a_usage_error() {
 
 const OLD_FOLDERS: [&str; 3] = ["greyproxy", "engines", "sandbox"];
 
-/// A home holding the old proxy's unit and state folders, with a `systemctl` that logs its
-/// arguments and exits `systemctl_status`.
+/// A home holding the old proxy's unit (`unit_text`) and state folders, with a `systemctl`
+/// that logs its arguments and exits `systemctl_status`.
 struct OldSandbox {
     home: TempDir,
     unit: std::path::PathBuf,
@@ -98,6 +98,12 @@ struct OldSandbox {
 
 impl OldSandbox {
     fn new(systemctl_status: u8) -> OldSandbox {
+        Self::with_unit(systemctl_status, |profile| {
+            format!("# Torlek managed Greyproxy, profile {profile}\n[Service]\n")
+        })
+    }
+
+    fn with_unit(systemctl_status: u8, unit_text: impl Fn(&str) -> String) -> OldSandbox {
         let home = TempDir::new().unwrap();
         let report = String::from_utf8(doctor(&home, &[]).stdout).unwrap();
         let field = |prefix: &str| {
@@ -117,7 +123,7 @@ impl OldSandbox {
             ".config/systemd/user/torlek-greyproxy-{profile}.service"
         ));
         std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
-        std::fs::write(&unit, "[Service]\n").unwrap();
+        std::fs::write(&unit, unit_text(&profile)).unwrap();
         let folders: Vec<_> = OLD_FOLDERS
             .iter()
             .map(|name| state_dir.join(name))
@@ -241,7 +247,31 @@ fn a_service_that_does_not_stop_leaves_every_leftover_in_place() {
         stderr.contains("systemctl --user disable --now"),
         "{stderr}"
     );
+    assert!(
+        stderr.contains(&format!(
+            "stop the service yourself and delete {}",
+            old.unit.display()
+        )),
+        "{stderr}"
+    );
     assert!(old.everything_is_left());
+}
+
+/// Only the unit the old release wrote, with its marker, is Torlek's to stop and delete.
+#[test]
+fn a_unit_of_that_name_without_the_old_marker_is_never_reported_or_touched() {
+    let old = OldSandbox::with_unit(0, |_| "[Service]\nExecStart=/usr/bin/mine\n".to_owned());
+
+    let report = String::from_utf8(old.doctor(&[]).stdout).unwrap();
+    let removed = old.doctor(&["--remove-old-sandbox"]);
+
+    assert!(
+        !line(&report, "old sandbox").contains(&old.unit.display().to_string()),
+        "{report}"
+    );
+    assert!(removed.status.success());
+    assert!(old.unit.exists());
+    assert_eq!(old.systemctl_calls(), "");
 }
 
 #[test]

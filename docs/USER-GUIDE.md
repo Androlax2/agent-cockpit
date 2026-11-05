@@ -76,7 +76,7 @@ Use the same profile throughout. To isolate a preview's state from an existing i
    This records that you accept running agents unsandboxed, the only choice this release can run, and keeps agents off your desktop session.
    An unsandboxed agent runs with your rights: it can reach the owner socket and act as the owner, so Torlek's grants do not bind it. The daemon logs that risk at its start and at every launch.
    `sandbox = "required"` refuses every agent launch, naming the missing backend, until Torlek's own sandbox exists; it never runs an agent unsandboxed.
-   A profile used with Torlek's removed Greywall and Greyproxy engines may still hold their `torlek-greyproxy-<profile>` service and state: `torlek doctor` lists them, and `torlek doctor --remove-old-sandbox` stops the service and deletes them.
+   A profile used with Torlek's removed Greywall and Greyproxy engines may still hold their `torlek-greyproxy-<profile>` service and state: `torlek doctor` lists them, and once no session an earlier release launched in Greywall still runs, `torlek doctor --remove-old-sandbox` stops the service and deletes them.
    The default desktop setting is `shared`, which exposes your display and filtered session bus to agents; choose it only if you want desktop access.
    Run `torlek config reload` after changing session settings on a running daemon.
    The TUI rings the terminal bell when a session finishes, asks a question or fails; add `[tui]` with `attention_bell = false` to turn that off, then close the manager session and run `torlek tui` again.

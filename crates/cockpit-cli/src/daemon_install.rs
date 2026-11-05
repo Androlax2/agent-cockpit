@@ -307,7 +307,7 @@ fn write_unit(unit_dir: &Path, unit: &Path, text: &str) -> Result<(), String> {
     fs::rename(&partial, unit).map_err(|error| format!("{}: {error}", unit.display()))
 }
 
-fn service_manager(program: &str, arguments: &[&str]) -> Result<(), String> {
+pub(crate) fn service_manager(program: &str, arguments: &[&str]) -> Result<(), String> {
     let shown = format!("{program} {}", arguments.join(" "));
     let status = Command::new(program)
         .args(arguments)

@@ -49,6 +49,27 @@ async fn a_reload_prints_each_session_setting_and_the_value_it_replaced() {
     );
 }
 
+/// #828: the start's sandbox log would be stale after a reload that changes the setting.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_to_required_logs_that_every_launch_is_refused() {
+    let home = Home::new();
+    let _daemon = home.start();
+    home.write_owner_config("[agents]\nsandbox = \"required\"\n");
+
+    let reloaded = reload(&home).await;
+    let log = home
+        .log_once_it_contains("every agent launch is refused")
+        .await;
+
+    assert!(reloaded.status.success(), "{}", text(&reloaded.stderr));
+    assert!(
+        log.lines()
+            .any(|line| line.contains("every agent launch is refused")
+                && line.contains(cockpit_config::NO_SANDBOX_BACKEND)),
+        "{log}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_launched_after_a_reload_to_withheld_gets_no_desktop_session() {
     let home = Home::new();

@@ -351,7 +351,7 @@ async fn an_existing_config_folder_is_not_created_again() {
 }
 
 #[tokio::test]
-async fn the_owners_sandbox_setting_is_the_recorded_consent() {
+async fn a_required_setting_keeps_the_step_open_because_every_launch_is_refused() {
     let home = Home::new();
     home.write_owner_config("[agents]\nsandbox = \"required\"\n");
 
@@ -359,12 +359,15 @@ async fn the_owners_sandbox_setting_is_the_recorded_consent() {
 
     let checklist = text(&output.stdout);
     assert!(
-        step(&checklist, "Sandbox and approvals").starts_with("[done"),
+        step(&checklist, "Sandbox and approvals").starts_with("[todo"),
         "{checklist}"
     );
-    assert!(checklist.contains("you chose the sandbox"), "{checklist}");
     assert!(
         checklist.contains("every agent launch is refused"),
+        "{checklist}"
+    );
+    assert!(
+        checklist.contains("set `sandbox = \"off\"` at "),
         "{checklist}"
     );
 }
