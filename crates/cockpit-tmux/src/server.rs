@@ -40,35 +40,15 @@ set-option -s escape-time 0
 /// How long [`Server::close_session`] waits for a server it emptied to exit.
 const SERVER_EXIT_WAIT: Duration = Duration::from_secs(5);
 
-/// Which tmux server socket every command addresses.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Socket {
-    /// `-L name`: a socket named `name` in tmux's per-user directory.
-    Named(String),
-    /// `-S path`: a socket at an explicit path (tests use one in a temporary directory).
-    Path(PathBuf),
-}
-
-impl Socket {
-    /// The product's server, `-L torlek` (report 05).
-    pub fn cockpit() -> Socket {
-        Socket::Named("torlek".to_string())
-    }
-
-    fn arguments(&self) -> [&OsStr; 2] {
-        match self {
-            Socket::Named(name) => ["-L".as_ref(), name.as_ref()],
-            Socket::Path(path) => ["-S".as_ref(), path.as_os_str()],
-        }
-    }
-}
-
 /// Where the tmux binary, the server socket and Cockpit's tmux configuration are.
 #[derive(Clone, Debug)]
 pub struct ServerSpec {
     /// A bare name is looked up on `PATH`.
     pub tmux: PathBuf,
-    pub socket: Socket,
+    /// The server's socket, always named by path (`-S`): `-L` takes `$TMUX_TMPDIR` only when
+    /// it exists and silently falls back to `/tmp`, where another installation's server
+    /// lives (#845).
+    pub socket: PathBuf,
     /// Written by [`Server::open`] with [`config`]; its directory must exist.
     pub config_path: PathBuf,
     /// The lines of history each pane keeps ([`config`]).
@@ -172,7 +152,7 @@ impl Server {
         &self.spec.tmux
     }
 
-    pub fn socket(&self) -> &Socket {
+    pub fn socket(&self) -> &Path {
         &self.spec.socket
     }
 
@@ -183,7 +163,8 @@ impl Server {
         command
             .arg("-f")
             .arg(&self.spec.config_path)
-            .args(self.spec.socket.arguments())
+            .arg("-S")
+            .arg(&self.spec.socket)
             .env_remove("TMUX")
             .env_remove("TMUX_PANE");
         command
@@ -493,7 +474,7 @@ impl Server {
     /// run: clients attach without linking this crate (report 05).
     pub fn attach_command(&self, session: &SessionName) -> Vec<OsString> {
         let mut client = vec![self.spec.tmux.clone().into_os_string()];
-        client.extend(self.spec.socket.arguments().map(OsString::from));
+        client.extend(["-S".into(), self.spec.socket.clone().into_os_string()]);
         client.extend(words(&["attach-session", "-t", &session.target()]));
         client
     }

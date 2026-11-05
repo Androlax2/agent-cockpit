@@ -397,6 +397,15 @@ impl Home {
         format!("unix:path=/run/user/{uid}/bus")
     }
 
+    /// The daemon's tmux server of `profile_dir`, named by path: `-L` falls back to tmux's
+    /// default socket directory when this home's is gone (#845).
+    pub fn tmux_socket_of(&self, profile_dir: &str) -> PathBuf {
+        use std::os::unix::fs::MetadataExt;
+        let tmux_tmpdir = self.path().join("tmux");
+        let uid = std::fs::metadata(self.path()).expect("the home").uid();
+        tmux_tmpdir.join(format!("tmux-{uid}")).join(profile_dir)
+    }
+
     pub fn agent_socket_path(&self) -> PathBuf {
         self.path()
             .join("run")
@@ -741,11 +750,15 @@ impl Drop for Home {
     /// The agents live in the private tmux server, which outlives every daemon.
     fn drop(&mut self) {
         for profile_dir in PROFILE_DIRS {
-            let _ = Process::new("tmux")
-                .env_remove("TMUX")
-                .env("TMUX_TMPDIR", self.path().join("tmux"))
-                .args(["-L", profile_dir, "kill-server"])
-                .output();
+            let socket = self.tmux_socket_of(profile_dir);
+            if socket.exists() {
+                let _ = Process::new("tmux")
+                    .env_remove("TMUX")
+                    .arg("-S")
+                    .arg(socket)
+                    .arg("kill-server")
+                    .output();
+            }
         }
     }
 }

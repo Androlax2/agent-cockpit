@@ -5,9 +5,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use cockpit_tmux::{
-    Error, PaneState, Server, ServerSpec, SessionLaunch, SessionName, Socket, config,
-};
+use cockpit_tmux::{Error, PaneState, Server, ServerSpec, SessionLaunch, SessionName, config};
 
 /// The history limit these specs ask for; the fake reads none of it.
 const HISTORY_LIMIT: u32 = 10_000;
@@ -51,13 +49,17 @@ impl FakeTmux {
         FakeTmux { directory }
     }
 
-    fn spec(&self, socket: Socket) -> ServerSpec {
+    fn spec(&self) -> ServerSpec {
         ServerSpec {
             tmux: self.directory.path().join("tmux"),
-            socket,
+            socket: self.socket(),
             config_path: self.config_path(),
             history_limit: HISTORY_LIMIT,
         }
+    }
+
+    fn socket(&self) -> PathBuf {
+        self.directory.path().join("server.sock")
     }
 
     fn config_path(&self) -> PathBuf {
@@ -67,7 +69,7 @@ impl FakeTmux {
     /// [`Server::open`], then the recorded calls forgotten: the tests below check what a
     /// command runs, not the config [`Server::open`] applies.
     fn open(&self) -> Server {
-        let server = Server::open(self.spec(Socket::cockpit())).expect("opens");
+        let server = Server::open(self.spec()).expect("opens");
         fs::remove_file(self.directory.path().join("calls")).expect("open ran tmux");
         server
     }
@@ -88,7 +90,7 @@ fn a_tmux_before_stable_3_6_is_refused_before_configuring_the_server() {
     for release in ["3.4", "3.1c", "3.2", "3.3a", "3.5a", "next-3.6", "3.6-rc2"] {
         let fake = FakeTmux::printing_version(&format!("tmux {release}"));
 
-        let error = Server::open(fake.spec(Socket::cockpit())).expect_err(release);
+        let error = Server::open(fake.spec()).expect_err(release);
 
         assert!(
             matches!(error, Error::TmuxTooOld { ref found, .. } if found == release),
@@ -117,7 +119,7 @@ fn stable_3_6_and_newer_release_spellings_are_accepted() {
     ] {
         let fake = FakeTmux::printing_version(printed);
 
-        let opened = Server::open(fake.spec(Socket::cockpit()));
+        let opened = Server::open(fake.spec());
 
         assert!(opened.is_ok(), "{printed}: {opened:?}");
     }
@@ -128,7 +130,7 @@ fn a_version_whose_features_cannot_be_known_is_refused() {
     for printed in ["tmux master", "tmux openbsd-7.5", "screen 4.9", ""] {
         let fake = FakeTmux::printing_version(printed);
 
-        let error = Server::open(fake.spec(Socket::cockpit())).expect_err(printed);
+        let error = Server::open(fake.spec()).expect_err(printed);
 
         assert!(
             matches!(error, Error::UnrecognizedVersion { .. }),
@@ -142,7 +144,7 @@ fn a_missing_tmux_is_refused_naming_the_binary() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let spec = ServerSpec {
         tmux: directory.path().join("no-tmux-here"),
-        socket: Socket::cockpit(),
+        socket: directory.path().join("server.sock"),
         config_path: directory.path().join("tmux.conf"),
         history_limit: HISTORY_LIMIT,
     };
@@ -158,7 +160,7 @@ fn upgrading_the_binary_does_not_accept_an_unsupported_running_server() {
     for release in ["3.4", "3.5a", "next-3.6", "3.6-rc2", "master", ""] {
         let fake = FakeTmux::printing_server("tmux 3.8", release, "%7");
 
-        let error = Server::open(fake.spec(Socket::cockpit())).expect_err(release);
+        let error = Server::open(fake.spec()).expect_err(release);
 
         assert!(error.to_string().contains("running tmux server"), "{error}");
         assert!(!fake.config_path().exists(), "{release}");
@@ -183,7 +185,7 @@ fn opening_without_a_live_server_still_writes_the_next_servers_config() {
             "%7",
         );
 
-        Server::open(fake.spec(Socket::cockpit())).expect(message);
+        Server::open(fake.spec()).expect(message);
 
         assert_eq!(
             fs::read_to_string(fake.config_path()).expect("config"),
@@ -209,7 +211,7 @@ fn a_failed_server_version_query_is_not_treated_as_an_absent_server() {
                 fs::write(fake.config_path(), contents).expect("existing config");
             }
 
-            let error = Server::open(fake.spec(Socket::cockpit())).expect_err(message);
+            let error = Server::open(fake.spec()).expect_err(message);
 
             assert!(matches!(error, Error::CommandFailed { .. }), "{error:?}");
             assert!(error.to_string().contains(message), "{error}");
@@ -227,7 +229,7 @@ fn a_failed_server_version_query_is_not_treated_as_an_absent_server() {
 fn opening_writes_cockpits_own_config_private_to_the_user() {
     let fake = FakeTmux::printing_version("tmux 3.6");
 
-    Server::open(fake.spec(Socket::cockpit())).expect("3.6 is supported");
+    Server::open(fake.spec()).expect("3.6 is supported");
 
     assert_eq!(
         fs::read_to_string(fake.config_path()).expect("written"),
@@ -244,17 +246,18 @@ fn opening_writes_cockpits_own_config_private_to_the_user() {
 fn opening_applies_the_config_to_a_running_server() {
     let fake = FakeTmux::printing_version("tmux 3.6");
 
-    Server::open(fake.spec(Socket::cockpit())).expect("opens");
+    Server::open(fake.spec()).expect("opens");
 
     let config = fake.config_path().display().to_string();
+    let socket = fake.socket().display().to_string();
     assert_eq!(
         fake.calls(),
         vec![
             vec![
                 "-f",
                 config.as_str(),
-                "-L",
-                "torlek",
+                "-S",
+                socket.as_str(),
                 "display-message",
                 "-p",
                 "#{version}",
@@ -262,8 +265,8 @@ fn opening_applies_the_config_to_a_running_server() {
             vec![
                 "-f",
                 config.as_str(),
-                "-L",
-                "torlek",
+                "-S",
+                socket.as_str(),
                 "source-file",
                 config.as_str()
             ]
@@ -293,8 +296,12 @@ fn every_command_uses_the_private_cockpit_server_and_its_config() {
 
     let calls = fake.calls();
     let config = fake.config_path().display().to_string();
+    let socket = fake.socket().display().to_string();
     assert_eq!(calls.len(), 1, "{calls:?}");
-    assert_eq!(calls[0][..4], ["-f", config.as_str(), "-L", "torlek"]);
+    assert_eq!(
+        calls[0][..4],
+        ["-f", config.as_str(), "-S", socket.as_str()]
+    );
 }
 
 #[test]
@@ -427,8 +434,8 @@ fn the_attach_command_names_the_private_server_and_the_exact_session() {
         attach,
         [
             tmux.as_os_str(),
-            "-L".as_ref(),
-            "torlek".as_ref(),
+            "-S".as_ref(),
+            fake.socket().as_os_str(),
             "attach-session".as_ref(),
             "-t".as_ref(),
             "=cockpit:".as_ref(),

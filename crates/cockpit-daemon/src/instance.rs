@@ -1,5 +1,6 @@
 //! One daemon per OS user: the private socket directory and the instance lock (report 11).
 
+use std::ffi::OsStr;
 use std::fs::{self, DirBuilder, File, OpenOptions, TryLockError};
 use std::io::ErrorKind;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
@@ -128,6 +129,62 @@ impl Instance {
     pub fn options(&self) -> &Options {
         &self.options
     }
+
+    /// The socket of the tmux server named `name`: `tmux-<uid>/<name>` under `$TMUX_TMPDIR`,
+    /// or under `/tmp` when it is unset or empty, where `tmux -L <name>` puts it. Named by
+    /// path, since `-L` silently takes `/tmp` when `$TMUX_TMPDIR` is missing and so reached
+    /// the installed Torlek's server (#845); a missing one is refused instead.
+    pub fn tmux_socket(
+        &self,
+        name: &str,
+        tmux_tmpdir: Option<&OsStr>,
+    ) -> Result<PathBuf, StartError> {
+        let user_dir = tmux_base_dir(tmux_tmpdir)?.join(format!("tmux-{}", self.owner_uid));
+        create_tmux_user_dir(&user_dir, self.owner_uid)?;
+        Ok(user_dir.join(name))
+    }
+}
+
+/// Creates tmux's `tmux-<uid>` directory 0700, or checks the existing one as tmux does: a
+/// real directory of `owner_uid` that other users cannot open. tmux accepts group bits, so
+/// refusing them would stop a daemon on a server `-L` used to reach.
+fn create_tmux_user_dir(path: &Path, owner_uid: u32) -> Result<(), StartError> {
+    match DirBuilder::new().mode(PRIVATE_DIR_MODE).create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+        Err(source) => return Err(StartError::io("create", path)(source)),
+    }
+    let metadata = fs::symlink_metadata(path).map_err(StartError::io("inspect", path))?;
+    let reason = if !metadata.file_type().is_dir() {
+        "is not a directory (a symbolic link is refused)".to_owned()
+    } else if metadata.uid() != owner_uid {
+        format!(
+            "belongs to user id {}, not to this daemon's user id {owner_uid}",
+            metadata.uid()
+        )
+    } else if metadata.permissions().mode() & 0o007 != 0 {
+        format!(
+            "has mode {:03o}; other users must not open it (run `chmod o-rwx` on it)",
+            metadata.permissions().mode() & 0o777
+        )
+    } else {
+        return Ok(());
+    };
+    Err(StartError::PrivateDir {
+        path: path.to_path_buf(),
+        reason,
+    })
+}
+
+fn tmux_base_dir(tmux_tmpdir: Option<&OsStr>) -> Result<PathBuf, StartError> {
+    let Some(set) = tmux_tmpdir.filter(|set| !set.is_empty()) else {
+        return Ok(PathBuf::from("/tmp"));
+    };
+    let path = PathBuf::from(set);
+    if !path.is_absolute() || !path.is_dir() {
+        return Err(StartError::TmuxTmpdir { path });
+    }
+    Ok(path)
 }
 
 /// The user id this process creates files as, read from a file it creates next to
@@ -181,4 +238,24 @@ fn create_private_dir(path: &Path, owner_uid: u32) -> Result<(), StartError> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only the path: a test never creates or opens tmux's default socket directory (#845).
+    #[test]
+    fn an_unset_or_empty_tmux_tmpdir_is_tmux_s_own_default() {
+        for unset in [None, Some(OsStr::new(""))] {
+            assert_eq!(tmux_base_dir(unset).unwrap(), Path::new("/tmp"));
+        }
+    }
+
+    #[test]
+    fn a_relative_tmux_tmpdir_is_refused() {
+        let refused = tmux_base_dir(Some(OsStr::new("tmux"))).unwrap_err();
+
+        assert!(matches!(refused, StartError::TmuxTmpdir { path } if path == Path::new("tmux")));
+    }
 }

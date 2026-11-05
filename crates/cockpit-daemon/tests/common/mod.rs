@@ -42,6 +42,9 @@ pub struct TestHome {
     pub path: Option<std::ffi::OsString>,
     /// The daemon's `SHELL`, the approval shell; unset by default, so it is `/bin/sh`.
     pub shell: Option<PathBuf>,
+    /// The daemon's `TMUX_TMPDIR`, `<home>/tmux` (created 0700): never tmux's default
+    /// socket directory, where the owner's installed Torlek runs (#845).
+    pub tmux_tmpdir: PathBuf,
 }
 
 impl TestHome {
@@ -52,6 +55,7 @@ impl TestHome {
             .mode(0o700)
             .create(&runtime_base)
             .expect("the runtime base is creatable");
+        let tmux_tmpdir = private_tmux_tmpdir(root.path());
         TestHome {
             root,
             runtime_base: Some(runtime_base),
@@ -59,20 +63,25 @@ impl TestHome {
             log_level: None,
             path: None,
             shell: None,
+            tmux_tmpdir,
         }
     }
 
-    /// A home with nothing in it and only `HOME` in the environment. Under `/tmp`: without
+    /// A home with nothing in it but [`TestHome::tmux_tmpdir`], and only `HOME` and
+    /// `TMUX_TMPDIR` in the environment. Under `/tmp`: without
     /// `XDG_RUNTIME_DIR` the agent socket is `<home>/.local/state/torlek-dev/run/agent/agent.sock`,
     /// which under macOS's `/var/folders/…/T` exceeds the 104-byte socket path limit.
     pub fn bare() -> TestHome {
+        let root = tempfile::tempdir_in("/tmp").expect("a temporary home");
+        let tmux_tmpdir = private_tmux_tmpdir(root.path());
         TestHome {
-            root: tempfile::tempdir_in("/tmp").expect("a temporary home"),
+            root,
             runtime_base: None,
             sets_xdg_dirs: false,
             log_level: None,
             path: None,
             shell: None,
+            tmux_tmpdir,
         }
     }
 
@@ -129,6 +138,7 @@ impl TestHome {
         command
             .env_clear()
             .env("HOME", self.home())
+            .env("TMUX_TMPDIR", &self.tmux_tmpdir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -270,6 +280,15 @@ impl Drop for RunningDaemon {
 /// launched by mistake has logged well within it.
 pub const SETTLE: Duration = Duration::from_millis(500);
 
+fn private_tmux_tmpdir(home: &Path) -> PathBuf {
+    let tmux_tmpdir = home.join("tmux");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&tmux_tmpdir)
+        .expect("the home's tmux directory is creatable");
+    tmux_tmpdir
+}
+
 /// Seconds since 1970, the clock the daemon stamps rows with.
 pub fn unix_now() -> i64 {
     let elapsed = std::time::SystemTime::now()
@@ -344,7 +363,7 @@ pub fn wiring_in(
     cockpit_daemon::Wiring {
         tmux: cockpit_tmux::ServerSpec {
             tmux: PathBuf::from("tmux"),
-            socket: cockpit_tmux::Socket::Path(dir.join("tmux.sock")),
+            socket: dir.join("tmux.sock"),
             config_path: dir.join("tmux.conf"),
             history_limit: 10_000,
         },

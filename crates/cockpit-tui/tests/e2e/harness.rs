@@ -256,6 +256,15 @@ impl Cockpit {
         ]
     }
 
+    /// The daemon's tmux server, named by path: `-L` falls back to tmux's default socket
+    /// directory, where the owner's Torlek runs, when this home's is gone (#845).
+    fn daemon_tmux_socket(&self) -> PathBuf {
+        use std::os::unix::fs::MetadataExt;
+        let tmux_tmpdir = self.root.join("tmux");
+        let uid = std::fs::metadata(&self.root).expect("the home").uid();
+        tmux_tmpdir.join(format!("tmux-{uid}/torlek-dev"))
+    }
+
     fn command(&self, program: &Path) -> Command {
         let mut command = Command::new(program);
         command
@@ -352,7 +361,8 @@ impl Cockpit {
     fn agent_panes(&self) -> String {
         let private_tmux = |arguments: &[&str]| {
             self.command(Path::new("tmux"))
-                .args(["-L", "torlek-dev"])
+                .arg("-S")
+                .arg(self.daemon_tmux_socket())
                 .args(arguments)
                 .output()
                 .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
@@ -728,11 +738,12 @@ impl Cockpit {
         }
     }
 
-    /// A tmux command on the daemon's private server (`-L cockpit` under the scratch home).
+    /// A tmux command on the daemon's private server, under the scratch home.
     fn private_tmux(&self, arguments: &[&str]) -> String {
         let output = self
             .command(Path::new("tmux"))
-            .args(["-L", "torlek-dev"])
+            .arg("-S")
+            .arg(self.daemon_tmux_socket())
             .args(arguments)
             .output()
             .expect("tmux runs");
@@ -799,7 +810,9 @@ impl Cockpit {
         let target = format!("={session}:");
         let mut watcher = self
             .command(Path::new("tmux"))
-            .args(["-L", "torlek-dev", "-C", "attach-session", "-t", &target])
+            .arg("-S")
+            .arg(self.daemon_tmux_socket())
+            .args(["-C", "attach-session", "-t", &target])
             .args(["-f", "read-only,ignore-size"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -994,7 +1007,9 @@ impl Drop for Cockpit {
         // The agents run in the daemon's tmux server, which outlives the daemon by design.
         let _ = self
             .command(Path::new("tmux"))
-            .args(["-L", "torlek-dev", "kill-server"])
+            .arg("-S")
+            .arg(self.daemon_tmux_socket())
+            .arg("kill-server")
             .output();
     }
 }

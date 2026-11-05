@@ -63,7 +63,11 @@ fn the_providers_and_manager_replies_name_their_fields_on_the_wire() {
         }],
     };
     let manager = Reply::Manager {
-        attach: vec!["tmux".to_owned(), "-L".to_owned(), "cockpit".to_owned()],
+        attach: vec![
+            "tmux".to_owned(),
+            "-S".to_owned(),
+            "/run/torlek.sock".to_owned(),
+        ],
         created: true,
     };
 
@@ -74,7 +78,7 @@ fn the_providers_and_manager_replies_name_their_fields_on_the_wire() {
         ),
         (
             json!({"kind": "providers", "providers": [{"name": "claude", "resume": true, "events": true}]}),
-            json!({"kind": "manager", "attach": ["tmux", "-L", "cockpit"], "created": true})
+            json!({"kind": "manager", "attach": ["tmux", "-S", "/run/torlek.sock"], "created": true})
         )
     );
 }

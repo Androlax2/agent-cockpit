@@ -73,10 +73,14 @@ impl TestHome {
             failing_git_argument: None,
             daemon_env: Vec::new(),
         };
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(home.home().join("run"))
-            .unwrap();
+        // `tmux`: the daemon's `TMUX_TMPDIR`, never tmux's default socket directory, where
+        // the owner's installed Torlek runs (#845).
+        for private in ["run", "tmux"] {
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(home.home().join(private))
+                .unwrap();
+        }
         std::fs::create_dir_all(home.home().join("bin")).unwrap();
         let fake = home.home().join("bin/git");
         std::fs::write(&fake, FAKE_GIT).unwrap();
@@ -155,6 +159,7 @@ impl TestHome {
             .env("XDG_STATE_HOME", self.home().join("state"))
             .env("XDG_CONFIG_HOME", self.home().join("config"))
             .env("XDG_RUNTIME_DIR", self.home().join("run"))
+            .env("TMUX_TMPDIR", self.home().join("tmux"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

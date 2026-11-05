@@ -354,6 +354,19 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.tmux_calls.exists())
 
+    def test_stop_after_the_scratch_directory_is_gone_runs_no_tmux(self):
+        # The fallback that reached the installed Torlek: a missing TMUX_TMPDIR (#845).
+        result = self.run_script("stop")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.scratch.exists())
+        self.assertFalse(self.tmux_calls.exists())
+
+    def test_the_runner_tests_reach_only_the_recording_tmux(self):
+        self.assertEqual(
+            shutil.which("tmux", path=self.environment["PATH"]),
+            str(self.tmux_calls.parent / "fake-tmux/tmux"),
+        )
+
     def test_stop_kills_the_scratch_tmux_servers_by_their_socket_paths(self):
         sockets = self.scratch / f"tmux/tmux-{os.getuid()}"
         sockets.mkdir(parents=True)

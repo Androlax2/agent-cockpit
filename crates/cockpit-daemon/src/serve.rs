@@ -104,6 +104,12 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         tracing::error!(%error, "the owner configuration is invalid");
         StartError::Config(error)
     })?;
+    let tmux_socket = instance
+        .tmux_socket(
+            &profile.qualified_name(),
+            std::env::var_os("TMUX_TMPDIR").as_deref(),
+        )
+        .inspect_err(|error| tracing::error!(%error, "the tmux server has no socket path"))?;
     let start_files = config.declared_start_files();
     // Discovery runs programs and may block for seconds, so it comes before the runtime.
     let plugin_dir = instance.options().state_dir.join(OPENCODE_PLUGIN_DIR);
@@ -176,7 +182,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
                 tmux: "tmux".into(),
                 // Each profile its own server, so a `dev` daemon never sees the installed
                 // one's sessions (#196).
-                socket: cockpit_tmux::Socket::Named(profile.qualified_name()),
+                socket: tmux_socket,
                 config_path: instance.options().state_dir.join("tmux.conf"),
                 history_limit: config.memory.tmux_history_lines.value,
             },

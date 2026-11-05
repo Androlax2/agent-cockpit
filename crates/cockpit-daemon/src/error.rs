@@ -11,6 +11,11 @@ pub enum StartError {
         path: PathBuf,
         reason: String,
     },
+    /// `TMUX_TMPDIR` is set but names no directory: tmux would take `/tmp` instead, where
+    /// another installation's server runs (#845).
+    TmuxTmpdir {
+        path: PathBuf,
+    },
     /// Another daemon of this user holds the instance lock.
     AlreadyRunning {
         lock_path: PathBuf,
@@ -65,6 +70,12 @@ impl fmt::Display for StartError {
             Self::PrivateDir { path, reason } => {
                 write!(formatter, "directory {}: {reason}", path.display())
             }
+            Self::TmuxTmpdir { path } => write!(
+                formatter,
+                "TMUX_TMPDIR is {}, which is not an absolute path to a directory: create it or \
+                 unset TMUX_TMPDIR",
+                path.display()
+            ),
             Self::AlreadyRunning { lock_path } => write!(
                 formatter,
                 "another torlek daemon of this user is already running (it holds {})",

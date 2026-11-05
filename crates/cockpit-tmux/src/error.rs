@@ -15,10 +15,7 @@ pub enum Error {
     /// The installed tmux is older than [`MINIMUM_VERSION`].
     TmuxTooOld { binary: PathBuf, found: String },
     /// The existing private server is unsupported even if the installed binary is new.
-    UnsupportedServerVersion {
-        socket: crate::server::Socket,
-        found: String,
-    },
+    UnsupportedServerVersion { socket: PathBuf, found: String },
     /// A tmux command exited unsuccessfully.
     CommandFailed {
         arguments: Vec<OsString>,
@@ -89,8 +86,9 @@ impl fmt::Display for Error {
             ),
             Self::UnsupportedServerVersion { socket, found } => write!(
                 formatter,
-                "running tmux server at {socket:?} reports {found:?}; Torlek needs tmux \
-                 {MINIMUM_VERSION} or newer; finish its sessions and restart that private server"
+                "running tmux server at {} reports {found:?}; Torlek needs tmux \
+                 {MINIMUM_VERSION} or newer; finish its sessions and restart that private server",
+                socket.display()
             ),
             Self::CommandFailed {
                 arguments,
