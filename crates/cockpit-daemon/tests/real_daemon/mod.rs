@@ -283,6 +283,7 @@ impl Home {
             std::fs::set_permissions(decoy, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         proxy::commands(&home.path());
+        home.write_owner_config("");
         home
     }
 
@@ -413,8 +414,20 @@ impl Home {
         }
     }
 
-    /// Writes the owner's `config.toml`, which the next daemon start reads.
+    /// Writes the owner's `config.toml`, which the next daemon start reads. The low-disk guard
+    /// is off in it (#838), so a test's result never depends on the host's free space; a test
+    /// of the guard sets `low_disk_floor_mib` in `contents` itself.
     pub fn write_owner_config(&self, contents: &str) {
+        let guard_is_set = contents.contains("low_disk_floor_mib");
+        assert!(
+            guard_is_set || !contents.contains("[storage]"),
+            "a [storage] table must also set low_disk_floor_mib: the harness appends its own"
+        );
+        let contents = if guard_is_set {
+            contents.to_owned()
+        } else {
+            format!("{contents}\n[storage]\nlow_disk_floor_mib = 0\n")
+        };
         let dir = self.path().join("config").join(BUILD_PROFILE_DIR);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("config.toml"), contents).unwrap();

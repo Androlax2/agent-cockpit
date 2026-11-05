@@ -183,6 +183,31 @@ exit "$(cat "$HOME/sign-in.exit")"
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_test_home_runs_with_the_disk_guard_off() {
+    let home = Home::new();
+    let _daemon = home.start();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    assert!(!report.contains("  disk: "), "{report}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_test_that_sets_a_floor_turns_the_disk_guard_on() {
+    let home = Home::new();
+    home.write_owner_config("[storage]\nlow_disk_floor_mib = 1000000000\n");
+    let _daemon = home.start();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    assert_eq!(doctor.status.code(), Some(1), "{report}");
+    let (line, _) = requirement(&report, "disk");
+    assert_eq!(status(line), "missing-prerequisite", "{line}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_with_its_programs_reports_them_available_and_exits_0() {
     let home = Home::new();
