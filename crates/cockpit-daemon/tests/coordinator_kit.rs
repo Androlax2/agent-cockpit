@@ -1126,8 +1126,8 @@ async fn a_held_message_the_owner_overtook_says_so_in_agent_sessions_and_on_the_
     owner_sends(&pair, "The fixes the coordinator sent are yours too.").await;
 
     let overtaken = format!(
-        "held until session {0}'s turn ends; its hook then hands it over; the owner's later \
-         message reached session {0} first",
+        "held until session {0}'s turn ends; its hook then hands it over; the owner's \
+         message to session {0} was delivered while it waited",
         pair.target.id
     );
     let observed = pair.observed_target().await;
@@ -1140,6 +1140,31 @@ async fn a_held_message_the_owner_overtook_says_so_in_agent_sessions_and_on_the_
     assert_eq!(
         card.inbound_message.and_then(|message| message.note),
         Some(overtaken)
+    );
+}
+
+/// #897: a message to an agent waiting at its prompt is not held for a turn's end, as its hook
+/// collects it within seconds: an owner's message sent meanwhile does not name it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owner_message_to_a_waiting_agent_names_no_message_its_hook_is_about_to_collect() {
+    let pair = commanded_pair().await;
+    let waiting = pair
+        .as_target(&["agent", "report", "--state", "waiting"])
+        .await;
+    assert!(waiting.ends_with("exit=0\n"), "{waiting}");
+    let sent = pair
+        .as_coordinator(&["agent", "message", &pair.target.id, "Apply the five fixes."])
+        .await;
+    assert!(sent.ends_with("exit=0\n"), "{sent}");
+
+    let reply = owner_sends(&pair, "Carry on.").await;
+
+    assert_eq!(
+        reply,
+        Reply::SessionAction {
+            session: pair.target.id.clone(),
+            held: Vec::new(),
+        }
     );
 }
 

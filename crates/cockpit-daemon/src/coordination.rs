@@ -1438,7 +1438,7 @@ pub(crate) async fn notes(connection: &Connection) -> Result<Notes, Failed> {
             .filter(|_| envelope.state == DeliveryState::Queued)
             .map(|_| {
                 format!(
-                    "the owner's later message reached session {} first",
+                    "the owner's message to session {} was delivered while it waited",
                     target.as_str()
                 )
             });
@@ -1466,35 +1466,38 @@ pub(crate) struct Held {
     pub(crate) view: HeldMessageView,
 }
 
-/// The coordinator messages to `session` still waiting, oldest first: those an owner's
-/// message sent now overtakes (#897).
+/// The coordinator messages to `session` its hook holds for the end of its agent's turn,
+/// oldest first: those an owner's message sent now overtakes (#897). None while the agent can
+/// take them: its hook collects them within seconds. A typed message is left out too: it is
+/// typed as soon as its session takes input, so it does not wait for the turn's end.
 pub(crate) async fn held_for(connection: &Connection, session: &str) -> Result<Vec<Held>, Failed> {
-    let mut held = Vec::new();
-    for producer in [PRODUCER, INBOX_PRODUCER] {
-        for envelope in cockpit_messaging::queued_for(connection, producer, session).await? {
-            // The note never stops the owner's message: an inconsistent envelope is logged
-            // and left out, as on the card.
-            let Some(entry) = audit_entry_of(&envelope.effect_key) else {
-                tracing::error!(
-                    key = envelope.effect_key,
-                    "a queued coordinator message names no audit entry"
-                );
-                continue;
-            };
-            let Some(audited) = cockpit_authorization::audit_entry(connection, entry).await? else {
-                tracing::error!(entry, "a queued coordinator message has no audit entry");
-                continue;
-            };
-            held.push(Held {
-                envelope: envelope.id,
-                view: HeldMessageView {
-                    message: entry,
-                    from: audited.audit.actor.as_str().to_owned(),
-                },
-            });
-        }
+    let target = holder(session)?;
+    if !is_busy(connection, &target).await? {
+        return Ok(Vec::new());
     }
-    held.sort_by_key(|held| held.envelope);
+    let mut held = Vec::new();
+    for envelope in cockpit_messaging::queued_for(connection, INBOX_PRODUCER, session).await? {
+        // The note never stops the owner's message: an inconsistent envelope is logged
+        // and left out, as on the card.
+        let Some(entry) = audit_entry_of(&envelope.effect_key) else {
+            tracing::error!(
+                key = envelope.effect_key,
+                "a queued coordinator message names no audit entry"
+            );
+            continue;
+        };
+        let Some(audited) = cockpit_authorization::audit_entry(connection, entry).await? else {
+            tracing::error!(entry, "a queued coordinator message has no audit entry");
+            continue;
+        };
+        held.push(Held {
+            envelope: envelope.id,
+            view: HeldMessageView {
+                message: entry,
+                from: audited.audit.actor.as_str().to_owned(),
+            },
+        });
+    }
     Ok(held)
 }
 
@@ -1514,9 +1517,10 @@ pub(crate) fn with_overtake_note(message: String, held: &[Held]) -> String {
             )
         })
         .collect();
+    let them = if held.len() == 1 { "it" } else { "them" };
     format!(
         "{message} [Torlek] Sent to you before this message and still held: {}. Torlek hands \
-         it over when your turn ends.",
+         {them} over when your turn ends.",
         named.join(", ")
     )
 }
