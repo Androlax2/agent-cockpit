@@ -279,17 +279,17 @@ async fn a_sandboxed_agent_may_not_read_the_owners_ssh_keys_or_the_state_databas
     let database = home.state_dir().join("state.db");
     assert!(database.is_file());
 
-    for secret in [home.path().join(".ssh/id_ed25519"), database] {
+    for unreadable in [home.path().join(".ssh/id_ed25519"), database] {
         let printed = run_in_agent(
             &home,
             &agent.root,
-            &format!("cat '{}' || echo refused", secret.display()),
+            &format!("cat '{}' || echo refused", unreadable.display()),
         )
         .await;
 
         assert!(
             printed.ends_with("refused\nexit=0\n"),
-            "{secret:?}: {printed}"
+            "{unreadable:?}: {printed}"
         );
         assert!(!printed.contains("owner's key"), "{printed}");
     }
