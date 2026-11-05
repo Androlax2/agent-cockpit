@@ -134,6 +134,25 @@ impl Sandbox {
         )
     }
 
+    /// What `session`'s launcher last reported letting out of the sandbox and refusing
+    /// (#831); None when no sandboxed launch of it reported anything.
+    pub fn egress_report(&self, session: &str) -> Result<Option<crate::EgressReport>, String> {
+        let Some(host) = self.host.as_ref() else {
+            return Ok(None);
+        };
+        let path = session_folder(&host.mount_sources, session)
+            .map_err(|refusal| refusal.reason)?
+            .join(crate::EGRESS_FILE);
+        let text = match std::fs::read(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+        };
+        serde_json::from_slice(&text)
+            .map(Some)
+            .map_err(|error| format!("{} is malformed: {error}", path.display()))
+    }
+
     /// The host's platform, as the daemon detected it.
     pub fn platform(&self) -> &Platform {
         &self.platform

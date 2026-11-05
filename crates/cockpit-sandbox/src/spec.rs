@@ -8,9 +8,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::egress::{Allowlist, Target, normalized_name};
+
 /// Bumped when a field changes meaning; the launcher refuses any other version, so a launcher
 /// left from an older install never half-reads a newer daemon's spec.
-pub const SPEC_VERSION: u32 = 1;
+pub const SPEC_VERSION: u32 = 2;
 
 /// The file name of the spec in the session's mount folder.
 pub const SPEC_FILE: &str = "launch-spec.json";
@@ -103,6 +105,8 @@ pub struct LaunchSpec {
     pub hidden: Vec<PathBuf>,
     pub needs_source: NeedsSource,
     pub forwards: Vec<Forward>,
+    /// What the session proxy lets out of the sandbox (#831).
+    pub egress: Allowlist,
 }
 
 /// A folder bound read-write at another path.
@@ -147,7 +151,8 @@ impl std::error::Error for InvalidSpec {}
 impl LaunchSpec {
     /// Refuses a spec the launcher cannot enforce as written: another version, a relative
     /// path, a Landlock ABI below the floor, a protected or hidden path outside every bound
-    /// folder, a working directory outside the writable ones, or a forward.
+    /// folder, a working directory outside the writable ones, a forward, or an allowlist entry
+    /// that is no host name or address and a port.
     pub fn validate(&self) -> Result<(), InvalidSpec> {
         if self.version != SPEC_VERSION {
             return Err(InvalidSpec(format!(
@@ -210,6 +215,7 @@ impl LaunchSpec {
                 )));
             }
         }
+        check_allowlist(&self.egress)?;
         if let Some(forward) = self.forwards.first() {
             return Err(InvalidSpec(format!(
                 "forward {} to {}: host-service forwards do not exist yet (#860)",
@@ -218,6 +224,28 @@ impl LaunchSpec {
         }
         Ok(())
     }
+}
+
+/// Every entry names a port, and a name entry a lower-case DNS name of at least two labels,
+/// or `*.` and one: the proxy matches what the spec says, never a pattern it widened.
+fn check_allowlist(allowlist: &Allowlist) -> Result<(), InvalidSpec> {
+    for entry in &allowlist.entries {
+        let is_valid = entry.port != 0
+            && match &entry.target {
+                Target::Name(pattern) => {
+                    let name = pattern.strip_prefix("*.").unwrap_or(pattern);
+                    normalized_name(name).as_deref() == Some(name) && name.contains('.')
+                }
+                Target::Address(_) => true,
+            };
+        if !is_valid {
+            return Err(InvalidSpec(format!(
+                "allowlist entry {entry} ({}) is not a host name or address and a port",
+                entry.source
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// An absolute path without `.` or `..`: what the launcher binds is what the spec names.

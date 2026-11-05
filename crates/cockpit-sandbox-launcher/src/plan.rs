@@ -29,6 +29,9 @@ pub struct Policy {
     /// The name the spec gave it, its `argv[0]`: a link's name selects some programs'
     /// behaviour.
     pub program_name: PathBuf,
+    /// The launcher's hand-off socket, where stage 2 sends the proxy listener before
+    /// anything else (#831). Its folder is bound read-only and granted to no one.
+    pub proxy_handoff: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,8 +119,12 @@ fn words(flag: &str, source: &Path, destination: &Path) -> Vec<OsString> {
     ]
 }
 
-/// The bubblewrap arguments and stage 2 policy for `spec`, run by `launcher` inside.
-pub fn plan(spec: &LaunchSpec, launcher: &Path) -> Result<Plan, String> {
+/// The bubblewrap arguments and stage 2 policy for `spec`, run by `launcher` inside, which
+/// hands the proxy listener over on `handoff`, a socket in a folder of the launcher's own.
+pub fn plan(spec: &LaunchSpec, launcher: &Path, handoff: &Path) -> Result<Plan, String> {
+    let handoff_folder = handoff
+        .parent()
+        .ok_or("the proxy hand-off socket has no folder")?;
     let program = spec
         .program
         .canonicalize()
@@ -153,7 +160,11 @@ pub fn plan(spec: &LaunchSpec, launcher: &Path) -> Result<Plan, String> {
             .iter()
             .chain(&declared)
             .chain(&spec.sockets)
-            .chain([&program, &launcher.to_path_buf()])
+            .chain([
+                &program,
+                &launcher.to_path_buf(),
+                &handoff_folder.to_path_buf(),
+            ])
             .cloned()
             .map(Mount::ReadOnly),
     );
@@ -190,6 +201,7 @@ pub fn plan(spec: &LaunchSpec, launcher: &Path) -> Result<Plan, String> {
             verify: masks.verify,
             program,
             program_name: spec.program.clone(),
+            proxy_handoff: handoff.to_path_buf(),
         },
     })
 }

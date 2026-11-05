@@ -16,8 +16,8 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   the agent's place with `Sandboxed` evidence naming bubblewrap's version and the Landlock
   ABI. `Staged::write` is the one place a sandboxed session's mount sources and own home are
   created. The provider's declared credential variables are dropped and its credential files
-  masked (#858); no network but loopback until the session proxy (#831), so a placeholder
-  secret or a shared desktop session is refused.
+  masked (#858); the network is the session proxy's (#831, `egress.rs`), which swaps no
+  placeholders yet (#832), so a placeholder secret or a shared desktop session is refused.
 - Toolchains and caches (#859): the caller resolves `ToolNeeds` from the toolchain table of
   `cockpit-provider-api`. The install roots `PATH` resolves the checkout's ecosystems in are
   bound read-only; every cache variable points into `caches/` of the session's temp folder;
