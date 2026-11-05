@@ -1,6 +1,6 @@
 [package]
 name = "cockpit-sandbox"
-description = "Owns the sandbox every launched agent runs in: the profile Cockpit requests, the platform it would be enforced on, the refusal while no backend enforces it and the evidence of what each launch got."
+description = "Owns the sandbox every launched agent runs in: the profile Cockpit requests, the launch spec the native launcher enforces, the refusal on a host without it and the evidence of what each launch got."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,8 @@ persistence = ["dep:cockpit-turso"]
 [dependencies]
 cockpit-config = { path = "../cockpit-config" }
 cockpit-turso = { path = "../cockpit-turso", optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 
 [dev-dependencies]
 tempfile = "3.27.0"

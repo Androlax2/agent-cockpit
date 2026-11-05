@@ -321,7 +321,7 @@ fn sandbox_evidence_prints_one_line_per_fact_in_a_fixed_order() {
         [
             "sandbox: enforced by fixture-backend on linux",
             "engine: fixture-backend 1.0 (7c06d51)",
-            "proxy client: cockpit-s1-0a1b2c3d4e5f",
+            "launch identity: cockpit-s1-0a1b2c3d4e5f",
             "rule: read everything else: denied <- fixture-backend Landlock (defaultDenyRead)",
             "observed: landlock: yes",
         ]

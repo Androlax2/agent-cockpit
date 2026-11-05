@@ -67,11 +67,17 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-bin: false
-      - name: Install tmux for cockpit-tmux's real-server tests
+      - name: Install tmux and bubblewrap for the real tmux server and sandbox tests
+        # Ubuntu's AppArmor refuses unprivileged user namespaces by default; the native sandbox
+        # (#829) needs one, as on the hosts it supports.
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes tmux
+          sudo apt-get install --no-install-recommends --yes tmux bubblewrap
           tmux -V
+          bwrap --version
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns > /dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Configure hosted runner admission
         if: runner.environment == 'github-hosted'
         # Disposable hosted runners have no workstation game-guard daemon.

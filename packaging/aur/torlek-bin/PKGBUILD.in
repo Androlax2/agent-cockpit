@@ -14,7 +14,8 @@ arch=('x86_64' 'aarch64')
 url='https://github.com/Androlax2/agent-cockpit'
 license=('Apache-2.0')
 depends=('glibc' 'gcc-libs' 'git' 'curl' 'tmux>=3.6')
-optdepends=('systemd: per-user daemon and proxy services')
+optdepends=('systemd: per-user daemon and proxy services'
+            'bubblewrap: the native agent sandbox, agents.sandbox = "required"')
 provides=('torlek')
 conflicts=('torlek')
 options=('!strip' '!debug')

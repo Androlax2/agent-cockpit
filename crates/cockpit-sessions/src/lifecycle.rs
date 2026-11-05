@@ -33,7 +33,7 @@ use crate::{
 /// The variable that hands the agent its one-time launch token (report 17).
 const LAUNCH_TOKEN_VARIABLE: &str = "TORLEK_LAUNCH_TOKEN";
 
-/// The session a dry run's proxy client identity names: no session launches under it.
+/// The session a dry run's launch identity names: no session launches under it.
 const DRY_RUN_SESSION: &str = "dry-run";
 
 /// How often [`Sessions::after_early_exit`] looks at a new agent within its window.
@@ -241,6 +241,11 @@ impl Sessions {
     /// Whether launched agents get the owner's desktop session variables (#305).
     pub fn desktop_session(&self) -> crate::DesktopSession {
         self.owner_settings().desktop_session
+    }
+
+    /// The sandbox every launch goes through, with the backend the daemon probed.
+    pub fn sandbox(&self) -> &cockpit_sandbox::Sandbox {
+        &self.settings.sandbox
     }
 
     /// The owner's session settings in force now.
@@ -1992,6 +1997,7 @@ impl Sessions {
                 with_github_token(environment.clone(), None),
             )
         });
+        let needs = provider_needs(self.provider(Some(session.provider.as_str()))?.as_ref())?;
         let prepared = self.prepare_sandbox(
             id.as_str(),
             session.provider.as_str(),
@@ -2000,9 +2006,22 @@ impl Sessions {
             temp_dir,
             environment,
             github,
+            needs,
             command.program,
             command.arguments,
         )?;
+        if let Some(staged) = prepared.staged.clone() {
+            let counted = TerminalStep::start(&self.session_lock(id));
+            self.blocking("write the sandbox's launch spec", move || {
+                let _counted = counted;
+                staged.write().map_err(|source| Error::Io {
+                    action: "write",
+                    path: staged.spec_path(),
+                    source,
+                })
+            })
+            .await?;
+        }
         if let cockpit_sandbox::Enforcement::Unsandboxed { reason } = &prepared.evidence.enforcement
         {
             tracing::warn!(
@@ -2037,11 +2056,10 @@ impl Sessions {
             .await?;
             store::insert_launch(&write, id, kind, purpose, execution, &start_files).await?;
             cockpit_sandbox::record(&write, execution.0, id.as_str(), &prepared.evidence).await?;
-            // Unsandboxed, the daemon reaches the provider's sockets where it names them.
             crate::delivery_context::record_launch(
                 &write,
                 execution.0,
-                &cockpit_sandbox::ProviderReach::Direct,
+                &prepared.reach,
                 &delivery_launch,
             )
             .await?;
@@ -2213,16 +2231,24 @@ impl Sessions {
         temp_dir: PathBuf,
         environment: Vec<(OsString, OsString)>,
         github: GithubAccess,
+        needs: cockpit_sandbox::ProviderNeeds,
         program: PathBuf,
         arguments: Vec<OsString>,
     ) -> Result<cockpit_sandbox::Prepared, Error> {
+        let setting = self.owner_settings().sandbox;
+        // A sandboxed agent never holds the project's token (#857): the proxy that will add
+        // it on GitHub's hosts alone does not exist yet, so Git and `gh` inside get none.
+        let token = match setting {
+            cockpit_config::AgentSandbox::Required => None,
+            cockpit_config::AgentSandbox::Off => github.token.as_ref(),
+        };
         let mut secrets = vec![cockpit_sandbox::Secret {
             // The agent presents it on the local agent socket, never in an HTTP header a
             // proxy could swap a placeholder in.
             variable: LAUNCH_TOKEN_VARIABLE.to_owned(),
             handling: cockpit_sandbox::SecretHandling::PassThrough,
         }];
-        if github.token.is_some() {
+        if token.is_some() {
             secrets.push(cockpit_sandbox::Secret {
                 // Git sends it inside Basic credentials, which a header-swapping proxy does
                 // not decode, so a placeholder would never be swapped back: `git push` would
@@ -2234,17 +2260,18 @@ impl Sessions {
         self.settings
             .sandbox
             .prepare(
-                self.owner_settings().sandbox,
+                setting,
                 &cockpit_sandbox::LaunchRequest {
                     session: session.to_owned(),
                     provider: provider.to_owned(),
                     working_dir: checkout_root,
                     session_dir,
                     temp_dir,
-                    environment: with_github_token(environment, github.token.as_ref()),
+                    environment: with_github_token(environment, token),
                     secrets,
                     denied: github.hidden_owner_login,
                     desktop: self.desktop_session(),
+                    needs,
                 },
                 program,
                 arguments,
@@ -2271,6 +2298,7 @@ impl Sessions {
             .await?;
         let (checkout, _) = self.checkout_containing(&dir).await?;
         let github = self.github_access(checkout.project.as_str()).await?;
+        let needs = provider_needs(self.provider(Some(&provider))?.as_ref())?;
         self.prepare_sandbox(
             DRY_RUN_SESSION,
             &provider,
@@ -2279,6 +2307,7 @@ impl Sessions {
             self.dry_run_temp_dir(),
             with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir()),
             github,
+            needs,
             PathBuf::from("<agent>"),
             Vec::new(),
         )
@@ -2485,7 +2514,12 @@ impl Sessions {
             tracing::debug!(session = %id, "directory cleanup deferred until outstanding steps return");
             return Ok(());
         }
-        let paths = [self.session_dir(id), self.session_temp_dir(id)];
+        let mut paths = vec![self.session_dir(id), self.session_temp_dir(id)];
+        // A sandboxed session's own home, with its provider's conversations, outlives its
+        // relaunches but not its end (#858).
+        if let Some(home) = self.settings.sandbox.session_home(id.as_str()) {
+            paths.push(home.map_err(Error::Sandbox)?);
+        }
         let counted = TerminalStep::start(&self.session_lock(id));
         self.blocking("remove the session's directories", move || {
             let _counted = counted;
@@ -2881,6 +2915,48 @@ fn owner_gh_config_dirs(environment: &cockpit_config::Environment, home: &Path) 
 /// `environment` with `token` as its only GitHub token (#754): none the daemon or a
 /// provider passed reaches the agent, so a project without one never gets another's or the
 /// owner's.
+/// What `provider`'s adapter declares for the sandbox (#830, #858); a malformed declaration
+/// refuses the launch rather than narrowing it.
+fn provider_needs(provider: &dyn Provider) -> Result<cockpit_sandbox::ProviderNeeds, Error> {
+    let refused = |error: cockpit_provider_api::InvalidValue| {
+        Error::Provider(ProviderError {
+            reason: format!("its sandbox declaration is invalid: {error}"),
+        })
+    };
+    let needs = provider.needs().map_err(refused)?;
+    let credentials = provider.credentials().map_err(refused)?;
+    let declares_nothing = needs.hosts.is_empty()
+        && needs.read.is_empty()
+        && needs.write.is_empty()
+        && credentials.files.is_empty()
+        && credentials.bindings.is_empty();
+    let source = if declares_nothing {
+        cockpit_sandbox::NeedsSource::Floor
+    } else {
+        cockpit_sandbox::NeedsSource::Adapter {
+            provider: provider.name().as_str().to_owned(),
+        }
+    };
+    Ok(cockpit_sandbox::ProviderNeeds {
+        source,
+        read: needs
+            .read
+            .iter()
+            .map(|path| path.as_str().to_owned())
+            .collect(),
+        credential_files: credentials
+            .files
+            .iter()
+            .map(|path| path.as_str().to_owned())
+            .collect(),
+        credential_variables: credentials
+            .bindings
+            .into_iter()
+            .map(|binding| binding.variable)
+            .collect(),
+    })
+}
+
 fn with_github_token(
     mut environment: Vec<(OsString, OsString)>,
     token: Option<&cockpit_config::GithubToken>,

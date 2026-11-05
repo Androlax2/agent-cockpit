@@ -451,6 +451,30 @@ impl Home {
         self.spawn(search, extra, None)
     }
 
+    /// [`Home::start`] on a host without bubblewrap (#829): each folder of the host's `PATH`
+    /// that holds `bwrap` is replaced by one of links to everything else it holds, so the
+    /// daemon finds its other programs but no sandbox.
+    pub fn start_without_bubblewrap(&self) -> Daemon {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut search = vec![self.path().join("bin")];
+        for (index, folder) in std::env::split_paths(&path).enumerate() {
+            if !folder.join("bwrap").exists() {
+                search.push(folder);
+                continue;
+            }
+            let without = self.path().join(format!("path-without-bwrap-{index}"));
+            std::fs::create_dir_all(&without).unwrap();
+            for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+                if entry.file_name() != "bwrap" {
+                    std::os::unix::fs::symlink(entry.path(), without.join(entry.file_name()))
+                        .unwrap();
+                }
+            }
+            search.push(without);
+        }
+        self.spawn(search, &[], None)
+    }
+
     /// [`Home::start`] with `--profile profile`; it is ready on that profile's socket.
     pub fn start_profile(&self, profile: &str) -> Daemon {
         let path = std::env::var_os("PATH").unwrap_or_default();

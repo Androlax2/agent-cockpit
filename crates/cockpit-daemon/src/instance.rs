@@ -15,6 +15,7 @@ const EXECUTIONS_DIR: &str = "executions";
 const SESSION_DIRS: &str = "sessions";
 const MOUNT_SOURCES: &str = "mounts";
 const SESSION_TEMPS: &str = "tmp";
+const SESSION_HOMES: &str = "homes";
 /// Only the owner may enter the socket directory.
 const PRIVATE_DIR_MODE: u32 = 0o700;
 
@@ -78,6 +79,13 @@ impl Options {
     /// folder per session inside. No agent is granted it or any folder above it (#446).
     pub fn mount_sources(&self) -> PathBuf {
         self.runtime_dir.join(MOUNT_SOURCES)
+    }
+
+    /// `$XDG_STATE_HOME/cockpit/homes`: one home folder per sandboxed session, kept across
+    /// its relaunches (#858). On the main disk, since a provider keeps its conversations there;
+    /// no agent is granted it or any folder above it.
+    pub fn session_homes(&self) -> PathBuf {
+        self.state_dir.join(SESSION_HOMES)
     }
 
     /// `$XDG_STATE_HOME/cockpit/executions`: each execution's output files and leader file.

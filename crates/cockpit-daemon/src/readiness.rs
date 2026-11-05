@@ -309,6 +309,10 @@ fn host_facts(context: &Context) -> HostFacts {
         platform: platform(context.sandbox.platform()),
         tmux: context.tmux.clone(),
         sandbox_setting: context.sessions.owner_settings().sandbox,
+        sandbox_backend: match context.sandbox.backend() {
+            cockpit_sandbox::Backend::Native(native) => Ok(native.describe()),
+            cockpit_sandbox::Backend::Missing { reason } => Err(reason.clone()),
+        },
         providers: context.providers.clone(),
         controls: context
             .admission

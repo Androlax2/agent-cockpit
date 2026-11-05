@@ -268,20 +268,19 @@ fn readiness_step(facts: &Facts) -> Step {
     }
 }
 
-/// That agents run unsandboxed while no backend exists (#828), what needs the owner and how
-/// approvals work; done once the owner wrote `agents.sandbox` in their own file, which is
-/// the recorded consent.
+/// What each `agents.sandbox` value does, what needs the owner and how approvals work; done
+/// once the owner wrote `agents.sandbox` in their own file, which is the recorded consent.
 fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
     let Ok(config) = config else {
         return Step::waiting(SANDBOX, "the configuration reads");
     };
     let setting = &config.agents_sandbox;
     let mut lines = vec![
-        format!(
-            "no sandbox: {}; agents.sandbox = \"off\" runs agents UNSANDBOXED, with your \
-             rights, and \"required\" refuses every launch until it is",
-            cockpit_config::NO_SANDBOX_BACKEND
-        ),
+        "sandbox: agents.sandbox = \"off\" runs agents UNSANDBOXED, with your rights; \
+         \"required\" runs them in Torlek's native sandbox (bubblewrap, Landlock and \
+         seccomp), with no network but loopback until the session proxy exists (#831), and \
+         refuses every launch on a host without it"
+            .to_owned(),
         "needs you: a command an agent asks you to run (`torlek ask run`) or a step only a \
          person can do (`torlek ask guide`); an agent cannot approve its own request"
             .to_owned(),
@@ -296,24 +295,17 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
         ),
     ];
     if let Source::UserFile { path, line } = &setting.source {
-        // An earlier release's init advised `required` as consent; it now refuses every
-        // launch, so the step stays open rather than count a setup that cannot start (#828).
         if setting.value == AgentSandbox::Required {
             lines.push(format!(
-                "you chose the sandbox ({}:{line}): every agent launch is refused until it exists",
+                "you chose the sandbox ({}:{line}): the readiness step's `sandbox` line says \
+                 whether this host has it",
                 path.display()
             ));
             return Step {
                 title: SANDBOX,
-                state: State::Open,
+                state: State::Done,
                 lines,
-                next: Some(format!(
-                    "to run agents now, set `sandbox = \"off\"` at {}:{line}: agents run \
-                     unsandboxed, with your rights ({}); otherwise start none until Torlek's own \
-                     sandbox (#546) ships",
-                    path.display(),
-                    cockpit_config::UNSANDBOXED_RISK
-                )),
+                next: None,
             };
         }
         lines.push(format!(

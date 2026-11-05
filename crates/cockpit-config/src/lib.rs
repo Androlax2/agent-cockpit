@@ -227,19 +227,15 @@ impl DesktopSession {
 pub const UNSANDBOXED_RISK: &str = "an unsandboxed agent can reach the owner socket and act \
     as the owner, so Torlek's grants only hold under the sandbox";
 
-/// Why `agents.sandbox = "required"` refuses every launch in this release (#828): the
-/// engines it used are removed and Torlek's native sandbox (#546) is not built yet.
-pub const NO_SANDBOX_BACKEND: &str =
-    "this release has no sandbox backend: Torlek's native sandbox (#546) is not built yet";
-
 /// Whether a launched agent runs in the sandbox (#61). The product default is `off` until
-/// the native sandbox is live (#546), logged at every launch; an explicit `required` refuses
-/// every launch while no backend exists, never runs one unsandboxed.
+/// the native sandbox is live (#546), logged at every launch; an explicit `required` runs
+/// every launch in Torlek's native sandbox (#829) and refuses it on a host without one,
+/// never runs one unsandboxed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentSandbox {
-    /// Every launch goes through a sandbox backend; one it cannot enforce is refused, and
-    /// with no backend every launch is.
+    /// Every launch goes through the native sandbox; one it cannot enforce is refused, and
+    /// on a host without the sandbox every launch is.
     Required,
     /// Agents run unsandboxed, with the owner's rights.
     Off,

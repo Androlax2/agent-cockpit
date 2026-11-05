@@ -1,6 +1,6 @@
 //! `Sandbox::prepare`, the one entry every launch goes through, and the evidence it records:
-//! with no backend in this release (#828), `agents.sandbox = "off"` runs the agent unchanged
-//! and says so, and `"required"` refuses the launch naming the missing backend.
+//! `agents.sandbox = "off"` runs the agent unchanged and says so; `"required"` runs it through
+//! the native backend (#829) or, on a host without one, refuses the launch naming why.
 
 mod common;
 
@@ -8,9 +8,14 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use cockpit_sandbox::{
-    AgentSandbox, AppliedRule, Enforcement, Evidence, HostPaths, MIGRATIONS, Platform, Sandbox,
+    AgentSandbox, AppliedRule, DesktopSession, Enforcement, Evidence, HostPaths, LaunchRequest,
+    MIGRATIONS, NeedsSource, Platform, Prepared, Protected, ProviderNeeds, Sandbox, SecretHandling,
+    WhenAbsent,
 };
-use common::{MOUNT_SOURCES, OWNER_UID, launch_request, no_host_paths};
+use common::{
+    HOMES, MOUNT_SOURCES, NO_BUBBLEWRAP, OWNER_UID, launch_request, missing_backend,
+    native_backend, no_host_paths,
+};
 
 fn agent_words() -> (PathBuf, Vec<OsString>) {
     (PathBuf::from("/usr/bin/claude"), vec!["--resume".into()])
@@ -18,8 +23,14 @@ fn agent_words() -> (PathBuf, Vec<OsString>) {
 
 fn sandboxes() -> [(&'static str, Sandbox); 3] {
     [
-        ("linux", Sandbox::new(Platform::Linux, no_host_paths())),
-        ("macos", Sandbox::new(Platform::MacOs, no_host_paths())),
+        (
+            "linux",
+            Sandbox::new(Platform::Linux, no_host_paths(), missing_backend()),
+        ),
+        (
+            "macos",
+            Sandbox::new(Platform::MacOs, no_host_paths(), missing_backend()),
+        ),
         ("host paths unread", Sandbox::unavailable()),
     ]
 }
@@ -27,7 +38,7 @@ fn sandboxes() -> [(&'static str, Sandbox); 3] {
 /// The security rule of #828: an explicit `required` never falls back to running the agent
 /// unsandboxed, whatever the host.
 #[test]
-fn a_required_sandbox_refuses_every_launch_naming_the_missing_backend() {
+fn a_required_sandbox_without_a_backend_refuses_every_launch_naming_why() {
     for (case, sandbox) in sandboxes() {
         let (program, arguments) = agent_words();
 
@@ -42,9 +53,12 @@ fn a_required_sandbox_refuses_every_launch_naming_the_missing_backend() {
 
         assert_eq!(refused.rule, "agents.sandbox = \"required\"", "{case}");
         assert!(
-            refused.reason.contains(cockpit_config::NO_SANDBOX_BACKEND),
+            refused.reason.contains("no sandbox backend on this host"),
             "{case}: {refused}"
         );
+        if case != "host paths unread" {
+            assert!(refused.reason.contains(NO_BUBBLEWRAP), "{case}: {refused}");
+        }
         assert!(
             refused
                 .reason
@@ -54,9 +68,162 @@ fn a_required_sandbox_refuses_every_launch_naming_the_missing_backend() {
     }
 }
 
+fn native_launch(request: &LaunchRequest) -> Result<Prepared, cockpit_sandbox::Refusal> {
+    let (program, arguments) = agent_words();
+    Sandbox::new(Platform::Linux, no_host_paths(), native_backend()).prepare(
+        AgentSandbox::Required,
+        request,
+        program,
+        arguments,
+    )
+}
+
+/// #829: the daemon runs the launcher in the agent's place; the agent's own words travel in
+/// the spec, which the daemon writes before the launch.
+#[test]
+fn a_required_sandbox_runs_the_launcher_with_the_sessions_spec() {
+    let prepared = native_launch(&launch_request("s1", "/home/owner/app")).unwrap();
+
+    assert_eq!(
+        prepared.program,
+        PathBuf::from("/opt/torlek/torlek-sandbox")
+    );
+    assert_eq!(
+        prepared.arguments,
+        vec![
+            OsString::from("run"),
+            OsString::from(format!("{MOUNT_SOURCES}/s1/launch-spec.json"))
+        ]
+    );
+    let spec = prepared.staged.unwrap().spec;
+    assert_eq!(
+        (spec.program, spec.arguments),
+        (
+            PathBuf::from("/usr/bin/claude"),
+            vec!["--resume".to_owned()]
+        )
+    );
+}
+
+/// #858: the agent's home is the session's own folder, standing in at the owner's `HOME`.
+#[test]
+fn a_required_sandbox_gives_the_session_its_own_home() {
+    let spec = native_launch(&launch_request("s1", "/home/owner/app"))
+        .unwrap()
+        .staged
+        .unwrap()
+        .spec;
+
+    assert_eq!(
+        (spec.home, spec.home_source),
+        (
+            PathBuf::from("/home/owner"),
+            PathBuf::from(format!("{HOMES}/s1"))
+        )
+    );
+}
+
+/// #829: Git and Torlek act on these outside the sandbox, so an absent one gets an empty
+/// read-only folder; an editor's file is protected only when present.
+#[test]
+fn a_required_sandbox_protects_the_checkouts_git_and_torlek_folders() {
+    let spec = native_launch(&launch_request("s1", "/home/owner/app"))
+        .unwrap()
+        .staged
+        .unwrap()
+        .spec;
+
+    for (path, when_absent) in [
+        ("/home/owner/app/.git/hooks", WhenAbsent::EmptyFolder),
+        ("/home/owner/app/.git/config", WhenAbsent::EmptyFolder),
+        ("/home/owner/app/.torlek", WhenAbsent::EmptyFolder),
+        ("/home/owner/app/.envrc", WhenAbsent::Unprotected),
+    ] {
+        let expected = Protected {
+            path: PathBuf::from(path),
+            when_absent,
+        };
+        assert!(spec.protected.contains(&expected), "{expected:?}");
+    }
+}
+
+#[test]
+fn the_native_evidence_names_the_backend_bubblewrap_and_the_landlock_abi() {
+    let evidence = native_launch(&launch_request("s1", "/home/owner/app"))
+        .unwrap()
+        .evidence;
+
+    assert!(
+        matches!(&evidence.enforcement, Enforcement::Sandboxed { backend, engine, .. }
+            if backend == "torlek-sandbox" && engine == "bubblewrap 0.11.0"),
+        "{evidence:?}"
+    );
+    assert!(
+        evidence.observed.contains(&"landlock abi: 6".to_owned()),
+        "{evidence:?}"
+    );
+}
+
+/// #858: a provider's declared credentials never reach the sandbox, as a variable or a file.
+#[test]
+fn a_required_sandbox_drops_declared_credential_variables_and_hides_credential_files() {
+    let mut request = launch_request("s1", "/home/owner/app");
+    request
+        .environment
+        .push(("ANTHROPIC_API_KEY".into(), "sk-owner".into()));
+    request.needs = ProviderNeeds {
+        source: NeedsSource::Adapter {
+            provider: "claude".to_owned(),
+        },
+        read: vec!["~/.claude".to_owned()],
+        credential_files: vec!["~/.claude/.credentials.json".to_owned()],
+        credential_variables: vec!["ANTHROPIC_API_KEY".to_owned()],
+    };
+
+    let prepared = native_launch(&request).unwrap();
+
+    assert!(
+        !prepared
+            .environment
+            .iter()
+            .any(|(name, _)| name == "ANTHROPIC_API_KEY"),
+        "{:?}",
+        prepared.environment
+    );
+    let spec = prepared.staged.unwrap().spec;
+    assert!(
+        spec.hidden
+            .contains(&PathBuf::from("/home/owner/.claude/.credentials.json")),
+        "{:?}",
+        spec.hidden
+    );
+}
+
+/// Without the session proxy (#831) nothing swaps a placeholder for the secret.
+#[test]
+fn a_required_sandbox_refuses_a_placeholder_secret() {
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.secrets[0].handling = SecretHandling::Placeholder;
+
+    let refused = native_launch(&request).unwrap_err();
+
+    assert_eq!(refused.rule, "secret TORLEK_LAUNCH_TOKEN as a placeholder");
+}
+
+#[test]
+fn a_required_sandbox_refuses_a_shared_desktop_session() {
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.desktop = DesktopSession::Shared;
+    request.environment.push(("DISPLAY".into(), ":0".into()));
+
+    let refused = native_launch(&request).unwrap_err();
+
+    assert_eq!(refused.rule, "desktop session shared");
+}
+
 #[test]
 fn the_off_setting_runs_the_agent_unchanged_and_the_evidence_says_no_sandbox() {
-    let sandbox = Sandbox::new(Platform::Linux, no_host_paths());
+    let sandbox = Sandbox::new(Platform::Linux, no_host_paths(), missing_backend());
     let (program, arguments) = agent_words();
     let request = launch_request("s1", "/home/owner/app");
 
@@ -94,7 +261,10 @@ fn a_hosts_denied_path_reaches_the_profile() {
             denied_write: Vec::new(),
             owner_uid: OWNER_UID,
             mount_sources: PathBuf::from(MOUNT_SOURCES),
+            sockets: Vec::new(),
+            homes: PathBuf::from(HOMES),
         },
+        missing_backend(),
     );
 
     let profile = sandbox
@@ -118,7 +288,10 @@ fn a_launch_requests_own_denied_path_reaches_its_profile_beside_the_hosts() {
             denied_write: Vec::new(),
             owner_uid: OWNER_UID,
             mount_sources: PathBuf::from(MOUNT_SOURCES),
+            sockets: Vec::new(),
+            homes: PathBuf::from(HOMES),
         },
+        missing_backend(),
     );
     let mut request = launch_request("s1", "/home/owner/app");
     request.denied = vec![PathBuf::from("/home/owner/.config/gh")];
@@ -149,7 +322,7 @@ async fn the_evidence_is_read_back_as_recorded_for_the_sessions_latest_launch() 
     let database = cockpit_turso::Database::open(&dir.path().join("state.db"), &[MIGRATIONS])
         .await
         .unwrap();
-    let unsandboxed = Sandbox::new(Platform::Linux, no_host_paths())
+    let unsandboxed = Sandbox::new(Platform::Linux, no_host_paths(), missing_backend())
         .prepare(
             AgentSandbox::Off,
             &launch_request("s1", "/home/owner/app"),

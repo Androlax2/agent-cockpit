@@ -47,12 +47,13 @@ Out of scope:
   (output, messages, files, proposed commands) are not. An agent reaches the daemon only
   through one authenticated agent channel, and every privileged action is checked against
   grants the owner set.
-- **Sandbox.** This release has no sandbox backend: Greywall and Greyproxy were removed
-  (#828) and Torlek's own sandbox (#546) replaces them. By default (`agents.sandbox =
-  "off"`) agents run unsandboxed, with the owner's rights, so grants do not bind them; the
-  daemon logs that risk at its start and at every launch. An explicit `required` refuses
-  every launch. Once a backend is live, the sandbox profile decides which paths, hosts and
-  commands are reachable, and a gap in the profile is a vulnerability, not a feature.
+- **Sandbox.** By default (`agents.sandbox = "off"`) agents run unsandboxed, with the
+  owner's rights, so grants do not bind them; the daemon logs that risk at its start and at
+  every launch. An explicit `required` runs each agent in Torlek's native sandbox (#829):
+  bubblewrap's namespaces and mount view, then Landlock and a seccomp filter, with no network
+  but loopback until the session proxy (#831). On a host without it, `required` refuses every
+  launch and never runs an agent unsandboxed. The sandbox decides which paths, hosts and
+  system calls are reachable, and a gap in it is a vulnerability, not a feature.
 - **Host actions.** Installs, Git writes and other host commands an agent asks for run
   only after the owner approves them on the host side.
 - **Per-user daemon.** The daemon serves its own OS user only and has no desktop
