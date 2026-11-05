@@ -14,7 +14,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app::{App, Confirm, Focus, Overlay};
-use crate::board::Board;
+use crate::board::{Board, Idle};
 use crate::bug_form::{BugField, BugForm};
 use crate::form::{Field, Form, Place};
 use crate::pane::{Shown, Typing};
@@ -263,7 +263,8 @@ pub(crate) fn columns(text: &str) -> usize {
 }
 
 /// One session's card: the id line, then whether it waits on you and what the agent reports
-/// on an indented line of their own. The mark after the selection marker lets the eye find the
+/// on an indented line of their own. A running session whose agent waits with nothing in
+/// progress says `waiting`, the lifecycle kept in brackets (#864). The mark after the selection marker lets the eye find the
 /// sessions that need you down the list's left edge: `!` blocked on you, `?` asked you and
 /// still works (#215). A question a coordinator holds is named with it instead (#710).
 fn card(board: &Board, session: &SessionView, is_selected: bool, width: usize) -> Vec<String> {
@@ -275,16 +276,24 @@ fn card(board: &Board, session: &SessionView, is_selected: bool, width: usize) -
     } else {
         ("!", Some("waiting on you"))
     };
+    let idle = board.idle(session);
+    let state = match idle {
+        Some(_) => format!("waiting ({})", session.state),
+        None => session.state.to_string(),
+    };
     let mut card = vec![format!(
-        "{marker}{mark} {}  {}  {}",
-        session.id, session.agent, session.state,
+        "{marker}{mark} {}  {}  {state}",
+        session.id, session.agent,
     )];
     let held = board
         .question_holder(&session.id)
         .map(|coordinator| format!("question with coordinator {coordinator}"));
+    let resumed_note =
+        (idle == Some(Idle::Resumed)).then_some("resumed, idle until you send it something");
     let details: Vec<&str> = waiting
         .into_iter()
         .chain(held.as_deref())
+        .chain(resumed_note)
         .chain(
             board
                 .report(&session.id)

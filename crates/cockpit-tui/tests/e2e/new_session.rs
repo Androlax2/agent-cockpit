@@ -42,7 +42,7 @@ fn the_form_starts_a_session_in_place_with_its_first_message() {
         view.state == SessionStateView::Running
     });
     assert_eq!(view.working_dir, cockpit.project_root().to_str().unwrap());
-    cockpit.wait_for(&format!("{session}  claude  running"));
+    cockpit.wait_for(&format!("{session}  claude  waiting (running)"));
     cockpit.press(&["Enter"]);
     cockpit.wait_for(&format!("reply: {FIRST_MESSAGE}"));
 }
