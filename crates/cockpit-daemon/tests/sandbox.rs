@@ -375,6 +375,65 @@ async fn a_sandboxed_agent_gets_no_github_token_or_gh_sign_in() {
     assert!(printed.ends_with("refused\nexit=0\n"), "{printed}");
 }
 
+/// #858, and #830's daemon acceptance: no provider's sign-in file is in the view. The
+/// launched provider's folder is the session's own, where the launch also masks the file; the
+/// other providers' folders are not mounted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_sees_no_providers_credential_file() {
+    let home = Home::new();
+    let credential_files = [
+        ".claude/.credentials.json",
+        ".codex/auth.json",
+        ".local/share/opencode/auth.json",
+    ];
+    let agent = sandboxed_agent(&home, |home| {
+        for file in credential_files {
+            let path = home.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "owner's sign-in\n").unwrap();
+        }
+    })
+    .await;
+
+    for file in credential_files {
+        let printed = run_in_agent(
+            &home,
+            &agent.root,
+            &format!("cat ~/{file} 2>/dev/null || echo absent"),
+        )
+        .await;
+
+        assert_eq!(printed, "absent\nexit=0\n", "{file}");
+    }
+}
+
+/// #858: the owner's provider keys stay with the daemon; until #832's placeholders, the
+/// agent gets none of them. The daemon passes only its base variables, and the launcher
+/// drops the launched provider's declared ones besides.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_gets_no_providers_credential_variable() {
+    let home = Home::new();
+    home.write_owner_config(REQUIRED);
+    let credential_variables = [
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "CODEX_API_KEY",
+    ];
+    let owner_keys: Vec<(&str, &str)> = credential_variables
+        .iter()
+        .map(|variable| (*variable, "owner-key"))
+        .collect();
+    let _daemon = home.start_with(&owner_keys);
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    new_session(&client, &root).await;
+
+    let printed = run_in_agent(&home, &root, "env | grep -c owner-key").await;
+
+    assert_eq!(printed, "0\nexit=1\n");
+}
+
 /// #857: the session proxy allows no forge the adapter does not declare, so a push from
 /// inside reaches none.
 #[tokio::test(flavor = "multi_thread")]
