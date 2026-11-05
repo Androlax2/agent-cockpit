@@ -11,7 +11,9 @@ question (import the Go engines or keep them separate) and is superseded by this
 
 ## Recommendation and decisions
 
-Build the replacement for Linux and WSL2 first, from five pieces Torlek owns:
+Remove Greywall and Greyproxy first: nothing uses them today (Theo, 2026-11-05). Then build the
+replacement for Linux and WSL2 from five pieces Torlek owns; it becomes the default once it is
+live:
 
 1. **A session launcher, `torlek-sandbox`.** One small Rust program per session, started where
    Greywall starts today. It builds the agent's namespaces (user, mount, PID, network, IPC,
@@ -36,8 +38,8 @@ Build the replacement for Linux and WSL2 first, from five pieces Torlek owns:
    adapters; network allow rules become audited, revocable grants; the launcher reports what it
    actually enforced.
 
-Migrate behind one owner setting, run the same live enforcement suite (#433) and red-team
-(#685) on both backends, make the native one the default, then delete the engines.
+Until it is live, agents run without a sandbox and Torlek says so at every launch. Run the live
+enforcement suite (#433) and the red-team (#685) against it, then turn it on by default.
 
 Performance does not decide this. On the research host bubblewrap adds about 1.8 ms to a plain
 start, and a native prototype without a mount view or PID namespace about 0.75 ms. The decided
@@ -54,8 +56,8 @@ call takes hundreds of milliseconds. The case rests on correctness, one lifecycl
   #674's text changes from the whole profile to the project.
 - [x] D5 decided 2026-11-05: A, the `landlock` crate and `seccompiler`, pinned exactly; the
   workspace keeps `unsafe_code = "deny"`.
-- [x] D6 decided 2026-11-05: A, stages 1 to 4 in v0.1.0-alpha.4, stage 5 in v0.1.0-alpha.5,
-  macOS in Roadmap: macOS.
+- [x] D6 decided 2026-11-05: A, then changed the same day: the engines are removed first, and
+  everything up to the native default is in v0.1.0-alpha.4; macOS in Roadmap: macOS.
 - [ ] Theo approves or declines each
   [proposed issue](#proposed-issues-not-filed).
 
@@ -90,7 +92,8 @@ Pins: Greywall [`a9ccc58`](https://github.com/Androlax2/greywall/tree/a9ccc58c4e
 (Go, 15,013 lines without tests, Apache-2.0, embeds GPL-3.0 tun2socks 2.5.2) and Greyproxy
 [`15ad5fb`](https://github.com/Androlax2/greyproxy/tree/15ad5fbfd582d3d85fce79fec09f5a26bb18323e)
 (Go, 49,466 lines without tests of which about 27,500 are a vendored copy of the proxy it forked, MIT, 31 direct
-dependencies). Paths below are inside those trees.
+dependencies). Paths below are inside those trees. Nothing uses the engines today (Theo,
+2026-11-05); this inventory describes them as wired, which is what the removal deletes.
 
 ### Mechanisms
 
@@ -158,21 +161,21 @@ The design below closes each by construction or names the test that must prove i
 | [#641](https://github.com/Androlax2/agent-cockpit/issues/641) unknown host hangs | alpha.4 | Superseded by #674 |
 | [#674](https://github.com/Androlax2/agent-cockpit/issues/674) refuse at once, owner decides | alpha.4 | Kept: built in the native proxy (Theo's 2026-11-03 decision). Text changes: "allow always" covers the project, not the whole profile (D4) |
 | [#495](https://github.com/Androlax2/agent-cockpit/issues/495) Greyproxy lifecycle | alpha.4 | Superseded: no shared service. Its fresh-home and "present versus working" acceptance moves to the launcher |
-| [#433](https://github.com/Androlax2/agent-cockpit/issues/433) live enforcement CI | alpha.4 | Changed: same probes, run against the native backend built from the same tree |
+| [#433](https://github.com/Androlax2/agent-cockpit/issues/433) live enforcement CI | alpha.4 | Superseded: no Greywall baseline remains; the same probes run against the native sandbox |
 | [#434](https://github.com/Androlax2/agent-cockpit/issues/434) settings files | alpha.4 | Superseded: policy passes by file descriptor |
 | [#482](https://github.com/Androlax2/agent-cockpit/issues/482) mount source cleanup | alpha.4 | Unaffected in substance; the folder stays daemon-owned |
 | [#685](https://github.com/Androlax2/agent-cockpit/issues/685) red-team | alpha.4 | Changed: section 1 targets the native sandbox, after it ships |
-| [#527](https://github.com/Androlax2/agent-cockpit/issues/527) macOS public CA | Roadmap: macOS | Superseded: the per-session CA's key stays in the launcher's memory (D1) and only its certificate enters the session, so there is no private CA state to protect |
+| [#527](https://github.com/Androlax2/agent-cockpit/issues/527) macOS public CA | Roadmap: macOS | Superseded: the removal ends Greywall on macOS, and the per-session CA's key stays in the launcher's memory (D1) and only its certificate enters the session, so there is no private CA state to protect |
 | [#372](https://github.com/Androlax2/agent-cockpit/issues/372) plugin egress | Roadmap: plugins | Changed: shares the native allowlist, decision and audit model |
 | [#89](https://github.com/Androlax2/agent-cockpit/issues/89), [#245](https://github.com/Androlax2/agent-cockpit/issues/245), [#691](https://github.com/Androlax2/agent-cockpit/issues/691) | beta.3, beta.4 | Changed: no Greyproxy dashboard; a "hold" is a Torlek network request on the change feed |
 
-Also reworded, not re-scoped: #66 (cutover removes the native-replaced engines), #150 (final
+Also reworded, not re-scoped: #66 (the engines are gone before the cutover), #150 (final
 audit covers Torlek-owned code), #568 (macOS needs a native backend), #500 and #501 (remote
 hosts need user namespaces and Landlock, not Greywall), #390 (containers use the native
-proxy), #59 (its proxy placeholders become credentials bound to hosts by proposed issue 4).
+proxy), #59 (its proxy placeholders become credentials bound to hosts by proposed issue 5).
 Since #754 (merged in #819) the project's `GH_TOKEN` enters the sandbox: no launch requests a
 placeholder, because Git sends the token inside Basic credentials that Greyproxy cannot swap.
-Proposed issue 4 takes it out; #754's rule that the sandbox hides `~/.config/gh` applies to any
+Proposed issue 5 takes it out; #754's rule that the sandbox hides `~/.config/gh` applies to any
 backend. Unaffected: #155, #352, #716 and #718.
 
 ## Threat model for an agent session
@@ -255,7 +258,7 @@ namespace it sees only `lo`). Allow-list filters break toolchains on each new sy
 with these additions is the proportionate choice. User notification is not needed, and its manual page warns against using it for
 security decisions. A
 provider's own nested sandbox (for example one built on bubblewrap) cannot start under this
-filter; issue 1 checks that each provider is launched with its own sandbox off.
+filter; proposed issue 2 checks that each provider is launched with its own sandbox off.
 
 ### M4. Network containment
 
@@ -391,25 +394,29 @@ tmux pane ─> torlek-sandbox (host network; scope; confines itself after starti
   shared proxy; no GPL binary to redistribute; no Go toolchain in the release.
 - **Weaknesses 1 to 7 closed by construction** and kept closed by regression tests.
 
-## Migration plan without a gap in enforcement
+## Migration plan
 
-The profile, refusals and evidence are backend-neutral already, so the switch is per launch.
+Theo's direction (2026-11-05): nothing uses Greywall or Greyproxy today, so they are removed
+first, before any sandbox work, and the native sandbox becomes the default once it is live.
+The profile, refusals and evidence are backend-neutral already, so stage 1 deletes only engine
+code and stage 2 adds a backend behind the same interface.
 
 | Stage | Change | Exit check |
 | --- | --- | --- |
 | 0 | Theo's decisions recorded; issues filed | This report updated |
-| 1 | Native launcher and proxy behind `agents.sandbox_backend = "greywall" \| "torlek"` (owner-only, default `greywall`). A running session keeps the backend it started with; evidence names it. A failed native launch refuses; it never falls back to Greywall | Fixture tests through the daemon; the #433 probe suite passes on both backends in disposable CI |
-| 2 | #674 owner decisions and provider-owned allowlists | Unknown host refused under 1 s; decision round trip through the TUI |
-| 3 | Red-team (#685 section 1) on the native backend; findings fixed | Report with no open high finding |
-| 4 | Default becomes `torlek`; Greywall stays selectable for one release as the rollback | Live Linux and WSL2 runs on the owner's hosts with the sandbox on |
-| 5 | Delete `greywall.rs`, `install.rs`, `proxy/`, `seccomp.rs`, pins, `sandbox install`/`restart`/`stop` and their tests; `torlek doctor` offers to stop and remove the old `torlek-greyproxy-<profile>` unit and its state, with the owner's confirmation | No reference to the engines outside history; report 11 and decision register item 15 rewritten |
+| 1 | Remove the engines: `greywall.rs`, `install.rs`, `proxy/`, `seccomp.rs`, the pins, `sandbox install`/`restart`/`stop` and their tests; `torlek doctor` offers to stop and remove the old `torlek-greyproxy-<profile>` unit and its state, with the owner's confirmation. The product default of `agents.sandbox` becomes `off`, with the unsandboxed risk logged at every launch as today; an explicit `required` refuses the launch and names the missing backend, never runs unsandboxed | No reference to the engines outside history; readiness and evidence say "no sandbox"; report 11 and decision register item 15 rewritten |
+| 2 | Native launcher, provider-owned paths and hosts, egress proxy; usable with an explicit `agents.sandbox = "required"` while the default stays `off` | Fixture tests through the daemon; the #433 probe suite passes in disposable CI |
+| 3 | #674 owner decisions for unknown hosts | Unknown host refused under 1 s; decision round trip through the TUI |
+| 4 | Red-team (#685 section 1); findings fixed | Report with no open high finding |
+| 5 | Live: the product default returns to `required`, enforced by the native sandbox | Live Linux and WSL2 runs on the owner's hosts with the sandbox on |
 
-Selective interception (proposed issue 4) follows stage 1 and gates stage 4. Torlek asks for no
-placeholder, but Greywall's own detection still replaces matching credential variables (row
-Credentials above), so a native launch must not carry them in instead. Until issue 4 lands,
-the native agent gets only the environment Torlek builds plus its declared pass-through
-secrets; a variable Greywall would have replaced is dropped and named in the evidence. Rollback before stage 5 is one owner setting. Nothing in stages 1 to 4 removes the managed
-Greyproxy, so an owner who switches back finds it running.
+Between stages 1 and 5 an agent can reach the owner socket and act as the owner, so grants do
+not bind it (the risk Torlek already logs for `agents.sandbox = "off"`, #729); Theo accepts
+this because the engines are not in use today. Selective interception (proposed issue 5)
+follows the proxy and gates no stage: the native agent gets only the environment Torlek builds
+plus its declared pass-through secrets, so an owner credential in the pane never reaches it.
+After stage 5 the rollback is `agents.sandbox = "off"`, the existing named opt-out; there is no
+engine to switch back to.
 
 ## Decisions for the owner
 
@@ -423,7 +430,7 @@ Greyproxy, so an owner who switches back finds it running.
   bound credential (M6 B), from the start.
 
 **Decided 2026-11-05: C, staged.** The target is C. A ships first; selective interception
-with the in-memory per-session CA is the next issue (proposed issue 4).
+with the in-memory per-session CA is the next issue (proposed issue 5).
 
 **D2. Where the proxy runs.** **A (recommended):** in each session's launcher (M7 A): traffic
 survives daemon restarts and a session's identity needs no secret. **B:** inside the daemon.
@@ -462,8 +469,10 @@ no dependency.
 stage 5 in v0.1.0-alpha.5, macOS in Roadmap: macOS. **B:** a new milestone between alpha.4 and
 alpha.5 for the native sandbox. **C:** after the Beta 2 cutover.
 
-**Decided 2026-11-05: A.** Stages 1 to 4 in v0.1.0-alpha.4, stage 5 (remove Greywall and
-Greyproxy) in v0.1.0-alpha.5, macOS in Roadmap: macOS.
+**Decided 2026-11-05: A**, then **changed the same day by Theo**: Greywall and Greyproxy are
+removed first, before any sandbox work, because nothing uses them; the native sandbox becomes
+the default once it is live. Every migration stage is in v0.1.0-alpha.4, none in alpha.5;
+macOS stays in Roadmap: macOS.
 
 ## Proposed issues (not filed)
 
@@ -472,15 +481,15 @@ with focused tests, without review or CI waits.
 
 | # | Title | Acceptance | Milestone (D6) | Supersedes or changes | Rough size |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Native Linux launcher behind `agents.sandbox_backend` | Through the daemon with a fake provider: checkout writable; `.git/hooks`, `.git/config`, `.torlek` not; `~/.ssh/id_*` and the state database unreadable; no interface but `lo`; `Seccomp: 2`; a second Unix user starts a session (#628); each provider launched with its own sandbox off; a credential variable Greywall would have replaced is dropped and named in the evidence; evidence names the backend and Landlock ABI | alpha.4 | #628, #434 | about 3 days |
-| 2 | Provider hosts and paths in the provider adapters | Each adapter declares its hosts and folders; a test compares them with the Greywall profiles they replace; attribution kept | alpha.4 | Greywall `--profile` | about half a day |
-| 3 | Per-session egress proxy | Allowed host connects; unknown host `403` under 1 s with a reason; loopback, private, link-local, metadata and IP literals refused; SNI missing or mismatched on 443 refused; a granted host and port other than 443 tunnels without a peek; no DNS or UDP from inside | alpha.4 | #495 | about 2 days |
-| 4 | Selective TLS interception for credential hosts | A host with a bound credential (for example the project's `GH_TOKEN`, #754) is intercepted with a per-session CA whose key never leaves the launcher's memory; only the certificate enters the session, with trust variables per runtime; the credential is added on that host only and never enters the sandbox, so `git push` over HTTPS and `gh` work with no token inside; every other host stays a plain tunnel; a pinned client's failure names the host | alpha.4 | #59 placeholders, #754's pass-through, #527 | about 3 days |
-| 5 | Network requests as owner decisions | Request listed in `approval list`, Waiting on you and the change feed; allow once, always for the project (D4), deny; who, when, client recorded; revocation closes open tunnels; no path adds an allowlist entry without an owner decision | alpha.4 | #674 (scope text changes per D4), #641 | about 2 days |
-| 6 | Live enforcement CI for the native backend | #433's probes on disposable Linux and WSL2 runners, both backends, four sequential launches | alpha.4 | #433 | about 1 day |
-| 7 | Red-team the native sandbox | #685 section 1 against the native backend; one issue per finding | alpha.4 | #685 | about 1 day, plus fixes |
-| 8 | Default to the native backend | Default `torlek`; doctor's probe launch; rollback documented | alpha.4 | | about 2 hours |
-| 9 | Remove Greywall and Greyproxy | Stage 5 above, including the confirmed removal of the old unit and state | alpha.5 | #495, #527, #66 wording | about half a day |
+| 1 | Remove Greywall and Greyproxy | Stage 1 above: the engines' code, pins and verbs are gone; the old unit and its state are removed with the owner's confirmation; product default `agents.sandbox = "off"` with the risk logged at every launch; an explicit `required` refuses and names the missing backend | alpha.4 | #495, #628, #434, #641's hang, #527, #66 wording | about 1 day |
+| 2 | Native Linux sandbox launcher | Through the daemon with a fake provider and `agents.sandbox = "required"`: checkout writable; `.git/hooks`, `.git/config`, `.torlek` not; `~/.ssh/id_*` and the state database unreadable; no interface but `lo`; `Seccomp: 2`; a second Unix user starts a session (#628); each provider launched with its own sandbox off; only the environment Torlek builds and declared secrets reach the agent; evidence names the sandbox and Landlock ABI | alpha.4 | #628 and #434 as regression tests | about 3 days |
+| 3 | Provider hosts and paths in the provider adapters | Each adapter declares its hosts and folders, seeded from Greywall's profiles at the pinned commit; attribution kept | alpha.4 | Greywall `--profile` | about half a day |
+| 4 | Per-session egress proxy | Allowed host connects; unknown host `403` under 1 s with a reason; loopback, private, link-local, metadata and IP literals refused; SNI missing or mismatched on 443 refused; a granted host and port other than 443 tunnels without a peek; no DNS or UDP from inside | alpha.4 | #495 | about 2 days |
+| 5 | Selective TLS interception for credential hosts | A host with a bound credential (for example the project's `GH_TOKEN`, #754) is intercepted with a per-session CA whose key never leaves the launcher's memory; only the certificate enters the session, with trust variables per runtime; the credential is added on that host only and never enters the sandbox, so `git push` over HTTPS and `gh` work with no token inside; every other host stays a plain tunnel; a pinned client's failure names the host | alpha.4 | #59 placeholders, #754's pass-through | about 3 days |
+| 6 | Network requests as owner decisions | Request listed in `approval list`, Waiting on you and the change feed; allow once, always for the project (D4), deny; who, when, client recorded; revocation closes open tunnels; no path adds an allowlist entry without an owner decision | alpha.4 | #674 (scope text changes per D4), #641 | about 2 days |
+| 7 | Live enforcement CI for the native sandbox | #433's probes on disposable Linux and WSL2 runners against the native sandbox, four sequential launches | alpha.4 | #433 | about 1 day |
+| 8 | Red-team the native sandbox | #685 section 1 against the native sandbox; one issue per finding | alpha.4 | #685 | about 1 day, plus fixes |
+| 9 | Turn the sandbox on by default | Product default `agents.sandbox = "required"` again, enforced natively; `torlek doctor` runs a probe launch; `off` documented as the rollback | alpha.4 | | about 2 hours |
 | 10 | Per-session resource limits | A fork bomb or memory hog in one session leaves the others running; without a user manager, "no per-session limits" is reported | Hardening: daemon, sessions, CLI and TUI | | about half a day |
 | 11 | macOS Seatbelt backend | Same probe suite on a macOS runner | Roadmap: macOS | #527, #568 | about 3 days |
 
@@ -491,20 +500,19 @@ report closes and rewrites nothing; Theo does that when filing.
 
 | Current issue | Disposition | By proposed issue |
 | --- | --- | --- |
-| [#628](https://github.com/Androlax2/agent-cockpit/issues/628) shared seccomp folder | Superseded: the filter is installed from memory; its second-user acceptance becomes a regression test | 1 |
-| [#434](https://github.com/Androlax2/agent-cockpit/issues/434) settings files of failed and ended sessions | Superseded: the policy passes on an inherited descriptor, no settings file exists | 1 |
-| [#495](https://github.com/Androlax2/agent-cockpit/issues/495) own the Greyproxy lifecycle | Superseded: no shared proxy service; its fresh-home and "present versus working" checks move to the launcher's probe launch | 1, 3, 9 |
-| [#641](https://github.com/Androlax2/agent-cockpit/issues/641) request to a new host hangs | Superseded: an unknown host is refused at once and becomes an owner decision | 3, 5 |
-| [#674](https://github.com/Androlax2/agent-cockpit/issues/674) refuse at once, owner decides | Kept and rewritten for the native proxy: it can carry proposed issue 5 itself; "allow always" covers the project (D4) | 5 |
-| [#433](https://github.com/Androlax2/agent-cockpit/issues/433) live enforcement CI | Not superseded: the same probes stay the Greywall baseline; proposed issue 6 runs them on the native backend, or #433 is widened to both | 6 |
-| [#685](https://github.com/Androlax2/agent-cockpit/issues/685) red-team | Not superseded: its section 1 targets the native sandbox once it ships | 7 |
+| [#628](https://github.com/Androlax2/agent-cockpit/issues/628) shared seccomp folder | Superseded: the removal deletes the shared filter; the native one is installed from memory, and the second-user acceptance becomes a regression test | 1, 2 |
+| [#434](https://github.com/Androlax2/agent-cockpit/issues/434) settings files of failed and ended sessions | Superseded: the removal deletes the settings files; the native policy passes on an inherited descriptor | 1, 2 |
+| [#495](https://github.com/Androlax2/agent-cockpit/issues/495) own the Greyproxy lifecycle | Superseded by the removal; its fresh-home and "present versus working" checks move to the launcher's probe launch | 1, 9 |
+| [#641](https://github.com/Androlax2/agent-cockpit/issues/641) request to a new host hangs | Superseded: the removal ends the hang; the native proxy refuses an unknown host at once and asks the owner | 1, 4, 6 |
+| [#674](https://github.com/Androlax2/agent-cockpit/issues/674) refuse at once, owner decides | Kept and rewritten for the native proxy: it can carry proposed issue 6 itself; "allow always" covers the project (D4) | 6 |
+| [#433](https://github.com/Androlax2/agent-cockpit/issues/433) live enforcement CI | Superseded: no Greywall baseline remains; proposed issue 7 runs the same probes on the native sandbox, or #433 is rewritten to do so | 7 |
+| [#685](https://github.com/Androlax2/agent-cockpit/issues/685) red-team | Not superseded: its section 1 targets the native sandbox once it ships | 8 |
 | [#482](https://github.com/Androlax2/agent-cockpit/issues/482) mount source cleanup | Unaffected: the folder stays daemon-owned | |
 | [#382](https://github.com/Androlax2/agent-cockpit/issues/382) repository protection | Unaffected | |
 | [#546](https://github.com/Androlax2/agent-cockpit/issues/546) this research | Stays open for Theo | |
 
-Outside alpha.4, proposed issue 4 supersedes [#527](https://github.com/Androlax2/agent-cockpit/issues/527)
-(Roadmap: macOS) and takes over the proxy placeholders of
-[#59](https://github.com/Androlax2/agent-cockpit/issues/59) (v0.1.0-beta.2).
+Outside alpha.4, the removal (proposed issue 1) ends [#527](https://github.com/Androlax2/agent-cockpit/issues/527) (Roadmap: macOS),
+and proposed issue 5 takes over the proxy placeholders of [#59](https://github.com/Androlax2/agent-cockpit/issues/59) (v0.1.0-beta.2).
 
 ## Sources, limits and what was not measured
 
