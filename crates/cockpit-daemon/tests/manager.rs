@@ -656,12 +656,28 @@ async fn showing_a_running_session_whose_tmux_session_is_gone_names_the_missing_
         .await,
     );
 
-    assert_ne!(error.code, ErrorCode::Internal, "{}", error.message);
+    assert_eq!(error.code, ErrorCode::Conflict, "{}", error.message);
     assert!(
         error.message.contains(&started.id) && error.message.contains("terminal is gone"),
         "{}",
         error.message
     );
+    let ended = session(
+        &client,
+        Command::SessionEnd {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+    assert_eq!(ended.state, SessionStateView::Ended);
+    let resumed = session(
+        &client,
+        Command::SessionResume {
+            session: started.id,
+        },
+    )
+    .await;
+    assert_eq!(resumed.state, SessionStateView::Running);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -695,7 +711,12 @@ async fn showing_a_running_session_after_the_whole_tmux_server_is_gone_is_not_in
         .await,
     );
 
-    assert_ne!(error.code, ErrorCode::Internal, "{}", error.message);
+    assert_eq!(error.code, ErrorCode::NotFound, "{}", error.message);
+    assert!(
+        error.message.contains("run `torlek tui`"),
+        "{}",
+        error.message
+    );
 }
 
 /// A session started and ended by its owner: it has no terminal any more.

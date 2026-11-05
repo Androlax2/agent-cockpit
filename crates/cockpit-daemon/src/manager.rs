@@ -272,6 +272,7 @@ async fn show(
     let target = SessionName::new(id.as_str()).map_err(tmux_error)?;
     let showing = Arc::clone(&manager);
     let showing_id = id.clone();
+    let attaching = target.clone();
     let attached = tmux_blocking(move || {
         let tmux = showing.tmux()?;
         let panes = whole_manager(tmux)?;
@@ -287,7 +288,7 @@ async fn show(
             let column = tmux.pane_geometry(&panes.column).map_err(tmux_error)?;
             arrange(tmux, &panes, column, true, true).map_err(tmux_error)?;
         }
-        let attached = tmux.show_in_viewer(&panes.viewer, &target, viewing(is_phone));
+        let attached = tmux.show_in_viewer(&panes.viewer, &attaching, viewing(is_phone));
         if attached.is_ok() {
             *showing
                 .shown
@@ -307,14 +308,13 @@ async fn show(
         if is_without_terminal(current.state) {
             return describe(sessions, &current).await;
         }
-        let terminal = SessionName::new(id.as_str()).map_err(tmux_error)?;
         let probing = Arc::clone(&manager);
         let terminal_exists = tmux_blocking(move || {
             Ok(probing
                 .tmux()?
                 .sessions()
                 .map_err(tmux_error)?
-                .contains(&terminal))
+                .contains(&target))
         })
         .await?;
         if !terminal_exists {
