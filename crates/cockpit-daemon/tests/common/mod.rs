@@ -280,7 +280,6 @@ impl Drop for RunningDaemon {
 /// launched by mistake has logged well within it.
 pub const SETTLE: Duration = Duration::from_millis(500);
 
-/// Seconds since 1970, the clock the daemon stamps rows with.
 fn private_tmux_tmpdir(home: &Path) -> PathBuf {
     let tmux_tmpdir = home.join("tmux");
     std::fs::DirBuilder::new()
@@ -290,6 +289,7 @@ fn private_tmux_tmpdir(home: &Path) -> PathBuf {
     tmux_tmpdir
 }
 
+/// Seconds since 1970, the clock the daemon stamps rows with.
 pub fn unix_now() -> i64 {
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -78,7 +78,7 @@ fn every_tmux_command_names_the_server_by_its_path_under_tmux_tmpdir() {
 }
 
 #[test]
-fn the_tmux_user_directory_is_created_private() {
+fn a_missing_tmux_user_directory_is_created_private() {
     let fixture = LoggedTmux::new();
     let _daemon = fixture.home.start();
 
@@ -104,4 +104,38 @@ fn a_missing_tmux_tmpdir_is_refused_before_any_server_command() {
     );
     assert_eq!(fixture.server_calls(), Vec::<String>::new());
     assert!(!missing.exists(), "the daemon does not create it");
+}
+
+/// tmux refuses only a `tmux-<uid>` directory other users can open; a group bit is its own.
+#[test]
+fn a_tmux_user_directory_with_group_bits_is_accepted_as_tmux_accepts_it() {
+    let fixture = LoggedTmux::new();
+    let user_dir = user_dir(&fixture.home.tmux_tmpdir);
+    std::fs::create_dir(&user_dir).unwrap();
+    std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o750)).unwrap();
+
+    let _daemon = fixture.home.start();
+
+    assert!(
+        !fixture.server_calls().is_empty(),
+        "the start queries its server"
+    );
+}
+
+#[test]
+fn a_tmux_user_directory_other_users_can_open_is_refused() {
+    let fixture = LoggedTmux::new();
+    let user_dir = user_dir(&fixture.home.tmux_tmpdir);
+    std::fs::create_dir(&user_dir).unwrap();
+    std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o705)).unwrap();
+
+    let refused = fixture.home.run_to_exit();
+
+    assert_eq!(refused.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains(&user_dir.display().to_string()) && stderr.contains("705"),
+        "{stderr}"
+    );
+    assert_eq!(fixture.server_calls(), Vec::<String>::new());
 }

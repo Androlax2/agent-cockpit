@@ -133,17 +133,47 @@ impl Instance {
     /// The socket of the tmux server named `name`: `tmux-<uid>/<name>` under `$TMUX_TMPDIR`,
     /// or under `/tmp` when it is unset or empty, where `tmux -L <name>` puts it. Named by
     /// path, since `-L` silently takes `/tmp` when `$TMUX_TMPDIR` is missing and so reached
-    /// the installed Torlek's server (#845); a missing one is refused instead. The
-    /// `tmux-<uid>` directory is created 0700, or checked, as tmux does.
+    /// the installed Torlek's server (#845); a missing one is refused instead.
     pub fn tmux_socket(
         &self,
         name: &str,
         tmux_tmpdir: Option<&OsStr>,
     ) -> Result<PathBuf, StartError> {
         let user_dir = tmux_base_dir(tmux_tmpdir)?.join(format!("tmux-{}", self.owner_uid));
-        create_private_dir(&user_dir, self.owner_uid)?;
+        create_tmux_user_dir(&user_dir, self.owner_uid)?;
         Ok(user_dir.join(name))
     }
+}
+
+/// Creates tmux's `tmux-<uid>` directory 0700, or checks the existing one as tmux does: a
+/// real directory of `owner_uid` that other users cannot open. tmux accepts group bits, so
+/// refusing them would stop a daemon on a server `-L` used to reach.
+fn create_tmux_user_dir(path: &Path, owner_uid: u32) -> Result<(), StartError> {
+    match DirBuilder::new().mode(PRIVATE_DIR_MODE).create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+        Err(source) => return Err(StartError::io("create", path)(source)),
+    }
+    let metadata = fs::symlink_metadata(path).map_err(StartError::io("inspect", path))?;
+    let reason = if !metadata.file_type().is_dir() {
+        "is not a directory (a symbolic link is refused)".to_owned()
+    } else if metadata.uid() != owner_uid {
+        format!(
+            "belongs to user id {}, not to this daemon's user id {owner_uid}",
+            metadata.uid()
+        )
+    } else if metadata.permissions().mode() & 0o007 != 0 {
+        format!(
+            "has mode {:03o}; other users must not open it (run `chmod o-rwx` on it)",
+            metadata.permissions().mode() & 0o777
+        )
+    } else {
+        return Ok(());
+    };
+    Err(StartError::PrivateDir {
+        path: path.to_path_buf(),
+        reason,
+    })
 }
 
 fn tmux_base_dir(tmux_tmpdir: Option<&OsStr>) -> Result<PathBuf, StartError> {

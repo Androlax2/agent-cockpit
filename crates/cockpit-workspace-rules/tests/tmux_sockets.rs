@@ -55,12 +55,34 @@ fn offending_lines(path: &Path, offends: impl Fn(&str) -> bool) -> Vec<String> {
         .collect()
 }
 
+/// Whether `line`, outside a comment, passes tmux a `-L` option: `-L` (or `-Lname`) after
+/// whitespace or a quote on a line that runs `tmux`, or a quoted `-L…` argument anywhere in
+/// Rust, where a command's words sit on lines of their own. A text check: a `-L` on the line
+/// after `tmux` in a shell command passes it.
+fn passes_dash_l(line: &str, is_rust: bool) -> bool {
+    let code = line.trim_start();
+    if code.starts_with('#') || code.starts_with("//") {
+        return false;
+    }
+    let option: String = ['-', 'L'].iter().collect();
+    let after_quote = |quote: char| line.contains(&format!("{quote}{option}"));
+    if is_rust && after_quote('"') {
+        return true;
+    }
+    line.contains("tmux")
+        && line.match_indices(&option).any(|(at, _)| {
+            line[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|before| before.is_whitespace() || before == '"' || before == '\'')
+        })
+}
+
 #[test]
 fn no_crate_names_a_tmux_server_with_dash_l() {
-    let dash_l: String = ['"', '-', 'L', '"'].iter().collect();
     let offenders: Vec<String> = rust_sources()
         .iter()
-        .flat_map(|path| offending_lines(path, |line| line.contains(&dash_l)))
+        .flat_map(|path| offending_lines(path, |line| passes_dash_l(line, true)))
         .collect();
     assert!(
         offenders.is_empty(),
@@ -73,20 +95,38 @@ fn no_crate_names_a_tmux_server_with_dash_l() {
 fn no_tool_names_a_tmux_server_with_dash_l() {
     let offenders: Vec<String> = files_under(&repo_root().join("tools"))
         .iter()
-        .flat_map(|path| {
-            offending_lines(path, |line| {
-                line.contains("tmux")
-                    && [" -L ", "\"-L\"", "'-L'"]
-                        .iter()
-                        .any(|dash_l| line.contains(dash_l))
-            })
-        })
+        .flat_map(|path| offending_lines(path, |line| passes_dash_l(line, false)))
         .collect();
     assert!(
         offenders.is_empty(),
         "name the tmux server by path (`tmux -S`), never by `-L`:\n{}",
         offenders.join("\n")
     );
+}
+
+#[test]
+fn the_dash_l_check_catches_the_usual_spellings() {
+    let option: String = ['-', 'L'].iter().collect();
+    for caught in [
+        format!("tmux {option} torlek kill-server"),
+        format!("tmux {option}torlek kill-server"),
+        format!("    tmux {option}\"$name\" kill-server"),
+        format!("[\"tmux\", \"{option}\", name]"),
+    ] {
+        assert!(passes_dash_l(&caught, false), "{caught}");
+    }
+    assert!(passes_dash_l(
+        &format!("    .args([\"{option}torlek\"])"),
+        true
+    ));
+    for passed in [
+        format!("# Never `tmux {option}`: it falls back to /tmp"),
+        format!("tmux -S \"$socket\" kill-server"),
+        format!("[[ {option} $file ]]"),
+        format!("tmux select-pane{option}"),
+    ] {
+        assert!(!passes_dash_l(&passed, false), "{passed}");
+    }
 }
 
 #[test]
