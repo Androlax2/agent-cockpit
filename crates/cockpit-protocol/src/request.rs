@@ -832,11 +832,15 @@ pub enum Command {
     },
     /// Open the manager tmux session, or find the one already open. `column` (the TUI) runs
     /// in its left pane and `viewer` in the pane beside it until a session is shown there,
-    /// both from `dir` (absolute). Words are never parsed by a shell.
+    /// both from `dir` (absolute). `image_paste` runs when the owner presses CMD+V in the
+    /// viewer (#848); without it, as a client before #848 sends it, the key is not bound.
+    /// Words are never parsed by a shell.
     ManagerOpen {
         dir: String,
         column: Vec<String>,
         viewer: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        image_paste: Vec<String>,
     },
     /// Give the keys to a pane of the manager: the column, where the TUI shows what waits on
     /// the owner (#317), or back to the viewer the column took them from (#345). The TUI
@@ -859,6 +863,10 @@ pub enum Command {
         session: String,
         text: String,
     },
+    /// Owner only: the PNG on the owner's desktop clipboard, saved in the temporary folder of
+    /// the session the manager's viewer shows and its path pasted into that session (#848).
+    /// Without a PNG there, CMD+V goes on to the session as the key it was.
+    SessionPasteImage,
     /// A kind this version does not know. Read only: `decode_request` refuses it as
     /// `unknown-command`, and serializing it fails.
     #[serde(other, skip_serializing)]
@@ -1212,6 +1220,13 @@ pub enum Reply {
     /// `manager-fit` arranged the manager: `phone` says whether in the phone layout.
     ManagerFitted {
         phone: bool,
+    },
+    /// `session-paste-image` for `session`: `path`, the clipboard's image saved and pasted
+    /// into it, or none when the clipboard held no PNG and the key went on to it.
+    ClipboardImage {
+        session: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
     },
 }
 

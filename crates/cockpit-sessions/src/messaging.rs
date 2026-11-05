@@ -98,6 +98,33 @@ impl Sessions {
         .await
     }
 
+    /// Pastes `text` into the agent's terminal as one bracketed paste (#848), as the owner's
+    /// terminal pastes: only into a running session and only printable text.
+    pub async fn paste_text(&self, id: &SessionId, text: &str) -> Result<(), Error> {
+        if text.is_empty() || text.chars().any(char::is_control) {
+            return Err(Error::InvalidMessage {
+                reason: "paste printable text: no control characters or line breaks",
+            });
+        }
+        let session = self.get(id).await?;
+        if session.state != SessionState::Running {
+            return Err(Error::WrongState {
+                session: id.clone(),
+                state: session.state,
+                operation: "paste into its terminal",
+            });
+        }
+        let tmux = self.tmux.clone();
+        let name = terminal_name(id)?;
+        let text = text.to_owned();
+        self.blocking("paste into the agent's terminal", move || {
+            let tmux = tmux.map_err(|reason| Error::TmuxUnavailable { reason })?;
+            let pane = agent_pane(&tmux, &name)?;
+            tmux.paste(&pane, &text).map_err(Error::Tmux)
+        })
+        .await
+    }
+
     /// Interrupts the turn without ending the agent or changing the session's lifecycle.
     pub async fn cancel(&self, id: &SessionId) -> Result<(), Error> {
         self.act(id, None, Addressed::Owner).await

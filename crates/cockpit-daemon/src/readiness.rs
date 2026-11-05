@@ -30,6 +30,8 @@ pub(crate) struct Context {
     pub(crate) sign_in_providers: Vec<Arc<dyn cockpit_provider_api::Provider>>,
     /// Read on each request, so a changed configuration shows at once.
     pub(crate) environment: cockpit_config::Environment,
+    /// Copy out of the viewer and CMD+V's image paste into it (#848).
+    pub(crate) manager: Arc<crate::manager::Manager>,
 }
 
 /// The facts a wired provider reports about itself.
@@ -117,6 +119,12 @@ pub(crate) async fn requirements(
 }
 
 async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, String> {
+    let clipboard = {
+        let context = context.clone();
+        tokio::task::spawn_blocking(move || clipboard_requirements(&context))
+            .await
+            .map_err(|error| error.to_string())?
+    };
     let mut host = host_facts(&context);
     let providers = context.sign_in_providers.clone();
     host.providers = tokio::task::spawn_blocking(move || {
@@ -150,9 +158,10 @@ async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, St
     .await
     .map_err(|error| error.to_string())?;
     let Some(dir) = dir else {
-        return Ok(with_disk(
+        return Ok(with_daemon_lines(
             cockpit_readiness::assess(&host, &config, None),
             &context,
+            clipboard,
         ));
     };
     let checkout = match (&config, checkout) {
@@ -178,17 +187,102 @@ async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, St
         },
         docker,
     };
-    Ok(with_disk(
+    Ok(with_daemon_lines(
         cockpit_readiness::assess(&host, &config, Some(&project)),
         &context,
+        clipboard,
     ))
 }
 
-fn with_disk(mut report: Report, context: &Context) -> Report {
+/// `report` with what only the daemon knows: the disk guard's reading and `clipboard`.
+fn with_daemon_lines(
+    mut report: Report,
+    context: &Context,
+    clipboard: [cockpit_readiness::Requirement; 2],
+) -> Report {
     report
         .requirements
         .extend(disk_requirement(&context.admission));
+    report.requirements.extend(clipboard);
     report
+}
+
+/// Copy out of a session and image paste into it (#848): optional, so neither blocks. Runs
+/// tmux.
+fn clipboard_requirements(context: &Context) -> [cockpit_readiness::Requirement; 2] {
+    let restart = "then restart the daemon";
+    let copies_out = match context.manager.passes_copies_out() {
+        Ok(true) => cockpit_readiness::Requirement::available(
+            "clipboard out",
+            "a copy in the session in the viewer (copy mode: the prefix twice, then [) reaches              your terminal with OSC 52, when it accepts that, as kitty does",
+        ),
+        Ok(false) => cockpit_readiness::Requirement::available(
+            "clipboard out",
+            "not usable, optional: this tmux has no get-clipboard option, so copies stop at              the viewer rather than let panes read the clipboard",
+        )
+        .with_advice(format!(
+            "to use it, install a tmux with get-clipboard (3.8 has it), {restart}"
+        )),
+        Err(reason) => cockpit_readiness::Requirement::available(
+            "clipboard out",
+            format!("not usable, optional: {reason}"),
+        )
+        .with_advice("to use it, make tmux available as its own line says"),
+    };
+    [copies_out, image_paste_requirement(context)]
+}
+
+fn image_paste_requirement(context: &Context) -> cockpit_readiness::Requirement {
+    let name = "clipboard in";
+    let reader = context.manager.clipboard_reader();
+    let Some(found) = find_program(reader) else {
+        return cockpit_readiness::Requirement::available(
+            name,
+            format!(
+                "not usable, optional: no `{}` on the daemon's PATH",
+                reader.display()
+            ),
+        )
+        .with_advice(
+            "to use it, install wl-clipboard on the daemon's PATH, then restart the daemon",
+        );
+    };
+    let display = context
+        .sessions
+        .desktop_environment()
+        .into_iter()
+        .find(|(variable, value)| variable == "WAYLAND_DISPLAY" && !value.is_empty())
+        .map(|(_, value)| value);
+    let Some(display) = display else {
+        return cockpit_readiness::Requirement::available(
+            name,
+            "not usable, optional: the daemon knows no Wayland display to read the clipboard on",
+        )
+        .with_advice(
+            "to use it, run `torlek desktop-session import` in a terminal of your desktop",
+        );
+    };
+    cockpit_readiness::Requirement::available(
+        name,
+        format!(
+            "CMD+V in the viewer pastes the clipboard's PNG into the session on screen ({} on \
+             Wayland display {})",
+            found.display(),
+            display.to_string_lossy()
+        ),
+    )
+}
+
+/// `program` itself when it names a path, else the first file of that name on the daemon's
+/// `PATH`.
+fn find_program(program: &Path) -> Option<PathBuf> {
+    if program.components().count() > 1 {
+        return program.is_file().then(|| program.to_path_buf());
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
 }
 
 /// The low-disk guard's last reading (#406); nothing before its first reading or when the

@@ -28,9 +28,65 @@ fn a_manager_open_carries_the_words_of_both_panes() {
             dir: "/home/owner".to_owned(),
             column: vec!["/usr/bin/cockpit-tui".to_owned(), "--column".to_owned()],
             viewer: vec!["/usr/bin/cockpit-tui".to_owned(), "--viewer".to_owned()],
+            image_paste: Vec::new(),
         }
     );
     assert_eq!(serde_json::to_value(request).unwrap(), wire);
+}
+
+#[test]
+fn a_manager_open_carries_the_image_paste_command_and_session_paste_image_carries_nothing() {
+    for (wire, command) in [
+        (
+            json!({"id": 1, "command": {
+                "kind": "manager-open",
+                "dir": "/home/owner",
+                "column": ["tui"],
+                "viewer": ["tui", "--viewer"],
+                "image_paste": ["/usr/bin/torlek", "session", "paste-image"]
+            }}),
+            Command::ManagerOpen {
+                dir: "/home/owner".to_owned(),
+                column: vec!["tui".to_owned()],
+                viewer: vec!["tui".to_owned(), "--viewer".to_owned()],
+                image_paste: vec![
+                    "/usr/bin/torlek".to_owned(),
+                    "session".to_owned(),
+                    "paste-image".to_owned(),
+                ],
+            },
+        ),
+        (
+            json!({"id": 2, "command": {"kind": "session-paste-image"}}),
+            Command::SessionPasteImage,
+        ),
+    ] {
+        let request = decode_request(&wire.to_string()).unwrap();
+        assert_eq!(request.command, command);
+        assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    }
+}
+
+#[test]
+fn a_clipboard_image_reply_names_the_path_only_when_one_was_pasted() {
+    for (reply, wire) in [
+        (
+            Reply::ClipboardImage {
+                session: "s0123456789ab".to_owned(),
+                path: Some("/tmp/s0123456789ab/clipboard-1.png".to_owned()),
+            },
+            json!({"kind": "clipboard-image", "session": "s0123456789ab", "path": "/tmp/s0123456789ab/clipboard-1.png"}),
+        ),
+        (
+            Reply::ClipboardImage {
+                session: "s0123456789ab".to_owned(),
+                path: None,
+            },
+            json!({"kind": "clipboard-image", "session": "s0123456789ab"}),
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(reply).unwrap(), wire);
+    }
 }
 
 #[test]

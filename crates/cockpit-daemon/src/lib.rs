@@ -5,6 +5,7 @@ mod agent_context;
 mod approvals;
 mod bug_report_feed;
 mod bug_reports;
+mod clipboard;
 mod coordination;
 mod coordinator_workers;
 mod database_retention;
@@ -90,6 +91,9 @@ pub struct Wiring {
     /// The owner's desktop session variables agents get until the owner imports others
     /// (#307): the daemon start's.
     pub desktop_environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    /// The program that reads the owner's desktop clipboard for CMD+V's image paste in the
+    /// viewer (#848): `wl-paste`, found on `PATH` when it runs.
+    pub clipboard_reader: std::path::PathBuf,
     /// How often the sessions' periodic pass (exits, idle sleep, expiry) runs.
     pub session_tick: Duration,
     /// How often the exits alone are looked at between ticks (#632): a dead agent shows as
@@ -366,7 +370,11 @@ impl Instance {
                 }
             }))
             .collect();
-        let manager = Arc::new(Manager::new(tmux.clone(), wiring.environment.clone()));
+        let manager = Arc::new(Manager::new(
+            tmux.clone(),
+            wiring.environment.clone(),
+            wiring.clipboard_reader,
+        ));
         let sign_in_providers = wiring.providers.clone();
         let sessions = Arc::new(cockpit_sessions::Sessions::new(
             Arc::clone(&database),
@@ -433,6 +441,7 @@ impl Instance {
             providers: provider_facts.clone(),
             sign_in_providers: sign_in_providers.clone(),
             environment: wiring.environment.clone(),
+            manager: Arc::clone(&manager),
         };
         let shared = Arc::new(server::Shared {
             owner_uid: self.owner_uid,

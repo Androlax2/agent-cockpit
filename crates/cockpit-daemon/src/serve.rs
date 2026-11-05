@@ -193,6 +193,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             // The start's values until the owner imports fresher ones (#307).
             desktop_environment: own_variables(&cockpit_protocol::DESKTOP_SESSION_VARIABLES)
                 .collect(),
+            clipboard_reader: "wl-paste".into(),
             session_tick: serve.session_tick,
             exit_sweep: EXIT_SWEEP,
             run_settings,

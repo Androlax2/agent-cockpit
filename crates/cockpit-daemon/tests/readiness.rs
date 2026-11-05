@@ -208,6 +208,58 @@ async fn a_provider_that_does_not_run_is_listed_as_optional_and_exits_0() {
     assert!(!next.contains("install"), "{next}");
 }
 
+/// #848: CMD+V in the viewer reads the clipboard with `wl-paste` on the display the owner
+/// imported; doctor says it works once both are there.
+#[tokio::test(flavor = "multi_thread")]
+async fn image_paste_is_available_with_wl_paste_and_the_owners_wayland_display() {
+    let home = Home::new();
+    fake_failing_program(&home, "wl-paste");
+    let _daemon = home.start_with(&[("WAYLAND_DISPLAY", "wayland-test")]);
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    let (line, next) = requirement(&report, "clipboard in");
+    assert_eq!(status(line), "available", "{report}");
+    assert!(line.contains("CMD+V"), "{line}");
+    assert!(next.is_none(), "{report}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_the_owners_wayland_display_image_paste_is_optional_naming_the_import() {
+    let home = Home::new();
+    fake_failing_program(&home, "wl-paste");
+    let _daemon = home.start();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    assert!(doctor.status.success(), "{report}{}", text(&doctor.stderr));
+    let (line, next) = requirement(&report, "clipboard in");
+    assert!(line.contains("not usable, optional"), "{line}");
+    let next = next.unwrap_or_else(|| panic!("no next action in:\n{report}"));
+    assert!(next.contains("torlek desktop-session import"), "{next}");
+}
+
+/// Copy out depends on the tmux the daemon found (`get-clipboard`, which 3.6 lacks), so the
+/// line says which, and never blocks.
+#[tokio::test(flavor = "multi_thread")]
+async fn clipboard_out_is_listed_without_blocking() {
+    let home = Home::new();
+    let _daemon = home.start();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    assert!(doctor.status.success(), "{report}{}", text(&doctor.stderr));
+    let (line, _) = requirement(&report, "clipboard out");
+    assert_eq!(status(line), "available", "{line}");
+    assert!(
+        line.contains("OSC 52") || line.contains("not usable, optional"),
+        "{line}"
+    );
+}
+
 /// #624: init's provider step reads the report doctor prints, so a provider doctor calls not
 /// usable is not offered to sessions.
 #[tokio::test(flavor = "multi_thread")]

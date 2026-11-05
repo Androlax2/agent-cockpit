@@ -71,6 +71,9 @@ Elsewhere
   Copy from the session in the viewer with its copy mode: the prefix twice,
   then [. The copied text goes to the desktop clipboard when the terminal
   accepts OSC 52, as kitty does, and tmux has get-clipboard (3.8 has).
+  Paste an image into the session in the viewer with CMD+V: Torlek saves the
+  PNG on the desktop clipboard (Wayland) and pastes its path; without one,
+  the key reaches the session. torlek doctor says whether both work.
   Detach from the manager with tmux's prefix, then d.";
 
 pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {

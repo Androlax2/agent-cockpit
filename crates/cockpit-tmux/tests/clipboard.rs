@@ -176,6 +176,19 @@ fn panes_osc_52_is_taken_only_where_tmux_can_refuse_clipboard_queries() {
 }
 
 #[test]
+fn the_server_says_copies_go_out_only_where_tmux_can_refuse_clipboard_queries() {
+    let fixture = TestServer::new();
+    fixture.start_shell("agent-1", "sleep 60");
+    let has_get_clipboard = !fixture
+        .tmux(&["show-options", "-sqv", "get-clipboard"])
+        .is_empty();
+
+    let copies_out = fixture.server.passes_copies_out().unwrap();
+
+    assert_eq!(copies_out, has_get_clipboard, "{}", tmux_version());
+}
+
+#[test]
 fn text_an_agent_copies_with_osc_52_reaches_the_desktop_terminal() {
     let fixture = TestServer::new();
     let copy = "printf '\\033]52;c;%s\\007' \"$(printf agent-copied | base64)\"";

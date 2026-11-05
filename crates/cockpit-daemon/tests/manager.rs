@@ -48,16 +48,42 @@ impl Home {
 
     /// Starts the daemon with `tmux` as its tmux binary.
     async fn start_with_tmux(&self, tmux: PathBuf) -> Daemon {
+        self.start_wired(|wiring| wiring.tmux.tmux = tmux).await
+    }
+
+    /// Starts the daemon reading the clipboard with [`Home::fake_clipboard`] holding
+    /// `clipboard`, the owner's desktop session imported as `desktop`.
+    async fn start_with_clipboard(&self, clipboard: Clipboard, desktop: &[(&str, &str)]) -> Daemon {
+        let reader = self.fake_clipboard(clipboard);
+        let desktop = desktop
+            .iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+        self.start_wired(|wiring| {
+            wiring.clipboard_reader = reader;
+            wiring.desktop_environment = desktop;
+        })
+        .await
+    }
+
+    async fn start_wired(&self, wire: impl FnOnce(&mut cockpit_daemon::Wiring)) -> Daemon {
         let log = self.path().join("agents.log");
         let providers: Vec<Arc<dyn Provider>> = vec![
             Arc::new(FakeProvider::new(
                 ProviderName::new("fake").unwrap(),
                 log.clone(),
             )),
-            Arc::new(FakeProvider::new(ProviderName::new("plain").unwrap(), log).without_resume()),
+            Arc::new(
+                FakeProvider::new(ProviderName::new("plain").unwrap(), log.clone())
+                    .without_resume(),
+            ),
+            Arc::new(
+                FakeProvider::new(ProviderName::new("keys").unwrap(), log)
+                    .running(self.first_key_recorder()),
+            ),
         ];
         let mut wiring = common::wiring_in(&self.path(), providers);
-        wiring.tmux.tmux = tmux;
+        wire(&mut wiring);
         wiring.sessions.stop = cockpit_processes::Escalation {
             grace: Duration::from_secs(2),
             kill_wait: Duration::from_secs(5),
@@ -135,6 +161,60 @@ impl Home {
         .to_owned()
     }
 
+    /// An agent program that records the first byte its terminal sends it in
+    /// [`Home::first_key`], as typed: no echo, no line editing.
+    fn first_key_recorder(&self) -> PathBuf {
+        let recorder = self.path().join("record-first-key");
+        std::fs::write(
+            &recorder,
+            format!(
+                "#!/bin/sh\nstty raw -echo\ndd bs=1 count=1 of='{}' 2>/dev/null\n",
+                self.path().join("first-key").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&recorder, Permissions::from_mode(0o755)).unwrap();
+        recorder
+    }
+
+    /// The first byte a `keys` agent got, once it has one.
+    fn first_key(&self) -> Option<Vec<u8>> {
+        std::fs::read(self.path().join("first-key"))
+            .ok()
+            .filter(|key| !key.is_empty())
+    }
+
+    /// A `wl-paste` holding `clipboard`, as wl-clipboard's answers: types listed one a line,
+    /// the PNG's bytes, `Nothing is copied` for an empty clipboard. It answers only on the
+    /// Wayland display `wayland-test`, as the real one finds no clipboard without one.
+    fn fake_clipboard(&self, clipboard: Clipboard) -> PathBuf {
+        let png = self.path().join("clipboard.png");
+        let (types, bytes): (&str, &[u8]) = match clipboard {
+            Clipboard::Empty => ("", b""),
+            Clipboard::Text => ("text/plain;charset=utf-8\nUTF8_STRING", b""),
+            Clipboard::Image(bytes) => ("image/png\ntext/html", bytes),
+        };
+        std::fs::write(&png, bytes).unwrap();
+        let reader = self.path().join("wl-paste");
+        std::fs::write(
+            &reader,
+            format!(
+                "#!/bin/sh\n\
+                 [ \"$WAYLAND_DISPLAY\" = wayland-test ] || {{ echo 'Failed to connect to a Wayland server' >&2; exit 1; }}\n\
+                 [ -n '{types}' ] || {{ echo 'Nothing is copied' >&2; exit 1; }}\n\
+                 case \"$*\" in\n\
+                 --list-types) printf '%s\\n' '{types}' ;;\n\
+                 '--no-newline --type image/png') cat '{png}' ;;\n\
+                 *) echo \"unexpected arguments: $*\" >&2; exit 2 ;;\n\
+                 esac\n",
+                png = png.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&reader, Permissions::from_mode(0o755)).unwrap();
+        reader
+    }
+
     async fn open_manager(&self, client: &Connection) -> Result<Reply, ClientError> {
         request(
             client,
@@ -149,11 +229,24 @@ impl Home {
                     "column".to_owned(),
                 ],
                 viewer: vec!["/bin/sleep".to_owned(), "601".to_owned()],
+                image_paste: Vec::new(),
             },
         )
         .await
     }
 }
+
+/// What the fake desktop clipboard holds.
+#[derive(Clone, Copy)]
+enum Clipboard {
+    Empty,
+    Text,
+    Image(&'static [u8]),
+}
+
+/// The smallest PNG: its signature and a header chunk are what the daemon checks.
+const PNG: &[u8] =
+    b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89";
 
 impl Drop for Home {
     fn drop(&mut self) {
@@ -962,6 +1055,11 @@ fn agent_screen(home: &Home, session: &str) -> String {
 
 /// A running session shown in the viewer, the manager `columns` wide and fitted first.
 async fn shown_session(home: &Home, client: &Connection, columns: u16) -> SessionView {
+    shown_agent(home, client, columns, "fake").await
+}
+
+/// [`shown_session`] of the provider `agent`.
+async fn shown_agent(home: &Home, client: &Connection, columns: u16, agent: &str) -> SessionView {
     let root = home.project(client).await;
     home.open_manager(client).await.unwrap();
     resize_manager(home, columns);
@@ -970,7 +1068,7 @@ async fn shown_session(home: &Home, client: &Connection, columns: u16) -> Sessio
         client,
         Command::SessionNew {
             dir: root.display().to_string(),
-            agent: Some("fake".to_owned()),
+            agent: Some(agent.to_owned()),
             prompt: None,
             clone: None,
             model: None,
@@ -1262,8 +1360,181 @@ async fn session_type_into_a_session_not_on_screen_is_refused() {
     assert!(!agent_screen(&home, &started.id).contains("never typed"));
 }
 
+const DESKTOP: &[(&str, &str)] = &[("WAYLAND_DISPLAY", "wayland-test")];
+/// The manager's width as built: the desktop layout, the viewer taking keys.
+const DESKTOP_COLUMNS: u16 = 200;
+
+async fn paste_image(client: &Connection) -> Result<Reply, ClientError> {
+    request(client, Command::SessionPasteImage).await
+}
+
+/// The image path a `session-paste-image` answered for `session`.
+fn pasted_path(reply: Reply, session: &SessionView) -> PathBuf {
+    match reply {
+        Reply::ClipboardImage {
+            session: pasted,
+            path: Some(path),
+        } if pasted == session.id => PathBuf::from(path),
+        other => panic!(
+            "expected an image pasted into {}, got {other:?}",
+            session.id
+        ),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn an_agent_may_neither_fit_the_manager_nor_type_into_a_session() {
+async fn a_pasted_image_is_the_clipboards_png_saved_privately_in_the_sessions_temp_folder() {
+    let home = Home::new();
+    let daemon = home
+        .start_with_clipboard(Clipboard::Image(PNG), DESKTOP)
+        .await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let started = shown_session(&home, &client, DESKTOP_COLUMNS).await;
+
+    let path = pasted_path(paste_image(&client).await.unwrap(), &started);
+
+    assert_eq!(std::fs::read(&path).unwrap(), PNG);
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "{path:?}");
+    let folder = path.parent().and_then(Path::file_name).unwrap();
+    assert_eq!(folder, started.id.as_str(), "{path:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pasted_images_path_reaches_the_session_on_screen() {
+    let home = Home::new();
+    let daemon = home
+        .start_with_clipboard(Clipboard::Image(PNG), DESKTOP)
+        .await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let started = shown_session(&home, &client, DESKTOP_COLUMNS).await;
+
+    let path = pasted_path(paste_image(&client).await.unwrap(), &started);
+
+    let path = path.display().to_string();
+    eventually("the image's path reaches the agent's terminal", || {
+        agent_screen(&home, &started.id)
+            .replace('\n', "")
+            .contains(&path)
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_an_image_on_the_clipboard_the_key_goes_on_to_the_session_on_screen() {
+    for clipboard in [Clipboard::Empty, Clipboard::Text] {
+        let home = Home::new();
+        let daemon = home.start_with_clipboard(clipboard, DESKTOP).await;
+        let client = Connection::open(daemon.socket_path(), GENEROUS)
+            .await
+            .unwrap();
+        let started = shown_agent(&home, &client, DESKTOP_COLUMNS, "keys").await;
+
+        let reply = paste_image(&client).await.unwrap();
+
+        assert_eq!(
+            reply,
+            Reply::ClipboardImage {
+                session: started.id.clone(),
+                path: None,
+            }
+        );
+        eventually("Ctrl-V reaches the agent", || {
+            home.first_key() == Some(vec![0x16])
+        });
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pasting_an_image_without_the_owners_wayland_display_is_refused_naming_the_import() {
+    let home = Home::new();
+    let daemon = home.start_with_clipboard(Clipboard::Image(PNG), &[]).await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    shown_session(&home, &client, DESKTOP_COLUMNS).await;
+
+    let error = refusal(paste_image(&client).await);
+
+    assert_eq!(error.code, ErrorCode::Refused, "{error:?}");
+    assert!(
+        error.message.contains("torlek desktop-session import"),
+        "{}",
+        error.message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clipboard_image_that_is_not_a_png_is_refused_and_nothing_is_pasted() {
+    let home = Home::new();
+    let daemon = home
+        .start_with_clipboard(Clipboard::Image(b"GIF89a-not-a-png"), DESKTOP)
+        .await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let started = shown_session(&home, &client, DESKTOP_COLUMNS).await;
+
+    let error = refusal(paste_image(&client).await);
+
+    assert_eq!(error.code, ErrorCode::Refused, "{error:?}");
+    assert!(error.message.contains("not a PNG"), "{}", error.message);
+    assert!(!agent_screen(&home, &started.id).contains(".png"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pasting_an_image_with_no_session_on_screen_is_refused() {
+    let home = Home::new();
+    let daemon = home
+        .start_with_clipboard(Clipboard::Image(PNG), DESKTOP)
+        .await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    home.open_manager(&client).await.unwrap();
+
+    let error = refusal(paste_image(&client).await);
+
+    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+    assert!(error.message.contains("open"), "{}", error.message);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_manager_opened_with_an_image_paste_command_binds_ctrl_v_to_it() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+
+    request(
+        &client,
+        Command::ManagerOpen {
+            dir: home.path().display().to_string(),
+            column: vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                "sleep 600".to_owned(),
+                "column".to_owned(),
+            ],
+            viewer: vec!["/bin/sleep".to_owned(), "601".to_owned()],
+            image_paste: vec!["/bin/true".to_owned(), "paste-image".to_owned()],
+        },
+    )
+    .await
+    .unwrap();
+
+    let binding = home.tmux(&["list-keys", "-T", "root", "C-v"]);
+    assert!(binding.contains("run-shell"), "{binding}");
+    let script = std::fs::read_to_string(home.path().join("image-paste")).unwrap();
+    assert!(script.contains("'/bin/true' 'paste-image'"), "{script}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_may_neither_fit_the_manager_nor_type_nor_paste_into_a_session() {
     let home = Home::new();
     let daemon = home.start().await;
     let agent = Connection::open(daemon.agent_socket_path(), GENEROUS)
@@ -1276,6 +1547,7 @@ async fn an_agent_may_neither_fit_the_manager_nor_type_into_a_session() {
             session: "s000000000001".to_owned(),
             text: "x".to_owned(),
         },
+        Command::SessionPasteImage,
     ] {
         let error = refusal(request(&agent, command).await);
         assert_eq!(error.code, ErrorCode::NotAuthorized, "{error:?}");

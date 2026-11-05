@@ -51,7 +51,8 @@ set-option -s terminal-features[11] 'screen*:clipboard'
     )
 }
 
-/// The owner's paste key, as tmux names it: CMD+V is Control+V under Theo's keyd mapping.
+/// The owner's image paste key as tmux names it: Ctrl+V, which Claude Code reads as its own
+/// image paste and kitty sends as `C-v` (CMD+V where Command is mapped to Control).
 const IMAGE_PASTE_KEY: &str = "C-v";
 /// Set on the viewer pane only: the key binding's test for where the key was pressed.
 const VIEWER_OPTION: &str = "@torlek-viewer";
@@ -383,6 +384,20 @@ impl Server {
     pub fn select_pane(&self, pane: &PaneId) -> Result<(), Error> {
         self.run(&words(&["select-pane", "-t", pane.as_str()]))
             .map(drop)
+    }
+
+    /// Whether a copy in a pane goes on to the owner's terminal (#848): the config turns
+    /// `set-clipboard` on only where tmux can refuse panes' clipboard queries. Starts the
+    /// server to read it when none runs.
+    pub fn passes_copies_out(&self) -> Result<bool, Error> {
+        let printed = self.run(&words(&[
+            "start-server",
+            ";",
+            "show-options",
+            "-sv",
+            "set-clipboard",
+        ]))?;
+        Ok(String::from_utf8_lossy(&printed).trim_end() == "on")
     }
 
     /// The pane of `session` that has the keys: its current window's active pane.

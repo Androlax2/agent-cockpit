@@ -176,6 +176,24 @@ async fn provider_with_anything_but_list_is_a_usage_error() {
 }
 
 #[tokio::test]
+async fn session_paste_image_asks_the_daemon_and_prints_nothing() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::ClipboardImage {
+            session: "s0123456789ab".to_owned(),
+            path: Some("/run/s0123456789ab/clipboard-1.png".to_owned()),
+        }),
+    );
+
+    let output = home.cockpit(&["session", "paste-image"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "");
+    assert_eq!(daemon.await.unwrap(), Command::SessionPasteImage);
+}
+
+#[tokio::test]
 async fn tui_opens_the_manager_with_the_tui_beside_cockpit_and_attaches_to_it() {
     let home = Home::new();
     let socket = home.daemon_socket();
@@ -208,6 +226,13 @@ async fn tui_opens_the_manager_with_the_tui_beside_cockpit_and_attaches_to_it() 
                 path_text(&home.dir.path().join(".local/state/torlek-dev")),
             ],
             viewer: vec![tui, "--viewer".to_owned()],
+            image_paste: vec![
+                path_text(&cockpit),
+                "--profile".to_owned(),
+                "dev".to_owned(),
+                "session".to_owned(),
+                "paste-image".to_owned(),
+            ],
         }
     );
 }

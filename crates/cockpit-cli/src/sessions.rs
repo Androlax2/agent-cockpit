@@ -68,6 +68,7 @@ pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
         ["end", id] => Command::SessionEnd {
             session: session(id),
         },
+        ["paste-image"] => Command::SessionPasteImage,
         ["show", id] => Command::SessionShow {
             session: session(id),
         },
@@ -269,6 +270,8 @@ pub fn run(command: Command) -> ExitCode {
                 .iter()
                 .for_each(|entry| outln!("{}", audit_line(entry)));
         }
+        // CMD+V in the viewer runs it (#848): what it did shows in the session.
+        Reply::ClipboardImage { .. } => {}
         Reply::EndedFinished { ended, failed } => {
             ended.iter().for_each(|session| {
                 out!("{}", session_line(session));

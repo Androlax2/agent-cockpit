@@ -129,6 +129,7 @@ impl Routes {
             providers: capabilities.provider_facts,
             sign_in_providers: capabilities.sign_in_providers,
             environment: environment.clone(),
+            manager: Arc::clone(&capabilities.manager),
         };
         Routes {
             storage: capabilities.storage,
@@ -536,7 +537,8 @@ impl Handler for Routes {
                 | Command::ManagerFocus { .. }
                 | Command::ManagerFit { .. }
                 | Command::SessionShow { .. }
-                | Command::SessionType { .. }),
+                | Command::SessionType { .. }
+                | Command::SessionPasteImage),
                 peer,
             ) => {
                 match peer {

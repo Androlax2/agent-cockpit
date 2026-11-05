@@ -1,5 +1,6 @@
 //! `cockpit tui`: asks the daemon for the manager session (a column running `cockpit-tui`
-//! and a viewer beside it) and attaches this terminal to it. The CLI resolves the socket, the
+//! and a viewer beside it, where CMD+V runs `cockpit session paste-image`, #848) and attaches
+//! this terminal to it. The CLI resolves the socket, the
 //! profile and its state directory so the TUI needs no configuration of its own (crate graph:
 //! tui -> client/protocol/diagnostics only).
 
@@ -69,6 +70,13 @@ fn manager_open() -> Result<Command, ExitCode> {
             utf8(&state_dir)?,
         ],
         viewer: vec![tui, "--viewer".to_owned()],
+        image_paste: vec![
+            utf8(&crate::profile::this_program().map_err(|problem| fail(&problem))?)?,
+            "--profile".to_owned(),
+            environment.profile.value.name().to_owned(),
+            "session".to_owned(),
+            "paste-image".to_owned(),
+        ],
     })
 }
 

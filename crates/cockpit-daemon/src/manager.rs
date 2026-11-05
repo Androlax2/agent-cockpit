@@ -3,13 +3,15 @@
 //! because only the daemon's side runs tmux; the TUI asks for it over the socket.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cockpit_protocol::{Command, ErrorCode, ManagerPaneView, Outcome, ProtocolError, Reply};
 use cockpit_sessions::{Session, SessionId, SessionState, Sessions, StopTarget};
-use cockpit_tmux::{PaneGeometry, PaneId, PaneState, SessionLaunch, SessionName, Split, Viewing};
+use cockpit_tmux::{
+    Keystroke, PaneGeometry, PaneId, PaneState, SessionLaunch, SessionName, Split, Viewing,
+};
 
 use crate::routes::{Route, WorkClass, refusal};
 
@@ -29,6 +31,8 @@ pub struct Manager {
     /// Where the owner's configuration is read: when the column is built
     /// (`tui.attention_bell`) and at each fit (`tui.phone_below_columns`).
     environment: cockpit_config::Environment,
+    /// `wl-paste`, which reads the owner's clipboard for CMD+V in the viewer (#848).
+    clipboard_reader: PathBuf,
     /// Held while the manager is checked and built, so two `cockpit tui` at once build it
     /// once.
     opening: Mutex<()>,
@@ -47,10 +51,12 @@ impl Manager {
     pub(crate) fn new(
         tmux: Result<Arc<cockpit_tmux::Server>, String>,
         environment: cockpit_config::Environment,
+        clipboard_reader: PathBuf,
     ) -> Manager {
         Manager {
             tmux,
             environment,
+            clipboard_reader,
             opening: Mutex::new(()),
             shown: Mutex::new(None),
             focusing: Mutex::new(()),
@@ -66,6 +72,18 @@ impl Manager {
             .clone()
     }
 
+    /// Whether a copy in a session goes on to the owner's terminal (#848), or why tmux cannot
+    /// say.
+    pub(crate) fn passes_copies_out(&self) -> Result<bool, String> {
+        let tmux = self.tmux.as_deref().map_err(Clone::clone)?;
+        tmux.passes_copies_out().map_err(|error| error.to_string())
+    }
+
+    /// The program CMD+V in the viewer reads the clipboard with.
+    pub(crate) fn clipboard_reader(&self) -> &Path {
+        &self.clipboard_reader
+    }
+
     fn tmux(&self) -> Result<&cockpit_tmux::Server, ProtocolError> {
         self.tmux.as_deref().map_err(|reason| {
             ProtocolError::new(
@@ -79,15 +97,18 @@ impl Manager {
     }
 }
 
-/// `manager-open`, `manager-focus`, `manager-fit`, `session-show` and `session-type`;
-/// `routes.rs` sends only those here. Each runs tmux, so they take the bulk lane.
+/// `manager-open`, `manager-focus`, `manager-fit`, `session-show`, `session-type` and
+/// `session-paste-image`; `routes.rs` sends only those here. Each runs tmux, so they take the bulk lane.
 pub(crate) fn route(command: Command, sessions: Arc<Sessions>, manager: Arc<Manager>) -> Route {
     let job = match command {
         Command::ManagerOpen {
             dir,
             column,
             viewer,
-        } => job(tmux_blocking(move || open(&manager, dir, &column, &viewer))),
+            image_paste,
+        } => job(tmux_blocking(move || {
+            open(&manager, dir, &column, &viewer, &image_paste)
+        })),
         Command::ManagerFocus { pane } => job(tmux_blocking(move || focus(&manager, pane))),
         Command::ManagerFit { session_open } => job(tmux_blocking(move || {
             fit(
@@ -102,6 +123,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>, manager: Arc<Mana
         Command::SessionType { session, text } => {
             job(async move { type_line(&sessions, &manager, session, &text).await })
         }
+        Command::SessionPasteImage => job(async move { paste_image(&sessions, manager).await }),
         other => {
             tracing::error!(
                 ?other,
@@ -144,6 +166,7 @@ fn open(
     dir: String,
     column: &[String],
     viewer: &[String],
+    image_paste: &[String],
 ) -> Result<Reply, ProtocolError> {
     let tmux = manager.tmux()?;
     let name = manager_name();
@@ -201,6 +224,12 @@ fn open(
         )
         .map_err(tmux_error)?;
         tracing::info!("opened the manager session");
+    }
+    if !image_paste.is_empty() {
+        // Each open: the script names the client that opened the manager last.
+        let panes = whole_manager(tmux)?;
+        tmux.bind_image_paste(&panes.viewer, &words(image_paste))
+            .map_err(tmux_error)?;
     }
     Ok(Reply::Manager {
         attach: tmux
@@ -498,6 +527,60 @@ async fn type_line(
     Ok(Reply::SessionAction {
         session,
         held: Vec::new(),
+    })
+}
+
+/// CMD+V in the viewer (#848): the owner's clipboard PNG saved in the temporary folder of the
+/// session on screen and its path pasted there; without a PNG, the key goes on to the viewer,
+/// so the session gets it as it would have. Read only for a running session the viewer shows.
+async fn paste_image(sessions: &Sessions, manager: Arc<Manager>) -> Result<Reply, ProtocolError> {
+    let Some(id) = manager.viewed() else {
+        return Err(ProtocolError::new(
+            ErrorCode::Conflict,
+            "no session is on screen: open one in the viewer, then press CMD+V",
+        ));
+    };
+    let shown = sessions
+        .get(&id)
+        .await
+        .map_err(|error| crate::sessions::protocol_error(&error))?;
+    if shown.state != SessionState::Running {
+        return Err(ProtocolError::new(
+            ErrorCode::Conflict,
+            format!("{id} is not running: open it again, then press CMD+V"),
+        ));
+    }
+    let reader = manager.clipboard_reader.clone();
+    let desktop = sessions.desktop_environment();
+    let image = tmux_blocking(move || crate::clipboard::read_png(&reader, &desktop)).await?;
+    let Some(image) = image else {
+        tmux_blocking(move || {
+            let tmux = manager.tmux()?;
+            let panes = whole_manager(tmux)?;
+            tmux.send_keys(&panes.viewer, &[Keystroke::Control('v')])
+                .map_err(tmux_error)
+        })
+        .await?;
+        return Ok(Reply::ClipboardImage {
+            session: id.to_string(),
+            path: None,
+        });
+    };
+    let folder = sessions.session_temp_dir(&id);
+    let saved = tmux_blocking(move || crate::clipboard::save(&folder, &image)).await?;
+    let path = saved.to_str().ok_or_else(|| {
+        ProtocolError::new(
+            ErrorCode::Internal,
+            format!("{}: not UTF-8, so it cannot be pasted", saved.display()),
+        )
+    })?;
+    sessions
+        .paste_text(&id, path)
+        .await
+        .map_err(|error| crate::sessions::protocol_error(&error))?;
+    Ok(Reply::ClipboardImage {
+        session: id.to_string(),
+        path: Some(path.to_owned()),
     })
 }
 
