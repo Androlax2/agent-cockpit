@@ -267,8 +267,7 @@ pub struct Staged {
     pub config_dir: PathBuf,
     pub config_files: Vec<(String, String)>,
     pub spec: LaunchSpec,
-    /// The owner's decisions on the subject's network requests when it launches (#674);
-    /// the caller reads them from the database, empty until it does.
+    /// The owner's decisions on the subject's network requests when it launches (#674).
     pub decisions: EgressDecisions,
     /// The bound credentials' values, in the order of the spec's interception (#832).
     pub credential_values: Vec<CredentialValue>,
@@ -382,6 +381,8 @@ pub(crate) struct Launch {
     pub reaches_agent: bool,
     /// The credentials the session proxy adds (#832); a check binds none.
     pub credentials: Vec<BoundCredential>,
+    /// The owner's decisions when it launches (#674); a check's are none.
+    pub decisions: EgressDecisions,
 }
 
 /// The launch of `program` with `arguments` for `launch` through `native`: the launcher in
@@ -520,7 +521,7 @@ pub(crate) fn prepare(
         },
         interception,
     };
-    spec.validate()
+    spec.validate(&launch.decisions)
         .map_err(|error| Refusal::new("launch spec", error.to_string()))?;
     let mut environment: Vec<(OsString, OsString)> = launch
         .environment
@@ -561,7 +562,7 @@ pub(crate) fn prepare(
         config_dir,
         config_files: tool_environment.files,
         spec,
-        decisions: EgressDecisions::default(),
+        decisions: launch.decisions.clone(),
         credential_values: launch
             .credentials
             .iter()

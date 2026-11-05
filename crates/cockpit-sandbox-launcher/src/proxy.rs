@@ -189,6 +189,16 @@ fn say_unreadable(path: &Path, error: &std::io::Error) {
     );
 }
 
+/// The owner's decisions in `path`: none when the file is missing, unreadable or malformed,
+/// so what they allowed is refused again, never kept; an unreadable or malformed one is said.
+pub fn decisions_at(path: &Path) -> EgressDecisions {
+    let (read, problem) = read_decisions(path);
+    if let Some(error) = &problem {
+        say_unreadable(path, error);
+    }
+    decisions_in(path, read.as_deref())
+}
+
 /// The decisions `read` from `path` holds: none when the file is missing or malformed, so
 /// the proxy fails closed.
 fn decisions_in(path: &Path, read: Option<&[u8]>) -> EgressDecisions {
@@ -240,19 +250,10 @@ impl<U: Upstream> Proxy<U> {
         let _ = self.requests_file.set(path);
     }
 
-    /// Reads the owner's decisions from `path` and applies them. A missing or malformed file
-    /// is no decision: what the decisions allowed is refused again, never kept.
-    pub fn load_decisions(&self, path: &Path) {
-        let (read, problem) = read_decisions(path);
-        if let Some(error) = &problem {
-            say_unreadable(path, error);
-        }
-        self.apply_decisions(decisions_in(path, read.as_deref()));
-    }
-
     /// Keeps the decisions current: `path` is read each [`DECISIONS_INTERVAL`] and applied
     /// when it changed, until the process ends. The first read always applies: a file
-    /// replaced between [`Proxy::load_decisions`] and this thread's start is not missed.
+    /// replaced between the launch's read ([`decisions_at`]) and this thread's start is not
+    /// missed.
     pub fn keep_decisions(self: &Arc<Self>, path: PathBuf) {
         let proxy = Arc::clone(self);
         let spawned = std::thread::Builder::new()
@@ -1687,11 +1688,11 @@ mod tests {
             denied: Vec::new(),
         };
         std::fs::write(&decisions, serde_json::to_vec(&allowed).unwrap()).unwrap();
-        running.proxy.load_decisions(&decisions);
+        running.proxy.apply_decisions(decisions_at(&decisions));
         assert!(connect(running.address, "git.example.com:22", b"").starts_with("HTTP/1.1 200 "));
 
         std::fs::write(&decisions, b"{").unwrap();
-        running.proxy.load_decisions(&decisions);
+        running.proxy.apply_decisions(decisions_at(&decisions));
 
         let answer = connect(running.address, "git.example.com:22", b"");
         assert!(answer.starts_with("HTTP/1.1 403 "), "{answer}");

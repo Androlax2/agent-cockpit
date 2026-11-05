@@ -2005,7 +2005,16 @@ impl Sessions {
             self.provider(Some(session.provider.as_str()))?.as_ref(),
             &tools.ecosystems,
         )?;
-        let mut prepared = self.prepare_sandbox(
+        let decisions = self
+            .launch_decisions(
+                setting,
+                &output_project,
+                &cockpit_sandbox::Subject::Session {
+                    session: id.as_str().to_owned(),
+                },
+            )
+            .await?;
+        let prepared = self.prepare_sandbox(
             setting,
             id.as_str(),
             session.provider.as_str(),
@@ -2016,31 +2025,18 @@ impl Sessions {
             environment,
             github,
             needs,
+            decisions,
             tools,
             command.program,
             command.arguments,
         )?;
-        // Dropped when this launch returns, whichever way it does.
-        let _staged_credentials = StagedCredentials(
+        // Removed if this launch returns before its agent is released.
+        let mut staged_credentials = StagedCredentials(
             prepared
                 .staged
                 .as_ref()
                 .and_then(cockpit_sandbox::Staged::credentials_path),
         );
-        if let Some(staged) = prepared.staged.as_mut() {
-            // The project's grants and the session's earlier decisions (#674) hold from the
-            // agent's first connection, not from the daemon's next write.
-            let read = self.database.read().await?;
-            staged.decisions =
-                cockpit_sandbox::egress_decisions(&read, &output_project, &staged.spec.subject)
-                    .await
-                    .map_err(|error| match error {
-                        cockpit_sandbox::NetworkError::Sql(source) => Error::Sql(source),
-                        other => Error::InvalidStoredRow {
-                            reason: other.to_string(),
-                        },
-                    })?;
-        }
         if let Some(staged) = prepared.staged.clone() {
             let counted = TerminalStep::start(&self.session_lock(id));
             self.blocking("write the sandbox's launch spec", move || {
@@ -2148,6 +2144,7 @@ impl Sessions {
                 return Err(error);
             }
         };
+        staged_credentials.hand_over();
         let write = self.database.write().await?;
         if let Some(named) = &command.conversation {
             store::set_conversation(&write, id, named).await?;
@@ -2271,20 +2268,26 @@ impl Sessions {
         environment: Vec<(OsString, OsString)>,
         github: GithubAccess,
         needs: cockpit_sandbox::ProviderNeeds,
+        decisions: cockpit_sandbox::EgressDecisions,
         tools: cockpit_sandbox::ToolNeeds,
         program: PathBuf,
         arguments: Vec<OsString>,
     ) -> Result<cockpit_sandbox::Prepared, Error> {
         // A sandboxed agent never holds the project's token, which can push (#857): pushes go
         // through `torlek push`. The session proxy adds the project's API token instead, on
-        // the GitHub hosts the launch reaches (#832).
+        // the GitHub hosts the launch reaches: by its declared needs, or by the owner's
+        // grants and allows at launch (#832, #674).
         let (token, api_credential) = match setting {
             cockpit_config::AgentSandbox::Required => (
                 None,
-                github
-                    .api_token
-                    .as_ref()
-                    .map(|api_token| github_api_credential(api_token, &needs.egress)),
+                github.api_token.as_ref().map(|api_token| {
+                    let reach = cockpit_sandbox::Allowlist {
+                        program: String::new(),
+                        entries: needs.egress.clone(),
+                    }
+                    .with_decisions(&decisions);
+                    github_api_credential(api_token, &reach)
+                }),
             ),
             cockpit_config::AgentSandbox::Off => (github.token.as_ref(), None),
         };
@@ -2325,6 +2328,7 @@ impl Sessions {
                         .and_then(|bound| bound.credential.clone())
                         .into_iter()
                         .collect(),
+                    decisions,
                 },
                 program,
                 arguments,
@@ -2335,6 +2339,30 @@ impl Sessions {
                     prepared.evidence.rules.extend(bound.unbound_rules());
                 }
                 prepared
+            })
+    }
+
+    /// The owner's decisions (#674) for `subject` of `project` when it launches: the project's
+    /// grants and the subject's earlier answers, which hold from the agent's first connection,
+    /// not from the daemon's next write, and which a bound credential counts as reach (#832).
+    /// None under `"off"`, whose launch has no proxy to apply them.
+    async fn launch_decisions(
+        &self,
+        setting: cockpit_config::AgentSandbox,
+        project: &str,
+        subject: &cockpit_sandbox::Subject,
+    ) -> Result<cockpit_sandbox::EgressDecisions, Error> {
+        if setting == cockpit_config::AgentSandbox::Off {
+            return Ok(cockpit_sandbox::EgressDecisions::default());
+        }
+        let read = self.database.read().await?;
+        cockpit_sandbox::egress_decisions(&read, project, subject)
+            .await
+            .map_err(|error| match error {
+                cockpit_sandbox::NetworkError::Sql(source) => Error::Sql(source),
+                other => Error::InvalidStoredRow {
+                    reason: other.to_string(),
+                },
             })
     }
 
@@ -2388,6 +2416,15 @@ impl Sessions {
             .sandbox_tools(setting, &checkout.path, &checkout.path, &environment)
             .await?;
         let needs = provider_needs(self.provider(Some(&provider))?.as_ref(), &tools.ecosystems)?;
+        let decisions = self
+            .launch_decisions(
+                setting,
+                checkout.project.as_str(),
+                &cockpit_sandbox::Subject::Session {
+                    session: DRY_RUN_SESSION.to_owned(),
+                },
+            )
+            .await?;
         self.prepare_sandbox(
             setting,
             DRY_RUN_SESSION,
@@ -2399,6 +2436,7 @@ impl Sessions {
             environment,
             github,
             needs,
+            decisions,
             tools,
             PathBuf::from("<agent>"),
             Vec::new(),
@@ -2976,10 +3014,18 @@ fn with_temp_dir(
     environment
 }
 
-/// A launch's bound credentials file (#832), removed when the launch returns: the launcher
-/// removes it as it starts, so one still there belongs to a launch that failed before its
-/// launcher ran, or that a later start of the launcher must not find.
+/// A launch's bound credentials file (#832), removed if the launch returns before its agent is
+/// released, so a launch that fails before its launcher runs leaves none. Once released, the
+/// launcher runs and removes it as it starts: removing it then would race the launcher, which
+/// would find none and refuse the launch.
 struct StagedCredentials(Option<PathBuf>);
+
+impl StagedCredentials {
+    /// The released launcher owns the file from now on.
+    fn hand_over(&mut self) {
+        self.0 = None;
+    }
+}
 
 impl Drop for StagedCredentials {
     fn drop(&mut self) {
@@ -3089,7 +3135,9 @@ impl GithubApiCredential {
                 rule: format!(
                     "credential: {GITHUB_API_TOKEN_NAME} is not added on {host}:443: the \
                      session's launch does not reach it, and a credential is bound at launch \
-                     only to a host the launch reaches (#857); a later allow (#674) adds none"
+                     only to a host the launch reaches (#857), by its needs or the owner's \
+                     grants and allows (#674); an allow made after the launch adds none until \
+                     the session launches again"
                 ),
                 enforced_by: "torlek".to_owned(),
             })
@@ -3097,20 +3145,16 @@ impl GithubApiCredential {
     }
 }
 
-/// `api_token` bound to each of GitHub's hosts that `egress` lets through on 443: binding a
+/// `api_token` bound to each of GitHub's hosts that `reach` lets through on 443: binding a
 /// credential never grants reach (#857, decision 3), so a host the launch does not reach gets
 /// none and is named instead.
 fn github_api_credential(
     api_token: &cockpit_config::GithubToken,
-    egress: &[cockpit_sandbox::AllowEntry],
+    reach: &cockpit_sandbox::Allowlist,
 ) -> GithubApiCredential {
-    let allowlist = cockpit_sandbox::Allowlist {
-        program: String::new(),
-        entries: egress.to_vec(),
-    };
     let (reached, unbound): (Vec<_>, Vec<_>) = GITHUB_API_TOKEN_HOSTS
         .iter()
-        .partition(|(host, _)| allowlist.decide(host, cockpit_sandbox::TLS_PORT).is_ok());
+        .partition(|(host, _)| reach.decide(host, cockpit_sandbox::TLS_PORT).is_ok());
     let hosts: Vec<cockpit_sandbox::CredentialHost> = reached
         .iter()
         .map(|(host, scheme)| cockpit_sandbox::CredentialHost {

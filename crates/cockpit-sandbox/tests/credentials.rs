@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use cockpit_sandbox::{
     AgentSandbox, AllowEntry, AllowSource, BoundCredential, CredentialHost, CredentialScheme,
-    CredentialValue, HostPaths, LaunchRequest, PLACEHOLDER, Platform, Prepared, Refusal, Sandbox,
-    Target,
+    CredentialValue, EgressDecisions, HostPaths, LaunchRequest, PLACEHOLDER, Platform, Prepared,
+    Refusal, Sandbox, Target,
 };
 use common::{MOUNT_SOURCES, launch_request, native_backend, no_host_paths};
 
@@ -240,6 +240,25 @@ fn a_credential_for_a_host_the_session_may_not_reach_is_refused() {
         )),
         "{refused}"
     );
+}
+
+/// #674: a host the owner's grant or allow lets through at launch is reached, so it is bound;
+/// the proxy gets the same decisions.
+#[test]
+fn a_credential_for_a_host_the_owners_decisions_reach_is_bound() {
+    let bundle = host_bundle();
+    let mut request = bound_request(bundle.path());
+    request.needs.egress = Vec::new();
+    request.decisions = EgressDecisions {
+        allowed: github_hosts(),
+        denied: Vec::new(),
+    };
+
+    let staged = native_launch(&request).unwrap().staged.unwrap();
+
+    let interception = staged.spec.interception.unwrap();
+    assert_eq!(interception.credentials[0].hosts, api_token().hosts);
+    assert_eq!(staged.decisions, request.decisions);
 }
 
 #[test]

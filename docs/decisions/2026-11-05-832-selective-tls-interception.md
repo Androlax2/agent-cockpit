@@ -35,13 +35,20 @@ upstream servers, 2026-11-05) and by the worker (the rest, reasons below).
   `torlek push`; other requests on `github.com` pass unchanged. The agent's `GH_TOKEN` holds a
   placeholder so `gh` runs.
 - **A binding never grants reach (#857 decision 3).** The spec refuses a credential bound to a
-  host its allowlist does not let through on 443. The daemon binds the API token to the
-  GitHub hosts the launch already reaches and names each other one in the evidence ("is not
-  added on github.com:443: the session's launch does not reach it"), rather than refusing
-  every launch of a project that has the file. Today no adapter declares GitHub's hosts, and
-  the binding counts only the launch's declared reach: a project grant or an allow of the
-  owner (#674) lets the session reach a GitHub host without the token, until the binding
-  counts them too (proposal, not implemented).
+  host that neither its allowlist nor the owner's decisions at launch (#674: the project's
+  grants, the session's earlier allows) let through on 443; the daemon checks it against the
+  decisions it stages, the launcher against the decisions file it finds. The daemon binds the
+  API token to the GitHub hosts the launch reaches either way and names each other one in the
+  evidence ("is not added on github.com:443: the session's launch does not reach it"), rather
+  than refusing every launch of a project that has the file. No adapter declares GitHub's
+  hosts, so today the token reaches a GitHub host through the owner's "allow always", or an
+  "allow once" that the session's next launch still holds. A host first allowed while the
+  session runs gets no token until the next launch: the CA is name-constrained to the hosts
+  bound at launch. A revoked grant closes the host's intercepted tunnels as it does plain
+  ones; a host bound at launch carries the token again whenever a later allow reaches it.
+  The launcher checks the binding against the decisions file it reads at its start, and its
+  proxy starts with those same decisions; a revocation between the daemon's read and the
+  launcher's refuses that launch rather than binding a host the session no longer reaches.
 - **Only the bound hosts are intercepted.** Every other host stays the plain tunnel of #831.
   A client that rejects the session CA (pinned, or trusting neither variable) ends the
   handshake with an alert; the proxy counts it (`ca_refused`) and names the host and the
@@ -58,8 +65,9 @@ upstream servers, 2026-11-05) and by the worker (the rest, reasons below).
   waits at most the idle timeout (300 s). `Expect: 100-continue` is answered by the proxy.
 - **The credentials file never outlives its launch.** The launcher removes it before it parses
   the spec, so a spec it refuses leaves none behind; the daemon removes it when the launch
-  returns, so a launch that failed before its launcher ran, or a launcher too old to know the
-  file, leaves none either.
+  fails before its agent is released, so a launch whose launcher never ran leaves none either.
+  Once released, the launcher owns it: removing it as the launch returns raced the launcher,
+  which then found none and refused the launch (fixed in the follow-up to #947).
 - **Upstream servers are verified against the host's CA bundle.** The owner's `SSL_CERT_FILE`
   when the daemon's environment sets one, else the first of the usual distribution bundles;
   no bundle refuses the launch. A failed upstream handshake is a 502 naming the TLS error.
