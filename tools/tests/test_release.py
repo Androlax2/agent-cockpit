@@ -994,75 +994,101 @@ def pull_request_paths():
 
 
 class KnownGapsTests(unittest.TestCase):
-    GAPS = "# Known gaps\n\nThis is an alpha.\n\n- **No macOS builds** (#568, #562).\n"
+    GAPS = "# Known gaps\n\nThis is an alpha.\n\n- **No macOS builds**\n  (#568, #562).\n"
+    REPOSITORY = "Androlax2/agent-cockpit"
 
-    def known_gaps(self, gaps, states, version="0.1.0-alpha.7"):
+    def known_gaps(self, gaps, *options, closed=()):
+        """release.py known-gaps on a throwaway file, with `gh` answering each issue's state."""
+
+        def fake_gh(command, **_):
+            self.assertEqual(command[:3], ["gh", "issue", "view"])
+            self.assertEqual(command[4:], ["--repo", self.REPOSITORY, "--json", "state"])
+            if command[3] == "404":
+                return subprocess.CompletedProcess(command, 1, "", "not found")
+            state = "CLOSED" if command[3] in closed else "OPEN"
+            return subprocess.CompletedProcess(command, 0, json.dumps({"state": state}), "")
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "docs").mkdir()
-            (root / release.KNOWN_GAPS).write_text(gaps)
-            (root / "states").write_text(states)
+            if gaps is not None:
+                (root / release.KNOWN_GAPS).write_text(gaps)
             stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                versioned = [] if version is None else ["--version", version]
-                code = release.main(
-                    ["known-gaps", *versioned, "--issue-states", str(root / "states")],
-                    cwd=root,
-                )
+            with (
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+                patch.object(release.subprocess, "run", fake_gh),
+            ):
+                code = release.main(["known-gaps", *options], cwd=root)
             return code, stdout.getvalue(), stderr.getvalue()
 
     def test_the_notes_name_the_release_and_no_other(self):
-        code, notes, error = self.known_gaps(self.GAPS, "562=open\n568=open\n")
+        code, notes, error = self.known_gaps(
+            self.GAPS, "--version", "0.1.0-alpha.7", "--open-issues-of", self.REPOSITORY
+        )
         self.assertEqual(code, 0, error)
         self.assertEqual(notes, self.GAPS.replace("# Known gaps", "# Known gaps in 0.1.0-alpha.7"))
-        self.assertEqual(release.RELEASE_VERSION_PATTERN.findall(notes), ["0.1.0-alpha.7"])
+        self.assertEqual(release.PRERELEASE_VERSION_PATTERN.findall(notes), ["0.1.0-alpha.7"])
 
     def test_refused_gaps_name_the_rule(self):
         cases = {
-            "a gap that links a closed issue": (
-                self.GAPS,
-                "562=closed\n568=open\n",
-                "#562 is closed",
-            ),
-            "a gap whose issue state was not read": (self.GAPS, "568=open\n", "#562 is of unknown"),
-            "a gap without an issue": (
-                self.GAPS + "- **Untracked.**\n",
-                "562=open\n568=open\n",
-                "links no issue",
-            ),
+            "a gap that links a closed issue": (self.GAPS, ("562",), "#562 is closed"),
+            "an issue whose state cannot be read": (self.GAPS + "- **Lost** (#404).\n", (), "404"),
+            "a gap without an issue": (self.GAPS + "- **Untracked.**\n", (), "links no issue"),
             "a hard-coded release": (
-                self.GAPS + "\nFixes are planned for `0.1.0-alpha.2`.\n",
-                "562=open\n568=open\n",
+                self.GAPS + "\nFixes are planned for `v0.1.0-alpha.2`.\n",
+                (),
                 "names 0.1.0-alpha.2",
             ),
-            "another heading": ("## Gaps\n", "", "first line must be"),
+            "another heading": ("## Gaps\n", (), "first line must be"),
+            "no file": (None, (), "docs/KNOWN-GAPS.md: missing"),
         }
-        for name, (gaps, states, refusal) in cases.items():
+        for name, (gaps, closed, refusal) in cases.items():
             with self.subTest(name):
-                code, notes, error = self.known_gaps(gaps, states)
+                code, notes, error = self.known_gaps(
+                    gaps,
+                    "--version",
+                    "0.1.0-alpha.7",
+                    "--open-issues-of",
+                    self.REPOSITORY,
+                    closed=closed,
+                )
                 self.assertEqual(code, 1)
                 self.assertEqual(notes, "")
                 self.assertIn(refusal, error)
 
-    def test_the_repository_s_gaps_pass_while_their_issues_are_open(self):
-        issues = release.gap_issues(ROOT)
-        self.assertTrue(issues)
-        release.current_gaps({str(issue): "open" for issue in issues}, ROOT)
+    def test_another_program_s_version_is_not_a_release(self):
+        gaps = self.GAPS + "- **Needs tmux 3.5.1 on 127.0.0.1** (#568).\n"
+        code, _, error = self.known_gaps(gaps, "--version", "0.1.0-alpha.7")
+        self.assertEqual(code, 0, error)
+
+    def test_a_tag_s_own_run_renders_without_reading_issue_states(self):
+        code, notes, error = self.known_gaps(
+            self.GAPS, "--version", "0.1.0-alpha.7", closed=("562", "568")
+        )
+        self.assertEqual(code, 0, error)
+        self.assertIn("# Known gaps in 0.1.0-alpha.7\n", notes)
 
     def test_without_a_version_the_gaps_are_checked_and_nothing_is_printed(self):
-        code, notes, error = self.known_gaps(self.GAPS, "562=open\n568=open\n", version=None)
+        code, notes, error = self.known_gaps(self.GAPS, "--open-issues-of", self.REPOSITORY)
         self.assertEqual((code, notes), (0, ""), error)
-        code, _, error = self.known_gaps(self.GAPS, "562=closed\n568=open\n", version=None)
+        code, _, error = self.known_gaps(
+            self.GAPS, "--open-issues-of", self.REPOSITORY, closed=("568",)
+        )
         self.assertEqual(code, 1)
-        self.assertIn("#562 is closed", error)
+        self.assertIn("#568 is closed", error)
 
-    def test_the_notes_and_the_tag_step_both_check_the_gaps(self):
+    def test_the_repository_s_gaps_name_no_release_and_link_issues(self):
+        self.assertTrue(release.known_gaps("0.1.0-alpha.7", None, ROOT))
+
+    def test_issue_states_are_read_before_a_tag_and_in_dry_runs_but_not_for_a_tag(self):
         prerelease = (ROOT / ".github/workflows/prerelease.yml").read_text()
         notes = RELEASE_WORKFLOW.read_text().split("\n  notes:\n", 1)[1].split("\n  build:\n", 1)[0]
-        for workflow in (prerelease, notes):
-            self.assertIn("tools/release.py gap-issues", workflow)
-        self.assertIn("tools/release.py known-gaps --issue-states", prerelease)
-        self.assertIn('tools/release.py known-gaps --version "$VERSION"', notes)
+        self.assertIn(
+            'tools/release.py known-gaps --open-issues-of "$GITHUB_REPOSITORY"', prerelease
+        )
+        self.assertIn('if [ "$CHANNEL" = alpha ]; then issues=(); fi', notes)
+        self.assertIn('tools/release.py known-gaps --version "$VERSION" "${issues[@]}"', notes)
         self.assertNotIn("cat docs/KNOWN-GAPS.md", notes)
 
 

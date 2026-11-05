@@ -11,8 +11,7 @@ Usage: release.py check-tag TAG --main REF --alpha-checklist open|closed
                           --binaries DIR --out DIR
        release.py verify-install ARCHIVE_ROOT --revision SHA
        release.py gate-gaps CHANNEL
-       release.py gap-issues
-       release.py known-gaps [--version V] --issue-states FILE
+       release.py known-gaps [--version V] [--open-issues-of OWNER/REPO]
        release.py release-plan --version V --channel C
        release.py verify-gates --channel C --results JSON
 
@@ -96,7 +95,8 @@ exit 1
 KNOWN_GAPS = "docs/KNOWN-GAPS.md"
 KNOWN_GAPS_HEADING = "# Known gaps"
 # The file names no release: known-gaps adds the one being released to the heading (#886).
-RELEASE_VERSION_PATTERN = re.compile(r"\b[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?")
+# Only a pre-release's suffix tells a Torlek version from another program's `3.5.1`.
+PRERELEASE_VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta|dev)\.[0-9]+")
 ISSUE_PATTERN = re.compile(r"#([0-9]+)")
 # The install step's one `version=` line; package writes the bundle's own version there (#885).
 README_VERSION_LINE = re.compile(r"(?m)^(?P<indent>[ \t]*)version=(?P<version>.*)$")
@@ -412,47 +412,55 @@ def refuse_other_install_version(root, version):
         raise Refusal(f"{readme}: the install step names {named}, the bundle is {version}")
 
 
-def gap_lines(cwd):
-    """The known gaps' heading-less text and its list items."""
-    heading, _, body = (Path(cwd) / KNOWN_GAPS).read_text().partition("\n")
+def read_gaps(cwd):
+    """The known gaps' text under its heading, and each list item with its wrapped lines."""
+    gaps_file = Path(cwd) / KNOWN_GAPS
+    if not gaps_file.is_file():
+        raise Refusal(f"{KNOWN_GAPS}: missing")
+    heading, _, body = gaps_file.read_text().partition("\n")
     if heading != KNOWN_GAPS_HEADING:
         raise Refusal(f"{KNOWN_GAPS}: the first line must be `{KNOWN_GAPS_HEADING}`")
-    return body, [line for line in body.splitlines() if line.startswith("- ")]
+    gaps = []
+    for line in body.splitlines():
+        if line.startswith("- "):
+            gaps.append(line)
+        elif gaps and line.strip():
+            gaps[-1] += " " + line.strip()
+    return body, gaps
 
 
-def gap_issues(cwd):
-    """Every issue a known gap links, for the workflow to read its state."""
-    _, gaps = gap_lines(cwd)
-    return sorted({int(issue) for gap in gaps for issue in ISSUE_PATTERN.findall(gap)})
+def issue_state(issue, repository):
+    command = ["gh", "issue", "view", issue, "--repo", repository, "--json", "state"]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        raise Refusal(f"{' '.join(command)}: exit {completed.returncode}: {completed.stderr}")
+    return json.loads(completed.stdout)["state"].lower()
 
 
-def read_issue_states(path):
-    """`NUMBER=open|closed` lines, as the workflow writes them from `gh issue view`."""
-    states = {}
-    for line in Path(path).read_text().splitlines():
-        issue, _, state = line.partition("=")
-        states[issue] = state
-    return states
+def known_gaps(version, issues_repository, cwd):
+    """The notes' known gaps, headed by the release when one is given.
 
-
-def current_gaps(issue_states, cwd):
-    """The known gaps under their heading; refused when one is no longer a tracked, open gap."""
-    body, gaps = gap_lines(cwd)
+    A named release or a gap without an issue is refused. With a repository, so is a gap whose
+    issue is not open there; a tag's own run passes none, because its file can no longer change.
+    """
+    body, gaps = read_gaps(cwd)
     problems = [
         f"names {named}; the release step adds the version"
-        for named in sorted({match[0] for match in RELEASE_VERSION_PATTERN.finditer(body)})
+        for named in sorted({match[0] for match in PRERELEASE_VERSION_PATTERN.finditer(body)})
     ]
     for gap in gaps:
         issues = ISSUE_PATTERN.findall(gap)
         if not issues:
             problems.append(f"a gap links no issue: {gap[:60]}")
+        if issues_repository is None:
+            continue
         for issue in issues:
-            state = issue_states.get(issue) or "of unknown state"
+            state = issue_state(issue, issues_repository)
             if state != "open":
                 problems.append(f"#{issue} is {state}; a gap links open issues only")
     if problems:
         raise Refusal(f"{KNOWN_GAPS}: " + "; ".join(problems))
-    return body
+    return body if version is None else f"{KNOWN_GAPS_HEADING} in {version}\n{body}"
 
 
 def sha256_of(path):
@@ -803,10 +811,9 @@ def parse_arguments(arguments):
     verify_command.add_argument("root")
     verify_command.add_argument("--revision", required=True)
     commands.add_parser("gate-gaps").add_argument("channel")
-    commands.add_parser("gap-issues")
     gaps_command = commands.add_parser("known-gaps")
     gaps_command.add_argument("--version")
-    gaps_command.add_argument("--issue-states", required=True)
+    gaps_command.add_argument("--open-issues-of")
     plan_command = commands.add_parser("release-plan")
     plan_command.add_argument("--version", required=True)
     plan_command.add_argument("--channel", required=True)
@@ -857,15 +864,11 @@ def main(arguments, cwd=ROOT):
                 print(f"gap: {gap}")
             if gaps:
                 raise Refusal(f"{len(gaps)} release gate check(s) have no job; publishing waits")
-        elif options.command == "gap-issues":
-            for issue in gap_issues(cwd):
-                print(issue)
         elif options.command == "known-gaps":
-            states = read_issue_states(options.issue_states)
-            gaps = current_gaps(states, cwd)
+            gaps = known_gaps(options.version, options.open_issues_of, cwd)
             # Without a version this only checks: prerelease.yml runs it before a tag exists.
             if options.version is not None:
-                print(f"{KNOWN_GAPS_HEADING} in {options.version}\n{gaps}", end="")
+                print(gaps, end="")
         elif options.command == "release-plan":
             print_outputs(release_plan(options.version, options.channel))
         elif options.command == "verify-gates":

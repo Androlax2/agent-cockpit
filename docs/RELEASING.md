@@ -346,8 +346,9 @@ Two release texts take their version from the release, so nobody edits them per 
   `verify-install` refuses a bundle whose README installs another one. The README on `main` asks
   GitHub for the newest release instead.
 - `docs/KNOWN-GAPS.md` names no release. `tools/release.py known-gaps` heads it with the version
-  for the notes and refuses a named release, a gap without an issue, and a gap whose issue is not
-  open. `prerelease.yml` runs it before it creates an alpha tag; every dry run rehearses it.
+  for the notes and refuses a named pre-release and a gap without an issue. With
+  `--open-issues-of`, it also refuses a gap whose issue is not open: `prerelease.yml` runs that
+  before it creates an alpha tag, and the nightly and a dispatched dry run rehearse it.
 
 ## Who does what
 

@@ -44,7 +44,7 @@ Ubuntu 24.04 ships tmux 3.4: install a newer tmux first.
 
    ```sh
    version=$(curl -fsSL "https://api.github.com/repos/Androlax2/agent-cockpit/releases?per_page=1" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-   archive="torlek-v$version-linux-$(uname -m)"
+   archive="torlek-v${version:?GitHub named no release}-linux-$(uname -m)"
    cd "$(mktemp -d)"
    curl -fLO "https://github.com/Androlax2/agent-cockpit/releases/download/v$version/$archive.tar.gz"
    curl -fLO "https://github.com/Androlax2/agent-cockpit/releases/download/v$version/SHA256SUMS"
@@ -54,7 +54,6 @@ Ubuntu 24.04 ships tmux 3.4: install a newer tmux first.
      ln -sfn ~/.local/lib/torlek/"$archive"/bin/torlek ~/.local/bin/torlek
    ```
 
-   The first line asks GitHub for the newest release; in a release archive's own README it names that release.
    `sha256sum` must print `OK`; if it does not, nothing is installed. If `torlek` is not found afterwards, add `~/.local/bin` to your `PATH`.
 
 2. Set it up:

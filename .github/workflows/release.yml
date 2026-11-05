@@ -135,14 +135,15 @@ jobs:
           flags=()
           if [ -n "$NOTES_TAG" ]; then flags+=(--tag "$NOTES_TAG"); fi
           git cliff --config cliff.toml --strip all "${flags[@]}" "$NOTES_RANGE" > notes.md
-          # Alpha notes carry the known gaps, headed by this release; a dry run rehearses them.
-          # known-gaps refuses a gap whose issue is closed (#886); prerelease.yml reads the same.
+          # Alpha notes carry the known gaps, headed by this release (#886). A tag's file can no
+          # longer change, so prerelease.yml refuses a closed gap before the tag; the nightly
+          # and a dispatch rehearse that, and a pull request never waits on another issue's state.
           if [ "$CHANNEL" = alpha ] || [ "$CHANNEL" = dev ]; then
-            python3 tools/release.py gap-issues | while read -r issue; do
-              echo "$issue=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')"
-            done > gap-issue-states
+            issues=(--open-issues-of "$GITHUB_REPOSITORY")
+            if [ "$CHANNEL" = alpha ]; then issues=(); fi
+            if [ "$GITHUB_EVENT_NAME" = pull_request ]; then issues=(); fi
             echo >> notes.md
-            python3 tools/release.py known-gaps --version "$VERSION" --issue-states gap-issue-states >> notes.md
+            python3 tools/release.py known-gaps --version "$VERSION" "${issues[@]}" >> notes.md
           fi
           cat notes.md
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
