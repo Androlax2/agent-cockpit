@@ -14,7 +14,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app::{App, Confirm, Focus, Overlay};
-use crate::board::Board;
+use crate::board::{Board, Idle};
 use crate::bug_form::{BugField, BugForm};
 use crate::form::{Field, Form, Place};
 use crate::pane::{Shown, Typing};
@@ -265,7 +265,9 @@ pub(crate) fn columns(text: &str) -> usize {
 /// One session's card: the id line, then whether it waits on you and what the agent reports
 /// on an indented line of their own. The mark after the selection marker lets the eye find the
 /// sessions that need you down the list's left edge: `!` blocked on you, `?` asked you and
-/// still works (#215). A question a coordinator holds is named with it instead (#710).
+/// still works (#215). A question a coordinator holds is named with it instead (#710). A running
+/// session whose agent waits with nothing in progress says `waiting`, the lifecycle kept in
+/// brackets (#864).
 fn card(board: &Board, session: &SessionView, is_selected: bool, width: usize) -> Vec<String> {
     let marker = if is_selected { ">" } else { " " };
     let (mark, waiting) = if !board.needs_you(&session.id) {
@@ -275,23 +277,32 @@ fn card(board: &Board, session: &SessionView, is_selected: bool, width: usize) -
     } else {
         ("!", Some("waiting on you"))
     };
+    let idle = board.idle(session);
+    let state = match idle {
+        Some(_) => format!("waiting ({})", session.state),
+        None => session.state.to_string(),
+    };
     let mut card = vec![format!(
-        "{marker}{mark} {}  {}  {}",
-        session.id, session.agent, session.state,
+        "{marker}{mark} {}  {}  {state}",
+        session.id, session.agent,
     )];
     let held = board
         .question_holder(&session.id)
         .map(|coordinator| format!("question with coordinator {coordinator}"));
+    // A resumed session's report predates the resume: it says nothing of the agent that runs now.
+    let is_resumed = idle == Some(Idle::Resumed);
+    let resumed_note = is_resumed.then_some("resumed, idle until you send it something");
+    let reported = board
+        .report(&session.id)
+        .filter(|_| !is_resumed)
+        .into_iter()
+        .flat_map(|report| [report.label.as_deref(), report.doing.as_deref()])
+        .flatten();
     let details: Vec<&str> = waiting
         .into_iter()
         .chain(held.as_deref())
-        .chain(
-            board
-                .report(&session.id)
-                .into_iter()
-                .flat_map(|report| [report.label.as_deref(), report.doing.as_deref()])
-                .flatten(),
-        )
+        .chain(resumed_note)
+        .chain(reported)
         .collect();
     if !details.is_empty() {
         card.push(format!("{CARD_INDENT}{}", details.join(" · ")));

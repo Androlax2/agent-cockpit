@@ -7,8 +7,8 @@ use std::fmt;
 
 use cockpit_protocol::{
     AgentState, BugReportView, Change, ChangeBatch, CheckoutView, EntityKind, FeedPosition,
-    GuideStateView, GuideView, ProjectView, QuestionSource, RunRequestView, RunStateView,
-    SessionReport, SessionStateView, SessionView, TurnOutcome, ViewArea, ViewStamp,
+    GuideStateView, GuideView, LaunchKindView, ProjectView, QuestionSource, RunRequestView,
+    RunStateView, SessionReport, SessionStateView, SessionView, TurnOutcome, ViewArea, ViewStamp,
 };
 
 use crate::attention::{Cue, StartSource, Watch};
@@ -372,6 +372,31 @@ impl Board {
             })
     }
 
+    /// Whether the session's process runs while its agent waits with nothing in progress
+    /// (#864): the lifecycle says `running`, but nothing happens until the owner types.
+    /// A report from before the session's latest launch says nothing about the agent that
+    /// runs now, so a resumed session counts as idle until a report from after the resume
+    /// says otherwise.
+    pub fn idle(&self, session: &SessionView) -> Option<Idle> {
+        if session.state != SessionStateView::Running || self.needs_you(&session.id) {
+            return None;
+        }
+        let report = self.reports.get(&session.id);
+        let resumed_at = session
+            .launch
+            .as_ref()
+            .filter(|launch| launch.kind == LaunchKindView::Resume)
+            .map(|launch| launch.launched_at);
+        if let Some(resumed_at) = resumed_at
+            && report.is_none_or(|report| report.reported_at < resumed_at)
+        {
+            return Some(Idle::Resumed);
+        }
+        let report = report?;
+        (report.state == Some(AgentState::Waiting) && report.doing.is_none())
+            .then_some(Idle::Waiting)
+    }
+
     /// The bug report drafts waiting for the owner, oldest first.
     pub fn bug_report_drafts(&self) -> Vec<&BugReportView> {
         self.bug_reports.values().collect()
@@ -386,6 +411,15 @@ impl Board {
             .get(&session.checkout)
             .map(|checkout| checkout.project.as_str())
     }
+}
+
+/// Why a running session shows as waiting (#864).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Idle {
+    /// Its agent reported waiting and has nothing in progress.
+    Waiting,
+    /// It was resumed and nothing was sent to it since.
+    Resumed,
 }
 
 /// One decoded change of a batch.
