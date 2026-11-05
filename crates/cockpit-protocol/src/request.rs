@@ -10,6 +10,7 @@ use crate::coordination::{
 };
 use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::instructions::{ContextBudgetView, InstructionTopicView};
+use crate::network::{NetworkGrantView, NetworkRequestView};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
 use crate::queue::{QueueExplanationView, QueuePlacementView};
 use crate::readiness::RequirementView;
@@ -349,6 +350,34 @@ pub enum Command {
     ApprovalInput {
         request: i64,
         text: String,
+    },
+    /// Owner only: the network requests still asking, oldest first (#674).
+    NetworkList,
+    /// Owner only: let the request's destination through, for the rest of its session or,
+    /// `always`, for its project through a revocable grant. `through` names the client.
+    NetworkAllow {
+        request: i64,
+        #[serde(default)]
+        always: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<DecidedThroughView>,
+    },
+    /// Owner only: keep refusing the request's destination to its session.
+    NetworkDeny {
+        request: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<DecidedThroughView>,
+    },
+    /// Owner only: the active network grants, of `project` or of every project.
+    NetworkGrants {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
+    /// Owner only: revoke a network grant; its open tunnels close.
+    NetworkRevoke {
+        grant: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<DecidedThroughView>,
     },
     /// Owner only: one guide, whatever its state.
     GuideShow {
@@ -1021,6 +1050,19 @@ pub enum Reply {
     },
     Guide {
         guide: Box<GuideView>,
+    },
+    /// Network requests still asking, oldest first (#674).
+    NetworkRequests {
+        requests: Vec<NetworkRequestView>,
+    },
+    NetworkRequest {
+        request: Box<NetworkRequestView>,
+    },
+    NetworkGrants {
+        grants: Vec<NetworkGrantView>,
+    },
+    NetworkGrant {
+        grant: Box<NetworkGrantView>,
     },
     /// An ask from the sender would reach the owner: it is identified and may ask.
     AskReady {

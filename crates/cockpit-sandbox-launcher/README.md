@@ -47,13 +47,19 @@ host's network, one thread per connection (`proxy.rs`). Clients find it through
 - Only `CONNECT`; plain HTTP is refused.
 - The decision is `cockpit_sandbox::Allowlist` (the spec's `egress`): the adapter's hosts
   and, when it declares any, the checkout's ecosystem registries, each naming its source;
-  project grants join them with #674. An
+  the owner's decisions on network requests join them (#674). An
   unknown host gets `403` at once, with the reason, the session and a `Proxy-Status` that
   separates a refusal (`http_request_denied`, `destination_ip_prohibited`) from an
   unreachable upstream (`dns_error`, `destination_unavailable`, `connection_timeout`).
+- A name refused for want of an entry is listed in `egress-requests.json` beside the spec,
+  and the refusal says the owner is asked. The daemon files it as a network request; the
+  owner allows it for the rest of the session, allows it always for the project (a grant),
+  or denies it. The decisions arrive in `egress-decisions.json`, read before the first
+  connection and every 200 ms; a missing or unreadable file means none. A revoked decision
+  closes the tunnels it carried. See `docs/decisions/2026-11-05-674-network-requests.md`.
 - IP literals and names resolving to loopback, private, link-local, metadata or other
-  non-public addresses are refused unless an entry grants that address (none does before
-  #674; a host-service forward, #860, is never one); one such address
+  non-public addresses are refused unless an entry grants that address (no owner decision
+  does: only names are asked about; a host-service forward, #860, is never one); one such address
   among a name's answers refuses the connection, and the proxy connects only to the
   addresses it checked.
 - On port 443 the ClientHello's server name must match the `CONNECT` host; a missing or

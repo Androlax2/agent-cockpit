@@ -2005,7 +2005,7 @@ impl Sessions {
             self.provider(Some(session.provider.as_str()))?.as_ref(),
             &tools.ecosystems,
         )?;
-        let prepared = self.prepare_sandbox(
+        let mut prepared = self.prepare_sandbox(
             setting,
             id.as_str(),
             session.provider.as_str(),
@@ -2020,6 +2020,20 @@ impl Sessions {
             command.program,
             command.arguments,
         )?;
+        if let Some(staged) = prepared.staged.as_mut() {
+            // The project's grants and the session's earlier decisions (#674) hold from the
+            // agent's first connection, not from the daemon's next write.
+            let read = self.database.read().await?;
+            staged.decisions =
+                cockpit_sandbox::egress_decisions(&read, &output_project, &staged.spec.subject)
+                    .await
+                    .map_err(|error| match error {
+                        cockpit_sandbox::NetworkError::Sql(source) => Error::Sql(source),
+                        other => Error::InvalidStoredRow {
+                            reason: other.to_string(),
+                        },
+                    })?;
+        }
         if let Some(staged) = prepared.staged.clone() {
             let counted = TerminalStep::start(&self.session_lock(id));
             self.blocking("write the sandbox's launch spec", move || {

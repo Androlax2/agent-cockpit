@@ -31,6 +31,66 @@ pub const EGRESS_FILE: &str = "egress.json";
 /// The most destinations a report names; the rest add up in [`EgressReport::other`].
 pub const MAX_REPORTED_DESTINATIONS: usize = 256;
 
+/// The file beside the launch spec where the daemon keeps the owner's decisions on the
+/// subject's network requests (#674): the launcher reads it before serving and again each
+/// time it changes, so a decision applies to the next connection and a revocation closes the
+/// tunnels it allowed.
+pub const DECISIONS_FILE: &str = "egress-decisions.json";
+
+/// The file beside the launch spec where the launcher lists the destinations it refused for
+/// want of an entry; the daemon files each as a network request the owner decides (#674).
+/// Only a file of the session's mount folder, which no agent reaches: an agent cannot ask
+/// for a host except by trying it.
+pub const REQUESTS_FILE: &str = "egress-requests.json";
+
+/// The most destinations the launcher lists in [`REQUESTS_FILE`]; past it, a refused
+/// destination is refused without asking.
+pub const MAX_ASKED_DESTINATIONS: usize = 256;
+
+/// The owner's decisions on a subject's network requests, as the daemon writes them to
+/// [`DECISIONS_FILE`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EgressDecisions {
+    /// What the owner allowed: for this session ([`AllowSource::Request`]) or always for its
+    /// project ([`AllowSource::Grant`]).
+    pub allowed: Vec<AllowEntry>,
+    /// What the owner denied this subject.
+    pub denied: Vec<DeniedDestination>,
+}
+
+/// A destination the owner denied, and the request denied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeniedDestination {
+    pub host: String,
+    pub port: u16,
+    pub request: i64,
+}
+
+impl EgressDecisions {
+    /// The request whose denial covers `host` on `port`, if the owner denied it.
+    pub fn denial(&self, host: &str, port: u16) -> Option<i64> {
+        self.denied
+            .iter()
+            .find(|denied| denied.port == port && denied.host == host)
+            .map(|denied| denied.request)
+    }
+}
+
+/// The destinations a launcher refused for want of an entry, as it writes them to
+/// [`REQUESTS_FILE`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EgressRequests {
+    pub subject: Subject,
+    pub asked: Vec<AskedDestination>,
+}
+
+/// One refused destination: a lower-case DNS name and a port, as the `CONNECT` named them.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct AskedDestination {
+    pub host: String,
+    pub port: u16,
+}
+
 /// What one listener let out and refused, per destination (`host:port`): bounded counters the
 /// evidence shows and #718 builds on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,8 +205,12 @@ pub enum AllowSource {
     Adapter { provider: String },
     /// The registry of an ecosystem the checkout uses (#859).
     Ecosystem { ecosystem: String },
-    /// An owner's grant (#674). Nothing records one yet; the launcher enforces it as written.
+    /// The owner's "allow always" of a host for the subject's project (#674): a revocable
+    /// grant, named by its id.
     Grant { grant: String },
+    /// The owner's "allow once" of a network request (#674): the host stays allowed for the
+    /// rest of the session that asked.
+    Request { request: i64 },
 }
 
 impl fmt::Display for AllowSource {
@@ -157,6 +221,12 @@ impl fmt::Display for AllowSource {
                 write!(formatter, "the {ecosystem} registry")
             }
             AllowSource::Grant { grant } => write!(formatter, "grant {grant}"),
+            AllowSource::Request { request } => {
+                write!(
+                    formatter,
+                    "network request {request}, allowed for this session"
+                )
+            }
         }
     }
 }
@@ -207,6 +277,15 @@ pub enum Refusal {
 }
 
 impl Refusal {
+    /// Whether the owner can lift the refusal by allowing the name (#674): no entry names
+    /// it. Addresses and malformed hosts are refused without asking.
+    pub fn is_askable(&self) -> bool {
+        matches!(
+            self,
+            Refusal::NotAllowed { .. } | Refusal::NoHostsDeclared { .. }
+        )
+    }
+
     /// Whether the refusal is about an address rather than a name: the proxy answers
     /// `destination_ip_prohibited` for it.
     pub fn is_about_an_address(&self) -> bool {
@@ -251,6 +330,19 @@ impl fmt::Display for Refusal {
 }
 
 impl Allowlist {
+    /// This allowlist with the entries the owner allowed added after its own.
+    pub fn with_decisions(&self, decisions: &EgressDecisions) -> Allowlist {
+        Allowlist {
+            program: self.program.clone(),
+            entries: self
+                .entries
+                .iter()
+                .chain(&decisions.allowed)
+                .cloned()
+                .collect(),
+        }
+    }
+
     /// The entry that lets `host` (a `CONNECT` target's host, brackets removed) on `port`
     /// through, or why none does.
     pub fn decide(&self, host: &str, port: u16) -> Result<Allowed<'_>, Refusal> {

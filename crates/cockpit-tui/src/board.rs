@@ -7,8 +7,9 @@ use std::fmt;
 
 use cockpit_protocol::{
     AgentState, BugReportView, Change, ChangeBatch, CheckoutView, EntityKind, FeedPosition,
-    GuideStateView, GuideView, LaunchKindView, ProjectView, QuestionSource, RunRequestView,
-    RunStateView, SessionReport, SessionStateView, SessionView, TurnOutcome, ViewArea, ViewStamp,
+    GuideStateView, GuideView, LaunchKindView, NetworkRequestStateView, NetworkRequestView,
+    NetworkSubjectView, ProjectView, QuestionSource, RunRequestView, RunStateView, SessionReport,
+    SessionStateView, SessionView, TurnOutcome, ViewArea, ViewStamp,
 };
 
 use crate::attention::{Cue, StartSource, Watch};
@@ -24,6 +25,8 @@ pub struct Board {
     pub(crate) reports: BTreeMap<String, SessionReport>,
     pub(crate) runs: Vec<RunRequestView>,
     pub(crate) guides: Vec<GuideView>,
+    /// The hosts sandboxed sessions were refused, asking the owner (#674).
+    pub(crate) network: Vec<NetworkRequestView>,
     /// The bug report drafts, by id (#471): waiting for a send, or opened by one (#847).
     pub(crate) bug_reports: BTreeMap<i64, BugReportView>,
     /// The last stamp the feed gave each area the daemon answers by request (#706). Kept
@@ -190,6 +193,13 @@ impl Board {
         self.look_for_cues(Some(StartSource::Queue));
     }
 
+    /// The network requests asking the owner. Not a start source: a request already waiting
+    /// when the TUI started may ring once, the safer error (#682).
+    pub fn set_network(&mut self, requests: Vec<NetworkRequestView>) {
+        self.network = requests;
+        self.look_for_cues(None);
+    }
+
     /// Whether the bell should ring for what changed since the last call (#682): a session
     /// raised a cue it did not raise before, all that landed together counting once.
     pub(crate) fn take_ring(&mut self) -> bool {
@@ -314,7 +324,8 @@ impl Board {
             .and_then(|report| report.held_by.as_deref())
     }
 
-    /// An approval or guide the session asked for, or a command of its waiting for input.
+    /// An approval, guide or network request the session asked for, or a command of its
+    /// waiting for input.
     pub(crate) fn has_open_request(&self, session: &str) -> bool {
         self.open_requests(session).next().is_some()
     }
@@ -338,7 +349,15 @@ impl Board {
             .iter()
             .filter(move |guide| guide.session == session && guide.state == GuideStateView::Asking)
             .map(|guide| format!("guide {}", guide.id));
-        runs.chain(guides)
+        let network = self
+            .network
+            .iter()
+            .filter(move |request| {
+                request.state == NetworkRequestStateView::Asking
+                    && network_session(request) == session
+            })
+            .map(|request| format!("network {}", request.id));
+        runs.chain(guides).chain(network)
     }
 
     /// What the session waits on the owner for, as [`Board::needs_you`] decides it: every open
@@ -438,4 +457,11 @@ fn decode<View: serde::de::DeserializeOwned>(
     state: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<View, String> {
     View::deserialize(state).map_err(|error| error.to_string())
+}
+
+/// The session a network request came from.
+pub(crate) fn network_session(request: &NetworkRequestView) -> &str {
+    match &request.subject {
+        NetworkSubjectView::Session { id } => id,
+    }
 }

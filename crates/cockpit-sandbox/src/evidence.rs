@@ -15,9 +15,10 @@ use cockpit_turso::{Migration, MigrationSet, WriteTransaction};
 #[cfg(feature = "persistence")]
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "sandbox",
-    migrations: &[Migration {
-        version: 1,
-        sql: "CREATE TABLE sandbox_launches (
+    migrations: &[
+        Migration {
+            version: 1,
+            sql: "CREATE TABLE sandbox_launches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 execution_id INTEGER NOT NULL UNIQUE,
                 session_id TEXT NOT NULL CHECK (session_id <> ''),
@@ -42,7 +43,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 CHECK ((kind = 'rule') = (enforced_by IS NOT NULL)),
                 PRIMARY KEY (launch, position)
             );",
-    }],
+        },
+        // #674: network requests and the project grants their "allow always" creates.
+        Migration {
+            version: 2,
+            sql: crate::network::MIGRATION_SQL,
+        },
+    ],
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

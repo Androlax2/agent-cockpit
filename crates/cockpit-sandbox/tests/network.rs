@@ -1,0 +1,258 @@
+//! Network requests and the owner's decisions on them (#674), through the crate's storage API.
+
+use cockpit_sandbox::{
+    AllowEntry, AllowSource, AskedDestination, DeniedDestination, EgressDecisions, MIGRATIONS,
+    NETWORK_ALLOW_GRACE_SECONDS, NetworkError, NetworkRefusal, NetworkRequestState, OwnerClient,
+    OwnerDecision, Subject, Target,
+};
+use cockpit_turso::Database;
+
+const ASKED_AT: i64 = 1_000;
+const DECIDED_AT: i64 = ASKED_AT + NETWORK_ALLOW_GRACE_SECONDS;
+
+struct Store {
+    _dir: tempfile::TempDir,
+    database: Database,
+}
+
+async fn store() -> Store {
+    let dir = tempfile::tempdir().unwrap();
+    let database = Database::open(&dir.path().join("state.db"), &[MIGRATIONS])
+        .await
+        .unwrap();
+    Store {
+        _dir: dir,
+        database,
+    }
+}
+
+fn session(id: &str) -> Subject {
+    Subject::Session {
+        session: id.to_owned(),
+    }
+}
+
+fn example() -> AskedDestination {
+    AskedDestination {
+        host: "unknown.example.com".to_owned(),
+        port: 443,
+    }
+}
+
+impl Store {
+    async fn file(&self, subject: &str, project: &str) -> Option<i64> {
+        let write = self.database.write().await.unwrap();
+        let filed = cockpit_sandbox::file_network_request(
+            &write,
+            &session(subject),
+            project,
+            &example(),
+            ASKED_AT,
+        )
+        .await
+        .unwrap();
+        write.commit().await.unwrap();
+        filed.map(|request| request.id)
+    }
+
+    async fn allow(&self, request: i64, always: bool, at: i64) -> Result<(), NetworkError> {
+        let write = self.database.write().await.unwrap();
+        cockpit_sandbox::allow_network_request(&write, request, always, Some(OwnerClient::Cli), at)
+            .await?;
+        write.commit().await.unwrap();
+        Ok(())
+    }
+
+    async fn deny(&self, request: i64) {
+        let write = self.database.write().await.unwrap();
+        cockpit_sandbox::deny_network_request(&write, request, Some(OwnerClient::Tui), DECIDED_AT)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+    }
+
+    async fn decisions(&self, subject: &str, project: &str) -> EgressDecisions {
+        let read = self.database.read().await.unwrap();
+        cockpit_sandbox::egress_decisions(&read, project, &session(subject))
+            .await
+            .unwrap()
+    }
+}
+
+fn entry(source: AllowSource) -> AllowEntry {
+    AllowEntry {
+        target: Target::Name("unknown.example.com".to_owned()),
+        port: 443,
+        source,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_destination_is_filed_once_and_allows_nothing_until_decided() {
+    let store = store().await;
+
+    let first = store.file("s1", "app").await;
+    let again = store.file("s1", "app").await;
+
+    assert!(first.is_some());
+    assert_eq!(again, None);
+    let read = store.database.read().await.unwrap();
+    let asking = cockpit_sandbox::asking_network_requests(&read)
+        .await
+        .unwrap();
+    assert_eq!(asking.len(), 1);
+    assert_eq!(asking[0].state, NetworkRequestState::Asking);
+    assert_eq!(asking[0].decision, None);
+    drop(read);
+    assert_eq!(
+        store.decisions("s1", "app").await,
+        EgressDecisions::default()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_once_lets_only_the_asking_session_through_for_the_rest_of_it() {
+    let store = store().await;
+    let request = store.file("s1", "app").await.unwrap();
+
+    store.allow(request, false, DECIDED_AT).await.unwrap();
+
+    assert_eq!(
+        store.decisions("s1", "app").await.allowed,
+        vec![entry(AllowSource::Request { request })]
+    );
+    assert_eq!(
+        store.decisions("s2", "app").await,
+        EgressDecisions::default()
+    );
+    let read = store.database.read().await.unwrap();
+    let decided = cockpit_sandbox::network_request(&read, request)
+        .await
+        .unwrap();
+    assert_eq!(decided.state, NetworkRequestState::AllowedOnce);
+    assert_eq!(
+        decided.decision,
+        Some(OwnerDecision {
+            at: DECIDED_AT,
+            through: Some(OwnerClient::Cli),
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_always_grants_the_project_and_no_other() {
+    let store = store().await;
+    let request = store.file("s1", "app").await.unwrap();
+
+    store.allow(request, true, DECIDED_AT).await.unwrap();
+
+    let read = store.database.read().await.unwrap();
+    let grants = cockpit_sandbox::network_grants(&read, Some("app"))
+        .await
+        .unwrap();
+    drop(read);
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0].request, request);
+    let granted = entry(AllowSource::Grant {
+        grant: grants[0].id.to_string(),
+    });
+    assert_eq!(store.decisions("s2", "app").await.allowed, vec![granted]);
+    assert_eq!(
+        store.decisions("s3", "other").await,
+        EgressDecisions::default()
+    );
+    assert_eq!(store.file("s2", "app").await, None, "the grant covers it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_grant_allows_nothing_and_the_destination_is_asked_about_again() {
+    let store = store().await;
+    let request = store.file("s1", "app").await.unwrap();
+    store.allow(request, true, DECIDED_AT).await.unwrap();
+    let read = store.database.read().await.unwrap();
+    let grant = cockpit_sandbox::network_grants(&read, None).await.unwrap()[0].id;
+    drop(read);
+
+    let write = store.database.write().await.unwrap();
+    let revoked =
+        cockpit_sandbox::revoke_network_grant(&write, grant, Some(OwnerClient::Tui), DECIDED_AT)
+            .await
+            .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(
+        revoked.revoked,
+        Some(OwnerDecision {
+            at: DECIDED_AT,
+            through: Some(OwnerClient::Tui),
+        })
+    );
+    assert_eq!(
+        store.decisions("s1", "app").await,
+        EgressDecisions::default()
+    );
+    assert!(store.file("s1", "app").await.is_some());
+    let write = store.database.write().await.unwrap();
+    let again = cockpit_sandbox::revoke_network_grant(&write, grant, None, DECIDED_AT).await;
+    assert!(matches!(
+        again,
+        Err(NetworkError::Refused(NetworkRefusal::AlreadyRevoked))
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_destination_stays_refused_and_is_not_asked_about_again() {
+    let store = store().await;
+    let request = store.file("s1", "app").await.unwrap();
+
+    store.deny(request).await;
+
+    assert_eq!(
+        store.decisions("s1", "app").await,
+        EgressDecisions {
+            allowed: Vec::new(),
+            denied: vec![DeniedDestination {
+                host: "unknown.example.com".to_owned(),
+                port: 443,
+                request,
+            }],
+        }
+    );
+    assert_eq!(store.file("s1", "app").await, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_decision_is_taken_once() {
+    let store = store().await;
+    let request = store.file("s1", "app").await.unwrap();
+    store.deny(request).await;
+
+    let allowed = store.allow(request, true, DECIDED_AT).await;
+
+    assert!(matches!(
+        allowed,
+        Err(NetworkError::Refused(NetworkRefusal::AlreadyDecided {
+            state: "denied"
+        }))
+    ));
+}
+
+/// #156: a keystroke meant for what the queue showed before does not allow a host.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_allow_within_the_grace_after_the_request_appeared_is_refused() {
+    let store = store().await;
+    let request = store.file("s1", "app").await.unwrap();
+
+    let allowed = store.allow(request, false, ASKED_AT + 1).await;
+
+    assert!(matches!(
+        allowed,
+        Err(NetworkError::Refused(NetworkRefusal::TooSoon {
+            wait_seconds: 1
+        }))
+    ));
+    assert_eq!(
+        store.decisions("s1", "app").await,
+        EgressDecisions::default()
+    );
+}

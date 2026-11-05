@@ -3,7 +3,8 @@
 //! - `torlek-sandbox run SPEC`: reads and removes the daemon's launch spec, then starts its
 //!   program under bubblewrap (new user, mount, PID, network, IPC, UTS and cgroup
 //!   namespaces, a mount view of only what the spec names) through stage 2, serves the
-//!   session proxy on the listener stage 2 hands it (#831), and waits.
+//!   session proxy on the listener stage 2 hands it (#831) with the owner's decisions on
+//!   its network requests (#674), and waits.
 //! - `torlek-sandbox stage2 POLICY ARGUMENT...`: inside the namespaces, checks the folders the launcher
 //!   pinned are the ones it saw, applies Landlock and the seccomp filter from memory, then
 //!   runs the program in its place with the arguments. Never run by hand. Each argument
@@ -110,6 +111,11 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
     let proxy = proxy::Proxy::new(spec.egress.clone(), spec.subject.clone(), proxy::Network);
     let report = mount_dir.join(cockpit_sandbox::EGRESS_FILE);
     proxy.keep_report(report.clone());
+    // The owner's decisions (#674) apply before the first connection is served.
+    let decisions = mount_dir.join(cockpit_sandbox::DECISIONS_FILE);
+    proxy.load_decisions(&decisions);
+    proxy.keep_decisions(decisions);
+    proxy.ask_through(mount_dir.join(cockpit_sandbox::REQUESTS_FILE));
     let serving = std::sync::Arc::clone(&proxy);
     std::thread::Builder::new()
         .name("egress-listener".to_owned())
