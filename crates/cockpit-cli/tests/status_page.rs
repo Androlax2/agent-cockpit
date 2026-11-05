@@ -17,8 +17,8 @@ use cockpit_protocol::{
 use serde_json::json;
 
 const QUESTION: &str = "Merge the <b>schema</b> change now?";
-const SECRET_COMMAND: &str = "cat ~/.ssh/id_ed25519";
-const SECRET_CWD: &str = "/home/owner/private";
+const HIDDEN_COMMAND: &str = "cat ~/notes/plan.txt";
+const HIDDEN_DIRECTORY: &str = "/home/owner/private";
 
 struct Home {
     dir: tempfile::TempDir,
@@ -199,15 +199,15 @@ fn fixture_reply(command: &Command) -> Reply {
             "kind": "approval-queue",
             "runs": [{
                 "id": 7, "session": "s-busy", "revision": 1, "state": "asking",
-                "command": SECRET_COMMAND, "cwd": SECRET_CWD,
-                "reason": "check the deploy key", "shown_command": shown(SECRET_COMMAND),
-                "shown_cwd": shown(SECRET_CWD), "shown_reason": shown("check the deploy key"),
+                "command": HIDDEN_COMMAND, "cwd": HIDDEN_DIRECTORY,
+                "reason": "check the deploy key", "shown_command": shown(HIDDEN_COMMAND),
+                "shown_cwd": shown(HIDDEN_DIRECTORY), "shown_reason": shown("check the deploy key"),
                 "project": "billing", "outside_project": true, "digest": "00",
                 "asked_at": 1, "expires_at": 2, "waiting_for_input": false,
             }],
             "guides": [{
                 "id": 3, "session": "s-asking", "title": shown("sign in to the registry"),
-                "cwd": SECRET_CWD, "shown_cwd": shown(SECRET_CWD), "project": "warehouse",
+                "cwd": HIDDEN_DIRECTORY, "shown_cwd": shown(HIDDEN_DIRECTORY), "project": "warehouse",
                 "outside_project": false, "state": "asking", "current_step": 0, "steps": [],
                 "asked_at": 1, "expires_at": 2,
             }],
@@ -228,15 +228,15 @@ fn fixture_reply(command: &Command) -> Reply {
 fn session(id: &str, checkout: i64) -> serde_json::Value {
     json!({
         "id": id, "agent": "claude", "checkout": checkout, "holds_checkout": true,
-        "working_dir": SECRET_CWD, "state": { "kind": "running" },
-        "reason": "agent printed: secret terminal line",
+        "working_dir": HIDDEN_DIRECTORY, "state": { "kind": "running" },
+        "reason": "agent printed: last terminal line",
         "revision": 1, "created_at": 1, "changed_at": 1,
     })
 }
 
 fn checkout(id: i64, project: &str) -> serde_json::Value {
     json!({
-        "id": id, "project": project, "kind": { "kind": "main" }, "path": SECRET_CWD,
+        "id": id, "project": project, "kind": { "kind": "main" }, "path": HIDDEN_DIRECTORY,
         "incarnation": 1, "removing": false, "occupant": null, "trust": { "kind": "trusted" },
     })
 }
@@ -283,17 +283,13 @@ fn the_page_shows_waiting_approvals_by_reason_without_their_command_or_directory
         "{}",
         page.body
     );
-    for secret in [
-        SECRET_COMMAND,
-        SECRET_CWD,
-        "secret terminal line",
+    for hidden in [
+        HIDDEN_COMMAND,
+        HIDDEN_DIRECTORY,
+        "last terminal line",
         "/usr/bin/tmux",
     ] {
-        assert!(
-            !page.body.contains(secret),
-            "{secret} leaked: {}",
-            page.body
-        );
+        assert!(!page.body.contains(hidden), "{hidden} shown: {}", page.body);
     }
 }
 
@@ -334,10 +330,10 @@ fn status_json_returns_the_same_sessions_approvals_and_readiness() {
     assert_eq!(status["approvals"][0]["reason"], "check the deploy key");
     assert_eq!(status["readiness"]["low_disk"], "low");
     assert!(status["generated_at"].as_i64().unwrap() > 0);
-    for secret in [SECRET_COMMAND, SECRET_CWD, "secret terminal line"] {
+    for hidden in [HIDDEN_COMMAND, HIDDEN_DIRECTORY, "last terminal line"] {
         assert!(
-            !answer.body.contains(secret),
-            "{secret} leaked: {}",
+            !answer.body.contains(hidden),
+            "{hidden} shown: {}",
             answer.body
         );
     }
