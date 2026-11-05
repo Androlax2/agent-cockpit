@@ -277,10 +277,13 @@ impl Server {
     /// empty when no server runs. A session with any other name is not Cockpit's, so it is
     /// left out.
     pub fn sessions(&self) -> Result<Vec<SessionName>, Error> {
-        let Some(printed) =
-            self.run_if_server(&words(&["list-sessions", "-F", "#{session_name}"]))?
-        else {
-            return Ok(Vec::new());
+        let printed = match self.run_if_server(&words(&["list-sessions", "-F", "#{session_name}"]))
+        {
+            Ok(Some(printed)) => printed,
+            Ok(None) => return Ok(Vec::new()),
+            // A server killed a moment ago closes the connection as it exits: it holds nothing.
+            Err(error) if is_exiting_server(&error) => return Ok(Vec::new()),
+            Err(error) => return Err(error),
         };
         let mut names: Vec<SessionName> = String::from_utf8_lossy(&printed)
             .lines()

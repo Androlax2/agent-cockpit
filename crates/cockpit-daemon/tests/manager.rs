@@ -625,6 +625,104 @@ async fn showing_a_session_before_the_manager_is_open_is_refused_naming_the_fix(
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn showing_a_running_session_whose_tmux_session_is_gone_names_the_missing_terminal() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&client).await;
+    home.open_manager(&client).await.unwrap();
+    let started = session(
+        &client,
+        Command::SessionNew {
+            dir: root.display().to_string(),
+            agent: Some("fake".to_owned()),
+            prompt: None,
+            clone: None,
+            model: None,
+            effort: None,
+        },
+    )
+    .await;
+    home.tmux(&["kill-session", "-t", &format!("={}", started.id)]);
+
+    let error = refusal(
+        request(
+            &client,
+            Command::SessionShow {
+                session: started.id.clone(),
+            },
+        )
+        .await,
+    );
+
+    assert_eq!(error.code, ErrorCode::Conflict, "{}", error.message);
+    assert!(
+        error.message.contains(&started.id) && error.message.contains("terminal is gone"),
+        "{}",
+        error.message
+    );
+    let ended = session(
+        &client,
+        Command::SessionEnd {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+    assert_eq!(ended.state, SessionStateView::Ended);
+    let resumed = session(
+        &client,
+        Command::SessionResume {
+            session: started.id,
+        },
+    )
+    .await;
+    assert_eq!(resumed.state, SessionStateView::Running);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn showing_a_running_session_after_the_whole_tmux_server_is_gone_is_not_internal() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&client).await;
+    home.open_manager(&client).await.unwrap();
+    let started = session(
+        &client,
+        Command::SessionNew {
+            dir: root.display().to_string(),
+            agent: Some("fake".to_owned()),
+            prompt: None,
+            clone: None,
+            model: None,
+            effort: None,
+        },
+    )
+    .await;
+    home.tmux(&["kill-server"]);
+
+    let error = refusal(
+        request(
+            &client,
+            Command::SessionShow {
+                session: started.id,
+            },
+        )
+        .await,
+    );
+
+    assert_eq!(error.code, ErrorCode::NotFound, "{}", error.message);
+    assert!(
+        error.message.contains("run `torlek tui`"),
+        "{}",
+        error.message
+    );
+}
+
 /// A session started and ended by its owner: it has no terminal any more.
 async fn ended_session(client: &Connection, root: &Path) -> SessionView {
     let started = session(

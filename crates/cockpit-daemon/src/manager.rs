@@ -272,6 +272,7 @@ async fn show(
     let target = SessionName::new(id.as_str()).map_err(tmux_error)?;
     let showing = Arc::clone(&manager);
     let showing_id = id.clone();
+    let attaching = target.clone();
     let attached = tmux_blocking(move || {
         let tmux = showing.tmux()?;
         let panes = whole_manager(tmux)?;
@@ -287,7 +288,7 @@ async fn show(
             let column = tmux.pane_geometry(&panes.column).map_err(tmux_error)?;
             arrange(tmux, &panes, column, true, true).map_err(tmux_error)?;
         }
-        let attached = tmux.show_in_viewer(&panes.viewer, &target, viewing(is_phone));
+        let attached = tmux.show_in_viewer(&panes.viewer, &attaching, viewing(is_phone));
         if attached.is_ok() {
             *showing
                 .shown
@@ -306,6 +307,24 @@ async fn show(
             .map_err(|error| crate::sessions::protocol_error(&error))?;
         if is_without_terminal(current.state) {
             return describe(sessions, &current).await;
+        }
+        let probing = Arc::clone(&manager);
+        let terminal_exists = tmux_blocking(move || {
+            Ok(probing
+                .tmux()?
+                .sessions()
+                .map_err(tmux_error)?
+                .contains(&target))
+        })
+        .await?;
+        if !terminal_exists {
+            return Err(ProtocolError::new(
+                ErrorCode::Conflict,
+                format!(
+                    "session {id}'s terminal is gone: its tmux session no longer exists; \
+                     end it with `torlek session end {id}`, then resume it with `torlek session resume {id}`"
+                ),
+            ));
         }
         return Err(tmux_error(error));
     }
