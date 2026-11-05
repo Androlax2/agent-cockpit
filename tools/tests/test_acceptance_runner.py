@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -39,6 +40,7 @@ RUNNER_VERBS = {
     "stop",
     "clean",
     "fill-target",
+    "prune-prepare",
     "big-needs",
     "todo-image",
     "code-change",
@@ -119,7 +121,8 @@ case "$1 $2" in
 session\\ *) echo "$*" ;;
 "resources status") printf 'platform linux\\nbudget 16000 millicores 31691 MiB\\tin use 0\\n' ;;
 "todo add") printf 'item 7 (intent revision 1, state revision 1)\\nproject: demo\\n' ;;
-"todo image"|"workflow start") echo "$*" ;;
+"checkout list") printf '1\\tdemo\\tmain\\t1\\n3\\tdemo\\tparallel:prune-me\\t1\\n' ;;
+"todo image"|"workflow start"|"storage prune") echo "$*" ;;
 *) pwd; env ;;
 esac
 """
@@ -143,8 +146,16 @@ class RunnerTests(unittest.TestCase):
             stand_in.chmod(0o755)
         self.scratch = root / "scratch"
         self.state = root / "state"
+        # A real tmux falls back to /tmp when TMUX_TMPDIR is missing, where the owner's servers
+        # live: the tests only ever see this recorder.
+        self.tmux_calls = root / "tmux-calls"
+        fake_tmux = root / "fake-tmux/tmux"
+        fake_tmux.parent.mkdir()
+        fake_tmux.write_text(f'#!/bin/sh\necho "$*" >> {self.tmux_calls}\n')
+        fake_tmux.chmod(0o755)
         self.environment = {
             **os.environ,
+            "PATH": f"{fake_tmux.parent}:{os.environ['PATH']}",
             "COCKPIT_ACCEPTANCE_HOME": str(self.scratch),
             "COCKPIT_ACCEPTANCE_STATE": str(self.state),
             "TORLEK_PROFILE": "torlek",
@@ -198,13 +209,8 @@ class RunnerTests(unittest.TestCase):
 
     def test_the_state_stays_in_the_clone_by_default(self):
         (self.scratch / "projects").mkdir(parents=True)
-        environment = {k: v for k, v in self.environment.items() if k != "COCKPIT_ACCEPTANCE_STATE"}
-        result = subprocess.run(
-            [BASH, str(self.script), "torlek", "version"],
-            env=environment,
-            capture_output=True,
-            text=True,
-        )
+        del self.environment["COCKPIT_ACCEPTANCE_STATE"]
+        result = self.run_script("torlek", "version")
         self.assertEqual(result.returncode, 0, result.stderr)
         variables = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
         self.assertEqual(variables["XDG_STATE_HOME"], str(self.clone / "target/acceptance/state"))
@@ -254,6 +260,15 @@ class RunnerTests(unittest.TestCase):
         ).stdout
         self.assertEqual(status, "")
 
+    def test_start_refuses_a_state_directory_with_files_it_did_not_make(self):
+        self.make_program("real/claude")
+        self.state.mkdir()
+        (self.state / "keep").write_text("owner data")
+        result = self.start_with_path("real")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("was not made by run.sh", result.stderr)
+        self.assertFalse((self.state / ".torlek-acceptance").exists())
+
     def test_start_links_the_first_claude_outside_greywall(self):
         self.make_program("greywall-agents/claude")
         real = self.make_program("real/claude")
@@ -289,7 +304,7 @@ class RunnerTests(unittest.TestCase):
         calls = self.root / "calls"
         self.make_program("fakes/hyprctl", f'echo "hyprctl $XDG_RUNTIME_DIR $*" >> {calls}\nexit {hyprctl_exit}')
         self.make_program("fakes/setsid", f'echo "setsid ${{XDG_CONFIG_HOME:-unset}} $XDG_RUNTIME_DIR $*" >> {calls}')
-        result = self.run_script("tui-window", PATH=f"{self.root / 'fakes'}:{os.environ['PATH']}")
+        result = self.run_script("tui-window", PATH=f"{self.root / 'fakes'}:{self.environment['PATH']}")
         return result, calls.read_text().splitlines()
 
     def test_tui_window_opens_the_tui_in_an_opaque_window_of_its_own(self):
@@ -332,6 +347,34 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.scratch.exists())
         self.assertFalse(self.state.exists())
+
+    def test_stop_without_a_scratch_tmux_server_runs_no_tmux(self):
+        self.scratch.mkdir()
+        result = self.run_script("stop")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.tmux_calls.exists())
+
+    def test_stop_kills_the_scratch_tmux_servers_by_their_socket_paths(self):
+        sockets = self.scratch / f"tmux/tmux-{os.getuid()}"
+        sockets.mkdir(parents=True)
+        listeners = []
+        for name in ("torlek-acceptance", "torlek"):
+            listener = socket.socket(socket.AF_UNIX)
+            listener.bind(str(sockets / name))
+            listeners.append(listener)
+        try:
+            result = self.run_script("stop")
+        finally:
+            for listener in listeners:
+                listener.close()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.tmux_calls.read_text().splitlines(),
+            [
+                f"-S {sockets}/torlek-acceptance kill-server",
+                f"-S {sockets}/torlek kill-server",
+            ],
+        )
 
     def test_clean_refuses_a_state_directory_it_did_not_make(self):
         self.scratch.mkdir()
@@ -388,6 +431,32 @@ class RunnerTests(unittest.TestCase):
         result = self.run_script("fill-target", "absent")
         self.assertEqual(result.returncode, 1)
         self.assertIn("checkout clone demo absent", result.stderr)
+
+    def test_fill_target_finds_a_clone_of_a_branch_with_a_slash(self):
+        clone = self.scratch / "projects/.parallel/demo/feature-x"
+        (clone / ".git").mkdir(parents=True)
+        result = self.run_script("fill-target", "feature/x")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((clone / "target/debug/stand-in-1").exists())
+
+    def test_fill_target_refuses_a_branch_that_leaves_the_demo_clones(self):
+        outside = self.scratch / "projects/elsewhere"
+        (outside / ".git").mkdir(parents=True)
+        result = self.run_script("fill-target", "../../elsewhere")
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((outside / "target").exists())
+
+    def test_prune_prepare_prunes_the_checkout_number_of_the_clone(self):
+        (self.scratch / "projects").mkdir(parents=True)
+        result = self.run_script("prune-prepare", "prune-me")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[-1], "storage prune 3")
+
+    def test_prune_prepare_refuses_a_clone_checkout_list_does_not_show(self):
+        (self.scratch / "projects").mkdir(parents=True)
+        result = self.run_script("prune-prepare", "absent")
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("storage prune", result.stdout)
 
     def test_big_needs_reserves_two_fifths_of_the_budget_and_off_removes_it(self):
         demo = self.make_demo()

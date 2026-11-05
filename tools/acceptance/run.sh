@@ -13,6 +13,8 @@
 #                             `session new` remembered, with that verb's other arguments
 #   run.sh fill-target BRANCH write 24 MiB of stand-in build output into the demo clone BRANCH's
 #                             target/, for a storage report and a prune
+#   run.sh prune-prepare BRANCH  prepare a prune plan for the demo clone BRANCH (it looks up the
+#                             checkout number: removed clones keep theirs, so numbers vary)
 #   run.sh big-needs on|off   on: each demo agent reserves 40% of the CPU budget (60% with the
 #                             startup headroom), so one queued item fits at a time; off: none
 #   run.sh todo-image ITEM FILE  attach FILE (relative to this clone) to item ITEM as an image note
@@ -29,7 +31,7 @@
 # uses the owner's Claude Code login.
 set -euo pipefail
 
-usage="usage: run.sh start|tui|tui-window|kill-daemon|stop|clean | torlek ARGS... | session new [OPTIONS] | session sleep|wake|resume|end|show|send|grant|grants|revoke [ARGS...] | fill-target BRANCH | big-needs on|off | todo-image ITEM FILE | code-change TITLE NOTES"
+usage="usage: run.sh start|tui|tui-window|kill-daemon|stop|clean | torlek ARGS... | session new [OPTIONS] | session sleep|wake|resume|end|show|send|grant|grants|revoke [ARGS...] | fill-target BRANCH | prune-prepare BRANCH | big-needs on|off | todo-image ITEM FILE | code-change TITLE NOTES"
 
 clone=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 bin="$clone/target/release"
@@ -107,7 +109,24 @@ daemon_pid() {
     echo "$pid"
 }
 
+# Refuses a directory that exists with something in it but no marker: `clean` would later
+# delete what the marker claimed.
+claim() {
+    local dir=$1 entries
+    [[ -e $dir && ! -f $dir/$marker ]] || return 0
+    entries=$(
+        shopt -s nullglob dotglob
+        echo "$dir"/*
+    )
+    [[ -z $entries ]] || {
+        echo "$dir exists and was not made by run.sh; choose another directory" >&2
+        exit 1
+    }
+}
+
 make_scratch() {
+    claim "$scratch"
+    claim "$bulk"
     mkdir -p "$scratch" "$bulk" "$XDG_CONFIG_HOME/torlek-$TORLEK_PROFILE" "$XDG_STATE_HOME" \
         "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR" "$TMUX_TMPDIR" "$projects"
     chmod 700 "$scratch" "$bulk" "$XDG_RUNTIME_DIR" "$TMUX_TMPDIR"
@@ -163,8 +182,20 @@ big_needs() {
     echo "each demo agent now reserves $((budget * 2 / 5)) of $budget millicores"
 }
 
+# A clone's directory is its branch with / as - (cockpit-projects' clones.rs); anything else,
+# such as .. or a leading dot, is refused so the path stays under .parallel/demo.
+clone_directory() {
+    local name=${1//\//-}
+    [[ $name =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || {
+        echo "not a branch name run.sh accepts: $1" >&2
+        exit 2
+    }
+    echo "$projects/.parallel/demo/$name"
+}
+
 fill_target() {
-    local branch=$1 checkout="$projects/.parallel/demo/$1" index
+    local branch=$1 checkout index
+    checkout=$(clone_directory "$branch")
     [[ -d $checkout/.git || -f $checkout/.git ]] || {
         echo "no demo clone $branch at $checkout: run.sh torlek checkout clone demo $branch first" >&2
         exit 1
@@ -174,6 +205,19 @@ fill_target() {
         head -c 8M /dev/urandom >"$checkout/target/debug/stand-in-$index"
     done
     echo "wrote 25165824 bytes into $checkout/target"
+}
+
+prune_prepare() {
+    local branch=$1 checkout
+    clone_directory "$branch" >/dev/null
+    checkout=$("$bin/torlek" checkout list demo |
+        awk -F '\t' -v kind="parallel:$branch" '$3 == kind { print $1 }')
+    [[ $checkout =~ ^[0-9]+$ ]] || {
+        echo "no single demo clone $branch in torlek checkout list demo" >&2
+        exit 1
+    }
+    echo "demo clone $branch is checkout $checkout"
+    exec "$bin/torlek" storage prune "$checkout"
 }
 
 start_daemon() {
@@ -243,6 +287,15 @@ start() {
     echo "TUI:      bash $clone/tools/acceptance/run.sh tui"
 }
 
+# Kills the scratch tmux server NAME by its socket path. Never `tmux -L`: when TMUX_TMPDIR's
+# directory is missing, tmux falls back to /tmp, where the installed Torlek's server lives.
+stop_tmux() {
+    local socket
+    socket="$TMUX_TMPDIR/tmux-$(id -u)/$1"
+    [[ -S $socket ]] || return 0
+    tmux -S "$socket" kill-server 2>/dev/null || true
+}
+
 stop() {
     local pid waited
     if pid=$(daemon_pid); then
@@ -257,7 +310,9 @@ stop() {
         fi
     fi
     rm -f "$pid_file"
-    tmux -L "torlek-$TORLEK_PROFILE" kill-server 2>/dev/null || true
+    stop_tmux "torlek-$TORLEK_PROFILE"
+    # An M1-era scratch home's daemon had no profile: its server is named torlek.
+    stop_tmux torlek
 }
 
 # The owner's Hyprland draws windows at 0.95 / 0.9 opacity, too faint for the walk: the TUI gets
@@ -326,6 +381,15 @@ fill-target)
     }
     enter_projects
     fill_target "$2"
+    ;;
+prune-prepare)
+    [[ $# -eq 2 ]] || {
+        echo "$usage" >&2
+        exit 2
+    }
+    require_binaries
+    enter_projects
+    prune_prepare "$2"
     ;;
 big-needs)
     require_binaries
