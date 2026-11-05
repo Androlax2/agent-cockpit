@@ -43,8 +43,8 @@ Ubuntu 24.04 ships tmux 3.4: install a newer tmux first.
 1. Download the release, check it and unpack it into `~/.local/lib/torlek`:
 
    ```sh
-   version=0.1.0-alpha.1
-   archive="torlek-v$version-linux-$(uname -m)"
+   version=$(curl -fsSL "https://api.github.com/repos/Androlax2/agent-cockpit/releases?per_page=1" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+   archive="torlek-v${version:?GitHub named no release}-linux-$(uname -m)"
    cd "$(mktemp -d)"
    curl -fLO "https://github.com/Androlax2/agent-cockpit/releases/download/v$version/$archive.tar.gz"
    curl -fLO "https://github.com/Androlax2/agent-cockpit/releases/download/v$version/SHA256SUMS"
