@@ -84,6 +84,28 @@ jobs:
         run: python3 config/bin/.local/bin/cockpit-game-guard off
       - name: Run the greenfield gate
         run: make greenfield-ci
+      - name: Run the ignored second-user sandbox test (#628) as a second Unix user
+        # The gate ran sandboxed sessions as the runner's user; a sandbox that keeps state at a
+        # fixed shared path then fails for anyone else (#628). The second user runs the gate's
+        # own build, copied to a root-owned folder it can read. sudo stays in this disposable
+        # runner.
+        run: |
+          set -euo pipefail
+          sudo useradd --create-home torlek-second
+          test_binary=$(cargo test --locked --workspace --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "sandbox"
+                and (.package_id | test("/cockpit-daemon#")) and .executable != null)
+                | .executable')
+          programs=$(dirname "$(dirname "$test_binary")")
+          root=/opt/torlek-second-user
+          sudo install -d -m 0755 "$root/bin"
+          sudo find "$programs" -maxdepth 1 -type f -perm -u+x -exec install -m 0755 -t "$root/bin" {} +
+          sudo install -m 0755 "$test_binary" "$root/sandbox-test"
+          first_user=$(id -u)
+          cd /
+          sudo -u torlek-second env -i HOME=/home/torlek-second PATH=/usr/local/bin:/usr/bin:/bin \
+            COCKPIT_CANDIDATE_ROOT="$root" COCKPIT_FIRST_USER_UID="$first_user" \
+            "$root/sandbox-test" --ignored --exact a_second_unix_user_starts_a_sandboxed_session
 
   # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
   # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash

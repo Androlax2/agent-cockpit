@@ -14,7 +14,9 @@ below by the worker, with the reasons. Q1 and Q2 on #829 are open with the owner
   launch. The launcher reads it, removes it and validates it before anything
   runs, so a launch that started leaves none (#434); one a launch that failed earlier left
   holds no secret, and the session's next launch replaces it. The seccomp filter is built in memory in stage 2;
-  nothing is written to a shared folder (#628). Rejected: the spec on the command line
+  nothing is written to a shared folder (#628). CI's greenfield job proves it: after the gate
+  ran sandboxed sessions as the runner's user, a second Unix user starts one through the
+  daemon (an ignored test, run in its own named step). Rejected: the spec on the command line
   (visible in `ps`, length limits) and a pipe from the daemon (the hosted launch goes through
   tmux, which does not carry one).
 - **The session's own home.** `$STATE/homes/<session>` is bound at the owner's `HOME` path:
