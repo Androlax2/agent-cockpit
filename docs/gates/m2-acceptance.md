@@ -1,7 +1,7 @@
 # Gate Alpha 3: live acceptance runs (#136)
 
-Proof for [gate #46](https://github.com/Androlax2/agent-cockpit/issues/46)'s "live acceptance
-#136 completed by Theo". The guide is [docs/acceptance/m2.md](../acceptance/m2.md) (the `m2`
+Proof for [gate #46](https://github.com/Androlax2/agent-cockpit/issues/46)'s "live
+acceptance #136 completed by Theo". The guide is [docs/acceptance/m2.md](../acceptance/m2.md) (the `m2`
 filename keeps the issue's link; Alpha 3 is the release name), in `torlek ask guide` format; it
 is re-run after fixes and each run is appended below.
 
