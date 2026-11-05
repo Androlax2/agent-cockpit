@@ -48,7 +48,7 @@ Code at this branch's base (`88612ce1`); paths are relative to the repository ro
 | Native sandbox (#546, M3) | seccomp denies `unshare`, `setns`, namespace flags of `clone` and the new mount API. No engine, Podman or Buildah can start **inside** a session: the engine is always outside, and the only question is which socket the mount view shows |
 | `crates/cockpit-daemon/src/serve.rs:29` | An agent inherits eight variables and its XDG layout from the daemon; `DOCKER_HOST` is not among them. The Docker CLI falls back to its default socket |
 | `crates/cockpit-sandbox/src/profile.rs:22` | `~/.docker/config.json` (registry logins) is unreadable in every profile |
-| `crates/cockpit-readiness/src/project.rs:252` | A rootless engine is `available`, a rootful one is `missing-prerequisite` ("whoever reaches its socket is root on this host"). The probe is `docker info` in the **daemon's** environment (`crates/cockpit-daemon/src/readiness.rs:395`), not the engine a session reaches |
+| `crates/cockpit-readiness/src/project.rs:252` | On Linux and WSL2 a rootless engine is `available` and a rootful one is `missing-prerequisite` ("whoever reaches its socket is root on this host"); on macOS and under Docker Desktop every engine is `available`, inside its VM (`:255`). The probe is `docker info` in the **daemon's** environment (`crates/cockpit-daemon/src/readiness.rs:395`), not the engine a session reaches |
 | `crates/cockpit-config/src/lib.rs:177`, `:229` | A project may declare `[execution] environment = "docker"`. `agents.sandbox = "off"` is the one named opt-out, set by the owner for the whole profile |
 | `crates/cockpit-daemon/src/verification.rs:396` | The daemon refuses every check whose environment is not `native` (#352) |
 | `crates/cockpit-agent-context/bundle/references/sandbox.md:11` | Agents are told to use only the engine their environment provides, never the owner's, and not to start one |
@@ -74,7 +74,7 @@ is out of scope, an escape that needs none is not.
 | # | Threat | Why it needs no kernel bug |
 | --- | --- | --- |
 | T1 | **The engine is the owner.** A socket to an engine that runs as the owner (rootless) or as root (rootful) | `docker run -v /:/host` mounts whatever that user reads: `~/.ssh`, Torlek's state, the owner socket (#729). Docker's own guide: "only trusted users should be allowed to control your Docker daemon" |
-| T2 | **Masks bypassed.** A container bind-mounts the checkout | It writes `.git/hooks`, `.git/config`, `.torlek`, `.envrc` and reads `.env` (`profile.rs:17`, `:36`): paths the session cannot touch, which later run with the owner's rights |
+| T2 | **Masks bypassed.** A container bind-mounts the checkout | It writes `.git/hooks`, `.git/config`, `.torlek`, `.envrc` and the other baseline write denials, and reads `.env` and `.env.*` (`profile.rs:17`, `:36`): paths the session cannot touch, most of which later run with the owner's rights |
 | T3 | **Egress bypassed.** Pulls, builds and containers use the engine's network | RootlessKit's slirp4netns or pasta is a full NAT with no allowlist: no host rule, no owner request (#674), open DNS and UDP, the LAN, cloud metadata |
 | T4 | **Credentials leak into images.** A token or CA passed as build argument, `ENV` or `COPY` | It stays in a layer or a process. #832 exists so a token never enters the sandbox |
 | T5 | **Other sessions.** One engine serves every clone of a project | A session mounts a sibling clone's checkout and runs `docker exec` in its containers |
@@ -101,7 +101,7 @@ to a sandboxed session: that is T1, the same as `agents.sandbox = "off"`.
 
 | Option | Threats left | Cost |
 | --- | --- | --- |
-| A. A dedicated Unix user per project, in a root-installed unit with its own filesystem view (the legacy shape) | A container escape lands as that user inside that view: the project's checkouts and nothing of the owner's. The boundary is the kernel's user separation, set by root where neither agent nor engine can change it | About 3 days for a guided setup and the identity check. The owner runs one `sudo` step per project. Linux and WSL2 with systemd. Files a container creates in the checkout belong to subordinate IDs |
+| A. A dedicated Unix user per project, in a root-installed unit with its own filesystem view (the legacy shape) | A container escape lands as that user inside that view: the project's checkouts and nothing of the owner's. The boundary is the kernel's user separation, set by root where neither agent nor engine can change it | About 3 days for a guided setup and the identity check. The owner runs one `sudo` step per project, which holds only if that step also installs a way to mask clones made later (the legacy engine sees a new folder only after a restart). Linux and WSL2 with systemd. Files a container creates in the checkout belong to subordinate IDs, so the setup needs ACLs as the legacy has (`tools/agent-docker.sh:103`) |
 | B. The owner's own user, confined by Torlek's launcher: a mount view without the owner's home, an empty network namespace | The engine cannot run under Landlock ("cannot modify filesystem topology, whether via mount(2) or pivot_root(2)", [kernel](https://docs.kernel.org/userspace-api/landlock.html)) or under #546's seccomp filter, so namespaces are the only wall, and report 11 does not count same-UID separation as a boundary. **Unproven:** bubblewrap maps one user ID, rootless Docker needs 65,536 | A 1-day prototype first, then about 3 days. No root step |
 | C. A microVM per project (what Docker Sandboxes does) | A kernel bug inside the guest stays in the guest | Two weeks or more: a guest image to ship and update, KVM on the host, nested virtualization on WSL2 |
 
@@ -109,7 +109,7 @@ to a sandboxed session: that is T1, the same as `agents.sandbox = "off"`.
 
 | Option | Threats left | Cost |
 | --- | --- | --- |
-| A. Per project, shared by its parallel clones (#390's wording, the legacy shape) | T5: a session reaches sibling clones' files and containers. The masks (T2) still hold in every clone | One image store per project |
+| A. Per project, shared by its parallel clones (#390's wording, the legacy shape) | T5: a session reaches sibling clones' files and containers. The masks (T2) must hold in every clone, including one made after the engine started | One image store per project |
 | B. Per checkout | None between sessions | Every clone pulls and builds its own images (gigabytes, minutes). Under Q2 A, one root step per clone or a pool of users made ahead |
 
 ### Q4. Container egress
@@ -126,7 +126,8 @@ proxy's identity is its listener (#546 D2). So the engine gets a proxy instance 
 
 How the engine's namespace gets its single listener is #390's design: the file-descriptor
 passing of the launcher (#829), or the legacy's nftables rules by user. The acceptance is the
-probe.
+probe. An engine has no session that ends, so "allow once" has no natural length there: the
+#674 note below proposes that a container request offers "allow always" or "deny" only.
 
 ### Q5. Credentials and the CA in containers
 
@@ -153,14 +154,15 @@ project.
 
 ### What `torlek doctor` and readiness report
 
-This follows from the answers; with the recommended ones, for a project that declares Docker:
+This follows from the answers; with the recommended ones, on Linux and WSL2, for a project
+that declares Docker:
 
 | State | `docker` requirement |
 | --- | --- |
-| `agents.sandbox = "off"` | Today's rule: rootless `available`, rootful `missing-prerequisite`; the detail adds that agents reach it unsandboxed |
+| `agents.sandbox = "off"` | Today's rule unchanged (rootless or inside Docker Desktop's VM `available`, rootful `missing-prerequisite`); the detail adds that agents reach it unsandboxed |
 | `required`, before #390 | `unsupported`: "containers are not available to sandboxed sessions in this release"; next: `torlek ask run` |
 | `required`, no Torlek-run engine for the project | `missing-prerequisite`, with the setup step |
-| `required`, the engine answers but is not the recorded one, not rootless, or runs as the owner | `missing-prerequisite`: the identity that failed, by name |
+| `required`, the engine answers but is not the recorded one (the owner's own, Docker Desktop's), not rootless, or runs as the owner | `missing-prerequisite`: the identity that failed, by name |
 | `required`, verified engine | `available`: engine ID, its user, "egress through Torlek's proxy" |
 
 The probe asks the engine a session would reach, not the daemon's `docker` (today's mismatch).
@@ -221,34 +223,45 @@ written. Nothing here is applied by this report: Theo applies them.
 > - **Engine.** Rootless Docker per project under a Unix user of its own, in a unit whose
 >   filesystem view holds that project's checkouts only. A guided root step sets it up
 >   (`torlek doctor` prints it; the owner runs it). Never the owner's engine, never rootful.
-> - **Masks.** The engine sees each checkout through the session baseline's denials
->   (`.git/hooks`, `.git/config`, `.torlek`, `.envrc` read-only; `.env` unreadable).
+> - **Masks.** The engine sees each checkout through every denial of the session baseline that
+>   lies in a checkout (`BASELINE_DENIED_WRITE` and `BASELINE_DENIED_READ` in
+>   `cockpit-sandbox`'s `profile.rs`: `.git/hooks`, `.git/config`, `.torlek`, `.cockpit`,
+>   `.envrc`, IDE run configurations; `.env`, `.env.*`). A clone made after the engine started
+>   is masked before any session of it gets the socket, without a new root step.
+> - **Checkout access.** The engine's user can write the project's checkouts, and the owner
+>   can change and delete what containers create there (the legacy uses ACLs with a default
+>   owner entry).
 > - **Session.** The launcher (#829) binds the engine's socket into the session's mount view
 >   and sets `DOCKER_HOST`. Full API, no request filter. The engine's identity (recorded
 >   engine ID, rootless, its user) is verified before the socket is bound.
 > - **Egress.** The engine's network has no route out except a Torlek egress proxy (#831's
->   code, one instance per engine) with the project's "allow always" grants. Unknown hosts are
->   refused at once and filed as owner requests (#674). The session's `DOCKER_CONFIG` injects
->   the proxy into builds and containers.
+>   code, one instance per engine) with the project's "allow always" grants, not the
+>   provider's hosts. Unknown hosts are refused at once and filed as owner requests (#674).
+>   The engine's unit points the daemon's own pulls at the proxy; the session's
+>   `DOCKER_CONFIG` injects it into builds and containers.
 > - **Credentials.** None in builds, images or containers, and no CA. `agent-docker-build` is
 >   not carried over.
 > - **Forwards** to a container's published port use the mechanism #860 decides.
-> - **Limits.** The engine runs in a scope of its own; readiness names what is enforced (#834).
+> - **Limits.** The engine runs in a scope of its own, outside any session's (#834 does not
+>   cover it); readiness says whether `--cpus` and `--memory` are enforced (report 10).
 >
 > **Acceptance** (through the daemon, on Linux and WSL2)
 >
 > - From a sandboxed session `docker run` works; a container that mounts `/` sees no file of
 >   the owner's home, Torlek's state or another project.
-> - A container cannot write `.git/hooks`, `.git/config`, `.torlek` or `.envrc` of any
->   checkout, nor read `.env`.
-> - From a container, direct TCP, DNS and UDP fail; a granted host connects through the proxy;
->   an unknown host is refused in under 1 s and listed as a request naming the project.
+> - A container cannot write any baseline write denial of any checkout, nor read `.env` or
+>   `.env.*`, including in a clone made after the engine started (one probe per baseline
+>   entry).
+> - A container writes a file into the checkout; the session changes and deletes it.
+> - `docker pull` of a granted registry works. From a container, direct TCP, DNS and UDP fail;
+>   a granted host connects through the proxy; a provider host and an unknown host are refused
+>   in under 1 s, the unknown one listed as a request naming the project.
 > - A session of another project cannot reach this engine's socket.
 > - An engine that is rootful, runs as the owner, or is not the recorded one is refused, with
 >   the reason; readiness reports each state as in #856's table.
 > - No build argument, layer or container environment holds a credential or a CA.
 >
-> **Depends on:** #829, #831, #674, #856
+> **Depends on:** #829, #831, #674, #856; #860 for the forwards only
 
 ### #352 (covered; replace the container part of Scope)
 
@@ -261,9 +274,11 @@ written. Nothing here is applied by this report: Theo applies them.
 
 ### #829 (add to Acceptance)
 
-> - No container engine socket is reachable from the session (`/var/run/docker.sock`,
->   `$XDG_RUNTIME_DIR/docker.sock`, Podman's and containerd's), and `DOCKER_HOST`,
->   `DOCKER_CONTEXT` and `DOCKER_CONFIG` are unset: `docker info` fails with "no engine".
+> - No container engine socket is reachable from the session: the view shows no socket folder
+>   the session does not need. Probed at least for `/var/run/docker.sock`,
+>   `$XDG_RUNTIME_DIR/docker.sock`, `~/.docker/run/docker.sock`,
+>   `~/.docker/desktop/docker.sock`, Podman's and containerd's. `DOCKER_HOST`,
+>   `DOCKER_CONTEXT` and `DOCKER_CONFIG` are unset, and `docker info` cannot connect.
 > - The launch spec can name a Unix socket to show at a path inside the view, allowed by
 >   Landlock where the kernel scopes named sockets; unused until #390, so #390 changes no
 >   launch code.
@@ -285,9 +300,10 @@ written. Nothing here is applied by this report: Theo applies them.
 ### #674 (add a note)
 
 > A request can come from a project's containers (#390) instead of a session. It names the
-> project and "containers"; "allow once" lasts until that engine stops; "allow always" is the
-> same project grant a session's request creates (#546 D4). The feed event carries the
-> subject, so the phone (#245) can show which one asked.
+> project and "containers". Its choices are "allow always", the same revocable project grant
+> a session's request creates (#546 D4), or "deny": the engine outlives sessions, so "allow
+> once" would last until a reboot with no grant to revoke. The feed event carries the subject,
+> so the phone (#245) can show which one asked.
 
 ### #833 (add to Acceptance)
 
@@ -296,8 +312,9 @@ written. Nothing here is applied by this report: Theo applies them.
 >   `torlek ask run`) until #390 ships; `torlek doctor` shows it before the first launch.
 
 Also touched, one line each: #685 gains three probes once #390 ships (T1 socket escape, T2
-mask bypass, T3 egress bypass); #862 can reuse #831's subject for checks and plugins; #834's
-limits do not cover an engine, which gets its own scope in #390.
+mask bypass, T3 egress bypass); T5 is accepted inside a project (Q3), so nothing probes it.
+The decision of #862 can reuse #831's subject for checks and plugins, and #834's limits do not
+cover an engine, which gets its own scope in #390.
 
 ## Sources, limits and what was not checked
 
@@ -310,8 +327,10 @@ limits do not cover an engine, which gets its own scope in #390.
   cgroup v2 and systemd). RootlessKit's network modes: #546's
   [appendix](546/measurements.md#prior-art-and-platform-sources).
 - Nothing was run: no engine was started and no option was prototyped. Q2 B's feasibility,
-  the masks surviving a recursive bind into a container (T2), and an engine behind a single
-  listener (Q4 A) are claims for #390's tests to prove.
+  the masks surviving a recursive bind into a container (T2), masking a clone or a file that
+  appears after the engine started without a root step each time (Q2 A, Q3 A), and an engine
+  behind a single listener (Q4 A) are claims for #390's tests to prove. If the second one
+  fails, Q2 A costs a root step per clone and Q3 comes back to Theo.
 - Not covered: macOS (every engine there runs in a VM; Roadmap: macOS), Podman and other
   engines (the same bounds apply to anything that speaks the Docker API), where the image
   store sits among the caches of #859.
