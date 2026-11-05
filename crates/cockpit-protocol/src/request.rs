@@ -865,7 +865,8 @@ pub enum Command {
     },
     /// Owner only: the PNG on the owner's desktop clipboard, saved in the temporary folder of
     /// the session the manager's viewer shows and its path pasted into that session (#848).
-    /// Without a PNG there, CMD+V goes on to the session as the key it was.
+    /// Without a PNG there, or without the owner's display or `wl-paste` to read it, CMD+V
+    /// goes on to the session as the key it was. Refused in the phone layout (read-only).
     SessionPasteImage,
     /// A kind this version does not know. Read only: `decode_request` refuses it as
     /// `unknown-command`, and serializing it fails.
@@ -1222,7 +1223,7 @@ pub enum Reply {
         phone: bool,
     },
     /// `session-paste-image` for `session`: `path`, the clipboard's image saved and pasted
-    /// into it, or none when the clipboard held no PNG and the key went on to it.
+    /// into it, or none when no PNG was read and the key went on to it.
     ClipboardImage {
         session: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

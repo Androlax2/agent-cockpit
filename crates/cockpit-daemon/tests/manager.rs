@@ -314,6 +314,11 @@ async fn the_provider_list_names_each_wired_provider_and_whether_it_resumes() {
                     resume: false,
                     events: false
                 },
+                ProviderView {
+                    name: "keys".to_owned(),
+                    resume: true,
+                    events: false
+                },
             ]
         }
     );
@@ -1448,23 +1453,47 @@ async fn without_an_image_on_the_clipboard_the_key_goes_on_to_the_session_on_scr
     }
 }
 
+/// Without the owner's display the daemon cannot read the clipboard: the key goes on, as before
+/// #848, for an agent that reads it itself (`agents.desktop_session`); `torlek doctor` says why.
 #[tokio::test(flavor = "multi_thread")]
-async fn pasting_an_image_without_the_owners_wayland_display_is_refused_naming_the_import() {
+async fn without_the_owners_wayland_display_the_key_goes_on_to_the_session_on_screen() {
     let home = Home::new();
     let daemon = home.start_with_clipboard(Clipboard::Image(PNG), &[]).await;
     let client = Connection::open(daemon.socket_path(), GENEROUS)
         .await
         .unwrap();
-    shown_session(&home, &client, DESKTOP_COLUMNS).await;
+    let started = shown_agent(&home, &client, DESKTOP_COLUMNS, "keys").await;
+
+    let reply = paste_image(&client).await.unwrap();
+
+    assert_eq!(
+        reply,
+        Reply::ClipboardImage {
+            session: started.id.clone(),
+            path: None,
+        }
+    );
+    eventually("Ctrl-V reaches the agent", || {
+        home.first_key() == Some(vec![0x16])
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pasting_an_image_in_the_phone_layout_is_refused_as_the_viewer_is_read_only() {
+    let home = Home::new();
+    let daemon = home
+        .start_with_clipboard(Clipboard::Image(PNG), DESKTOP)
+        .await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let started = shown_session(&home, &client, 45).await;
 
     let error = refusal(paste_image(&client).await);
 
-    assert_eq!(error.code, ErrorCode::Refused, "{error:?}");
-    assert!(
-        error.message.contains("torlek desktop-session import"),
-        "{}",
-        error.message
-    );
+    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+    assert!(error.message.contains("read-only"), "{}", error.message);
+    assert!(!agent_screen(&home, &started.id).contains(".png"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

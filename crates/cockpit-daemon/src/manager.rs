@@ -226,10 +226,12 @@ fn open(
         tracing::info!("opened the manager session");
     }
     if !image_paste.is_empty() {
-        // Each open: the script names the client that opened the manager last.
+        // Each open: the script names the client that opened the manager last. An optional
+        // key: without it CMD+V reaches the session as before, so the manager still opens.
         let panes = whole_manager(tmux)?;
-        tmux.bind_image_paste(&panes.viewer, &words(image_paste))
-            .map_err(tmux_error)?;
+        if let Err(error) = tmux.bind_image_paste(&panes.viewer, &words(image_paste)) {
+            tracing::warn!(%error, "CMD+V in the viewer is not bound: it reaches the session as a key");
+        }
     }
     Ok(Reply::Manager {
         attach: tmux
@@ -540,6 +542,14 @@ async fn paste_image(sessions: &Sessions, manager: Arc<Manager>) -> Result<Reply
             "no session is on screen: open one in the viewer, then press CMD+V",
         ));
     };
+    if manager.phone.load(Ordering::SeqCst) {
+        return Err(ProtocolError::new(
+            ErrorCode::Conflict,
+            "the viewer is read-only in the phone layout: widen the window to paste an image",
+        ));
+    }
+    // Checked before the clipboard is read, so no image is read for a session that cannot
+    // take it.
     let shown = sessions
         .get(&id)
         .await

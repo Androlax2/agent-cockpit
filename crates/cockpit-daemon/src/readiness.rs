@@ -214,11 +214,13 @@ fn clipboard_requirements(context: &Context) -> [cockpit_readiness::Requirement;
     let copies_out = match context.manager.passes_copies_out() {
         Ok(true) => cockpit_readiness::Requirement::available(
             "clipboard out",
-            "a copy in the session in the viewer (copy mode: the prefix twice, then [) reaches              your terminal with OSC 52, when it accepts that, as kitty does",
+            "a copy in the session in the viewer (copy mode: the prefix twice, then [) reaches \
+             your terminal with OSC 52, when it accepts that, as kitty does",
         ),
         Ok(false) => cockpit_readiness::Requirement::available(
             "clipboard out",
-            "not usable, optional: this tmux has no get-clipboard option, so copies stop at              the viewer rather than let panes read the clipboard",
+            "not usable, optional: this tmux has no get-clipboard option, so copies stop at \
+             the viewer rather than let panes read the clipboard",
         )
         .with_advice(format!(
             "to use it, install a tmux with get-clipboard (3.8 has it), {restart}"
@@ -235,7 +237,7 @@ fn clipboard_requirements(context: &Context) -> [cockpit_readiness::Requirement;
 fn image_paste_requirement(context: &Context) -> cockpit_readiness::Requirement {
     let name = "clipboard in";
     let reader = context.manager.clipboard_reader();
-    let Some(found) = find_program(reader) else {
+    let Some(found) = crate::clipboard::find_program(reader) else {
         return cockpit_readiness::Requirement::available(
             name,
             format!(
@@ -247,13 +249,8 @@ fn image_paste_requirement(context: &Context) -> cockpit_readiness::Requirement 
             "to use it, install wl-clipboard on the daemon's PATH, then restart the daemon",
         );
     };
-    let display = context
-        .sessions
-        .desktop_environment()
-        .into_iter()
-        .find(|(variable, value)| variable == "WAYLAND_DISPLAY" && !value.is_empty())
-        .map(|(_, value)| value);
-    let Some(display) = display else {
+    let desktop = context.sessions.desktop_environment();
+    let Some(display) = crate::clipboard::wayland_display(&desktop) else {
         return cockpit_readiness::Requirement::available(
             name,
             "not usable, optional: the daemon knows no Wayland display to read the clipboard on",
@@ -271,18 +268,6 @@ fn image_paste_requirement(context: &Context) -> cockpit_readiness::Requirement 
             display.to_string_lossy()
         ),
     )
-}
-
-/// `program` itself when it names a path, else the first file of that name on the daemon's
-/// `PATH`.
-fn find_program(program: &Path) -> Option<PathBuf> {
-    if program.components().count() > 1 {
-        return program.is_file().then(|| program.to_path_buf());
-    }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(program))
-        .find(|candidate| candidate.is_file())
 }
 
 /// The low-disk guard's last reading (#406); nothing before its first reading or when the

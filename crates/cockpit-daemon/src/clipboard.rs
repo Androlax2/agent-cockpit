@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc::Receiver;
@@ -24,24 +24,26 @@ const READ_LIMIT: Duration = Duration::from_secs(5);
 const NOTHING_COPIED: &str = "Nothing is copied";
 /// What of `wl-paste`'s complaints is kept for the refusal.
 const STDERR_LIMIT: usize = 4096;
+/// Names tried for one millisecond's image before the save gives up.
+const SAVE_ATTEMPTS: u32 = 100;
 /// What of the clipboard's list of types is read: a few lines in practice.
 const TYPES_LIMIT: usize = 64 * 1024;
 
-/// The clipboard's PNG, none when it holds no image, or why it could not be read. `desktop` is
-/// the owner's last import; the desktop variables it lacks are unset for `reader`.
+/// The clipboard's PNG; none when it holds no image, or when the daemon cannot reach it (no
+/// Wayland display imported, no `reader`), so CMD+V goes on as before #848 to an agent that
+/// reads the clipboard itself, and `torlek doctor` says why; or why it could not be read.
+/// `desktop` is the owner's last import; the desktop variables it lacks are unset for `reader`.
 pub(crate) fn read_png(
     reader: &Path,
     desktop: &[(OsString, OsString)],
 ) -> Result<Option<Vec<u8>>, ProtocolError> {
-    let has_wayland = desktop
-        .iter()
-        .any(|(name, value)| name == "WAYLAND_DISPLAY" && !value.is_empty());
-    if !has_wayland {
-        return Err(refused(
-            "the daemon knows no Wayland display to read the clipboard on: run \
-             `torlek desktop-session import` in a terminal of your desktop, then press CMD+V again"
-                .to_owned(),
-        ));
+    if wayland_display(desktop).is_none() {
+        tracing::info!("CMD+V goes on to the session: no Wayland display was imported");
+        return Ok(None);
+    }
+    if find_program(reader).is_none() {
+        tracing::info!(reader = %reader.display(), "CMD+V goes on to the session: no clipboard reader");
+        return Ok(None);
     }
     let types = run(reader, desktop, &["--list-types"], TYPES_LIMIT)?;
     if !types.status.success() {
@@ -80,15 +82,40 @@ pub(crate) fn read_png(
     Ok(Some(image.stdout))
 }
 
-/// Saves `image` as a new `clipboard-<milliseconds>.png` in `folder`, readable and writable by
-/// the owner only, and answers its path.
+/// The imported `WAYLAND_DISPLAY`, when there is one.
+pub(crate) fn wayland_display(desktop: &[(OsString, OsString)]) -> Option<&OsString> {
+    desktop
+        .iter()
+        .find(|(name, value)| name == "WAYLAND_DISPLAY" && !value.is_empty())
+        .map(|(_, value)| value)
+}
+
+/// `program` itself when it names a path, else the first executable file of that name on the
+/// daemon's `PATH`.
+pub(crate) fn find_program(program: &Path) -> Option<PathBuf> {
+    let is_executable = |candidate: &Path| {
+        candidate
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    };
+    if program.components().count() > 1 {
+        return is_executable(program).then(|| program.to_path_buf());
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| is_executable(candidate))
+}
+
+/// Saves `image` as a new `clipboard-<milliseconds>[-<n>].png` in `folder`, readable and
+/// writable by the owner only, and answers its path. Two pastes in one millisecond (a held
+/// key) get two files.
 pub(crate) fn save(folder: &Path, image: &[u8]) -> Result<PathBuf, ProtocolError> {
     let milliseconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let path = folder.join(format!("clipboard-{milliseconds}.png"));
-    let cannot = |error: std::io::Error| {
+    let cannot = |path: &Path, error: std::io::Error| {
         ProtocolError::new(
             ErrorCode::Internal,
             format!(
@@ -97,14 +124,32 @@ pub(crate) fn save(folder: &Path, image: &[u8]) -> Result<PathBuf, ProtocolError
             ),
         )
     };
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(cannot)?;
-    file.write_all(image).map_err(cannot)?;
-    Ok(path)
+    for attempt in 0..SAVE_ATTEMPTS {
+        let name = match attempt {
+            0 => format!("clipboard-{milliseconds}.png"),
+            attempt => format!("clipboard-{milliseconds}-{attempt}.png"),
+        };
+        let path = folder.join(name);
+        let opened = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path);
+        let mut file = match opened {
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            opened => opened.map_err(|error| cannot(&path, error))?,
+        };
+        file.write_all(image)
+            .map_err(|error| cannot(&path, error))?;
+        return Ok(path);
+    }
+    Err(ProtocolError::new(
+        ErrorCode::Internal,
+        format!(
+            "cannot save the clipboard's image in {}: {SAVE_ATTEMPTS} files of this millisecond exist",
+            folder.display()
+        ),
+    ))
 }
 
 struct Answer {

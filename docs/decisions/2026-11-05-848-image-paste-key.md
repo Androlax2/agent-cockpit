@@ -16,8 +16,9 @@ agent; agents never read the clipboard themselves.
   mode 0700, each word single-quoted, so no word reaches tmux's or a shell's parser. Its output
   is dropped; its errors show in the viewer. Each `manager-open` writes it again.
 - **`session-paste-image`, owner only.** The session is the one the viewer shows, and it must
-  be running. The daemon runs `wl-paste --list-types`, then
-  `wl-paste --no-newline --type image/png`, each for at most 5 s, with the desktop variables
+  be running; in the phone layout, where the viewer is read-only (#855), it is refused. The
+  daemon runs `wl-paste --list-types`, then `wl-paste --no-newline --type image/png`, each for
+  at most 5 s, with the desktop variables
   the owner last imported (`torlek desktop-session import`) in place of its own. Only
   `image/png` is read: clipboard text never leaves the desktop. The bytes must start with the
   PNG signature and stay under 32 MiB. The image is saved as a new `clipboard-<ms>.png`, mode
@@ -25,10 +26,13 @@ agent; agents never read the clipboard themselves.
   pasted into the agent's pane as one bracketed paste, so Claude Code takes it as an
   attachment. The paste buffer it goes through is deleted, so prefix `]` never types it again.
   Proven by `crates/cockpit-daemon/tests/manager.rs`.
-- **No PNG** (an empty clipboard, which `wl-paste` reports as `Nothing is copied`, or text
-  only): the daemon sends `C-v` to the viewer, so the session gets the key as it would have.
-  No Wayland display imported, no `wl-paste`, a reader that fails or hangs, or bytes that are
-  not a PNG: refused, naming why, and nothing is pasted.
+- **No PNG read** (an empty clipboard, which `wl-paste` reports as `Nothing is copied`, text
+  only, no Wayland display imported or no `wl-paste`): the daemon sends `C-v` to the viewer, so
+  the session gets the key as before #848, which an agent given the display
+  (`agents.desktop_session`) reads itself; `torlek doctor` says what is missing. A reader that
+  fails or hangs, or bytes that are not a PNG: refused, naming why, and nothing is pasted.
+- **Optional:** a script path tmux cannot take as it is (outside letters, digits and
+  `/ . _ - +`) leaves the key unbound, logged; the manager opens all the same.
 - **`torlek doctor`** lists `clipboard out` (whether tmux takes OSC 52 copies, decision
   `2026-11-05-848-tmux-clipboard-copy-out`) and `clipboard in` (`wl-paste` on the daemon's
   PATH and a Wayland display imported). Both are optional: neither blocks.
