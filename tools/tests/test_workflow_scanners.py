@@ -1,5 +1,6 @@
 """Exercise scanner event guards; these fixtures do not execute hosted scanners."""
 
+import re
 import unittest
 
 from test_workflow_drafts import WORKFLOWS, allows, context, job_conditions
@@ -39,6 +40,31 @@ class ScannerEventTests(unittest.TestCase):
         ):
             with self.subTest(event=event, ref=ref):
                 self.assertEqual(allows(expression, context(event, ref=ref)), expected)
+
+    # api.scorecard.dev refuses published results (and so the README badge) from a job with
+    # run steps, other actions, or write permissions beyond the job's own id-token (#382).
+    def test_scorecard_job_keeps_the_shape_scorecard_accepts_for_publication(self):
+        text = (WORKFLOWS / "scorecard.yml").read_text()
+        top_level, jobs = text.split("\njobs:\n", 1)
+        self.assertIn("permissions:\n  contents: read\n", top_level)
+        self.assertNotRegex(top_level, r"(?m)^(env|defaults):")
+        self.assertNotRegex(jobs, r"(?m)^\s+(-\s+)?(run|env|defaults|container|services):")
+        self.assertEqual(
+            set(re.findall(r"uses: ([\w./-]+)@", jobs)),
+            {"actions/checkout", "ossf/scorecard-action", "actions/upload-artifact"},
+        )
+        self.assertIn("permissions:\n      contents: read\n      id-token: write\n", jobs)
+        self.assertIn("publish_results: true", jobs)
+
+
+class ActionPinningTests(unittest.TestCase):
+    # Repository setting sha_pinning_required fails any run whose action is not pinned to a
+    # full commit SHA; tools/repository_settings.py turns it on only while this holds (#382).
+    def test_every_action_is_pinned_to_a_full_commit_sha(self):
+        for workflow in sorted(WORKFLOWS.glob("*.yml")):
+            for reference in re.findall(r"uses: *([^\s#]+)", workflow.read_text()):
+                with self.subTest(workflow=workflow.name, reference=reference):
+                    self.assertRegex(reference, r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 
 
 if __name__ == "__main__":

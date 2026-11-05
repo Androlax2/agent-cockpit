@@ -1,6 +1,7 @@
 # Torlek
 
 [![Documentation (latest)](https://img.shields.io/badge/docs-latest-lightgrey)](https://androlax2.github.io/agent-cockpit/latest/)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Androlax2/agent-cockpit/badge)](https://scorecard.dev/viewer/?uri=github.com/Androlax2/agent-cockpit)
 
 Torlek runs your coding agents (Claude Code, Codex, OpenCode) side by side, each in its own terminal session.
 Every agent works inside a sandbox and must ask you before it runs anything outside it.
