@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod conversations;
+mod declarations;
 mod delivery_context;
 mod error;
 mod exits;
@@ -12,6 +13,7 @@ mod retention;
 mod store;
 
 pub use cockpit_config::DesktopSession;
+pub use declarations::{RefusedDeclaration, refused_declarations};
 pub use delivery_context::{ConnectSessionSocket, DeliveryContext};
 pub use error::Error;
 pub use lifecycle::Sessions;

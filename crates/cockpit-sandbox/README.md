@@ -26,6 +26,10 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   end removes (`Sandbox::session_tool_config`). Git reads no system configuration and no
   `GIT_CONFIG*` variable of the launch. Nothing of the owner's caches or tool configuration
   is mounted.
+- Declarations (#861): the evidence names where the program's needs came from, its adapter,
+  the owner's entry for it, or none (the floor). `cockpit-sessions` refuses, when the daemon
+  loads its providers, a declaration that reads or writes a baseline-denied path or another
+  program's `write` folder.
 - `agents.sandbox = "required"` on a host without it (no `bwrap`, a failed probe, Landlock
   below ABI 2): `Sandbox::prepare` returns a `Refusal` naming why. It never degrades to an
   unsandboxed launch.

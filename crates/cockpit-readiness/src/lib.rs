@@ -145,6 +145,9 @@ pub enum ProviderUnusable {
     /// Its program is on the daemon's `PATH`, and `reason` is why the adapter refused it,
     /// such as a `--version` it did not understand.
     Refused { reason: String },
+    /// Its adapter's sandbox declaration breaks the sandbox's rules (#861): refused when the
+    /// daemon loaded its providers, for `reason`.
+    DeclarationRefused { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

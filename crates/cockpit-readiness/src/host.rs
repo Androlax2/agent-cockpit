@@ -124,9 +124,12 @@ pub(crate) fn providers(providers: &[ProviderFacts]) -> Vec<Requirement> {
         } else {
             "no agent provider is usable, so no session can start"
         };
-        let is_any_installed = providers
-            .iter()
-            .any(|provider| matches!(provider.found, Err(ProviderUnusable::Refused { .. })));
+        let is_any_installed = providers.iter().any(|provider| {
+            matches!(
+                provider.found,
+                Err(ProviderUnusable::Refused { .. } | ProviderUnusable::DeclarationRefused { .. })
+            )
+        });
         let next = if is_any_installed {
             format!(
                 "fix a provider named above, or install another supported agent ({}) on the \
@@ -173,6 +176,15 @@ fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
                          as the daemon's user (report a Torlek bug if it already does), {RESTART}",
                         provider.name
                     )),
+            ];
+        }
+        Err(ProviderUnusable::DeclarationRefused { reason }) => {
+            return vec![
+                Requirement::available(
+                    name,
+                    format!("not usable, optional: its sandbox declaration is refused: {reason}"),
+                )
+                .with_advice("the declaration is Torlek's adapter's own: report a Torlek bug"),
             ];
         }
     };

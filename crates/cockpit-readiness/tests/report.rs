@@ -351,6 +351,34 @@ fn a_host_whose_only_provider_was_refused_blocks_pointing_at_it() {
 }
 
 #[test]
+fn a_host_whose_only_provider_declaration_was_refused_blocks_pointing_at_it() {
+    let host = HostFacts {
+        providers: vec![
+            missing("claude"),
+            missing("codex"),
+            ProviderFacts {
+                name: "opencode".to_owned(),
+                found: Err(ProviderUnusable::DeclarationRefused {
+                    reason: "it declares ~/.ssh".to_owned(),
+                }),
+            },
+        ],
+        ..ready_host()
+    };
+
+    let report = assess(&host, &Ok(owner_only_config()), None);
+
+    let providers = requirement(&report, "providers");
+    assert!(
+        providers
+            .next
+            .as_deref()
+            .is_some_and(|next| next.starts_with("fix a provider named above")),
+        "{providers:#?}"
+    );
+}
+
+#[test]
 fn a_host_where_no_provider_is_usable_blocks_naming_every_supported_one() {
     let host = HostFacts {
         providers: vec![missing("claude"), missing("codex"), missing("opencode")],

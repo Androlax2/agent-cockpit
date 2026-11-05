@@ -54,7 +54,10 @@ pub enum Enforcement {
         engine: String,
         client_identity: String,
     },
-    /// Only ever by the owner's explicit setting, which `reason` names.
+    /// Only by the owner's own act, which `reason` names: the setting `agents.sandbox =
+    /// "off"`, or an adoption of an agent the owner started outside Torlek (#296, #861).
+    /// A launch under `"required"` that cannot be enforced is refused, never recorded
+    /// here.
     Unsandboxed { reason: String },
 }
 

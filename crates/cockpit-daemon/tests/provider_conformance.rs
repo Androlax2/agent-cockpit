@@ -134,3 +134,23 @@ fn claude_direct_delivery_explicitly_requires_terminal_fallback() {
         );
     }
 }
+
+#[test]
+fn the_shipped_adapters_sandbox_declarations_are_accepted_together() {
+    let opencode = OpenCode::new(
+        "/unused/opencode".into(),
+        None,
+        Some(cockpit_opencode::Bridge {
+            plugin: "/unused/cockpit-opencode-plugin.js".into(),
+            bridge_program: "/unused/cockpit-opencode-bridge".into(),
+            cockpit_program: "/unused/cockpit".into(),
+        }),
+    );
+    let providers: [std::sync::Arc<dyn Provider>; 3] = [
+        std::sync::Arc::new(claude()),
+        std::sync::Arc::new(codex()),
+        std::sync::Arc::new(opencode),
+    ];
+
+    assert_eq!(cockpit_sessions::refused_declarations(&providers), []);
+}

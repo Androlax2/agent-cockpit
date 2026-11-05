@@ -42,6 +42,9 @@ pub enum Subject {
 pub enum NeedsSource {
     /// A provider adapter's declaration (#830).
     Adapter { provider: String },
+    /// The owner's configuration entry for an unadapted program (#84, #294), which no
+    /// session reads or writes.
+    OwnerEntry { program: String },
     /// Nothing declared: the floor, no folder of the home and no host.
     Floor,
 }
@@ -50,6 +53,9 @@ impl NeedsSource {
     pub fn describe(&self) -> String {
         match self {
             NeedsSource::Adapter { provider } => format!("the {provider} adapter"),
+            NeedsSource::OwnerEntry { program } => {
+                format!("declared by owner config: the entry for {program}")
+            }
             NeedsSource::Floor => "none declared: the floor".to_owned(),
         }
     }

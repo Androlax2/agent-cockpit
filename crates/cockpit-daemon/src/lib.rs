@@ -320,6 +320,24 @@ impl Instance {
         );
         let stopper = processes.clone();
         let sweeper = processes.clone();
+        // Refused when loaded, rather than at each launch, so readiness names the provider
+        // as unusable from the start (#861).
+        for refused in cockpit_sessions::refused_declarations(&wiring.providers) {
+            tracing::error!(
+                provider = %refused.provider,
+                reason = %refused.reason,
+                "provider not usable: its sandbox declaration is refused"
+            );
+            wiring
+                .providers
+                .retain(|provider| provider.name().as_str() != refused.provider);
+            wiring.unavailable_providers.push((
+                refused.provider,
+                cockpit_readiness::ProviderUnusable::DeclarationRefused {
+                    reason: refused.reason,
+                },
+            ));
+        }
         let provider_capabilities: std::collections::BTreeMap<_, _> = wiring
             .providers
             .iter()
