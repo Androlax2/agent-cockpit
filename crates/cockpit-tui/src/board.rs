@@ -315,7 +315,7 @@ impl Board {
     }
 
     /// An approval or guide the session asked for, or a command of its waiting for input.
-    fn has_open_request(&self, session: &str) -> bool {
+    pub(crate) fn has_open_request(&self, session: &str) -> bool {
         self.open_requests(session).next().is_some()
     }
 

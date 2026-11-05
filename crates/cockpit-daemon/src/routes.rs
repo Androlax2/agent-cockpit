@@ -533,7 +533,9 @@ impl Handler for Routes {
             (
                 command @ (Command::ManagerOpen { .. }
                 | Command::ManagerFocus { .. }
-                | Command::SessionShow { .. }),
+                | Command::ManagerFit { .. }
+                | Command::SessionShow { .. }
+                | Command::SessionType { .. }),
                 peer,
             ) => {
                 match peer {

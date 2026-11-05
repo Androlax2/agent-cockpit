@@ -152,6 +152,8 @@ pub struct EffectiveConfig {
     pub agents_sandbox: Sourced<AgentSandbox>,
     /// Whether the TUI rings the terminal bell when a session needs the owner (#682).
     pub tui_attention_bell: Sourced<bool>,
+    /// Below this many columns, the TUI takes its one-column phone layout (#855); 0 never.
+    pub tui_phone_below_columns: Sourced<u16>,
     /// The checks the project declares, in its order: what Cockpit runs and a gate requires.
     pub checks: Vec<Sourced<Check>>,
     /// Where the project expects its work to run (`[execution] environment`); unset asks for
@@ -379,6 +381,8 @@ struct AgentsTable {
 #[serde(deny_unknown_fields)]
 struct TuiTable {
     attention_bell: Option<Spanned<bool>>,
+    /// `i64` keeps a negative or huge value an error with its line rather than a parse error.
+    phone_below_columns: Option<Spanned<i64>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -510,6 +514,7 @@ pub fn load(
         start_files: start_files(&layers, &home)?,
         tasks_blocker_project: tasks_blocker_project(&layers)?,
         tasks_cross_project_open_max: tasks_cross_project_open_max(&layers)?,
+        tui_phone_below_columns: tui_phone_below_columns(&layers)?,
         idle_sleep_after: idle_sleep_after(&layers)?,
         asleep_expiry: asleep_expiry(&layers)?,
         agents_desktop_session: agents_desktop_session(&layers),
@@ -802,6 +807,32 @@ fn tasks_cross_project_open_max(layers: &[Layer]) -> Result<Sourced<u32>, Config
         cap = Sourced::new(value, source);
     }
     Ok(cap)
+}
+
+/// Product default for [`EffectiveConfig::tui_phone_below_columns`]: an iPhone in portrait
+/// gives an SSH terminal about 45 columns, a desktop terminal well over 60.
+pub const PHONE_BELOW_COLUMNS: u16 = 60;
+
+fn tui_phone_below_columns(layers: &[Layer]) -> Result<Sourced<u16>, ConfigError> {
+    let mut columns = Sourced::new(PHONE_BELOW_COLUMNS, Source::ProductDefault);
+    for layer in layers {
+        let Some(value) = layer
+            .settings
+            .tui
+            .as_ref()
+            .and_then(|tui| tui.get_ref().phone_below_columns.as_ref())
+        else {
+            continue;
+        };
+        let source = layer.source_at(value.span());
+        let value = u16::try_from(*value.get_ref()).map_err(|_| ConfigError::Invalid {
+            key: "tui.phone_below_columns".to_string(),
+            source: source.clone(),
+            reason: format!("must be a whole number from 0 to {}", u16::MAX),
+        })?;
+        columns = Sourced::new(value, source);
+    }
+    Ok(columns)
 }
 
 /// The current cockpit's `idle-sleep-after`: 60 minutes by default, 30 at least.

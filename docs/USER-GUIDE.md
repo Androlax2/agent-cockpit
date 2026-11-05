@@ -126,6 +126,12 @@ Setup refuses an occupied endpoint. A separate profile does not provide separate
 
 Alpha TUI, rendered from the checked-in demo fixture with fictional projects and agents.
 
+On a terminal narrower than 60 columns, such as a phone over SSH, the TUI switches to a
+one-column layout: requests and questions first, each with its whole command, then one line
+per session. Enter opens a session full screen and read-only; `i` types a line into it, Esc
+goes back. `[tui] phone_below_columns` in the owner configuration changes the width, and `0`
+turns it off.
+
 ## Approvals
 
 Inside a launched session, an agent can request an outside-sandbox command with

@@ -1,6 +1,6 @@
-//! The owner's `[tui]` settings: `attention_bell`, whether the TUI rings the terminal bell
-//! when a session needs the owner (#682), read through `cockpit_config::load` from an
-//! isolated home.
+//! The owner's `[tui]` settings, read through `cockpit_config::load` from an isolated home:
+//! `attention_bell`, whether the TUI rings the terminal bell when a session needs the owner
+//! (#682), and `phone_below_columns`, the width below which it takes its phone layout (#855).
 
 use std::fs;
 use std::path::Path;
@@ -98,6 +98,61 @@ fn config_show_prints_the_attention_bell_with_its_source() {
 
     assert!(
         shown.contains("tui.attention_bell = true  # product default\n"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_clean_home_takes_the_phone_layout_below_sixty_columns() {
+    let home = TempDir::new().unwrap();
+
+    let config = load(home.path(), None).unwrap();
+
+    assert_eq!(config.tui_phone_below_columns.value, 60);
+    assert_eq!(
+        config.tui_phone_below_columns.source,
+        Source::ProductDefault
+    );
+}
+
+#[test]
+fn the_owner_file_sets_the_phone_width_with_its_line() {
+    let home = TempDir::new().unwrap();
+    write_user_config(home.path(), "[tui]\nphone_below_columns = 0\n");
+
+    let config = load(home.path(), None).unwrap();
+
+    assert_eq!(config.tui_phone_below_columns.value, 0);
+    assert_eq!(
+        config.tui_phone_below_columns.source,
+        Source::UserFile {
+            path: config.user_file.path.clone(),
+            line: 2
+        }
+    );
+}
+
+#[test]
+fn a_negative_phone_width_fails_with_its_line() {
+    let home = TempDir::new().unwrap();
+    write_user_config(home.path(), "[tui]\nphone_below_columns = -1\n");
+
+    let error = load(home.path(), None).unwrap_err().to_string();
+
+    assert!(error.contains("config.toml:2"), "{error}");
+    assert!(error.contains("tui.phone_below_columns"), "{error}");
+}
+
+#[test]
+fn config_show_prints_the_phone_width_with_its_source() {
+    let home = TempDir::new().unwrap();
+
+    let shown = cockpit_config::render(&load(home.path(), None).unwrap());
+
+    assert!(
+        shown
+            .lines()
+            .any(|line| line == "tui.phone_below_columns = 60  # product default"),
         "{shown}"
     );
 }

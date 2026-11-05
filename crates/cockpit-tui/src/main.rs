@@ -95,7 +95,8 @@ fn viewer() -> ExitCode {
 
 enum Input {
     Key(Key),
-    Redraw,
+    /// The terminal changed size: the manager may cross the phone width (#855).
+    Resized,
     Answer(Box<(Sent, Result<Reply, String>)>),
 }
 
@@ -151,10 +152,15 @@ async fn run(
     // A refresh is sent only once the last one is answered, so a slow daemon gets no pile.
     let mut unanswered_refreshes = 0_usize;
     let mut refresh = tokio::time::interval(REFRESH);
+    send(&requests, app.fit_command(), false)?;
     loop {
         // One clock reading for the frame and its deadline: a grace that ends in between
         // would otherwise leave its hint on screen with nothing armed to remove it.
         let now = Instant::now();
+        let size = terminal
+            .size()
+            .map_err(|error| format!("cannot read the terminal's size: {error}"))?;
+        app.set_screen(size.width, size.height);
         terminal
             .draw(|frame| draw(&app, frame, now))
             .map_err(|error| format!("cannot draw: {error}"))?;
@@ -178,7 +184,7 @@ async fn run(
             },
             input = received.recv() => match input {
                 None => return Err("the key reader stopped".to_owned()),
-                Some(Input::Redraw) => {}
+                Some(Input::Resized) => send(&requests, app.fit_command(), false)?,
                 Some(Input::Key(key)) => {
                     let step = app.key(key, Instant::now());
                     record_usage(&step);
@@ -273,7 +279,7 @@ fn read_keys(inputs: &mpsc::Sender<Input>) {
                     None => continue,
                 }
             }
-            Ok(Event::Resize(..)) => Input::Redraw,
+            Ok(Event::Resize(..)) => Input::Resized,
             Ok(_) => continue,
             Err(error) => {
                 tracing::error!(%error, "cannot read the terminal");

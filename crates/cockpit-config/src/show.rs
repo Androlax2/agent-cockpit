@@ -235,6 +235,11 @@ pub fn render(config: &EffectiveConfig) -> String {
         &config.tui_attention_bell.value.to_string(),
         &config.tui_attention_bell.source,
     ));
+    lines.push(line(
+        "tui.phone_below_columns",
+        &config.tui_phone_below_columns.value.to_string(),
+        &config.tui_phone_below_columns.source,
+    ));
     // Before the start files and checks, which list last as they grow.
     lines.push(line(
         "execution.environment",

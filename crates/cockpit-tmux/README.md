@@ -45,6 +45,11 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
   (#338); [`Server::attach_command`] is the same command, for a frontend that attaches a
   terminal to the manager session.
   [`Server::split_approval_pane`] splits a focused pane under the viewer.
+  A [`Viewing::ReadOnly`] viewer has its pane input off (`select-pane -d`): keys typed into
+  it reach no session, while `send-keys` to the session still works, which a client attached
+  with `-f read-only` would refuse while it is tmux's latest client (#855).
+  [`Server::pane_geometry`], [`Server::toggle_zoom`], [`Server::stack_panes`] and
+  [`Server::place_side_by_side`] arrange the manager for its window's width.
 - **Observation.** [`Server::observe`] attaches a `read-only,ignore-size` control-mode client
   (`-C`; `-CC` needs a terminal) and returns once tmux has attached it. Its reader thread
   always drains tmux, because a client that stops reading makes tmux stop reading the pane
@@ -70,3 +75,6 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
 - `tests/sessions.rs`, `tests/control_mode.rs`, `tests/capture_stream.rs`,
   `tests/reattach.rs`: a real tmux on a private socket in a temporary directory, never the
   user's server.
+- `tests/phone_layout.rs` (#855): through an owner client in control mode, keys reach the
+  session through a read-write viewer and none through a read-only one, `send-keys` still
+  works, and stacking, zooming and side by side give the panes their sizes.
