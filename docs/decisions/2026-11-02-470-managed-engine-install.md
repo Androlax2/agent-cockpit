@@ -3,6 +3,8 @@
 Issue #470. Installer architecture chosen by the worker within Theo's release-install
 decision; dependency additions and the CLI edge explicitly approved by Theo on 2026-11-02.
 
+Superseded by `2026-11-05-828-remove-sandbox-engines.md`: the installer and engines are removed.
+
 - **`cockpit-sandbox` owns installation.** It consumes the existing `engine-pins.json`.
   The CLI calls it offline with persistence disabled, so a standalone CLI build does not
   include the database. A combined CLI/daemon build unifies Cargo features and enables

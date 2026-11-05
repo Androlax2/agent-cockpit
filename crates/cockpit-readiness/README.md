@@ -9,7 +9,7 @@ grants nothing.
 **Depends on:** `cockpit-config` (the effective configuration, owner and project, with each
 value's source), and `serde_json` to read a Docker engine's answer. The
 `readiness -> config only` rule of `cockpit-workspace-rules/tests/crate_graph.rs` keeps every
-other Cockpit crate out: the daemon gathers each fact from its owner (tmux, the sandbox engine,
+other Cockpit crate out: the daemon gathers each fact from its owner (tmux, the sandbox setting,
 the providers, resource admission, the workflow presets, the project registry) and passes it in.
 **Used by:** `cockpit-daemon`, which serves the report as `readiness`; `torlek doctor` renders
 it (#50).

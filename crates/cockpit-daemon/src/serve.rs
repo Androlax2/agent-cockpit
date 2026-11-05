@@ -234,11 +234,10 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
 /// How long a stopping daemon waits for blocking work before it exits anyway.
 const STOP_WAIT: Duration = Duration::from_secs(5);
 
-/// The sandbox every launch goes through (#61): the release-owned Greywall and greyproxy
-/// checked against the pinned builds, with the paths the daemon's layout
-/// gives every agent and keeps from it; `bridge_dirs` hold what the adapters' bridges run
-/// and load inside it, and the instruction bundle. An engine that is missing or of another build is
-/// logged; launches are then refused while the owner requires the sandbox.
+/// The sandbox every launch goes through (#61), with the paths the daemon's layout gives
+/// every agent and keeps from it; `bridge_dirs` hold what the adapters' bridges run and load
+/// inside it, and the instruction bundle. No backend enforces it in this release (#828): the
+/// start says how the owner's setting treats launches.
 fn sandbox(
     instance: &Instance,
     environment: &cockpit_config::Environment,
@@ -246,37 +245,17 @@ fn sandbox(
     config: &cockpit_config::EffectiveConfig,
 ) -> cockpit_sandbox::Sandbox {
     let options = instance.options();
-    let platform = cockpit_sandbox::Platform::detect();
-    let settings_dir = options.state_dir.join("sandbox");
-    let engine = cockpit_sandbox::Greywall::detect_owned(
-        &options.state_dir,
-        platform.clone(),
-        settings_dir.clone(),
-        environment.profile.value.name(),
-        std::env::var_os("TORLEK_DEV_GREYWALL").map(PathBuf::from),
-        std::env::var_os("TORLEK_DEV_GREYPROXY").map(PathBuf::from),
-    );
-    match (&engine, config.agents_sandbox.value) {
-        (Ok(greywall), _) => tracing::info!(
-            engine = %greywall.engine(),
-            platform = %greywall.platform,
-            "the sandbox engine is ready"
-        ),
-        (Err(reason), cockpit_config::AgentSandbox::Required) => tracing::error!(
-            %reason,
-            "the sandbox engine is unavailable: every agent launch is refused until it is installed and the daemon restarts"
-        ),
-        (Err(reason), cockpit_config::AgentSandbox::Off) => tracing::warn!(
-            %reason,
-            "the sandbox engine is unavailable"
-        ),
-    }
-    if config.agents_sandbox.value == cockpit_config::AgentSandbox::Off {
-        tracing::warn!(
+    match config.agents_sandbox.value {
+        cockpit_config::AgentSandbox::Required => tracing::error!(
             source = %config.agents_sandbox.source,
-            "agents run UNSANDBOXED: the owner set agents.sandbox = \"off\"; {}",
+            "agents.sandbox = \"required\": {}; every agent launch is refused until the owner sets agents.sandbox = \"off\"",
+            cockpit_config::NO_SANDBOX_BACKEND
+        ),
+        cockpit_config::AgentSandbox::Off => tracing::warn!(
+            source = %config.agents_sandbox.source,
+            "agents run UNSANDBOXED: agents.sandbox = \"off\"; {}",
             cockpit_config::UNSANDBOXED_RISK
-        );
+        ),
     }
     let layout_config_dir = environment
         .home_dir()
@@ -299,17 +278,13 @@ fn sandbox(
         Some(database.clone()),
         Some(options.state_dir.join("logs")),
         Some(options.executions_dir()),
-        Some(settings_dir),
         layout_config_dir,
     ]
     .into_iter()
     .flatten()
     .collect();
-    let engines = options.state_dir.join("engines");
-    let proxy = cockpit_sandbox::ManagedProxy::new(environment, &platform);
     cockpit_sandbox::Sandbox::new(
-        platform,
-        engine,
+        cockpit_sandbox::Platform::detect(),
         cockpit_sandbox::HostPaths {
             read_only: std::iter::once(
                 options
@@ -319,17 +294,13 @@ fn sandbox(
                     .to_path_buf(),
             )
             .chain(bridge_dirs.iter().cloned())
-            // Greywall re-executes its Landlock wrapper inside the sandbox. Keep the
-            // release readable, with an explicit write denial for broad project roots.
-            .chain(engines.is_dir().then_some(engines.clone()))
             .collect(),
             denied,
-            denied_write: vec![engines],
+            denied_write: Vec::new(),
             owner_uid: instance.owner_uid,
             mount_sources: options.mount_sources(),
         },
     )
-    .with_managed_proxy(proxy)
 }
 
 /// Those of `names` the daemon's own environment sets, never invented (#303).

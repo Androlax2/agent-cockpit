@@ -149,7 +149,7 @@ async fn a_blocker_report_goes_queued_to_the_configured_project() {
         &agent,
         &fixture.settings,
         "Cannot reach the registry",
-        "greyproxy blocks registry.example.com",
+        "the proxy blocks registry.example.com",
         "",
         NOW,
     )
@@ -163,7 +163,7 @@ async fn a_blocker_report_goes_queued_to_the_configured_project() {
     assert_eq!(report.filed_from.as_deref(), Some("app"));
     assert_eq!(
         report.why.as_deref(),
-        Some("greyproxy blocks registry.example.com")
+        Some("the proxy blocks registry.example.com")
     );
 }
 

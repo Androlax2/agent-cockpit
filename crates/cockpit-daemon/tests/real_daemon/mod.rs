@@ -19,25 +19,9 @@ use std::time::{Duration, Instant};
 use cockpit_client::Connection;
 use cockpit_protocol::{Command, Reply, SessionStateView, SessionView};
 
-mod proxy;
-
 /// The profile directory of a daemon this test build runs without `--profile`: a build
 /// outside a release bundle runs profile `dev` (#196).
 pub const BUILD_PROFILE_DIR: &str = "torlek-dev";
-
-/// True, after saying why on standard error, when this host's target has no pinned sandbox
-/// engines (macOS until #568), so a test that starts a daemon with managed engines cannot
-/// run here. A supported target never skips: any other failure to resolve the engines panics.
-pub fn skip_without_pinned_engines() -> bool {
-    match cockpit_sandbox::install::programs(Path::new("/")) {
-        Ok(_) => false,
-        Err(cockpit_sandbox::install::InstallError::UnsupportedTarget(target)) => {
-            eprintln!("SKIPPED: no pinned sandbox engines for {target}");
-            true
-        }
-        Err(error) => panic!("the managed engines resolve on a supported target: {error}"),
-    }
-}
 
 /// Every profile directory a test here runs a daemon under, whose tmux servers the home
 /// stops when dropped.
@@ -91,10 +75,6 @@ pub const COMMANDED_PROJECT: &str = "commanded";
 pub const QUESTION_PROJECT: &str = "question";
 /// What the [`QUESTION_PROJECT`] agent asks.
 pub const ASKED_QUESTION: &str = "Which branch should I base the fix on?";
-/// A project of this name runs an agent that writes `probe` into its session's directory
-/// when the stand-in Greywall lets it write there (`--allow-path`), as Codex's launcher writes
-/// its app-server socket there (#437).
-pub const SESSION_DIR_PROJECT: &str = "session-dir";
 /// What the [`ASK_RUN_PROJECT`] agent asks to run.
 pub const ASKED_COMMAND: &str = "echo asked from the agent";
 /// The guide the [`ASK_GUIDE_PROJECT`] agent hands the owner, one step.
@@ -102,8 +82,8 @@ pub const ASKED_GUIDE: &str = "# Asked from the agent\nLook at the panel\n";
 
 /// The agent acts as the last component of its working directory says ([`FLOOD_PROJECT`],
 /// [`STALL_PROJECT`], [`REPORT_PROJECT`], [`ENVIRONMENT_PROJECT`], [`ASK_RUN_PROJECT`],
-/// [`ASK_GUIDE_PROJECT`], [`COMMANDED_PROJECT`], [`QUESTION_PROJECT`],
-/// [`SESSION_DIR_PROJECT`], [`ONBOARD_PROJECT`]); anything else sleeps. `--version` answers
+/// [`ASK_GUIDE_PROJECT`], [`COMMANDED_PROJECT`], [`QUESTION_PROJECT`], [`ONBOARD_PROJECT`]);
+/// anything else sleeps. `--version` answers
 /// the version the adapter's conformance tests ran on.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
@@ -144,12 +124,6 @@ case "${PWD##*/}" in
   @QUESTION@) '@COCKPIT@' agent report --state waiting --needs-input '@ASKED_QUESTION_TEXT@' \
       >> '@REPORT_LOG@' 2>&1
     while :; do '@COCKPIT@' agent inbox >> inbox.log 2>> inbox.err || sleep 1; done ;;
-  @SESSION_DIR@) IFS=:
-    for dir in $FAKE_GREYWALL_WRITABLE; do
-      case "$dir" in */sessions/"$TORLEK_SESSION") printf 'written\n' > "$dir/probe" ;; esac
-    done
-    unset IFS
-    exec sleep 3600 ;;
   @ONBOARD@) { '@COCKPIT@' brief; '@COCKPIT@' docs; for topic in workflow checks approvals; do
       '@COCKPIT@' docs "$topic"; done
     test -r "$TORLEK_INSTRUCTIONS/torlek/SKILL.md" && echo 'skill readable on disk'
@@ -157,43 +131,6 @@ case "${PWD##*/}" in
     exec sleep 3600 ;;
   *) exec sleep 3600 ;;
 esac
-"#;
-
-/// A stand-in Greywall (#61): `--version` answers as the pinned build on a host with every
-/// capability, and `--help` lists the fork's `--mount` (#446); a launch appends its arguments
-/// to `@LOG@`, one line, then runs the agent after `--` unsandboxed, so the agents above
-/// behave as they do without it. The folders it
-/// was asked to make writable (`--allow-path`) are in `FAKE_GREYWALL_WRITABLE`, `:`-separated.
-const FAKE_GREYWALL: &str = r#"#!/bin/sh
-if [ "$1" = --version ]; then
-  printf 'greywall - stand-in\n  Version: 0.3.7+dotfiles\n  Commit:  @COMMIT@\n'
-  printf 'Checking system capabilities:\n'
-  # These are fixture capabilities, not claims about the pinned release. In
-  # particular its missing macOS public-CA capability has a separate refusal test.
-  for capability in bubblewrap landlock seccomp 'network isolation' 'D-Bus isolated' 'public CA isolation'; do
-    printf '  \342\234\223 %s\n' "$capability"
-  done
-  exit 0
-fi
-if [ "$1" = --help ]; then
-  printf 'Flags:\n      --mount stringArray   Mount a host directory below /tmp in the sandbox\n'
-  exit 0
-fi
-printf '%s\n' "$*" >> '@LOG@'
-printf '%s\n' "$GREYPROXY_DATA_HOME" >> '@LOG@.proxy-home'
-writable=
-while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
-  if [ "$1" = --allow-path ]; then writable="$writable:$2"; fi
-  shift
-done
-export FAKE_GREYWALL_WRITABLE="$writable"
-shift
-exec "$@"
-"#;
-
-/// A stand-in greyproxy: only `--version`, as the pinned build.
-const FAKE_GREYPROXY: &str = r#"#!/bin/sh
-printf 'greyproxy 0.4.5 (stand-in)\n  commit: @COMMIT@\n'
 "#;
 
 pub struct Home {
@@ -255,43 +192,21 @@ impl Home {
                 .replace("@COMMANDED@", COMMANDED_PROJECT)
                 .replace("@QUESTION@", QUESTION_PROJECT)
                 .replace("@ASKED_QUESTION_TEXT@", ASKED_QUESTION)
-                .replace("@SESSION_DIR@", SESSION_DIR_PROJECT)
                 .replace("@ONBOARD@", ONBOARD_PROJECT)
                 .replace("@ONBOARD_LOG@", &utf8(&home.onboard_log())),
         )
         .unwrap();
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
         for (name, script) in [
-            (
-                "greywall",
-                FAKE_GREYWALL
-                    .replace("@COMMIT@", cockpit_sandbox::PINNED_GREYWALL_COMMIT)
-                    .replace("@LOG@", &utf8(&home.sandbox_log())),
-            ),
-            (
-                "greyproxy",
-                FAKE_GREYPROXY.replace("@COMMIT@", cockpit_sandbox::PINNED_GREYPROXY_COMMIT),
-            ),
             // Answering only `--version`, as the adapters' conformance versions, so a real
             // `codex` or `opencode` on the host never answers (#411, #415).
-            ("codex", "#!/bin/sh\necho 'codex-cli 0.166.0'\n".to_owned()),
-            ("opencode", "#!/bin/sh\necho '1.19.5'\n".to_owned()),
+            ("codex", "#!/bin/sh\necho 'codex-cli 0.166.0'\n"),
+            ("opencode", "#!/bin/sh\necho '1.19.5'\n"),
         ] {
-            let program = match name {
-                "greywall" => home.path().join("engine-fixtures/greywall"),
-                "greyproxy" => home.path().join("engine-fixtures/greyproxy"),
-                _ => home.path().join("bin").join(name),
-            };
-            std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+            let program = home.path().join("bin").join(name);
             std::fs::write(&program, script).unwrap();
             std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        for name in ["greywall", "greyproxy"] {
-            let decoy = home.path().join("bin").join(name);
-            std::fs::write(&decoy, "#!/bin/sh\nexit 99\n").unwrap();
-            std::fs::set_permissions(decoy, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        proxy::commands(&home.path());
         home.write_owner_config("");
         home
     }
@@ -332,11 +247,6 @@ impl Home {
     /// Session `id`'s temporary folder, its agent's `TMPDIR` (#766).
     pub fn session_temp_dir(&self, id: &str) -> PathBuf {
         self.state_dir().join("tmp").join(id)
-    }
-
-    /// The arguments of each launch the stand-in Greywall ran, one line each.
-    pub fn sandbox_log(&self) -> PathBuf {
-        self.path().join("sandbox.log")
     }
 
     pub fn path(&self) -> PathBuf {
@@ -389,8 +299,7 @@ impl Home {
             .join(id)
     }
 
-    /// `DBUS_SESSION_BUS_ADDRESS` as systemd sets it for the user running the tests: the
-    /// only bus greywall's filtered proxy takes the place of (#435).
+    /// `DBUS_SESSION_BUS_ADDRESS` as systemd sets it for the user running the tests (#435).
     pub fn owner_bus(&self) -> String {
         use std::os::unix::fs::MetadataExt;
         let uid = std::fs::metadata(self.path()).unwrap().uid();
@@ -539,7 +448,7 @@ impl Home {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut search = vec![self.path().join("bin")];
         search.extend(std::env::split_paths(&path));
-        self.spawn(search, extra, None, true)
+        self.spawn(search, extra, None)
     }
 
     /// [`Home::start`] with `--profile profile`; it is ready on that profile's socket.
@@ -547,63 +456,16 @@ impl Home {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut search = vec![self.path().join("bin")];
         search.extend(std::env::split_paths(&path));
-        self.spawn(search, &[], Some(profile), true)
+        self.spawn(search, &[], Some(profile))
     }
 
-    /// A fresh named profile before its managed engines have been installed.
-    pub fn start_profile_without_greywall(&self, profile: &str) -> Daemon {
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        let mut search = vec![self.path().join("bin")];
-        search.extend(std::env::split_paths(&path));
-        self.spawn(search, &[], Some(profile), false)
-    }
-
-    /// [`Home::start`] on a host without Greywall: neither stand-in, and no folder of the
-    /// caller's `PATH` that holds a real one.
-    pub fn start_without_greywall(&self) -> Daemon {
-        let engines = cockpit_sandbox::install::programs(&self.state_dir()).unwrap();
-        for program in [engines.greywall, engines.greyproxy] {
-            if program.exists() {
-                std::fs::remove_file(program).unwrap();
-            }
-        }
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        let mut search = vec![self.path().join("bin")];
-        search.extend(
-            std::env::split_paths(&path)
-                .filter(|dir| !dir.join("greywall").exists() && !dir.join("greyproxy").exists()),
-        );
-        self.spawn(search, &[], None, false)
-    }
-
-    fn spawn(
-        &self,
-        search: Vec<PathBuf>,
-        extra: &[(&str, &str)],
-        profile: Option<&str>,
-        engines: bool,
-    ) -> Daemon {
+    fn spawn(&self, search: Vec<PathBuf>, extra: &[(&str, &str)], profile: Option<&str>) -> Daemon {
         let profile_dir = match profile {
             None => BUILD_PROFILE_DIR.to_owned(),
             Some(profile) => cockpit_config::Profile::parse(profile)
                 .expect("a profile name")
                 .qualified_name(),
         };
-        if engines {
-            let state = self.path().join("state").join(&profile_dir);
-            let programs = cockpit_sandbox::install::programs(&state).unwrap();
-            for (name, path) in [
-                ("greywall", programs.greywall),
-                ("greyproxy", programs.greyproxy),
-            ] {
-                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                if !path.exists() {
-                    std::fs::copy(self.path().join("engine-fixtures").join(name), path).unwrap();
-                }
-            }
-            std::fs::set_permissions(state, std::fs::Permissions::from_mode(0o700)).unwrap();
-            proxy::configure(&self.path(), profile.unwrap_or("dev"));
-        }
         let mut command = Process::new(candidate::program("torlek-daemon"));
         command
             .args(

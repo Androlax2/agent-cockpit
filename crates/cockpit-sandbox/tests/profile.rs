@@ -29,7 +29,7 @@ fn the_profile_denies_reading_everything_but_the_checkout_and_cockpits_folders()
         "deny /home/owner/.local/state/cockpit/cockpit.db",
         "deny read ~/.ssh/id_*",
         "deny write .git/hooks",
-        "network: through greyproxy only",
+        "network: through the session's proxy only",
         "secret TORLEK_LAUNCH_TOKEN passed through",
         "desktop session withheld",
     ] {
@@ -61,46 +61,6 @@ fn the_agent_writes_its_own_temp_folder_and_no_other_sessions() {
             "{granted:?} grants s2's folder"
         );
     }
-}
-
-/// Greywall writes its seccomp filter in `$TMPDIR/greywall-seccomp`, which is now the
-/// session's temp folder: the agent may not write it, so it cannot plant a link greywall
-/// follows at the next launch (#628, #766).
-#[test]
-fn greywalls_seccomp_folder_in_the_temp_folder_is_denied_writes_on_linux() {
-    for platform in [Platform::Linux, wsl2()] {
-        let mut request = profile_request("/home/owner/app");
-        request.environment.push(("TMPDIR".into(), TEMP_DIR.into()));
-
-        let profile = Profile::build(request, &platform).unwrap();
-
-        let folder = Path::new(TEMP_DIR).join("greywall-seccomp");
-        assert_eq!(profile.seccomp_folder.as_deref(), Some(folder.as_path()));
-        let denial = format!("deny write {}", folder.display());
-        assert!(profile.rules().contains(&denial), "{:#?}", profile.rules());
-    }
-}
-
-#[test]
-fn a_seccomp_folder_the_agent_cannot_write_needs_no_denial() {
-    let mut request = profile_request("/home/owner/app");
-    request
-        .environment
-        .push(("TMPDIR".into(), "/var/tmp".into()));
-
-    let profile = Profile::build(request, &Platform::Linux).unwrap();
-
-    assert_eq!(profile.seccomp_folder, None);
-}
-
-#[test]
-fn macos_has_no_seccomp_folder_to_protect() {
-    let mut request = profile_request("/home/owner/app");
-    request.environment.push(("TMPDIR".into(), TEMP_DIR.into()));
-
-    let profile = Profile::build(request, &Platform::MacOs).unwrap();
-
-    assert_eq!(profile.seccomp_folder, None);
 }
 
 #[test]
@@ -310,7 +270,7 @@ fn a_codex_agent_gets_a_folder_of_its_sessions_own_at_codexs_socket_path() {
     );
 }
 
-/// Greywall checks a mount source before it mounts it: one the agent could swap in between,
+/// A backend checks a mount source before it mounts it: one the agent could swap in between,
 /// inside or holding a folder it writes, is refused (#446).
 #[test]
 fn a_mount_source_the_agent_could_swap_is_refused() {

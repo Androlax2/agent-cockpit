@@ -127,24 +127,6 @@ pub enum Platform {
     Unsupported(String),
 }
 
-/// What the sandbox engine the daemon detected at its start is, or why there is none.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SandboxEngine {
-    /// `greywall 0.3.7+dotfiles (7c06d51), greyproxy 0.4.5 (cdd5cde)`.
-    pub engine: String,
-    /// The host capabilities the engine reported, one line each.
-    pub observations: Vec<String>,
-    /// Why every launch through it fails now although it is installed, such as a seccomp
-    /// filter it cannot write (#628).
-    pub blocked: Option<SandboxBlocked>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SandboxBlocked {
-    pub detail: String,
-    pub next: String,
-}
-
 /// A provider the daemon tried to wire at its start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderFacts {
@@ -195,24 +177,13 @@ pub struct ControlFacts {
 /// What the daemon knows about this host, each fact from its owner.
 #[derive(Debug, Clone)]
 pub struct HostFacts {
-    /// The daemon's profile, retained in commands that repair its installation.
-    pub profile: cockpit_config::Profile,
     pub platform: Platform,
     /// The tmux version the daemon's start found, or why it refused it.
     pub tmux: Result<String, String>,
-    pub sandbox_engine: Result<SandboxEngine, String>,
-    /// A fresh health observation, separately from the pinned engine build.
-    pub sandbox_proxy: Result<String, ProxyUnavailable>,
     /// The owner's `agents.sandbox` as the daemon applies it now.
     pub sandbox_setting: AgentSandbox,
     pub providers: Vec<ProviderFacts>,
     pub controls: Vec<ControlFacts>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ProxyUnavailable {
-    pub detail: String,
-    pub next: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,15 +238,7 @@ pub fn assess(
 ) -> Report {
     let mut requirements = vec![host::config(config), host::platform(&host.platform)];
     requirements.push(host::tmux(&host.tmux));
-    requirements.push(host::sandbox(
-        &host.sandbox_engine,
-        host.sandbox_setting,
-        &host.profile,
-    ));
-    requirements.push(host::sandbox_proxy(
-        &host.sandbox_proxy,
-        host.sandbox_setting,
-    ));
+    requirements.push(host::sandbox(host.sandbox_setting));
     requirements.extend(host::providers(&host.providers));
     requirements.push(host::resource_controls(&host.controls));
     if let (Some(project), Ok(config)) = (project, config) {

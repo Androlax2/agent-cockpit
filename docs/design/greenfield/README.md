@@ -55,7 +55,7 @@ Each file is under 120 lines, except the coverage map (16) and portability inven
 12. One authenticated agent channel replaces the report socket, team socket and file queues.
 13. Build the new workspace beside `apps/` and cut over once at milestone M5 (report 20).
 14. Accounts switch only at launch and at a quota-stop restart; no mid-turn routing gates.
-15. Greywall and greyproxy are Cockpit's own patched forks, pinned and built by the release.
+15. No sandbox engine is bundled: Greywall and Greyproxy were removed (#828). Agents run unsandboxed by default (`agents.sandbox = "off"`, risk logged at every launch); an explicit `required` refuses the launch naming the missing backend. Torlek's own sandbox (#546) replaces them and becomes the default once live.
 16. The protected-checkout apply flow is Theo-only tooling outside the product.
 17. The TUI before M6 is deliberately basic; unused keys (`e $ C m g U o w l t u v k c d i B`) and the Pull requests tab are dropped; every command is counted so M6 prunes on data.
 18. Cockpit is standalone: the dotfiles reach it only through the integration contract in report 19 (CLI verbs, status file, units, instruction bundle); desktop extras leave the repository at the M5 cutover.

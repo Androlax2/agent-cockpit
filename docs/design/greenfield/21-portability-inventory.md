@@ -1,6 +1,7 @@
 # 21. Portability inventory
 
 Status: source inventory at `e429826f`, 2026-11-02; follow-up remedies are proposed unless already implemented.
+Rows P02–P04, P52–P54, P56, P80 and P88 describe the Greywall and Greyproxy engines, removed by #828: their evidence is the inventory commit's source, and their remedies now belong to Torlek's own sandbox (#546). Until it is live, agents run unsandboxed by default and an explicit `agents.sandbox = "required"` refuses every launch.
 Part of #154: the inventory is delivered here; reporting every documented requirement in `cockpit doctor` remains later #154 work.
 Merged four independent audits and their row fact-check; source references were rechecked in this clone. This covers the root workspace plus its distribution/development entry points; legacy desktop code is outside the product boundary.
 

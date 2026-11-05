@@ -570,14 +570,14 @@ async fn session_list_exits_141_without_a_panic_when_its_stdout_is_closed() {
 fn evidence() -> SandboxEvidenceView {
     SandboxEvidenceView {
         enforcement: SandboxEnforcementView::Sandboxed {
-            backend: "greywall".to_owned(),
-            engine: "greywall 0.3.7 (7c06d51), greyproxy 0.4.5 (cdd5cde)".to_owned(),
+            backend: "fixture-backend".to_owned(),
+            engine: "fixture-backend 1.0 (abc1234)".to_owned(),
             client_identity: "cockpit-s0123456789ab-0a1b2c3d4e5f".to_owned(),
         },
         platform: "linux".to_owned(),
         rules: vec![SandboxRuleView {
             rule: "read-write /p/app".to_owned(),
-            enforced_by: "greywall bubblewrap+Landlock (--allow-path)".to_owned(),
+            enforced_by: "fixture mount view".to_owned(),
         }],
         observed: vec!["landlock: yes".to_owned()],
     }
@@ -600,10 +600,10 @@ async fn session_sandbox_prints_the_evidence_of_the_latest_launch() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
         text(&output.stdout),
-        "sandbox: enforced by greywall on linux\n\
-         engine: greywall 0.3.7 (7c06d51), greyproxy 0.4.5 (cdd5cde)\n\
+        "sandbox: enforced by fixture-backend on linux\n\
+         engine: fixture-backend 1.0 (abc1234)\n\
          proxy client: cockpit-s0123456789ab-0a1b2c3d4e5f\n\
-         rule: read-write /p/app <- greywall bubblewrap+Landlock (--allow-path)\n\
+         rule: read-write /p/app <- fixture mount view\n\
          observed: landlock: yes\n"
     );
     assert_eq!(
@@ -638,7 +638,7 @@ async fn sandbox_show_sends_an_absolute_dir_and_prints_the_profile_and_command()
         Outcome::Ok(Reply::SandboxProfile {
             evidence: Box::new(evidence()),
             command: vec![
-                "/usr/bin/greywall".to_owned(),
+                "/usr/bin/fixture-backend".to_owned(),
                 "--".to_owned(),
                 "<agent>".to_owned(),
             ],
@@ -653,7 +653,7 @@ async fn sandbox_show_sends_an_absolute_dir_and_prints_the_profile_and_command()
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert!(
         text(&output.stdout)
-            .ends_with("observed: landlock: yes\ncommand: /usr/bin/greywall -- <agent>\n"),
+            .ends_with("observed: landlock: yes\ncommand: /usr/bin/fixture-backend -- <agent>\n"),
         "{}",
         text(&output.stdout)
     );
@@ -673,7 +673,7 @@ async fn a_refused_sandbox_show_exits_1_with_the_rule_and_reason() {
         &home.daemon_socket(),
         Outcome::Error(ProtocolError::new(
             ErrorCode::Refused,
-            "the sandbox refuses `sandbox`: no sandbox engine: no `greywall` on PATH",
+            "the sandbox refuses `agents.sandbox = \"required\"`: this release has no sandbox backend",
         )),
     );
 
@@ -684,7 +684,7 @@ async fn a_refused_sandbox_show_exits_1_with_the_rule_and_reason() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "torlek: refused: the sandbox refuses `sandbox`: no sandbox engine: no `greywall` on PATH\n"
+        "torlek: refused: the sandbox refuses `agents.sandbox = \"required\"`: this release has no sandbox backend\n"
     );
 }
 

@@ -173,10 +173,10 @@ fn a_link_outside_the_mounted_folders_is_refused_without_connecting() {
     assert!(outside.accept().is_err(), "the daemon connected");
 }
 
-/// Without greywall's `--mount`, the sandboxed app-server's socket is out of reach: the
-/// delivery is refused naming the missing feature, and nothing is opened (#446).
+/// A sandboxed app-server's socket the backend cannot mount is out of reach: the delivery is
+/// refused naming why, and nothing is opened (#446).
 #[test]
-fn without_folder_mounts_delivery_is_refused_naming_the_feature() {
+fn without_folder_mounts_delivery_is_refused_naming_why() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("codex.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -184,8 +184,7 @@ fn without_folder_mounts_delivery_is_refused_naming_the_feature() {
     let agent = Reaped(Command::new("sleep").arg("60").spawn().unwrap());
     let sockets = SessionTreeSockets {
         reach: ProviderReach::Unreachable {
-            feature: cockpit_sandbox::MOUNT_FLAG,
-            reason: "greywall's --help lists no --mount".to_owned(),
+            reason: "the backend mounts no folders".to_owned(),
         },
         ..tree_of(&agent.0)
     };
@@ -193,9 +192,7 @@ fn without_folder_mounts_delivery_is_refused_naming_the_feature() {
     let refused = sockets.connect(&socket).unwrap_err();
 
     assert!(
-        refused
-            .reason
-            .ends_with("greywall's --help lists no --mount"),
+        refused.reason.ends_with("the backend mounts no folders"),
         "{}",
         refused.reason
     );

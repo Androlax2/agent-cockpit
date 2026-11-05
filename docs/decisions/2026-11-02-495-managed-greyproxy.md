@@ -3,6 +3,9 @@
 Issue #495. Implemented with isolated fixture evidence; real platform lifecycle/network
 acceptance remains open. Theo approved the fixed-port option on 2026-11-02.
 
+Superseded by `2026-11-05-828-remove-sandbox-engines.md`: the managed proxy is removed;
+`torlek doctor --remove-old-sandbox` deletes what it left.
+
 - `cockpit-sandbox` owns configuration, service commands and bounded proxy health checks.
   The existing CLI-to-sandbox edge is sufficient; no dependency or manifest changes.
 - `cockpit sandbox install` remains the single setup path: verified release installation,

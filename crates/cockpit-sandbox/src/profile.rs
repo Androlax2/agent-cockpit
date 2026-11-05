@@ -11,9 +11,8 @@ use cockpit_config::DesktopSession;
 
 use crate::Platform;
 
-/// Read denials every profile carries, whatever the project: credential stores and the
-/// proxy's own keys (from the launcher the current cockpit runs, `greywall.json`). `~` is
-/// the agent's home; the engine expands it.
+/// Read denials every profile carries, whatever the project: credential stores. `~` is the
+/// agent's home; the backend expands it.
 pub const BASELINE_DENIED_READ: &[&str] = &[
     "~/.ssh/id_*",
     "~/.gnupg/**",
@@ -24,7 +23,6 @@ pub const BASELINE_DENIED_READ: &[&str] = &[
     "~/.git-credentials",
     "~/.password-store/**",
     "~/.local/share/keyrings/**",
-    "~/.local/share/greyproxy/**",
     ".env",
     ".env.*",
 ];
@@ -48,7 +46,6 @@ pub const BASELINE_DENIED_WRITE: &[&str] = &[
     "~/.local/bin",
     "~/.config/systemd",
     "~/.config/autostart",
-    "~/.config/greywall",
     "~/.config/fish",
     "~/.bashrc",
     "~/.profile",
@@ -81,9 +78,10 @@ const X11_SOCKET_DIR: &str = "/tmp/.X11-unix";
 /// How one environment variable that holds a secret crosses into the sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretHandling {
-    /// The agent sees a placeholder; greyproxy swaps the real value into outgoing requests.
+    /// The agent sees a placeholder; the backend's proxy swaps the real value into outgoing
+    /// requests.
     Placeholder,
-    /// The agent sees the real value: the engine's credential detection leaves it alone.
+    /// The agent sees the real value.
     /// For values used outside HTTP headers, such as the launch token on the agent socket.
     PassThrough,
 }
@@ -97,7 +95,7 @@ pub struct Secret {
 /// What one launch asks for, before Cockpit's baseline and the platform's rules.
 #[derive(Debug, Clone)]
 pub struct ProfileRequest {
-    /// The provider whose agent runs; its own data folders and hosts come from the engine's
+    /// The provider whose agent runs; its own data folders and hosts come from the backend's
     /// reviewed profile of that name.
     pub provider: String,
     /// The checkout folder the agent works in: read and write.
@@ -154,11 +152,6 @@ pub struct Profile {
     /// Codex's socket folder. Never the host's folder at that path, which the owner's own
     /// Codex uses (#446).
     pub folder_mounts: Vec<FolderMount>,
-    /// The folder greywall writes its seccomp filter to before the agent starts, when the
-    /// agent could otherwise write it: it follows `TMPDIR`, the session's temp folder (#766).
-    /// Denied writes and created before the launch, so the denial has a folder to apply to
-    /// and the agent cannot plant a link greywall follows at its next launch.
-    pub seccomp_folder: Option<PathBuf>,
 }
 
 /// A host folder the sandbox shows at another path.
@@ -169,6 +162,20 @@ pub struct FolderMount {
     pub host: PathBuf,
     /// Where the agent finds it.
     pub sandbox: PathBuf,
+}
+
+/// How the daemon reaches the sockets a sandboxed provider publishes, such as Codex's
+/// app-server (#446).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderReach {
+    /// At the paths the provider names: they are the host's.
+    Direct,
+    /// Through these folders: a link the provider leaves to a path under a mount's
+    /// `sandbox` names the same entry under its `host`.
+    Mounted(Vec<FolderMount>),
+    /// Not at all: delivery to the agent is refused with `reason`; the launch itself went
+    /// ahead.
+    Unreachable { reason: String },
 }
 
 impl FolderMount {
@@ -199,7 +206,7 @@ pub enum EndpointKind {
     /// A file read only (`XAUTHORITY`).
     File,
     /// The session bus (`DBUS_SESSION_BUS_ADDRESS`): never the owner's own bus, which
-    /// starts programs outside the sandbox, but the engine's filtered proxy at this path.
+    /// starts programs outside the sandbox, but the backend's filtered proxy at this path.
     Bus,
 }
 
@@ -305,9 +312,6 @@ impl Profile {
         for mount in &folder_mounts {
             refuse_writable_source(mount, &writable)?;
         }
-        let seccomp_folder = matches!(platform, Platform::Linux | Platform::Wsl2 { .. })
-            .then(|| crate::seccomp::seccomp_filter_dir(&environment))
-            .filter(|folder| writable.iter().any(|granted| folder.starts_with(granted)));
         for secret in &request.secrets {
             check_variable(&secret.variable)?;
         }
@@ -344,7 +348,6 @@ impl Profile {
                     request
                         .denied_write
                         .iter()
-                        .chain(&seccomp_folder)
                         .map(|path| path.display().to_string()),
                 )
                 .collect(),
@@ -354,7 +357,6 @@ impl Profile {
             desktop: request.desktop,
             desktop_endpoints,
             folder_mounts,
-            seccomp_folder,
         })
     }
 
@@ -403,7 +405,7 @@ impl Profile {
                 .iter()
                 .map(|pattern| format!("deny write {pattern}")),
         );
-        rules.push("network: through greyproxy only".to_owned());
+        rules.push("network: through the session's proxy only".to_owned());
         rules.extend(
             self.allow_hosts
                 .iter()
@@ -441,8 +443,8 @@ fn folder_mounts(provider: &str, mount_dir: &Path, owner_uid: u32) -> Vec<Folder
     }
 }
 
-/// Greywall refuses unsafe mount sources but checks before it mounts: a source, or the
-/// folder holding it, that the agent writes could be swapped in between (#446).
+/// A backend checks a mount source before it mounts it: a source, or the folder holding it,
+/// that the agent writes could be swapped in between (#446).
 fn refuse_writable_source(mount: &FolderMount, writable: &[&Path]) -> Result<(), Refusal> {
     let holder = mount.host.parent().unwrap_or(&mount.host);
     let Some(granted) = writable
@@ -615,7 +617,7 @@ fn check_absolute(path: &Path, rule: &str) -> Result<(), Refusal> {
     }
 }
 
-/// The engine applies denials last, so an allowed folder inside a denied one would be
+/// The backend applies denials last, so an allowed folder inside a denied one would be
 /// unreadable after all: refused rather than handed over broken.
 fn refuse_masked(allowed: &Path, denied: &Path, rule: &str) -> Result<(), Refusal> {
     if allowed.starts_with(denied) {

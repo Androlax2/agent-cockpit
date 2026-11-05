@@ -23,8 +23,9 @@ it treats as untrusted. In scope:
 
 - An agent, a plugin, a skill or any other prose gaining authority the owner did not
   grant. Instructions request; only `cockpit-authorization` decides.
-- Escaping the agent sandbox (greywall and greyproxy, which Cockpit ships as its own
-  pinned forks), or reaching files, hosts or sockets the sandbox profile denies.
+- Escaping the agent sandbox once a backend enforces it, or reaching files, hosts or
+  sockets the sandbox profile denies; an `agents.sandbox = "required"` launch that runs
+  unsandboxed.
 - Bypassing host-side approval, or a request accepted from a sender whose identity was
   not authenticated on the agent channel.
 - Another local OS user, or a remote client such as the phone interface, reading or
@@ -36,8 +37,9 @@ Out of scope:
 - Anything that already requires the owner's own OS account or root on the machine.
 - Shared multi-human control, native Windows execution and other configurations Cockpit
   does not support (Windows runs Cockpit inside WSL2).
-- Vulnerabilities in the coding agents themselves, or in upstream greywall and greyproxy
-  that do not affect the forks Cockpit pins: report those to their projects.
+- Vulnerabilities in the coding agents themselves: report those to their projects.
+- What an agent does with the owner's rights while it runs unsandboxed: that is the
+  documented risk of `agents.sandbox = "off"`, not a vulnerability.
 
 ## Threat model summary
 
@@ -45,9 +47,12 @@ Out of scope:
   (output, messages, files, proposed commands) are not. An agent reaches the daemon only
   through one authenticated agent channel, and every privileged action is checked against
   grants the owner set.
-- **Sandbox.** Each agent session runs inside greywall, with network traffic through
-  greyproxy. The sandbox profile decides which paths, hosts and commands are reachable;
-  a gap in the profile is a vulnerability, not a feature.
+- **Sandbox.** This release has no sandbox backend: Greywall and Greyproxy were removed
+  (#828) and Torlek's own sandbox (#546) replaces them. By default (`agents.sandbox =
+  "off"`) agents run unsandboxed, with the owner's rights, so grants do not bind them; the
+  daemon logs that risk at its start and at every launch. An explicit `required` refuses
+  every launch. Once a backend is live, the sandbox profile decides which paths, hosts and
+  commands are reachable, and a gap in the profile is a vulnerability, not a feature.
 - **Host actions.** Installs, Git writes and other host commands an agent asks for run
   only after the owner approves them on the host side.
 - **Per-user daemon.** The daemon serves its own OS user only and has no desktop

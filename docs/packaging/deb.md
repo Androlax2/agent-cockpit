@@ -37,8 +37,7 @@ CI runners.
   `release.refuse_changed_contents`. `copyright` and `changelog.Debian.gz` go to
   `/usr/share/doc/torlek/`. The package installs nothing outside `/usr` and has no conffiles.
 - **No maintainer scripts:** no `preinst`, `postinst`, `prerm` or `postrm`. The package never
-  starts, stops or adopts a daemon. Per-user services are written by `torlek daemon install`
-  and `torlek sandbox install`.
+  starts, stops or adopts a daemon. Per-user services are written by `torlek daemon install`.
 - **Dependencies:** `libc6 (>= 2.39), libgcc-s1, git, curl, tmux (>= 3.6)`; `Suggests: systemd`.
   The programs are built on `ubuntu-24.04` runners (glibc 2.39), so 2.39 is the version they
   were linked against. `dpkg-shlibdeps` might find a lower bound, but it has not run.

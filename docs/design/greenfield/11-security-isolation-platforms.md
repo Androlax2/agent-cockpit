@@ -17,19 +17,26 @@ Status: proposed; platform enforcement `validate`
 
 ## Sandbox backends
 
-- Greywall covers Linux (bubblewrap, Landlock, seccomp, network namespace + TUN) and macOS
-  (Seatbelt; proxy by environment variables only, no full traffic capture, `.env` files denied
-  rather than rewritten). Greywall is defense in depth, not hostile-code containment.
-- Cockpit keeps a **capability profile per platform and backend**; "Greywall installed" is not
-  evidence that a requested policy is enforced.
-- Greywall and greyproxy are consumed as **Cockpit's own patched forks** (decided 2026-10-31):
-  upstream looks unmaintained, so Theo iterates on the forks. The release bundle pins exact fork
-  revisions and builds them; readiness reports the installed fork version.
-- **Being removed (owner direction, 2026-11-05):** both engines are removed first, since nothing
-  uses them; agents run unsandboxed, with the risk logged at every launch, until Torlek's own
-  sandbox and traffic control are live and on by default. Options, design, migration and
-  Theo's decisions are in the
-  [#546 research](../../research/2026-11-05-546-own-sandbox-and-traffic-control.md).
+- **No backend today (#828, owner direction 2026-11-05).** Greywall and Greyproxy were removed:
+  nothing used them. The product default of `agents.sandbox` is `off`: agents run unsandboxed,
+  with the owner's rights, and the risk is logged at the daemon's start and at every launch;
+  `torlek doctor`, `torlek init` and each launch's evidence say "no sandbox". An explicit
+  `agents.sandbox = "required"` refuses every launch naming the missing backend; it never runs
+  an agent unsandboxed. Until a backend is live an agent can reach the owner socket and act as
+  the owner, so grants do not bind it (#729); Theo accepts this while no sandbox is in use.
+- **Torlek's own sandbox replaces them** (#546,
+  [research](../../research/2026-11-05-546-own-sandbox-and-traffic-control.md)): a per-session
+  launcher, `torlek-sandbox`, that builds the agent's namespaces, applies Landlock and seccomp
+  from memory and serves one loopback listener as a per-session egress proxy whose unknown
+  hosts become owner decisions (#674). Linux and WSL2 first; macOS later. Stage 2 makes it
+  usable with an explicit `required`; stage 5 returns the product default to `required`.
+- The profile Cockpit requests, its refusals and the launch evidence are backend-neutral
+  (`cockpit-sandbox`), so the native backend plugs in behind the same interface. Cockpit keeps
+  a **capability profile per platform and backend**; a backend's presence is not evidence that
+  a requested policy is enforced: the backend reports what it applied.
+- `torlek doctor` reports the removed engines' leftovers (the `torlek-greyproxy-<profile>`
+  login service and its state folders); only the owner's `torlek doctor --remove-old-sandbox`
+  stops and deletes them.
 - Rootless Docker per project: dedicated engine identity, checkout-specific containers,
   volumes, networks and ports. Same-UID separation is not a hostile-tenant boundary.
 - Windows: everything runs inside the chosen WSL2 distribution. Keep projects on the Linux
@@ -57,8 +64,8 @@ Status: proposed; platform enforcement `validate`
 - XDG: <https://specifications.freedesktop.org/basedir/latest/>
 - Docker rootless and socket protection: <https://docs.docker.com/engine/security/rootless/>,
   <https://docs.docker.com/engine/security/protect-access/>
-- Greywall platform support and security model: <https://docs.greywall.io/greywall/platform-support>,
-  <https://docs.greywall.io/greywall/security-model>
+- Torlek's own sandbox and traffic control, with its sources:
+  [#546 research](../../research/2026-11-05-546-own-sandbox-and-traffic-control.md)
 - WSL config/interop/networking: <https://learn.microsoft.com/en-us/windows/wsl/wsl-config>,
   <https://learn.microsoft.com/en-us/windows/wsl/networking>
 - MCP security best practices (confused deputy, local servers, state handles):

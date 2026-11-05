@@ -47,6 +47,8 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Enforcement {
+    /// Recorded by launches of an earlier release's backend; read back, never produced while
+    /// this release has none (#828).
     Sandboxed {
         backend: String,
         engine: String,
@@ -69,13 +71,6 @@ pub struct Evidence {
     pub rules: Vec<AppliedRule>,
     /// Engine-reported capabilities and separately labelled owner probe attestations.
     pub observed: Vec<String>,
-}
-
-impl Evidence {
-    /// A running launch retains its previous engine until the owner restarts the session.
-    pub fn requires_engine_restart(&self, current: &str) -> bool {
-        matches!(&self.enforcement, Enforcement::Sandboxed { engine, .. } if engine != current)
-    }
 }
 
 /// Records `evidence` for the launch of `execution` in `session`, in the caller's

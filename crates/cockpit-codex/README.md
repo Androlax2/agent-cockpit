@@ -72,9 +72,10 @@ provider and nothing above the contract sees a Codex type (#48).
   later prompt can finish it. The daemon still authenticates
   every report and checks its conversation. In-session resume/fork behavior is unmeasured.
 - **Known gaps.** The socket's real file is Codex's, under
-  `/tmp/codex-daemon-<uid>/` whatever `TMPDIR` says, beside the owner's own Codex's: the
-  sandbox shows a folder of the session's own there, through a greywall fork feature, and
-  without it the daemon refuses delivery naming that feature (#446). Where the approval
+  `/tmp/codex-daemon-<uid>/` whatever `TMPDIR` says, beside the owner's own Codex's. An
+  unsandboxed launch reaches it directly; a sandbox backend must show a folder of the
+  session's own there, and when the reach recorded at launch says it cannot, the daemon
+  refuses delivery naming why (#446, #828). Where the approval
   requests of a delivered turn go is measured with a local fake model on 0.166.0 below;
   signed-in delivered-start acceptance passed on Linux with 0.166.0
   ([#436 receipt](../../docs/acceptance/436-codex-approval-routing.md)). Older versions are unverified.

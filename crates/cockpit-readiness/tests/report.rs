@@ -7,23 +7,17 @@ use std::path::PathBuf;
 use cockpit_config::{AgentSandbox, EffectiveConfig, Environment};
 use cockpit_readiness::{
     CheckoutFacts, ControlFacts, DockerEngine, HostFacts, Platform, PresetFacts, ProjectFacts,
-    ProjectNeeds, ProviderFacts, ProviderFound, ProviderUnusable, Report, Requirement,
-    SandboxBlocked, SandboxEngine, Status, Trust, assess, needs_docker,
+    ProjectNeeds, ProviderFacts, ProviderFound, ProviderUnusable, Report, Requirement, Status,
+    Trust, assess, needs_docker,
 };
 use tempfile::TempDir;
 
 fn ready_host() -> HostFacts {
     HostFacts {
-        profile: cockpit_config::Profile::parse("next").unwrap(),
         platform: Platform::Linux,
         tmux: Ok("3.6".to_owned()),
-        sandbox_engine: Ok(SandboxEngine {
-            engine: "greywall 0.3.7 (7c06d51), greyproxy 0.4.5 (cdd5cde)".to_owned(),
-            observations: vec!["landlock: yes".to_owned()],
-            blocked: None,
-        }),
-        sandbox_setting: AgentSandbox::Required,
-        sandbox_proxy: Ok("owned proxy healthy".into()),
+        // The product default while no backend exists (#828): `required` blocks.
+        sandbox_setting: AgentSandbox::Off,
         providers: vec![ProviderFacts {
             name: "claude".to_owned(),
             found: Ok(ProviderFound {
@@ -131,7 +125,6 @@ fn a_ready_host_reports_every_host_requirement_available() {
             "platform",
             "tmux",
             "sandbox",
-            "sandbox proxy",
             "provider claude",
             "provider claude sign-in",
             "resource controls"
@@ -150,13 +143,12 @@ fn every_requirement_that_is_not_available_names_its_next_action() {
     let host = HostFacts {
         platform: Platform::Unsupported("freebsd".to_owned()),
         tmux: Err("no tmux".to_owned()),
-        sandbox_engine: Err("no greywall".to_owned()),
+        sandbox_setting: AgentSandbox::Required,
         providers: vec![ProviderFacts {
             name: "claude".to_owned(),
             found: Err(ProviderUnusable::NotOnPath),
         }],
         controls: Vec::new(),
-        ..ready_host()
     };
     let mut project = fixture.facts();
     project.checkout = None;
@@ -173,50 +165,32 @@ fn every_requirement_that_is_not_available_names_its_next_action() {
     assert!(!report.is_ready());
 }
 
+/// The security rule of #828: an explicit `required` blocks, since every launch is refused,
+/// and the report names the missing backend and the owner's one way to run agents anyway.
 #[test]
-fn a_missing_sandbox_names_the_managed_installer() {
+fn a_required_sandbox_blocks_naming_the_missing_backend() {
     let fixture = Fixture::new();
     fixture.configure("", None);
     let host = HostFacts {
-        sandbox_engine: Err("no managed greywall installation".to_owned()),
+        sandbox_setting: AgentSandbox::Required,
         ..ready_host()
     };
+
     let report = fixture.report(&host, &fixture.facts());
+
     let sandbox = requirement(&report, "sandbox");
     assert_eq!(sandbox.status, Status::MissingPrerequisite);
+    assert!(sandbox.detail.starts_with("no sandbox: "), "{sandbox:?}");
+    assert!(
+        sandbox.detail.contains(cockpit_config::NO_SANDBOX_BACKEND),
+        "{sandbox:?}"
+    );
     assert!(
         sandbox
             .next
             .as_deref()
             .unwrap()
-            .contains("torlek --profile next sandbox install"),
-        "{sandbox:?}"
-    );
-}
-
-#[test]
-fn an_installed_engine_that_cannot_write_its_seccomp_filter_blocks_naming_the_cause() {
-    let fixture = Fixture::new();
-    fixture.configure("", None);
-    let mut host = ready_host();
-    let Ok(engine) = &mut host.sandbox_engine else {
-        unreachable!("a ready host has an engine")
-    };
-    engine.blocked = Some(SandboxBlocked {
-        detail: "greywall cannot write its seccomp filter in /tmp/greywall-seccomp".to_owned(),
-        next: "the pinned greywall keeps one seccomp folder for every user (#628)".to_owned(),
-    });
-
-    let report = fixture.report(&host, &fixture.facts());
-
-    let sandbox = requirement(&report, "sandbox");
-    assert_eq!(sandbox.status, Status::MissingPrerequisite);
-    assert!(
-        sandbox.detail.contains("/tmp/greywall-seccomp"),
-        "{sandbox:?}"
-    );
-    assert!(
-        sandbox.next.as_deref().unwrap().contains("#628"),
+            .contains("agents.sandbox = \"off\""),
         "{sandbox:?}"
     );
     assert!(!report.is_ready());
@@ -236,7 +210,7 @@ fn a_host_fact_decides_its_requirement_status() {
         ),
         (
             HostFacts {
-                sandbox_engine: Err("greywall at /bin/greywall is commit abc".to_owned()),
+                sandbox_setting: AgentSandbox::Required,
                 ..ready_host()
             },
             "sandbox",
@@ -402,7 +376,7 @@ fn an_unreadable_configuration_misses_a_prerequisite_and_skips_the_project() {
     );
 }
 
-/// Turning the sandbox off is the owner's to do, and the report says so loudly.
+/// Agents running unsandboxed, by default while no backend exists, is said loudly.
 #[test]
 fn an_unsandboxed_owner_is_reported_as_such() {
     let host = HostFacts {
@@ -414,6 +388,7 @@ fn an_unsandboxed_owner_is_reported_as_such() {
 
     let sandbox = requirement(&report, "sandbox");
     assert_eq!(sandbox.status, Status::Available);
+    assert!(sandbox.detail.starts_with("no sandbox: "), "{sandbox:#?}");
     assert!(sandbox.detail.contains("UNSANDBOXED"), "{sandbox:#?}");
     assert!(
         sandbox.detail.contains(
@@ -569,52 +544,38 @@ fn a_preset_needs_a_provider_that_reports_its_steps_capabilities() {
     }
 }
 
-/// Each case: the project's environment, the owner's sandbox setting, whether the engine is
-/// there, and the status of the project's execution environment.
+/// Each case: the project's environment, the owner's sandbox setting and the status of the
+/// project's execution environment. No backend exists (#828), so a project expecting the
+/// sandbox is never available.
 #[test]
 fn the_execution_environment_the_project_expects_meets_what_the_owner_granted() {
     let cases = [
-        ("native", AgentSandbox::Off, true, Status::Available),
-        (
-            "native",
-            AgentSandbox::Required,
-            true,
-            Status::NeedsAuthorization,
-        ),
-        ("sandbox", AgentSandbox::Required, true, Status::Available),
+        ("native", AgentSandbox::Off, Status::Available),
+        ("native", AgentSandbox::Required, Status::NeedsAuthorization),
         (
             "sandbox",
             AgentSandbox::Required,
-            false,
             Status::MissingPrerequisite,
         ),
-        (
-            "sandbox",
-            AgentSandbox::Off,
-            true,
-            Status::NeedsAuthorization,
-        ),
+        ("sandbox", AgentSandbox::Off, Status::NeedsAuthorization),
     ];
-    for (environment, setting, has_engine, status) in cases {
+    for (environment, setting, status) in cases {
         let fixture = Fixture::new();
         fixture.configure(
             &format!("[execution]\nenvironment = \"{environment}\"\n"),
             None,
         );
-        let mut host = HostFacts {
+        let host = HostFacts {
             sandbox_setting: setting,
             ..ready_host()
         };
-        if !has_engine {
-            host.sandbox_engine = Err("no greywall".to_owned());
-        }
 
         let report = fixture.report(&host, &fixture.facts());
 
         let requirement = requirement(&report, "execution environment");
         assert_eq!(
             requirement.status, status,
-            "{environment} {setting:?} {has_engine}: {requirement:#?}"
+            "{environment} {setting:?}: {requirement:#?}"
         );
     }
 }

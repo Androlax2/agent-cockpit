@@ -196,8 +196,7 @@ impl Cockpit {
             std::fs::create_dir(root.join(plain)).unwrap();
         }
         // The owner's one opt-out of the sandbox (#61): these tests drive the TUI, not the
-        // sandbox, and must not depend on whether the host has Greywall (CI does not; a
-        // developer's would sandbox the fake agent for real).
+        // sandbox, and must not depend on the product default.
         std::fs::create_dir(root.join("config/torlek-dev")).unwrap();
         std::fs::write(
             root.join("config/torlek-dev/config.toml"),

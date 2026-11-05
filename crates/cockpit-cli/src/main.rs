@@ -35,12 +35,12 @@ mod installations;
 mod instructions;
 mod logs;
 mod mcp;
+mod old_sandbox;
 mod onboarding;
 mod profile;
 mod projects;
 mod queue;
 mod resources;
-mod sandbox_install;
 mod sessions;
 mod status_page;
 mod storage;
@@ -106,13 +106,11 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek session grants SESSION
        torlek session sandbox SESSION
        torlek session sandbox-record SESSION --client CLIENT --observed TEXT...
-       torlek sandbox install [--engines-only]
-       torlek sandbox status|restart|stop
        torlek sandbox show DIR [--agent NAME]
        torlek provider list
        torlek desktop-session import
        torlek init
-       torlek doctor [--project DIR]
+       torlek doctor [--project DIR | --remove-old-sandbox]
        torlek tui [--version]
        torlek version [--all]
        torlek update [check | later | skip | checks on|off]
@@ -271,13 +269,6 @@ fn main() -> ExitCode {
             Ok(command) => sessions::run(command),
             Err(problem) => verb_usage_error(&verb_name, problem),
         },
-        [Some("sandbox"), Some("install")] => sandbox_install::run(&arguments[2..])
-            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
-        [
-            Some("sandbox"),
-            Some(action @ ("status" | "restart" | "stop")),
-        ] => sandbox_install::proxy(action, &arguments[2..])
-            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("sandbox"), ..] => match sessions::parse_sandbox(&arguments[1..]) {
             Ok(command) => sessions::run(command),
             Err(problem) => verb_usage_error(&verb_name, problem),

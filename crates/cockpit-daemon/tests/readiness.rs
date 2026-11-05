@@ -1,6 +1,6 @@
 //! `cockpit doctor` against the real daemon binary (#50): the readiness report names each
 //! requirement with its status and the next action, from the hosts the daemon found at its
-//! start (stand-in Greywall, greyproxy and claude, and a stand-in `docker`), and exits 1
+//! start (stand-in claude and `docker`), and exits 1
 //! only when a requirement blocks.
 
 mod candidate;
@@ -58,52 +58,6 @@ fn declare_docker(root: &Path) {
         "[execution]\nenvironment = \"docker\"\n",
     )
     .unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn doctor_refreshes_proxy_health_separately_from_verified_engine_builds() {
-    let home = Home::new();
-    let _daemon = home.start();
-    let initial = home.cockpit(&["doctor"], &[]).await;
-    assert_eq!(
-        status(requirement(&text(&initial.stdout), "sandbox proxy").0),
-        "available"
-    );
-    let control = home.path().join("proxy-fixture/dev");
-    for name in ["unhealthy", "stopped"] {
-        std::fs::write(control.join(name), "fixture").unwrap();
-        let output = home.cockpit(&["doctor"], &[]).await;
-        let report = text(&output.stdout);
-        assert_eq!(output.status.code(), Some(1), "{report}");
-        assert_eq!(
-            status(requirement(&report, "sandbox").0),
-            "available",
-            "{report}"
-        );
-        let (proxy, next) = requirement(&report, "sandbox proxy");
-        assert_eq!(status(proxy), "missing-prerequisite", "{report}");
-        assert!(
-            next.unwrap()
-                .contains("torlek --profile dev sandbox restart"),
-            "{report}"
-        );
-        std::fs::remove_file(control.join(name)).unwrap();
-    }
-    let recovered = home.cockpit(&["doctor"], &[]).await;
-    assert_eq!(
-        status(requirement(&text(&recovered.stdout), "sandbox proxy").0),
-        "available"
-    );
-    std::fs::remove_dir_all(home.state_dir().join("greyproxy")).unwrap();
-    let missing = home.cockpit(&["doctor"], &[]).await;
-    let report = text(&missing.stdout);
-    assert!(
-        requirement(&report, "sandbox proxy")
-            .1
-            .unwrap()
-            .contains("torlek --profile dev sandbox install"),
-        "{report}"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -229,12 +183,7 @@ async fn a_host_with_its_programs_reports_them_available_and_exits_0() {
         assert_eq!(status(line), "available", "{line}");
     }
     let (sandbox, _) = requirement(&report, "sandbox");
-    for pin in [
-        cockpit_sandbox::PINNED_GREYWALL_COMMIT,
-        cockpit_sandbox::PINNED_GREYPROXY_COMMIT,
-    ] {
-        assert!(sandbox.contains(&pin[..7]), "{sandbox}");
-    }
+    assert!(sandbox.contains("no sandbox: "), "{sandbox}");
     let (sign_in, next) = requirement(&report, "provider claude sign-in");
     assert_eq!(status(sign_in), "unknown", "{sign_in}");
     assert!(next.is_some(), "{report}");
@@ -289,92 +238,38 @@ async fn init_offers_only_the_providers_doctor_finds_usable() {
     );
 }
 
+/// #828: no backend exists, so `required` blocks and names it rather than run unsandboxed.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_host_without_greywall_blocks_naming_what_to_install() {
+async fn a_required_sandbox_blocks_doctor_and_init_naming_the_missing_backend() {
     let home = Home::new();
-    let _daemon = home.start_profile_without_greywall("next");
+    home.write_owner_config("[agents]\nsandbox = \"required\"\n");
+    let _daemon = home.start();
 
-    let doctor = home.cockpit(&["--profile", "next", "doctor"], &[]).await;
+    let doctor = home.cockpit(&["doctor"], &[]).await;
 
     let report = text(&doctor.stdout);
     assert_eq!(doctor.status.code(), Some(1), "{report}");
     let (sandbox, next) = requirement(&report, "sandbox");
     assert_eq!(status(sandbox), "missing-prerequisite", "{sandbox}");
     assert!(
-        next.unwrap()
-            .contains("torlek --profile next sandbox install"),
+        sandbox.contains(cockpit_config::NO_SANDBOX_BACKEND),
+        "{sandbox}"
+    );
+    assert!(
+        next.unwrap().contains("agents.sandbox = \"off\""),
         "{report}"
     );
-    let init = home.cockpit(&["--profile", "next", "init"], &[]).await;
+    let init = home.cockpit(&["init"], &[]).await;
     assert!(
-        text(&init.stdout).contains("torlek --profile next sandbox install"),
+        text(&init.stdout).contains(cockpit_config::NO_SANDBOX_BACKEND),
         "{}",
         text(&init.stdout)
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_engine_upgrade_names_the_running_session_that_needs_restart() {
-    let home = Home::new();
-    let daemon = home.start_profile("next");
-    let client = home.connect_to("torlek-next").await;
-    let (root, _) = home.project(&client, "app").await;
-    let session = real_daemon::new_session(&client, &root).await;
-    home.wait_for_launches(&session.id, 1).await;
-    drop(client);
-    daemon.kill();
-    // A previous release's recorded launch, with the real session still alive in tmux.
-    let database = cockpit_turso::Database::open(
-        &home.path().join("state/torlek-next/state.db"),
-        &cockpit_daemon::MIGRATION_SETS,
-    )
-    .await
-    .unwrap();
-    let write = database.write().await.unwrap();
-    write
-        .execute(
-            "UPDATE sandbox_launches SET engine = 'previous pinned release' WHERE session_id = ?1",
-            [session.id.as_str()],
-        )
-        .await
-        .unwrap();
-    write.commit().await.unwrap();
-    drop(database);
-    let _daemon = home.start_profile("next");
-    let output = home.cockpit(&["--profile", "next", "doctor"], &[]).await;
-    let report = text(&output.stdout);
-    assert!(
-        report.contains(&format!(
-            "torlek --profile next session restart {}",
-            session.id
-        )),
-        "{report}"
-    );
-    let shown = home
-        .cockpit(
-            &["--profile", "next", "session", "sandbox", &session.id],
-            &[],
-        )
-        .await;
-    assert!(
-        text(&shown.stdout).contains(&format!(
-            "torlek --profile next session restart {}",
-            session.id
-        )),
-        "{}",
-        text(&shown.stdout)
-    );
-    assert_eq!(
-        home.launches_of(&session.id).len(),
-        1,
-        "advice must never restart a running session"
-    );
-}
-
 #[tokio::test(flavor = "multi_thread")]
-async fn an_unsandboxed_owner_setting_is_reported_loudly_without_blocking() {
+async fn the_default_unsandboxed_setting_is_reported_loudly_without_blocking() {
     let home = Home::new();
-    home.write_owner_config("[agents]\nsandbox = \"off\"\n");
     let _daemon = home.start();
 
     let doctor = home.cockpit(&["doctor"], &[]).await;

@@ -1884,8 +1884,9 @@ impl Sessions {
         environment.extend(command.environment);
         let mut environment = with_temp_dir(environment, &temp_dir);
         environment.push(("TORLEK_SESSION".into(), id.as_str().into()));
-        // Every launch goes through the sandbox (#61); a profile this host cannot enforce
-        // fails the launch before anything is reserved. The agent gets its whole checkout,
+        // Every launch goes through the sandbox (#61); one it refuses, such as any under
+        // `agents.sandbox = "required"` while no backend exists (#828), fails the launch
+        // before anything is reserved. The agent gets its whole checkout,
         // not just the folder it starts in: Git and the project's own files live at its root.
         let (checkout, _) = self.checkout_containing(&session.working_dir).await?;
         let output_project = checkout.project.as_str().to_owned();
@@ -1917,33 +1918,6 @@ impl Sessions {
                 cockpit_config::UNSANDBOXED_RISK
             );
         }
-        if let Some(plan) = prepared.settings.clone() {
-            let sandbox = self.settings.sandbox.clone();
-            self.blocking("check the managed proxy", move || {
-                sandbox.require_proxy().map_err(Error::Sandbox)
-            })
-            .await?;
-            self.blocking("write the sandbox settings", move || {
-                plan.write_settings().map_err(|source| Error::Io {
-                    action: "write the sandbox settings",
-                    path: plan.settings_path.clone(),
-                    source,
-                })?;
-                plan.create_mount_sources()
-                    .map_err(|(path, source)| Error::Io {
-                        action: "prepare the session's folder the sandbox mounts",
-                        path,
-                        source,
-                    })?;
-                plan.create_seccomp_folder()
-                    .map_err(|(path, source)| Error::Io {
-                        action: "prepare the sandbox engine's seccomp folder",
-                        path,
-                        source,
-                    })
-            })
-            .await?;
-        }
         // The execution is reserved in the transaction that records the launch, so a crash
         // never leaves one the session does not name (#256); the sandbox evidence is recorded
         // with it, so a launch the database names always says how its agent ran.
@@ -1969,14 +1943,14 @@ impl Sessions {
             .await?;
             store::insert_launch(&write, id, kind, purpose, execution, &start_files).await?;
             cockpit_sandbox::record(&write, execution.0, id.as_str(), &prepared.evidence).await?;
-            let reach = prepared
-                .settings
-                .as_ref()
-                .map_or(cockpit_sandbox::ProviderReach::Direct, |plan| {
-                    plan.reach.clone()
-                });
-            crate::delivery_context::record_launch(&write, execution.0, &reach, &delivery_launch)
-                .await?;
+            // Unsandboxed, the daemon reaches the provider's sockets where it names them.
+            crate::delivery_context::record_launch(
+                &write,
+                execution.0,
+                &cockpit_sandbox::ProviderReach::Direct,
+                &delivery_launch,
+            )
+            .await?;
             write.commit().await?;
             (token, execution)
         };
@@ -2130,8 +2104,8 @@ impl Sessions {
     }
 
     /// How `program` runs for a launch of `provider` in `checkout_root`, with the session's
-    /// own `session_dir` and the project's `github` access: through the sandbox, or
-    /// unchanged only by the owner's `agents.sandbox = "off"`.
+    /// own `session_dir` and the project's `github` access: unchanged under
+    /// `agents.sandbox = "off"`, refused under `"required"` while no backend exists (#828).
     #[allow(
         clippy::too_many_arguments,
         reason = "one launch's facts, each passed straight into the sandbox's request"
@@ -2149,15 +2123,16 @@ impl Sessions {
         arguments: Vec<OsString>,
     ) -> Result<cockpit_sandbox::Prepared, Error> {
         let mut secrets = vec![cockpit_sandbox::Secret {
-            // The agent presents it on the local agent socket, never in an HTTP header
-            // greyproxy could swap a placeholder in.
+            // The agent presents it on the local agent socket, never in an HTTP header a
+            // proxy could swap a placeholder in.
             variable: LAUNCH_TOKEN_VARIABLE.to_owned(),
             handling: cockpit_sandbox::SecretHandling::PassThrough,
         }];
         if github.token.is_some() {
             secrets.push(cockpit_sandbox::Secret {
-                // Git sends it inside Basic credentials, which greyproxy does not decode, so
-                // a placeholder would never be swapped back: `git push` would fail.
+                // Git sends it inside Basic credentials, which a header-swapping proxy does
+                // not decode, so a placeholder would never be swapped back: `git push` would
+                // fail.
                 variable: cockpit_config::GITHUB_TOKEN_VARIABLE.to_owned(),
                 handling: cockpit_sandbox::SecretHandling::PassThrough,
             });
@@ -2183,24 +2158,7 @@ impl Sessions {
             .map_err(Error::Sandbox)
     }
 
-    /// Whether the sandbox engine can write the seccomp filter a launch loads (#628), in
-    /// the folder a launch's environment gives it: under its own temp folder (#766), here
-    /// the dry run's, created as a launch creates it so the check writes where the engine
-    /// will. Blocking: it creates folders and writes a file.
-    pub fn check_seccomp_filter(&self) -> Result<(), cockpit_sandbox::FilterWriteFailure> {
-        let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
-        let folder = cockpit_sandbox::seccomp_filter_dir(&environment);
-        create_session_dir(&folder).map_err(|error| cockpit_sandbox::FilterWriteFailure {
-            reason: format!("the sessions' temp folders cannot be created: {error}"),
-            next: format!(
-                "make {} a folder this user can write",
-                self.session_temps.display()
-            ),
-        })?;
-        self.settings.sandbox.check_seccomp_filter(&environment)
-    }
-
-    /// The temp folder the dry run and the seccomp check stand in for a session's with.
+    /// The temp folder the dry run stands in for a session's with.
     fn dry_run_temp_dir(&self) -> PathBuf {
         self.session_temps.join(DRY_RUN_SESSION)
     }
@@ -2264,26 +2222,8 @@ impl Sessions {
         id: &SessionId,
     ) -> Result<Option<cockpit_sandbox::Evidence>, Error> {
         let read = self.database.read().await?;
-        let session = store::session(&read, id).await?;
-        let mut evidence = cockpit_sandbox::latest_for_session(&read, id.as_str()).await?;
-        if session.state != SessionState::Ended
-            && let Some(evidence) = &mut evidence
-            && let Ok(engine) = self.settings.sandbox.engine()
-            && evidence.requires_engine_restart(&engine.engine())
-        {
-            let action = self
-                .settings
-                .base_environment
-                .iter()
-                .find(|(name, _)| name == cockpit_config::PROFILE_VARIABLE)
-                .and_then(|(_, value)| value.to_str())
-                .and_then(|name| cockpit_config::Profile::parse(name).ok())
-                .map(|profile| format!("run `torlek --profile {profile} session restart {id}`"))
-                .unwrap_or_else(|| "restart this session in its Torlek profile".to_owned());
-            evidence.observed.push(format!(
-                "restart required: this session retains an earlier engine; {action}"
-            ));
-        }
+        store::session(&read, id).await?;
+        let evidence = cockpit_sandbox::latest_for_session(&read, id.as_str()).await?;
         Ok(evidence)
     }
 
@@ -2768,7 +2708,7 @@ pub(crate) fn agent_pane_info(tmux: &Server, name: &SessionName) -> Result<PaneI
 
 /// `environment` with every temporary file in `temp_dir`, a session's own (#766): Claude
 /// Code reads its own variable; every other program, OpenCode and Codex included, follows
-/// `TMPDIR`, and so does the sandbox engine's seccomp filter (#628).
+/// `TMPDIR`.
 fn with_temp_dir(
     mut environment: Vec<(OsString, OsString)>,
     temp_dir: &Path,
@@ -2817,8 +2757,8 @@ fn github_access(
     })
 }
 
-/// Where the owner's `gh` keeps its login (`hosts.yml`): `~/.config/gh`, which the engine's
-/// profile lets every agent read, and `$XDG_CONFIG_HOME/gh`, where `gh` looks when it is set.
+/// Where the owner's `gh` keeps its login (`hosts.yml`): `~/.config/gh`, which a provider's
+/// profile may let every agent read, and `$XDG_CONFIG_HOME/gh`, where `gh` looks when it is set.
 fn owner_gh_config_dirs(environment: &cockpit_config::Environment, home: &Path) -> Vec<PathBuf> {
     let mut dirs = vec![home.join(".config").join("gh")];
     let xdg_config = environment

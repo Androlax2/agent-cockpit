@@ -98,8 +98,6 @@ async fn an_agent_of_a_profile_reports_to_its_daemon_and_leaves_the_legacy_layou
         profile_entries(&home),
         [
             "config/cockpit",
-            #[cfg(target_os = "linux")]
-            "config/systemd",
             "run/cockpit",
             "run/torlek-next",
             "state/cockpit",
@@ -169,8 +167,6 @@ async fn the_default_profile_and_a_dev_build_run_side_by_side_each_with_its_own_
     assert_eq!(
         profile_entries(&home),
         [
-            #[cfg(target_os = "linux")]
-            "config/systemd".to_owned(),
             "run/torlek".to_owned(),
             format!("run/{BUILD_PROFILE_DIR}"),
             "state/torlek".to_owned(),

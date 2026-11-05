@@ -158,28 +158,31 @@ fn execution_environment(config: &EffectiveConfig, host: &HostFacts) -> Option<R
         (ExecutionEnvironment::Native, AgentSandbox::Required) => Requirement::needs(
             name,
             Status::NeedsAuthorization,
-            format!("the project expects native work ({source}); agents run sandboxed"),
             format!(
-                "keep it sandboxed, or, if you accept unsandboxed agents everywhere, set agents.sandbox = \"off\" in {owner_file}"
+                "the project expects native work ({source}); agents.sandbox = \"required\" refuses every launch"
+            ),
+            format!(
+                "if you accept unsandboxed agents everywhere, set agents.sandbox = \"off\" in {owner_file}"
             ),
         ),
-        (ExecutionEnvironment::Sandbox, AgentSandbox::Required) => match &host.sandbox_engine {
-            Ok(_) => Requirement::available(name, "sandbox"),
-            Err(_) => Requirement::needs(
-                name,
-                Status::MissingPrerequisite,
-                "the project expects the sandbox, and this host has no engine",
-                "make the `sandbox` requirement available",
+        (ExecutionEnvironment::Sandbox, AgentSandbox::Required) => Requirement::needs(
+            name,
+            Status::MissingPrerequisite,
+            format!(
+                "the project expects the sandbox ({source}), and {}",
+                cockpit_config::NO_SANDBOX_BACKEND
             ),
-        },
+            "make the `sandbox` requirement available",
+        ),
         (ExecutionEnvironment::Sandbox, AgentSandbox::Off) => Requirement::needs(
             name,
             Status::NeedsAuthorization,
             format!(
-                "the project expects the sandbox ({source}); the owner runs agents unsandboxed"
+                "the project expects the sandbox ({source}); agents run unsandboxed: {}",
+                cockpit_config::NO_SANDBOX_BACKEND
             ),
             format!(
-                "remove agents.sandbox = \"off\" from {owner_file} and run `torlek config reload`"
+                "accept unsandboxed agents for this project, or keep its sessions stopped until the native sandbox ships; agents.sandbox in {owner_file} decides"
             ),
         ),
     };
