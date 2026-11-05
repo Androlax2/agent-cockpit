@@ -156,3 +156,76 @@ fn an_answer_is_bounded_to_16_kib_and_counts_the_bytes_it_leaves_out() {
         output.len() as u64
     );
 }
+
+#[test]
+fn a_name_that_only_contains_a_secret_word_keeps_what_follows_it() {
+    let cases = [
+        "skip greenfield-857-forge-credentials-decision: no target/",
+        "src/token_store.rs:12: error",
+        "token_store.rs:12:5: warning: unused import",
+        "token-refresh.rs: 2 tests",
+        "secret-scan: 3 files",
+        "cat: credentials.json: No such file or directory",
+    ];
+    for line in cases {
+        let presented = present(line.as_bytes(), line.len() as u64, 10);
+        assert_eq!(
+            (presented.shown.as_str(), presented.redacted),
+            (line, 0),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_secret_after_its_name_is_still_redacted() {
+    let cases = [
+        ("GH_TOKEN=ghp_x", "GH_TOKEN=[redacted]"),
+        ("api-key: abc", "api-key: [redacted]"),
+        ("X-Auth-Token: abc", "X-Auth-Token: [redacted]"),
+        ("client_secret = \"abc\"", "client_secret = \"[redacted]\""),
+        (
+            "\"credentials\": \"abc\"",
+            "\"credentials\": \"[redacted]\"",
+        ),
+        (
+            "export AWS_SECRET_ACCESS_KEY=abc",
+            "export AWS_SECRET_ACCESS_KEY=[redacted]",
+        ),
+        (
+            "aws.secret_access_key = abc",
+            "aws.secret_access_key = [redacted]",
+        ),
+        ("--token=abc", "--token=[redacted]"),
+    ];
+    for (line, redacted) in cases {
+        let presented = present(line.as_bytes(), line.len() as u64, 10);
+        assert_eq!(
+            (presented.shown.as_str(), presented.redacted),
+            (redacted, 1),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_token_after_a_name_that_only_contains_a_secret_word_is_redacted_by_its_shape() {
+    let cases = [
+        (
+            "secret-scan: ghp_0123456789abcdefghijABCDEFGHIJ012345",
+            "secret-scan: [redacted]",
+        ),
+        (
+            "src/token_store.rs:12: ghp_0123456789abcdefghijABCDEFGHIJ012345",
+            "src/token_store.rs:12: [redacted]",
+        ),
+    ];
+    for (line, redacted) in cases {
+        let presented = present(line.as_bytes(), line.len() as u64, 10);
+        assert_eq!(
+            (presented.shown.as_str(), presented.redacted),
+            (redacted, 1),
+            "{line}"
+        );
+    }
+}

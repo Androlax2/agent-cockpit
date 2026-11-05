@@ -1,6 +1,8 @@
 //! What a run's output must not carry back to the agent: terminal control sequences, and
 //! secrets by their shape or by the name in front of them. The patterns are the current
-//! approval terminal's (`apps/crates/cockpit-core/src/approval.rs`), carried over unchanged.
+//! approval terminal's (`apps/crates/cockpit-core/src/approval.rs`), carried over unchanged
+//! but for the `name: value` rule, which no longer takes a hyphenated slug or a file name
+//! for a key.
 
 use std::borrow::Cow;
 use std::sync::LazyLock;
@@ -65,7 +67,10 @@ static SECRET_VALUES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)((?:set-)?cookie\s*:\s*)[^\n]+",
         // JSON: a quoted secret value may hold spaces ("token": "…", Docker's "auth": "…").
         r#"(?i)("[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?|auth)[a-z0-9_.-]*"\s*:\s*")[^"]+(")"#,
-        r#"(?i)(\b[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[a-z0-9_.-]*\b["']?\s*[:=]\s*["']?)[^\s"']+"#,
+        // The secret word is in the name's last part: after it come only letters, digits
+        // and `_`, so `secret-scan:` or `src/token_store.rs:12:` is a name that merely
+        // contains the word, not a key (#872).
+        r#"(?i)(\b[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[a-z0-9_]*\b["']?\s*[:=]\s*["']?)[^\s"']+"#,
         // .netrc and .pgpass style: the keyword, a space, the value.
         r"(?im)(\b(?:password|passwd)\s+)[^\s=:]\S*",
         r"(?i)([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+(@)",
