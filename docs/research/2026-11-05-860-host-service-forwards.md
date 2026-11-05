@@ -15,8 +15,8 @@ proposals; Theo applies them.
 ## The question
 
 A session in the native sandbox has an empty network namespace and one proxy listener
-(#546 M4 A, #831); #831 refuses loopback. A service on the host (FigCraft's control port for
-#71, an MCP server, a dev server, a container's published port from #390) is therefore
+(#546 M4 A, #831); #831 refuses loopback. A service on the host (FigCraft's control port for #71,
+an MCP server, a dev server, a container's published port from #390) is therefore
 unreachable. Is there a way in, what does it carry, and who decides?
 
 Only the direction session to host is covered. A service the agent starts itself listens on the
