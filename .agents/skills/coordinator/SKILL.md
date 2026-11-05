@@ -23,7 +23,7 @@ never `/tmp`. Nothing here depends on a file from an earlier session.
 | Send a worker a note | `torlek agent message SESSION TEXT` (`message-sessions`); a collaborator's word, never the owner's |
 | Start a worker | `start_worker.sh` (files its task item, then `torlek agent start DIR --clone BRANCH ...`, `start-sessions`); waits for the owner's approval |
 | Give a worker the owner's answer | `torlek ask run --reason TEXT "torlek session send SESSION 'TEXT'"`; `torlek session send` itself is refused from a session |
-| End a worker | `torlek agent end SESSION` (`end-sessions`): refused until the worker marked its item done; without the grant, `end_prune.sh` through `torlek ask run` ends it |
+| End a worker | `torlek agent end SESSION` (`end-sessions`): refused until the worker marked its item done; without the grant, ask the owner: `torlek ask run --reason TEXT "torlek session end SESSION"` |
 | Anything else only the owner may run | `torlek ask run --reason TEXT COMMAND`; the owner approves that exact command once |
 
 Starts are capped (sessions not yet ended, and starts per hour); the refusal names the cap.
@@ -70,10 +70,13 @@ It wakes you only for these lines; everything else is one `SUMMARY` every 10 min
 | `QUESTION` | Relay it (below) |
 | `CI ... PR` on a new head commit | Read the failure (below); tell the worker only if it has not moved within one turn |
 | `PR ... MERGED` or `CLOSED` | Close out (below) |
-| `IDLE without merged PR` | Message the worker once; if it does not act by its next turn end, tell the owner |
-| `WATCH ENDED` | The monitor exited 1. Re-arm it; the state file keeps what was reported |
+| `IDLE without merged PR` | Message the worker once; if it does not act by its next turn end, tell the owner. Reported once per idle spell: a second idle after the worker worked again is a new line |
+| `IDLE, merge state unknown` | `gh` failed or timed out, so the merge could not be checked: run `gh pr list --head BRANCH --state merged` yourself, then treat it as the line above or ignore it |
+| `PR POLL FAILED` | `gh` cannot list PRs (network, login, rate limit), so no CI or merge line can arrive. Reported once, then every 30 minutes; check `gh auth status` and the network |
+| `WATCH ENDED` | The monitor exited non-zero (the status of `torlek agent sessions --watch`, else 1) after killing its watch. The text after the colon says why (a missing grant, a crash). Fix that, then re-arm; the state file keeps what was reported |
 
-State survives a re-arm; keep the state file in your session temp folder, which may be swept when your session ends. After a reboot, Torlek resumes workers but each sits idle until
+State survives a re-arm; keep the state file in your session temp folder, which may be swept
+when your session ends. After a reboot, Torlek resumes workers but each sits idle until
 messaged: re-arm the watcher, `torlek agent message` each worker to continue, and check which
 PRs merged meanwhile.
 
@@ -112,18 +115,18 @@ an issue. Ignore `greenfield-macos` (macOS is not supported yet; the watcher alr
    is fine.
 4. The worker's task item is done (`torlek todo show ID`); the worker marks it itself after
    the merge. Then end the worker: `torlek agent end SESSION`. Without the `end-sessions`
-   grant, or when the worker never marked its item, ask the owner to end it in the next step.
-5. Prune the clone's `target/` through the owner, ending the session in the same command when
-   you could not end it yourself:
+   grant, or when the worker never marked its item, ask the owner to end it (see the table).
+5. Prune the clone's `target/` through the owner, once the session has ended:
 
    ```sh
    torlek ask run --reason "Delete the finished worker's clone target/ to free disk" \
-       ".agents/skills/coordinator/scripts/end_prune.sh CLONES_ROOT [SESSION...] -- CLONE_DIR_NAME"
+       ".agents/skills/coordinator/scripts/prune_target.sh CLONES_ROOT CLONE_DIR_NAME"
    ```
 
    `CLONES_ROOT` is the folder holding the clones (the watcher prints it as `workers under`).
-   The script skips a clone a process still works in, and refuses names with a slash. Torlek
-   also sweeps a clone when its session ends; the prune covers `target/` of idle clones.
+   The script skips a clone a process still works in, and refuses a name with a slash and a
+   clone that is a symlink. Torlek also sweeps a clone when its session ends; the prune covers
+   the `target/` of idle clones.
 6. Add the trial row to [trials-log.md](trials-log.md) (see "Model and effort").
 
 ## Decision issues

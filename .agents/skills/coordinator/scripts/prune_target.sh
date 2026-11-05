@@ -1,29 +1,17 @@
 #!/bin/sh
-# Ends worker sessions, then prunes the target/ of clones nobody works in.
-# Usage: end_prune.sh CLONES_ROOT SESSION... -- CLONE_DIR_NAME...
-# Run it through `torlek ask run`: `torlek session end` is the owner's verb.
+# Deletes the target/ folder of finished workers' clones that nobody works in.
+# Usage: prune_target.sh CLONES_ROOT CLONE_DIR_NAME...
+# Run it through `torlek ask run`: it deletes files outside your sandbox. End the worker first
+# (`torlek agent end SESSION`).
 set -eu
 
 if [ "$#" -lt 2 ] || [ ! -d "$1" ]; then
-    echo "usage: end_prune.sh CLONES_ROOT SESSION... -- CLONE_DIR_NAME..." >&2
+    echo "usage: prune_target.sh CLONES_ROOT CLONE_DIR_NAME..." >&2
     exit 2
 fi
 # /proc/PID/cwd is always a resolved path, so compare against the resolved root.
 root=$(cd "$1" && pwd -P)
 shift
-failed=0
-
-while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
-    torlek session end "$1" || {
-        echo "failed to end session $1" >&2
-        failed=1
-    }
-    shift
-done
-[ "${1:-}" = "--" ] && shift
-
-# A clone's session may still be closing its terminal; give it a moment before looking.
-sleep "${END_PRUNE_SETTLE_SECONDS:-3}"
 
 for name in "$@"; do
     case "$name" in
@@ -33,6 +21,12 @@ for name in "$@"; do
         ;;
     esac
     clone="$root/$name"
+    # The busy check below compares resolved /proc paths, so a symlinked clone could not be
+    # matched, and rm would work through the link.
+    if [ -L "$clone" ]; then
+        echo "refusing symlinked clone: $name" >&2
+        exit 2
+    fi
     [ -d "$clone/target" ] || {
         echo "skip $name: no target/"
         continue
@@ -54,4 +48,3 @@ for name in "$@"; do
     echo "pruned $name/target"
 done
 df -h "$root" | tail -1
-exit "$failed"

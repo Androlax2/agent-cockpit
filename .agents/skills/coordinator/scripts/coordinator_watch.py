@@ -1,12 +1,13 @@
 """Coordinator event filter: wakes the coordinator only for events that need action.
 
-Immediate: a worker question appears or changes, a CI failure on a PR's current head commit
-(once per commit and check), a PR merged or closed, a worker going idle without a merged PR.
-Everything else that changed is batched into one summary every 10 minutes.
+Immediate: a worker question appears or changes, a worker goes idle without a merged PR (once
+per idle spell), a CI failure on a PR's current head commit (once per commit and check), a PR
+merged or closed. Everything else that changed is batched into one summary every 10 minutes.
 State persists in the state file so a re-armed monitor does not repeat what it already reported.
 
-Exits 1 when `torlek agent sessions --watch` ends, so the monitor running this script wakes
-the coordinator instead of going silent.
+When `torlek agent sessions --watch` ends, or a helper thread dies, it prints `WATCH ENDED`, kills
+the watch it started and exits non-zero (torlek's own status when that was non-zero, else 1), so
+the monitor running this script wakes the coordinator instead of going silent.
 
 Usage: coordinator_watch.py STATE_FILE [--repo OWNER/NAME] [--worker-root DIR]
 """
@@ -15,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -28,13 +30,17 @@ from pathlib import Path
 KNOWN_FAILING_ON_MAIN = {"greenfield-macos"}
 FAILED_CONCLUSIONS = ("FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE")
 FIELD = re.compile(r'(\w[\w-]*)="((?:[^"\\]|\\.)*)"')
+POLL_FAILURE_REPORT_SECONDS = 1800
 
 lock = threading.Lock()
 batched = []
+gh_timeout_seconds = 60
 
 
 def run_text(command):
-    return subprocess.run(command, capture_output=True, text=True, check=True).stdout.strip()
+    return subprocess.run(
+        command, capture_output=True, text=True, check=True, timeout=gh_timeout_seconds
+    ).stdout.strip()
 
 
 def default_repo():
@@ -64,13 +70,24 @@ class Watcher:
         self.sessions = self.state.setdefault("sessions", {})
         self.reported_failures = set(self.state.setdefault("failures", []))
         self.pr_states = self.state.setdefault("prs", {})
+        # session id -> the doing-text of the idle spell already reported; cleared when it works.
+        if not isinstance(self.state.get("idle"), dict):
+            self.state["idle"] = {}
+        self.reported_idle = self.state["idle"]
+        self.saved_text = None
+        self.process = None
+        self.last_poll_failure_report = None
 
     def save(self):
+        """Writes the state only when it changed, atomically (a kill mid-write keeps the old file)."""
         self.state["failures"] = sorted(self.reported_failures)
-        # Replace atomically so a kill or reboot mid-write never leaves a truncated state file.
+        text = json.dumps(self.state, sort_keys=True)
+        if text == self.saved_text:
+            return
         partial = self.state_path.with_name(self.state_path.name + ".partial")
-        partial.write_text(json.dumps(self.state))
+        partial.write_text(text)
         os.replace(partial, self.state_path)
+        self.saved_text = text
 
     def branch_of(self, path):
         name = Path(path).name
@@ -94,7 +111,7 @@ class Watcher:
         }
 
     def is_merged(self, branch):
-        """True or False; None when GitHub could not say."""
+        """True or False; None when GitHub could not say. Never call this holding the lock."""
         if self.pr_states.get(branch, {}).get("state") == "MERGED":
             return True
         try:
@@ -106,69 +123,103 @@ class Watcher:
             return None
         return count != "0"
 
-    def on_session(self, current):
-        session_id = current["id"]
-        previous = self.sessions.get(session_id)
-        self.sessions[session_id] = current
-        if previous == current:
-            return
-        if self.is_first_run and time.monotonic() - self.started_at < self.seed_seconds:
-            return
-        tag = f"{session_id} ({current['branch']})"
-        if current["question"] and current["question"] != (previous or {}).get("question"):
-            print(f"QUESTION {tag}: {current['question']}", flush=True)
-            return
-        went_idle = current["state"] == "waiting" and (previous or {}).get("state") != "waiting"
-        if went_idle and not current["question"]:
-            idle_key = f"{session_id}:{current['doing']}"
-            reported_idle = self.state.setdefault("idle", [])
-            if idle_key not in reported_idle:
-                merged = self.is_merged(current["branch"])
-                if merged is None:
-                    print(
-                        f"IDLE, merge state unknown (gh failed) {tag}: doing={current['doing']!r}",
-                        flush=True,
-                    )
-                    return
-                if not merged:
-                    reported_idle.append(idle_key)
-                    print(f"IDLE without merged PR {tag}: doing={current['doing']!r}", flush=True)
-                    return
-        if (
-            previous is None
-            or previous["doing"] != current["doing"]
-            or previous["state"] != current["state"]
-        ):
+    def batch(self, previous, current, tag):
+        changed = previous is None or previous["doing"] != current["doing"]
+        if changed or previous["state"] != current["state"]:
             batched.append(f"{tag} {current['state']}: {current['doing']}")
+
+    def on_session(self, current):
+        """Handles one session line. The merge check runs gh, so the lock is not held for it."""
+        session_id = current["id"]
+        tag = f"{session_id} ({current['branch']})"
+        with lock:
+            previous = self.sessions.get(session_id)
+            self.sessions[session_id] = current
+            if previous == current:
+                return
+            if current["state"] != "waiting":
+                self.reported_idle.pop(session_id, None)
+            # The first look at a fresh start fills the summary with history; a question or an
+            # idle worker found then is still news.
+            seeding = self.is_first_run and time.monotonic() - self.started_at < self.seed_seconds
+            if current["question"] and current["question"] != (previous or {}).get("question"):
+                print(f"QUESTION {tag}: {current['question']}", flush=True)
+                self.save()
+                return
+            went_idle = current["state"] == "waiting" and (previous or {}).get("state") != "waiting"
+            needs_merge_check = (
+                went_idle
+                and not current["question"]
+                and self.reported_idle.get(session_id) != current["doing"]
+            )
+            if not needs_merge_check:
+                if not seeding:
+                    self.batch(previous, current, tag)
+                self.save()
+                return
+        merged = self.is_merged(current["branch"])
+        with lock:
+            if merged is None:
+                reason = f"IDLE, merge state unknown (gh failed) {tag}: doing={current['doing']!r}"
+                print(reason, flush=True)
+            elif not merged:
+                self.reported_idle[session_id] = current["doing"]
+                print(f"IDLE without merged PR {tag}: doing={current['doing']!r}", flush=True)
+            elif not seeding:
+                self.batch(previous, current, tag)
+            self.save()
+
+    def on_session_ended(self, session_id):
+        with lock:
+            self.sessions.pop(session_id, None)
+            self.reported_idle.pop(session_id, None)
+            self.save()
+
+    def handle_line(self, line):
+        columns = line.split("\t")
+        if len(columns) == 2 and columns[1] == "ended":
+            self.on_session_ended(columns[0])
+            return
+        current = self.parse(line)
+        if current is not None:
+            self.on_session(current)
+
+    def stop_child(self):
+        if self.process is not None and self.process.poll() is None:
+            self.process.kill()
+            self.process.wait()
 
     def follow_sessions(self):
         # A file, not a pipe: a chatty stderr must never block the watch while stdout is read.
         errors = tempfile.TemporaryFile(mode="w+")
-        process = subprocess.Popen(
-            ["torlek", "agent", "sessions", "--watch"],
-            stdout=subprocess.PIPE, stderr=errors, text=True, bufsize=1,
-        )  # fmt: skip
-        for raw in process.stdout:
-            line = raw.rstrip("\n")
-            columns = line.split("\t")
-            if len(columns) == 2 and columns[1] == "ended":
-                with lock:
-                    self.sessions.pop(columns[0], None)
-                    self.save()
-                continue
-            current = self.parse(line)
-            if current is None:
-                continue
-            with lock:
-                self.on_session(current)
-                self.save()
-        exit_status = process.wait()
-        errors.seek(0)
-        reason = errors.read().strip()
-        print(
-            f"WATCH ENDED: torlek agent sessions --watch exited {exit_status}: {reason}", flush=True
-        )
-        return exit_status or 1
+        try:
+            self.process = subprocess.Popen(
+                ["torlek", "agent", "sessions", "--watch"],
+                stdout=subprocess.PIPE, stderr=errors, text=True, bufsize=1,
+            )  # fmt: skip
+            for raw in self.process.stdout:
+                self.handle_line(raw.rstrip("\n"))
+            exit_status = self.process.wait()
+            errors.seek(0)
+            reason = errors.read().strip()
+            print(
+                f"WATCH ENDED: torlek agent sessions --watch exited {exit_status}: {reason}",
+                flush=True,
+            )
+            return exit_status or 1
+        except Exception as error:
+            traceback.print_exc()
+            print(f"WATCH ENDED: {type(error).__name__}: {error}", flush=True)
+            return 1
+        finally:
+            self.stop_child()
+
+    def report_poll_failure(self, error):
+        now = time.monotonic()
+        last = self.last_poll_failure_report
+        if last is None or now - last >= POLL_FAILURE_REPORT_SECONDS:
+            print(f"PR POLL FAILED (repeats are not reported for 30 minutes): {error}", flush=True)
+            self.last_poll_failure_report = now
 
     def poll_prs(self):
         query = [
@@ -179,10 +230,15 @@ class Watcher:
         while True:
             try:
                 pulls = json.loads(run_text(query))
-            except (subprocess.CalledProcessError, json.JSONDecodeError) as error:
-                print(f"PR POLL FAILED: {error}", flush=True)
+            except (
+                subprocess.CalledProcessError,
+                subprocess.TimeoutExpired,
+                json.JSONDecodeError,
+            ) as error:
+                self.report_poll_failure(error)
                 time.sleep(self.poll_seconds)
                 continue
+            self.last_poll_failure_report = None
             with lock:
                 self.on_pulls(pulls)
                 self.save()
@@ -230,6 +286,7 @@ class Watcher:
 
 
 def parse_arguments(argv):
+    global gh_timeout_seconds
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("state_file", type=Path)
     parser.add_argument(
@@ -247,28 +304,37 @@ def parse_arguments(argv):
     parser.add_argument("--seed-seconds", type=float, default=5)
     parser.add_argument("--poll-seconds", type=float, default=120)
     parser.add_argument("--summary-seconds", type=float, default=600)
+    parser.add_argument("--gh-timeout-seconds", type=float, default=60)
     arguments = parser.parse_args(argv)
+    gh_timeout_seconds = arguments.gh_timeout_seconds
     arguments.repo = arguments.repo or default_repo()
     arguments.worker_root = arguments.worker_root or default_worker_root()
     arguments.since = arguments.since or (date.today() - timedelta(days=2)).isoformat()
     return arguments
 
 
-def run_or_exit(target):
+def run_or_exit(watcher, target):
     """Runs a helper thread; if it dies, take the whole watcher down so the monitor wakes."""
     try:
         target()
     except BaseException:
         traceback.print_exc()
         print(f"WATCH ENDED: {target.__name__} crashed", flush=True)
+        watcher.stop_child()
         os._exit(1)
 
 
 def main(argv):
-    watcher = Watcher(parse_arguments(argv))
+    # Monitors stop a script with SIGTERM; raise so the `finally` kills the torlek watch too.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    try:
+        watcher = Watcher(parse_arguments(argv))
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError) as error:
+        print(f"WATCH ENDED: could not start: {error}", flush=True)
+        return 1
     print(f"WATCHING {watcher.repo}, workers under {watcher.worker_root}", flush=True)
     for helper in (watcher.poll_prs, watcher.summarize):
-        threading.Thread(target=run_or_exit, args=(helper,), daemon=True).start()
+        threading.Thread(target=run_or_exit, args=(watcher, helper), daemon=True).start()
     return watcher.follow_sessions()
 
 

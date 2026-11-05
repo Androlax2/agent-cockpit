@@ -1,15 +1,18 @@
+import argparse
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SKILL = REPO / ".agents/skills/coordinator"
 WATCHER = SKILL / "scripts/coordinator_watch.py"
-END_PRUNE = SKILL / "scripts/end_prune.sh"
+PRUNE_TARGET = SKILL / "scripts/prune_target.sh"
 APPLIER = SKILL / "scripts/apply_issue_changes.py"
 START_WORKER = SKILL / "scripts/start_worker.sh"
 
@@ -39,11 +42,9 @@ class FakeCommandsTestCase(unittest.TestCase):
         return self.calls.read_text().splitlines() if self.calls.exists() else []
 
 
-class EndPruneTests(FakeCommandsTestCase):
+class PruneTargetTests(FakeCommandsTestCase):
     def setUp(self):
         super().setUp()
-        self.shim("torlek", 'echo "torlek $*" >> "$FAKE_CALLS"')
-        self.environment["END_PRUNE_SETTLE_SECONDS"] = "0"
         self.clones = self.root / "clones"
         self.clones.mkdir()
 
@@ -52,32 +53,47 @@ class EndPruneTests(FakeCommandsTestCase):
         (self.clones / name / "target/artifact").write_text("build output")
         return self.clones / name
 
-    def end_prune(self, *arguments):
+    def prune_target(self, *arguments):
         return subprocess.run(
-            [str(END_PRUNE), *arguments], env=self.environment, capture_output=True, text=True
+            [str(PRUNE_TARGET), *arguments], env=self.environment, capture_output=True, text=True
         )
 
-    def test_it_ends_each_session_and_prunes_the_idle_clones_target(self):
+    def test_it_prunes_the_idle_clones_target(self):
         clone = self.clone_with_target("greenfield-1-first")
 
-        result = self.end_prune(str(self.clones), "s1", "s2", "--", "greenfield-1-first")
+        result = self.prune_target(str(self.clones), "greenfield-1-first")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.recorded_calls(), ["torlek session end s1", "torlek session end s2"])
         self.assertFalse((clone / "target").exists())
         self.assertIn("pruned greenfield-1-first/target", result.stdout)
 
-    def test_it_still_ends_the_other_sessions_and_prunes_when_one_end_fails(self):
-        clone = self.clone_with_target("greenfield-4-after")
-        self.shim("torlek", 'echo "torlek $*" >> "$FAKE_CALLS"; [ "$3" != bad ]')
+    def test_it_keeps_the_rest_of_the_clone(self):
+        clone = self.clone_with_target("greenfield-1-first")
+        (clone / "notes.md").write_text("uncommitted work")
 
-        result = self.end_prune(str(self.clones), "bad", "good", "--", "greenfield-4-after")
+        self.prune_target(str(self.clones), "greenfield-1-first")
 
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual(
-            self.recorded_calls(), ["torlek session end bad", "torlek session end good"]
-        )
-        self.assertFalse((clone / "target").exists())
+        self.assertTrue((clone / "notes.md").exists())
+
+    def test_it_prunes_every_named_clone(self):
+        first = self.clone_with_target("greenfield-1-first")
+        second = self.clone_with_target("greenfield-2-second")
+
+        self.prune_target(str(self.clones), "greenfield-1-first", "greenfield-2-second")
+
+        self.assertFalse((first / "target").exists())
+        self.assertFalse((second / "target").exists())
+
+    def test_it_refuses_a_clone_that_is_a_symlink(self):
+        outside = self.root / "outside"
+        (outside / "target").mkdir(parents=True)
+        (self.clones / "greenfield-6-link").symlink_to(outside)
+
+        result = self.prune_target(str(self.clones), "greenfield-6-link")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("refusing symlinked clone", result.stderr)
+        self.assertTrue((outside / "target").exists())
 
     def test_it_keeps_the_target_when_the_clones_root_is_given_through_a_symlink(self):
         clone = self.clone_with_target("greenfield-5-linked")
@@ -87,7 +103,7 @@ class EndPruneTests(FakeCommandsTestCase):
         self.addCleanup(worker.wait)
         self.addCleanup(worker.kill)
 
-        result = self.end_prune(str(link), "s1", "--", "greenfield-5-linked")
+        result = self.prune_target(str(link), "greenfield-5-linked")
 
         self.assertTrue((clone / "target/artifact").exists())
         self.assertIn("a process works in it", result.stdout)
@@ -98,7 +114,7 @@ class EndPruneTests(FakeCommandsTestCase):
         self.addCleanup(worker.wait)
         self.addCleanup(worker.kill)
 
-        result = self.end_prune(str(self.clones), "s1", "--", "greenfield-2-busy")
+        result = self.prune_target(str(self.clones), "greenfield-2-busy")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((clone / "target/artifact").exists())
@@ -107,7 +123,7 @@ class EndPruneTests(FakeCommandsTestCase):
     def test_it_skips_a_clone_without_a_target(self):
         (self.clones / "greenfield-3-clean").mkdir()
 
-        result = self.end_prune(str(self.clones), "s1", "--", "greenfield-3-clean")
+        result = self.prune_target(str(self.clones), "greenfield-3-clean")
 
         self.assertIn("skip greenfield-3-clean: no target/", result.stdout)
 
@@ -115,17 +131,16 @@ class EndPruneTests(FakeCommandsTestCase):
         outside = self.root / "outside"
         (outside / "target").mkdir(parents=True)
 
-        result = self.end_prune(str(self.clones), "s1", "--", "../outside")
+        result = self.prune_target(str(self.clones), "../outside")
 
         self.assertEqual(result.returncode, 2)
         self.assertTrue((outside / "target").exists())
 
     def test_it_fails_with_usage_when_the_clones_root_is_missing(self):
-        result = self.end_prune(str(self.clones / "missing"), "s1")
+        result = self.prune_target(str(self.clones / "missing"), "greenfield-1-first")
 
         self.assertEqual(result.returncode, 2)
         self.assertIn("usage:", result.stderr)
-        self.assertEqual(self.recorded_calls(), [])
 
 
 class ApplyIssueChangesTests(FakeCommandsTestCase):
@@ -213,20 +228,36 @@ printf '%s' "$7" > "$FAKE_CALLS.body.$3"
         self.assertIn("does not list", result.stderr)
         self.assertEqual(self.recorded_calls(), [])
 
-    def test_it_reads_a_last_heading_without_a_trailing_newline(self):
+    def test_it_reads_a_last_section_that_ends_without_a_trailing_newline(self):
         self.report.write_text(
-            "## Changes for each linked issue\n\n### #11 First\n\n> One.\n\n### #12 Second"
+            "## Changes for each linked issue\n\n### #11 First\n\n> One.\n\n### #12 Second\n\n> Two."
         )
 
         result = self.apply()
 
-        self.assertIn("#12: 0 characters", result.stdout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("#12: 4 characters", result.stdout)
 
-    def test_it_drops_the_report_only_sentence_and_the_blockquote_markers(self):
+    def test_it_fails_without_posting_when_an_issue_has_no_proposed_text(self):
+        self.report.write_text(
+            "## Changes for each linked issue\n\n### #11 First\n\n> One.\n\n### #12 Second"
+        )
+
+        result = self.apply("--go")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no proposed text for issues ['12']", result.stderr)
+        self.assertEqual(self.recorded_calls(), [])
+
+    def test_it_drops_the_report_only_sentence(self):
         result = self.apply()
 
         self.assertIn("Shared context.", result.stdout)
         self.assertNotIn("the owner applies it", result.stdout)
+
+    def test_it_strips_the_blockquote_markers(self):
+        result = self.apply()
+
         self.assertNotIn("> Add", result.stdout)
 
     def test_it_posts_only_the_issues_named_by_only(self):
@@ -351,8 +382,10 @@ esac
         fields = f'doing="{doing}"' + (f' needs-input="{question}"' if question else "")
         return "\t".join(["s-" + name, "running", "-", state, workspace, fields])
 
-    def watch(self, *session_lines):
+    def watch(self, *session_lines, first_run=False, extra_arguments=(), timeout=30):
         self.sessions_file.write_text("\n".join(session_lines) + "\n")
+        if first_run:
+            self.state_file.unlink()
         return subprocess.run(
             [
                 sys.executable,
@@ -370,23 +403,23 @@ esac
                 "0.2",
                 "--summary-seconds",
                 "1000",
+                *extra_arguments,
             ],
             env=self.environment,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout,
         )
 
-    def pull_with_failing_checks(self, head):
+    def pull_with_checks(self, head, *checks):
         return {
             "number": 7,
             "state": "OPEN",
             "headRefName": "greenfield/7-feature",
             "headRefOid": head,
             "statusCheckRollup": [
-                {"name": "greenfield", "conclusion": "FAILURE", "detailsUrl": "https://ci/job/1"},
-                {"name": "greenfield-macos", "conclusion": "FAILURE"},
-                {"name": "docs", "conclusion": "SUCCESS"},
+                {"name": name, "conclusion": conclusion, "detailsUrl": f"https://ci/{name}"}
+                for name, conclusion in checks
             ],
         }
 
@@ -426,16 +459,26 @@ esac
 
         self.assertNotIn("IDLE", result.stdout)
 
-    def test_it_reports_a_ci_failure_once_per_head_and_skips_the_macos_job(self):
-        self.pulls_file.write_text(json.dumps([self.pull_with_failing_checks(self.HEAD)]))
+    def test_it_reports_a_ci_failure_once_per_head_and_check(self):
+        pull = self.pull_with_checks(self.HEAD, ("greenfield", "FAILURE"), ("docs", "SUCCESS"))
+        self.pulls_file.write_text(json.dumps([pull]))
 
         result = self.watch(self.session("greenfield-7-feature", "working", "coding"))
 
         failures = [line for line in result.stdout.splitlines() if line.startswith("CI ")]
         self.assertEqual(len(failures), 1, result.stdout)
         self.assertIn(
-            "PR #7 (greenfield/7-feature) head abcdef12: greenfield https://ci/job/1", failures[0]
+            "PR #7 (greenfield/7-feature) head abcdef12: greenfield https://ci/greenfield",
+            failures[0],
         )
+
+    def test_it_skips_a_failure_of_the_macos_job(self):
+        pull = self.pull_with_checks(self.HEAD, ("greenfield-macos", "FAILURE"))
+        self.pulls_file.write_text(json.dumps([pull]))
+
+        result = self.watch(self.session("greenfield-7-feature", "working", "coding"))
+
+        self.assertNotIn("CI ", result.stdout)
 
     def test_it_reports_a_pr_merge_on_a_later_poll_after_an_empty_first_poll(self):
         pull = {
@@ -465,7 +508,8 @@ esac
         self.assertIn("PR #8 MERGED (greenfield/8-x)", result.stdout)
 
     def test_it_ignores_pull_requests_outside_the_branch_prefix(self):
-        stray = {**self.pull_with_failing_checks(self.HEAD), "headRefName": "feature/other"}
+        failing = self.pull_with_checks(self.HEAD, ("greenfield", "FAILURE"))
+        stray = {**failing, "headRefName": "feature/other"}
         self.pulls_file.write_text(json.dumps([stray]))
 
         result = self.watch(self.session("greenfield-7-feature", "working", "coding"))
@@ -491,6 +535,85 @@ esac
         self.assertIn("IDLE, merge state unknown", result.stdout)
         self.assertNotIn("IDLE without merged PR", result.stdout)
 
+    def test_it_reports_a_question_already_open_when_a_fresh_watcher_starts(self):
+        result = self.watch(
+            self.session("greenfield-5-thing", "waiting", "asking", question="Which option?"),
+            first_run=True,
+            extra_arguments=("--seed-seconds", "5"),
+        )
+
+        self.assertIn("QUESTION s-greenfield-5-thing", result.stdout)
+
+    def test_it_reports_a_second_idle_spell_with_the_same_doing_text(self):
+        result = self.watch(
+            self.session("greenfield-6-idle", "working", "coding"),
+            self.session("greenfield-6-idle", "waiting", "waiting on CI"),
+            self.session("greenfield-6-idle", "working", "coding"),
+            self.session("greenfield-6-idle", "waiting", "waiting on CI"),
+        )
+
+        self.assertEqual(result.stdout.count("IDLE without merged PR"), 2, result.stdout)
+
+    def test_it_gives_up_on_a_hung_gh_and_says_the_merge_state_is_unknown(self):
+        self.shim(
+            "gh",
+            """
+case "$*" in
+*--search*) echo '[]' ;;
+*) exec sleep 30 ;;
+esac
+""",
+        )
+
+        result = self.watch(
+            self.session("greenfield-6-idle", "working", "coding"),
+            self.session("greenfield-6-idle", "waiting", "coding"),
+            extra_arguments=("--gh-timeout-seconds", "0.5"),
+        )
+
+        self.assertIn("IDLE, merge state unknown", result.stdout)
+
+    def test_it_reports_a_failing_pr_poll_once_not_on_every_poll(self):
+        self.shim(
+            "gh",
+            """
+case "$*" in
+*--search*) exit 1 ;;
+esac
+""",
+        )
+
+        result = self.watch(self.session("greenfield-7-feature", "working", "coding"))
+
+        self.assertEqual(result.stdout.count("PR POLL FAILED"), 1, result.stdout)
+
+    def test_it_ends_the_watch_and_kills_the_session_listing_when_a_helper_thread_dies(self):
+        self.shim(
+            "torlek",
+            'echo $$ > "$FAKE_CALLS.pid"; cat "$FAKE_SESSIONS"; exec sleep 30',
+        )
+        self.shim(
+            "gh",
+            """
+case "$*" in
+*--search*) echo '[{"number": 1}]' ;;
+esac
+""",
+        )
+
+        result = self.watch(self.session("greenfield-7-feature", "working", "coding"))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("WATCH ENDED: poll_prs crashed", result.stdout)
+        listing_pid = int(Path(f"{self.calls}.pid").read_text())
+        for _ in range(20):
+            try:
+                os.kill(listing_pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        self.fail("the session listing is still running")
+
     def test_it_exits_nonzero_and_says_why_when_the_session_watch_ends(self):
         result = self.watch(self.session("greenfield-8-gone", "working", "coding"))
 
@@ -498,6 +621,32 @@ esac
         self.assertIn(
             "WATCH ENDED: torlek agent sessions --watch exited 3: no grant", result.stdout
         )
+
+
+class WatcherStateTests(FakeCommandsTestCase):
+    def test_it_rewrites_the_state_file_only_when_the_state_changed(self):
+        spec = importlib.util.spec_from_file_location("coordinator_watch", WATCHER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        state_file = self.root / "state.json"
+        watcher = module.Watcher(
+            argparse.Namespace(
+                repo="example/shop",
+                worker_root=self.root,
+                branch_prefix="greenfield/",
+                since="2026-01-01",
+                seed_seconds=0,
+                poll_seconds=1,
+                summary_seconds=1,
+                state_file=state_file,
+            )
+        )
+        watcher.save()
+        written_inode = state_file.stat().st_ino
+
+        watcher.save()
+
+        self.assertEqual(state_file.stat().st_ino, written_inode)
 
 
 class SkillContentTests(unittest.TestCase):
@@ -513,7 +662,7 @@ class SkillContentTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
 
     def test_the_scripts_are_executable(self):
-        for script in (WATCHER, END_PRUNE, APPLIER, START_WORKER):
+        for script in (WATCHER, PRUNE_TARGET, APPLIER, START_WORKER):
             self.assertTrue(os.access(script, os.X_OK), script)
 
 

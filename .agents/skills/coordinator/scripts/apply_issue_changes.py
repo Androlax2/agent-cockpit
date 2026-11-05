@@ -72,6 +72,9 @@ def main(argv):
     introduction, changes = split_changes(changes_section(arguments.report.read_text()))
     if not changes:
         sys.exit("apply_issue_changes: no '### #NUMBER' subsections under the changes section")
+    empty = [number for number, body in changes if not body]
+    if empty:
+        sys.exit(f"apply_issue_changes: the report gives no proposed text for issues {empty}")
     only = {number.lstrip("#") for number in arguments.only or []}
     unknown = only - {number for number, _ in changes}
     if unknown:
