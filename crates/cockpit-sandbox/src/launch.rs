@@ -197,37 +197,6 @@ impl Sandbox {
             .map_err(|error| format!("{} is malformed: {error}", path.display()))
     }
 
-    /// The sessions with a folder in the mount sources: every session a sandboxed launch
-    /// staged, ended ones too until something removes it.
-    pub fn staged_sessions(&self) -> Result<Vec<String>, String> {
-        let Some(host) = self.host.as_ref() else {
-            return Ok(Vec::new());
-        };
-        let entries = match std::fs::read_dir(&host.mount_sources) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => {
-                return Err(format!(
-                    "cannot list {}: {error}",
-                    host.mount_sources.display()
-                ));
-            }
-        };
-        let mut sessions = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|error| {
-                format!("cannot list {}: {error}", host.mount_sources.display())
-            })?;
-            if entry.file_type().is_ok_and(|kind| kind.is_dir())
-                && let Ok(name) = entry.file_name().into_string()
-            {
-                sessions.push(name);
-            }
-        }
-        sessions.sort();
-        Ok(sessions)
-    }
-
     /// Replaces the decisions `session`'s launcher enforces (#674); false, writing nothing,
     /// when the session has no sandbox folder, so no launcher reads them.
     pub fn write_egress_decisions(
@@ -245,6 +214,9 @@ impl Sandbox {
         }
         let path = folder.join(crate::DECISIONS_FILE);
         let text = serde_json::to_vec(decisions).map_err(|error| error.to_string())?;
+        if std::fs::read(&path).is_ok_and(|written| written == text) {
+            return Ok(true);
+        }
         crate::native::replace_atomically(&path, &text)
             .map(|()| true)
             .map_err(|error| format!("cannot write {}: {error}", path.display()))

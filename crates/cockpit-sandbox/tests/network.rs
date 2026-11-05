@@ -256,3 +256,25 @@ async fn an_allow_within_the_grace_after_the_request_appeared_is_refused() {
         EgressDecisions::default()
     );
 }
+
+/// Two sessions asked before either was decided: the second "always" joins the first's grant.
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_always_of_a_host_the_project_was_granted_since_joins_that_grant() {
+    let store = store().await;
+    let first = store.file("s1", "app").await.unwrap();
+    let second = store.file("s2", "app").await.unwrap();
+    store.allow(first, true, DECIDED_AT).await.unwrap();
+
+    store.allow(second, true, DECIDED_AT).await.unwrap();
+
+    let read = store.database.read().await.unwrap();
+    let grants = cockpit_sandbox::network_grants(&read, Some("app"))
+        .await
+        .unwrap();
+    let joined = cockpit_sandbox::network_request(&read, second)
+        .await
+        .unwrap();
+    assert_eq!(grants.len(), 1);
+    assert_eq!(joined.state, NetworkRequestState::AllowedAlways);
+    assert_eq!(joined.grant, Some(grants[0].id));
+}

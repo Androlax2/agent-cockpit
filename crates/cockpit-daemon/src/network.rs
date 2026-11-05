@@ -30,6 +30,10 @@ use crate::routes::{Route, WorkClass};
 /// owner's list within this.
 const COLLECT_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Every this many passes, about a second, the decisions files are rewritten even without a
+/// decision; an unchanged file is left as it is.
+const RESYNC_PASSES: u32 = 4;
+
 impl From<NetworkError> for Failed {
     fn from(error: NetworkError) -> Failed {
         let NetworkError::Refused(refusal) = &error else {
@@ -48,6 +52,8 @@ impl From<NetworkError> for Failed {
                 ErrorCode::Refused,
                 format!("read the request, then allow it again in {wait_seconds} s"),
             ),
+            // No owner verb names a subject: a check run reaching here is the daemon's bug.
+            NetworkRefusal::NotASession => return internal(&error),
         };
         Failed(ProtocolError {
             code,
@@ -67,12 +73,14 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
         match command {
             Command::NetworkList => {
                 let read = database.read().await?;
-                let live = live_sessions(&read).await?;
+                let live = live_sessions(&read)
+                    .await
+                    .map_err(|reason| internal(&reason))?;
                 let requests = cockpit_sandbox::asking_network_requests(&read).await?;
                 Ok(Reply::NetworkRequests {
                     requests: requests
                         .iter()
-                        .filter(|request| live.contains_key(subject_session(&request.subject)))
+                        .filter(|request| live.contains_key(&request.session))
                         .map(request_view)
                         .collect(),
                 })
@@ -142,20 +150,23 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
     }
 }
 
-/// Files what the launchers refused and, at the start and after each decision, rewrites
-/// every live session's decisions file, until the daemon stops. One pass's failure is
-/// logged and the next pass tries again.
+/// Files what the launchers refused and rewrites every live session's decisions file: at
+/// the start, after each decision, and each [`RESYNC_PASSES`] passes so that a launch that
+/// staged decisions read before one was taken gets it too. Until the daemon stops; one
+/// pass's failure is logged and the next pass tries again.
 pub(crate) async fn keep_forever(database: Arc<Database>, sandbox: Sandbox, decided: Arc<Notify>) {
     let mut seen = HashMap::new();
     // At the start: a decision committed just before a crash may not have reached its file.
     let mut is_decided = true;
+    let mut passes: u32 = 0;
     loop {
-        if is_decided && let Err(error) = write_decisions(&database, &sandbox).await {
-            tracing::warn!(%error, "the owner's network decisions were not written");
+        if is_decided || passes.is_multiple_of(RESYNC_PASSES) {
+            write_decisions(&database, &sandbox).await;
         }
         if let Err(error) = collect(&database, &sandbox, &mut seen).await {
             tracing::warn!(%error, "the sandbox's network requests were not collected");
         }
+        passes = passes.wrapping_add(1);
         is_decided = tokio::select! {
             () = decided.notified() => true,
             () = tokio::time::sleep(COLLECT_INTERVAL) => false,
@@ -163,16 +174,22 @@ pub(crate) async fn keep_forever(database: Arc<Database>, sandbox: Sandbox, deci
     }
 }
 
-/// Files the destinations each live session's launcher listed since the last pass.
+/// Files the destinations each live session's launcher listed since the last pass. The
+/// requests files of ended sessions are not read, and what was seen of them is forgotten.
 async fn collect(
     database: &Database,
     sandbox: &Sandbox,
     seen: &mut HashMap<String, EgressRequests>,
 ) -> Result<(), String> {
+    let read = database.read().await.map_err(|error| error.to_string())?;
+    let live = live_sessions(&read).await?;
+    drop(read);
+    seen.retain(|session, _| live.contains_key(session));
     let reading = sandbox.clone();
+    let sessions: Vec<String> = live.keys().cloned().collect();
     let listed = tokio::task::spawn_blocking(move || {
         let mut listed = Vec::new();
-        for session in reading.staged_sessions()? {
+        for session in sessions {
             if let Some(requests) = reading.egress_requests(&session)? {
                 listed.push((session, requests));
             }
@@ -189,9 +206,6 @@ async fn collect(
         return Ok(());
     }
     let write = database.write().await.map_err(|error| error.to_string())?;
-    let live = live_sessions(&write)
-        .await
-        .map_err(|_| "the live sessions could not be read".to_owned())?;
     let at = now();
     for (session, requests) in &changed {
         let Some(project) = live.get(session) else {
@@ -209,7 +223,7 @@ async fn collect(
             .iter()
             .take(cockpit_sandbox::MAX_ASKED_DESTINATIONS)
         {
-            if !is_askable(&asked.host, asked.port) {
+            if !cockpit_sandbox::is_askable_destination(&asked.host, asked.port) {
                 tracing::warn!(
                     session,
                     host = asked.host,
@@ -236,49 +250,58 @@ async fn collect(
     Ok(())
 }
 
-/// A lower-case DNS name of at least two labels and a port: what an entry may name.
-fn is_askable(host: &str, port: u16) -> bool {
-    port != 0
-        && host.contains('.')
-        && cockpit_sandbox::normalized_name(host).as_deref() == Some(host)
+/// Rewrites the decisions file of every live session that has a sandbox folder. A session
+/// whose decisions cannot be read or written is logged and the others still get theirs.
+async fn write_decisions(database: &Database, sandbox: &Sandbox) {
+    let all = match decisions_of_live_sessions(database).await {
+        Ok(all) => all,
+        Err(error) => {
+            tracing::warn!(%error, "the owner's network decisions were not read");
+            return;
+        }
+    };
+    let writing = sandbox.clone();
+    let written = tokio::task::spawn_blocking(move || {
+        for (session, decisions) in all {
+            if let Err(error) = writing.write_egress_decisions(&session, &decisions) {
+                tracing::warn!(session, %error, "the owner's network decisions were not written");
+            }
+        }
+    })
+    .await;
+    if let Err(error) = written {
+        tracing::warn!(%error, "the owner's network decisions were not written");
+    }
 }
 
-/// Rewrites the decisions file of every live session that has a sandbox folder.
-async fn write_decisions(database: &Database, sandbox: &Sandbox) -> Result<(), String> {
+async fn decisions_of_live_sessions(
+    database: &Database,
+) -> Result<Vec<(String, EgressDecisions)>, String> {
     let read = database.read().await.map_err(|error| error.to_string())?;
-    let live = live_sessions(&read)
-        .await
-        .map_err(|_| "the live sessions could not be read".to_owned())?;
-    let mut all: Vec<(String, EgressDecisions)> = Vec::with_capacity(live.len());
+    let live = live_sessions(&read).await?;
+    let mut all = Vec::with_capacity(live.len());
     for (session, project) in live {
         let subject = Subject::Session {
             session: session.clone(),
         };
-        let decisions = cockpit_sandbox::egress_decisions(&read, &project, &subject)
-            .await
-            .map_err(|error| error.to_string())?;
-        all.push((session, decisions));
-    }
-    drop(read);
-    let writing = sandbox.clone();
-    tokio::task::spawn_blocking(move || {
-        for (session, decisions) in all {
-            writing.write_egress_decisions(&session, &decisions)?;
+        match cockpit_sandbox::egress_decisions(&read, &project, &subject).await {
+            Ok(decisions) => all.push((session, decisions)),
+            Err(error) => {
+                tracing::warn!(session, %error, "the owner's network decisions were not read");
+            }
         }
-        Ok::<_, String>(())
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    }
+    Ok(all)
 }
 
 /// Every session not ended, by id, with its project's name.
-async fn live_sessions(connection: &Connection) -> Result<HashMap<String, String>, Failed> {
+async fn live_sessions(connection: &Connection) -> Result<HashMap<String, String>, String> {
     let sessions = cockpit_sessions::sessions(connection, false)
         .await
-        .map_err(|error| internal(&error))?;
+        .map_err(|error| format!("the live sessions could not be read: {error}"))?;
     let checkouts = cockpit_projects::checkouts(connection, None)
         .await
-        .map_err(|error| internal(&error))?;
+        .map_err(|error| format!("the checkouts could not be read: {error}"))?;
     Ok(sessions
         .into_iter()
         .filter_map(|session| {
@@ -291,12 +314,6 @@ async fn live_sessions(connection: &Connection) -> Result<HashMap<String, String
             ))
         })
         .collect())
-}
-
-fn subject_session(subject: &Subject) -> &str {
-    match subject {
-        Subject::Session { session } => session,
-    }
 }
 
 fn owner_client(through: DecidedThroughView) -> OwnerClient {
@@ -326,7 +343,7 @@ fn request_view(request: &NetworkRequest) -> NetworkRequestView {
     NetworkRequestView {
         id: request.id,
         subject: NetworkSubjectView::Session {
-            id: subject_session(&request.subject).to_owned(),
+            id: request.session.clone(),
         },
         project: request.project.clone(),
         kind: NetworkTargetKindView::Host,

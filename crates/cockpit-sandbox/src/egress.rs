@@ -74,6 +74,14 @@ impl EgressDecisions {
             .find(|denied| denied.port == port && denied.host == host)
             .map(|denied| denied.request)
     }
+
+    /// Whether the owner decided on `host` on `port`: allowed by name or denied.
+    pub fn covers(&self, host: &str, port: u16) -> bool {
+        self.denial(host, port).is_some()
+            || self.allowed.iter().any(|entry| {
+                entry.port == port && matches!(&entry.target, Target::Name(name) if name == host)
+            })
+    }
 }
 
 /// The destinations a launcher refused for want of an entry, as it writes them to
@@ -81,7 +89,17 @@ impl EgressDecisions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EgressRequests {
     pub subject: Subject,
+    /// Counts the launcher's writes: a destination asked about again after a decision on it
+    /// was taken back makes the file differ from the one the daemon last read.
+    pub revision: u64,
     pub asked: Vec<AskedDestination>,
+}
+
+/// Whether a refused `host` on `port` is asked of the owner: a lower-case DNS name of at least
+/// two labels, as an entry may name it. The launcher says the owner is asked only of these,
+/// and the daemon files only these.
+pub fn is_askable_destination(host: &str, port: u16) -> bool {
+    port != 0 && host.contains('.') && normalized_name(host).as_deref() == Some(host)
 }
 
 /// One refused destination: a lower-case DNS name and a port, as the `CONNECT` named them.

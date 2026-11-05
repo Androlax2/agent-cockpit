@@ -22,8 +22,12 @@ Issue #674 (supersedes #641). Decided by Theo for the verbs, the TUI keys and th
   entry, at most 256 destinations) and `egress-decisions.json` (the daemon writes the owner's
   decisions, replaced atomically; the launcher reads it every 200 ms and before its first
   connection). The launcher holds no daemon socket, and a missing or unreadable decisions file
-  means no decisions: it fails closed. The daemon reads the requests every 250 ms and rewrites
-  the decisions at its start and after each decision. Code:
+  means no decisions: it fails closed. The daemon reads the live sessions' requests every
+  250 ms and rewrites the decisions at its start, after each decision and about every second
+  (an unchanged file is left alone), so a launch that staged decisions read just before one
+  was taken still gets it. A destination whose decision was taken back (a revoked grant) is
+  asked about again: the requests file carries a revision the launcher bumps on each write.
+  Code:
   `crates/cockpit-sandbox-launcher/src/proxy.rs`, `crates/cockpit-daemon/src/network.rs`.
 - **The refusal is still immediate.** The proxy answers `403` at once, adding "the owner is
   asked: `torlek network list` shows the request, `torlek network allow` lets it through", or,

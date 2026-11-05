@@ -122,11 +122,12 @@ pub struct OwnerDecision {
     pub through: Option<OwnerClient>,
 }
 
-/// One destination a subject was refused, and what the owner decided.
+/// One destination a session was refused, and what the owner decided. Only sessions ask
+/// today; the rows name the subject's kind for #862.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkRequest {
     pub id: i64,
-    pub subject: Subject,
+    pub session: String,
     pub project: String,
     pub host: String,
     pub port: u16,
@@ -153,10 +154,19 @@ pub struct NetworkGrant {
 /// Why a decision was not taken.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkRefusal {
-    NotFound { kind: &'static str, id: i64 },
-    AlreadyDecided { state: &'static str },
+    NotFound {
+        kind: &'static str,
+        id: i64,
+    },
+    AlreadyDecided {
+        state: &'static str,
+    },
     AlreadyRevoked,
-    TooSoon { wait_seconds: i64 },
+    TooSoon {
+        wait_seconds: i64,
+    },
+    /// Only a session asks: a check run's network requests are #862's.
+    NotASession,
 }
 
 impl std::fmt::Display for NetworkRefusal {
@@ -177,6 +187,9 @@ impl std::fmt::Display for NetworkRefusal {
                 "the network request appeared less than {NETWORK_ALLOW_GRACE_SECONDS} s ago; \
                  allow it again in {wait_seconds} s"
             ),
+            NetworkRefusal::NotASession => {
+                formatter.write_str("only a session's network requests are filed (#862)")
+            }
         }
     }
 }
@@ -237,7 +250,7 @@ pub async fn file_network_request(
     asked: &AskedDestination,
     now: i64,
 ) -> Result<Option<NetworkRequest>, NetworkError> {
-    let (subject_kind, subject_id) = subject_columns(subject);
+    let (subject_kind, subject_id) = subject_columns(subject)?;
     let port = i64::from(asked.port);
     let mut standing = write
         .query(
@@ -339,6 +352,44 @@ pub async fn allow_network_request(
         )
         .await;
     }
+    // Two sessions of the project asked before either was decided: the first "always" made
+    // the grant, which this one joins instead of making a second.
+    let mut granted = write
+        .query(
+            "SELECT id FROM sandbox_network_grants
+             WHERE project = ?1 AND host = ?2 AND port = ?3 AND revoked_at IS NULL",
+            (
+                request.project.as_str(),
+                request.host.as_str(),
+                i64::from(request.port),
+            ),
+        )
+        .await?;
+    let active: Option<i64> = match granted.next().await? {
+        Some(row) => Some(row.get(0)?),
+        None => None,
+    };
+    drop(granted);
+    let grant: i64 = match active {
+        Some(grant) => grant,
+        None => new_grant(write, &request, now, through).await?,
+    };
+    decided(
+        write,
+        "UPDATE sandbox_network_requests
+         SET state = 'allowed-always', decided_at = ?2, decided_through = ?3, grant_id = ?4
+         WHERE id = ?1",
+        (id, now, through, grant),
+    )
+    .await
+}
+
+async fn new_grant(
+    write: &WriteTransaction<'_>,
+    request: &NetworkRequest,
+    now: i64,
+    through: Option<&str>,
+) -> Result<i64, NetworkError> {
     let grant: i64 = write
         .prepare(
             "INSERT INTO sandbox_network_grants
@@ -350,20 +401,13 @@ pub async fn allow_network_request(
             request.project.as_str(),
             request.host.as_str(),
             i64::from(request.port),
-            id,
+            request.id,
             now,
             through,
         ))
         .await?
         .get(0)?;
-    decided(
-        write,
-        "UPDATE sandbox_network_requests
-         SET state = 'allowed-always', decided_at = ?2, decided_through = ?3, grant_id = ?4
-         WHERE id = ?1",
-        (id, now, through, grant),
-    )
-    .await
+    Ok(grant)
 }
 
 /// The owner denies request `id`: its session keeps being refused that destination, now
@@ -450,6 +494,7 @@ pub async fn egress_decisions(
     project: &str,
     subject: &Subject,
 ) -> Result<EgressDecisions, NetworkError> {
+    let (subject_kind, subject_id) = subject_columns(subject)?;
     let mut decisions = EgressDecisions::default();
     for grant in network_grants(connection, Some(project)).await? {
         decisions.allowed.push(AllowEntry {
@@ -460,7 +505,6 @@ pub async fn egress_decisions(
             },
         });
     }
-    let (subject_kind, subject_id) = subject_columns(subject);
     let mut rows = connection
         .query(
             &format!(
@@ -517,26 +561,26 @@ async fn decided(
     request_from(&row)
 }
 
-fn subject_columns(subject: &Subject) -> (&'static str, &str) {
+fn subject_columns(subject: &Subject) -> Result<(&'static str, &str), NetworkError> {
     match subject {
-        Subject::Session { session } => ("session", session.as_str()),
+        Subject::Session { session } => Ok(("session", session.as_str())),
+        Subject::Check { .. } => Err(NetworkError::Refused(NetworkRefusal::NotASession)),
     }
 }
 
 fn request_from(row: &Row) -> Result<NetworkRequest, NetworkError> {
     let subject_kind: String = row.get(1)?;
-    let subject = match subject_kind.as_str() {
-        "session" => Subject::Session {
-            session: row.get(2)?,
-        },
-        other => return Err(NetworkError::InvalidRow(format!("subject kind {other:?}"))),
-    };
+    if subject_kind != "session" {
+        return Err(NetworkError::InvalidRow(format!(
+            "subject kind {subject_kind:?}"
+        )));
+    }
     let state: String = row.get(6)?;
     let state = NetworkRequestState::parse(&state)
         .ok_or_else(|| NetworkError::InvalidRow(format!("request state {state:?}")))?;
     Ok(NetworkRequest {
         id: row.get(0)?,
-        subject,
+        session: row.get(2)?,
         project: row.get(3)?,
         host: row.get(4)?,
         port: port_from(row, 5)?,

@@ -304,7 +304,6 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Writes `contents` to a new owner-only file at `path`, replacing one an earlier launch left.
 /// Writes `contents` to `path`, owner-only, through a file beside it: a reader polling `path`
 /// sees the old contents or the new, never none (#674).
 pub(crate) fn replace_atomically(path: &Path, contents: &[u8]) -> std::io::Result<()> {
@@ -315,6 +314,7 @@ pub(crate) fn replace_atomically(path: &Path, contents: &[u8]) -> std::io::Resul
     std::fs::rename(&staged, path)
 }
 
+/// Writes `contents` to a new owner-only file at `path`, replacing one an earlier launch left.
 fn replace_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => {}

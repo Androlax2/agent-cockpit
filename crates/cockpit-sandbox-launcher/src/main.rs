@@ -115,7 +115,10 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
     let decisions = mount_dir.join(cockpit_sandbox::DECISIONS_FILE);
     proxy.load_decisions(&decisions);
     proxy.keep_decisions(decisions);
-    proxy.ask_through(mount_dir.join(cockpit_sandbox::REQUESTS_FILE));
+    // Only a session asks the owner; a check run's requests are #862's.
+    if matches!(spec.subject, cockpit_sandbox::Subject::Session { .. }) {
+        proxy.ask_through(mount_dir.join(cockpit_sandbox::REQUESTS_FILE));
+    }
     let serving = std::sync::Arc::clone(&proxy);
     std::thread::Builder::new()
         .name("egress-listener".to_owned())
