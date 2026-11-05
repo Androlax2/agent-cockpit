@@ -66,6 +66,16 @@ jobs:
           beta=$(gh issue view 57 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
           echo "alpha=$alpha" | tee -a "$GITHUB_OUTPUT"
           echo "beta=$beta" | tee -a "$GITHUB_OUTPUT"
+      # Before a tag exists: release.yml's notes refuse a gap whose issue is closed (#886).
+      - name: Check the known gaps an alpha's notes carry
+        if: steps.checklists.outputs.beta == 'open'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/release.py gap-issues | while read -r issue; do
+            echo "$issue=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')"
+          done > gap-issue-states
+          python3 tools/release.py known-gaps --issue-states gap-issue-states
       - name: Verify the open draft, freeze the snapshot and optionally tag
         id: next
         env:

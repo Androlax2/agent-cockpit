@@ -661,6 +661,31 @@ class PackageTests(PackagingTestCase):
             names,
         )
 
+    def test_the_bundle_readme_installs_the_bundle_s_own_version(self):
+        code, outputs, error = self.package()
+        self.assertEqual(code, 0, error)
+        readme = (Path(outputs["root"]) / "README.md").read_text()
+        self.assertEqual(re.findall(r"(?m)^\s*version=(.*)$", readme), ["0.1.0-alpha.7"])
+
+    def test_a_readme_without_one_install_version_line_is_refused(self):
+        for readme in ("# Torlek\n", "version=1\nversion=2\n"):
+            with self.subTest(readme=readme), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory)
+                (source / "LICENSE").write_text("license\n")
+                (source / "README.md").write_text(readme)
+                code, _, error = run(
+                    "package",
+                    "--version=0.1.0-alpha.7",
+                    "--channel=alpha",
+                    "--platform=linux-x86_64",
+                    "--revision=0123abcd",
+                    f"--binaries={self.binaries}",
+                    f"--out={source / 'dist'}",
+                    cwd=source,
+                )
+                self.assertEqual(code, 1)
+                self.assertIn("the install step needs one", error)
+
     def test_the_manifest_names_version_revision_components_and_contents(self):
         code, outputs, error = self.package()
         self.assertEqual(code, 0, error)
@@ -733,6 +758,18 @@ class VerifyInstallTests(PackagingTestCase):
         code, verified, error = self.verify(outputs["root"])
         self.assertEqual(code, 0, error)
         self.assertEqual(verified["version"], "0.1.0-alpha.7")
+
+    def test_a_readme_that_installs_another_version_fails_the_install_check(self):
+        _code, outputs, _error = self.package()
+        root = Path(outputs["root"])
+        readme = root / "README.md"
+        readme.write_text(readme.read_text().replace("0.1.0-alpha.7", "0.1.0-alpha.1"))
+        self.edit_manifest(
+            root, lambda m: m["contents"].update({"README.md": release.sha256_of(readme)})
+        )
+        code, _verified, error = self.verify(root)
+        self.assertEqual(code, 1)
+        self.assertIn("names ['0.1.0-alpha.1'], the bundle is 0.1.0-alpha.7", error)
 
     def test_the_unpacked_archive_runs_its_tui(self):
         code, outputs, error = self.package()
@@ -954,6 +991,79 @@ def pull_request_paths():
     )
     assert paths, "expected the pull_request trigger's paths"
     return re.findall(r"- (\S+)", paths[1])
+
+
+class KnownGapsTests(unittest.TestCase):
+    GAPS = "# Known gaps\n\nThis is an alpha.\n\n- **No macOS builds** (#568, #562).\n"
+
+    def known_gaps(self, gaps, states, version="0.1.0-alpha.7"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "docs").mkdir()
+            (root / release.KNOWN_GAPS).write_text(gaps)
+            (root / "states").write_text(states)
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                versioned = [] if version is None else ["--version", version]
+                code = release.main(
+                    ["known-gaps", *versioned, "--issue-states", str(root / "states")],
+                    cwd=root,
+                )
+            return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_the_notes_name_the_release_and_no_other(self):
+        code, notes, error = self.known_gaps(self.GAPS, "562=open\n568=open\n")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(notes, self.GAPS.replace("# Known gaps", "# Known gaps in 0.1.0-alpha.7"))
+        self.assertEqual(release.RELEASE_VERSION_PATTERN.findall(notes), ["0.1.0-alpha.7"])
+
+    def test_refused_gaps_name_the_rule(self):
+        cases = {
+            "a gap that links a closed issue": (
+                self.GAPS,
+                "562=closed\n568=open\n",
+                "#562 is closed",
+            ),
+            "a gap whose issue state was not read": (self.GAPS, "568=open\n", "#562 is of unknown"),
+            "a gap without an issue": (
+                self.GAPS + "- **Untracked.**\n",
+                "562=open\n568=open\n",
+                "links no issue",
+            ),
+            "a hard-coded release": (
+                self.GAPS + "\nFixes are planned for `0.1.0-alpha.2`.\n",
+                "562=open\n568=open\n",
+                "names 0.1.0-alpha.2",
+            ),
+            "another heading": ("## Gaps\n", "", "first line must be"),
+        }
+        for name, (gaps, states, refusal) in cases.items():
+            with self.subTest(name):
+                code, notes, error = self.known_gaps(gaps, states)
+                self.assertEqual(code, 1)
+                self.assertEqual(notes, "")
+                self.assertIn(refusal, error)
+
+    def test_the_repository_s_gaps_pass_while_their_issues_are_open(self):
+        issues = release.gap_issues(ROOT)
+        self.assertTrue(issues)
+        release.current_gaps({str(issue): "open" for issue in issues}, ROOT)
+
+    def test_without_a_version_the_gaps_are_checked_and_nothing_is_printed(self):
+        code, notes, error = self.known_gaps(self.GAPS, "562=open\n568=open\n", version=None)
+        self.assertEqual((code, notes), (0, ""), error)
+        code, _, error = self.known_gaps(self.GAPS, "562=closed\n568=open\n", version=None)
+        self.assertEqual(code, 1)
+        self.assertIn("#562 is closed", error)
+
+    def test_the_notes_and_the_tag_step_both_check_the_gaps(self):
+        prerelease = (ROOT / ".github/workflows/prerelease.yml").read_text()
+        notes = RELEASE_WORKFLOW.read_text().split("\n  notes:\n", 1)[1].split("\n  build:\n", 1)[0]
+        for workflow in (prerelease, notes):
+            self.assertIn("tools/release.py gap-issues", workflow)
+        self.assertIn("tools/release.py known-gaps --issue-states", prerelease)
+        self.assertIn('tools/release.py known-gaps --version "$VERSION"', notes)
+        self.assertNotIn("cat docs/KNOWN-GAPS.md", notes)
 
 
 class ReleaseTriggerTests(unittest.TestCase):

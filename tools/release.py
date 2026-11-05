@@ -11,6 +11,8 @@ Usage: release.py check-tag TAG --main REF --alpha-checklist open|closed
                           --binaries DIR --out DIR
        release.py verify-install ARCHIVE_ROOT --revision SHA
        release.py gate-gaps CHANNEL
+       release.py gap-issues
+       release.py known-gaps [--version V] --issue-states FILE
        release.py release-plan --version V --channel C
        release.py verify-gates --channel C --results JSON
 
@@ -92,6 +94,12 @@ exit 1
 """
 # Alpha notes carry the known gaps (RELEASING.md, Changelog); #97 writes the file.
 KNOWN_GAPS = "docs/KNOWN-GAPS.md"
+KNOWN_GAPS_HEADING = "# Known gaps"
+# The file names no release: known-gaps adds the one being released to the heading (#886).
+RELEASE_VERSION_PATTERN = re.compile(r"\b[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?")
+ISSUE_PATTERN = re.compile(r"#([0-9]+)")
+# The install step's one `version=` line; package writes the bundle's own version there (#885).
+README_VERSION_LINE = re.compile(r"(?m)^(?P<indent>[ \t]*)version=(?P<version>.*)$")
 
 # Report 13's release gate: each check, the release.yml job that proves it (None while
 # nothing does) and the channels it does not bind. A check without a job is a named gap that
@@ -387,6 +395,66 @@ def stamp(version, cwd):
     return {"version": version, "previous": old_version}
 
 
+def stamped_readme(text, version):
+    """The README as a bundle ships it: its install step names the bundle's own release."""
+    stamped, replaced = README_VERSION_LINE.subn(
+        lambda line: f"{line['indent']}version={version}", text
+    )
+    if replaced != 1:
+        raise Refusal(f"README.md: {replaced} `version=` lines, the install step needs one")
+    return stamped
+
+
+def refuse_other_install_version(root, version):
+    readme = root / "README.md"
+    named = [line["version"] for line in README_VERSION_LINE.finditer(readme.read_text())]
+    if named != [version]:
+        raise Refusal(f"{readme}: the install step names {named}, the bundle is {version}")
+
+
+def gap_lines(cwd):
+    """The known gaps' heading-less text and its list items."""
+    heading, _, body = (Path(cwd) / KNOWN_GAPS).read_text().partition("\n")
+    if heading != KNOWN_GAPS_HEADING:
+        raise Refusal(f"{KNOWN_GAPS}: the first line must be `{KNOWN_GAPS_HEADING}`")
+    return body, [line for line in body.splitlines() if line.startswith("- ")]
+
+
+def gap_issues(cwd):
+    """Every issue a known gap links, for the workflow to read its state."""
+    _, gaps = gap_lines(cwd)
+    return sorted({int(issue) for gap in gaps for issue in ISSUE_PATTERN.findall(gap)})
+
+
+def read_issue_states(path):
+    """`NUMBER=open|closed` lines, as the workflow writes them from `gh issue view`."""
+    states = {}
+    for line in Path(path).read_text().splitlines():
+        issue, _, state = line.partition("=")
+        states[issue] = state
+    return states
+
+
+def current_gaps(issue_states, cwd):
+    """The known gaps under their heading; refused when one is no longer a tracked, open gap."""
+    body, gaps = gap_lines(cwd)
+    problems = [
+        f"names {named}; the release step adds the version"
+        for named in sorted({match[0] for match in RELEASE_VERSION_PATTERN.finditer(body)})
+    ]
+    for gap in gaps:
+        issues = ISSUE_PATTERN.findall(gap)
+        if not issues:
+            problems.append(f"a gap links no issue: {gap[:60]}")
+        for issue in issues:
+            state = issue_states.get(issue) or "of unknown state"
+            if state != "open":
+                problems.append(f"#{issue} is {state}; a gap links open issues only")
+    if problems:
+        raise Refusal(f"{KNOWN_GAPS}: " + "; ".join(problems))
+    return body
+
+
 def sha256_of(path):
     with open(path, "rb") as contents:
         return hashlib.file_digest(contents, "sha256").hexdigest()
@@ -481,7 +549,10 @@ def package(version, channel, platform, revision, binaries, out, cwd):
         shutil.copyfile(source, target)
         target.chmod(0o755)
     for document in DOCUMENTS:
-        shutil.copyfile(Path(cwd) / document, staging / document)
+        text = (Path(cwd) / document).read_text()
+        if document == "README.md":
+            text = stamped_readme(text, version)
+        (staging / document).write_text(text)
     write_manifest(staging, version, channel, platform, revision)
     archive = Path(out) / f"{name}.tar.gz"
     # The gzip header's own timestamp is zeroed too, so a rebuild gives the same bytes.
@@ -508,6 +579,7 @@ def verify_install(root, revision):
             f"{manifest_file}: schema {manifest.get('schema')!r} is not {MANIFEST_SCHEMA}"
         )
     refuse_changed_contents(root, manifest)
+    refuse_other_install_version(root, manifest["version"])
     # Short and fresh: a clean home, and a socket path under macOS's 104-byte limit.
     home = tempfile.mkdtemp(prefix="torlek-home-", dir="/tmp")
     environment = {"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
@@ -731,6 +803,10 @@ def parse_arguments(arguments):
     verify_command.add_argument("root")
     verify_command.add_argument("--revision", required=True)
     commands.add_parser("gate-gaps").add_argument("channel")
+    commands.add_parser("gap-issues")
+    gaps_command = commands.add_parser("known-gaps")
+    gaps_command.add_argument("--version")
+    gaps_command.add_argument("--issue-states", required=True)
     plan_command = commands.add_parser("release-plan")
     plan_command.add_argument("--version", required=True)
     plan_command.add_argument("--channel", required=True)
@@ -781,6 +857,15 @@ def main(arguments, cwd=ROOT):
                 print(f"gap: {gap}")
             if gaps:
                 raise Refusal(f"{len(gaps)} release gate check(s) have no job; publishing waits")
+        elif options.command == "gap-issues":
+            for issue in gap_issues(cwd):
+                print(issue)
+        elif options.command == "known-gaps":
+            states = read_issue_states(options.issue_states)
+            gaps = current_gaps(states, cwd)
+            # Without a version this only checks: prerelease.yml runs it before a tag exists.
+            if options.version is not None:
+                print(f"{KNOWN_GAPS_HEADING} in {options.version}\n{gaps}", end="")
         elif options.command == "release-plan":
             print_outputs(release_plan(options.version, options.channel))
         elif options.command == "verify-gates":

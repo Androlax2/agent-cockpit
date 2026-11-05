@@ -340,6 +340,15 @@ A pre-release's notes compare with the release tag highest in version order belo
 ancestor of its commit, or with the base when there is none. Alpha notes carry a `Known gaps`
 list; beta notes name any upgrade step.
 
+Two release texts take their version from the release, so nobody edits them per tag:
+
+- `tools/release.py package` writes the bundle's own version into its README's install step, and
+  `verify-install` refuses a bundle whose README installs another one. The README on `main` asks
+  GitHub for the newest release instead.
+- `docs/KNOWN-GAPS.md` names no release. `tools/release.py known-gaps` heads it with the version
+  for the notes and refuses a named release, a gap without an issue, and a gap whose issue is not
+  open. `prerelease.yml` runs it before it creates an alpha tag; every dry run rehearses it.
+
 ## Who does what
 
 - Agent sessions write PRs with conventional titles; they never tag, dispatch the prerelease
