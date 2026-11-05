@@ -19,7 +19,7 @@ const GENEROUS: Duration = Duration::from_secs(60);
 pub const GITHUB_URL: &str = "https://github.com/example/app.git";
 
 /// The fake `git`. It appends its arguments to `$FAKE_GIT_LOG`, exits 128 when one argument
-/// equals `$FAKE_GIT_FAIL`, and runs `$FAKE_GIT_REAL`. For `push` and `fetch` only, it inserts
+/// equals `$FAKE_GIT_FAIL`, and runs `$FAKE_GIT_REAL`. For `push`, `fetch` and `ls-remote` only, it inserts
 /// two settings after the caller's leading `-c` pairs, where they win over the caller's own,
 /// so the transfer goes to the local bare repository while every check reads the configured
 /// GitHub URL.
@@ -45,7 +45,7 @@ while [ "$remaining" -gt 0 ]; do
     fi
     if [ "$inserted" = no ]; then
         case "$argument" in
-            push | fetch)
+            push | fetch | ls-remote)
                 set -- "$@" -c "url.file://$FAKE_GIT_GITHUB_DIR.insteadOf=$FAKE_GIT_GITHUB_URL" \
                     -c protocol.file.allow=always
                 ;;

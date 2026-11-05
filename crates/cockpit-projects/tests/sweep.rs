@@ -203,3 +203,105 @@ async fn an_empty_unpushed_commit_is_kept_as_unpushed() {
     assert_eq!(kept, Some(Kept::UnpushedCommits));
     assert!(clone.path.exists());
 }
+
+/// #882: `feature` pushed, rebased and force-pushed, with the clone's `origin/feature` left at
+/// the first push (as a push by another URL leaves it); the pull request is then
+/// squash-merged and the clone never fetches. Only origin itself knows the branch holds the
+/// clone's tip.
+fn push_with_a_stale_tracking_ref(clone: &Path) {
+    git(clone, &["push", "--quiet", "origin", "feature"]);
+    let first_push = git(clone, &["rev-parse", "HEAD"]);
+    git(
+        clone,
+        &["commit", "--quiet", "--amend", "-m", "local work, rebased"],
+    );
+    git(clone, &["push", "--quiet", "--force", "origin", "feature"]);
+    git(
+        clone,
+        &[
+            "update-ref",
+            "refs/remotes/origin/feature",
+            first_push.trim(),
+        ],
+    );
+}
+
+/// The squash merge of `feature` into `main` at origin, which the clone does not fetch.
+fn squash_merge_unfetched(root: &Path) {
+    std::fs::write(root.join("draft"), "work\n").unwrap();
+    git(root, &["add", "draft"]);
+    git(root, &["commit", "--quiet", "-m", "local work (#1)"]);
+}
+
+#[tokio::test]
+async fn a_squash_merged_branch_whose_tracking_ref_is_stale_is_removed() {
+    let scratch = Scratch::new();
+    let (database, root, clone) = clone_with_local_commit(&scratch).await;
+    push_with_a_stale_tracking_ref(&clone.path);
+    squash_merge_unfetched(&root);
+
+    let (_, kept) = sweep_clone(&database, &Git::from_path(), clone.id)
+        .await
+        .unwrap();
+
+    assert_eq!(kept, None);
+    assert!(!clone.path.exists());
+}
+
+#[tokio::test]
+async fn a_commit_after_the_pushed_tip_is_kept_as_unpushed_despite_the_stale_tracking_ref() {
+    let scratch = Scratch::new();
+    let (database, root, clone) = clone_with_local_commit(&scratch).await;
+    push_with_a_stale_tracking_ref(&clone.path);
+    squash_merge_unfetched(&root);
+    std::fs::write(clone.path.join("follow-up"), "more\n").unwrap();
+    git(&clone.path, &["add", "follow-up"]);
+    git(&clone.path, &["commit", "--quiet", "-m", "after the push"]);
+
+    let (_, kept) = sweep_clone(&database, &Git::from_path(), clone.id)
+        .await
+        .unwrap();
+
+    assert_eq!(kept, Some(Kept::UnpushedCommits));
+    assert!(clone.path.join("follow-up").exists());
+}
+
+#[tokio::test]
+async fn a_branch_on_a_remote_that_is_neither_github_nor_the_main_checkout_is_kept_as_unpushed() {
+    let scratch = Scratch::new();
+    let (database, _, clone) = clone_with_local_commit(&scratch).await;
+    let elsewhere = scratch.repository("elsewhere");
+    git(
+        &clone.path,
+        &["push", "--quiet", elsewhere.to_str().unwrap(), "feature"],
+    );
+    git(
+        &clone.path,
+        &["remote", "set-url", "origin", elsewhere.to_str().unwrap()],
+    );
+
+    let (_, kept) = sweep_clone(&database, &Git::from_path(), clone.id)
+        .await
+        .unwrap();
+
+    assert_eq!(kept, Some(Kept::UnpushedCommits));
+    assert!(clone.path.join("draft").exists());
+}
+
+#[tokio::test]
+async fn a_clone_whose_origin_cannot_be_asked_is_kept_with_the_reason() {
+    let scratch = Scratch::new();
+    let (database, root, clone) = clone_with_local_commit(&scratch).await;
+    let moved = scratch.path().join("moved");
+    std::fs::rename(&root, &moved).unwrap();
+
+    let (_, kept) = sweep_clone(&database, &Git::from_path(), clone.id)
+        .await
+        .unwrap();
+
+    let Some(Kept::Unreadable { reason }) = kept else {
+        panic!("{kept:?}");
+    };
+    assert!(reason.contains("origin could not be asked"), "{reason}");
+    assert!(clone.path.join("draft").exists());
+}

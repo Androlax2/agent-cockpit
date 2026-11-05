@@ -13,8 +13,8 @@ pub struct Pushed {
     pub remote_url: String,
 }
 
-/// Checkout settings that send a push elsewhere or change how it gets there: every HTTP
-/// setting, since GitHub needs none from the checkout.
+/// Checkout settings that send a push, or the sweep's question to origin, elsewhere or change
+/// how it gets there: every HTTP setting, since GitHub needs none from the checkout.
 const REDIRECTS: &str =
     r"^(remote\.origin\.(pushurl|proxy|vcs)|url\..*\.(push)?insteadof|http\..*)$";
 
@@ -40,6 +40,33 @@ pub async fn push(database: &Database, git: &Git, id: CheckoutId) -> Result<Push
         push_branch(&git, &stored.checkout.path)
     })
     .await
+}
+
+/// The checkout's own settings that [`REDIRECTS`] names, as Git lists them; `None` when it has
+/// none.
+pub(crate) fn configured_redirects(
+    git: &Git,
+    checkout: &std::path::Path,
+) -> Result<Option<String>, Error> {
+    // `--worktree` reads `.git/config.worktree` when that is enabled, `.git/config` otherwise.
+    for scope in ["--local", "--worktree"] {
+        let redirects = git.output(
+            checkout,
+            &[
+                arg("config"),
+                arg(scope),
+                arg("--includes"),
+                arg("--get-regexp"),
+                arg(REDIRECTS),
+            ],
+        )?;
+        if redirects.status.success() {
+            return Ok(Some(
+                String::from_utf8_lossy(&redirects.stdout).trim().to_owned(),
+            ));
+        }
+    }
+    Ok(None)
 }
 
 fn push_branch(git: &Git, checkout: &std::path::Path) -> Result<Pushed, Error> {
@@ -103,24 +130,10 @@ fn push_branch(git: &Git, checkout: &std::path::Path) -> Result<Pushed, Error> {
             ));
         }
     }
-    // `--worktree` reads `.git/config.worktree` when that is enabled, `.git/config` otherwise.
-    for scope in ["--local", "--worktree"] {
-        let redirects = git.output(
-            checkout,
-            &[
-                arg("config"),
-                arg(scope),
-                arg("--includes"),
-                arg("--get-regexp"),
-                arg(REDIRECTS),
-            ],
-        )?;
-        if redirects.status.success() {
-            return refuse(format!(
-                "the checkout's configuration redirects pushes: {}",
-                String::from_utf8_lossy(&redirects.stdout).trim()
-            ));
-        }
+    if let Some(redirects) = configured_redirects(git, checkout)? {
+        return refuse(format!(
+            "the checkout's configuration redirects pushes: {redirects}"
+        ));
     }
     let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
     git.run(
