@@ -4,11 +4,12 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cockpit_protocol::{Command, ErrorCode, ManagerPaneView, Outcome, ProtocolError, Reply};
 use cockpit_sessions::{Session, SessionId, SessionState, Sessions, StopTarget};
-use cockpit_tmux::{PaneId, PaneState, SessionLaunch, SessionName, Split};
+use cockpit_tmux::{PaneGeometry, PaneId, PaneState, SessionLaunch, SessionName, Split, Viewing};
 
 use crate::routes::{Route, WorkClass, refusal};
 
@@ -17,12 +18,16 @@ use crate::routes::{Route, WorkClass, refusal};
 const MANAGER: &str = "torlek";
 /// The viewer's share of the manager's width.
 const VIEWER_PERCENT: u8 = 70;
+/// The column's rows above a session open in the phone layout: its name and read-only or
+/// typing, the keys or the typed line, and what waits on the owner (#855).
+const PHONE_BAR_ROWS: u16 = 3;
 
 /// A handle on the private tmux server for the manager, or why there is none.
 pub struct Manager {
     /// The daemon's one handle, shared with the sessions, or why tmux is unavailable.
     tmux: Result<Arc<cockpit_tmux::Server>, String>,
-    /// Where the owner's configuration is read when the column is built (`tui.attention_bell`).
+    /// Where the owner's configuration is read: when the column is built
+    /// (`tui.attention_bell`) and at each fit (`tui.phone_below_columns`).
     environment: cockpit_config::Environment,
     /// Held while the manager is checked and built, so two `cockpit tui` at once build it
     /// once.
@@ -33,6 +38,9 @@ pub struct Manager {
     /// Held while the keys move, so a give-back between another focus's look at the active
     /// pane and its select cannot falsify `took_from_viewer`.
     focusing: Mutex<()>,
+    /// The last `manager-fit` found the window narrower than the owner's phone width: the
+    /// viewer attaches read-only (#855).
+    phone: AtomicBool,
 }
 
 impl Manager {
@@ -46,6 +54,7 @@ impl Manager {
             opening: Mutex::new(()),
             shown: Mutex::new(None),
             focusing: Mutex::new(()),
+            phone: AtomicBool::new(false),
         }
     }
 
@@ -70,8 +79,8 @@ impl Manager {
     }
 }
 
-/// `manager-open`, `manager-focus` and `session-show`; `routes.rs` sends only those here.
-/// Each runs tmux, so they take the bulk lane.
+/// `manager-open`, `manager-focus`, `manager-fit`, `session-show` and `session-type`;
+/// `routes.rs` sends only those here. Each runs tmux, so they take the bulk lane.
 pub(crate) fn route(command: Command, sessions: Arc<Sessions>, manager: Arc<Manager>) -> Route {
     let job = match command {
         Command::ManagerOpen {
@@ -80,8 +89,18 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>, manager: Arc<Mana
             viewer,
         } => job(tmux_blocking(move || open(&manager, dir, &column, &viewer))),
         Command::ManagerFocus { pane } => job(tmux_blocking(move || focus(&manager, pane))),
+        Command::ManagerFit { session_open } => job(tmux_blocking(move || {
+            fit(
+                &manager,
+                phone_below_columns(&manager.environment)?,
+                session_open,
+            )
+        })),
         Command::SessionShow { session } => {
             job(async move { show(&sessions, manager, &session).await })
+        }
+        Command::SessionType { session, text } => {
+            job(async move { type_line(&sessions, &manager, session, &text).await })
         }
         other => {
             tracing::error!(
@@ -156,11 +175,12 @@ fn open(
     };
     if created {
         let column = with_attention_bell(column, &manager.environment)?;
-        // A new viewer shows no session yet.
+        // A new viewer shows no session yet, beside the column: the desktop layout.
         *manager
             .shown
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        manager.phone.store(false, Ordering::SeqCst);
         let column_pane = tmux
             .new_session(&SessionLaunch {
                 name: name.clone(),
@@ -239,10 +259,10 @@ async fn show(
     if is_without_terminal(shown.state) {
         return describe(sessions, &shown).await;
     }
-    let viewer = {
+    {
         let manager = Arc::clone(&manager);
-        tmux_blocking(move || Ok(whole_manager(manager.tmux()?)?.viewer)).await?
-    };
+        tmux_blocking(move || whole_manager(manager.tmux()?).map(drop)).await?;
+    }
     if shown.state == SessionState::Asleep {
         shown = sessions
             .wake(&id, cockpit_sessions::WakeCause::Open)
@@ -251,8 +271,32 @@ async fn show(
     }
     let target = SessionName::new(id.as_str()).map_err(tmux_error)?;
     let showing = Arc::clone(&manager);
-    let attached =
-        tmux_blocking(move || Ok(showing.tmux()?.show_in_viewer(&viewer, &target))).await?;
+    let showing_id = id.clone();
+    let attached = tmux_blocking(move || {
+        let tmux = showing.tmux()?;
+        let panes = whole_manager(tmux)?;
+        // Under the fits' lock: a fit crossing the width between reading the layout and the
+        // attach would leave the viewer in the other one's input mode.
+        let _focusing = showing
+            .focusing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let is_phone = showing.phone.load(Ordering::SeqCst);
+        if is_phone {
+            // Stacked before the attach, so the session takes the size the owner sees (#338).
+            let column = tmux.pane_geometry(&panes.column).map_err(tmux_error)?;
+            arrange(tmux, &panes, column, true, true).map_err(tmux_error)?;
+        }
+        let attached = tmux.show_in_viewer(&panes.viewer, &target, viewing(is_phone));
+        if attached.is_ok() {
+            *showing
+                .shown
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(showing_id);
+        }
+        Ok(attached)
+    })
+    .await?;
     if let Err(error) = attached {
         // The session may have ended since it was read: its agent exited, or the owner
         // ended it. Then its terminal is gone, and the session is described instead.
@@ -265,10 +309,6 @@ async fn show(
         }
         return Err(tmux_error(error));
     }
-    *manager
-        .shown
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id);
     crate::sessions::session_reply(sessions, &shown)
         .await
         .map_err(|crate::approvals::Failed(error)| error)
@@ -312,6 +352,131 @@ fn focus(manager: &Manager, pane: ManagerPaneView) -> Result<Reply, ProtocolErro
     };
     tmux.select_pane(target).map_err(tmux_error)?;
     Ok(Reply::ManagerFocused { took_from_viewer })
+}
+
+/// The owner's `tui.phone_below_columns`, read for each fit: a broken owner configuration
+/// refuses the fit rather than guessing a width the owner did not choose.
+fn phone_below_columns(environment: &cockpit_config::Environment) -> Result<u16, ProtocolError> {
+    cockpit_config::load(environment, None, &[])
+        .map(|config| config.tui_phone_below_columns.value)
+        .map_err(|error| {
+            ProtocolError::new(
+                ErrorCode::Refused,
+                format!("the owner configuration cannot be read: {error}"),
+            )
+        })
+}
+
+/// Arranges the manager for its window's width (#855): narrower than `phone_below` it is the
+/// phone layout, otherwise the desktop's. The viewer's input follows, off on the phone; when
+/// it changes, the viewed session is shown again at the viewer's new size. The phone flag is
+/// stored only once all this is done.
+fn fit(manager: &Manager, phone_below: u16, session_open: bool) -> Result<Reply, ProtocolError> {
+    let tmux = manager.tmux()?;
+    let panes = whole_manager(tmux)?;
+    let _focusing = manager
+        .focusing
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let column = tmux.pane_geometry(&panes.column).map_err(tmux_error)?;
+    let is_phone = column.window_width < phone_below;
+    arrange(tmux, &panes, column, is_phone, session_open).map_err(tmux_error)?;
+    let viewer = tmux.pane_geometry(&panes.viewer).map_err(tmux_error)?;
+    if viewer.is_input_off != is_phone {
+        show_again(manager, tmux, &panes.viewer, viewing(is_phone)).map_err(tmux_error)?;
+    }
+    manager.phone.store(is_phone, Ordering::SeqCst);
+    Ok(Reply::ManagerFitted { phone: is_phone })
+}
+
+/// The layout for `is_phone` and `session_open`, from what tmux has, `column` read before:
+/// the column alone and zoomed for the phone's list, a bar `PHONE_BAR_ROWS` high above the
+/// viewer for an open session, the keys in the column either way; side by side on the
+/// desktop. Read from tmux rather than remembered, so a fit after a failed one or a daemon
+/// restart still undoes a phone layout, and changed only where it differs, so the resize it
+/// causes in the column brings a fit that changes nothing.
+fn arrange(
+    tmux: &cockpit_tmux::Server,
+    panes: &ManagerPanes,
+    column: PaneGeometry,
+    is_phone: bool,
+    session_open: bool,
+) -> Result<(), cockpit_tmux::Error> {
+    let is_column_full_width = column.pane_width == column.window_width;
+    match (is_phone, session_open) {
+        (false, _) if column.is_window_zoomed || is_column_full_width => {
+            tmux.place_side_by_side(&panes.column, 100 - VIEWER_PERCENT)?;
+        }
+        (false, _) => {}
+        (true, false) if column.is_window_zoomed && column.is_active => {}
+        (true, false) => {
+            if column.is_window_zoomed {
+                tmux.toggle_zoom(&panes.column)?;
+            }
+            tmux.toggle_zoom(&panes.column)?;
+        }
+        (true, true)
+            if !column.is_window_zoomed
+                && is_column_full_width
+                && column.pane_height == PHONE_BAR_ROWS => {}
+        (true, true) => tmux.stack_panes(&panes.column, PHONE_BAR_ROWS)?,
+    }
+    if is_phone && !column.is_active {
+        tmux.select_pane(&panes.column)?;
+    }
+    Ok(())
+}
+
+/// Shows the viewed session again with `viewing`, or turns the viewer's input to it when no
+/// session is viewed or the one viewed has lost its terminal.
+fn show_again(
+    manager: &Manager,
+    tmux: &cockpit_tmux::Server,
+    viewer: &PaneId,
+    viewing: Viewing,
+) -> Result<(), cockpit_tmux::Error> {
+    if let Some(shown) = manager.viewed() {
+        let shown_again = SessionName::new(shown.as_str())
+            .and_then(|target| tmux.show_in_viewer(viewer, &target, viewing));
+        match shown_again {
+            Ok(()) => return Ok(()),
+            // The session may have ended since it was shown: its terminal is gone.
+            Err(error) => {
+                tracing::warn!(%error, session = %shown, "cannot show the viewed session again");
+            }
+        }
+    }
+    tmux.set_viewing(viewer, viewing)
+}
+
+fn viewing(is_phone: bool) -> Viewing {
+    if is_phone {
+        Viewing::ReadOnly
+    } else {
+        Viewing::ReadWrite
+    }
+}
+
+/// Types `text` and Enter into `session`'s terminal, only while the viewer shows it: the
+/// phone layout's typing reaches what the owner sees and nothing else (#855).
+async fn type_line(
+    sessions: &Sessions,
+    manager: &Manager,
+    session: String,
+    text: &str,
+) -> Result<Reply, ProtocolError> {
+    let id = SessionId::parse(&session).map_err(|error| crate::sessions::protocol_error(&error))?;
+    if manager.viewed().as_ref() != Some(&id) {
+        return Err(ProtocolError::new(
+            ErrorCode::Conflict,
+            format!("{session} is not the session on screen: open it, then type"),
+        ));
+    }
+    sessions
+        .type_line(&id, text)
+        .await
+        .map_err(|error| crate::sessions::protocol_error(&error))?;
+    Ok(Reply::SessionAction { session })
 }
 
 /// The manager's column and viewer panes, or why it has none: only reopening the manager

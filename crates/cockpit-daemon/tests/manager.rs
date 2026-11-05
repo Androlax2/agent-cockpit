@@ -798,3 +798,387 @@ async fn a_manager_that_lost_its_viewer_is_built_again_on_the_next_open() {
     let panes = home.tmux(&["list-panes", "-t", "=torlek:", "-F", "#{pane_id}"]);
     assert_eq!(panes.lines().count(), 2, "{panes}");
 }
+
+// The phone layout (#855): `manager-fit` arranges the manager for its window's width, the
+// viewer shows a session read-only on the phone, and `session-type` types into it.
+
+fn fit(session_open: bool) -> Command {
+    Command::ManagerFit { session_open }
+}
+
+async fn fitted(client: &Connection, session_open: bool) -> bool {
+    match request(client, fit(session_open)).await {
+        Ok(Reply::ManagerFitted { phone }) => phone,
+        other => panic!("manager-fit: {other:?}"),
+    }
+}
+
+/// The owner's terminal, `columns` wide, is the manager window's size.
+fn resize_manager(home: &Home, columns: u16) {
+    home.tmux(&[
+        "resize-window",
+        "-t",
+        "=torlek:",
+        "-x",
+        &columns.to_string(),
+        "-y",
+        "30",
+    ]);
+}
+
+/// The column's `width height zoomed active`.
+fn column_geometry(home: &Home) -> String {
+    home.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        "=torlek:.0",
+        "#{pane_width} #{pane_height} #{window_zoomed_flag} #{pane_active}",
+    ])
+    .trim()
+    .to_owned()
+}
+
+fn is_attached(home: &Home, session: &str) -> bool {
+    home.tmux(&["list-clients", "-F", "#{session_name}"])
+        .lines()
+        .any(|attached| attached == session)
+}
+
+/// Whether tmux drops what is typed into the viewer: its input is off.
+fn is_viewer_read_only(home: &Home) -> bool {
+    home.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        "=torlek:.1",
+        "#{pane_input_off}",
+    ])
+    .trim()
+        == "1"
+}
+
+fn agent_screen(home: &Home, session: &str) -> String {
+    home.tmux(&["capture-pane", "-p", "-t", &format!("={session}:")])
+}
+
+/// A running session shown in the viewer, the manager `columns` wide and fitted first.
+async fn shown_session(home: &Home, client: &Connection, columns: u16) -> SessionView {
+    let root = home.project(client).await;
+    home.open_manager(client).await.unwrap();
+    resize_manager(home, columns);
+    fitted(client, false).await;
+    let started = session(
+        client,
+        Command::SessionNew {
+            dir: root.display().to_string(),
+            agent: Some("fake".to_owned()),
+            prompt: None,
+            clone: None,
+            model: None,
+            effort: None,
+        },
+    )
+    .await;
+    session(
+        client,
+        Command::SessionShow {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+    eventually("the viewer's client is attached to the session", || {
+        is_attached(home, &started.id)
+    });
+    started
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_desktop_wide_manager_keeps_its_layout_on_fit() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    home.open_manager(&client).await.unwrap();
+    let before = column_geometry(&home);
+
+    let phone = fitted(&client, false).await;
+
+    assert!(!phone);
+    assert_eq!(column_geometry(&home), before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_manager_narrower_than_sixty_columns_shows_the_column_alone_with_the_keys() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    home.open_manager(&client).await.unwrap();
+    home.tmux(&["select-pane", "-t", "=torlek:.1"]);
+    resize_manager(&home, 45);
+
+    let phone = fitted(&client, false).await;
+
+    assert!(phone);
+    assert_eq!(column_geometry(&home), "45 30 1 1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn on_the_phone_a_session_is_shown_read_only_below_a_bar_of_the_column() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    shown_session(&home, &client, 45).await;
+
+    let phone = fitted(&client, true).await;
+
+    assert!(phone);
+    assert_eq!(column_geometry(&home), "45 3 0 1");
+    assert!(is_viewer_read_only(&home));
+}
+
+/// The owner's terminal on the manager, a control-mode client attached while it lives, typing
+/// into the viewer the way a tap and a key on the phone would.
+struct OwnerTerminal {
+    process: std::process::Child,
+    name: String,
+}
+
+impl OwnerTerminal {
+    fn attach(home: &Home) -> OwnerTerminal {
+        let process = Process::new("tmux")
+            .arg("-S")
+            .arg(home.path().join("tmux.sock"))
+            .args(["-C", "attach-session", "-t", "=torlek"])
+            .env_remove("TMUX")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut name = String::new();
+        eventually("the owner's terminal is attached to the manager", || {
+            name = home
+                .tmux(&["list-clients", "-t", "=torlek", "-F", "#{client_name}"])
+                .trim()
+                .to_owned();
+            !name.is_empty()
+        });
+        OwnerTerminal { process, name }
+    }
+
+    fn type_into_viewer(&self, home: &Home, text: &str) {
+        for keys in [["-l", text], ["Enter", ""]] {
+            let mut arguments = vec!["send-keys", "-c", &self.name, "-t", "=torlek:.1"];
+            arguments.extend(keys.into_iter().filter(|key| !key.is_empty()));
+            home.tmux(&arguments);
+        }
+    }
+}
+
+impl Drop for OwnerTerminal {
+    fn drop(&mut self) {
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn on_the_phone_keys_typed_into_the_viewer_reach_no_pane_and_session_type_does() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let started = shown_session(&home, &client, 45).await;
+    fitted(&client, true).await;
+    let owner = OwnerTerminal::attach(&home);
+    // The owner taps the session: tmux gives the viewer the keys, as a click would.
+    home.tmux(&["select-pane", "-t", "=torlek:.1"]);
+
+    owner.type_into_viewer(&home, "stray-keystrokes");
+    request(
+        &client,
+        Command::SessionType {
+            session: started.id.clone(),
+            text: "typed-after-the-switch".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+
+    eventually("the typed line reaches the agent's terminal", || {
+        agent_screen(&home, &started.id).contains("typed-after-the-switch")
+    });
+    let screen = agent_screen(&home, &started.id);
+    assert!(!screen.contains("stray-keystrokes"), "{screen}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn on_the_phone_a_session_takes_the_size_of_the_viewer_below_the_bar_as_it_is_shown() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+
+    let started = shown_session(&home, &client, 45).await;
+
+    assert_eq!(column_geometry(&home), "45 3 0 1");
+    let window = home.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &format!("={}:", started.id),
+        "#{window_width} #{window_height}",
+    ]);
+    assert_eq!(window.trim(), "45 26");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_desktop_fit_undoes_a_phone_layout_the_daemon_does_not_remember() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    home.open_manager(&client).await.unwrap();
+    resize_manager(&home, 200);
+    // What a daemon that stopped on the phone leaves in tmux, which outlives it.
+    home.tmux(&["resize-pane", "-Z", "-t", "=torlek:.0"]);
+    home.tmux(&["select-pane", "-d", "-t", "=torlek:.1"]);
+
+    let phone = fitted(&client, false).await;
+
+    assert!(!phone);
+    assert_eq!(column_geometry(&home), "60 30 0 1");
+    assert!(!is_viewer_read_only(&home));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn on_the_desktop_a_session_is_shown_read_write() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+
+    shown_session(&home, &client, 200).await;
+
+    assert!(!is_viewer_read_only(&home));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn widening_the_phone_manager_puts_the_desktop_layout_back_and_the_viewer_read_write() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let started = shown_session(&home, &client, 45).await;
+    fitted(&client, true).await;
+    resize_manager(&home, 200);
+
+    let phone = fitted(&client, true).await;
+
+    assert!(!phone);
+    assert_eq!(column_geometry(&home), "60 30 0 1");
+    assert!(!is_viewer_read_only(&home));
+    eventually(
+        "the viewer's client is attached to the session again",
+        || is_attached(&home, &started.id),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_type_types_the_line_into_the_session_on_screen() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let started = shown_session(&home, &client, 45).await;
+    fitted(&client, true).await;
+
+    let typed = request(
+        &client,
+        Command::SessionType {
+            session: started.id.clone(),
+            text: "typed-from-the-phone".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        typed,
+        Reply::SessionAction {
+            session: started.id.clone()
+        }
+    );
+    eventually("the line reaches the agent's terminal", || {
+        agent_screen(&home, &started.id).contains("typed-from-the-phone")
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_type_into_a_session_not_on_screen_is_refused() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&client).await;
+    home.open_manager(&client).await.unwrap();
+    let started = session(
+        &client,
+        Command::SessionNew {
+            dir: root.display().to_string(),
+            agent: Some("fake".to_owned()),
+            prompt: None,
+            clone: None,
+            model: None,
+            effort: None,
+        },
+    )
+    .await;
+
+    let error = refusal(
+        request(
+            &client,
+            Command::SessionType {
+                session: started.id.clone(),
+                text: "never typed".to_owned(),
+            },
+        )
+        .await,
+    );
+
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert!(error.message.contains("open it"), "{}", error.message);
+    assert!(!agent_screen(&home, &started.id).contains("never typed"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_may_neither_fit_the_manager_nor_type_into_a_session() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let agent = Connection::open(daemon.agent_socket_path(), GENEROUS)
+        .await
+        .unwrap();
+
+    for command in [
+        fit(false),
+        Command::SessionType {
+            session: "s000000000001".to_owned(),
+            text: "x".to_owned(),
+        },
+    ] {
+        let error = refusal(request(&agent, command).await);
+        assert_eq!(error.code, ErrorCode::NotAuthorized, "{error:?}");
+    }
+}

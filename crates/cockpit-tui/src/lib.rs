@@ -7,6 +7,7 @@ mod bug_form;
 mod feed;
 mod form;
 mod pane;
+mod phone;
 mod projects;
 mod render;
 mod task_form;
@@ -19,6 +20,7 @@ pub use bug_form::{BugField, BugForm};
 pub use feed::{FeedEvent, follow_feed};
 pub use form::{Field, Form, FormOutcome, Place};
 pub use pane::{INPUT_GRACE, Pane, PaneOutcome, Shown, Typing};
+pub use phone::PHONE_TYPING_TIMEOUT;
 pub use render::{HELP, draw};
 pub use workflows::{HandoffEntry, WorkflowConfirm, Workflows, WorkflowsOutcome};
 

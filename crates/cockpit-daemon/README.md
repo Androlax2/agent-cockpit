@@ -303,4 +303,7 @@ builds it only when asked and no release installs it.
   manager tmux session with its column and viewer, opened once), `manager-focus` (the column
   takes the keys from the viewer, #317, and gives them back, answering whether the viewer
   had them, #345), `session-show` (waking an asleep session into
-  the viewer, refused before the manager is open), owner only.
+  the viewer, refused before the manager is open), `manager-fit` (the phone layout under
+  `tui.phone_below_columns`: the column alone, or a three-row bar over a read-only viewer;
+  back to side by side and read-write when wider, #855), `session-type` (a line typed into
+  the session on screen, refused for any other), owner only.

@@ -839,6 +839,19 @@ pub enum Command {
         #[serde(default = "ManagerPaneView::column")]
         pane: ManagerPaneView,
     },
+    /// Arrange the manager for its window's width (#855). Below the owner's
+    /// `tui.phone_below_columns` it takes the one-column phone layout: the column alone, or,
+    /// with `session_open`, a bar of the column above the session the viewer shows read-only.
+    /// At or above it, the desktop layout, untouched unless the phone layout had changed it.
+    ManagerFit {
+        session_open: bool,
+    },
+    /// Owner only: type `text`, then Enter, into the terminal of the session the manager's
+    /// viewer shows (#855): the phone layout's typing, which reaches no other session.
+    SessionType {
+        session: String,
+        text: String,
+    },
     /// A kind this version does not know. Read only: `decode_request` refuses it as
     /// `unknown-command`, and serializing it fails.
     #[serde(other, skip_serializing)]
@@ -1184,6 +1197,10 @@ pub enum Reply {
     /// viewer had them just before.
     ManagerFocused {
         took_from_viewer: bool,
+    },
+    /// `manager-fit` arranged the manager: `phone` says whether in the phone layout.
+    ManagerFitted {
+        phone: bool,
     },
 }
 

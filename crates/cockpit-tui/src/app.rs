@@ -5,13 +5,14 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use cockpit_protocol::{ChangeBatch, Command, ManagerPaneView, Reply, ViewArea};
+use cockpit_protocol::{ChangeBatch, Command, ManagerPaneView, Reply, SessionStateView, ViewArea};
 
 use crate::attention::StartSource;
 use crate::board::{Board, FeedError};
 use crate::bug_form::BugForm;
 use crate::form::{Form, FormOutcome};
 use crate::pane::{Pane, PaneOutcome};
+use crate::phone::{OpenOutcome, OpenSession};
 use crate::projects::{Projects, ProjectsOutcome};
 use crate::tasks::{TaskOutcome, Tasks};
 use crate::workflows::{Workflows, WorkflowsOutcome};
@@ -123,6 +124,15 @@ pub struct App {
     /// an app built without a choice rings.
     is_bell_muted: bool,
     taken_keys: TakenKeys,
+    /// The daemon's last `manager-fit` found the window narrower than the owner's phone
+    /// width (#855).
+    pub(crate) phone: bool,
+    /// The session open full screen on the phone.
+    pub(crate) phone_open: Option<OpenSession>,
+    /// Rows scrolled down the card the keys decide, on the phone.
+    pub(crate) phone_scroll: usize,
+    /// The terminal's width and height, as the runtime last drew it.
+    pub(crate) screen: Option<(u16, u16)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +217,43 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// What the runtime sends at start and on every resize: the daemon arranges the manager
+    /// for the window's width and answers whether that is the phone layout (#855).
+    pub fn fit_command(&self) -> Command {
+        Command::ManagerFit {
+            session_open: self.phone_open.is_some(),
+        }
+    }
+
+    /// The terminal's size, which the phone layout scrolls a card in.
+    pub fn set_screen(&mut self, width: u16, height: u16) {
+        self.screen = Some((width, height));
+    }
+
+    /// Whether the phone layout is drawn: on the phone, unless a form or view of the desktop
+    /// layout is open over the list.
+    pub fn is_phone_view(&self) -> bool {
+        self.phone_open.is_some() || (self.phone && self.is_list_on_screen())
+    }
+
+    fn is_list_on_screen(&self) -> bool {
+        self.form.is_none()
+            && self.bug_form.is_none()
+            && self.workflows.is_none()
+            && self.tasks.is_none()
+            && self.projects.is_none()
+    }
+
+    /// Whether the session open on the phone still has a terminal to read and type into.
+    pub(crate) fn is_phone_session_running(&self) -> bool {
+        self.phone_open.as_ref().is_some_and(|open| {
+            self.board
+                .sessions
+                .get(&open.session)
+                .is_some_and(|session| session.state == SessionStateView::Running)
+        })
+    }
+
     pub fn workflows(&self) -> Option<&Workflows> {
         self.workflows.as_ref()
     }
@@ -276,6 +323,29 @@ impl App {
                 Key::Char('?') if overlay == Overlay::Log => self.open(Overlay::Help),
                 Key::Char('L') if overlay == Overlay::Help => self.open(Overlay::Log),
                 _ => Step::used("unbound"),
+            };
+        }
+        // A session that ended, failed or fell asleep while open has no terminal: any key goes
+        // back to the list.
+        if self.phone_open.is_some() && !self.is_phone_session_running() {
+            return self.phone_back(now);
+        }
+        // The open session keeps every key: none reaches the list or a card hidden behind it.
+        if let Some(open) = &mut self.phone_open {
+            return match open.key(key, now) {
+                OpenOutcome::Back => self.phone_back(now),
+                // The bar is three rows high: the help is read from the list, full screen.
+                OpenOutcome::Help => {
+                    let back = self.phone_back(now);
+                    Step {
+                        send: back.send,
+                        ..self.open(Overlay::Help)
+                    }
+                }
+                OpenOutcome::Handled { used, send } => Step {
+                    used: Some(used),
+                    send: send.into_iter().map(|command| *command).collect(),
+                },
             };
         }
         if let Some(form) = &mut self.form {
@@ -378,6 +448,9 @@ impl App {
             _ => {}
         }
         if self.focus() == Focus::Pane {
+            if let Some(step) = self.phone_card_key(key) {
+                return step;
+            }
             return match self.pane.key(key, now) {
                 PaneOutcome::IgnoredInGrace => Step::used("approval-ignored-in-grace"),
                 PaneOutcome::Handled { used, send } => Step {
@@ -388,6 +461,54 @@ impl App {
             };
         }
         self.list_key(key)
+    }
+
+    /// On the phone, the card the keys decide scrolls with `j` and `k`, and its keys (`y`, `x`,
+    /// `i` and `s`) wait until its end is on screen: nothing is decided on unseen text (#855).
+    fn phone_card_key(&mut self, key: Key) -> Option<Step> {
+        if !self.is_phone_view() || self.pane.typing().is_some() || self.pane.shown().is_none() {
+            return None;
+        }
+        match key {
+            Key::Char('j') | Key::Down => {
+                self.phone_scroll = (self.phone_scroll + 1).min(self.phone_scroll_end());
+                Some(Step::used("phone-scroll"))
+            }
+            Key::Char('k') | Key::Up => {
+                self.phone_scroll = self.phone_scroll.saturating_sub(1);
+                Some(Step::used("phone-scroll"))
+            }
+            Key::Char('y' | 'x' | 'i' | 's') if !self.is_phone_card_seen() => {
+                Some(Step::used("phone-read-to-the-end"))
+            }
+            _ => None,
+        }
+    }
+
+    /// The scroll that brings the card's last row to the screen's bottom.
+    fn phone_scroll_end(&self) -> usize {
+        let Some((width, height)) = self.screen else {
+            return 0;
+        };
+        let rows = crate::phone::head_card_rows(self, usize::from(width));
+        rows.saturating_sub(crate::phone::body_height(self, usize::from(height)))
+    }
+
+    /// Whether the card's end is on screen; unknown before the first draw, so not seen.
+    fn is_phone_card_seen(&self) -> bool {
+        let Some((width, height)) = self.screen else {
+            return false;
+        };
+        let rows = crate::phone::head_card_rows(self, usize::from(width));
+        self.phone_scroll + crate::phone::body_height(self, usize::from(height)) >= rows
+    }
+
+    /// Back from the open session to the list: the cards come into sight, so the pane waits
+    /// out its grace again before a key decides one.
+    fn phone_back(&mut self, now: Instant) -> Step {
+        self.phone_open = None;
+        self.pane.focus(now);
+        Step::sending("phone-back", self.fit_command())
     }
 
     fn list_key(&mut self, key: Key) -> Step {
@@ -604,6 +725,9 @@ impl App {
             Reply::ManagerFocused { took_from_viewer } => {
                 send = self.keys_moved(command, took_from_viewer, now);
             }
+            Reply::ManagerFitted { phone } => {
+                send = self.fitted(command, phone, now);
+            }
             Reply::Providers { providers } => {
                 if let Some(form) = &mut self.form {
                     form.set_agents(providers);
@@ -631,6 +755,10 @@ impl App {
                     Command::SessionEnd { .. } => Some("exited"),
                     _ => Some("changed"),
                 };
+                if what == Some("opened") && self.phone && self.is_list_on_screen() {
+                    self.phone_open = Some(OpenSession::read_only(session.id.clone()));
+                    send = Some(self.fit_command());
+                }
                 match what {
                     Some(what) => {
                         self.note(format!("{what} {} in {}", session.id, session.working_dir));
@@ -733,7 +861,11 @@ impl App {
     /// nothing waits, keys taken from the viewer go back to it (#345).
     fn follow_queue(&mut self, now: Instant) -> Option<Command> {
         let was_showing = self.pane.shown().is_some();
+        let shown_before = self.pane.shown().cloned();
         self.pane.sync(&self.board, now);
+        if self.pane.shown() != shown_before.as_ref() {
+            self.phone_scroll = 0;
+        }
         match (was_showing, self.pane.shown().is_some()) {
             (false, true) => {
                 self.focus = Focus::Pane;
@@ -784,6 +916,24 @@ impl App {
         self.give_keys_back()
     }
 
+    /// The daemon arranged the manager for `command`. Crossing the phone width redraws every
+    /// card, so the pane waits out its grace again; on the phone the column has the keys and
+    /// keeps them. A fit for a session no longer open, or one opened since, is sent again.
+    fn fitted(&mut self, command: &Command, phone: bool, now: Instant) -> Option<Command> {
+        if phone != self.phone {
+            self.pane.focus(now);
+            self.phone_scroll = 0;
+        }
+        self.phone = phone;
+        if !phone {
+            self.phone_open = None;
+            return None;
+        }
+        self.keep_keys();
+        let is_current = *command == self.fit_command();
+        (!is_current).then(|| self.fit_command())
+    }
+
     /// Keys the owner now uses in the column are theirs: none go back to the viewer.
     fn keep_keys(&mut self) {
         if self.taken_keys == TakenKeys::FromViewer {
@@ -801,7 +951,8 @@ impl App {
             || self.tasks.is_some()
             || self.projects.is_some()
             || self.overlay.is_some();
-        if is_owner_in_column {
+        // On the phone the viewer reads only: keys there would reach nothing.
+        if is_owner_in_column || self.phone {
             self.keep_keys();
         }
         if self.taken_keys != TakenKeys::FromViewer {

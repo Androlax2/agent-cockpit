@@ -109,6 +109,30 @@ remains reachable with Tab outside the task form.
   to it, sender and delivery state included, on one plain line until the card has a design
   (#410).
 
+## Phone layout (#855)
+
+Narrower than `tui.phone_below_columns` (60 by default), the TUI is one column, for a phone
+over SSH. The TUI asks the daemon to fit the manager (`manager-fit`) at start, on each resize
+and when a session opens or closes; the daemon answers whether the window is a phone's.
+
+- **Cards first.** The request the pane shows, then the other waiting requests and the
+  agents' own questions, each a full-width card with its command wrapped whole, never
+  folded. Below them, one line per session: project, state, doing, `!` or `?` when it
+  needs the owner. The hint line picks the longest variant that fits.
+- **The same decision.** `y` and `x` are the pane's keys, so an approval names the same
+  revision and digest and records the TUI as on the desktop. A card taller than the screen
+  scrolls with `j`/`k`, and its keys (`y`, `x`, `i`, `s`) wait until its end has been on
+  screen.
+- **A session opens full screen and read-only.** Enter shows it under a three-row bar; the
+  viewer's input is off, so keys reach no pane. `i` types one line in the bar and Enter sends
+  it (`session-type`, refused unless that session is on screen); Esc, a minute without a key
+  ([`PHONE_TYPING_TIMEOUT`]) or leaving the session returns to read-only. No key in the open
+  view decides a request; the bar says how many wait, and Esc goes back to them, the pane's
+  grace starting again. `?` goes back to the list for the help, full screen. A session that
+  ended or fell asleep while open says it has no terminal, and any key goes back.
+- Widening the window past the threshold puts the desktop layout back, the viewer
+  read-write.
+
 ## Tests
 
 - `tests/feed.rs`: the list rendered from a recorded change feed, grouped by project.
@@ -117,6 +141,9 @@ remains reachable with Tab outside the task form.
   with `subscribe` the only request; no list in the refresh; late answers ignored; a lost
   feed kept on the status line.
 - `tests/pane.rs`: the pane's input model with an injected clock.
+- `tests/phone.rs` (#855): the phone layout at 40 and 60 columns, the whole command on a
+  card, one line per session, the same approval and decline as the desktop, `y` waiting for
+  a tall card's end, read-only keys sending nothing and `i` typing a line.
 - `tests/keys.rs`: open, next needing you, restart and exit after `y`, help, the log view,
   and every key counted as a named command.
 - `tests/form.rs`: the `N` form, from a fresh install's one project to `session-new`.

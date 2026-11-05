@@ -18,7 +18,7 @@ grants: owner settings are inputs to `cockpit-authorization`, which decides.
 | Project config | `<project>/.torlek/config.toml` | describing settings only (`workflow.preset`, `[[checks]]`, `[execution]`, `[needs]`, `[results]`) |
 | Overrides | `--set key=value` (TOML value) | `projects.trusted`, `workflow.preset` |
 
-A project file that sets an owner setting (`projects`, `start_files`, `tasks`, `sessions`, `storage`, `memory`) fails with its file and
+A project file that sets an owner setting (`projects`, `start_files`, `tasks`, `sessions`, `storage`, `memory`, `tui`) fails with its file and
 line: repository configuration describes requirements, owner settings grant. An owner file
 that declares `[[checks]]` fails the same way: a check describes a project (#313); each needs
 a `name` and a `command`, and a name declared twice fails at its second line. The project's
@@ -82,6 +82,19 @@ keep for it; the changes it missed reach it later in fewer, merged batches.
 `agentless_session_minutes` is how long a session may stay running after its agent exited,
 kept alive by processes the agent started, before it shows as waiting on the owner with the
 command that ends it. Nothing is ended automatically.
+
+## TUI
+
+How `torlek tui` looks and sounds. `attention_bell` (#682) is read when the daemon builds the
+manager session; `phone_below_columns` (#855) each time the TUI's window changes size: below
+it, the TUI takes its one-column phone layout (cards first, one line per session, a session
+opened full screen and read-only).
+
+```toml
+[tui]
+attention_bell = true     # ring the terminal bell when a session needs the owner
+phone_below_columns = 60  # 0 never switches
+```
 
 ## Start files
 

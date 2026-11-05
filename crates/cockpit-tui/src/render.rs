@@ -17,7 +17,7 @@ use crate::app::{App, Confirm, Focus, Overlay};
 use crate::board::Board;
 use crate::bug_form::{BugField, BugForm};
 use crate::form::{Field, Form, Place};
-use crate::pane::{Pane, Shown, Typing};
+use crate::pane::{Shown, Typing};
 
 /// The help overlay's text: every key the basic TUI has.
 pub const HELP: &str = "\
@@ -51,6 +51,14 @@ Approval pane (Tab moves between the list and the pane)
   i                  type a line for a command waiting for input; Enter sends it
   s                  stuck on the guide step: type why, Enter sends it
   Keys are ignored for a moment after a request appears or the pane takes focus.
+Phone layout (narrower than tui.phone_below_columns, 60 columns by default)
+  Requests and questions come first, each whole; sessions one line each below
+  j / k              scroll a long request; y and x wait until its end shows
+  Tab                between the request and the sessions
+  Enter              open the selected session full screen, read-only
+  i                  type into it: Enter sends the line; Esc, leaving it or
+                     a minute without a key makes it read-only again
+  Esc                back to the list
 Bug reports
   B                  the bug report drafts waiting for you; review and send them
                      with torlek bug-report show ID and send ID
@@ -62,6 +70,10 @@ Elsewhere
 
 pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
     let area = frame.area();
+    if app.overlay().is_none() && app.is_phone_view() {
+        crate::phone::draw(app, frame, now);
+        return;
+    }
     if let Some(overlay) = app.overlay() {
         let (title, text) = match overlay {
             Overlay::Help => ("Help", HELP.to_owned()),
@@ -99,7 +111,7 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
     frame.render_widget(Paragraph::new(status_line(app)), status);
 }
 
-fn status_line(app: &App) -> String {
+pub(crate) fn status_line(app: &App) -> String {
     match (&app.confirm, &app.failure, &app.feed_problem) {
         (Some(Confirm::Restart(session)), ..) => format!("restart {session}? y to confirm"),
         (Some(Confirm::Exit(session)), ..) => format!("exit {session}? y to confirm"),
@@ -246,7 +258,7 @@ pub(crate) fn wrapped(text: &str, width: usize, indent: &str) -> Vec<String> {
     rows
 }
 
-fn columns(text: &str) -> usize {
+pub(crate) fn columns(text: &str) -> usize {
     ratatui::text::Span::raw(text).width()
 }
 
@@ -348,7 +360,7 @@ fn coordination_line(session: &SessionView, is_selected: bool) -> Option<String>
 }
 
 /// `text` cut to one row of `width` columns, ending in `…` where it was cut.
-fn truncated(text: &str, width: usize) -> String {
+pub(crate) fn truncated(text: &str, width: usize) -> String {
     if columns(text) <= width {
         return text.to_owned();
     }
@@ -467,7 +479,7 @@ fn draw_pane(app: &App, frame: &mut Frame<'_>, area: Rect, now: Instant) {
             .runs
             .iter()
             .find(|run| run.id == *id)
-            .map(|run| run_lines(run, pane))
+            .map(|run| run_lines(run, pane.is_expanded()))
             .unwrap_or_default(),
         Some(Shown::Guide { id, .. }) => board
             .guides
@@ -478,12 +490,7 @@ fn draw_pane(app: &App, frame: &mut Frame<'_>, area: Rect, now: Instant) {
         None => Vec::new(),
     };
     if let Some((typing, typed)) = pane.typing() {
-        let prompt = match typing {
-            Typing::Input => "Line for the command",
-            Typing::Answer => "Answer",
-            Typing::StuckNote => "Stuck because",
-        };
-        lines.push(format!("{prompt}: {typed}_   (Enter sends, Esc cancels)"));
+        lines.push(typing_line(typing, typed));
     } else if pane.in_grace(now) {
         lines.push("Read it first: keys work again in a moment.".to_owned());
     } else {
@@ -502,7 +509,17 @@ fn draw_pane(app: &App, frame: &mut Frame<'_>, area: Rect, now: Instant) {
     );
 }
 
-fn pane_keys(shown: Option<&Shown>) -> &'static str {
+/// What the owner types into the pane, with its prompt.
+pub(crate) fn typing_line(typing: Typing, typed: &str) -> String {
+    let prompt = match typing {
+        Typing::Input => "Line for the command",
+        Typing::Answer => "Answer",
+        Typing::StuckNote => "Stuck because",
+    };
+    format!("{prompt}: {typed}_   (Enter sends, Esc cancels)")
+}
+
+pub(crate) fn pane_keys(shown: Option<&Shown>) -> &'static str {
     match shown {
         Some(Shown::Run {
             waiting_for_input: true,
@@ -515,7 +532,8 @@ fn pane_keys(shown: Option<&Shown>) -> &'static str {
     }
 }
 
-fn run_lines(run: &RunRequestView, pane: &Pane) -> Vec<String> {
+/// A run request's lines; `is_expanded` shows the whole command instead of its folded start.
+pub(crate) fn run_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> {
     let waiting = crate::pane::waits_for_input(run);
     let mut lines = vec![format!(
         "{} {} from {}{}",
@@ -538,7 +556,7 @@ fn run_lines(run: &RunRequestView, pane: &Pane) -> Vec<String> {
     };
     lines.push(format!("Directory: {}{outside}", run.shown_cwd.text));
     lines.push(format!("Reason: {}", run.shown_reason.text));
-    match (&run.folded_command, pane.is_expanded()) {
+    match (&run.folded_command, is_expanded) {
         (Some(folded), false) => {
             lines.push(format!("Command: {}", folded.preview));
             lines.push(format!(
@@ -615,7 +633,7 @@ fn hidden_name(kind: HiddenView) -> &'static str {
     }
 }
 
-fn guide_lines(guide: &GuideView) -> Vec<String> {
+pub(crate) fn guide_lines(guide: &GuideView) -> Vec<String> {
     let mut lines = vec![format!(
         "Guide {} from {}: {}",
         guide.id, guide.session, guide.title.text

@@ -79,6 +79,26 @@ pub enum PaneState {
     },
 }
 
+/// How the viewer's client attaches: typing reaches the session, or nothing typed does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Viewing {
+    ReadWrite,
+    ReadOnly,
+}
+
+/// A pane's size, its window's, whether the window is zoomed, whether the pane is the
+/// window's active one and whether its input is off ([`Viewing::ReadOnly`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaneGeometry {
+    pub pane_width: u16,
+    pub pane_height: u16,
+    pub window_width: u16,
+    pub window_height: u16,
+    pub is_window_zoomed: bool,
+    pub is_active: bool,
+    pub is_input_off: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaneInfo {
     pub id: PaneId,
@@ -418,11 +438,27 @@ impl Server {
     /// tmux rewraps a line wider than the viewer and the client draws a screen that lost
     /// lines. `window-size` is unset again so the window follows the viewer afterwards.
     /// Why: `docs/decisions/2026-11-01-338-tmux-viewer-sized-before-attach.md`.
-    pub fn show_in_viewer(&self, viewer: &PaneId, session: &SessionName) -> Result<(), Error> {
+    ///
+    /// [`Viewing::ReadOnly`] turns the viewer pane's input off (`select-pane -d`): tmux drops
+    /// every key typed into it before the client sees one (#855). Not the client's own
+    /// `read-only` flag: tmux then refuses every `send-keys` while that client is the most
+    /// recently active, which would stop messages reaching the session shown.
+    /// [`Viewing::ReadWrite`] turns it on again. Neither moves the keys to another pane.
+    pub fn show_in_viewer(
+        &self,
+        viewer: &PaneId,
+        session: &SessionName,
+        viewing: Viewing,
+    ) -> Result<(), Error> {
         let (columns, rows) = self.pane_size(viewer)?;
         let (columns, rows) = (columns.to_string(), rows.to_string());
         let window = session.target();
         let mut arguments = words(&[
+            "select-pane",
+            input_flag(viewing),
+            "-t",
+            viewer.as_str(),
+            ";",
             "resize-window",
             "-t",
             &window,
@@ -446,6 +482,112 @@ impl Server {
         ]);
         arguments.extend(pane_command(&self.attach_command(session))?);
         self.run(&arguments).map(drop)
+    }
+
+    /// Turns `pane`'s input on or off as [`Server::show_in_viewer`] does, without showing a
+    /// session in it again.
+    pub fn set_viewing(&self, pane: &PaneId, viewing: Viewing) -> Result<(), Error> {
+        self.run(&words(&[
+            "select-pane",
+            input_flag(viewing),
+            "-t",
+            pane.as_str(),
+        ]))
+        .map(drop)
+    }
+
+    /// Where `pane` stands in its window, read in one tmux command.
+    pub fn pane_geometry(&self, pane: &PaneId) -> Result<PaneGeometry, Error> {
+        let arguments = words(&[
+            "display-message",
+            "-p",
+            "-t",
+            pane.as_str(),
+            "#{pane_width} #{pane_height} #{window_width} #{window_height} \
+             #{window_zoomed_flag} #{pane_active} #{pane_input_off}",
+        ]);
+        let printed = self.run(&arguments)?;
+        let printed = String::from_utf8_lossy(&printed);
+        let numbers: Option<Vec<u16>> = printed
+            .split_whitespace()
+            .map(|word| word.parse::<u16>().ok())
+            .collect();
+        match numbers.as_deref() {
+            Some(
+                &[
+                    pane_width,
+                    pane_height,
+                    window_width,
+                    window_height,
+                    zoomed,
+                    active,
+                    input_off,
+                ],
+            ) if zoomed <= 1 && active <= 1 && input_off <= 1 => Ok(PaneGeometry {
+                pane_width,
+                pane_height,
+                window_width,
+                window_height,
+                is_window_zoomed: zoomed == 1,
+                is_active: active == 1,
+                is_input_off: input_off == 1,
+            }),
+            _ => Err(Error::UnexpectedOutput {
+                arguments,
+                output: printed.into_owned(),
+            }),
+        }
+    }
+
+    /// Zooms `pane` when its window is not zoomed, unzooms its window when it is: tmux's
+    /// `resize-pane -Z`. Zooming also makes `pane` the active one.
+    pub fn toggle_zoom(&self, pane: &PaneId) -> Result<(), Error> {
+        self.run(&words(&["resize-pane", "-Z", "-t", pane.as_str()]))
+            .map(drop)
+    }
+
+    /// Lays the panes of `first`'s window out one above the other, in pane order, `first`
+    /// on top and `rows` high; the others share the rest. Unzooms the window first.
+    pub fn stack_panes(&self, first: &PaneId, rows: u16) -> Result<(), Error> {
+        let rows = rows.to_string();
+        self.run(&words(&[
+            "select-layout",
+            "-t",
+            first.as_str(),
+            "even-vertical",
+            ";",
+            "resize-pane",
+            "-t",
+            first.as_str(),
+            "-y",
+            &rows,
+        ]))
+        .map(drop)
+    }
+
+    /// Lays the panes of `first`'s window out side by side, in pane order, `first` on the
+    /// left holding `percent` of the width. Unzooms the window first.
+    pub fn place_side_by_side(&self, first: &PaneId, percent: u8) -> Result<(), Error> {
+        if !(1..=99).contains(&percent) {
+            return Err(Error::InvalidArgument {
+                what: "pane width (1-99 percent)",
+                value: percent.to_string(),
+            });
+        }
+        let width = format!("{percent}%");
+        self.run(&words(&[
+            "select-layout",
+            "-t",
+            first.as_str(),
+            "even-horizontal",
+            ";",
+            "resize-pane",
+            "-t",
+            first.as_str(),
+            "-x",
+            &width,
+        ]))
+        .map(drop)
     }
 
     /// A pane's width and height.
@@ -693,4 +835,12 @@ fn write_private_file(path: &Path, contents: &str) -> Result<(), Error> {
     file.write_all(contents.as_bytes())
         .map_err(Error::io("write", &staging))?;
     fs::rename(&staging, path).map_err(Error::io("replace", path))
+}
+
+/// `select-pane`'s flag for a pane's input: `-e` on, `-d` off.
+fn input_flag(viewing: Viewing) -> &'static str {
+    match viewing {
+        Viewing::ReadWrite => "-e",
+        Viewing::ReadOnly => "-d",
+    }
 }

@@ -286,7 +286,7 @@ fn handled(used: &'static str, send: Option<Command>) -> PaneOutcome {
 
 /// What waits on the owner, in the daemon's queue order (a command waiting for input, then
 /// asking requests oldest first), then guides.
-fn waiting(board: &Board) -> impl Iterator<Item = Shown> + '_ {
+pub(crate) fn waiting(board: &Board) -> impl Iterator<Item = Shown> + '_ {
     board
         .runs
         .iter()

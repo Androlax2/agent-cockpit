@@ -5,7 +5,7 @@ mod common;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use cockpit_tmux::{Error, PaneId, PaneState, SessionLaunch, SessionName, Split};
+use cockpit_tmux::{Error, PaneId, PaneState, SessionLaunch, SessionName, Split, Viewing};
 use common::{TestServer, eventually, shell};
 
 fn screen(fixture: &TestServer, pane: &PaneId) -> String {
@@ -168,7 +168,7 @@ fn the_viewer_pane_attaches_to_an_agent_session_nested() {
 
     fixture
         .server
-        .show_in_viewer(&viewer, &agent)
+        .show_in_viewer(&viewer, &agent, Viewing::ReadWrite)
         .expect("respawns the viewer");
 
     eventually("a client is attached to the agent session", || {

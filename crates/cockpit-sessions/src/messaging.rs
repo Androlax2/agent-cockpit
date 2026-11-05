@@ -65,6 +65,39 @@ impl Sessions {
         self.act(id, Some(message), addressed).await
     }
 
+    /// Types `text`, then Enter, into the agent's terminal, as the owner typing into a
+    /// viewer attached to it would (#855): no provider transport and no activity check, but
+    /// only into a running session and only printable text.
+    pub async fn type_line(&self, id: &SessionId, text: &str) -> Result<(), Error> {
+        if text.chars().any(char::is_control) {
+            return Err(Error::InvalidMessage {
+                reason: "type printable text: no control characters or line breaks",
+            });
+        }
+        let session = self.get(id).await?;
+        if session.state != SessionState::Running {
+            return Err(Error::WrongState {
+                session: id.clone(),
+                state: session.state,
+                operation: "type into its terminal",
+            });
+        }
+        let tmux = self.tmux.clone();
+        let name = terminal_name(id)?;
+        let text = text.to_owned();
+        self.blocking("type into the agent's terminal", move || {
+            let tmux = tmux.map_err(|reason| Error::TmuxUnavailable { reason })?;
+            let pane = agent_pane(&tmux, &name)?;
+            let mut keys = Vec::new();
+            if !text.is_empty() {
+                keys.push(Keystroke::Text(&text));
+            }
+            keys.push(Keystroke::Enter);
+            tmux.send_keys(&pane, &keys).map_err(Error::Tmux)
+        })
+        .await
+    }
+
     /// Interrupts the turn without ending the agent or changing the session's lifecycle.
     pub async fn cancel(&self, id: &SessionId) -> Result<(), Error> {
         self.act(id, None, Addressed::Owner).await
