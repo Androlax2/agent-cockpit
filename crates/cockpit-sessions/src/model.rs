@@ -340,6 +340,8 @@ pub struct TickReport {
     /// Sessions whose agent exited by itself with a failure status, now failed (#632).
     pub failed: Vec<SessionId>,
     pub slept: Vec<SessionId>,
+    /// Running sessions whose tmux session is gone, now failed and resumable (#844).
+    pub terminal_lost: Vec<SessionId>,
     /// Asleep sessions nobody woke within the expiry, now ended.
     pub expired: Vec<SessionId>,
     /// Sessions whose deferred restart ran once their agent waited at its prompt.

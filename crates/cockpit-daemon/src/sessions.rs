@@ -517,6 +517,9 @@ fn log_tick(report: &cockpit_sessions::TickReport) {
     for id in &report.failed {
         tracing::warn!(session = %id, "a session's agent exited with a failure; it failed");
     }
+    for id in &report.terminal_lost {
+        tracing::warn!(session = %id, "a session's terminal is gone; it failed");
+    }
     for id in &report.slept {
         tracing::info!(session = %id, "an idle session went to sleep");
     }

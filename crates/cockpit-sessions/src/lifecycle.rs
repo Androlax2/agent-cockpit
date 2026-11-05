@@ -25,9 +25,9 @@ pub use messaging::visible_line;
 use crate::model::{LaunchPurpose, validate_link};
 use crate::store::{self, NewSession};
 use crate::{
-    AgentExit, AgentState, Ender, Error, LaunchKind, QuestionSource, RestartAll, Restored, Session,
-    SessionId, SessionReport, SessionState, Settings, SleepRefusal, StartRequest, StopTarget,
-    TickReport, WakeCause,
+    AgentExit, AgentState, Ender, Error, Launch, LaunchKind, QuestionSource, RestartAll, Restored,
+    Session, SessionId, SessionReport, SessionState, Settings, SleepRefusal, StartRequest,
+    StopTarget, TickReport, WakeCause,
 };
 
 /// The variable that hands the agent its one-time launch token (report 17).
@@ -1051,6 +1051,17 @@ impl Sessions {
                     continue;
                 }
             };
+            match self.fail_if_terminal_lost(&session).await {
+                Ok(Some(_)) => {
+                    report.terminal_lost.push(id);
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    report.errors.push((id, error.to_string()));
+                    continue;
+                }
+            }
             match self.end_if_exited(&session).await {
                 Ok(Some(over)) => report.record_exit(&over),
                 Ok(None) => {
@@ -1397,6 +1408,17 @@ impl Sessions {
                     continue;
                 }
             };
+            match self.fail_if_terminal_lost(&session).await {
+                Ok(Some(_)) => {
+                    report.terminal_lost.push(id);
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    report.errors.push((id, error.to_string()));
+                    continue;
+                }
+            }
             match self.end_if_exited(&session).await {
                 Ok(Some(over)) => report.record_exit(&over),
                 Ok(None) => {}
@@ -1440,16 +1462,83 @@ impl Sessions {
         if execution.phase.is_occupying() {
             return Ok(None);
         }
-        let exit = self.close_terminal_reading_exit(&session.id).await?;
+        let Some(exit) = self.close_terminal_reading_exit(&session.id).await? else {
+            // The terminal went since the pass looked: as when it was already gone.
+            let failed = self
+                .settle_over(
+                    session,
+                    launch,
+                    &crate::exits::unknown(),
+                    &terminal_lost_reason(&session.id),
+                    true,
+                )
+                .await?;
+            return Ok(Some(failed));
+        };
         let reason = crate::exits::reason(exit.status);
+        let over = self
+            .settle_over(session, launch, &exit, &reason, exit.status.is_failure())
+            .await?;
+        tracing::info!(
+            session = %session.id,
+            state = %over.state,
+            status = %exit.status,
+            output = ?exit.output,
+            "a session's agent exited"
+        );
+        Ok(Some(over))
+    }
+
+    /// Fails a running session whose terminal, its tmux session, is gone, and the agent
+    /// with it if it outlived the terminal (#844); the session, when it did. Nobody can
+    /// attach a terminal that is gone, so it is no longer shown as running: `resume`
+    /// reopens its conversation. A look at tmux that fails leaves the session as it is.
+    /// The caller holds the session's lock, so no launch replaces the terminal meanwhile.
+    async fn fail_if_terminal_lost(&self, session: &Session) -> Result<Option<Session>, Error> {
+        let Some(launch) = &session.launch else {
+            return Ok(None);
+        };
+        let tmux = self.tmux()?;
+        let name = terminal_name(&session.id)?;
+        let is_open = self
+            .blocking("look at the session's terminal", move || {
+                Ok(tmux.sessions()?.contains(&name))
+            })
+            .await?;
+        if is_open {
+            return Ok(None);
+        }
+        self.stop_previous_agent(session).await?;
+        let failed = self
+            .settle_over(
+                session,
+                launch,
+                &crate::exits::unknown(),
+                &terminal_lost_reason(&session.id),
+                true,
+            )
+            .await?;
+        Ok(Some(failed))
+    }
+
+    /// Moves a running session whose agent is gone to `failed` or `ended` with `reason`,
+    /// recording how the agent exited and releasing what an over session holds.
+    async fn settle_over(
+        &self,
+        session: &Session,
+        launch: &Launch,
+        exit: &AgentExit,
+        reason: &str,
+        is_failure: bool,
+    ) -> Result<Session, Error> {
         let write = self.database.write().await?;
-        let over = if exit.status.is_failure() {
+        let over = if is_failure {
             let failed = store::transition(
                 &write,
                 &session.id,
                 &[SessionState::Running],
                 SessionState::Failed,
-                Some(&reason),
+                Some(reason),
                 "fail",
             )
             .await?;
@@ -1462,32 +1551,28 @@ impl Sessions {
                 &session.id,
                 &[SessionState::Running],
                 SessionState::Ended,
-                Some(&reason),
+                Some(reason),
                 "end",
             )
             .await?;
             give_up_on_end(&write, &ended).await?;
             ended
         };
-        store::insert_exit(&write, launch, &exit).await?;
+        store::insert_exit(&write, launch, exit).await?;
         // Read again: the snapshot the transition returned predates the exit.
         let over = store::session(&write, &over.id).await?;
         write.commit().await?;
         self.remove_session_folders(&session.id).await?;
-        tracing::info!(
-            session = %session.id,
-            state = %over.state,
-            status = %exit.status,
-            output = ?exit.output,
-            "a session's agent exited"
-        );
-        Ok(Some(over))
+        Ok(over)
     }
 
     /// Closes the session's terminal like [`Self::close_terminal`], first reading how its
-    /// agent exited, in the same step. A read that fails is logged and reads as an unknown
-    /// exit: the session still ends.
-    async fn close_terminal_reading_exit(&self, id: &SessionId) -> Result<AgentExit, Error> {
+    /// agent exited, in the same step; `None` when the terminal was already gone. A read
+    /// that fails is logged and reads as an unknown exit: the session still ends.
+    async fn close_terminal_reading_exit(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<AgentExit>, Error> {
         let tmux = self.tmux()?;
         let name = terminal_name(id)?;
         let counted = TerminalStep::start(&self.session_lock(id));
@@ -1496,7 +1581,7 @@ impl Sessions {
             let _counted = counted;
             let exit = crate::exits::read(&tmux, &name).unwrap_or_else(|error| {
                 tracing::warn!(%session, %error, "an exited agent's terminal could not be read");
-                crate::exits::unknown()
+                Some(crate::exits::unknown())
             });
             close_if_open(&tmux, &name)?;
             Ok(exit)
@@ -2720,6 +2805,14 @@ fn authorization_session(id: &SessionId) -> Result<cockpit_authorization::Sessio
 
 fn holder(id: &SessionId) -> Holder {
     Holder::new(id.as_str()).expect("a session id is a valid holder")
+}
+
+/// The reason of a session failed for its terminal being gone (#844).
+fn terminal_lost_reason(id: &SessionId) -> String {
+    format!(
+        "its terminal is gone: its tmux session no longer exists; \
+         `torlek session resume {id}` reopens it"
+    )
 }
 
 fn terminal_name(id: &SessionId) -> Result<SessionName, Error> {

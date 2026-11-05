@@ -16,12 +16,12 @@ const LINE_CHARACTERS: usize = 400;
 /// What tmux writes into a pane whose process ended under `remain-on-exit`.
 const DEAD_PANE_NOTICE: &str = "Pane is dead (";
 
-/// The agent's exit as its terminal shows it. A terminal that is gone reads as an unknown
-/// status with no output; a pane tmux still shows running (a wrapper outliving the agent,
-/// or tmux not yet marking it dead) as an unknown status with what it printed.
-pub(crate) fn read(tmux: &Server, name: &SessionName) -> Result<AgentExit, Error> {
+/// The agent's exit as its terminal shows it, or `None` when the terminal is gone (#844):
+/// nothing can be read from it. A pane tmux still shows running (a wrapper outliving the
+/// agent, or tmux not yet marking it dead) reads as an unknown status with what it printed.
+pub(crate) fn read(tmux: &Server, name: &SessionName) -> Result<Option<AgentExit>, Error> {
     if !tmux.sessions()?.contains(name) {
-        return Ok(unknown());
+        return Ok(None);
     }
     let pane = crate::lifecycle::agent_pane_info(tmux, name)?;
     let status = match pane.state {
@@ -30,10 +30,10 @@ pub(crate) fn read(tmux: &Server, name: &SessionName) -> Result<AgentExit, Error
         PaneState::Exited { status: None } => ExitStatus::Signal,
     };
     let printed = tmux.capture_text(&pane.id, HISTORY_LINES)?;
-    Ok(AgentExit {
+    Ok(Some(AgentExit {
         status,
         output: last_lines(&printed),
-    })
+    }))
 }
 
 pub(crate) fn unknown() -> AgentExit {

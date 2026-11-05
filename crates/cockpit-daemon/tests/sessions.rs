@@ -2097,3 +2097,6 @@ async fn a_session_in_the_main_checkout_never_records_harness_trust() {
     assert_eq!(session.state, SessionStateView::Running);
     assert_eq!(FakeProvider::trusted(&home.trust_log()), Vec::new());
 }
+
+#[path = "sessions/lost_terminal.rs"]
+mod lost_terminal;
