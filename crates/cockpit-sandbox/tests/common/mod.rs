@@ -109,5 +109,6 @@ pub fn launch_request(session: &str, working_dir: &str) -> LaunchRequest {
         needs: ProviderNeeds::floor(),
         tools: ToolNeeds::none(),
         credentials: Vec::new(),
+        decisions: cockpit_sandbox::EgressDecisions::default(),
     }
 }

@@ -191,6 +191,16 @@ fn say_unreadable(path: &Path, error: &std::io::Error) {
 
 /// The decisions `read` from `path` holds: none when the file is missing or malformed, so
 /// the proxy fails closed.
+/// The owner's decisions in `path`; a missing, unreadable or malformed file is none, and an
+/// unreadable or malformed one is said.
+pub fn decisions_at(path: &Path) -> EgressDecisions {
+    let (read, problem) = read_decisions(path);
+    if let Some(error) = &problem {
+        say_unreadable(path, error);
+    }
+    decisions_in(path, read.as_deref())
+}
+
 fn decisions_in(path: &Path, read: Option<&[u8]>) -> EgressDecisions {
     let Some(text) = read else {
         return EgressDecisions::default();
@@ -243,11 +253,7 @@ impl<U: Upstream> Proxy<U> {
     /// Reads the owner's decisions from `path` and applies them. A missing or malformed file
     /// is no decision: what the decisions allowed is refused again, never kept.
     pub fn load_decisions(&self, path: &Path) {
-        let (read, problem) = read_decisions(path);
-        if let Some(error) = &problem {
-            say_unreadable(path, error);
-        }
-        self.apply_decisions(decisions_in(path, read.as_deref()));
+        self.apply_decisions(decisions_at(path));
     }
 
     /// Keeps the decisions current: `path` is read each [`DECISIONS_INTERVAL`] and applied

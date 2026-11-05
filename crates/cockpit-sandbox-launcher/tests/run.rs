@@ -10,8 +10,9 @@ use std::process::Command;
 
 use cockpit_sandbox::{
     AllowEntry, AllowSource, Allowlist, CA_BUNDLE_FILE, CREDENTIALS_FILE, CredentialHost,
-    CredentialScheme, EGRESS_FILE, EgressReport, Interception, LaunchSpec, NeedsSource, Protected,
-    SESSION_CA_FILE, SPEC_FILE, SPEC_VERSION, SpecCredential, Subject, Target, WhenAbsent,
+    CredentialScheme, DECISIONS_FILE, EGRESS_FILE, EgressDecisions, EgressReport, Interception,
+    LaunchSpec, NeedsSource, Protected, SESSION_CA_FILE, SPEC_FILE, SPEC_VERSION, SpecCredential,
+    Subject, Target, WhenAbsent,
 };
 
 const LAUNCHER: &str = env!("CARGO_BIN_EXE_torlek-sandbox");
@@ -374,13 +375,7 @@ impl Fixture {
             .pem();
         std::fs::create_dir_all(self.path("config")).unwrap();
         write(&self.path("host-roots.pem"), &roots);
-        self.egress.entries.push(AllowEntry {
-            target: Target::Name("api.github.com".to_owned()),
-            port: 443,
-            source: AllowSource::Grant {
-                grant: "g1".to_owned(),
-            },
-        });
+        self.egress.entries.push(api_github_grant());
         self.interception = Some(Interception {
             credentials: vec![SpecCredential {
                 name: "the project's GitHub API token".to_owned(),
@@ -393,6 +388,19 @@ impl Fixture {
             ca_file: self.path("config").join(SESSION_CA_FILE),
             bundle_file: self.path("config").join(CA_BUNDLE_FILE),
         });
+    }
+
+    /// Moves the spec's reach of the bound host into the owner's decisions (#674).
+    fn reach_through_decisions(&mut self) {
+        self.egress.entries.clear();
+        let decisions = EgressDecisions {
+            allowed: vec![api_github_grant()],
+            denied: Vec::new(),
+        };
+        write(
+            &self.path("mounts").join(DECISIONS_FILE),
+            &serde_json::to_string(&decisions).unwrap(),
+        );
     }
 
     fn write_credentials(&self, values: &[&str]) {
@@ -423,6 +431,46 @@ fn a_bound_credential_leaves_only_the_session_cas_certificate_inside() {
 
     assert_eq!(printed, "-----BEGIN CERTIFICATE-----\n2\nexit=0\n");
     assert!(!fixture.path("mounts").join(CREDENTIALS_FILE).exists());
+}
+
+fn api_github_grant() -> AllowEntry {
+    AllowEntry {
+        target: Target::Name("api.github.com".to_owned()),
+        port: 443,
+        source: AllowSource::Grant {
+            grant: "g1".to_owned(),
+        },
+    }
+}
+
+/// #832, #674: a host the owner's decisions let through at launch counts as reached.
+#[test]
+fn a_credential_bound_to_a_host_the_owners_decisions_reach_starts() {
+    let mut fixture = Fixture::new();
+    fixture.bind_credential();
+    fixture.reach_through_decisions();
+    fixture.write_credentials(&[SECRET]);
+
+    let printed = fixture.run("echo started");
+
+    assert_eq!(printed, "started\nexit=0\n");
+}
+
+/// #857 decision 3: without the decisions, the same spec binds a host it does not reach.
+#[test]
+fn a_credential_bound_to_a_host_nothing_reaches_is_refused() {
+    let mut fixture = Fixture::new();
+    fixture.bind_credential();
+    fixture.egress.entries.clear();
+    fixture.write_credentials(&[SECRET]);
+
+    let printed = fixture.run("echo started");
+
+    assert!(!printed.contains("started"), "{printed}");
+    assert!(
+        printed.contains("cannot be bound to api.github.com: the session may not reach it"),
+        "{printed}"
+    );
 }
 
 #[test]

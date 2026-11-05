@@ -1147,16 +1147,84 @@ async fn network_list_once_it_contains(home: &Home, expected: &str) -> String {
 
 /// The `cockpit network list` line of the first request, asking for [`ASKED_HOST`].
 fn asking_line(session: &str) -> String {
-    format!("network\t1\tasking\t{session}\t{COMMANDED_PROJECT}\t{ASKED_HOST}")
+    asking_line_for(session, ASKED_HOST)
+}
+
+/// The `cockpit network list` line of the first request, asking for `destination`.
+fn asking_line_for(session: &str, destination: &str) -> String {
+    format!("network\t1\tasking\t{session}\t{COMMANDED_PROJECT}\t{destination}")
 }
 
 /// Refuses [`ASKED_HOST`] once and waits until the owner's list shows the request, then out
 /// of the grace in which an allow is refused (#156).
 async fn asked_and_listed(home: &Home, agent: &Sandboxed) {
-    run_in_agent(home, &agent.root, &connect_line(ASKED_HOST)).await;
-    let listed = network_list_once_it_contains(home, &asking_line(&agent.session)).await;
-    assert!(listed.contains(&asking_line(&agent.session)), "{listed}");
+    asked_and_listed_for(home, agent, ASKED_HOST).await;
+}
+
+/// [`asked_and_listed`] for `destination`.
+async fn asked_and_listed_for(home: &Home, agent: &Sandboxed, destination: &str) {
+    run_in_agent(home, &agent.root, &connect_line(destination)).await;
+    let asking = asking_line_for(&agent.session, destination);
+    let listed = network_list_once_it_contains(home, &asking).await;
+    assert!(listed.contains(&asking), "{listed}");
     tokio::time::sleep(Duration::from_millis(2_100)).await;
+}
+
+/// #832, #674: a GitHub host the owner allowed always for the project is reached at the
+/// project's next launch, so the API token is bound there: the agent runs with the placeholder
+/// in `GH_TOKEN`, the launcher took the value's file, and the evidence says where the token is
+/// added and names the host still unreached.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_api_token_is_added_on_a_github_host_the_owner_allowed_always() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        home.write_github_api_token(COMMANDED_PROJECT, "github_pat_api_token\n", 0o600);
+    })
+    .await;
+    asked_and_listed_for(&home, &agent, "api.github.com:443").await;
+    owner_network(&home, &["allow", "1", "--always"]).await;
+    let client = home.connect().await;
+    let ended = client
+        .request(
+            Command::SessionEnd {
+                session: agent.session.clone(),
+            },
+            GENEROUS,
+        )
+        .await;
+    assert!(ended.is_ok(), "{ended:?}");
+    std::fs::remove_dir_all(agent.root.join(".agent")).unwrap();
+    let session = new_session(&client, &agent.root).await;
+
+    let printed = run_in_agent(&home, &agent.root, "echo \"${GH_TOKEN-unset}\"").await;
+    let shown = home
+        .cockpit(&["session", "sandbox", &session.id], &[])
+        .await;
+    let credentials = home
+        .path()
+        .join("run")
+        .join(BUILD_PROFILE_DIR)
+        .join("mounts")
+        .join(&session.id)
+        .join(cockpit_sandbox::CREDENTIALS_FILE);
+
+    assert_eq!(
+        printed,
+        format!("{}\nexit=0\n", cockpit_sandbox::PLACEHOLDER)
+    );
+    assert!(!credentials.exists(), "{credentials:?}");
+    let evidence = text(&shown.stdout);
+    assert!(
+        evidence.contains("credential: the project's GitHub API token added on api.github.com:443"),
+        "{evidence}"
+    );
+    assert!(
+        evidence.contains(
+            "credential: the project's GitHub API token is not added on github.com:443: the \
+             session's launch does not reach it"
+        ),
+        "{evidence}"
+    );
 }
 
 /// What the owner's `cockpit network VERB...` printed; it must succeed.

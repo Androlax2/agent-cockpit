@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::credentials::{CredentialScheme, Interception};
-use crate::egress::{Allowlist, TLS_PORT, Target, normalized_name};
+use crate::egress::{Allowlist, EgressDecisions, TLS_PORT, Target, normalized_name};
 
 /// Bumped when a field changes meaning; the launcher refuses any other version, so a launcher
 /// left from an older install never half-reads a newer daemon's spec. 3: bound credentials
@@ -166,8 +166,9 @@ impl LaunchSpec {
     /// Refuses a spec the launcher cannot enforce as written: another version, a relative
     /// path, a Landlock ABI below the floor, a protected or hidden path outside every bound
     /// folder, a working directory outside the writable ones, a forward, or an allowlist entry
-    /// that is no host name or address and a port.
-    pub fn validate(&self) -> Result<(), InvalidSpec> {
+    /// that is no host name or address and a port, or a credential bound to a host neither
+    /// the allowlist nor the owner's `decisions` at launch (#674) let through.
+    pub fn validate(&self, decisions: &EgressDecisions) -> Result<(), InvalidSpec> {
         if self.version != SPEC_VERSION {
             return Err(InvalidSpec(format!(
                 "spec version {} is not this launcher's {SPEC_VERSION}",
@@ -231,7 +232,7 @@ impl LaunchSpec {
         }
         check_allowlist(&self.egress)?;
         if let Some(interception) = &self.interception {
-            check_interception(interception, &self.egress)?;
+            check_interception(interception, &self.egress.with_decisions(decisions))?;
         }
         if let Some(forward) = self.forwards.first() {
             return Err(InvalidSpec(format!(
@@ -265,9 +266,10 @@ fn check_allowlist(allowlist: &Allowlist) -> Result<(), InvalidSpec> {
     Ok(())
 }
 
-/// At least one credential; each host a lower-case DNS name bound once, which the allowlist
-/// lets the session reach on 443 (#857 decision 3: a credential is never bound to a host
-/// without reach); a Git username Basic credentials can carry; plain paths.
+/// At least one credential; each host a lower-case DNS name bound once, which `allowlist` (the
+/// spec's with the launch's decisions) lets the session reach on 443 (#857 decision 3: a
+/// credential is never bound to a host without reach); a Git username Basic credentials can
+/// carry; plain paths.
 fn check_interception(
     interception: &Interception,
     allowlist: &Allowlist,

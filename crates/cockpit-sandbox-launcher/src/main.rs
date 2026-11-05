@@ -83,7 +83,9 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
         .ok_or("the launch spec has no folder")?
         .to_path_buf();
     let credentials = plan::take_credentials(&mount_dir)?;
-    let spec = plan::read_spec(&spec_path)?;
+    // A credential may be bound to a host the owner's decisions let through (#832, #674).
+    let launch_decisions = proxy::decisions_at(&mount_dir.join(cockpit_sandbox::DECISIONS_FILE));
+    let spec = plan::read_spec(&spec_path, &launch_decisions)?;
     // Before the program starts: the trust files it reads at its start are written.
     let values = plan::credential_values(credentials, &spec)?;
     let authority = match &spec.interception {

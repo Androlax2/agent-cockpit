@@ -76,6 +76,10 @@ pub struct LaunchRequest {
     /// Credentials the session proxy adds on their own hosts (#832). Only a sandboxed launch
     /// binds one; an unsandboxed launch is refused one rather than given the value.
     pub credentials: Vec<BoundCredential>,
+    /// The owner's decisions on the session's network requests when it launches (#674): the
+    /// proxy applies them from the first connection, and a host they let through counts as
+    /// reached for a bound credential (#832).
+    pub decisions: crate::EgressDecisions,
 }
 
 /// One check run's facts (#862): the project's check as the program, with no provider, agent
@@ -312,6 +316,7 @@ impl Sandbox {
             tools: request.tools.clone(),
             reaches_agent: false,
             credentials: Vec::new(),
+            decisions: crate::EgressDecisions::default(),
         };
         crate::native::prepare(
             native,
@@ -361,6 +366,7 @@ impl Sandbox {
             tools: request.tools.clone(),
             reaches_agent: true,
             credentials: request.credentials.clone(),
+            decisions: request.decisions.clone(),
         };
         crate::native::prepare(
             native,

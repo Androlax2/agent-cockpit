@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use cockpit_sandbox::{LaunchSpec, Protected, SYSTEM_READ_ONLY, WhenAbsent};
+use cockpit_sandbox::{EgressDecisions, LaunchSpec, Protected, SYSTEM_READ_ONLY, WhenAbsent};
 use serde::{Deserialize, Serialize};
 
 /// What stage 2 enforces inside the namespaces, passed as its one argument: paths and rules,
@@ -66,15 +66,16 @@ const NAMESPACES: [&str; 7] = [
 ];
 
 /// Reads the spec at `path` and removes the file before anything else, so no spec outlives
-/// its launch (#434); then refuses one the launcher cannot enforce.
-pub fn read_spec(path: &Path) -> Result<LaunchSpec, String> {
+/// its launch (#434); then refuses one the launcher cannot enforce, given the owner's
+/// `decisions` at launch (#674).
+pub fn read_spec(path: &Path, decisions: &EgressDecisions) -> Result<LaunchSpec, String> {
     let text = std::fs::read(path)
         .map_err(|error| format!("cannot read the launch spec {}: {error}", path.display()))?;
     std::fs::remove_file(path)
         .map_err(|error| format!("cannot remove the launch spec {}: {error}", path.display()))?;
     let spec: LaunchSpec = serde_json::from_slice(&text)
         .map_err(|error| format!("the launch spec {} is malformed: {error}", path.display()))?;
-    spec.validate()
+    spec.validate(decisions)
         .map_err(|error| format!("the launch spec is refused: {error}"))?;
     Ok(spec)
 }
