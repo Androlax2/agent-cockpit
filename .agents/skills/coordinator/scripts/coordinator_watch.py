@@ -1,7 +1,7 @@
 """Coordinator event filter: wakes the coordinator only for events that need action.
 
 Immediate: a worker question appears or changes, a worker goes idle without a merged PR (once
-per idle spell; a working spell under 2 minutes does not end it), a CI failure on a PR's current head commit (once per commit and check), a PR
+per idle spell; a short working blip does not end it), a CI failure on a PR's current head commit (once per commit and check), a PR
 merged or closed. Everything else that changed is batched into one summary every 10 minutes.
 State persists in the state file so a re-armed monitor does not repeat what it already reported.
 
@@ -78,10 +78,10 @@ class Watcher:
         if not isinstance(self.state.get("idle"), dict):
             self.state["idle"] = {}
         self.reported_idle = self.state["idle"]
-        # session id -> wall-clock time the current working spell began.
-        if not isinstance(self.state.get("working_since"), dict):
-            self.state["working_since"] = {}
-        self.working_since = self.state["working_since"]
+        # session id -> when a working spell that began after this watcher saw the session idle
+        # started. Not persisted: a spell of unknown start counts as long, so an idle is
+        # reported again rather than silently dropped.
+        self.working_since = {}
         self.saved_text = None
         self.process = None
         self.last_poll_failure_report = None
@@ -136,12 +136,15 @@ class Watcher:
         if changed or previous["state"] != current["state"]:
             batched.append(f"{tag} {current['state']}: {current['doing']}")
 
-    def track_working_spell(self, session_id, state):
+    def track_working_spell(self, session_id, previous, state):
         if state != "waiting":
-            self.working_since.setdefault(session_id, time.time())
+            if (previous or {}).get("state") == "waiting":
+                self.working_since[session_id] = time.monotonic()
+            return
+        if (previous or {}).get("state") == "waiting":
             return
         started = self.working_since.pop(session_id, None)
-        if started is not None and time.time() - started >= self.working_seconds:
+        if started is None or time.monotonic() - started >= self.working_seconds:
             self.reported_idle.pop(session_id, None)
 
     def on_session(self, current):
@@ -153,7 +156,7 @@ class Watcher:
             self.sessions[session_id] = current
             if previous == current:
                 return
-            self.track_working_spell(session_id, current["state"])
+            self.track_working_spell(session_id, previous, current["state"])
             # The first look at a fresh start fills the summary with history; a question or an
             # idle worker found then is still news.
             seeding = self.is_first_run and time.monotonic() - self.started_at < self.seed_seconds
