@@ -25,7 +25,8 @@ CRATES = Path(__file__).resolve().parents[1] / "crates"
 # The crates ci.yml's platform jobs test with `-p`, and those whose programs their tests run:
 # the daemon's tests and the TUI's end-to-end harness start `cockpit` and the provider bridges
 # (`cockpit-claude-hook`, `cockpit-codex-hook`, `cockpit-codex-session`,
-# `cockpit-opencode-bridge`).
+# `cockpit-opencode-bridge`), and `torlek-sandbox`, which the WSL 2 job's sandbox step runs
+# (#433).
 PLATFORM_ROOTS = [
     "cockpit-agent-channel",
     "cockpit-cli",
@@ -35,6 +36,7 @@ PLATFORM_ROOTS = [
     "cockpit-opencode",
     "cockpit-processes",
     "cockpit-resource-admission",
+    "cockpit-sandbox-launcher",
     "cockpit-tui",
 ]
 

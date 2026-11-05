@@ -99,6 +99,20 @@ class CiJobSelectionTests(unittest.TestCase):
         self.assertTrue(tested, "expected the platform jobs' cargo nextest runs")
         self.assertLessEqual(tested, set(ci_jobs_module().PLATFORM_ROOTS))
 
+    def test_every_crate_with_a_program_is_a_platform_root(self):
+        # The WSL 2 job builds every program for the daemon's sandbox tests (#433).
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn(
+            "cargo build --locked --manifest-path Cargo.toml --workspace --bins", workflow
+        )
+        with_programs = {
+            manifest.parent.name
+            for manifest in (ROOT / "crates").glob("*/Cargo.toml")
+            if "[[bin]]" in manifest.read_text() or (manifest.parent / "src/main.rs").exists()
+        }
+        self.assertIn("cockpit-sandbox-launcher", with_programs)
+        self.assertLessEqual(with_programs, set(ci_jobs_module().PLATFORM_ROOTS))
+
     def test_every_program_the_tui_harness_builds_is_a_platform_root(self):
         harness = (ROOT / "crates/cockpit-tui/tests/e2e/harness.rs").read_text()
         built = set(re.findall(r'"--package",\s*"(cockpit-[a-z-]+)"', harness))
