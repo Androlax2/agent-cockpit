@@ -1,5 +1,6 @@
 //! One daemon per OS user: the private socket directory and the instance lock (report 11).
 
+use std::ffi::OsStr;
 use std::fs::{self, DirBuilder, File, OpenOptions, TryLockError};
 use std::io::ErrorKind;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
@@ -128,6 +129,32 @@ impl Instance {
     pub fn options(&self) -> &Options {
         &self.options
     }
+
+    /// The socket of the tmux server named `name`: `tmux-<uid>/<name>` under `$TMUX_TMPDIR`,
+    /// or under `/tmp` when it is unset or empty, where `tmux -L <name>` puts it. Named by
+    /// path, since `-L` silently takes `/tmp` when `$TMUX_TMPDIR` is missing and so reached
+    /// the installed Torlek's server (#845); a missing one is refused instead. The
+    /// `tmux-<uid>` directory is created 0700, or checked, as tmux does.
+    pub fn tmux_socket(
+        &self,
+        name: &str,
+        tmux_tmpdir: Option<&OsStr>,
+    ) -> Result<PathBuf, StartError> {
+        let user_dir = tmux_base_dir(tmux_tmpdir)?.join(format!("tmux-{}", self.owner_uid));
+        create_private_dir(&user_dir, self.owner_uid)?;
+        Ok(user_dir.join(name))
+    }
+}
+
+fn tmux_base_dir(tmux_tmpdir: Option<&OsStr>) -> Result<PathBuf, StartError> {
+    let Some(set) = tmux_tmpdir.filter(|set| !set.is_empty()) else {
+        return Ok(PathBuf::from("/tmp"));
+    };
+    let path = PathBuf::from(set);
+    if !path.is_absolute() || !path.is_dir() {
+        return Err(StartError::TmuxTmpdir { path });
+    }
+    Ok(path)
 }
 
 /// The user id this process creates files as, read from a file it creates next to
@@ -181,4 +208,24 @@ fn create_private_dir(path: &Path, owner_uid: u32) -> Result<(), StartError> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only the path: a test never creates or opens tmux's default socket directory (#845).
+    #[test]
+    fn an_unset_or_empty_tmux_tmpdir_is_tmux_s_own_default() {
+        for unset in [None, Some(OsStr::new(""))] {
+            assert_eq!(tmux_base_dir(unset).unwrap(), Path::new("/tmp"));
+        }
+    }
+
+    #[test]
+    fn a_relative_tmux_tmpdir_is_refused() {
+        let refused = tmux_base_dir(Some(OsStr::new("tmux"))).unwrap_err();
+
+        assert!(matches!(refused, StartError::TmuxTmpdir { path } if path == Path::new("tmux")));
+    }
 }

@@ -65,6 +65,8 @@ def smoke(programs, home):
         path.chmod(0o755)
     runtime = home / "run"
     runtime.mkdir(mode=0o700)
+    # The daemon refuses a missing TMUX_TMPDIR: tmux would fall back to /tmp (#845).
+    (home / "tmux").mkdir(mode=0o700)
     # Keep the caller's TLS trust and routing; never add a token or change proxy policy.
     env = {
         key: value

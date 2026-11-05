@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use cockpit_tmux::{PaneId, Server, ServerSpec, SessionLaunch, SessionName, Socket};
+use cockpit_tmux::{PaneId, Server, ServerSpec, SessionLaunch, SessionName};
 
 /// Long enough never to fire in a passing test, short enough to fail a hung one quickly.
 pub const GENEROUS: Duration = Duration::from_secs(10);
@@ -33,7 +33,7 @@ impl TestServer {
     pub fn spec_in(directory: &Path) -> ServerSpec {
         ServerSpec {
             tmux: PathBuf::from("tmux"),
-            socket: Socket::Path(directory.join("tmux.sock")),
+            socket: directory.join("tmux.sock"),
             config_path: directory.join("tmux.conf"),
             history_limit: HISTORY_LIMIT,
         }

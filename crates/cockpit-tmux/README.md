@@ -26,9 +26,10 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
   an upgrade's config reaches the sessions it holds; #308) and starts nothing. The config's
   `history-limit` is [`ServerSpec::history_limit`], the owner's `memory.tmux_history_lines`
   (#406). Panes opened afterwards are bound by it; tmux 3.8 trims the open ones too.
-- **Private server.** Every command is `tmux -f <Torlek's config> -L torlek` ([`Socket`];
-  tests use `-S` in a temporary directory). The user's `~/.tmux.conf` never applies, and the
-  caller's `TMUX`/`TMUX_PANE` are removed so a daemon started inside tmux cannot reach it.
+- **Private server.** Every command is `tmux -f <Torlek's config> -S <socket>`: the caller
+  names the socket by path, never by `-L` name, which falls back to `/tmp` when
+  `$TMUX_TMPDIR` is missing and reaches another installation's server (#845). The user's
+  `~/.tmux.conf` never applies, and the caller's `TMUX`/`TMUX_PANE` are removed so a daemon started inside tmux cannot reach it.
 - **Sessions.** One session per agent. [`SessionName`] admits only `A-Z a-z 0-9 _ -`, and
   every target is `=name:` so `agent-1` never reaches `agent-12`. A missing working directory
   is refused (tmux would start the pane in `$HOME`). A command's words are never parsed by

@@ -34,7 +34,7 @@ async fn a_daemon_starts_on_a_clean_home_and_answers_ping() {
 }
 
 #[tokio::test]
-async fn a_daemon_starts_on_a_clean_home_with_only_home_in_its_environment() {
+async fn a_daemon_starts_on_a_clean_home_with_only_home_and_tmux_tmpdir_in_its_environment() {
     let home = TestHome::bare();
     let _daemon = home.start();
 
