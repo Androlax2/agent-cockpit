@@ -121,7 +121,7 @@ fn the_dash_l_check_catches_the_usual_spellings() {
     ));
     for passed in [
         format!("# Never `tmux {option}`: it falls back to /tmp"),
-        format!("tmux -S \"$socket\" kill-server"),
+        "tmux -S \"$socket\" kill-server".to_owned(),
         format!("[[ {option} $file ]]"),
         format!("tmux select-pane{option}"),
     ] {
