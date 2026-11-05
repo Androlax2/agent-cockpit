@@ -25,6 +25,11 @@ Status: proposed; platform enforcement `validate`
 - Greywall and greyproxy are consumed as **Cockpit's own patched forks** (decided 2026-10-31):
   upstream looks unmaintained, so Theo iterates on the forks. The release bundle pins exact fork
   revisions and builds them; readiness reports the installed fork version.
+- **Being removed (owner direction, 2026-11-05):** both engines are removed first, since nothing
+  uses them; agents run unsandboxed, with the risk logged at every launch, until Torlek's own
+  sandbox and traffic control are live and on by default. Options, design, migration and
+  Theo's decisions are in the
+  [#546 research](../../research/2026-11-05-546-own-sandbox-and-traffic-control.md).
 - Rootless Docker per project: dedicated engine identity, checkout-specific containers,
   volumes, networks and ports. Same-UID separation is not a hostile-tenant boundary.
 - Windows: everything runs inside the chosen WSL2 distribution. Keep projects on the Linux
