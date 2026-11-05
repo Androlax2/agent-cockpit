@@ -641,6 +641,8 @@ async fn showing_a_running_session_whose_tmux_session_is_gone_names_the_missing_
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;
@@ -696,6 +698,8 @@ async fn showing_a_running_session_after_the_whole_tmux_server_is_gone_is_not_in
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;
