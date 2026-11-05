@@ -83,8 +83,10 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
         .ok_or("the launch spec has no folder")?
         .to_path_buf();
     let credentials = plan::take_credentials(&mount_dir)?;
-    // A credential may be bound to a host the owner's decisions let through (#832, #674).
-    let launch_decisions = proxy::decisions_at(&mount_dir.join(cockpit_sandbox::DECISIONS_FILE));
+    // A credential may be bound to a host the owner's decisions let through (#832, #674); the
+    // proxy starts with the same decisions the binding was checked against.
+    let decisions = mount_dir.join(cockpit_sandbox::DECISIONS_FILE);
+    let launch_decisions = proxy::decisions_at(&decisions);
     let spec = plan::read_spec(&spec_path, &launch_decisions)?;
     // Before the program starts: the trust files it reads at its start are written.
     let values = plan::credential_values(credentials, &spec)?;
@@ -135,8 +137,7 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
     let report = mount_dir.join(cockpit_sandbox::EGRESS_FILE);
     proxy.keep_report(report.clone());
     // The owner's decisions (#674) apply before the first connection is served.
-    let decisions = mount_dir.join(cockpit_sandbox::DECISIONS_FILE);
-    proxy.load_decisions(&decisions);
+    proxy.apply_decisions(launch_decisions);
     proxy.keep_decisions(decisions);
     // Only a session asks the owner; a check run's requests are #862's.
     if matches!(spec.subject, cockpit_sandbox::Subject::Session { .. }) {

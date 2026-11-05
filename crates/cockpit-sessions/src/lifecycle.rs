@@ -2007,6 +2007,7 @@ impl Sessions {
         )?;
         let decisions = self
             .launch_decisions(
+                setting,
                 &output_project,
                 &cockpit_sandbox::Subject::Session {
                     session: id.as_str().to_owned(),
@@ -2344,11 +2345,16 @@ impl Sessions {
     /// The owner's decisions (#674) for `subject` of `project` when it launches: the project's
     /// grants and the subject's earlier answers, which hold from the agent's first connection,
     /// not from the daemon's next write, and which a bound credential counts as reach (#832).
+    /// None under `"off"`, whose launch has no proxy to apply them.
     async fn launch_decisions(
         &self,
+        setting: cockpit_config::AgentSandbox,
         project: &str,
         subject: &cockpit_sandbox::Subject,
     ) -> Result<cockpit_sandbox::EgressDecisions, Error> {
+        if setting == cockpit_config::AgentSandbox::Off {
+            return Ok(cockpit_sandbox::EgressDecisions::default());
+        }
         let read = self.database.read().await?;
         cockpit_sandbox::egress_decisions(&read, project, subject)
             .await
@@ -2412,6 +2418,7 @@ impl Sessions {
         let needs = provider_needs(self.provider(Some(&provider))?.as_ref(), &tools.ecosystems)?;
         let decisions = self
             .launch_decisions(
+                setting,
                 checkout.project.as_str(),
                 &cockpit_sandbox::Subject::Session {
                     session: DRY_RUN_SESSION.to_owned(),

@@ -238,8 +238,9 @@ through `torlek push`. Save a second token for the project in
 read and write and contents read only. The session proxy adds it on `api.github.com`, and on
 `github.com` for fetches; the agent holds a placeholder `GH_TOKEN` and trusts a per-session
 CA through `SSL_CERT_FILE` and its siblings. It is added only on the GitHub hosts the session
-reaches at launch, including one you allowed always for the project (`torlek network allow ID
---always`); a host you allow while the session runs gets it at the session's next launch.
+reaches at launch, including one you allowed for the project (`torlek network allow ID
+--always`) or for the session; a host first allowed while the session runs gets it at the
+session's next launch.
 `torlek session sandbox SESSION` names any host it is not added on.
 
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` override their respective base directories.

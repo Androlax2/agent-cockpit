@@ -41,10 +41,14 @@ upstream servers, 2026-11-05) and by the worker (the rest, reasons below).
   API token to the GitHub hosts the launch reaches either way and names each other one in the
   evidence ("is not added on github.com:443: the session's launch does not reach it"), rather
   than refusing every launch of a project that has the file. No adapter declares GitHub's
-  hosts, so today the token reaches a GitHub host through the owner's "allow always". An
-  allow made while the session runs binds nothing until its next launch: the CA is
-  name-constrained to the hosts bound at launch. A revoked grant closes the host's
-  intercepted tunnels as it does plain ones.
+  hosts, so today the token reaches a GitHub host through the owner's "allow always", or an
+  "allow once" that the session's next launch still holds. A host first allowed while the
+  session runs gets no token until the next launch: the CA is name-constrained to the hosts
+  bound at launch. A revoked grant closes the host's intercepted tunnels as it does plain
+  ones; a host bound at launch carries the token again whenever a later allow reaches it.
+  The launcher checks the binding against the decisions file it reads at its start, and its
+  proxy starts with those same decisions; a revocation between the daemon's read and the
+  launcher's refuses that launch rather than binding a host the session no longer reaches.
 - **Only the bound hosts are intercepted.** Every other host stays the plain tunnel of #831.
   A client that rejects the session CA (pinned, or trusting neither variable) ends the
   handshake with an alert; the proxy counts it (`ca_refused`) and names the host and the
