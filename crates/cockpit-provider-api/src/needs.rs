@@ -121,6 +121,11 @@ impl HomePath {
                 .is_some_and(|other_name| matches_name(name, other_name))
         })
     }
+
+    /// Whether binding either of this path and `other` exposes the other.
+    pub fn overlaps(&self, other: &HomePath) -> bool {
+        self.covers(other) || other.covers(self)
+    }
 }
 
 impl fmt::Display for HomePath {
@@ -245,12 +250,10 @@ impl Credentials {
         needs: &Needs,
     ) -> Result<Credentials, InvalidValue> {
         let files = home_paths(files)?;
-        if let Some(exposed) = files.iter().find(|file| {
-            needs
-                .read
-                .iter()
-                .any(|read| read.covers(file) || file.covers(read))
-        }) {
+        if let Some(exposed) = files
+            .iter()
+            .find(|file| needs.read.iter().any(|read| read.overlaps(file)))
+        {
             return Err(InvalidValue {
                 kind: "credential file",
                 value: exposed.to_string(),

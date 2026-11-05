@@ -124,9 +124,12 @@ pub(crate) fn providers(providers: &[ProviderFacts]) -> Vec<Requirement> {
         } else {
             "no agent provider is usable, so no session can start"
         };
-        let is_any_installed = providers
-            .iter()
-            .any(|provider| matches!(provider.found, Err(ProviderUnusable::Refused { .. })));
+        let is_any_installed = providers.iter().any(|provider| {
+            matches!(
+                provider.found,
+                Err(ProviderUnusable::Refused { .. } | ProviderUnusable::DeclarationRefused { .. })
+            )
+        });
         let next = if is_any_installed {
             format!(
                 "fix a provider named above, or install another supported agent ({}) on the \

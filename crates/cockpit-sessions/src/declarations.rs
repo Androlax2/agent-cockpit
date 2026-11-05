@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use cockpit_provider_api::{HomePath, Needs, Provider};
+use cockpit_provider_api::{Credentials, HomePath, InvalidValue, Needs, Provider};
 use cockpit_sandbox::{BASELINE_DENIED_READ, BASELINE_DENIED_WRITE};
 
 /// One provider whose declaration the sandbox refuses, and why.
@@ -15,54 +15,33 @@ pub struct RefusedDeclaration {
 
 /// The providers among `providers` whose sandbox declaration is refused: a malformed one; one
 /// that reads or writes a path the baseline never shows or never lets change
-/// (`BASELINE_DENIED_READ`, `BASELINE_DENIED_WRITE`); and one that reads or writes a folder
-/// another provider declares `write`, a program's sign-in state, readable by it alone.
+/// (`BASELINE_DENIED_READ`, `BASELINE_DENIED_WRITE`); and one that reads or writes a loaded
+/// provider's sign-in state, a folder it declares `write` or a credential file of its, which is
+/// readable by that provider alone.
 pub fn refused_declarations(providers: &[Arc<dyn Provider>]) -> Vec<RefusedDeclaration> {
     let mut refused = Vec::new();
-    let mut declared = Vec::new();
+    let mut loaded = Vec::new();
     for provider in providers {
         let name = provider.name().as_str().to_owned();
-        match provider.needs() {
-            Ok(needs) => declared.push((name, needs)),
-            Err(error) => refused.push(RefusedDeclaration {
+        let reason = match declaration(provider.as_ref()) {
+            Err(error) => Some(format!("its sandbox declaration is invalid: {error}")),
+            Ok(declaration) => match baseline_overlap(&declaration.0) {
+                Some(reason) => Some(reason),
+                None => {
+                    loaded.push((name.clone(), declaration));
+                    None
+                }
+            },
+        };
+        if let Some(reason) = reason {
+            refused.push(RefusedDeclaration {
                 provider: name,
-                reason: format!("its sandbox declaration is invalid: {error}"),
-            }),
+                reason,
+            });
         }
     }
-    let baseline = baseline_home_paths();
-    for (name, needs) in &declared {
-        let others_writes =
-            declared
-                .iter()
-                .filter(|(other, _)| other != name)
-                .flat_map(|(other, other_needs)| {
-                    other_needs.write.iter().map(move |path| (other, path))
-                });
-        let reason =
-            declared_paths(needs)
-                .find_map(|path| {
-                    baseline.iter().find(|denied| overlaps(path, denied)).map(|denied| {
-                    format!(
-                        "it declares {path}, which overlaps {denied}: the sandbox never shows \
-                         or never lets a program change that path"
-                    )
-                })
-                })
-                .or_else(|| {
-                    others_writes.into_iter().find_map(|(other, written)| {
-                        declared_paths(needs)
-                        .find(|path| overlaps(path, written))
-                        .map(|path| {
-                            format!(
-                                "it declares {path}, which overlaps {written}, a folder {other} \
-                                 declares write: a program's sign-in state is readable by it \
-                                 alone"
-                            )
-                        })
-                    })
-                });
-        if let Some(reason) = reason {
+    for (name, (needs, _)) in &loaded {
+        if let Some(reason) = foreign_state_overlap(name, needs, &loaded) {
             refused.push(RefusedDeclaration {
                 provider: name.clone(),
                 reason,
@@ -72,13 +51,49 @@ pub fn refused_declarations(providers: &[Arc<dyn Provider>]) -> Vec<RefusedDecla
     refused
 }
 
-fn declared_paths(needs: &Needs) -> impl Iterator<Item = &HomePath> {
-    needs.read.iter().chain(&needs.write)
+fn declaration(provider: &dyn Provider) -> Result<(Needs, Credentials), InvalidValue> {
+    Ok((provider.needs()?, provider.credentials()?))
 }
 
-/// Whether binding one of `first` and `second` exposes the other.
-fn overlaps(first: &HomePath, second: &HomePath) -> bool {
-    first.covers(second) || second.covers(first)
+fn baseline_overlap(needs: &Needs) -> Option<String> {
+    let baseline = baseline_home_paths();
+    declared_paths(needs).find_map(|path| {
+        let denied = baseline.iter().find(|denied| path.overlaps(denied))?;
+        Some(format!(
+            "it declares {path}, which overlaps {denied}: the sandbox never shows or never lets \
+             a program change that path"
+        ))
+    })
+}
+
+/// Why `needs`, of the provider `name`, reaches another loaded provider's sign-in state.
+fn foreign_state_overlap(
+    name: &str,
+    needs: &Needs,
+    loaded: &[(String, (Needs, Credentials))],
+) -> Option<String> {
+    let foreign_state = loaded.iter().filter(|(other, _)| other != name).flat_map(
+        |(other, (other_needs, credentials))| {
+            other_needs
+                .write
+                .iter()
+                .chain(&credentials.files)
+                .map(move |state| (other, state))
+        },
+    );
+    for (other, state) in foreign_state {
+        if let Some(path) = declared_paths(needs).find(|path| path.overlaps(state)) {
+            return Some(format!(
+                "it declares {path}, which overlaps {state}, sign-in state of {other}: a \
+                 program's sign-in state is readable by it alone"
+            ));
+        }
+    }
+    None
+}
+
+fn declared_paths(needs: &Needs) -> impl Iterator<Item = &HomePath> {
+    needs.read.iter().chain(&needs.write)
 }
 
 /// The home paths of the baseline denials, a folder's `/**` read as the folder itself.
@@ -99,16 +114,19 @@ fn baseline_home_paths() -> Vec<HomePath> {
 #[cfg(test)]
 mod tests {
     use cockpit_provider_api::{
-        Capabilities, InvalidValue, LaunchCommand, LaunchRequest, ProviderError, ProviderName,
+        Capabilities, LaunchCommand, LaunchRequest, ProviderError, ProviderName,
     };
 
     use super::*;
 
-    /// A provider that declares `read` and `write`, and is never launched.
+    /// A provider that declares `read`, `write` and `credential_files`, and is never
+    /// launched.
     struct Declaring {
         name: ProviderName,
         read: &'static [&'static str],
         write: &'static [&'static str],
+        credential_files: &'static [&'static str],
+        credential_bindings: &'static [(&'static str, &'static [&'static str])],
     }
 
     impl Provider for Declaring {
@@ -127,6 +145,14 @@ mod tests {
         fn needs(&self) -> Result<Needs, InvalidValue> {
             Needs::new(&[], self.read, self.write)
         }
+
+        fn credentials(&self) -> Result<Credentials, InvalidValue> {
+            Credentials::new(
+                self.credential_files,
+                self.credential_bindings,
+                &self.needs()?,
+            )
+        }
     }
 
     fn declaring(
@@ -138,6 +164,18 @@ mod tests {
             name: ProviderName::new(name).unwrap(),
             read,
             write,
+            credential_files: &[],
+            credential_bindings: &[],
+        })
+    }
+
+    fn signed_in(name: &str, credential_files: &'static [&'static str]) -> Arc<dyn Provider> {
+        Arc::new(Declaring {
+            name: ProviderName::new(name).unwrap(),
+            read: &[],
+            write: &[],
+            credential_files,
+            credential_bindings: &[],
         })
     }
 
@@ -192,7 +230,7 @@ mod tests {
         assert!(
             refused[0]
                 .reason
-                .contains("~/.shared, a folder owner declares write"),
+                .contains("~/.shared, sign-in state of owner"),
             "{refused:?}"
         );
     }
@@ -205,5 +243,41 @@ mod tests {
         ];
 
         assert_eq!(refused_names(&providers), ["first", "second"]);
+    }
+
+    #[test]
+    fn another_providers_credential_file_is_refused_to_the_one_that_reads_it() {
+        let providers = [
+            signed_in("owner", &["~/.config/owner-login"]),
+            declaring("reader", &["~/.config/owner-login"], &[]),
+        ];
+
+        assert_eq!(refused_names(&providers), ["reader"]);
+    }
+
+    #[test]
+    fn a_refused_providers_folders_refuse_no_other() {
+        let providers = [
+            declaring("refused", &["~/.aws"], &["~/.refused"]),
+            declaring("reader", &["~/.refused/state"], &[]),
+        ];
+
+        assert_eq!(refused_names(&providers), ["refused"]);
+    }
+
+    #[test]
+    fn a_malformed_credential_declaration_is_refused() {
+        let providers: [Arc<dyn Provider>; 1] = [Arc::new(Declaring {
+            name: ProviderName::new("agent").unwrap(),
+            read: &[],
+            write: &[],
+            credential_files: &[],
+            credential_bindings: &[("TOKEN", &["undeclared.example.com"])],
+        })];
+
+        let refused = refused_declarations(&providers);
+
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(refused[0].reason.contains("invalid"), "{refused:?}");
     }
 }
