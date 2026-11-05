@@ -22,6 +22,9 @@ landlock = "=0.4.7"
 seccompiler = "=0.5.0"
 # Constants only (syscall numbers, ioctl requests); already in the tree through seccompiler.
 libc = "0.2.191"
+# Passing the proxy listener out of the sandbox's network namespace (SCM_RIGHTS, #831); the
+# same exact pin as the workspace's other crates.
+rustix = { version = "=1.1.6", default-features = false, features = ["net", "std"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

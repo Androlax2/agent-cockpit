@@ -2,7 +2,8 @@
 //!
 //! - `torlek-sandbox run SPEC`: reads and removes the daemon's launch spec, then starts its
 //!   program under bubblewrap (new user, mount, PID, network, IPC, UTS and cgroup
-//!   namespaces, a mount view of only what the spec names) through stage 2, and waits.
+//!   namespaces, a mount view of only what the spec names) through stage 2, serves the
+//!   session proxy on the listener stage 2 hands it (#831), and waits.
 //! - `torlek-sandbox stage2 POLICY ARGUMENT...`: inside the namespaces, checks the folders the launcher
 //!   pinned are the ones it saw, applies Landlock and the seccomp filter from memory, then
 //!   runs the program in its place with the arguments. Never run by hand. Each argument
@@ -11,9 +12,15 @@
 //!   the bubblewrap version and the Landlock ABI the kernel gives a sandboxed process.
 
 #[cfg(target_os = "linux")]
+mod client_hello;
+#[cfg(target_os = "linux")]
+mod handoff;
+#[cfg(target_os = "linux")]
 mod plan;
 #[cfg(target_os = "linux")]
 mod probe;
+#[cfg(target_os = "linux")]
+mod proxy;
 #[cfg(target_os = "linux")]
 mod stage2;
 
@@ -58,30 +65,68 @@ fn main() -> ExitCode {
     })
 }
 
-/// Starts the spec's program in the sandbox and waits for it; its exit status is the
-/// launcher's, a signal's as the shell reports it (128 + the signal).
+/// The folder of the session's mount folder where stage 2 hands the proxy listener over.
+#[cfg(target_os = "linux")]
+const HANDOFF_FOLDER: &str = "proxy-handoff";
+
+/// Starts the spec's program in the sandbox, serves its proxy, and waits for it; its exit
+/// status is the launcher's, a signal's as the shell reports it (128 + the signal).
 #[cfg(target_os = "linux")]
 fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
     let spec = plan::read_spec(&spec_path)?;
+    let mount_dir = spec_path
+        .parent()
+        .ok_or("the launch spec has no folder")?
+        .to_path_buf();
     let launcher = std::env::current_exe()
         .and_then(|path| path.canonicalize())
         .map_err(|error| format!("cannot find the launcher's own program: {error}"))?;
-    let plan = plan::plan(&spec, &launcher)?;
-    let status = std::process::Command::new(&spec.bubblewrap)
+    let waiting = handoff::Waiting::open(mount_dir.join(HANDOFF_FOLDER))?;
+    let plan = plan::plan(&spec, &launcher, &waiting.socket())?;
+    let mut child = std::process::Command::new(&spec.bubblewrap)
         .args(&plan.bubblewrap_arguments)
         .arg("--")
         .arg(&launcher)
         .arg("stage2")
         .arg(plan.policy_argument()?)
         .args(&spec.arguments)
-        .status()
+        .spawn()
         .map_err(|error| {
             format!(
                 "cannot start bubblewrap at {}: {error}",
                 spec.bubblewrap.display()
             )
         })?;
-    Ok(exit_code(status))
+    let listener = match waiting.receive(&mut child) {
+        Ok(Some(listener)) => listener,
+        // Stage 2 failed before the hand-off and said why.
+        Ok(None) => return wait(&mut child),
+        Err(reason) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(reason);
+        }
+    };
+    let proxy = proxy::Proxy::new(spec.egress.clone(), spec.subject.clone(), proxy::Network);
+    let report = mount_dir.join(cockpit_sandbox::EGRESS_FILE);
+    proxy.keep_report(report.clone());
+    let serving = std::sync::Arc::clone(&proxy);
+    std::thread::Builder::new()
+        .name("egress-listener".to_owned())
+        .spawn(move || serving.serve(listener))
+        .map_err(|error| format!("cannot start the session proxy: {error}"))?;
+    let exit = wait(&mut child);
+    // The last counters; the report thread may not have written them yet.
+    let _ = proxy.write_report(&report);
+    exit
+}
+
+#[cfg(target_os = "linux")]
+fn wait(child: &mut std::process::Child) -> Result<ExitCode, String> {
+    child
+        .wait()
+        .map(exit_code)
+        .map_err(|error| format!("cannot wait for bubblewrap: {error}"))
 }
 
 #[cfg(target_os = "linux")]

@@ -35,7 +35,32 @@ the bridge programs, the instruction bundle and the agent socket's folder read-o
 read-only when present; `.env` files and the host's denied paths are masked, a link's
 target with it. The terminal or file each standard stream already is can be reopened
 through `/dev/stdout` and `/dev/stderr`.
-There is no network but `lo` until the session proxy (#831).
+
+## Session proxy
+
+Decisions D1 and D2 of #546's report, issue #831. The network namespace is empty but for
+`lo`. Before Landlock, stage 2 listens on `127.0.0.1:3128` there and hands the listener over
+a Unix socket in a launcher-owned folder (`handoff.rs`); the launcher serves it from the
+host's network, one thread per connection (`proxy.rs`). Clients find it through
+`HTTPS_PROXY` and its siblings; nothing inside resolves names, and no UDP leaves.
+
+- Only `CONNECT`; plain HTTP is refused.
+- The decision is `cockpit_sandbox::Allowlist` (the spec's `egress`): the adapter's hosts
+  and, when it declares any, the checkout's ecosystem registries, each naming its source;
+  project grants join them with #674. An
+  unknown host gets `403` at once, with the reason, the session and a `Proxy-Status` that
+  separates a refusal (`http_request_denied`, `destination_ip_prohibited`) from an
+  unreachable upstream (`dns_error`, `destination_unavailable`, `connection_timeout`).
+- IP literals and names resolving to loopback, private, link-local, metadata or other
+  non-public addresses are refused unless an entry grants that address (none does before
+  #674; a host-service forward, #860, is never one); one such address
+  among a name's answers refuses the connection, and the proxy connects only to the
+  addresses it checked.
+- On port 443 the ClientHello's server name must match the `CONNECT` host; a missing or
+  different name closes the tunnel. Any other granted port tunnels without a peek.
+- The counters (`cockpit_sandbox::EgressReport`) go to `egress.json` in the session's
+  mount-source folder, at most once a second and at exit; `torlek session sandbox` shows
+  them under the evidence.
 
 ## seccomp
 

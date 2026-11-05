@@ -304,7 +304,8 @@ async fn a_sandboxed_agent_may_not_read_the_owners_ssh_keys_or_the_state_databas
     }
 }
 
-/// Until the session proxy (#831), a sandboxed agent has no network but loopback.
+/// A sandboxed agent's network is its own loopback: the session proxy (#831) listens there
+/// and is its only way out.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sandboxed_agent_sees_only_the_loopback_interface() {
     let home = Home::new();
@@ -354,7 +355,8 @@ async fn a_sandboxed_agent_gets_no_github_token_or_gh_sign_in() {
     assert!(printed.ends_with("refused\nexit=0\n"), "{printed}");
 }
 
-/// #857: with no network but loopback, a push from inside cannot reach any forge.
+/// #857: the session proxy allows no forge the adapter does not declare, so a push from
+/// inside reaches none.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sandboxed_agents_git_push_fails() {
     let home = Home::new();
@@ -831,4 +833,177 @@ async fn ending_the_session_removes_its_git_configuration() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(!configuration.exists(), "{}", configuration.display());
+}
+
+/// A raw `CONNECT target` to the session proxy from inside, with bash's `/dev/tcp`: the
+/// proxy's whole answer, then how many milliseconds it took.
+fn connect_line(target: &str) -> String {
+    format!(
+        "start=$(date +%s%N); bash -c 'exec 3<>/dev/tcp/127.0.0.1/3128; \
+         printf \"CONNECT {target} HTTP/1.1\\r\\nHost: {target}\\r\\n\\r\\n\" >&3; cat <&3'; \
+         echo \"ms=$(( ($(date +%s%N) - start) / 1000000 ))\""
+    )
+}
+
+fn milliseconds(printed: &str) -> u64 {
+    printed
+        .lines()
+        .find_map(|line| line.strip_prefix("ms="))
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or_else(|| panic!("no time in {printed}"))
+}
+
+/// #831: an unknown host gets `403` in under a second, naming the host, the session and
+/// why, and the client inside reads that the proxy, not the network, refused it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_is_refused_an_unknown_host_at_once_with_a_reason() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    let printed = run_in_agent(&home, &agent.root, &connect_line("unknown.example.com:443")).await;
+
+    assert!(
+        printed.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "{printed}"
+    );
+    assert!(printed.contains("error=http_request_denied"), "{printed}");
+    assert!(
+        printed.contains(&format!(
+            "torlek-sandbox refused unknown.example.com:443 for session {}: \
+             unknown.example.com:443 is not allowed",
+            agent.session
+        )),
+        "{printed}"
+    );
+    assert!(milliseconds(&printed) < 1000, "{printed}");
+}
+
+/// #831: loopback, private, link-local (metadata) addresses and IP literals are refused:
+/// the host's own services are not reachable from inside.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_is_refused_ip_literals_loopback_private_and_metadata_addresses() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    for target in [
+        "127.0.0.1:22",
+        "[::1]:22",
+        "10.0.0.1:443",
+        "169.254.169.254:80",
+        "1.1.1.1:443",
+    ] {
+        let printed = run_in_agent(&home, &agent.root, &connect_line(target)).await;
+
+        assert!(
+            printed.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+            "{target}: {printed}"
+        );
+        assert!(
+            printed.contains("error=destination_ip_prohibited"),
+            "{target}: {printed}"
+        );
+    }
+}
+
+/// #831: no resolver answers inside and no UDP leaves: no DNS tunnel.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_has_no_dns_and_no_udp() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "getent hosts example.com || echo unresolved; \
+         bash -c 'echo probe > /dev/udp/1.1.1.1/53' 2>/dev/null || echo 'no udp'",
+    )
+    .await;
+
+    assert_eq!(printed, "unresolved\nno udp\nexit=0\n");
+}
+
+/// #831: clients inside find the proxy through the usual variables.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agents_clients_are_pointed_at_the_session_proxy() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    let printed = run_in_agent(&home, &agent.root, "echo \"$HTTPS_PROXY $NO_PROXY\"").await;
+
+    assert_eq!(
+        printed,
+        "http://127.0.0.1:3128 localhost,127.0.0.1,::1\nexit=0\n"
+    );
+}
+
+/// #831, #861: the evidence names each allowed host with its source, and the counters the
+/// launcher keeps show what it refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_evidence_names_the_allowed_hosts_and_counts_refusals() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    run_in_agent(&home, &agent.root, &connect_line("unknown.example.com:443")).await;
+
+    let printed = sandbox_evidence_once_it_contains(
+        &home,
+        &agent.session,
+        "egress unknown.example.com:443: refused 1",
+    )
+    .await;
+
+    assert!(
+        printed.contains(
+            "egress: api.anthropic.com:443 (the claude adapter), TLS server name checked"
+        ),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(
+            "egress unknown.example.com:443: allowed 0, refused 1, unreachable 0, \
+             0 bytes out, 0 bytes in; last: unknown.example.com:443 is not allowed"
+        ),
+        "{printed}"
+    );
+}
+
+/// #859: a checkout that uses an ecosystem gets its registry, named as such.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_checkouts_ecosystem_registry_is_allowed_and_named() {
+    let home = Home::new();
+    home.write_owner_config(REQUIRED);
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"app\"\n").unwrap();
+    let session = new_session(&client, &root).await;
+
+    let shown = home
+        .cockpit(&["session", "sandbox", &session.id], &[])
+        .await;
+
+    assert!(shown.status.success(), "{}", text(&shown.stderr));
+    let printed = text(&shown.stdout);
+    for host in ["index.crates.io", "static.crates.io"] {
+        assert!(
+            printed.contains(&format!(
+                "egress: {host}:443 (the rust registry), TLS server name checked"
+            )),
+            "{printed}"
+        );
+    }
+}
+
+/// `cockpit session sandbox` once it prints `expected`: the launcher rewrites its counters
+/// within a second of a change.
+async fn sandbox_evidence_once_it_contains(home: &Home, session: &str, expected: &str) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let shown = home.cockpit(&["session", "sandbox", session], &[]).await;
+        assert!(shown.status.success(), "{}", text(&shown.stderr));
+        let printed = text(&shown.stdout);
+        if printed.contains(expected) || std::time::Instant::now() > deadline {
+            return printed;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }

@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
+use crate::egress::{AllowEntry, Allowlist, PROXY_ADDRESS, Target};
 use crate::spec::{
     LANDLOCK_ABI_FLOOR, LaunchSpec, NeedsSource, Protected, SPEC_FILE, SPEC_VERSION,
     SYSTEM_READ_ONLY, Subject, WhenAbsent,
@@ -168,6 +169,9 @@ pub struct ProviderNeeds {
     pub credential_files: Vec<String>,
     /// Variables a credential reaches the harness in: never passed into the sandbox.
     pub credential_variables: Vec<String>,
+    /// Where the session proxy lets the harness go (#831): its declared hosts, and the
+    /// registries of the ecosystems its checkout uses (#859), each with its source.
+    pub egress: Vec<AllowEntry>,
 }
 
 impl ProviderNeeds {
@@ -178,6 +182,7 @@ impl ProviderNeeds {
             read: Vec::new(),
             credential_files: Vec::new(),
             credential_variables: Vec::new(),
+            egress: Vec::new(),
         }
     }
 }
@@ -265,7 +270,8 @@ impl Staged {
     }
 
     /// Creates the owner-only folders and writes the spec, owner-only, replacing one a failed
-    /// launch left.
+    /// launch left; removes the last launch's egress counters, so the evidence never shows
+    /// them as this launch's.
     pub fn write(&self) -> std::io::Result<()> {
         let mut folders = std::fs::DirBuilder::new();
         folders.recursive(true).mode(0o700);
@@ -279,8 +285,16 @@ impl Staged {
         for (name, contents) in &self.config_files {
             replace_owner_only(&self.config_dir.join(name), contents.as_bytes())?;
         }
+        remove_if_present(&self.mount_dir.join(crate::EGRESS_FILE))?;
         let text = serde_json::to_vec(&self.spec).map_err(std::io::Error::other)?;
         replace_owner_only(&self.spec_path(), &text)
+    }
+}
+
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        removed => removed,
     }
 }
 
@@ -334,7 +348,7 @@ pub(crate) fn prepare(
     {
         return Err(Refusal::new(
             format!("secret {} as a placeholder", secret.variable),
-            "no proxy swaps placeholders in this release (#831)",
+            "the session proxy swaps no placeholders yet (#832)",
         ));
     }
     let home = home_folder(&request.environment)?;
@@ -427,6 +441,10 @@ pub(crate) fn prepare(
         hidden,
         needs_source: request.needs.source.clone(),
         forwards: Vec::new(),
+        egress: Allowlist {
+            program: request.provider.clone(),
+            entries: request.needs.egress.clone(),
+        },
     };
     spec.validate()
         .map_err(|error| Refusal::new("launch spec", error.to_string()))?;
@@ -446,9 +464,10 @@ pub(crate) fn prepare(
             // `GIT_CONFIG_COUNT` and its pairs, or `GIT_CONFIG_PARAMETERS`, could name a
             // credential helper again.
             let is_git_configuration = name.to_string_lossy().starts_with("GIT_CONFIG");
-            !is_credential && !is_replaced && !is_git_configuration
+            !is_credential && !is_replaced && !is_git_configuration && !is_proxy_variable(name)
         })
         .cloned()
+        .chain(proxy_variables())
         .collect();
     environment.extend(tool_environment.variables);
     let staged = Staged {
@@ -477,6 +496,47 @@ pub(crate) fn prepare(
         reach,
         staged: Some(staged),
     })
+}
+
+/// The variables that send clients through the session proxy (#546 M4 A); the owner's own
+/// proxy settings would point at nothing the sandbox reaches.
+const PROXY_VARIABLES: [&str; 6] = [
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "ALL_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "all_proxy",
+];
+
+/// The variables that keep the agent's own servers on its loopback direct.
+const NO_PROXY_VARIABLES: [&str; 2] = ["NO_PROXY", "no_proxy"];
+
+/// Loopback inside the sandbox: the agent's own servers, never the host's.
+const NO_PROXY: &str = "localhost,127.0.0.1,::1";
+
+fn is_proxy_variable(name: &OsStr) -> bool {
+    PROXY_VARIABLES
+        .iter()
+        .chain(&NO_PROXY_VARIABLES)
+        .any(|variable| name == *variable)
+        || name == "NODE_USE_ENV_PROXY"
+}
+
+fn proxy_variables() -> Vec<(OsString, OsString)> {
+    let proxy = format!("http://{PROXY_ADDRESS}");
+    let mut variables: Vec<(OsString, OsString)> = PROXY_VARIABLES
+        .iter()
+        .map(|name| (name.into(), proxy.clone().into()))
+        .collect();
+    variables.extend(
+        NO_PROXY_VARIABLES
+            .iter()
+            .map(|name| (name.into(), NO_PROXY.into())),
+    );
+    // Node's built-in `fetch` and `http` honor the variables only with it (Node 24.0, 22.21).
+    variables.push(("NODE_USE_ENV_PROXY".into(), "1".into()));
+    variables
 }
 
 /// The program's home: the owner's `HOME`, which the session's own folder stands in for.
@@ -768,10 +828,7 @@ fn evidence(
             "bubblewrap mask",
         ));
     }
-    rules.push(rule(
-        "network: none but lo (no proxy in this release, #831)".to_owned(),
-        "network namespace",
-    ));
+    rules.extend(egress_rules(&spec.egress));
     rules.push(rule(
         "system calls: tracing, mounts, namespaces, kernel modules, keys, BPF, io_uring and \
          terminal injection refused"
@@ -814,6 +871,42 @@ fn evidence(
             format!("subject: session {}", request.session),
         ],
     }
+}
+
+/// The network a launch gets: the session proxy alone, and each destination it allows.
+fn egress_rules(allowlist: &Allowlist) -> Vec<AppliedRule> {
+    let proxy = format!("{BACKEND_NAME} session proxy");
+    let rule = |text: String, enforced_by: &str| AppliedRule {
+        rule: text,
+        enforced_by: enforced_by.to_owned(),
+    };
+    let mut rules = vec![rule(
+        format!("network: only through the session proxy at {PROXY_ADDRESS}; no DNS or UDP inside"),
+        "network namespace",
+    )];
+    if allowlist.entries.is_empty() {
+        rules.push(rule(
+            format!("egress: no host, `{}` declares no hosts", allowlist.program),
+            &proxy,
+        ));
+    }
+    for entry in &allowlist.entries {
+        let check = match &entry.target {
+            Target::Name(_) if entry.port == crate::egress::TLS_PORT => ", TLS server name checked",
+            Target::Name(_) | Target::Address(_) => "",
+        };
+        rules.push(rule(
+            format!("egress: {entry} ({}){check}", entry.source),
+            &proxy,
+        ));
+    }
+    rules.push(rule(
+        "egress: other hosts, IP literals, and loopback, private, link-local, shared, \
+         multicast and reserved addresses refused unless granted by address"
+            .to_owned(),
+        &proxy,
+    ));
+    rules
 }
 
 /// One launch's own name, which an owner's observations name to attach to it.

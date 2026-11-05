@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod egress;
 mod evidence;
 mod launch;
 mod native;
@@ -10,6 +11,11 @@ mod profile;
 mod spec;
 
 pub use cockpit_config::{AgentSandbox, DesktopSession};
+pub use egress::{
+    AllowEntry, AllowSource, Allowed, Allowlist, Counters as EgressCounters, EGRESS_FILE,
+    EgressReport, MAX_REPORTED_DESTINATIONS, PROXY_ADDRESS, Refusal as EgressRefusal, TLS_PORT,
+    Target, destination, non_public_class, normalized_name,
+};
 pub use evidence::{AppliedRule, Enforcement, Evidence};
 #[cfg(feature = "persistence")]
 pub use evidence::{MIGRATIONS, latest_for_session, record};

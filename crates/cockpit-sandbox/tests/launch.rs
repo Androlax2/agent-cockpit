@@ -192,6 +192,7 @@ fn a_required_sandbox_drops_declared_credential_variables_and_hides_credential_f
         read: vec!["~/.claude".to_owned()],
         credential_files: vec!["~/.claude/.credentials.json".to_owned()],
         credential_variables: vec!["ANTHROPIC_API_KEY".to_owned()],
+        egress: Vec::new(),
     };
 
     let prepared = native_launch(&request).unwrap();
@@ -260,7 +261,7 @@ fn a_sessions_tool_configuration_is_the_folder_its_launch_writes() {
     assert_eq!(removed, prepared.staged.unwrap().config_dir);
 }
 
-/// Without the session proxy (#831) nothing swaps a placeholder for the secret.
+/// Until selective interception (#832) the session proxy swaps no placeholder.
 #[test]
 fn a_required_sandbox_refuses_a_placeholder_secret() {
     let mut request = launch_request("s1", "/home/owner/app");
@@ -431,4 +432,155 @@ async fn the_evidence_is_read_back_as_recorded_for_the_sessions_latest_launch() 
     assert_eq!(latest, Some(unsandboxed));
     assert_eq!(earlier, Some(earlier_release));
     assert_eq!(none, None);
+}
+
+fn claude_hosts() -> Vec<cockpit_sandbox::AllowEntry> {
+    vec![
+        cockpit_sandbox::AllowEntry {
+            target: cockpit_sandbox::Target::Name("api.anthropic.com".to_owned()),
+            port: 443,
+            source: cockpit_sandbox::AllowSource::Adapter {
+                provider: "claude".to_owned(),
+            },
+        },
+        cockpit_sandbox::AllowEntry {
+            target: cockpit_sandbox::Target::Name("index.crates.io".to_owned()),
+            port: 443,
+            source: cockpit_sandbox::AllowSource::Ecosystem {
+                ecosystem: "rust".to_owned(),
+            },
+        },
+    ]
+}
+
+/// #831: clients inside reach the network only through the session proxy; the owner's own
+/// proxy settings would point at nothing the sandbox reaches.
+#[test]
+fn a_required_sandbox_sends_clients_through_the_session_proxy() {
+    let mut request = launch_request("s1", "/home/owner/app");
+    request
+        .environment
+        .push(("https_proxy".into(), "http://owner-proxy:8080".into()));
+
+    let prepared = native_launch(&request).unwrap();
+
+    let value = |name: &str| {
+        prepared
+            .environment
+            .iter()
+            .filter(|(variable, _)| variable == name)
+            .map(|(_, value)| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
+    for variable in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "ALL_PROXY"] {
+        assert_eq!(value(variable), ["http://127.0.0.1:3128"], "{variable}");
+    }
+    assert_eq!(value("NO_PROXY"), ["localhost,127.0.0.1,::1"]);
+    assert_eq!(value("NODE_USE_ENV_PROXY"), ["1"]);
+}
+
+#[test]
+fn a_required_sandbox_hands_the_declared_hosts_to_the_launcher() {
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.needs.egress = claude_hosts();
+
+    let prepared = native_launch(&request).unwrap();
+
+    let spec = prepared.staged.unwrap().spec;
+    assert_eq!(spec.egress.entries, claude_hosts());
+    assert_eq!(spec.egress.program, request.provider);
+}
+
+/// #861: the evidence names each entry's source.
+#[test]
+fn the_evidence_names_each_allowed_host_and_its_source() {
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.needs.egress = claude_hosts();
+
+    let rules: Vec<String> = native_launch(&request)
+        .unwrap()
+        .evidence
+        .rules
+        .into_iter()
+        .map(|rule| rule.rule)
+        .collect();
+
+    for expected in [
+        "egress: api.anthropic.com:443 (the claude adapter), TLS server name checked",
+        "egress: index.crates.io:443 (the rust registry), TLS server name checked",
+    ] {
+        assert!(
+            rules.iter().any(|rule| rule == expected),
+            "{expected}: {rules:?}"
+        );
+    }
+}
+
+#[test]
+fn the_evidence_of_a_program_declaring_no_hosts_says_so() {
+    let request = launch_request("s1", "/home/owner/app");
+
+    let rules: Vec<String> = native_launch(&request)
+        .unwrap()
+        .evidence
+        .rules
+        .into_iter()
+        .map(|rule| rule.rule)
+        .collect();
+
+    let expected = format!("egress: no host, `{}` declares no hosts", request.provider);
+    assert!(rules.contains(&expected), "{rules:?}");
+}
+
+/// An entry the proxy could not match as written refuses the launch.
+#[test]
+fn a_spec_with_a_malformed_allowlist_entry_is_refused() {
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.needs.egress = vec![cockpit_sandbox::AllowEntry {
+        target: cockpit_sandbox::Target::Name("*".to_owned()),
+        port: 443,
+        source: cockpit_sandbox::AllowSource::Grant {
+            grant: "g1".to_owned(),
+        },
+    }];
+
+    let refused = native_launch(&request).unwrap_err();
+
+    assert_eq!(refused.rule, "launch spec");
+}
+
+/// #831: a relaunch never shows the last launch's egress counters as its own.
+#[test]
+fn staging_a_launch_removes_the_egress_counters_of_the_last_launch() {
+    let state = tempfile::tempdir().unwrap();
+    let host_paths = HostPaths {
+        mount_sources: state.path().join("mounts"),
+        homes: state.path().join("homes"),
+        ..no_host_paths()
+    };
+    let sandbox = Sandbox::new(Platform::Linux, host_paths, native_backend());
+    let last_launch = state.path().join("mounts/s1");
+    std::fs::create_dir_all(&last_launch).unwrap();
+    let report = cockpit_sandbox::EgressReport::new(cockpit_sandbox::Subject::Session {
+        session: "s1".to_owned(),
+    });
+    std::fs::write(
+        last_launch.join(cockpit_sandbox::EGRESS_FILE),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sandbox.egress_report("s1").unwrap(), Some(report));
+    let (program, arguments) = agent_words();
+    let prepared = sandbox
+        .prepare(
+            AgentSandbox::Required,
+            &launch_request("s1", state.path().join("app").to_str().unwrap()),
+            program,
+            arguments,
+        )
+        .unwrap();
+
+    prepared.staged.unwrap().write().unwrap();
+
+    assert_eq!(sandbox.egress_report("s1").unwrap(), None);
 }

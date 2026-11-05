@@ -2,25 +2,35 @@
 //! leaves an agent in its checkout. Needs `bwrap` on `PATH`, as CI installs it.
 #![cfg(target_os = "linux")]
 
+use std::io::{Read, Write};
+use std::net::{IpAddr, TcpListener};
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cockpit_sandbox::{
-    LaunchSpec, NeedsSource, Protected, SPEC_FILE, SPEC_VERSION, Subject, WhenAbsent,
+    AllowEntry, AllowSource, Allowlist, EGRESS_FILE, EgressReport, LaunchSpec, NeedsSource,
+    Protected, SPEC_FILE, SPEC_VERSION, Subject, Target, WhenAbsent,
 };
 
 const LAUNCHER: &str = env!("CARGO_BIN_EXE_torlek-sandbox");
 
 struct Fixture {
     root: tempfile::TempDir,
+    egress: Allowlist,
 }
 
 impl Fixture {
     /// A checkout with a Git folder, in Cargo's temporary folder for tests.
     fn new() -> Fixture {
         let root = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-        let fixture = Fixture { root };
+        let fixture = Fixture {
+            root,
+            egress: Allowlist {
+                program: "sh".to_owned(),
+                entries: Vec::new(),
+            },
+        };
         for folder in ["checkout/.git/hooks", "home", "home-source", "mounts"] {
             std::fs::create_dir_all(fixture.path(folder)).unwrap();
         }
@@ -67,6 +77,7 @@ impl Fixture {
             hidden: vec![checkout.join(".env")],
             needs_source: NeedsSource::Floor,
             forwards: Vec::new(),
+            egress: self.egress.clone(),
         }
     }
 
@@ -227,4 +238,116 @@ fn a_program_on_a_terminal_writes_to_dev_stdout_and_dev_stderr() {
     let printed = fixture.run_on_a_terminal("echo out > /dev/stdout && echo err > /dev/stderr");
 
     assert_eq!(printed, "out\nerr\n");
+}
+
+/// A server on the host's loopback that answers one request with `hello`; its port.
+fn hello_server() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+        }
+    });
+    port
+}
+
+/// `curl` through the session proxy, tunnelling with `CONNECT`: the body, then the proxy's
+/// answer to `CONNECT`.
+fn curl_through_the_proxy(url: &str) -> String {
+    format!(
+        "curl --silent --proxytunnel --proxy http://127.0.0.1:3128 --max-time 5 \
+         --write-out ' connect=%{{http_connect}}' {url}"
+    )
+}
+
+fn granted_loopback(port: u16) -> AllowEntry {
+    AllowEntry {
+        target: Target::Address(IpAddr::from([127, 0, 0, 1])),
+        port,
+        source: AllowSource::Grant {
+            grant: "g1".to_owned(),
+        },
+    }
+}
+
+/// #831: the listener stage 2 created inside reaches the launcher, which connects on the
+/// host's network to an address granted as such.
+#[test]
+fn a_granted_address_is_reached_through_the_session_proxy() {
+    let mut fixture = Fixture::new();
+    let port = hello_server();
+    fixture.egress.entries.push(granted_loopback(port));
+
+    let printed = fixture.run(&curl_through_the_proxy(&format!(
+        "http://127.0.0.1:{port}/"
+    )));
+
+    assert_eq!(printed, "hello connect=200exit=0\n");
+}
+
+/// The host's loopback is refused unless granted by address, whatever the agent asks.
+#[test]
+fn the_hosts_loopback_is_refused_without_a_grant() {
+    let fixture = Fixture::new();
+    let port = hello_server();
+
+    let printed = fixture.run(&curl_through_the_proxy(&format!(
+        "http://127.0.0.1:{port}/"
+    )));
+
+    assert!(printed.contains("connect=403"), "{printed}");
+    assert!(!printed.contains("hello"), "{printed}");
+}
+
+/// Inside, the agent's own servers on its loopback stay its own: the host's are not there.
+#[test]
+fn the_hosts_loopback_is_not_reachable_directly() {
+    let fixture = Fixture::new();
+    let port = hello_server();
+
+    let printed = fixture.run(&format!(
+        "curl --silent --max-time 5 http://127.0.0.1:{port}/; echo \" curl=$?\""
+    ));
+
+    assert!(!printed.contains("hello"), "{printed}");
+    assert!(!printed.contains("curl=0\n"), "{printed}");
+}
+
+/// No resolver answers inside: no DNS, and no UDP route out of the namespace.
+#[test]
+fn no_name_resolves_inside_the_sandbox() {
+    let fixture = Fixture::new();
+
+    let printed = fixture.run("getent hosts example.com || echo unresolved");
+
+    assert_eq!(printed, "unresolved\nexit=0\n");
+}
+
+/// The launcher keeps its counters beside the spec, in the folder no agent reaches.
+#[test]
+fn the_launcher_reports_what_it_allowed_and_refused() {
+    let mut fixture = Fixture::new();
+    let port = hello_server();
+    fixture.egress.entries.push(granted_loopback(port));
+
+    fixture.run(&format!(
+        "{}; {}",
+        curl_through_the_proxy(&format!("http://127.0.0.1:{port}/")),
+        curl_through_the_proxy("http://unknown.example.com/")
+    ));
+
+    let report: EgressReport =
+        serde_json::from_slice(&std::fs::read(fixture.path("mounts").join(EGRESS_FILE)).unwrap())
+            .unwrap();
+    let allowed = &report.destinations[&format!("127.0.0.1:{port}")];
+    assert_eq!((allowed.allowed, allowed.refused), (1, 0));
+    assert_eq!(allowed.source.as_deref(), Some("grant g1"));
+    assert_eq!(allowed.bytes_in, 43);
+    let refused = &report.destinations["unknown.example.com:80"];
+    assert_eq!((refused.allowed, refused.refused), (0, 1));
+    assert!(!fixture.path("mounts/proxy-handoff").exists());
 }

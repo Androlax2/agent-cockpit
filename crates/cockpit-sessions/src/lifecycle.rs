@@ -1997,11 +1997,14 @@ impl Sessions {
                 with_github_token(environment.clone(), None),
             )
         });
-        let needs = provider_needs(self.provider(Some(session.provider.as_str()))?.as_ref())?;
         let setting = self.owner_settings().sandbox;
         let tools = self
             .sandbox_tools(setting, &checkout.path, &session.working_dir, &environment)
             .await?;
+        let needs = provider_needs(
+            self.provider(Some(session.provider.as_str()))?.as_ref(),
+            &tools.ecosystems,
+        )?;
         let prepared = self.prepare_sandbox(
             setting,
             id.as_str(),
@@ -2334,12 +2337,12 @@ impl Sessions {
             .await?;
         let (checkout, _) = self.checkout_containing(&dir).await?;
         let github = self.github_access(checkout.project.as_str()).await?;
-        let needs = provider_needs(self.provider(Some(&provider))?.as_ref())?;
         let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
         let setting = self.owner_settings().sandbox;
         let tools = self
             .sandbox_tools(setting, &checkout.path, &checkout.path, &environment)
             .await?;
+        let needs = provider_needs(self.provider(Some(&provider))?.as_ref(), &tools.ecosystems)?;
         self.prepare_sandbox(
             setting,
             DRY_RUN_SESSION,
@@ -2390,8 +2393,32 @@ impl Sessions {
     ) -> Result<Option<cockpit_sandbox::Evidence>, Error> {
         let read = self.database.read().await?;
         store::session(&read, id).await?;
-        let evidence = cockpit_sandbox::latest_for_session(&read, id.as_str()).await?;
-        Ok(evidence)
+        let Some(mut evidence) = cockpit_sandbox::latest_for_session(&read, id.as_str()).await?
+        else {
+            return Ok(None);
+        };
+        drop(read);
+        if matches!(
+            evidence.enforcement,
+            cockpit_sandbox::Enforcement::Sandboxed { .. }
+        ) {
+            let sandbox = self.settings.sandbox.clone();
+            let session = id.as_str().to_owned();
+            let report = self
+                .blocking("read the session proxy's counters", move || {
+                    Ok(sandbox.egress_report(&session))
+                })
+                .await?;
+            // Counters are observations: one that cannot be read is said, never fatal.
+            match report {
+                Ok(Some(report)) => evidence.observed.extend(report.describe()),
+                Ok(None) => {}
+                Err(reason) => evidence
+                    .observed
+                    .push(format!("egress counters unreadable: {reason}")),
+            }
+        }
+        Ok(Some(evidence))
     }
 
     async fn confirm_agent(
@@ -2960,9 +2987,13 @@ fn owner_gh_config_dirs(environment: &cockpit_config::Environment, home: &Path) 
     dirs
 }
 
-/// What `provider`'s adapter declares for the sandbox (#830, #858); a malformed declaration
-/// refuses the launch rather than narrowing it.
-fn provider_needs(provider: &dyn Provider) -> Result<cockpit_sandbox::ProviderNeeds, Error> {
+/// What `provider`'s adapter declares for the sandbox (#830, #858), with the registries of
+/// the checkout's `ecosystems` in its egress when it declares any host (#859, #861); a
+/// malformed declaration refuses the launch rather than narrowing it.
+fn provider_needs(
+    provider: &dyn Provider,
+    ecosystems: &[String],
+) -> Result<cockpit_sandbox::ProviderNeeds, Error> {
     let refused = |error: cockpit_provider_api::InvalidValue| {
         Error::Provider(ProviderError {
             reason: format!("its sandbox declaration is invalid: {error}"),
@@ -2975,6 +3006,36 @@ fn provider_needs(provider: &dyn Provider) -> Result<cockpit_sandbox::ProviderNe
         && needs.write.is_empty()
         && credentials.files.is_empty()
         && credentials.bindings.is_empty();
+    let adapter = cockpit_sandbox::AllowSource::Adapter {
+        provider: provider.name().as_str().to_owned(),
+    };
+    let mut egress: Vec<cockpit_sandbox::AllowEntry> = needs
+        .hosts
+        .iter()
+        .map(|host| allow_entry(host.as_str(), adapter.clone()))
+        .collect();
+    if !egress.is_empty() {
+        for ecosystem in ecosystems {
+            let toolchain_refused = |reason: String| {
+                Error::Provider(ProviderError {
+                    reason: format!("the {ecosystem} toolchain {reason}"),
+                })
+            };
+            let toolchain = cockpit_provider_api::toolchains::TOOLCHAINS
+                .iter()
+                .find(|toolchain| toolchain.ecosystem == ecosystem)
+                .ok_or_else(|| toolchain_refused("is not in the toolchain table".to_owned()))?;
+            let source = cockpit_sandbox::AllowSource::Ecosystem {
+                ecosystem: ecosystem.clone(),
+            };
+            for host in toolchain.registry_hosts {
+                let host = cockpit_provider_api::Host::new(*host).map_err(|error| {
+                    toolchain_refused(format!("has an invalid registry host: {error}"))
+                })?;
+                egress.push(allow_entry(host.as_str(), source.clone()));
+            }
+        }
+    }
     let source = if declares_nothing {
         cockpit_sandbox::NeedsSource::Floor
     } else {
@@ -2999,7 +3060,22 @@ fn provider_needs(provider: &dyn Provider) -> Result<cockpit_sandbox::ProviderNe
             .into_iter()
             .map(|binding| binding.variable)
             .collect(),
+        egress,
     })
+}
+
+/// A declared host, `name` or `name:port` as [`cockpit_provider_api::Host`] validated it,
+/// as the proxy's entry: port 443 when it names none.
+fn allow_entry(host: &str, source: cockpit_sandbox::AllowSource) -> cockpit_sandbox::AllowEntry {
+    let (name, port) = match host.rsplit_once(':') {
+        Some((name, port)) => (name, port.parse().unwrap_or(0)),
+        None => (host, cockpit_sandbox::TLS_PORT),
+    };
+    cockpit_sandbox::AllowEntry {
+        target: cockpit_sandbox::Target::Name(name.to_owned()),
+        port,
+        source,
+    }
 }
 
 /// What the checkout at `checkout`, started in `start_dir`, and Git ask of a sandboxed
