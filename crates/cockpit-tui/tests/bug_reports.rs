@@ -1,6 +1,6 @@
 //! Bug report drafts in the TUI (#471): one needs-you card counts the drafts the feed carries,
 //! `B` lists them, and `b` drafts a new one with `bug-report-new`. Review and send stay in the
-//! CLI.
+//! CLI; a draft a send opened is listed apart, and `B` records its issue in place (#847).
 
 mod common;
 
@@ -31,8 +31,40 @@ fn draft(id: i64, origin: BugOriginView, title: &str, occurrences: i64) -> BugRe
         issue_url: None,
         created_at: 1,
         changed_at: 1,
+        opened_at: None,
         issue: None,
     }
+}
+
+/// `draft` once `torlek bug-report send` handed the owner its issue, as the feed carries it.
+fn opened(draft: BugReportView) -> BugReportView {
+    BugReportView {
+        opened_at: Some(2),
+        changed_at: 2,
+        ..draft
+    }
+}
+
+const ISSUE_URL: &str = "https://github.com/Androlax2/agent-cockpit/issues/844";
+
+/// `draft` as `bug-report-sent` answers it.
+fn recorded(draft: BugReportView) -> Reply {
+    Reply::BugReport {
+        report: Box::new(BugReportView {
+            status: BugStatusView::Sent,
+            issue_url: Some(ISSUE_URL.to_owned()),
+            ..draft
+        }),
+    }
+}
+
+/// An app whose feed carries `drafts`, with the `B` view open.
+fn listing(drafts: &[BugReportView], now: Instant) -> cockpit_tui::App {
+    let mut app = app_with(&["app"], Vec::new(), now);
+    app.apply_changes(&after_snapshot(drafts.iter().map(published).collect()))
+        .unwrap();
+    press(&mut app, &[Key::Char('B')], now);
+    app
 }
 
 fn published(draft: &BugReportView) -> cockpit_protocol::ChangeEvent {
@@ -214,4 +246,265 @@ fn a_draft_on_its_way_takes_no_edit() {
     let screen = screen_text(&app, now);
     assert!(!screen.contains("froze again"), "{screen}");
     assert!(screen.contains("Drafting…"), "{screen}");
+}
+
+/// #847: the owner submitted draft 1 in the browser `torlek bug-report send` opened, and `B`
+/// kept listing it as waiting.
+#[test]
+fn a_draft_a_send_opened_is_listed_as_opened_not_as_waiting() {
+    let now = Instant::now();
+    let app = listing(
+        &[
+            opened(draft(1, BugOriginView::Owner, "the board froze", 1)),
+            draft(2, BugOriginView::Agent, "todo add timed out", 1),
+        ],
+        now,
+    );
+
+    let screen = screen_text(&app, now);
+    let (before_waiting, waiting) = screen
+        .split_once("Waiting for you")
+        .unwrap_or_else(|| panic!("no waiting drafts:\n{screen}"));
+    assert!(
+        before_waiting.contains("Opened to send, issue not recorded yet"),
+        "{screen}"
+    );
+    assert!(before_waiting.contains("the board froze"), "{screen}");
+    assert!(!waiting.contains("the board froze"), "{screen}");
+    assert!(waiting.contains("todo add timed out"), "{screen}");
+}
+
+#[test]
+fn the_card_counts_the_opened_drafts_apart_from_the_waiting_ones() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], Vec::new(), now);
+
+    app.apply_changes(&after_snapshot(vec![
+        published(&opened(draft(
+            1,
+            BugOriginView::Owner,
+            "the board froze",
+            1,
+        ))),
+        published(&draft(2, BugOriginView::Agent, "todo add timed out", 1)),
+    ]))
+    .unwrap();
+
+    let screen = screen_text(&app, now);
+    assert!(
+        screen.contains("! Bug report drafts (1), 1 more opened to send: B lists them"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn the_card_of_opened_drafts_alone_says_b_records_their_issue() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], Vec::new(), now);
+
+    app.apply_changes(&after_snapshot(vec![published(&opened(draft(
+        1,
+        BugOriginView::Owner,
+        "the board froze",
+        1,
+    )))]))
+    .unwrap();
+
+    let screen = screen_text(&app, now);
+    assert!(
+        screen.contains("! Bug reports opened to send (1): B records their issue"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn enter_then_the_issue_records_it_for_the_selected_draft_with_bug_report_sent() {
+    let now = Instant::now();
+    let mut app = listing(
+        &[opened(draft(1, BugOriginView::Owner, "the board froze", 1))],
+        now,
+    );
+    press(&mut app, &[Key::Enter], now);
+    typing(&mut app, ISSUE_URL, now);
+
+    let submitted = sent(&press(&mut app, &[Key::Enter], now));
+
+    assert_eq!(
+        submitted,
+        vec![Command::BugReportSent {
+            report: 1,
+            issue_url: Some(ISSUE_URL.to_owned()),
+        }]
+    );
+}
+
+/// #847's acceptance: once the URL is recorded the draft leaves the list and its issue shows.
+#[test]
+fn a_recorded_draft_leaves_the_list_and_shows_its_issue() {
+    let now = Instant::now();
+    let submitted_in_browser = opened(draft(1, BugOriginView::Owner, "the board froze", 1));
+    let mut app = listing(std::slice::from_ref(&submitted_in_browser), now);
+    press(&mut app, &[Key::Enter], now);
+    typing(&mut app, "844", now);
+    let submitted = sent(&press(&mut app, &[Key::Enter], now));
+
+    app.answer(&submitted[0], Ok(recorded(submitted_in_browser)), now);
+    app.apply_changes(&after_snapshot(vec![tombstone(EntityKind::BugReport, "1")]))
+        .unwrap();
+
+    let screen = screen_text(&app, now);
+    assert!(!screen.contains("the board froze"), "{screen}");
+    assert!(
+        screen.contains(&format!("Done: bug report 1 is recorded as {ISSUE_URL}")),
+        "{screen}"
+    );
+    assert!(
+        app.log()
+            .any(|entry| entry == format!("bug report 1 is recorded as {ISSUE_URL}")),
+        "{:?}",
+        app.log().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn j_moves_to_the_next_draft_and_enter_records_that_one() {
+    let now = Instant::now();
+    let mut app = listing(
+        &[
+            opened(draft(1, BugOriginView::Owner, "the board froze", 1)),
+            opened(draft(2, BugOriginView::Agent, "todo add timed out", 1)),
+        ],
+        now,
+    );
+    press(&mut app, &[Key::Char('j'), Key::Enter], now);
+    typing(&mut app, "845", now);
+
+    let submitted = sent(&press(&mut app, &[Key::Enter], now));
+
+    assert_eq!(
+        submitted,
+        vec![Command::BugReportSent {
+            report: 2,
+            issue_url: Some("845".to_owned()),
+        }]
+    );
+}
+
+#[test]
+fn an_issue_left_empty_is_not_recorded() {
+    let now = Instant::now();
+    let mut app = listing(
+        &[opened(draft(1, BugOriginView::Owner, "the board froze", 1))],
+        now,
+    );
+
+    let submitted = sent(&press(&mut app, &[Key::Enter, Key::Enter], now));
+
+    assert!(submitted.is_empty());
+    assert!(
+        screen_text(&app, now).contains("Cannot record: give the issue's URL or its number"),
+        "{}",
+        screen_text(&app, now)
+    );
+}
+
+#[test]
+fn a_refused_record_keeps_what_was_typed_with_why() {
+    let now = Instant::now();
+    let mut app = listing(
+        &[opened(draft(1, BugOriginView::Owner, "the board froze", 1))],
+        now,
+    );
+    press(&mut app, &[Key::Enter], now);
+    typing(&mut app, "issue 844", now);
+    let submitted = sent(&press(&mut app, &[Key::Enter], now));
+
+    app.answer(
+        &submitted[0],
+        Err("invalid-request: issue must be an https:// URL or an issue number".to_owned()),
+        now,
+    );
+
+    let screen = screen_text(&app, now);
+    assert!(
+        screen.contains("its URL or its number: issue 844"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains(
+            "Cannot record: invalid-request: issue must be an https:// URL or an issue number"
+        ),
+        "{screen}"
+    );
+}
+
+#[test]
+fn an_issue_on_its_way_is_not_sent_twice() {
+    let now = Instant::now();
+    let mut app = listing(
+        &[opened(draft(1, BugOriginView::Owner, "the board froze", 1))],
+        now,
+    );
+    press(&mut app, &[Key::Enter], now);
+    typing(&mut app, "844", now);
+
+    let submitted = sent(&press(&mut app, &[Key::Enter, Key::Enter], now));
+
+    assert_eq!(submitted.len(), 1);
+    assert!(
+        screen_text(&app, now).contains("Recording…"),
+        "{}",
+        screen_text(&app, now)
+    );
+}
+
+/// `q` closes the list, and is a letter like any other in the issue typed.
+#[test]
+fn q_typed_into_the_issue_is_text() {
+    let now = Instant::now();
+    let mut app = listing(
+        &[opened(draft(1, BugOriginView::Owner, "the board froze", 1))],
+        now,
+    );
+    press(&mut app, &[Key::Enter], now);
+
+    typing(&mut app, "q", now);
+
+    assert!(
+        screen_text(&app, now).contains("its URL or its number: q"),
+        "{}",
+        screen_text(&app, now)
+    );
+}
+
+#[test]
+fn esc_leaves_the_issue_and_goes_back_to_the_list() {
+    let now = Instant::now();
+    let mut app = listing(
+        &[opened(draft(1, BugOriginView::Owner, "the board froze", 1))],
+        now,
+    );
+    press(&mut app, &[Key::Enter], now);
+    typing(&mut app, "844", now);
+
+    press(&mut app, &[Key::Esc], now);
+
+    let screen = screen_text(&app, now);
+    assert!(!screen.contains("its URL or its number"), "{screen}");
+    assert!(screen.contains("the board froze"), "{screen}");
+}
+
+#[test]
+fn enter_without_a_draft_asks_for_no_issue() {
+    let now = Instant::now();
+    let mut app = listing(&[], now);
+
+    press(&mut app, &[Key::Enter], now);
+
+    let screen = screen_text(&app, now);
+    assert!(
+        screen.contains("No bug report draft waits for you."),
+        "{screen}"
+    );
+    assert!(!screen.contains("its URL or its number"), "{screen}");
 }

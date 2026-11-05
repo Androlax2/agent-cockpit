@@ -426,6 +426,16 @@ async fn owner(command: Command, context: Context) -> Answer {
                 report: Box::new(view(&report, true)),
             })
         }
+        Command::BugReportOpened { report } => {
+            let write = context.database.write().await?;
+            let report = cockpit_bug_reports::mark_opened(&write, ReportId(report), now())
+                .await
+                .map_err(failed)?;
+            write.commit().await?;
+            Ok(Reply::BugReport {
+                report: Box::new(view(&report, false)),
+            })
+        }
         Command::BugReportSent { report, issue_url } => {
             let write = context.database.write().await?;
             let report = cockpit_bug_reports::mark_sent(
@@ -835,6 +845,7 @@ pub(crate) fn view(report: &Report, with_issue: bool) -> BugReportView {
         issue_url: report.issue_url.clone(),
         created_at: report.created_at,
         changed_at: report.changed_at,
+        opened_at: report.opened_at,
         issue,
     }
 }

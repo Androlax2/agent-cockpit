@@ -132,7 +132,7 @@ pub enum Verb {
     Send(Send),
 }
 
-/// `send ID [--gh | --print] [--anyway]`; `send ID --filed URL` is a [`Verb::Daemon`].
+/// `send ID [--gh | --print] [--anyway]`; `send ID --filed URL|NUMBER` is a [`Verb::Daemon`].
 #[derive(Debug)]
 pub struct Send {
     report: i64,
@@ -360,6 +360,10 @@ fn new_draft(command: Command) -> Result<Reply, ExitCode> {
 
 /// `ID status origin xN fingerprint: title`.
 fn summary_line(report: &BugReportView) -> String {
+    let mut status = report.status.as_str().to_owned();
+    if is_opened(report) {
+        status.push_str(" (opened, issue not recorded)");
+    }
     let mut origin = report.origin.as_str().to_owned();
     if let Some(session) = &report.session {
         origin.push_str(&format!(" {session}"));
@@ -368,12 +372,8 @@ fn summary_line(report: &BugReportView) -> String {
         origin.push_str(" (asked by the owner)");
     }
     format!(
-        "{} {} {origin} x{} {}: {}",
-        report.id,
-        report.status.as_str(),
-        report.occurrences,
-        report.fingerprint,
-        report.title
+        "{} {status} {origin} x{} {}: {}",
+        report.id, report.occurrences, report.fingerprint, report.title
     )
 }
 
@@ -401,13 +401,23 @@ fn report_text(report: &BugReportView) -> String {
             ));
         }
     }
-    if report.status == BugStatusView::Draft {
+    if is_opened(report) {
+        text.push_str(&format!(
+            "\nA send opened its issue. Once submitted, record it: `torlek bug-report send {} --filed ISSUE_URL`.\n",
+            report.id
+        ));
+    } else if report.status == BugStatusView::Draft {
         text.push_str(&format!(
             "\nNothing is sent until you run `torlek bug-report send {}`.\n",
             report.id
         ));
     }
     text
+}
+
+/// Whether a send handed the owner the draft's issue and nothing recorded it since.
+fn is_opened(report: &BugReportView) -> bool {
+    report.status == BugStatusView::Draft && report.opened_at.is_some()
 }
 
 fn bundle_text(bundle: &BugBundleView) -> String {
@@ -420,9 +430,9 @@ fn bundle_text(bundle: &BugBundleView) -> String {
 
 /// Shows the fingerprint, offers an existing issue instead of a duplicate, then files the
 /// issue with `gh` and records the draft sent, or opens the prefilled issue for the owner to
-/// submit. A browser or a printed URL proves nothing was filed, so the draft stays a draft
-/// until the owner records the issue with `send ID --filed URL`. One connection: the draft
-/// read is the draft sent.
+/// submit. A browser or a printed URL proves nothing was filed, so the draft stays a draft,
+/// marked opened (#847), until the owner records the issue with `send ID --filed URL`. One
+/// connection: the draft read is the draft sent.
 fn send_report(send: &Send) -> ExitCode {
     let socket = match crate::agent::caller_socket() {
         Ok(socket) => socket,
@@ -480,7 +490,17 @@ fn send_report(send: &Send) -> ExitCode {
                 "once submitted, record it: torlek bug-report send {} --filed ISSUE_URL",
                 report.id
             );
-            return ExitCode::SUCCESS;
+            let opened = connection
+                .request(
+                    Command::BugReportOpened { report: report.id },
+                    CONTROL_DEADLINE,
+                )
+                .await;
+            return match opened {
+                Ok(Reply::BugReport { .. }) => ExitCode::SUCCESS,
+                Ok(reply) => unexpected(&reply),
+                Err(error) => failed(&error),
+            };
         }
         let issue_url = match gh_create(issue) {
             Ok(url) => url,

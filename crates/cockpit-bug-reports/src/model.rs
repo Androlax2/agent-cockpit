@@ -229,6 +229,9 @@ pub struct Report {
     pub issue_url: Option<String>,
     pub created_at: i64,
     pub changed_at: i64,
+    /// When a send last handed the owner the prefilled issue, opened in their browser or
+    /// printed: the issue may exist, but nothing recorded it yet (#847).
+    pub opened_at: Option<i64>,
 }
 
 /// What filing a report did.

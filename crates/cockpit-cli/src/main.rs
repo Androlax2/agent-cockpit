@@ -71,7 +71,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek bug-report new DESCRIPTION [--title TEXT] [--steps TEXT] [--since 2h|RFC3339]
        torlek bug-report list [--all] | show ID | discard ID
        torlek bug-report edit ID [--title TEXT] [--description TEXT] [--steps TEXT]
-       torlek bug-report send ID [--gh | --print] [--anyway] | send ID --filed URL
+       torlek bug-report send ID [--gh | --print] [--anyway] | send ID --filed URL|NUMBER
        torlek project add DIR [--name NAME]
        torlek project list
        torlek project show PROJECT

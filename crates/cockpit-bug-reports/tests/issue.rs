@@ -31,6 +31,7 @@ fn report() -> Report {
         issue_url: None,
         created_at: 0,
         changed_at: 0,
+        opened_at: None,
     }
 }
 

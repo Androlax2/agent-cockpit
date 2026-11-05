@@ -62,6 +62,8 @@ Phone layout (narrower than tui.phone_below_columns, 60 columns by default)
 Bug reports
   B                  the bug report drafts waiting for you; review and send them
                      with torlek bug-report show ID and send ID
+  j k, Enter         in B: select a draft, then record the issue you submitted for
+                     it in your browser (its URL or its number)
   b                  report a Torlek bug (description, optional title and steps)
 Elsewhere
   L                  log of what the TUI did
@@ -78,12 +80,24 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
         let (title, text) = match overlay {
             Overlay::Help => ("Help", HELP.to_owned()),
             Overlay::Log => ("Log", app.log().collect::<Vec<_>>().join("\n")),
-            Overlay::BugReports => ("Bug report drafts", bug_reports_text(app.board())),
         };
         frame.render_widget(
             Paragraph::new(text)
                 .wrap(Wrap { trim: false })
                 .block(Block::default().borders(Borders::ALL).title(title)),
+            area,
+        );
+        return;
+    }
+    if let Some(view) = &app.bug_reports {
+        frame.render_widget(
+            Paragraph::new(view.text(app.board()))
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Bug report drafts"),
+                ),
             area,
         );
         return;
@@ -142,9 +156,7 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let mut lines: Vec<Line<'_>> = Vec::new();
     let mut selected_rows = None;
-    let drafts = board.bug_reports.len();
-    if drafts > 0 {
-        let text = format!("! Bug report drafts ({drafts}): B lists them");
+    if let Some(text) = bug_reports_card(board) {
         push_wrapped(&mut lines, &text, width, CARD_INDENT, bold);
     }
     let drafts_rows = lines.len();
@@ -424,33 +436,24 @@ fn draw_form(form: &Form, frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
-/// The drafts, one line each, and how the owner reviews and sends them: in the CLI for now
-/// (#471); the designed view is Beta 3's (#465).
-fn bug_reports_text(board: &Board) -> String {
+/// The needs-you card of the bug report drafts: the ones waiting for a send, and apart from
+/// them the ones a send opened, whose issue the owner records in `B` (#847).
+fn bug_reports_card(board: &Board) -> Option<String> {
     let drafts = board.bug_report_drafts();
-    if drafts.is_empty() {
-        return "No bug report draft waits for you.\n\nEsc, then b reports a Torlek bug."
-            .to_owned();
-    }
-    let mut lines: Vec<String> = drafts
+    let opened = drafts
         .iter()
-        .map(|draft| {
-            let mut line = format!("{}  {}  {}", draft.id, draft.origin.as_str(), draft.title);
-            if draft.occurrences > 1 {
-                line.push_str(&format!("  ({} times)", draft.occurrences));
-            }
-            if let Some(session) = &draft.session {
-                line.push_str(&format!("  from {session}"));
-            }
-            line
-        })
-        .collect();
-    lines.push(String::new());
-    lines.push("Review one: torlek bug-report show ID".to_owned());
-    lines.push(
-        "Send it: torlek bug-report send ID   Drop it: torlek bug-report discard ID".to_owned(),
-    );
-    lines.join("\n")
+        .filter(|draft| crate::bug_reports::is_opened(draft))
+        .count();
+    match (drafts.len() - opened, opened) {
+        (0, 0) => None,
+        (waiting, 0) => Some(format!("! Bug report drafts ({waiting}): B lists them")),
+        (0, opened) => Some(format!(
+            "! Bug reports opened to send ({opened}): B records their issue"
+        )),
+        (waiting, opened) => Some(format!(
+            "! Bug report drafts ({waiting}), {opened} more opened to send: B lists them"
+        )),
+    }
 }
 
 fn draw_bug_form(form: &BugForm, frame: &mut Frame<'_>, area: Rect) {

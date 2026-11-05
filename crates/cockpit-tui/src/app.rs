@@ -10,6 +10,7 @@ use cockpit_protocol::{ChangeBatch, Command, ManagerPaneView, Reply, SessionStat
 use crate::attention::StartSource;
 use crate::board::{Board, FeedError};
 use crate::bug_form::BugForm;
+use crate::bug_reports::{BugReports, BugReportsOutcome};
 use crate::form::{Form, FormOutcome};
 use crate::pane::{Pane, PaneOutcome};
 use crate::phone::{OpenOutcome, OpenSession};
@@ -46,8 +47,6 @@ pub enum Focus {
 pub enum Overlay {
     Help,
     Log,
-    /// The bug report drafts waiting for the owner (#471).
-    BugReports,
 }
 
 /// Where tmux's keys were before the pane took them for the column (#345): the TUI gives
@@ -104,6 +103,8 @@ pub struct App {
     pub(crate) pane: Pane,
     pub(crate) form: Option<Form>,
     pub(crate) bug_form: Option<BugForm>,
+    /// The `B` view: the bug report drafts, and the issue of one being recorded (#471, #847).
+    pub(crate) bug_reports: Option<BugReports>,
     pub(crate) workflows: Option<Workflows>,
     pub(crate) tasks: Option<Tasks>,
     pub(crate) projects: Option<Projects>,
@@ -323,6 +324,18 @@ impl App {
                 Key::Char('?') if overlay == Overlay::Log => self.open(Overlay::Help),
                 Key::Char('L') if overlay == Overlay::Help => self.open(Overlay::Log),
                 _ => Step::used("unbound"),
+            };
+        }
+        if let Some(view) = &mut self.bug_reports {
+            return match view.key(key, &self.board) {
+                BugReportsOutcome::Closed => {
+                    self.bug_reports = None;
+                    Step::used("bug-reports-close")
+                }
+                BugReportsOutcome::Handled { used, send } => Step {
+                    used: Some(used),
+                    send,
+                },
             };
         }
         // A session that ended, failed or fell asleep while open has no terminal: any key goes
@@ -553,7 +566,10 @@ impl App {
                 self.projects = Some(Projects::default());
                 Step::used("projects")
             }
-            Key::Char('B') => self.open(Overlay::BugReports),
+            Key::Char('B') => {
+                self.bug_reports = Some(BugReports::default());
+                Step::used("bug-reports")
+            }
             Key::Char('b') => {
                 self.bug_form = Some(BugForm::new());
                 Step::used("bug-report-form")
@@ -593,7 +609,6 @@ impl App {
         Step::used(match overlay {
             Overlay::Help => "help",
             Overlay::Log => "log-view",
-            Overlay::BugReports => "bug-reports",
         })
     }
 
@@ -785,6 +800,13 @@ impl App {
                     ));
                 }
             }
+            Reply::BugReport { report } if matches!(command, Command::BugReportSent { .. }) => {
+                if let Some(view) = &mut self.bug_reports {
+                    view.recorded(command, &report);
+                }
+                self.note(crate::bug_reports::recorded_text(&report));
+                self.failure = None;
+            }
             Reply::BugReport { report } => {
                 if self
                     .bug_form
@@ -842,6 +864,9 @@ impl App {
         {
             form.submitted = None;
             form.problem = Some(problem.clone());
+        }
+        if let Some(view) = &mut self.bug_reports {
+            view.failed(command, &problem);
         }
         let kind = command_label(command);
         let is_logged = self.feed_problem.as_ref() == Some(&problem)
@@ -942,10 +967,11 @@ impl App {
     }
 
     /// Keys taken from the viewer go back to it, unless the owner is typing in the column:
-    /// a form, a confirmation, the workflow view or an overlay is open.
+    /// a form, a confirmation, the workflow view, the bug reports or an overlay is open.
     fn give_keys_back(&mut self) -> Option<Command> {
         let is_owner_in_column = self.form.is_some()
             || self.bug_form.is_some()
+            || self.bug_reports.is_some()
             || self.confirm.is_some()
             || self.workflows.is_some()
             || self.tasks.is_some()

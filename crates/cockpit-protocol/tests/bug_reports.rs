@@ -105,6 +105,10 @@ fn the_owner_verbs_round_trip() {
             json!({"id": 4, "command": {"kind": "bug-report-discard", "report": 4}}),
             Command::BugReportDiscard { report: 4 },
         ),
+        (
+            json!({"id": 7, "command": {"kind": "bug-report-opened", "report": 4}}),
+            Command::BugReportOpened { report: 4 },
+        ),
     ] {
         let request = decode_request(&wire.to_string()).unwrap();
 
@@ -149,6 +153,7 @@ fn a_report_view_carries_its_bundle_state() {
         issue_url: None,
         created_at: 1,
         changed_at: 2,
+        opened_at: None,
         issue: None,
     };
 
@@ -159,10 +164,29 @@ fn a_report_view_carries_its_bundle_state() {
         json!({"state": "failed", "problem": "disk full"})
     );
     assert!(wire.get("issue").is_none());
+    assert!(wire.get("opened_at").is_none());
     assert_eq!(
         serde_json::from_value::<BugReportView>(wire).unwrap(),
         report
     );
+}
+
+/// A daemon from before #847 sends no `opened_at`: its drafts read as never opened.
+#[test]
+fn a_report_view_says_when_a_send_opened_it() {
+    let wire = json!({"id": 1, "origin": "owner", "requested_by_owner": false,
+        "status": "draft", "title": "t", "description": "d", "steps": "",
+        "fingerprint": "cockpit-0.1.0/other/unknown", "environment": "cockpit 0.1.0",
+        "bundle": {"state": "pending"}, "occurrences": 1, "created_at": 1, "changed_at": 2});
+    let never_opened: BugReportView = serde_json::from_value(wire.clone()).unwrap();
+    let mut opened_wire = wire;
+    opened_wire["opened_at"] = json!(5);
+
+    let opened: BugReportView = serde_json::from_value(opened_wire.clone()).unwrap();
+
+    assert_eq!(never_opened.opened_at, None);
+    assert_eq!(opened.opened_at, Some(5));
+    assert_eq!(serde_json::to_value(&opened).unwrap(), opened_wire);
 }
 
 /// Serde decodes a tagged enum from a sequence too; the daemon names a request's lane work by
