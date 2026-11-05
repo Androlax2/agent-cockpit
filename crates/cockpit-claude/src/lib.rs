@@ -3,6 +3,7 @@
 mod sign_in;
 
 pub mod hooks;
+pub mod needs;
 mod screen;
 pub mod trust;
 
@@ -16,9 +17,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use cockpit_provider_api::{
-    Action, Activity, Capabilities, Capability, Conversation, ConversationId, Key, LaunchCommand,
-    LaunchRequest, Observation, Provenance, Provider, ProviderError, ProviderName, TerminalInput,
-    TrustRequest, WorkspaceTrust,
+    Action, Activity, Capabilities, Capability, Conversation, ConversationId, Credentials,
+    InvalidValue, Key, LaunchCommand, LaunchRequest, Needs, Observation, Provenance, Provider,
+    ProviderError, ProviderName, TerminalInput, TrustRequest, WorkspaceTrust,
 };
 
 /// The Claude Code version this adapter's conformance tests pin; capabilities are `tested`
@@ -303,6 +304,14 @@ impl Provider for ClaudeCode {
         .fold(Capabilities::none(), |capabilities, capability| {
             capabilities.with(capability, provenance.clone())
         })
+    }
+
+    fn needs(&self) -> Result<Needs, InvalidValue> {
+        needs::needs()
+    }
+
+    fn credentials(&self) -> Result<Credentials, InvalidValue> {
+        needs::credentials()
     }
 
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {

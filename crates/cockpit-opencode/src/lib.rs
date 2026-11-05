@@ -4,6 +4,7 @@ mod sign_in;
 
 pub mod events;
 mod http;
+pub mod needs;
 mod process;
 pub mod server;
 
@@ -17,8 +18,8 @@ use std::time::Duration;
 
 use cockpit_provider_api::{
     Action, Activity, Capabilities, Capability, CommandResult, Conversation, ConversationId,
-    Delivered, DeliveryTarget, Key, LaunchCommand, LaunchRequest, Provenance, Provider,
-    ProviderError, ProviderName, TerminalInput,
+    Credentials, Delivered, DeliveryTarget, InvalidValue, Key, LaunchCommand, LaunchRequest, Needs,
+    Provenance, Provider, ProviderError, ProviderName, TerminalInput,
 };
 
 pub use server::{Invocation, NativeCommand, Server, ServerError};
@@ -335,6 +336,14 @@ impl Provider for OpenCode {
             .fold(Capabilities::none(), |capabilities, capability| {
                 capabilities.with(capability, provenance.clone())
             })
+    }
+
+    fn needs(&self) -> Result<Needs, InvalidValue> {
+        needs::needs()
+    }
+
+    fn credentials(&self) -> Result<Credentials, InvalidValue> {
+        needs::credentials()
     }
 
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {

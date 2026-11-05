@@ -1,0 +1,20 @@
+The provider adapters' sandbox needs (cockpit-claude, cockpit-codex, cockpit-opencode) and
+the toolchain table (cockpit-provider-api's `toolchains` module) are seeded from Greywall's
+`internal/profiles/agents` and `internal/profiles/toolchains` at commit
+a9ccc58c4e57f7ad7aaf7c2ab3779d71cf485baf of https://github.com/Androlax2/greywall
+(https://github.com/Androlax2/greywall/tree/a9ccc58c4e57f7ad7aaf7c2ab3779d71cf485baf/internal/profiles),
+licensed under the Apache License, Version 2.0. Its NOTICE reads, in the part that applies:
+
+    Greywall
+    Copyright 2025 Tusk AI, Inc
+    Copyright 2026 The Greywall Authors
+
+    Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+    This build is published by the Androlax2/greywall fork of
+    https://github.com/GreyhavenHQ/greywall.
+
+Torlek changed what it took: it keeps the Linux paths only, splits the paths read from the
+owner's home from those the session writes into folders of its own, names credential files
+and variables apart, and leaves out the hosts that other decisions own. Each adapter's README
+lists what was left out and why.

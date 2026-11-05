@@ -57,6 +57,20 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   same burst as the text it reads as a paste (#730).
 - **Screen reading** is a fallback with recorded confidence (report 05): a permission dialog
   or a running spinner is `high`, a choice menu or the bare prompt `low`.
+- **Sandbox needs** (`needs`, #830, #858). Hosts: `api.anthropic.com`,
+  `mcp-proxy.anthropic.com`, `downloads.claude.ai`, `platform.claude.com`. Read from the
+  owner's home: `~/.local/share/claude`, the installed versions. Written into the session's
+  own folders: `~/.claude`, `~/.claude.json` and its backups, `~/.claude.lock`,
+  `~/.cache/claude`, `~/.config/claude`, `~/.local/state/claude`, `~/.mcp.json`. Credential
+  file `~/.claude/.credentials.json`; `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` take a
+  bound credential, carried by `api.anthropic.com`. Seeded from Greywall's `claude.go` at
+  `a9ccc58c` (`crates/cockpit-provider-api/NOTICE-greywall`). Left out of it: the macOS
+  paths (macOS is not supported yet); `github.com`, `api.github.com` and
+  `*.githubusercontent.com`, which the forge adapter declares for a project (#60, #857);
+  `registry.npmjs.org`, a toolchain's registry (#859); `storage.googleapis.com`, a storage
+  host every Google Cloud tenant shares, which Claude Code fetches its releases from while
+  its install is read-only; and write access to `~/.local/share/claude`, since nothing writes the owner's
+  home (#859).
 
 ## Dependency edges
 
@@ -67,6 +81,7 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 
 ## Tests
 
+- `tests/needs.rs`: the declared hosts, folders and credentials, through the contract.
 - `tests/launch.rs`, `tests/capabilities.rs`, `tests/input.rs`: the contract's words.
 - `tests/hooks.rs`: conformance with the hook payloads pinned in
   `tests/fixtures/claude-code-2.1.316/`, and the reports they become.
