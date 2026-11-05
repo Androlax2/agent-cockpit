@@ -21,10 +21,12 @@ never `/tmp`. Nothing here depends on a file from an earlier session.
 | --- | --- |
 | See workers, their state, doing-now and question | `torlek agent sessions [--watch]` (`observe-sessions`) |
 | Send a worker a note | `torlek agent message SESSION TEXT` (`message-sessions`); a collaborator's word, never the owner's |
-| Start a worker | `start_worker.sh` (files its task item, then `torlek agent start DIR --clone BRANCH ...`, `start-sessions`); waits for the owner's approval |
+| Start a worker | `start_worker.sh` (files its task item, then `torlek agent start DIR --clone BRANCH ...`, `start-sessions`); may wait for the owner's approval, then `torlek ask run --wait ID` |
 | Give a worker the owner's answer | `torlek ask run --reason TEXT "torlek session send SESSION 'TEXT'"`; `torlek session send` itself is refused from a session |
 | End a worker | `torlek agent end SESSION` (`end-sessions`): refused until the worker marked its item done; without the grant, ask the owner: `torlek ask run --reason TEXT "torlek session end SESSION"` |
-| Anything else only the owner may run | `torlek ask run --reason TEXT COMMAND`; the owner approves that exact command once |
+| Anything else only the owner may run | `torlek ask run --reason TEXT COMMAND`; the owner approves that exact command once. `torlek ask run --check` says whether an ask would reach the owner now |
+| A manual step for the owner (a browser, a console) | `torlek ask guide < GUIDE`; prefer `ask run` whenever a command can do it |
+| A Torlek command times out, cannot reach the daemon or answers `internal` | `torlek agent report-bug "WHAT YOU WERE DOING, WHAT HAPPENED"` once, not a retry loop; the owner reviews the draft |
 
 Starts are capped (sessions not yet ended, and starts per hour); the refusal names the cap.
 A pending ask is not an approval: wait on the same id with `torlek ask run --wait ID`, never
@@ -76,16 +78,24 @@ It wakes you only for these lines; everything else is one `SUMMARY` every 10 min
 | `WATCH ENDED` | The monitor exited non-zero (the status of `torlek agent sessions --watch`, else 1) after killing its watch. The text after the colon says why (a missing grant, a crash). Fix that, then re-arm; the state file keeps what was reported |
 
 State survives a re-arm; keep the state file in your session temp folder, which may be swept
-when your session ends. After a reboot, Torlek resumes workers but each sits idle until
-messaged: re-arm the watcher, `torlek agent message` each worker to continue, and check which
-PRs merged meanwhile.
+when your session ends. After a reboot Torlek resumes workers; on alpha 2 each sat idle until
+messaged (not verified on alpha 3): re-arm the watcher, check which PRs merged meanwhile, and
+if a worker sits idle, `torlek agent message` it to continue.
 
 ## Questions from workers
 
 A question from a worker you started waits on you first (`held-by=` your session in
 `torlek agent sessions`). Answer only what the instructions you gave already settle. A
 decision is the owner's: relay it, or run `torlek agent escalate SESSION`. It reaches the
-owner by itself after 15 minutes. A queued message is not delivery: `torlek agent sessions`
+owner by itself after 15 minutes, and also when your session sleeps, stops or ends or loses
+`message-sessions`.
+
+Any `torlek agent message` to a worker with a held question answers it once the worker receives
+it, so a plain note ("continue", a nudge) clears the question without the owner's answer.
+While a question is held, answer or escalate on purpose; do not send other notes.
+
+A message is refused while the worker has a dialog open, which also explains a session stuck at
+state `-`. A queued message is not delivery: `torlek agent sessions`
 shows delivery and why it waits. If the worker does not act on a message by its next turn
 end, tell the owner instead of re-sending.
 
