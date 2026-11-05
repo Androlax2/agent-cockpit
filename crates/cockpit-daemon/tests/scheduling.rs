@@ -579,8 +579,8 @@ async fn queue_explain_of_an_item_queued_since_the_last_pass_says_the_next_pass_
     assert_eq!(
         error.message,
         format!(
-            "item {item} has no explanation yet: no pass has considered it; the next one \
-             will, within 3600 seconds, or now with `torlek queue dispatch`"
+            "item {item} has no explanation yet: no pass has considered it since it began \
+             waiting; the next one runs within 3600 seconds, or now with `torlek queue dispatch`"
         )
     );
 }
