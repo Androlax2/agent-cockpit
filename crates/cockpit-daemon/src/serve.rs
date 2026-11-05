@@ -20,6 +20,9 @@ const OPENCODE_PLUGIN_DIR: &str = "opencode-plugin";
 /// How often the product's sessions pass (exits, idle sleep, expiry) runs.
 pub const SESSION_TICK: Duration = Duration::from_secs(30);
 
+/// How often the exits alone are looked at between ticks (#632).
+pub const EXIT_SWEEP: Duration = Duration::from_secs(1);
+
 /// Variables of the daemon's own environment every agent starts with, where set, beside its
 /// XDG layout; the provider adds its own after them. The desktop session's
 /// ([`cockpit_protocol::DESKTOP_SESSION_VARIABLES`]) follow while the owner shares them.
@@ -185,6 +188,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             desktop_environment: own_variables(&cockpit_protocol::DESKTOP_SESSION_VARIABLES)
                 .collect(),
             session_tick: serve.session_tick,
+            exit_sweep: EXIT_SWEEP,
             run_settings,
             environment: environment.clone(),
             scheduling: cockpit_scheduling::Settings::default(),

@@ -354,6 +354,7 @@ pub fn wiring_in(
         sessions: unsandboxed_settings(),
         desktop_environment: Vec::new(),
         session_tick: Duration::from_secs(3600),
+        exit_sweep: cockpit_daemon::EXIT_SWEEP,
         run_settings: cockpit_daemon::run_settings(Vec::new()).unwrap(),
         environment: cockpit_config::Environment {
             home: Some(dir.join("home").into()),

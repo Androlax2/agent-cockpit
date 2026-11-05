@@ -481,13 +481,13 @@ pub(crate) async fn restore(sessions: &Sessions) -> Result<(), Error> {
     Ok(())
 }
 
-/// How often the exits alone are looked at between ticks (#632): a dead agent shows as
-/// failed or ended within about this long.
-const EXIT_SWEEP: Duration = Duration::from_secs(1);
-
 /// The sessions' periodic pass: exits, idle sleep, asleep expiry, every `interval`; the exits
-/// also every [`EXIT_SWEEP`] when `interval` is longer. Runs until aborted.
-pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
+/// also every `exit_sweep` when `interval` is longer. Runs until aborted.
+pub(crate) async fn tick_forever(
+    sessions: Arc<Sessions>,
+    interval: Duration,
+    exit_sweep: Duration,
+) {
     // The first pass waits one interval: startup's restore has just reconciled every active
     // session, so a pass at once would only repeat it, racing the startup scheduling pass
     // for the same sessions (#816).
@@ -495,9 +495,9 @@ pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Not at once: two ready intervals would push the first tick, which holds each session's
     // lock, past startup into the owner's first send or cancel.
-    let mut sweeps = tokio::time::interval_at(tokio::time::Instant::now() + EXIT_SWEEP, EXIT_SWEEP);
+    let mut sweeps = tokio::time::interval_at(tokio::time::Instant::now() + exit_sweep, exit_sweep);
     sweeps.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let is_sweeping = interval > EXIT_SWEEP;
+    let is_sweeping = interval > exit_sweep;
     loop {
         let pass = tokio::select! {
             _ = ticks.tick() => sessions.tick().await,
