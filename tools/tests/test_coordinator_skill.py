@@ -550,7 +550,31 @@ esac
             self.session("greenfield-6-idle", "waiting", "waiting on CI"),
             self.session("greenfield-6-idle", "working", "coding"),
             self.session("greenfield-6-idle", "waiting", "waiting on CI"),
+            extra_arguments=("--working-seconds", "0"),
         )
+
+        self.assertEqual(result.stdout.count("IDLE without merged PR"), 2, result.stdout)
+
+    def test_it_reports_one_idle_line_when_a_short_working_blip_separates_two_idles(self):
+        result = self.watch(
+            self.session("greenfield-6-idle", "working", "coding"),
+            self.session("greenfield-6-idle", "waiting", "waiting on CI"),
+            self.session("greenfield-6-idle", "working", "waiting on CI"),
+            self.session("greenfield-6-idle", "waiting", "waiting on CI"),
+        )
+
+        self.assertEqual(result.stdout.count("IDLE without merged PR"), 1, result.stdout)
+
+    def test_it_reports_a_second_idle_after_a_working_spell_longer_than_the_threshold(self):
+        working = self.session("greenfield-6-idle", "working", "waiting on CI")
+        waiting = self.session("greenfield-6-idle", "waiting", "waiting on CI")
+        self.shim(
+            "torlek",
+            f"printf '%s\\n' '{waiting}'; sleep 0.3; printf '%s\\n' '{working}'; sleep 1.2; "
+            f"printf '%s\\n' '{waiting}'; sleep 1.5; exit 3",
+        )
+
+        result = self.watch(extra_arguments=("--working-seconds", "1"))
 
         self.assertEqual(result.stdout.count("IDLE without merged PR"), 2, result.stdout)
 
@@ -637,6 +661,7 @@ class WatcherStateTests(FakeCommandsTestCase):
                 since="2026-01-01",
                 seed_seconds=0,
                 poll_seconds=1,
+                working_seconds=120,
                 summary_seconds=1,
                 state_file=state_file,
             )
