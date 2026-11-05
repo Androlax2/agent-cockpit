@@ -127,7 +127,7 @@ proxy's identity is its listener (#546 D2). So the engine gets a proxy instance 
 How the engine's namespace gets its single listener is #390's design: the file-descriptor
 passing of the launcher (#829), or the legacy's nftables rules by user. The acceptance is the
 probe. An engine has no session that ends, so "allow once" has no natural length there: the
-#674 note below proposes that a container request offers "allow always" or "deny" only.
+note for #674 below proposes that a container request offers "allow always" or "deny" only.
 
 ### Q5. Credentials and the CA in containers
 
