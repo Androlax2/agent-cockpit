@@ -417,7 +417,7 @@ fn print_database(database: &DatabaseStorageView, applied: bool) {
         rule_row("finished command runs' output", &database.run_outputs)
     );
     outln!(
-        "change feed: {} captured rows kept, at most {}",
+        "change feed: {} captured rows kept now; the hourly trim keeps the newest {}",
         database.feed_changes,
         database.feed_changes_kept
     );

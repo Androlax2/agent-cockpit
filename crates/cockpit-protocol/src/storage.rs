@@ -144,7 +144,8 @@ pub struct DatabaseStorageView {
     pub sessions: PayloadRetentionView,
     /// Finished command runs whose output text goes.
     pub run_outputs: PayloadRetentionView,
-    /// Captured change rows kept for clients that resume, and the most kept.
+    /// Captured change rows kept now for clients that resume, and the number the hourly trim
+    /// keeps. Rows written since the last trim can put the first above the second.
     pub feed_changes: u64,
     pub feed_changes_kept: u64,
     /// Newest first.
