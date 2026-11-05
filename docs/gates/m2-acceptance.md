@@ -72,3 +72,9 @@ is re-run after fixes and each run is appended below.
   and kept without an ended session or a base ref, and while `target/` was not ignored. With
   the base ref and `.gitignore`: report 25165824 bytes eligible, prepare printed the confirm
   line, confirm removed 25165824 bytes, report after: 0 bytes, target absent.
+- Finding, [#845](https://github.com/Androlax2/agent-cockpit/issues/845): while preparing this
+  run, the runner's tests killed the installed Torlek's tmux server twice. `run.sh stop` ran
+  `tmux -L torlek kill-server`; with the scratch `TMUX_TMPDIR` directory missing, tmux 3.8 fell
+  back to `/tmp`, where the installed server lives. The daemon resumed two sessions; others
+  running then may have been lost. `run.sh stop` now kills only sockets that exist under the
+  scratch `TMUX_TMPDIR`, by path, and the tests run a recording `tmux`.
