@@ -39,6 +39,6 @@ Superseded by `2026-11-05-828-remove-sandbox-engines.md`: the installer and engi
   overrides, broad archive unpacking, and automatically restarting running sessions.
   Explicit local paths are limited to profile `dev` of debug builds, with a warning.
 
-Evidence: [installer fixtures](../../crates/cockpit-sandbox/src/install/tests.rs),
+Evidence: [installer fixtures](https://github.com/Androlax2/agent-cockpit/blob/3913a006b0a1c1eb893d5abf83cbb1b08557f71f/crates/cockpit-sandbox/src/install/tests.rs),
 [real daemon readiness tests](../../crates/cockpit-daemon/tests/readiness.rs),
-[clean-home release smoke](../../tools/verify-engine-install.py).
+[clean-home release smoke](https://github.com/Androlax2/agent-cockpit/blob/3913a006b0a1c1eb893d5abf83cbb1b08557f71f/tools/verify-engine-install.py).
