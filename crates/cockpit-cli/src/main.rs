@@ -42,6 +42,7 @@ mod queue;
 mod resources;
 mod sandbox_install;
 mod sessions;
+mod status_page;
 mod storage;
 mod todo;
 mod tui;
@@ -82,6 +83,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek checkout release CHECKOUT HOLDER
        torlek checkout sweep [--dry-run]
        torlek checkout push CHECKOUT
+       torlek status serve [--port N] [--host TAILNET_NAME]
        torlek storage
        torlek storage outputs [prune]
        torlek storage database [prune]
@@ -226,6 +228,8 @@ fn main() -> ExitCode {
                 Err(problem) => verb_usage_error(&verb_name, problem),
             }
         }
+        [Some("status"), Some("serve")] => status_page::serve(&arguments[2..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("storage"), ..] => storage::run(&arguments[1..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("session"), ..] => match sessions::parse(&arguments[1..]) {
