@@ -152,3 +152,12 @@ pub struct BugReportView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issue: Option<BugIssueView>,
 }
+
+impl BugReportView {
+    /// Whether a send handed the owner the draft's issue and nothing recorded it since (#847):
+    /// it may be submitted, nothing says so.
+    #[must_use]
+    pub fn is_opened(&self) -> bool {
+        self.status == BugStatusView::Draft && self.opened_at.is_some()
+    }
+}

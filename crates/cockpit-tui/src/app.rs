@@ -243,6 +243,7 @@ impl App {
             && self.workflows.is_none()
             && self.tasks.is_none()
             && self.projects.is_none()
+            && self.bug_reports.is_none()
     }
 
     /// Whether the session open on the phone still has a terminal to read and type into.

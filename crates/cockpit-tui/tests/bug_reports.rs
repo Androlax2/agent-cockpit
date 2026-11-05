@@ -11,7 +11,8 @@ use cockpit_protocol::{
 };
 use cockpit_tui::Key;
 use common::{
-    after_snapshot, app_with, press, screen_text, sent, snapshot, tombstone, typing, upsert,
+    after_snapshot, answer, app_with, press, screen_text, sent, sized_screen, snapshot, tombstone,
+    typing, upsert,
 };
 
 fn draft(id: i64, origin: BugOriginView, title: &str, occurrences: i64) -> BugReportView {
@@ -507,4 +508,101 @@ fn enter_without_a_draft_asks_for_no_issue() {
         "{screen}"
     );
     assert!(!screen.contains("its URL or its number"), "{screen}");
+}
+
+/// Only the answer of a `bug-report-sent` on its way closes its input: an Esc that dropped it
+/// would lose the daemon's refusal.
+#[test]
+fn esc_while_an_issue_is_on_its_way_keeps_the_input_until_the_answer() {
+    let now = Instant::now();
+    let mut app = listing(
+        &[opened(draft(1, BugOriginView::Owner, "the board froze", 1))],
+        now,
+    );
+    press(&mut app, &[Key::Enter], now);
+    typing(&mut app, "844", now);
+
+    press(&mut app, &[Key::Enter, Key::Esc], now);
+
+    assert!(
+        screen_text(&app, now).contains("Recording…"),
+        "{}",
+        screen_text(&app, now)
+    );
+}
+
+#[test]
+fn recording_another_issue_drops_what_the_last_one_did() {
+    let now = Instant::now();
+    let first = opened(draft(1, BugOriginView::Owner, "the board froze", 1));
+    let mut app = listing(
+        &[
+            first.clone(),
+            opened(draft(2, BugOriginView::Agent, "todo add timed out", 1)),
+        ],
+        now,
+    );
+    press(&mut app, &[Key::Enter], now);
+    typing(&mut app, "844", now);
+    let submitted = sent(&press(&mut app, &[Key::Enter], now));
+    app.answer(&submitted[0], Ok(recorded(first)), now);
+    app.apply_changes(&after_snapshot(vec![tombstone(EntityKind::BugReport, "1")]))
+        .unwrap();
+
+    press(&mut app, &[Key::Enter], now);
+
+    let screen = screen_text(&app, now);
+    assert!(screen.contains("Issue of bug report 2"), "{screen}");
+    assert!(!screen.contains("Done:"), "{screen}");
+}
+
+/// An app in the phone layout, 40 columns wide, whose feed carries `drafts`.
+fn phone_app(drafts: &[BugReportView], now: Instant) -> cockpit_tui::App {
+    let mut app = app_with(&["app"], Vec::new(), now);
+    app.set_screen(40, 20);
+    answer(
+        &mut app,
+        Command::ManagerFit {
+            session_open: false,
+        },
+        Reply::ManagerFitted { phone: true },
+        now,
+    );
+    app.apply_changes(&after_snapshot(drafts.iter().map(published).collect()))
+        .unwrap();
+    app
+}
+
+/// The phone layout gives way to the view, as it does to the projects view.
+#[test]
+fn the_view_opened_on_the_phone_is_the_one_drawn() {
+    let now = Instant::now();
+    let mut app = phone_app(
+        &[opened(draft(1, BugOriginView::Owner, "the board froze", 1))],
+        now,
+    );
+
+    press(&mut app, &[Key::Char('B')], now);
+
+    let shown = sized_screen(&app, now, 40, 20).join("\n");
+    assert!(shown.contains("Opened to send"), "{shown}");
+}
+
+#[test]
+fn the_phone_card_counts_the_opened_drafts_apart_from_the_waiting_ones() {
+    let now = Instant::now();
+    let app = phone_app(
+        &[
+            draft(1, BugOriginView::Daemon, "a request stalled", 1),
+            opened(draft(2, BugOriginView::Owner, "the board froze", 1)),
+        ],
+        now,
+    );
+
+    // The card wraps at 40 columns: without its spaces it reads whole again.
+    let shown = sized_screen(&app, now, 40, 20).concat().replace(' ', "");
+    assert!(
+        shown.contains("!Bugreportdrafts(1),1moreopenedtosend:Bliststhem"),
+        "{shown}"
+    );
 }

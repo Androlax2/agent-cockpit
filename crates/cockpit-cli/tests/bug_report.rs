@@ -372,7 +372,7 @@ async fn show_says_how_to_record_the_issue_of_a_draft_a_send_opened() {
     let printed = text(&output.stdout);
     assert!(
         printed.contains(
-            "A send opened its issue. Once submitted, record it: `torlek bug-report send 7 --filed ISSUE_URL`.\n"
+            "A send opened its issue. Once submitted, record it: `torlek bug-report send 7 --filed ISSUE_URL` (or its number).\n"
         ),
         "{printed}"
     );
@@ -408,7 +408,9 @@ async fn send_opens_the_drafts_issue_url_in_the_browser_and_leaves_it_a_draft() 
         "{printed}"
     );
     assert!(
-        printed.contains("once submitted, record it: torlek bug-report send 7 --filed ISSUE_URL\n"),
+        printed.contains(
+            "once submitted, record it: torlek bug-report send 7 --filed ISSUE_URL (or its number)\n"
+        ),
         "{printed}"
     );
     assert_eq!(
@@ -437,11 +439,12 @@ async fn send_fails_when_the_daemon_cannot_mark_the_draft_opened() {
 
     assert!(!output.status.success());
     assert_eq!(home.ran("xdg-open"), format!("{NEW_ISSUE_URL}\n"));
+    let problem = text(&output.stderr);
     assert!(
-        text(&output.stderr).contains("the database is busy"),
-        "{}",
-        text(&output.stderr)
+        problem.contains("bug report 7 is not marked opened: the lists still show it as waiting"),
+        "{problem}"
     );
+    assert!(problem.contains("the database is busy"), "{problem}");
     assert!(
         text(&output.stdout).contains("torlek bug-report send 7 --filed ISSUE_URL"),
         "{}",
@@ -495,11 +498,34 @@ async fn send_offers_an_existing_issue_instead_of_a_duplicate() {
         "{}",
         text(&output.stdout)
     );
+    assert!(
+        text(&output.stdout).contains(
+            "once added there, record it: torlek bug-report send 7 --filed ISSUE_URL (or its number)\n"
+        ),
+        "{}",
+        text(&output.stdout)
+    );
     assert_eq!(home.ran("xdg-open"), "", "no new issue is opened");
     assert_eq!(
         daemon.await.unwrap(),
         vec![Command::BugReportShow { report: 7 }],
         "the draft stays a draft"
+    );
+}
+
+#[tokio::test]
+async fn filed_with_another_flag_is_refused_with_what_it_takes() {
+    let home = Home::new();
+
+    let output = home
+        .cockpit(&["bug-report", "send", "7", "--filed", "844", "--gh"], &[])
+        .await;
+
+    assert!(!output.status.success());
+    assert!(
+        text(&output.stderr).contains("--filed comes alone: send ID --filed URL|NUMBER"),
+        "{}",
+        text(&output.stderr)
     );
 }
 

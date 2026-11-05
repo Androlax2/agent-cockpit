@@ -81,25 +81,11 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
             Overlay::Help => ("Help", HELP.to_owned()),
             Overlay::Log => ("Log", app.log().collect::<Vec<_>>().join("\n")),
         };
-        frame.render_widget(
-            Paragraph::new(text)
-                .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title(title)),
-            area,
-        );
+        draw_text_view(frame, area, title, text);
         return;
     }
     if let Some(view) = &app.bug_reports {
-        frame.render_widget(
-            Paragraph::new(view.text(app.board()))
-                .wrap(Wrap { trim: false })
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Bug report drafts"),
-                ),
-            area,
-        );
+        draw_text_view(frame, area, "Bug report drafts", view.text(app.board()));
         return;
     }
     let pane_height = if app.pane().shown().is_some() { 14 } else { 0 };
@@ -150,6 +136,16 @@ const CARD_INDENT: &str = "   ";
 
 /// The list, wrapped here rather than by the paragraph so the rows the selected card takes
 /// are known: the list scrolls to keep that card whole on screen (#291).
+/// A view that is one wrapped text under its title: the help, the log, the bug report drafts.
+fn draw_text_view(frame: &mut Frame<'_>, area: Rect, title: &str, text: String) {
+    frame.render_widget(
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(title)),
+        area,
+    );
+}
+
 fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let board = app.board();
     let width = usize::from(area.width.saturating_sub(2));
@@ -438,12 +434,9 @@ fn draw_form(form: &Form, frame: &mut Frame<'_>, area: Rect) {
 
 /// The needs-you card of the bug report drafts: the ones waiting for a send, and apart from
 /// them the ones a send opened, whose issue the owner records in `B` (#847).
-fn bug_reports_card(board: &Board) -> Option<String> {
+pub(crate) fn bug_reports_card(board: &Board) -> Option<String> {
     let drafts = board.bug_report_drafts();
-    let opened = drafts
-        .iter()
-        .filter(|draft| crate::bug_reports::is_opened(draft))
-        .count();
+    let opened = drafts.iter().filter(|draft| draft.is_opened()).count();
     match (drafts.len() - opened, opened) {
         (0, 0) => None,
         (waiting, 0) => Some(format!("! Bug report drafts ({waiting}): B lists them")),

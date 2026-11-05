@@ -13,7 +13,7 @@ pub(crate) struct BugReports {
     selected: Option<i64>,
     recording: Option<Recording>,
     /// What the last issue recorded here did. Its draft left the list, so the view says it
-    /// until it closes.
+    /// until it closes or another issue is recorded.
     recorded: Option<String>,
 }
 
@@ -24,8 +24,8 @@ struct Recording {
     issue: String,
     /// Why the last Enter recorded nothing, for the owner.
     problem: Option<String>,
-    /// The `bug-report-sent` on its way: Enter sends no second one, and only its answer
-    /// closes or annotates the input.
+    /// The `bug-report-sent` on its way: no key sends a second one or leaves the input, and
+    /// only its answer closes or annotates it.
     submitted: Option<Command>,
 }
 
@@ -44,16 +44,11 @@ fn handled(used: &'static str) -> BugReportsOutcome {
     }
 }
 
-/// Whether a send handed the owner the draft's issue: it may be submitted, nothing says so.
-pub(crate) fn is_opened(draft: &BugReportView) -> bool {
-    draft.opened_at.is_some()
-}
-
 /// The drafts in the order the view lists them: the ones a send opened, then the ones still
 /// waiting for one, each oldest first.
 fn listed(board: &Board) -> Vec<&BugReportView> {
     let mut drafts = board.bug_report_drafts();
-    drafts.sort_by_key(|draft| !is_opened(draft));
+    drafts.sort_by_key(|draft| !draft.is_opened());
     drafts
 }
 
@@ -61,11 +56,11 @@ impl BugReports {
     pub(crate) fn key(&mut self, key: Key, board: &Board) -> BugReportsOutcome {
         if let Some(recording) = &mut self.recording {
             return match key {
+                _ if recording.submitted.is_some() => handled("bug-report-record-pending"),
                 Key::Esc => {
                     self.recording = None;
                     handled("bug-report-record-cancel")
                 }
-                _ if recording.submitted.is_some() => handled("bug-report-record-pending"),
                 Key::Enter => recording.submit(),
                 Key::Backspace => {
                     recording.issue.pop();
@@ -91,6 +86,7 @@ impl BugReports {
                 handled("bug-report-move")
             }
             (Key::Enter, Some(at)) => {
+                self.recorded = None;
                 self.recording = Some(Recording {
                     report: drafts[at].id,
                     issue: String::new(),
@@ -145,10 +141,10 @@ impl BugReports {
         let mut lines = Vec::new();
         for (position, draft) in drafts.iter().enumerate() {
             let is_first_of_its_group =
-                position == 0 || is_opened(drafts[position - 1]) != is_opened(draft);
+                position == 0 || drafts[position - 1].is_opened() != draft.is_opened();
             if is_first_of_its_group {
                 lines.push(
-                    if is_opened(draft) {
+                    if draft.is_opened() {
                         "Opened to send, issue not recorded yet"
                     } else {
                         "Waiting for you"

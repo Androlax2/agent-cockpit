@@ -13,6 +13,9 @@ consider and asked for the first and third together.
   select a draft, Enter asks for the issue and sends `bug-report-sent`. The needs-you card
   counts the two kinds apart. Any draft can be recorded, opened or not: a draft submitted
   before this change, or from a URL copied by hand, has no `opened_at`.
+- **`opened_at` outlives an edit and a merged occurrence.** It stays true that a send handed
+  the owner the issue; clearing it would list the draft as waiting again, which is #847. A
+  report recorded sent keeps it too, and is opened no more (`BugReportView::is_opened`).
 - **An issue is recorded by its URL or its number.** `bug-report-sent` takes `844` or `#844`
   for the repository reports go to (`cockpit_bug_reports::REPOSITORY`), in the TUI and in
   `send ID --filed`. The owner has the number in front of them after submitting.

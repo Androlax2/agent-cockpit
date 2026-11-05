@@ -209,7 +209,9 @@ fn parse_send(report: &str, flags: &[&str]) -> Result<Verb, String> {
             "--gh" => &mut send.is_gh,
             "--print" => &mut send.is_print_only,
             "--anyway" => &mut send.is_anyway,
-            "--filed" => return Err("--filed URL comes alone: send ID --filed URL".to_owned()),
+            "--filed" => {
+                return Err("--filed comes alone: send ID --filed URL|NUMBER".to_owned());
+            }
             _ => return Err(format!("unknown argument {flag}")),
         };
         if std::mem::replace(field, true) {
@@ -361,7 +363,7 @@ fn new_draft(command: Command) -> Result<Reply, ExitCode> {
 /// `ID status origin xN fingerprint: title`.
 fn summary_line(report: &BugReportView) -> String {
     let mut status = report.status.as_str().to_owned();
-    if is_opened(report) {
+    if report.is_opened() {
         status.push_str(" (opened, issue not recorded)");
     }
     let mut origin = report.origin.as_str().to_owned();
@@ -401,9 +403,9 @@ fn report_text(report: &BugReportView) -> String {
             ));
         }
     }
-    if is_opened(report) {
+    if report.is_opened() {
         text.push_str(&format!(
-            "\nA send opened its issue. Once submitted, record it: `torlek bug-report send {} --filed ISSUE_URL`.\n",
+            "\nA send opened its issue. Once submitted, record it: `torlek bug-report send {} --filed ISSUE_URL` (or its number).\n",
             report.id
         ));
     } else if report.status == BugStatusView::Draft {
@@ -413,11 +415,6 @@ fn report_text(report: &BugReportView) -> String {
         ));
     }
     text
-}
-
-/// Whether a send handed the owner the draft's issue and nothing recorded it since.
-fn is_opened(report: &BugReportView) -> bool {
-    report.status == BugStatusView::Draft && report.opened_at.is_some()
 }
 
 fn bundle_text(bundle: &BugBundleView) -> String {
@@ -431,7 +428,7 @@ fn bundle_text(bundle: &BugBundleView) -> String {
 /// Shows the fingerprint, offers an existing issue instead of a duplicate, then files the
 /// issue with `gh` and records the draft sent, or opens the prefilled issue for the owner to
 /// submit. A browser or a printed URL proves nothing was filed, so the draft stays a draft,
-/// marked opened (#847), until the owner records the issue with `send ID --filed URL`. One
+/// marked opened (#847), until the owner records the issue with `send ID --filed URL|NUMBER`. One
 /// connection: the draft read is the draft sent.
 fn send_report(send: &Send) -> ExitCode {
     let socket = match crate::agent::caller_socket() {
@@ -487,7 +484,7 @@ fn send_report(send: &Send) -> ExitCode {
                 outln!("attach the support bundle to the issue: {path}");
             }
             outln!(
-                "once submitted, record it: torlek bug-report send {} --filed ISSUE_URL",
+                "once submitted, record it: torlek bug-report send {} --filed ISSUE_URL (or its number)",
                 report.id
             );
             let opened = connection
@@ -496,11 +493,16 @@ fn send_report(send: &Send) -> ExitCode {
                     CONTROL_DEADLINE,
                 )
                 .await;
-            return match opened {
-                Ok(Reply::BugReport { .. }) => ExitCode::SUCCESS,
+            let problem = match opened {
+                Ok(Reply::BugReport { .. }) => return ExitCode::SUCCESS,
                 Ok(reply) => unexpected(&reply),
                 Err(error) => failed(&error),
             };
+            eprintln!(
+                "torlek: bug report {} is not marked opened: the lists still show it as waiting",
+                report.id
+            );
+            return problem;
         }
         let issue_url = match gh_create(issue) {
             Ok(url) => url,
@@ -566,7 +568,9 @@ fn offers_existing_issue(issue: &BugIssueView, report: i64) -> bool {
     }
     outln!("an issue with this fingerprint exists; add to it instead of filing a duplicate:");
     out!("{listed}");
-    outln!("once added there, record it: torlek bug-report send {report} --filed ISSUE_URL");
+    outln!(
+        "once added there, record it: torlek bug-report send {report} --filed ISSUE_URL (or its number)"
+    );
     outln!("to file a new one anyway: torlek bug-report send {report} --anyway");
     true
 }

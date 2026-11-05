@@ -189,6 +189,26 @@ fn a_report_view_says_when_a_send_opened_it() {
     assert_eq!(serde_json::to_value(&opened).unwrap(), opened_wire);
 }
 
+/// `opened_at` outlives the draft: a report recorded sent since is no longer waiting for its
+/// issue.
+#[test]
+fn a_report_is_opened_only_while_it_is_a_draft_a_send_opened() {
+    let view = |status: &str, opened_at: Option<i64>| -> BugReportView {
+        serde_json::from_value(
+            json!({"id": 1, "origin": "owner", "requested_by_owner": false,
+            "status": status, "title": "t", "description": "d", "steps": "",
+            "fingerprint": "cockpit-0.1.0/other/unknown", "environment": "cockpit 0.1.0",
+            "bundle": {"state": "pending"}, "occurrences": 1, "created_at": 1, "changed_at": 2,
+            "opened_at": opened_at}),
+        )
+        .unwrap()
+    };
+
+    assert!(view("draft", Some(5)).is_opened());
+    assert!(!view("draft", None).is_opened());
+    assert!(!view("sent", Some(5)).is_opened());
+}
+
 /// Serde decodes a tagged enum from a sequence too; the daemon names a request's lane work by
 /// its kind, so a command with no `kind` field is refused, never decoded without one.
 #[test]
