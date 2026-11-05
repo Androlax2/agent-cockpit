@@ -24,6 +24,7 @@ fn report(state: Option<AgentState>, doing: Option<&str>, reported_at: i64) -> S
         outcome: None,
         question_source: None,
         covered_question: None,
+        held_by: None,
         reported_at,
     }
 }
