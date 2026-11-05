@@ -653,13 +653,39 @@ async fn storage_database_reports_each_rule_the_feed_and_backups_without_retirin
         "database: 8192 bytes, WAL 0 bytes",
         "ended sessions' launch context\t2\t300\t0\t0",
         "finished command runs' output\t2\t40\t0\t0",
-        "change feed: 12 captured rows kept, at most 100000",
+        "change feed: 12 captured rows kept now; the hourly trim keeps the newest 100000",
         "backups: 1 of the newest 7 kept",
         "/s/backups/state-9.db\t9\t8192",
         "torlek storage database prune",
     ] {
         assert!(stdout.contains(line), "missing {line}: {stdout}");
     }
+}
+
+#[tokio::test]
+async fn storage_database_does_not_bound_a_feed_that_grew_past_its_cap_between_trims() {
+    let Reply::StorageDatabase {
+        mut database,
+        applied,
+    } = database_report(0, &[])
+    else {
+        unreachable!("database_report builds a StorageDatabase reply");
+    };
+    database.feed_changes = 101_362;
+    let (_, code, stdout) = against_scripted(
+        &["storage", "database"],
+        Reply::StorageDatabase { database, applied },
+    )
+    .await;
+
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(
+        stdout.contains(
+            "change feed: 101362 captured rows kept now; the hourly trim keeps the newest 100000"
+        ),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("at most"), "{stdout}");
 }
 
 #[tokio::test]
