@@ -74,7 +74,10 @@ fn every_tmux_command_names_the_server_by_its_path_under_tmux_tmpdir() {
         .iter()
         .filter(|call| !call.contains(&expected))
         .collect();
-    assert!(elsewhere.is_empty(), "not on {socket:?}: {elsewhere:#?}");
+    assert!(
+        elsewhere.is_empty(),
+        "not on the home's socket: {elsewhere:#?}"
+    );
 }
 
 #[test]
