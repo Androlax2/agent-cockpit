@@ -445,6 +445,35 @@ async fn a_sandboxed_agent_gets_no_providers_credential_variable() {
     assert_eq!(printed, "0\nexit=1\n");
 }
 
+/// #832: the project's API token is bound only to the GitHub hosts the session reaches, and
+/// the claude adapter declares none: the evidence names both hosts as left without it, and
+/// the agent holds neither token nor placeholder.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_api_token_for_hosts_the_session_does_not_reach_is_named_and_not_added() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        home.write_github_api_token(COMMANDED_PROJECT, "github_pat_api_token\n", 0o600);
+    })
+    .await;
+
+    let printed = run_in_agent(&home, &agent.root, "echo \"${GH_TOKEN-unset}\"").await;
+    let shown = home
+        .cockpit(&["session", "sandbox", &agent.session], &[])
+        .await;
+
+    assert_eq!(printed, "unset\nexit=0\n");
+    let evidence = text(&shown.stdout);
+    for host in ["github.com", "api.github.com"] {
+        assert!(
+            evidence.contains(&format!(
+                "credential: the project's GitHub API token is not added on {host}:443: the \
+                 session's launch does not reach it"
+            )),
+            "{evidence}"
+        );
+    }
+}
+
 /// #857: the session proxy allows no forge the adapter does not declare, so a push from
 /// inside reaches none.
 #[tokio::test(flavor = "multi_thread")]

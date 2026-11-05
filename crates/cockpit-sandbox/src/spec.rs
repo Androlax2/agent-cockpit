@@ -2,17 +2,19 @@
 //! sandbox (#829), written by the daemon into the session's mount folder, which no agent
 //! reaches, and removed by the launcher as soon as it read it (#434). It holds paths and
 //! rules, never a secret: the program's environment reaches the launcher the way every
-//! hosted launch's does.
+//! hosted launch's does, and bound credentials' values travel in their own file (#832).
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::egress::{Allowlist, Target, normalized_name};
+use crate::credentials::{CredentialScheme, Interception};
+use crate::egress::{Allowlist, TLS_PORT, Target, normalized_name};
 
 /// Bumped when a field changes meaning; the launcher refuses any other version, so a launcher
-/// left from an older install never half-reads a newer daemon's spec.
-pub const SPEC_VERSION: u32 = 2;
+/// left from an older install never half-reads a newer daemon's spec. 3: bound credentials
+/// (#832), which an older launcher would leave unadded.
+pub const SPEC_VERSION: u32 = 3;
 
 /// The file name of the spec in the session's mount folder.
 pub const SPEC_FILE: &str = "launch-spec.json";
@@ -116,6 +118,9 @@ pub struct LaunchSpec {
     pub forwards: Vec<Forward>,
     /// What the session proxy lets out of the sandbox (#831).
     pub egress: Allowlist,
+    /// The hosts the session proxy intercepts to add a bound credential (#832); None for a
+    /// launch with no bound credential, whose proxy intercepts nothing and has no CA.
+    pub interception: Option<Interception>,
 }
 
 /// A folder bound read-write at another path.
@@ -225,6 +230,9 @@ impl LaunchSpec {
             }
         }
         check_allowlist(&self.egress)?;
+        if let Some(interception) = &self.interception {
+            check_interception(interception, &self.egress)?;
+        }
         if let Some(forward) = self.forwards.first() {
             return Err(InvalidSpec(format!(
                 "forward {} to {}: host-service forwards do not exist yet (#860)",
@@ -252,6 +260,81 @@ fn check_allowlist(allowlist: &Allowlist) -> Result<(), InvalidSpec> {
                 "allowlist entry {entry} ({}) is not a host name or address and a port",
                 entry.source
             )));
+        }
+    }
+    Ok(())
+}
+
+/// At least one credential; each host a lower-case DNS name bound once, which the allowlist
+/// lets the session reach on 443 (#857 decision 3: a credential is never bound to a host
+/// without reach); a Git username Basic credentials can carry; plain paths.
+fn check_interception(
+    interception: &Interception,
+    allowlist: &Allowlist,
+) -> Result<(), InvalidSpec> {
+    if interception.credentials.is_empty() {
+        return Err(InvalidSpec(
+            "the interception binds no credential".to_owned(),
+        ));
+    }
+    for path in [
+        &interception.system_bundle,
+        &interception.ca_file,
+        &interception.bundle_file,
+    ] {
+        check_plain(path)?;
+    }
+    let mut bound: Vec<&str> = Vec::new();
+    for credential in &interception.credentials {
+        let is_printable = !credential.name.is_empty()
+            && credential
+                .name
+                .chars()
+                .all(|character| matches!(character, ' '..='~'));
+        if !is_printable {
+            return Err(InvalidSpec(format!(
+                "credential name {:?} is not printable ASCII",
+                credential.name
+            )));
+        }
+        if credential.hosts.is_empty() {
+            return Err(InvalidSpec(format!(
+                "{} is bound to no host",
+                credential.name
+            )));
+        }
+        for bound_host in &credential.hosts {
+            let host = bound_host.host.as_str();
+            if normalized_name(host).as_deref() != Some(host) || !host.contains('.') {
+                return Err(InvalidSpec(format!(
+                    "{} is bound to {host:?}, which is not a lower-case host name",
+                    credential.name
+                )));
+            }
+            if bound.contains(&host) {
+                return Err(InvalidSpec(format!(
+                    "{host} carries more than one credential"
+                )));
+            }
+            bound.push(host);
+            if let Err(refusal) = allowlist.decide(host, TLS_PORT) {
+                return Err(InvalidSpec(format!(
+                    "{} cannot be bound to {host}: the session may not reach it ({refusal}); \
+                     a credential is bound only to a host the session reaches (#857)",
+                    credential.name
+                )));
+            }
+            if let CredentialScheme::GitReads { username } = &bound_host.scheme {
+                let is_valid = !username.is_empty()
+                    && username
+                        .chars()
+                        .all(|character| character.is_ascii_graphic() && character != ':');
+                if !is_valid {
+                    return Err(InvalidSpec(format!(
+                        "the Git username {username:?} for {host} is empty or holds a `:`"
+                    )));
+                }
+            }
         }
     }
     Ok(())

@@ -2,7 +2,10 @@
 //! the sandbox, from the launcher on the host's network. One `CONNECT` per connection,
 //! decided on the allowlist snapshot by `cockpit_sandbox`'s decision core; names resolved
 //! here, every address checked, and on port 443 the TLS server name matched against the
-//! `CONNECT` host. No interception: after the check the bytes pass unchanged.
+//! `CONNECT` host. After the check the bytes pass unchanged, except on a host that carries a
+//! bound credential (#832): there the proxy ends the client's TLS with the per-session CA's
+//! certificate, opens its own to the host, and relays HTTP/1.1, adding the credential
+//! (`intercept.rs`).
 //!
 //! The owner's decisions on network requests (#674) arrive in a file the daemon replaces
 //! (`cockpit_sandbox::DECISIONS_FILE`): read before serving and again each time it changes.
@@ -28,7 +31,9 @@ use cockpit_sandbox::{
     EgressRequests, MAX_ASKED_DESTINATIONS, Subject, destination,
 };
 
+use crate::authority::{Authority, BoundHost};
 use crate::client_hello::{self, ServerName};
+use crate::intercept::{self, Direction, Ended, Event, Wire};
 
 /// How long a client has to send its `CONNECT` request.
 const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -48,6 +53,9 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 /// How often the decisions file is read for a change: an owner's decision applies to the
 /// agent's next try within this.
 const DECISIONS_INTERVAL: Duration = Duration::from_millis(200);
+/// How long an intercepted connection's client may stay silent: between requests, or inside
+/// one's body. Clients reopen a kept-alive connection the proxy closed.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Where the proxy resolves names and connects: the host's network in a launch, a fake in
 /// tests.
@@ -86,6 +94,8 @@ pub struct Proxy<U> {
     next_tunnel: AtomicU64,
     subject: Subject,
     upstream: U,
+    /// The hosts that carry a bound credential (#832); None when the launch binds none.
+    authority: Option<Authority>,
     report: Mutex<EgressReport>,
     /// Bumped at each change, so the writer rewrites the file only when something counted.
     changes: AtomicUsize,
@@ -195,7 +205,12 @@ fn decisions_in(path: &Path, read: Option<&[u8]>) -> EgressDecisions {
 }
 
 impl<U: Upstream> Proxy<U> {
-    pub fn new(allowlist: Allowlist, subject: Subject, upstream: U) -> Arc<Proxy<U>> {
+    pub fn new(
+        allowlist: Allowlist,
+        subject: Subject,
+        upstream: U,
+        authority: Option<Authority>,
+    ) -> Arc<Proxy<U>> {
         Arc::new(Proxy {
             decided: RwLock::new(Arc::new(Decided {
                 allowlist: allowlist.clone(),
@@ -212,6 +227,7 @@ impl<U: Upstream> Proxy<U> {
             report: Mutex::new(EgressReport::new(subject.clone())),
             subject,
             upstream,
+            authority,
             changes: AtomicUsize::new(0),
             open: AtomicUsize::new(0),
             writing: Mutex::new(()),
@@ -437,7 +453,22 @@ impl<U: Upstream> Proxy<U> {
         let Some(tunnel) = self.open_tunnel(entry, &client, &upstream) else {
             return;
         };
-        if upstream.write_all(&first_bytes).is_ok() {
+        let bound = self
+            .authority
+            .as_ref()
+            .filter(|_| expects_server_name)
+            .and_then(|authority| Some((authority, authority.host(&host)?)));
+        if let Some((authority, bound)) = bound {
+            self.intercept(
+                client,
+                upstream,
+                first_bytes,
+                &host,
+                &destination,
+                authority,
+                bound,
+            );
+        } else if upstream.write_all(&first_bytes).is_ok() {
             let _ = client.set_read_timeout(None);
             self.splice(client, upstream, &destination, first_bytes.len() as u64);
         }
@@ -666,6 +697,145 @@ impl<U: Upstream> Proxy<U> {
         }
     }
 
+    /// Ends the client's TLS with `bound`'s certificate, opens the proxy's own to `host`, and
+    /// relays HTTP/1.1 between them with the credential added. A client that refuses the
+    /// session CA's certificate, as one that pins its certificates does, is named with the
+    /// host in the counters.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one tunnel's streams and names, each handed over once"
+    )]
+    fn intercept(
+        &self,
+        client: TcpStream,
+        upstream: TcpStream,
+        first_bytes: Vec<u8>,
+        host: &str,
+        destination: &str,
+        authority: &Authority,
+        bound: &BoundHost,
+    ) {
+        let _ = client.set_read_timeout(Some(HELLO_TIMEOUT));
+        let Ok(connection) = rustls::ServerConnection::new(Arc::clone(&bound.server)) else {
+            return;
+        };
+        let mut client = rustls::StreamOwned::new(connection, Prefixed::new(first_bytes, client));
+        if let Err(error) = handshake(&mut client.conn, &mut client.sock) {
+            let refused_by_client = received_alert(&error).is_some();
+            let reason = match received_alert(&error) {
+                Some(alert) => format!(
+                    "the client refused the session CA's certificate for {host} ({alert:?}): a \
+                     client that pins its certificates, or trusts neither SSL_CERT_FILE nor \
+                     NODE_EXTRA_CA_CERTS, cannot use {} on {host}",
+                    bound.credential.name
+                ),
+                // A client that pins may close without an alert; one that offers no
+                // `http/1.1` gets the proxy's own.
+                None => format!(
+                    "the TLS handshake with the client for {host} failed ({error}): a client \
+                     that pins its certificates, offers no http/1.1, or trusts neither \
+                     SSL_CERT_FILE nor NODE_EXTRA_CA_CERTS, cannot use {} on {host}",
+                    bound.credential.name
+                ),
+            };
+            self.count(destination, |counters| {
+                if refused_by_client {
+                    counters.ca_refused += 1;
+                }
+                counters.last_reason = Some(reason);
+            });
+            return;
+        }
+        let _ = client.sock.stream.set_read_timeout(Some(IDLE_TIMEOUT));
+        let mut client = Wire::new(client);
+        let upstream = match self.open_tls(authority, host, upstream) {
+            Ok(upstream) => upstream,
+            Err((error, reason)) => {
+                self.count(destination, |counters| {
+                    counters.unreachable += 1;
+                    counters.last_reason = Some(reason.clone());
+                });
+                // The client is owed an answer to its first request.
+                if matches!(client_head(&mut client), Some(true)) {
+                    let answer = Answer::unreachable("502 Bad Gateway", error, reason);
+                    let _ = self.answer(client.get_mut(), destination, &answer);
+                }
+                close_tls(client.get_mut());
+                return;
+            }
+        };
+        let mut upstream = Wire::new(upstream);
+        let tally = |event: Event| match event {
+            Event::Bytes(direction, bytes) => self.add_bytes(destination, direction, bytes),
+            Event::CredentialAdded => self.count(destination, |counters| {
+                counters.credential_added += 1;
+            }),
+        };
+        let ended = intercept::relay(&mut client, &mut upstream, host, &bound.credential, &tally);
+        let answer = match ended {
+            Ended::Closed => None,
+            Ended::Refused { error, reason } => Some(Answer::refused(error, reason)),
+            Ended::BadRequest(reason) => Some(Answer {
+                status: "400 Bad Request",
+                error: "http_request_error",
+                reason,
+                is_refusal: true,
+            }),
+            Ended::Broken(reason) => {
+                self.count(destination, |counters| counters.last_reason = Some(reason));
+                None
+            }
+        };
+        if let Some(answer) = answer {
+            self.count(destination, |counters| {
+                counters.refused += 1;
+                counters.last_reason = Some(answer.reason.clone());
+            });
+            let _ = self.answer(client.get_mut(), destination, &answer);
+        }
+        close_tls(client.get_mut());
+        close_tls(upstream.get_mut());
+    }
+
+    /// The proxy's own TLS to `host`, verified against the host's roots; or the
+    /// `Proxy-Status` error and reason for the `502`.
+    fn open_tls(
+        &self,
+        authority: &Authority,
+        host: &str,
+        upstream: TcpStream,
+    ) -> Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>, (&'static str, String)>
+    {
+        let failed = |error: String| {
+            (
+                "tls_protocol_error",
+                format!("TLS with {host} failed: {error}"),
+            )
+        };
+        let name = rustls::pki_types::ServerName::try_from(host.to_owned())
+            .map_err(|error| failed(error.to_string()))?;
+        let connection = rustls::ClientConnection::new(authority.upstream(), name)
+            .map_err(|error| failed(error.to_string()))?;
+        let _ = upstream.set_read_timeout(Some(CONNECT_TIMEOUT));
+        let mut stream = rustls::StreamOwned::new(connection, upstream);
+        if let Err(error) = handshake(&mut stream.conn, &mut stream.sock) {
+            let is_certificate = matches!(
+                rustls_error(&error),
+                Some(rustls::Error::InvalidCertificate(_))
+            );
+            let (code, reason) = failed(error.to_string());
+            let code = if is_certificate {
+                "tls_certificate_error"
+            } else {
+                code
+            };
+            return Err((code, reason));
+        }
+        // A stalled upstream never holds the tunnel's thread longer than an idle client does.
+        let _ = stream.sock.set_read_timeout(Some(IDLE_TIMEOUT));
+        Ok(stream)
+    }
+
     /// Copies both ways until the upstream ends, or each side does, counting the bytes.
     fn splice(&self, client: TcpStream, upstream: TcpStream, destination: &str, already_out: u64) {
         let (Ok(client_reader), Ok(upstream_reader)) = (client.try_clone(), upstream.try_clone())
@@ -721,7 +891,7 @@ impl<U: Upstream> Proxy<U> {
 
     fn answer(
         &self,
-        client: &mut TcpStream,
+        client: &mut impl Write,
         destination: &str,
         answer: &Answer,
     ) -> std::io::Result<()> {
@@ -766,10 +936,86 @@ impl<U: Upstream> Proxy<U> {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Direction {
-    Out,
-    In,
+/// The bytes the proxy read from the client before it knew the tunnel is intercepted, its
+/// ClientHello, then the client's stream: what the TLS server reads.
+pub struct Prefixed {
+    prefix: Vec<u8>,
+    position: usize,
+    pub stream: TcpStream,
+}
+
+impl Prefixed {
+    fn new(prefix: Vec<u8>, stream: TcpStream) -> Prefixed {
+        Prefixed {
+            prefix,
+            position: 0,
+            stream,
+        }
+    }
+}
+
+impl Read for Prefixed {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let rest = &self.prefix[self.position..];
+        if rest.is_empty() {
+            return self.stream.read(buffer);
+        }
+        let read = rest.len().min(buffer.len());
+        buffer[..read].copy_from_slice(&rest[..read]);
+        self.position += read;
+        Ok(read)
+    }
+}
+
+impl Write for Prefixed {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.stream.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+/// Completes a TLS handshake on `stream`.
+fn handshake<C, S, D>(connection: &mut C, stream: &mut S) -> std::io::Result<()>
+where
+    C: std::ops::DerefMut + std::ops::Deref<Target = rustls::ConnectionCommon<D>>,
+    S: Read + Write,
+    D: rustls::SideData,
+{
+    while connection.is_handshaking() {
+        connection.complete_io(stream)?;
+    }
+    Ok(())
+}
+
+fn rustls_error(error: &std::io::Error) -> Option<&rustls::Error> {
+    error.get_ref()?.downcast_ref::<rustls::Error>()
+}
+
+/// The alert the peer ended a handshake with, if it sent one.
+fn received_alert(error: &std::io::Error) -> Option<rustls::AlertDescription> {
+    match rustls_error(error)? {
+        rustls::Error::AlertReceived(alert) => Some(*alert),
+        _ => None,
+    }
+}
+
+/// Whether the client sent a request head before it closed: Some(true) when it did.
+fn client_head<C: Read + Write>(client: &mut Wire<C>) -> Option<bool> {
+    client.head().ok().map(|head| head.is_some())
+}
+
+/// Ends one side's TLS with `close_notify`, as far as the peer still reads.
+fn close_tls<C, S, D>(stream: &mut rustls::StreamOwned<C, S>)
+where
+    C: std::ops::DerefMut + std::ops::Deref<Target = rustls::ConnectionCommon<D>>,
+    S: Read + Write,
+    D: rustls::SideData,
+{
+    stream.conn.send_close_notify();
+    let _ = stream.flush();
 }
 
 /// The request head, and the bytes the client sent after it.
@@ -854,6 +1100,8 @@ mod tests {
     use super::*;
     use crate::client_hello::tests::client_hello;
 
+    mod interception;
+
     /// Names resolve as the map says; every connection goes to `server` on the test host's
     /// loopback, whatever address and port the proxy asked for.
     struct Fake {
@@ -912,6 +1160,14 @@ mod tests {
     }
 
     fn start(entries: Vec<AllowEntry>, upstream: Fake) -> Running {
+        start_with(entries, upstream, None)
+    }
+
+    fn start_with(
+        entries: Vec<AllowEntry>,
+        upstream: Fake,
+        authority: Option<Authority>,
+    ) -> Running {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let proxy = Proxy::new(
@@ -923,6 +1179,7 @@ mod tests {
                 session: "s1".to_owned(),
             },
             upstream,
+            authority,
         );
         let serving = Arc::clone(&proxy);
         std::thread::spawn(move || serving.serve(listener));

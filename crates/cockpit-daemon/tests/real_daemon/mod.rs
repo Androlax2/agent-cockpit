@@ -224,11 +224,26 @@ impl Home {
     /// Writes project `project`'s GitHub token file with `mode`, where the owner keeps it
     /// (#754); its folder is owner-only.
     pub fn write_github_token(&self, project: &str, contents: &str, mode: u32) {
+        self.write_token_file(cockpit_config::GITHUB_TOKENS_DIR, project, contents, mode);
+    }
+
+    /// Writes project `project`'s GitHub API token file, the one the session proxy adds
+    /// (#832), as [`Home::write_github_token`] writes the other.
+    pub fn write_github_api_token(&self, project: &str, contents: &str, mode: u32) {
+        self.write_token_file(
+            cockpit_config::GITHUB_API_TOKENS_DIR,
+            project,
+            contents,
+            mode,
+        );
+    }
+
+    fn write_token_file(&self, folder: &str, project: &str, contents: &str, mode: u32) {
         let dir = self
             .path()
             .join("config")
             .join(BUILD_PROFILE_DIR)
-            .join(cockpit_config::GITHUB_TOKENS_DIR);
+            .join(folder);
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)

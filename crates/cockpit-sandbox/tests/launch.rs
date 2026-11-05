@@ -261,7 +261,7 @@ fn a_sessions_tool_configuration_is_the_folder_its_launch_writes() {
     assert_eq!(removed, prepared.staged.unwrap().config_dir);
 }
 
-/// Until selective interception (#832) the session proxy swaps no placeholder.
+/// A secret never crosses as a placeholder: a credential is bound to its hosts instead (#832).
 #[test]
 fn a_required_sandbox_refuses_a_placeholder_secret() {
     let mut request = launch_request("s1", "/home/owner/app");

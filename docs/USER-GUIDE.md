@@ -212,7 +212,8 @@ Unknown keys fail with the file and line. See the [current configuration guide](
 | Data | Default profile location |
 | --- | --- |
 | Owner settings | `~/.config/torlek/config.toml` |
-| A project's GitHub token, its sessions' `GH_TOKEN` | `~/.config/torlek/github-tokens/<project>` |
+| A project's GitHub token, its unsandboxed sessions' `GH_TOKEN` | `~/.config/torlek/github-tokens/<project>` |
+| A project's GitHub API token, which the session proxy adds for sandboxed sessions | `~/.config/torlek/github-api-tokens/<project>` |
 | Database, session records and instruction bundle | `~/.local/state/torlek/` |
 | Torlek operational logs | `~/.local/state/torlek/logs/` |
 | Each session's temporary files (its `TMPDIR`), removed when the session ends | `~/.local/state/torlek/tmp/<session>/` |
@@ -230,6 +231,15 @@ Its next sessions get it as `GH_TOKEN`; a sandbox would hide your `~/.config/gh`
 A project without one gets no `GH_TOKEN`. `torlek project show PROJECT` says which, never the
 token. A file whose mode is not `0600` or `0400`, or one that holds anything but the token, stops the
 project's sessions from launching until you fix it.
+
+Under `agents.sandbox = "required"` no session gets that token: it can push, and pushes go
+through `torlek push`. Save a second token for the project in
+`~/.config/torlek/github-api-tokens/<project>`, same rules, with pull requests and issues
+read and write and contents read only. The session proxy adds it on `api.github.com`, and on
+`github.com` for fetches; the agent holds a placeholder `GH_TOKEN` and trusts a per-session
+CA through `SSL_CERT_FILE` and its siblings. It is added only on the GitHub hosts the session
+reaches at launch, not on one you allow later; `torlek session sandbox SESSION` names any it is
+not added on.
 
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` override their respective base directories.
 Named profiles replace the `torlek` directory component with `torlek-NAME` (for example `torlek-dev`).

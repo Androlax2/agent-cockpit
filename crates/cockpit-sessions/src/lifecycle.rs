@@ -1989,7 +1989,8 @@ impl Sessions {
         // not just the folder it starts in: Git and the project's own files live at its root.
         let (checkout, _) = self.checkout_containing(&session.working_dir).await?;
         let output_project = checkout.project.as_str().to_owned();
-        let github = self.github_access(&output_project).await?;
+        let setting = self.owner_settings().sandbox;
+        let github = self.github_access(setting, &output_project).await?;
         // Kept for the clone's harness trust, recorded once the launch passed its gates.
         let clone_trust = matches!(checkout.kind, CheckoutKind::Parallel { .. }).then(|| {
             (
@@ -1997,7 +1998,6 @@ impl Sessions {
                 with_github_token(environment.clone(), None),
             )
         });
-        let setting = self.owner_settings().sandbox;
         let tools = self
             .sandbox_tools(setting, &checkout.path, &session.working_dir, &environment)
             .await?;
@@ -2020,6 +2020,13 @@ impl Sessions {
             command.program,
             command.arguments,
         )?;
+        // Dropped when this launch returns, whichever way it does.
+        let _staged_credentials = StagedCredentials(
+            prepared
+                .staged
+                .as_ref()
+                .and_then(cockpit_sandbox::Staged::credentials_path),
+        );
         if let Some(staged) = prepared.staged.as_mut() {
             // The project's grants and the session's earlier decisions (#674) hold from the
             // agent's first connection, not from the daemon's next write.
@@ -2228,13 +2235,17 @@ impl Sessions {
         environment
     }
 
-    /// What a launch in `project` gets of GitHub (#754), read now so a token the owner
-    /// replaced reaches the next launch.
-    async fn github_access(&self, project: &str) -> Result<GithubAccess, Error> {
+    /// What a launch in `project` under `setting` gets of GitHub (#754, #832), read now so a
+    /// token the owner replaced reaches the next launch.
+    async fn github_access(
+        &self,
+        setting: cockpit_config::AgentSandbox,
+        project: &str,
+    ) -> Result<GithubAccess, Error> {
         let environment = self.settings.owner_environment.clone();
         let project = project.to_owned();
         self.blocking("read the project's GitHub token", move || {
-            github_access(&environment, &project)
+            github_access(&environment, setting, &project)
         })
         .await
     }
@@ -2264,11 +2275,18 @@ impl Sessions {
         program: PathBuf,
         arguments: Vec<OsString>,
     ) -> Result<cockpit_sandbox::Prepared, Error> {
-        // A sandboxed agent never holds the project's token (#857): the proxy that will add
-        // it on GitHub's hosts alone does not exist yet, so Git and `gh` inside get none.
-        let token = match setting {
-            cockpit_config::AgentSandbox::Required => None,
-            cockpit_config::AgentSandbox::Off => github.token.as_ref(),
+        // A sandboxed agent never holds the project's token, which can push (#857): pushes go
+        // through `torlek push`. The session proxy adds the project's API token instead, on
+        // the GitHub hosts the launch reaches (#832).
+        let (token, api_credential) = match setting {
+            cockpit_config::AgentSandbox::Required => (
+                None,
+                github
+                    .api_token
+                    .as_ref()
+                    .map(|api_token| github_api_credential(api_token, &needs.egress)),
+            ),
+            cockpit_config::AgentSandbox::Off => (github.token.as_ref(), None),
         };
         let mut secrets = vec![cockpit_sandbox::Secret {
             // The agent presents it on the local agent socket, never in an HTTP header a
@@ -2302,11 +2320,22 @@ impl Sessions {
                     desktop: self.desktop_session(),
                     needs,
                     tools,
+                    credentials: api_credential
+                        .as_ref()
+                        .and_then(|bound| bound.credential.clone())
+                        .into_iter()
+                        .collect(),
                 },
                 program,
                 arguments,
             )
             .map_err(Error::Sandbox)
+            .map(|mut prepared| {
+                if let Some(bound) = &api_credential {
+                    prepared.evidence.rules.extend(bound.unbound_rules());
+                }
+                prepared
+            })
     }
 
     /// [`tool_needs`] for a launch in `checkout`, started in `start_dir`, with `environment`
@@ -2350,9 +2379,11 @@ impl Sessions {
             .blocking("resolve the directory", move || canonical_dir(dir))
             .await?;
         let (checkout, _) = self.checkout_containing(&dir).await?;
-        let github = self.github_access(checkout.project.as_str()).await?;
-        let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
         let setting = self.owner_settings().sandbox;
+        let github = self
+            .github_access(setting, checkout.project.as_str())
+            .await?;
+        let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
         let tools = self
             .sandbox_tools(setting, &checkout.path, &checkout.path, &environment)
             .await?;
@@ -2944,43 +2975,163 @@ fn with_temp_dir(
     environment
 }
 
+/// A launch's bound credentials file (#832), removed when the launch returns: the launcher
+/// removes it as it starts, so one still there belongs to a launch that failed before its
+/// launcher ran, or that a later start of the launcher must not find.
+struct StagedCredentials(Option<PathBuf>);
+
+impl Drop for StagedCredentials {
+    fn drop(&mut self) {
+        let Some(path) = &self.0 else {
+            return;
+        };
+        match std::fs::remove_file(path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => tracing::warn!(
+                path = %path.display(),
+                %error,
+                "a launch's credentials file could not be removed"
+            ),
+            _ => {}
+        }
+    }
+}
+
 /// What a launch in one project gets of GitHub (#754).
 #[derive(Debug, Default)]
 struct GithubAccess {
-    /// The project's token, when the owner keeps one: the agent's `GH_TOKEN`.
+    /// The project's token, when the owner keeps one: the agent's `GH_TOKEN` when unsandboxed.
+    /// It can push, so a sandboxed agent never gets it (#857).
     token: Option<cockpit_config::GithubToken>,
+    /// The project's API token, when the owner keeps one and the launch is sandboxed: what the
+    /// session proxy adds on GitHub's hosts, the agent holding a placeholder (#832).
+    api_token: Option<cockpit_config::GithubToken>,
     /// The owner's own `gh` login, for the sandbox profile to hide from an agent that has its
     /// project's token, so `gh` and Git use that token alone. No backend enforces the profile
     /// in this release (#828), so an unsandboxed agent can still read it. Empty without a
-    /// token: the owner decided agents may use their login until each project has one.
+    /// token: the owner decided agents may use their login until each project has one. A
+    /// sandboxed agent's home is its session's own, which holds no login either way.
     hidden_owner_login: Vec<PathBuf>,
 }
 
-/// [`GithubAccess`] for a launch in `project`, from the token file in the owner's
-/// configuration. Blocking: it reads the file. An owner environment that names no home
-/// (in-process tests) reads none.
+/// [`GithubAccess`] for a launch in `project` under `setting`, from the token files in the
+/// owner's configuration; the API token's only under `"required"`, the one setting that uses
+/// it. Blocking: it reads the files. An owner environment that names no home (in-process
+/// tests) reads none.
 fn github_access(
     environment: &cockpit_config::Environment,
+    setting: cockpit_config::AgentSandbox,
     project: &str,
 ) -> Result<GithubAccess, Error> {
-    let (Ok(home), Some(path)) = (
+    let (Ok(home), Some(path), Some(api_path)) = (
         environment.home_dir(),
         cockpit_config::github_token_file(environment, project),
+        cockpit_config::github_api_token_file(environment, project),
     ) else {
         return Ok(GithubAccess::default());
     };
-    let token = cockpit_config::read_github_token(&path).map_err(|error| Error::GithubToken {
-        project: project.to_owned(),
-        error,
-    })?;
+    let read = |path: &Path| {
+        cockpit_config::read_github_token(path).map_err(|error| Error::GithubToken {
+            project: project.to_owned(),
+            error,
+        })
+    };
+    let token = read(&path)?;
+    let api_token = match setting {
+        cockpit_config::AgentSandbox::Required => read(&api_path)?,
+        cockpit_config::AgentSandbox::Off => None,
+    };
     let hidden_owner_login = match token {
         Some(_) => owner_gh_config_dirs(environment, &home),
         None => Vec::new(),
     };
     Ok(GithubAccess {
         token,
+        api_token,
         hidden_owner_login,
     })
+}
+
+/// What the session proxy adds the project's API token as, on each of GitHub's hosts (#857):
+/// Bearer on the API, Basic on Git's reads alone, a push refused naming `torlek push`.
+const GITHUB_API_TOKEN_HOSTS: [(&str, GithubScheme); 2] = [
+    ("github.com", GithubScheme::GitReads),
+    ("api.github.com", GithubScheme::Bearer),
+];
+
+/// The name every refusal, report and evidence line gives the project's API token.
+const GITHUB_API_TOKEN_NAME: &str = "the project's GitHub API token";
+
+/// The username GitHub expects beside a token in Basic credentials.
+const GITHUB_GIT_USERNAME: &str = "x-access-token";
+
+#[derive(Clone, Copy)]
+enum GithubScheme {
+    GitReads,
+    Bearer,
+}
+
+/// The project's API token, bound to the GitHub hosts a launch reaches.
+struct GithubApiCredential {
+    /// None when the launch reaches none of them.
+    credential: Option<cockpit_sandbox::BoundCredential>,
+    /// The hosts the launch does not reach, which get no credential.
+    unbound: Vec<&'static str>,
+}
+
+impl GithubApiCredential {
+    /// The evidence that names each host left without the token, so a `gh` or a fetch that
+    /// fails there for want of it says why.
+    fn unbound_rules(&self) -> Vec<cockpit_sandbox::AppliedRule> {
+        self.unbound
+            .iter()
+            .map(|host| cockpit_sandbox::AppliedRule {
+                rule: format!(
+                    "credential: {GITHUB_API_TOKEN_NAME} is not added on {host}:443: the \
+                     session's launch does not reach it, and a credential is bound at launch \
+                     only to a host the launch reaches (#857); a later allow (#674) adds none"
+                ),
+                enforced_by: "torlek".to_owned(),
+            })
+            .collect()
+    }
+}
+
+/// `api_token` bound to each of GitHub's hosts that `egress` lets through on 443: binding a
+/// credential never grants reach (#857, decision 3), so a host the launch does not reach gets
+/// none and is named instead.
+fn github_api_credential(
+    api_token: &cockpit_config::GithubToken,
+    egress: &[cockpit_sandbox::AllowEntry],
+) -> GithubApiCredential {
+    let allowlist = cockpit_sandbox::Allowlist {
+        program: String::new(),
+        entries: egress.to_vec(),
+    };
+    let (reached, unbound): (Vec<_>, Vec<_>) = GITHUB_API_TOKEN_HOSTS
+        .iter()
+        .partition(|(host, _)| allowlist.decide(host, cockpit_sandbox::TLS_PORT).is_ok());
+    let hosts: Vec<cockpit_sandbox::CredentialHost> = reached
+        .iter()
+        .map(|(host, scheme)| cockpit_sandbox::CredentialHost {
+            host: (*host).to_owned(),
+            scheme: match scheme {
+                GithubScheme::GitReads => cockpit_sandbox::CredentialScheme::GitReads {
+                    username: GITHUB_GIT_USERNAME.to_owned(),
+                },
+                GithubScheme::Bearer => cockpit_sandbox::CredentialScheme::Bearer,
+            },
+        })
+        .collect();
+    let credential = (!hosts.is_empty()).then(|| cockpit_sandbox::BoundCredential {
+        name: GITHUB_API_TOKEN_NAME.to_owned(),
+        placeholder_variable: Some(cockpit_config::GITHUB_TOKEN_VARIABLE.to_owned()),
+        value: cockpit_sandbox::CredentialValue::new(api_token.expose().to_owned()),
+        hosts,
+    });
+    GithubApiCredential {
+        credential,
+        unbound: unbound.iter().map(|(host, _)| *host).collect(),
+    }
 }
 
 /// Where the owner's `gh` keeps its login (`hosts.yml`): `~/.config/gh`, which a provider's

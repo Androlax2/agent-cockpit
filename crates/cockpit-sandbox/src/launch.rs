@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use cockpit_config::{AgentSandbox, DesktopSession};
 
 use crate::{
-    Backend, Enforcement, Evidence, NativeBackend, Platform, Profile, ProfileRequest,
-    ProviderNeeds, ProviderReach, Refusal, Secret, Staged, Subject, ToolNeeds,
+    Backend, BoundCredential, Enforcement, Evidence, NativeBackend, Platform, Profile,
+    ProfileRequest, ProviderNeeds, ProviderReach, Refusal, Secret, Staged, Subject, ToolNeeds,
 };
 
 /// What the daemon's own layout asks of every profile.
@@ -73,6 +73,9 @@ pub struct LaunchRequest {
     pub needs: ProviderNeeds,
     /// What the checkout's toolchains and Git ask of a sandboxed launch (#859).
     pub tools: ToolNeeds,
+    /// Credentials the session proxy adds on their own hosts (#832). Only a sandboxed launch
+    /// binds one; an unsandboxed launch is refused one rather than given the value.
+    pub credentials: Vec<BoundCredential>,
 }
 
 /// One check run's facts (#862): the project's check as the program, with no provider, agent
@@ -308,6 +311,7 @@ impl Sandbox {
             needs: ProviderNeeds::floor(),
             tools: request.tools.clone(),
             reaches_agent: false,
+            credentials: Vec::new(),
         };
         crate::native::prepare(
             native,
@@ -333,6 +337,13 @@ impl Sandbox {
         arguments: Vec<OsString>,
     ) -> Result<Prepared, Refusal> {
         if setting == AgentSandbox::Off {
+            if let Some(credential) = request.credentials.first() {
+                return Err(Refusal::new(
+                    format!("credential {}", credential.name),
+                    "only the session proxy of a sandboxed launch adds a bound credential; \
+                     an unsandboxed launch has no proxy",
+                ));
+            }
             return Ok(self.unsandboxed(program, arguments, &request.environment));
         }
         let native = self.native()?;
@@ -349,6 +360,7 @@ impl Sandbox {
             needs: request.needs.clone(),
             tools: request.tools.clone(),
             reaches_agent: true,
+            credentials: request.credentials.clone(),
         };
         crate::native::prepare(
             native,

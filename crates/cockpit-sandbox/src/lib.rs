@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod credentials;
 mod egress;
 mod evidence;
 mod launch;
@@ -13,6 +14,11 @@ mod profile;
 mod spec;
 
 pub use cockpit_config::{AgentSandbox, DesktopSession};
+pub use credentials::{
+    BUNDLE_VARIABLES, BoundCredential, CA_BUNDLE_FILE, CREDENTIALS_FILE, CredentialHost,
+    CredentialScheme, CredentialValue, EXTRA_CA_VARIABLE, Interception, PLACEHOLDER,
+    SESSION_CA_FILE, SYSTEM_BUNDLES, SpecCredential,
+};
 pub use egress::{
     AllowEntry, AllowSource, Allowed, Allowlist, AskedDestination, Counters as EgressCounters,
     DECISIONS_FILE, DeniedDestination, EGRESS_FILE, EgressDecisions, EgressReport, EgressRequests,

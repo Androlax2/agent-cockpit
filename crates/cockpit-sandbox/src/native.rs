@@ -12,6 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
+use crate::credentials::{
+    BUNDLE_VARIABLES, BoundCredential, CA_BUNDLE_FILE, CREDENTIALS_FILE, CredentialValue,
+    EXTRA_CA_VARIABLE, Interception, PLACEHOLDER, SESSION_CA_FILE, SYSTEM_BUNDLES, SpecCredential,
+};
 use crate::egress::{AllowEntry, Allowlist, EgressDecisions, PROXY_ADDRESS, Target};
 use crate::spec::{
     LANDLOCK_ABI_FLOOR, LaunchSpec, NeedsSource, Protected, SPEC_FILE, SPEC_VERSION,
@@ -265,6 +269,8 @@ pub struct Staged {
     /// The owner's decisions on the subject's network requests when it launches (#674);
     /// the caller reads them from the database, empty until it does.
     pub decisions: EgressDecisions,
+    /// The bound credentials' values, in the order of the spec's interception (#832).
+    pub credential_values: Vec<CredentialValue>,
 }
 
 impl Staged {
@@ -272,10 +278,16 @@ impl Staged {
         self.mount_dir.join(SPEC_FILE)
     }
 
-    /// Creates the owner-only folders and writes the spec and the decisions, owner-only,
-    /// replacing what a failed launch left; removes the last launch's egress counters and
-    /// refused destinations, so the evidence never shows them as this launch's and the
-    /// daemon files only this launch's requests.
+    /// Where [`Staged::write`] puts the bound credentials' values; None when the launch binds
+    /// none. The launcher removes the file as it starts.
+    pub fn credentials_path(&self) -> Option<PathBuf> {
+        (!self.credential_values.is_empty()).then(|| self.mount_dir.join(CREDENTIALS_FILE))
+    }
+
+    /// Creates the owner-only folders and writes the spec, the decisions and the bound
+    /// credentials' values, owner-only, replacing what a failed launch left; removes the last
+    /// launch's egress counters and refused destinations, so the evidence never shows them
+    /// as this launch's and the daemon files only this launch's requests.
     pub fn write(&self) -> std::io::Result<()> {
         let mut folders = std::fs::DirBuilder::new();
         folders.recursive(true).mode(0o700);
@@ -292,6 +304,18 @@ impl Staged {
         remove_if_present(&self.mount_dir.join(crate::REQUESTS_FILE))?;
         let decisions = serde_json::to_vec(&self.decisions).map_err(std::io::Error::other)?;
         replace_atomically(&self.mount_dir.join(crate::DECISIONS_FILE), &decisions)?;
+        let credentials = self.mount_dir.join(CREDENTIALS_FILE);
+        if self.credential_values.is_empty() {
+            remove_if_present(&credentials)?;
+        } else {
+            let values: Vec<&str> = self
+                .credential_values
+                .iter()
+                .map(CredentialValue::expose)
+                .collect();
+            let text = serde_json::to_vec(&values).map_err(std::io::Error::other)?;
+            replace_owner_only(&credentials, &text)?;
+        }
         let text = serde_json::to_vec(&self.spec).map_err(std::io::Error::other)?;
         replace_owner_only(&self.spec_path(), &text)
     }
@@ -342,6 +366,8 @@ pub(crate) struct Launch {
     /// Whether the program reaches Torlek's agent socket, bridge programs and instruction
     /// bundle: a session's provider does, a check never.
     pub reaches_agent: bool,
+    /// The credentials the session proxy adds (#832); a check binds none.
+    pub credentials: Vec<BoundCredential>,
 }
 
 /// The launch of `program` with `arguments` for `launch` through `native`: the launcher in
@@ -378,7 +404,8 @@ pub(crate) fn prepare(
     {
         return Err(Refusal::new(
             format!("secret {} as a placeholder", secret.variable),
-            "the session proxy swaps no placeholders yet (#832)",
+            "a secret in the environment never crosses as a placeholder; bind it to its \
+             hosts as a credential instead (#832)",
         ));
     }
     let home = home_folder(&launch.environment)?;
@@ -440,6 +467,7 @@ pub(crate) fn prepare(
     } else {
         (Vec::new(), Vec::new())
     };
+    let interception = interception(launch, &config_dir)?;
     let spec = LaunchSpec {
         version: SPEC_VERSION,
         subject: launch.subject.clone(),
@@ -476,6 +504,7 @@ pub(crate) fn prepare(
             program: program_name(&launch.subject, profile),
             entries: launch.needs.egress.clone(),
         },
+        interception,
     };
     spec.validate()
         .map_err(|error| Refusal::new("launch spec", error.to_string()))?;
@@ -495,12 +524,19 @@ pub(crate) fn prepare(
             // `GIT_CONFIG_COUNT` and its pairs, or `GIT_CONFIG_PARAMETERS`, could name a
             // credential helper again.
             let is_git_configuration = name.to_string_lossy().starts_with("GIT_CONFIG");
-            !is_credential && !is_replaced && !is_git_configuration && !is_proxy_variable(name)
+            !is_credential
+                && !is_replaced
+                && !is_git_configuration
+                && !is_proxy_variable(name)
+                && !is_interception_variable(launch, name)
         })
         .cloned()
         .chain(proxy_variables())
         .collect();
     environment.extend(tool_environment.variables);
+    if let Some(interception) = &spec.interception {
+        environment.extend(interception_variables(launch, interception));
+    }
     let staged = Staged {
         mount_dir,
         home_source,
@@ -512,6 +548,11 @@ pub(crate) fn prepare(
         config_files: tool_environment.files,
         spec,
         decisions: EgressDecisions::default(),
+        credential_values: launch
+            .credentials
+            .iter()
+            .map(|credential| credential.value.clone())
+            .collect(),
     };
     let evidence = evidence(native, profile, launch, &staged);
     let reach = if folder_mounts.is_empty() {
@@ -567,6 +608,99 @@ fn proxy_variables() -> Vec<(OsString, OsString)> {
     );
     // Node's built-in `fetch` and `http` honor the variables only with it (Node 24.0, 22.21).
     variables.push(("NODE_USE_ENV_PROXY".into(), "1".into()));
+    variables
+}
+
+/// What the launcher intercepts for `launch`'s bound credentials (#832), its trust files in
+/// the session's read-only tool configuration folder `config_dir`; None without one.
+fn interception(launch: &Launch, config_dir: &Path) -> Result<Option<Interception>, Refusal> {
+    if launch.credentials.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Interception {
+        credentials: launch
+            .credentials
+            .iter()
+            .map(|credential| SpecCredential {
+                name: credential.name.clone(),
+                hosts: credential.hosts.clone(),
+            })
+            .collect(),
+        system_bundle: system_bundle(&launch.environment)?,
+        ca_file: config_dir.join(SESSION_CA_FILE),
+        bundle_file: config_dir.join(CA_BUNDLE_FILE),
+    }))
+}
+
+/// The host's CA bundle: the owner's `SSL_CERT_FILE` when the launch environment sets one,
+/// else the first of [`SYSTEM_BUNDLES`] present. Refused when there is none, rather than
+/// verifying upstream servers against nothing.
+fn system_bundle(environment: &[(OsString, OsString)]) -> Result<PathBuf, Refusal> {
+    let refused = |reason: String| Refusal::new("host CA bundle", reason);
+    let owners = environment
+        .iter()
+        .rev()
+        .find(|(name, _)| name == "SSL_CERT_FILE")
+        .map(|(_, value)| PathBuf::from(value));
+    if let Some(path) = owners {
+        if !path.is_absolute() || !path.is_file() {
+            return Err(refused(format!(
+                "SSL_CERT_FILE names {}, which is no file at an absolute path",
+                path.display()
+            )));
+        }
+        return Ok(path);
+    }
+    SYSTEM_BUNDLES
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            refused(format!(
+                "none of {} exists; set SSL_CERT_FILE in the daemon's environment to the \
+                 host's CA bundle",
+                SYSTEM_BUNDLES.join(", ")
+            ))
+        })
+}
+
+/// A variable the interception sets: the trust variables and the credentials' placeholders,
+/// which nothing of the owner's may replace.
+fn is_interception_variable(launch: &Launch, name: &OsStr) -> bool {
+    if launch.credentials.is_empty() {
+        return false;
+    }
+    BUNDLE_VARIABLES
+        .iter()
+        .chain([&EXTRA_CA_VARIABLE])
+        .any(|variable| name == *variable)
+        || launch
+            .credentials
+            .iter()
+            .filter_map(|credential| credential.placeholder_variable.as_deref())
+            .any(|variable| name == variable)
+}
+
+/// The trust variables per runtime, then each credential's placeholder.
+fn interception_variables(
+    launch: &Launch,
+    interception: &Interception,
+) -> Vec<(OsString, OsString)> {
+    let mut variables: Vec<(OsString, OsString)> = BUNDLE_VARIABLES
+        .iter()
+        .map(|name| (name.into(), interception.bundle_file.clone().into()))
+        .collect();
+    variables.push((
+        EXTRA_CA_VARIABLE.into(),
+        interception.ca_file.clone().into(),
+    ));
+    variables.extend(
+        launch
+            .credentials
+            .iter()
+            .filter_map(|credential| credential.placeholder_variable.as_deref())
+            .map(|variable| (variable.into(), PLACEHOLDER.into())),
+    );
     variables
 }
 
@@ -887,6 +1021,9 @@ fn evidence(
         ));
     }
     rules.extend(egress_rules(&spec.egress));
+    if let Some(interception) = &spec.interception {
+        rules.extend(interception_rules(launch, interception));
+    }
     rules.push(rule(
         "system calls: tracing, mounts, namespaces, kernel modules, keys, BPF, io_uring and \
          terminal injection refused"
@@ -969,6 +1106,53 @@ fn egress_rules(allowlist: &Allowlist) -> Vec<AppliedRule> {
          multicast and reserved addresses refused unless granted by address"
             .to_owned(),
         &proxy,
+    ));
+    rules
+}
+
+/// The credentials a launch binds, where each is added and what the sandbox holds instead.
+fn interception_rules(launch: &Launch, interception: &Interception) -> Vec<AppliedRule> {
+    let proxy = format!("{BACKEND_NAME} session proxy");
+    let rule = |text: String, enforced_by: &str| AppliedRule {
+        rule: text,
+        enforced_by: enforced_by.to_owned(),
+    };
+    let mut rules = Vec::new();
+    for credential in &launch.credentials {
+        for host in &credential.hosts {
+            rules.push(rule(
+                format!(
+                    "credential: {} added on {}:443 {}; intercepted with a per-session CA \
+                     whose key stays in the launcher's memory",
+                    credential.name,
+                    host.host,
+                    host.scheme.describe()
+                ),
+                &proxy,
+            ));
+        }
+        let held = match &credential.placeholder_variable {
+            Some(variable) => format!("a placeholder in {variable}"),
+            None => "nothing".to_owned(),
+        };
+        rules.push(rule(
+            format!(
+                "credential: {} never enters the sandbox, which holds {held}",
+                credential.name
+            ),
+            "environment",
+        ));
+    }
+    rules.push(rule(
+        format!(
+            "trust: the per-session CA in {EXTRA_CA_VARIABLE} ({}); the host's bundle {} with \
+             it in {} ({}); every other host is a plain tunnel",
+            interception.ca_file.display(),
+            interception.system_bundle.display(),
+            BUNDLE_VARIABLES.join(", "),
+            interception.bundle_file.display()
+        ),
+        "environment",
     ));
     rules
 }
