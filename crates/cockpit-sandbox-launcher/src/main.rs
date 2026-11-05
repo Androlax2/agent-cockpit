@@ -88,7 +88,9 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
     let values = plan::credential_values(credentials, &spec)?;
     let authority = match &spec.interception {
         Some(interception) => {
-            let cockpit_sandbox::Subject::Session { session } = &spec.subject;
+            let cockpit_sandbox::Subject::Session { session } = &spec.subject else {
+                return Err("a check binds no credential, yet its spec intercepts".to_owned());
+            };
             Some(authority::Authority::create(session, interception, values)?)
         }
         None => None,
