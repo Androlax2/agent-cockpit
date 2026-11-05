@@ -4,6 +4,7 @@ mod app;
 mod attention;
 mod board;
 mod bug_form;
+mod bug_reports;
 mod feed;
 mod form;
 mod pane;

@@ -226,8 +226,15 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         steps: Option<String>,
     },
+    /// Owner only: a send handed the owner the draft's prefilled issue, opened in their
+    /// browser or printed. Nothing proves it was submitted: the draft stays a draft, shown as
+    /// opened until `bug-report-sent` records its issue (#847).
+    BugReportOpened {
+        report: i64,
+    },
     /// Owner only: the owner sent the draft from their browser or their own `gh`;
-    /// `issue_url` when the send returned the issue.
+    /// `issue_url` when the send returned the issue: its `https://` URL, or its number in
+    /// the repository reports go to.
     BugReportSent {
         report: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]

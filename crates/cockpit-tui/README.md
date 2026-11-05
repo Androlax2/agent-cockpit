@@ -6,7 +6,7 @@ through cockpit-client.
 Deliberately basic until M6 (decision 17, report 05): the session list grouped by project,
 open, next needing you, new session (`N`), restart, exit, the approval pane,
 the task view (`T`, #44), the workflow view (`F`, #330), bug report drafts (one needs-you card, the `B` list and the `b`
-form, #471; review and send stay in `torlek bug-report`), the log view and help. Effort, billing, compact and Remote Control are CLI verbs and provider
+form, #471; review and send stay in `torlek bug-report`, and `B` records the issue of a draft a send opened, #847), the log view and help. Effort, billing, compact and Remote Control are CLI verbs and provider
 capabilities only; no key reaches them here.
 
 ## Dependency edges

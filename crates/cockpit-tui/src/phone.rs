@@ -22,8 +22,8 @@ use crate::app::{App, Focus};
 use crate::board::Board;
 use crate::pane::Shown;
 use crate::render::{
-    columns, guide_lines, pane_keys, run_lines, scroll_to_show, status_line, truncated,
-    typing_line, wrapped,
+    bug_reports_card, columns, guide_lines, pane_keys, run_lines, scroll_to_show, status_line,
+    truncated, typing_line, wrapped,
 };
 
 /// Typing stops after this long without a key: a phone left in a pocket reads only again.
@@ -307,9 +307,7 @@ fn document(app: &App, width: usize) -> Document {
         push_card(&mut lines, &[question], width, Style::default());
     }
     push_blank(&mut lines);
-    let drafts = board.bug_reports.len();
-    if drafts > 0 {
-        let text = format!("! Bug report drafts ({drafts}): B lists them");
+    if let Some(text) = bug_reports_card(board) {
         push_card(&mut lines, &[text], width, bold);
     }
     let mut selected_rows = None;

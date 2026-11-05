@@ -109,6 +109,7 @@ fn draft() -> BugReportView {
         issue_url: None,
         created_at: 1,
         changed_at: 2,
+        opened_at: None,
         issue: Some(BugIssueView {
             repository: "Androlax2/agent-cockpit".to_owned(),
             title: "Approval pane froze".to_owned(),
@@ -124,6 +125,17 @@ fn draft() -> BugReportView {
 fn shown() -> Outcome {
     Outcome::Ok(Reply::BugReport {
         report: Box::new(draft()),
+    })
+}
+
+/// The draft once a send handed the owner its issue.
+fn opened() -> Outcome {
+    Outcome::Ok(Reply::BugReport {
+        report: Box::new(BugReportView {
+            opened_at: Some(3),
+            issue: None,
+            ..draft()
+        }),
     })
 }
 
@@ -328,11 +340,52 @@ async fn list_prints_one_line_per_draft() {
 }
 
 #[tokio::test]
+async fn list_says_which_draft_a_send_opened() {
+    let home = Home::new();
+    let daemon = scripted_daemon(&home.socket("daemon.sock"), {
+        let Outcome::Ok(Reply::BugReport { report }) = opened() else {
+            unreachable!()
+        };
+        Outcome::Ok(Reply::BugReports {
+            reports: vec![*report],
+        })
+    });
+
+    let output = home.cockpit(&["bug-report", "list"], &[]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "7 draft (opened, issue not recorded) agent s1 x2 cockpit-0.1.0/timeout/approvals: Approval pane froze\n"
+    );
+    daemon.await.unwrap();
+}
+
+#[tokio::test]
+async fn show_says_how_to_record_the_issue_of_a_draft_a_send_opened() {
+    let home = Home::new();
+    let daemon = scripted_daemon(&home.socket("daemon.sock"), opened());
+
+    let output = home.cockpit(&["bug-report", "show", "7"], &[]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let printed = text(&output.stdout);
+    assert!(
+        printed.contains(
+            "A send opened its issue. Once submitted, record it: `torlek bug-report send 7 --filed ISSUE_URL` (or its number).\n"
+        ),
+        "{printed}"
+    );
+    assert!(!printed.contains("Nothing is sent until"), "{printed}");
+    daemon.await.unwrap();
+}
+
+#[tokio::test]
 async fn send_opens_the_drafts_issue_url_in_the_browser_and_leaves_it_a_draft() {
     let home = Home::new();
     home.stand_in("xdg-open", "exit 0");
     home.stand_in("gh", "exit 0");
-    let daemon = scripted_conversation(&home.socket("daemon.sock"), vec![shown()]);
+    let daemon = scripted_conversation(&home.socket("daemon.sock"), vec![shown(), opened()]);
 
     let output = home.cockpit(&["bug-report", "send", "7"], &[]).await;
 
@@ -355,21 +408,56 @@ async fn send_opens_the_drafts_issue_url_in_the_browser_and_leaves_it_a_draft() 
         "{printed}"
     );
     assert!(
-        printed.contains("once submitted, record it: torlek bug-report send 7 --filed ISSUE_URL\n"),
+        printed.contains(
+            "once submitted, record it: torlek bug-report send 7 --filed ISSUE_URL (or its number)\n"
+        ),
         "{printed}"
     );
     assert_eq!(
         daemon.await.unwrap(),
-        vec![Command::BugReportShow { report: 7 }],
-        "a browser proves nothing was filed: the draft stays a draft"
+        vec![
+            Command::BugReportShow { report: 7 },
+            Command::BugReportOpened { report: 7 },
+        ],
+        "a browser proves nothing was filed: the draft stays a draft, marked opened"
     );
+}
+
+/// #847: the TUI kept listing a draft as waiting after its issue was submitted. A send that
+/// cannot say it opened the draft fails, so the owner knows the lists will not show it.
+#[tokio::test]
+async fn send_fails_when_the_daemon_cannot_mark_the_draft_opened() {
+    let home = Home::new();
+    home.stand_in("xdg-open", "exit 0");
+    let refusal = Outcome::Error(ProtocolError::new(
+        ErrorCode::Internal,
+        "the database is busy",
+    ));
+    let daemon = scripted_conversation(&home.socket("daemon.sock"), vec![shown(), refusal]);
+
+    let output = home.cockpit(&["bug-report", "send", "7"], &[]).await;
+
+    assert!(!output.status.success());
+    assert_eq!(home.ran("xdg-open"), format!("{NEW_ISSUE_URL}\n"));
+    let problem = text(&output.stderr);
+    assert!(
+        problem.contains("bug report 7 is not marked opened: the lists still show it as waiting"),
+        "{problem}"
+    );
+    assert!(problem.contains("the database is busy"), "{problem}");
+    assert!(
+        text(&output.stdout).contains("torlek bug-report send 7 --filed ISSUE_URL"),
+        "{}",
+        text(&output.stdout)
+    );
+    daemon.await.unwrap();
 }
 
 #[tokio::test]
 async fn send_print_prints_the_url_and_opens_nothing() {
     let home = Home::new();
     home.stand_in("xdg-open", "exit 0");
-    let daemon = scripted_conversation(&home.socket("daemon.sock"), vec![shown()]);
+    let daemon = scripted_conversation(&home.socket("daemon.sock"), vec![shown(), opened()]);
 
     let output = home
         .cockpit(&["bug-report", "send", "7", "--print"], &[])
@@ -382,7 +470,14 @@ async fn send_print_prints_the_url_and_opens_nothing() {
         text(&output.stdout)
     );
     assert_eq!(home.ran("xdg-open"), "");
-    assert_eq!(daemon.await.unwrap().len(), 1);
+    assert_eq!(
+        daemon.await.unwrap(),
+        vec![
+            Command::BugReportShow { report: 7 },
+            Command::BugReportOpened { report: 7 },
+        ],
+        "the owner has the URL to submit: the draft is opened all the same"
+    );
 }
 
 #[tokio::test]
@@ -403,11 +498,34 @@ async fn send_offers_an_existing_issue_instead_of_a_duplicate() {
         "{}",
         text(&output.stdout)
     );
+    assert!(
+        text(&output.stdout).contains(
+            "once added there, record it: torlek bug-report send 7 --filed ISSUE_URL (or its number)\n"
+        ),
+        "{}",
+        text(&output.stdout)
+    );
     assert_eq!(home.ran("xdg-open"), "", "no new issue is opened");
     assert_eq!(
         daemon.await.unwrap(),
         vec![Command::BugReportShow { report: 7 }],
         "the draft stays a draft"
+    );
+}
+
+#[tokio::test]
+async fn filed_with_another_flag_is_refused_with_what_it_takes() {
+    let home = Home::new();
+
+    let output = home
+        .cockpit(&["bug-report", "send", "7", "--filed", "844", "--gh"], &[])
+        .await;
+
+    assert!(!output.status.success());
+    assert!(
+        text(&output.stderr).contains("--filed comes alone: send ID --filed URL|NUMBER"),
+        "{}",
+        text(&output.stderr)
     );
 }
 

@@ -24,7 +24,7 @@ pub struct Board {
     pub(crate) reports: BTreeMap<String, SessionReport>,
     pub(crate) runs: Vec<RunRequestView>,
     pub(crate) guides: Vec<GuideView>,
-    /// The bug report drafts waiting for the owner, by id (#471).
+    /// The bug report drafts, by id (#471): waiting for a send, or opened by one (#847).
     pub(crate) bug_reports: BTreeMap<i64, BugReportView>,
     /// The last stamp the feed gave each area the daemon answers by request (#706). Kept
     /// across snapshots: a stamp that differs after one is how an outage's changes are found.
@@ -397,7 +397,8 @@ impl Board {
             .then_some(Idle::Waiting)
     }
 
-    /// The bug report drafts waiting for the owner, oldest first.
+    /// The bug report drafts, oldest first: the ones waiting for the owner to send them and
+    /// the ones a send opened, whose issue is not recorded yet (#847).
     pub fn bug_report_drafts(&self) -> Vec<&BugReportView> {
         self.bug_reports.values().collect()
     }

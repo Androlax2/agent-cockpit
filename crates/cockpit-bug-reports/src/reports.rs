@@ -6,8 +6,8 @@ use cockpit_turso::sql::{Connection, Row, params};
 use crate::error::{invalid, invalid_row};
 use crate::text::{self, DESCRIPTION_MAX_CHARS, MERGED_DESCRIPTION_MAX_CHARS, STEPS_MAX_CHARS};
 use crate::{
-    Bundle, Edit, Error, Facts, Filed, Fingerprint, Kind, NewReport, Origin, Refusal, Report,
-    ReportId, Source, Status, UNKNOWN_COMPONENT,
+    Bundle, Edit, Error, Facts, Filed, Fingerprint, Kind, NewReport, Origin, REPOSITORY, Refusal,
+    Report, ReportId, Source, Status, UNKNOWN_COMPONENT,
 };
 
 /// The most drafts one session opens in a day, owner-requested ones included: the claim
@@ -19,7 +19,7 @@ const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
 
 const COLUMNS: &str = "id, origin, requested_by_owner, session, status, title, description, \
     steps, version, kind, component, environment, bundle_path, bundle_contents, bundle_problem, \
-    occurrences, issue_url, created_at, changed_at";
+    occurrences, issue_url, created_at, changed_at, opened_at";
 
 /// Files `new`. A limited source (an agent's own report, the daemon) opens at most one draft
 /// per fingerprint per UTC day: a repeat counts as one more occurrence of today's draft, or
@@ -192,27 +192,55 @@ pub async fn edit(
     required(write, id).await
 }
 
-/// Records that the owner sent the draft; `issue_url` when the send returned the issue.
+/// Records that a send handed the owner the draft's prefilled issue, opened in their browser
+/// or printed. Nothing proves the issue was submitted, so the draft stays a draft (#847).
+pub async fn mark_opened(
+    write: &WriteTransaction<'_>,
+    id: ReportId,
+    now: i64,
+) -> Result<Report, Error> {
+    draft(write, id, "be opened").await?;
+    write
+        .execute(
+            "UPDATE bug_reports SET opened_at = ?2, changed_at = ?2 WHERE id = ?1",
+            params![id.0, now],
+        )
+        .await?;
+    required(write, id).await
+}
+
+/// Records that the owner sent the draft; `issue` when the send returned the issue: its
+/// `https://` URL, or its number among [`REPOSITORY`]'s issues.
 pub async fn mark_sent(
     write: &WriteTransaction<'_>,
     id: ReportId,
-    issue_url: Option<&str>,
+    issue: Option<&str>,
     now: i64,
 ) -> Result<Report, Error> {
     draft(write, id, "be sent").await?;
-    if let Some(url) = issue_url
-        && !url.starts_with("https://")
-    {
-        return Err(invalid("issue URL", "must start with https://").into());
-    }
+    let issue_url = issue.map(issue_url).transpose()?;
     write
         .execute(
             "UPDATE bug_reports SET status = 'sent', issue_url = ?2, changed_at = ?3
              WHERE id = ?1",
-            params![id.0, issue_url, now],
+            params![id.0, issue_url.as_deref(), now],
         )
         .await?;
     required(write, id).await
+}
+
+fn issue_url(issue: &str) -> Result<String, Error> {
+    if issue.starts_with("https://") {
+        return Ok(issue.to_owned());
+    }
+    let digits = issue.strip_prefix('#').unwrap_or(issue);
+    let is_number = !digits.is_empty() && digits.bytes().all(|digit| digit.is_ascii_digit());
+    match digits.parse::<u64>() {
+        Ok(number) if is_number && number > 0 => {
+            Ok(format!("https://github.com/{REPOSITORY}/issues/{number}"))
+        }
+        _ => Err(invalid("issue", "must be an https:// URL or an issue number").into()),
+    }
 }
 
 /// The owner drops the draft. Its row stays, so the daily limit still counts it; the caller
@@ -404,5 +432,6 @@ fn report_from(row: &Row) -> Result<Report, Error> {
         issue_url: row.get(16)?,
         created_at: row.get(17)?,
         changed_at: row.get(18)?,
+        opened_at: row.get(19)?,
     })
 }

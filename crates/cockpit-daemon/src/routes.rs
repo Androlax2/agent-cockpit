@@ -254,6 +254,7 @@ impl Handler for Routes {
                 | Command::BugReportList { .. }
                 | Command::BugReportShow { .. }
                 | Command::BugReportEdit { .. }
+                | Command::BugReportOpened { .. }
                 | Command::BugReportSent { .. }
                 | Command::BugReportDiscard { .. }),
                 peer,

@@ -36,6 +36,11 @@ issue with the same fingerprint only when it is specific (not `other` with no co
 
 `draft` (the owner reviews and may edit it) → `sent` or `discarded`. Only a draft changes.
 
+A send that hands the owner the prefilled issue (`mark_opened`) proves nothing was filed: the
+draft stays a draft and keeps when it was opened (`opened_at`, #847), so the lists show it
+apart from the drafts still waiting for a send. `mark_sent` then records its issue, by its
+`https://` URL or its number in `REPOSITORY`.
+
 ## Sending
 
 `issue()` renders the title, the body `gh issue create` files, and the prefilled URL of the

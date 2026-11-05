@@ -15,8 +15,8 @@ pub use model::{
     Status, UNKNOWN_COMPONENT,
 };
 pub use reports::{
-    SESSION_DRAFTS_PER_DAY, attach_bundle, discard, drafts_waiting, edit, file, list, mark_sent,
-    report,
+    SESSION_DRAFTS_PER_DAY, attach_bundle, discard, drafts_waiting, edit, file, list, mark_opened,
+    mark_sent, report,
 };
 pub use text::{COMPONENT_MAX_CHARS, DESCRIPTION_MAX_CHARS, STEPS_MAX_CHARS, TITLE_MAX_CHARS};
 
@@ -24,9 +24,10 @@ pub use text::{COMPONENT_MAX_CHARS, DESCRIPTION_MAX_CHARS, STEPS_MAX_CHARS, TITL
 /// its fingerprint from opening another draft the same day.
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "bug_reports",
-    migrations: &[Migration {
-        version: 1,
-        sql: "CREATE TABLE bug_reports (
+    migrations: &[
+        Migration {
+            version: 1,
+            sql: "CREATE TABLE bug_reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             origin TEXT NOT NULL CHECK (origin IN ('owner', 'agent', 'daemon')),
             requested_by_owner INTEGER NOT NULL CHECK (requested_by_owner IN (0, 1)),
@@ -61,5 +62,12 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
         CREATE INDEX bug_reports_by_session ON bug_reports (session, day)
             WHERE session IS NOT NULL;
         CREATE INDEX bug_reports_drafts ON bug_reports (status) WHERE status = 'draft';",
-    }],
+        },
+        // #847: a send that opens the browser proves no issue was filed, so the draft stays
+        // one; this is when it was handed to the owner. Earlier rows keep NULL.
+        Migration {
+            version: 2,
+            sql: "ALTER TABLE bug_reports ADD COLUMN opened_at INTEGER;",
+        },
+    ],
 };

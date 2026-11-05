@@ -255,6 +255,7 @@ torlek bug-report show ID
 Each draft includes a support bundle. Inspect its listed contents before sharing it.
 Torlek's diagnostic logs exclude hosted prompts, agent output, shell commands, credentials and environment values; your own description may still contain private details.
 `torlek bug-report send ID` opens a prefilled GitHub issue in your browser; you review and submit it, then attach the bundle yourself.
+Torlek cannot see that you submitted it, so the draft is listed as opened until you record its issue: in the TUI press `B`, select the draft and press Enter, or run `torlek bug-report send ID --filed ISSUE_URL`. The issue's number works in place of its URL.
 Nothing is filed automatically. There is no standalone `torlek support-bundle` CLI verb yet.
 If the daemon is unavailable, use [GitHub issues](https://github.com/Androlax2/agent-cockpit/issues) with your version, platform and reproduction steps, excluding secrets.
 Report security problems through [Security](../SECURITY.md).

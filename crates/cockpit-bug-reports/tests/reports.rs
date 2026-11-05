@@ -400,3 +400,79 @@ async fn reports_without_text_or_with_an_odd_component_are_refused() {
         }
     ));
 }
+
+#[tokio::test]
+async fn a_draft_a_send_opened_stays_a_draft_and_says_when() {
+    let fixture = Fixture::new().await;
+    let report = created(fixture.file(owner("it broke")).await.unwrap());
+    assert_eq!(report.opened_at, None);
+    let write = fixture.database.write().await.unwrap();
+
+    let opened = cockpit_bug_reports::mark_opened(&write, report.id, NOW + 60)
+        .await
+        .unwrap();
+
+    assert_eq!(opened.status, Status::Draft);
+    assert_eq!(opened.opened_at, Some(NOW + 60));
+    assert_eq!(opened.changed_at, NOW + 60);
+}
+
+#[tokio::test]
+async fn a_report_already_sent_is_not_marked_opened() {
+    let fixture = Fixture::new().await;
+    let report = created(fixture.file(owner("it broke")).await.unwrap());
+    let write = fixture.database.write().await.unwrap();
+    cockpit_bug_reports::mark_sent(&write, report.id, None, NOW)
+        .await
+        .unwrap();
+
+    let refused = refusal(cockpit_bug_reports::mark_opened(&write, report.id, NOW).await);
+
+    assert!(matches!(
+        refused,
+        Refusal::WrongStatus {
+            status: Status::Sent,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn a_send_recorded_by_issue_number_keeps_the_issues_url() {
+    let fixture = Fixture::new().await;
+    let write = fixture.database.write().await.unwrap();
+    for number in ["844", "#844"] {
+        let report = created(
+            cockpit_bug_reports::file(&write, &fixture.facts, owner("it broke"), NOW)
+                .await
+                .unwrap(),
+        );
+
+        let sent = cockpit_bug_reports::mark_sent(&write, report.id, Some(number), NOW)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sent.issue_url.as_deref(),
+            Some("https://github.com/Androlax2/agent-cockpit/issues/844"),
+            "{number}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_issue_that_is_neither_a_url_nor_a_number_is_refused() {
+    let fixture = Fixture::new().await;
+    let report = created(fixture.file(owner("it broke")).await.unwrap());
+    let write = fixture.database.write().await.unwrap();
+
+    for issue in ["http://github.com/o/r/issues/1", "issue 844", "0", "", "-3"] {
+        let refused =
+            refusal(cockpit_bug_reports::mark_sent(&write, report.id, Some(issue), NOW).await);
+
+        assert!(
+            matches!(refused, Refusal::InvalidRequest { field: "issue", .. }),
+            "{issue:?}: {refused:?}"
+        );
+    }
+}

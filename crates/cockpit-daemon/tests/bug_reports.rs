@@ -316,6 +316,57 @@ async fn a_sent_draft_records_its_issue_and_leaves_the_drafts() {
     assert_eq!(reports(&owner, true).await.len(), 1);
 }
 
+/// #847: the browser proves no issue was filed, so the draft stays one; the feed says it was
+/// opened, then retracts it once the owner records the issue by its number.
+#[tokio::test]
+async fn a_draft_a_send_opened_is_published_as_opened_until_its_issue_is_recorded() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let mut feed = Subscription::new(home.socket_path(), None, GENEROUS);
+    let draft = report(&owner, new_draft("the board froze")).await;
+
+    let opened = report(&owner, Command::BugReportOpened { report: draft.id }).await;
+
+    assert_eq!(opened.status, BugStatusView::Draft);
+    assert!(opened.opened_at.is_some(), "{opened:?}");
+    assert_eq!(drafts(&owner).await, vec![opened.clone()]);
+    until_published(&mut feed, draft.id, Some(&opened)).await;
+
+    let sent = report(
+        &owner,
+        Command::BugReportSent {
+            report: draft.id,
+            issue_url: Some("844".to_owned()),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        sent.issue_url.as_deref(),
+        Some("https://github.com/Androlax2/agent-cockpit/issues/844")
+    );
+    until_published(&mut feed, draft.id, None).await;
+}
+
+#[tokio::test]
+async fn an_agent_marks_no_draft_opened() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let draft = report(&owner, new_draft("the board froze")).await;
+
+    let error = refused(
+        home.connect_agent()
+            .await
+            .request(Command::BugReportOpened { report: draft.id }, GENEROUS)
+            .await,
+    );
+
+    assert_eq!(error.code, ErrorCode::NotAuthorized);
+    assert_eq!(drafts(&owner).await[0].opened_at, None);
+}
+
 #[tokio::test]
 async fn an_agent_reads_no_draft_and_the_owner_files_none_as_an_agent() {
     let home = TestHome::new();
