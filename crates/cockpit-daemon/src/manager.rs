@@ -307,6 +307,25 @@ async fn show(
         if is_without_terminal(current.state) {
             return describe(sessions, &current).await;
         }
+        let terminal = SessionName::new(id.as_str()).map_err(tmux_error)?;
+        let probing = Arc::clone(&manager);
+        let terminal_exists = tmux_blocking(move || {
+            Ok(probing
+                .tmux()?
+                .sessions()
+                .map_err(tmux_error)?
+                .contains(&terminal))
+        })
+        .await?;
+        if !terminal_exists {
+            return Err(ProtocolError::new(
+                ErrorCode::Conflict,
+                format!(
+                    "session {id}'s terminal is gone: its tmux session no longer exists; \
+                     end it with `torlek session end {id}`, then resume it with `torlek session resume {id}`"
+                ),
+            ));
+        }
         return Err(tmux_error(error));
     }
     crate::sessions::session_reply(sessions, &shown)
