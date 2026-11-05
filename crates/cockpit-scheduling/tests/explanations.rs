@@ -225,3 +225,36 @@ async fn the_time_a_unit_entered_the_queue_survives_a_reopen() {
     assert_eq!(explanation.waiting_since, Some(NOW));
     assert_eq!(explanation.next_evaluation_at, NOW + 3600 + 30);
 }
+
+#[tokio::test]
+async fn an_item_queued_since_the_last_pass_awaits_the_next_one() {
+    let fixture = Fixture::with_budget(4).await;
+    fixture.dispatch_at(NOW, &[]).await;
+
+    let item = fixture.queued("a", "task", Priority::NORMAL).await;
+
+    assert!(fixture.explanations().await.is_empty());
+    assert!(fixture.awaits_pass(item.id).await);
+}
+
+#[tokio::test]
+async fn an_item_a_session_is_doing_awaits_no_pass() {
+    let fixture = Fixture::with_budget(4).await;
+    let session = fixture.session("a-1", "a").await;
+    let item = fixture.queued("a", "task", Priority::NORMAL).await;
+
+    let dispatched = fixture.dispatch_at(NOW, &[session]).await;
+
+    assert_eq!(dispatched.placed.len(), 1);
+    assert!(!fixture.awaits_pass(item.id).await);
+}
+
+#[tokio::test]
+async fn an_unqueued_item_added_since_the_last_pass_awaits_the_next_one() {
+    let fixture = Fixture::with_budget(4).await;
+    fixture.dispatch_at(NOW, &[]).await;
+
+    let item = fixture.item("a", "task", Priority::NORMAL).await;
+
+    assert!(fixture.awaits_pass(item.id).await);
+}

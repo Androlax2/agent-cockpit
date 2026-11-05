@@ -396,13 +396,23 @@ async fn explain(context: &Context, item: Option<i64>) -> Answer {
     if let Some(item) = item {
         explanations.retain(|explanation| explanation.item.0 == item);
         if explanations.is_empty() {
-            return Err(Failed(ProtocolError::new(
-                ErrorCode::NotFound,
+            let awaits_pass = cockpit_scheduling::awaits_pass(&read, cockpit_tasks::ItemId(item))
+                .await
+                .map_err(|error| internal(&error))?;
+            let message = if awaits_pass {
+                format!(
+                    "item {item} has no explanation yet: no pass has considered it since it \
+                     began waiting; the next one runs within {} seconds, or now with `torlek \
+                     queue dispatch`",
+                    context.settings.interval.as_secs()
+                )
+            } else {
                 format!(
                     "item {item} has no explanation: the last pass found it placed, being \
                      done, finished or gone; `torlek todo show {item}` says which"
-                ),
-            )));
+                )
+            };
+            return Err(Failed(ProtocolError::new(ErrorCode::NotFound, message)));
         }
     }
     Ok(Reply::QueueExplanations {

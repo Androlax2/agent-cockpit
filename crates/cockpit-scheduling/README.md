@@ -80,6 +80,9 @@ was evaluated and when the next pass looks again, and the available action with 
 (`owner`, or `cockpit` when time or capacity moves it). `torlek queue explain [ITEM]` prints
 them.
 
+An open item without a record began waiting after the last pass; `awaits_pass` tells it
+from one that is placed, done or gone, so `queue explain` can say the next pass considers it.
+
 ## Durable state
 
 `scheduling_waiting` (when each unit entered the queue, so aging survives a restart),

@@ -340,6 +340,16 @@ impl Outside<'_> {
     }
 }
 
+/// Whether `item` is open work a pass places or explains. One that is, yet has no explanation,
+/// began waiting after the last pass: the next one considers it.
+pub async fn awaits_pass(connection: &Connection, item: ItemId) -> Result<bool, Error> {
+    let items = cockpit_tasks::list(connection, &Actor::Owner, &ListFilter::default()).await?;
+    let runs = cockpit_workflows::runs(connection, &Actor::Owner, &RunFilter::default()).await?;
+    let (waiting, outside) = units(&items, &runs);
+    Ok(waiting.iter().any(|unit| unit.item == item)
+        || outside.iter().any(|outside| outside.item.id == item))
+}
+
 /// Splits the open items into queue units and those waiting on something else. An item a
 /// running workflow follows waits as its run's ready step; one without a run waits as itself
 /// once queued and free of unfinished waits.
