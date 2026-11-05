@@ -79,7 +79,8 @@ provider and nothing above the contract sees a Codex type (#48).
   signed-in delivered-start acceptance passed on Linux with 0.166.0
   ([#436 receipt](../../docs/acceptance/436-codex-approval-routing.md)). Older versions are unverified.
 - **Sandbox needs** (`needs`, #830, #858). Hosts: `api.openai.com`, `chatgpt.com`,
-  `ab.chatgpt.com`. Nothing read from the owner's home; written into the session's own
+  `ab.chatgpt.com`, and `auth.openai.com`, which refreshes a ChatGPT sign-in's tokens and was
+  not in Greywall's profile. Nothing read from the owner's home; written into the session's own
   folders: `~/.codex`, `~/.cache/codex`. Credential file `~/.codex/auth.json`;
   `OPENAI_API_KEY` or `CODEX_API_KEY`, which Codex 0.166.0 names as its supported key
   variables, take a bound credential, carried by `api.openai.com`. Whether its TUI takes a

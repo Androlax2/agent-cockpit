@@ -8,7 +8,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::needs::matches_name;
+use crate::InvalidValue;
+use crate::needs::{HomePath, matches_name};
 
 /// One ecosystem's row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,34 +135,52 @@ impl Toolchain {
     /// The folders to bind read-only for a launch whose `PATH` holds `path_entries`, with
     /// `home` the agent's home: each install root group whose first root holds one of the
     /// entries. A `PATH` entry outside every group, such as `~/.local/bin`, binds nothing.
-    pub fn roots_to_bind(&self, home: &Path, path_entries: &[PathBuf]) -> Vec<PathBuf> {
+    /// Refuses a root of the table that is not a [`HomePath`], or a companion root with `*`.
+    pub fn roots_to_bind(
+        &self,
+        home: &Path,
+        path_entries: &[PathBuf],
+    ) -> Result<Vec<PathBuf>, InvalidValue> {
         let mut roots = Vec::new();
         for group in self.install_roots {
             let Some((first, companions)) = group.split_first() else {
                 continue;
             };
+            let first = HomePath::new(*first)?;
+            let companions = companions
+                .iter()
+                .map(|companion| companion_root(home, companion))
+                .collect::<Result<Vec<_>, _>>()?;
             for entry in path_entries {
-                let Some(root) = root_holding(home, first, entry) else {
+                let Some(root) = root_holding(home, &first, entry) else {
                     continue;
                 };
-                if !roots.contains(&root) {
-                    roots.push(root);
-                }
-                for companion in companions {
-                    let companion = in_home(home, companion);
-                    if !roots.contains(&companion) {
-                        roots.push(companion);
+                for root in std::iter::once(root).chain(companions.iter().cloned()) {
+                    if !roots.contains(&root) {
+                        roots.push(root);
                     }
                 }
             }
         }
-        roots
+        Ok(roots)
     }
+}
+
+fn companion_root(home: &Path, companion: &str) -> Result<PathBuf, InvalidValue> {
+    let companion = HomePath::new(companion)?;
+    if companion.as_str().contains('*') {
+        return Err(InvalidValue {
+            kind: "install root",
+            value: companion.to_string(),
+            rule: "only the first root of a group may end with `*`",
+        });
+    }
+    Ok(in_home(home, &companion))
 }
 
 /// The folder `root` names in `home` when `entry` lies inside it; for a root whose last name
 /// holds `*`, the one folder `entry` lies in.
-fn root_holding(home: &Path, root: &str, entry: &Path) -> Option<PathBuf> {
+fn root_holding(home: &Path, root: &HomePath, entry: &Path) -> Option<PathBuf> {
     let root = in_home(home, root);
     let parent = root.parent()?;
     let pattern = root.file_name()?.to_str()?;
@@ -175,6 +194,7 @@ fn root_holding(home: &Path, root: &str, entry: &Path) -> Option<PathBuf> {
     matches_name(pattern, name).then(|| parent.join(name))
 }
 
-fn in_home(home: &Path, path: &str) -> PathBuf {
-    home.join(path.strip_prefix("~/").unwrap_or(path))
+fn in_home(home: &Path, path: &HomePath) -> PathBuf {
+    path.components()
+        .fold(home.to_path_buf(), |folder, name| folder.join(name))
 }

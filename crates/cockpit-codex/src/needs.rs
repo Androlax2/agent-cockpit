@@ -4,9 +4,14 @@
 
 use cockpit_provider_api::{Credentials, InvalidValue, Needs};
 
-/// The hosts Codex reaches: the API, and ChatGPT's backend and experiments for a ChatGPT
-/// sign-in.
-pub const HOSTS: [&str; 3] = ["api.openai.com", "chatgpt.com", "ab.chatgpt.com"];
+/// The hosts Codex reaches: the API, and for a ChatGPT sign-in ChatGPT's backend and
+/// experiments, and the sign-in host that refreshes its tokens (not in Greywall's profile).
+pub const HOSTS: [&str; 4] = [
+    "api.openai.com",
+    "chatgpt.com",
+    "ab.chatgpt.com",
+    "auth.openai.com",
+];
 
 /// Written into the session's own folders: `CODEX_HOME`'s default and Codex's cache.
 pub const WRITE: [&str; 2] = ["~/.codex", "~/.cache/codex"];

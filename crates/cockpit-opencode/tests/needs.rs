@@ -15,10 +15,10 @@ fn strings<T: ToString>(values: &[T]) -> Vec<String> {
 }
 
 #[test]
-fn it_reaches_the_two_model_apis_only() {
+fn it_reaches_the_two_model_apis_and_the_model_catalog_only() {
     assert_eq!(
         strings(&opencode().needs().unwrap().hosts),
-        ["api.openai.com", "api.anthropic.com"]
+        ["api.openai.com", "api.anthropic.com", "models.dev"]
     );
 }
 

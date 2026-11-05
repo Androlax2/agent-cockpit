@@ -4,8 +4,10 @@
 
 use cockpit_provider_api::{Credentials, InvalidValue, Needs};
 
-/// The hosts OpenCode reaches: the two model APIs Greywall's profile allowed.
-pub const HOSTS: [&str; 2] = ["api.openai.com", "api.anthropic.com"];
+/// The hosts OpenCode reaches: the two model APIs Greywall's profile allowed, and the model
+/// catalog OpenCode fetches at start (not in Greywall's profile), since the session's cache
+/// starts empty.
+pub const HOSTS: [&str; 3] = ["api.openai.com", "api.anthropic.com", "models.dev"];
 
 /// Read from the owner's home: OpenCode's install folder, its program and its packages.
 pub const READ: [&str; 1] = ["~/.opencode"];

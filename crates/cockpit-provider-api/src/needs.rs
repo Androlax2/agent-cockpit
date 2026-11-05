@@ -14,8 +14,10 @@ const MAX_LABEL_BYTES: usize = 63;
 
 /// A host a program reaches: a lower-case DNS name with an optional port (`api.example.com`,
 /// `api.example.com:8443`), or every name under a domain (`*.example.com`). A bare `*`, a
-/// wildcard on a single label (`*.com`), an IP literal and a port of 0 are refused: the proxy
-/// allows names, never addresses (#861).
+/// wildcard on a single label (`*.com`), a single-label name such as `localhost`, a
+/// `.localhost` name, an IP literal in any of the forms a resolver reads (`127.0.0.1`,
+/// `0x7f000001`) and a port of 0 are refused: the proxy allows public names, never addresses
+/// (#861).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Host(String);
 
@@ -28,8 +30,9 @@ impl Host {
             Err(InvalidValue {
                 kind: "host",
                 value: host,
-                rule: "a lower-case DNS name, or `*.` and a domain of at least two labels, with \
-                       an optional port from 1 to 65535; never an IP address",
+                rule: "a lower-case DNS name of at least two labels whose last starts with a \
+                       letter and is not `localhost`, or `*.` and such a name, with an optional \
+                       port from 1 to 65535; never an IP address",
             })
         }
     }
@@ -54,19 +57,16 @@ fn is_host(host: &str) -> bool {
         port.bytes().all(|byte| byte.is_ascii_digit())
             && port.parse::<u16>().is_ok_and(|port| port != 0)
     });
-    let (domain, is_wildcard) = match name.strip_prefix("*.") {
-        Some(domain) => (domain, true),
-        None => (name, false),
-    };
+    let domain = name.strip_prefix("*.").unwrap_or(name);
     let labels: Vec<&str> = domain.split('.').collect();
-    let is_name = name.len() <= MAX_HOST_BYTES
-        && labels.iter().all(|label| is_label(label))
-        // An all-digit last label is an IPv4 address, never a top-level domain.
-        && labels
-            .last()
-            .is_some_and(|last| !last.bytes().all(|byte| byte.is_ascii_digit()));
-    let is_narrow_enough = !is_wildcard || labels.len() >= 2;
-    is_port && is_name && is_narrow_enough
+    // Every top-level domain starts with a letter; a resolver reads a last label starting
+    // with a digit (`1`, `0x1`) as part of an IPv4 address.
+    let is_public_name = labels.len() >= 2
+        && labels.last().is_some_and(|last| {
+            last.starts_with(|first: char| first.is_ascii_lowercase()) && *last != "localhost"
+        });
+    let is_name = name.len() <= MAX_HOST_BYTES && labels.iter().all(|label| is_label(label));
+    is_port && is_name && is_public_name
 }
 
 fn is_label(label: &str) -> bool {
@@ -80,9 +80,10 @@ fn is_label(label: &str) -> bool {
 }
 
 /// A path in the agent's home, written `~/` and its components (`~/.claude`,
-/// `~/.claude.json.*`). Its last component may hold `*`, matching any run of characters in one
-/// name; no component is empty, `.`, `..` or `*` alone. The sandbox expands `~` to the home
-/// the agent runs with.
+/// `~/.claude.json.*`). Its last name may end with one `*`, matching every name that starts
+/// with what precedes it, which holds a character other than `.`: `~/*`, `~/.*` and `~/*.*`
+/// are refused. No name is empty, `.` or `..`. The sandbox expands `~` to the home the agent
+/// runs with.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct HomePath(String);
 
@@ -95,8 +96,8 @@ impl HomePath {
             Err(InvalidValue {
                 kind: "home path",
                 value: path,
-                rule: "`~/` and names, none empty, `.`, `..` or `*` alone; `*` only in the last \
-                       name",
+                rule: "`~/` and names, none empty, `.` or `..`; only the last may end with one \
+                       `*`, after a prefix holding a character other than `.`",
             })
         }
     }
@@ -111,7 +112,7 @@ impl HomePath {
     }
 
     /// Whether `other` is this path or lies inside it, so that binding this path exposes
-    /// `other`. A `*` in this path's last name matches any run of characters there.
+    /// `other`. A `*` ending this path's last name matches any name with its prefix.
     pub fn covers(&self, other: &HomePath) -> bool {
         let mut others = other.components();
         self.components().all(|name| {
@@ -135,33 +136,28 @@ fn is_home_path(path: &str) -> bool {
     let names: Vec<&str> = rest.split('/').collect();
     let last = names.len() - 1;
     names.iter().enumerate().all(|(index, name)| {
-        !name.is_empty()
-            && *name != "."
-            && *name != ".."
-            && *name != "*"
-            && !name.contains('\0')
-            && (index == last || !name.contains('*'))
+        let literal = if index == last {
+            name.strip_suffix('*').unwrap_or(name)
+        } else {
+            name
+        };
+        let is_plain = !literal.is_empty()
+            && literal != "."
+            && literal != ".."
+            && !literal.contains(['*', '\0']);
+        let is_narrow_wildcard =
+            literal.len() == name.len() || literal.bytes().any(|byte| byte != b'.');
+        is_plain && is_narrow_wildcard
     })
 }
 
-/// Whether `name` matches `pattern`, whose `*` match any run of characters.
+/// Whether `name` matches `pattern`: the same name, or, for a pattern ending with `*`, any
+/// name starting with what precedes it.
 pub(crate) fn matches_name(pattern: &str, name: &str) -> bool {
-    let mut pieces = pattern.split('*');
-    let first = pieces.next().unwrap_or_default();
-    let Some(mut rest) = name.strip_prefix(first) else {
-        return false;
-    };
-    let pieces: Vec<&str> = pieces.collect();
-    let Some((last, middle)) = pieces.split_last() else {
-        return rest.is_empty();
-    };
-    for piece in middle {
-        match rest.find(piece) {
-            Some(start) => rest = &rest[start + piece.len()..],
-            None => return false,
-        }
+    match pattern.strip_suffix('*') {
+        Some(prefix) => name.starts_with(prefix),
+        None => name == pattern,
     }
-    rest.len() >= last.len() && rest.ends_with(last)
 }
 
 /// An environment variable's name: ASCII letters, digits and `_`, not starting with a digit.
@@ -226,7 +222,7 @@ pub struct CredentialBinding {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Credentials {
     /// Files where the harness stores a sign-in. Never bound from the owner's home: no
-    /// [`Needs::read`] path covers one. One may lie under a [`Needs::write`] path, which the
+    /// [`Needs::read`] path covers one or lies inside one. One may lie under a [`Needs::write`] path, which the
     /// session's own folder backs.
     pub files: Vec<HomePath>,
     /// The variables that take a bound credential, each with the hosts that carry it. They are
@@ -249,14 +245,17 @@ impl Credentials {
         needs: &Needs,
     ) -> Result<Credentials, InvalidValue> {
         let files = home_paths(files)?;
-        if let Some(exposed) = files
-            .iter()
-            .find(|file| needs.read.iter().any(|read| read.covers(file)))
-        {
+        if let Some(exposed) = files.iter().find(|file| {
+            needs
+                .read
+                .iter()
+                .any(|read| read.covers(file) || file.covers(read))
+        }) {
             return Err(InvalidValue {
                 kind: "credential file",
                 value: exposed.to_string(),
-                rule: "no path read from the owner's home covers a credential file",
+                rule: "no path read from the owner's home covers a credential file or lies \
+                       inside one",
             });
         }
         let bindings = bindings

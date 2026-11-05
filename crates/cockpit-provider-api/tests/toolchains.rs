@@ -153,7 +153,9 @@ const HOME: &str = "/home/owner";
 
 fn roots(ecosystem: &str, path: &[&str]) -> Vec<PathBuf> {
     let entries: Vec<PathBuf> = path.iter().map(PathBuf::from).collect();
-    toolchain(ecosystem).roots_to_bind(Path::new(HOME), &entries)
+    toolchain(ecosystem)
+        .roots_to_bind(Path::new(HOME), &entries)
+        .unwrap()
 }
 
 #[test]
@@ -187,6 +189,34 @@ fn a_path_entry_inside_a_root_binds_the_whole_root() {
 }
 
 #[test]
+fn a_malformed_root_in_the_table_is_refused_not_bound() {
+    let malformed = Toolchain {
+        install_roots: &[&["/opt/tool/bin"]],
+        ..*toolchain("go")
+    };
+
+    let refused = malformed
+        .roots_to_bind(Path::new(HOME), &[PathBuf::from("/opt/tool/bin")])
+        .unwrap_err();
+
+    assert_eq!(refused.value, "/opt/tool/bin");
+}
+
+#[test]
+fn a_companion_root_with_a_wildcard_is_refused() {
+    let malformed = Toolchain {
+        install_roots: &[&["~/.cargo/bin", "~/.rustup/toolchains/stable*"]],
+        ..*toolchain("rust")
+    };
+
+    let refused = malformed
+        .roots_to_bind(Path::new(HOME), &[PathBuf::from("/home/owner/.cargo/bin")])
+        .unwrap_err();
+
+    assert_eq!(refused.kind, "install root");
+}
+
+#[test]
 fn a_path_entry_outside_every_root_binds_nothing() {
     for entry in [
         "/usr/bin",
@@ -200,6 +230,7 @@ fn a_path_entry_outside_every_root_binds_nothing() {
             assert!(
                 toolchain
                     .roots_to_bind(Path::new(HOME), &[PathBuf::from(entry)])
+                    .unwrap()
                     .is_empty(),
                 "{entry} binds a root of {}",
                 toolchain.ecosystem

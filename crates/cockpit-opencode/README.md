@@ -67,7 +67,8 @@ provider and nothing above the contract sees an OpenCode type (#47).
   malformed launch metadata and server refusals stay errors; no terminal fallback occurs
   inside this adapter. The daemon's delivery calls and launch retention are owned by #431.
 - **Sandbox needs** (`needs`, #830, #858). Hosts: `api.openai.com`,
-  `api.anthropic.com`. Read from the owner's home: `~/.opencode`, its program and packages.
+  `api.anthropic.com`, and `models.dev`, the model catalog OpenCode fetches at start, which
+  was not in Greywall's profile. Read from the owner's home: `~/.opencode`, its program and packages.
   Written into the session's own folders: `~/.opencode.json`, `~/.config/opencode`,
   `~/.cache/opencode`, `~/.local/share/opencode`, `~/.local/share/opentui`,
   `~/.local/state/opencode`. Credential files: `~/.local/share/opencode/auth.json` and

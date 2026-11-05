@@ -7,7 +7,6 @@ fn a_host_is_a_lower_case_name_or_a_domain_wildcard_with_an_optional_port() {
     for host in [
         "api.anthropic.com",
         "api.anthropic.com:443",
-        "localhost",
         "*.githubusercontent.com",
         "xn--bcher-kva.example",
         "a-b.example.com:65535",
@@ -27,6 +26,13 @@ fn a_host_outside_its_rule_is_refused() {
         "example.*",
         "API.example.com",
         "127.0.0.1",
+        "0x7f000001",
+        "127.0.0.0x1",
+        "2130706433",
+        "localhost",
+        "localhost:5432",
+        "db.localhost",
+        "intranet",
         "10.0.0.1:443",
         "[::1]",
         "::1",
@@ -69,8 +75,14 @@ fn a_home_path_outside_its_rule_is_refused() {
         "~/../etc",
         "~/a/./b",
         "~/*",
+        "~/.*",
+        "~/..*",
+        "~/**",
+        "~/*.*",
         "~/.claude/*",
+        "~/a*b",
         "~/*/bin",
+        "~/v*/bin",
         "~/a\0b",
     ] {
         assert!(HomePath::new(path).is_err(), "{path:?} was admitted");
@@ -90,22 +102,12 @@ fn a_home_path_covers_itself_and_what_lies_inside_it() {
 }
 
 #[test]
-fn a_wildcard_covers_each_name_it_matches_and_what_lies_inside_it() {
+fn a_wildcard_covers_each_name_with_its_prefix_and_what_lies_inside_it() {
     let backups = HomePath::new("~/.claude.json.*").unwrap();
 
     assert!(backups.covers(&HomePath::new("~/.claude.json.backup").unwrap()));
     assert!(backups.covers(&HomePath::new("~/.claude.json.1/x").unwrap()));
     assert!(!backups.covers(&HomePath::new("~/.claude.json").unwrap()));
-    assert!(
-        HomePath::new("~/a*b*c")
-            .unwrap()
-            .covers(&HomePath::new("~/aXbYbc").unwrap())
-    );
-    assert!(
-        !HomePath::new("~/a*bc")
-            .unwrap()
-            .covers(&HomePath::new("~/abc.x").unwrap())
-    );
 }
 
 #[test]
@@ -155,6 +157,25 @@ fn a_credential_file_a_read_path_would_expose_is_refused() {
 
     assert_eq!(refused.kind, "credential file");
     assert_eq!(refused.value, "~/.local/share/example/token");
+}
+
+#[test]
+fn a_read_path_inside_a_credential_folder_is_refused() {
+    let needs = Needs::new(&[], &["~/.config/github-copilot/hosts.json"], &[]).unwrap();
+
+    let refused = Credentials::new(&["~/.config/github-copilot"], &[], &needs).unwrap_err();
+
+    assert_eq!(refused.kind, "credential file");
+    assert_eq!(refused.value, "~/.config/github-copilot");
+}
+
+#[test]
+fn a_read_path_a_wildcard_credential_matches_is_refused() {
+    let needs = Needs::new(&[], &["~/.token-cache"], &[]).unwrap();
+
+    let refused = Credentials::new(&["~/.token*"], &[], &needs).unwrap_err();
+
+    assert_eq!(refused.kind, "credential file");
 }
 
 #[test]

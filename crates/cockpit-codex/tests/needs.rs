@@ -18,7 +18,12 @@ fn strings<T: ToString>(values: &[T]) -> Vec<String> {
 fn it_reaches_openai_s_and_chatgpt_s_hosts_only() {
     assert_eq!(
         strings(&codex().needs().unwrap().hosts),
-        ["api.openai.com", "chatgpt.com", "ab.chatgpt.com"]
+        [
+            "api.openai.com",
+            "chatgpt.com",
+            "ab.chatgpt.com",
+            "auth.openai.com"
+        ]
     );
 }
 

@@ -69,8 +69,9 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   is the floor: no host and no folder beyond the checkout and the session's own. The same
   `Needs` is what the owner's entry for an unadapted program produces (#84, #294); a project
   file's hosts are requests the owner decides (#674), never part of it. A malformed value is
-  refused, never narrowed: no bare `*`, no wildcard on one label, no IP address, no path
-  outside `~/`. The declarations request; the sandbox (#829, #831, #832) enforces and refuses
+  refused, never narrowed: no bare `*`, no wildcard on one label, no single-label or
+  `localhost` name, no IP address in any form a resolver reads, no path outside `~/`, and a
+  path wildcard only as one trailing `*` after a prefix that is not only dots. The declarations request; the sandbox (#829, #831, #832) enforces and refuses
   what its own rules forbid.
 - **Toolchain table** (`toolchains`, #859). For Rust, Node, Python and Go: the marker files
   that detect the ecosystem in a checkout, the install roots bound read-only where the launch's
