@@ -376,8 +376,12 @@ impl Profile {
             },
             format!("read-write {}", self.working_dir.display()),
             format!(
-                "read-write {} (the session's directory)",
-                self.session_dir.display()
+                "read-write {} ({})",
+                self.session_dir.display(),
+                match self.provider {
+                    Some(_) => "the session's directory",
+                    None => "the run's folder",
+                }
             ),
             format!(
                 "read-write {} (the session's temp folder)",

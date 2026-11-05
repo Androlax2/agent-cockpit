@@ -89,10 +89,10 @@ pub struct CheckRequest {
     pub command: String,
     /// The checkout the check runs in, whole: read and write.
     pub checkout: PathBuf,
-    /// The run's own folder, where its home and caches live: read and write, removed by the
-    /// caller when the run ends.
+    /// The run's own folder: read and write, removed by the caller when the run ends.
     pub execution_dir: PathBuf,
-    /// The run's own temporary folder, which `TMPDIR` names: read and write.
+    /// The run's own temporary folder, which `TMPDIR` names and its caches live in: read and
+    /// write, removed by the caller when the run ends.
     pub temp_dir: PathBuf,
     /// The environment Torlek builds for the check: none of the daemon's own variables.
     pub environment: Vec<(OsString, OsString)>,
@@ -219,7 +219,7 @@ impl Sandbox {
     /// unchanged under `agents.sandbox = "off"`, through the native launcher under
     /// `"required"`, or refused naming why there is none, never run unsandboxed. Writes
     /// nothing: the caller writes [`Prepared::staged`] before running it, and removes its
-    /// mount folder and [`CheckRequest::execution_dir`] when the run ends.
+    /// mount folder and home when the run ends, beside the run's own folders.
     pub fn prepare_check(
         &self,
         setting: AgentSandbox,
@@ -231,7 +231,10 @@ impl Sandbox {
         }
         let native = self.native()?;
         let host = self.host()?;
-        let mount_dir = session_folder(&host.mount_sources, &format!("check-{}", request.run))?;
+        let mount_dir = check_folder(&host.mount_sources, &request.run)?;
+        // In the daemon's folder of homes, as a session's, never in a folder the check
+        // writes: no program can swap a mount source between its creation and the bind.
+        let home_source = check_folder(&host.homes, &request.run)?;
         let profile = Profile::build(
             ProfileRequest {
                 provider: None,
@@ -256,7 +259,8 @@ impl Sandbox {
                 check: request.check.clone(),
             },
             start_dir: request.checkout.clone(),
-            environment: request.environment.clone(),
+            // The profile's: without what the platform withholds, `WSL_INTEROP` on WSL2.
+            environment: profile.environment.clone(),
             needs: ProviderNeeds::floor(),
             tools: request.tools.clone(),
             reaches_agent: false,
@@ -267,7 +271,7 @@ impl Sandbox {
             &profile,
             &launch,
             mount_dir,
-            request.execution_dir.join("home"),
+            home_source,
             request.shell.clone(),
             arguments,
         )
@@ -297,7 +301,7 @@ impl Sandbox {
                 session: request.session.clone(),
             },
             start_dir: request.start_dir.clone(),
-            environment: request.environment.clone(),
+            environment: profile.environment.clone(),
             needs: request.needs.clone(),
             tools: request.tools.clone(),
             reaches_agent: true,
@@ -364,12 +368,31 @@ impl Sandbox {
 
 /// `session`'s own folder in `parent`: the id is one plain name, never a path.
 fn session_folder(parent: &std::path::Path, session: &str) -> Result<PathBuf, Refusal> {
-    let mut components = std::path::Path::new(session).components();
-    match (components.next(), components.next()) {
-        (Some(std::path::Component::Normal(name)), None) => Ok(parent.join(name)),
-        _ => Err(Refusal::new(
+    if !is_plain_name(session) {
+        return Err(Refusal::new(
             format!("session {session}"),
             "a session id must be one plain name to name its folders",
-        )),
+        ));
     }
+    Ok(parent.join(session))
+}
+
+/// Check run `run`'s own folder in `parent`, beside sessions' folders: a session id is `s`
+/// and hexadecimal digits, so `check-` never names one.
+fn check_folder(parent: &std::path::Path, run: &str) -> Result<PathBuf, Refusal> {
+    if !is_plain_name(run) {
+        return Err(Refusal::new(
+            format!("check run {run}"),
+            "a check run id must be one plain name to name its folders",
+        ));
+    }
+    Ok(parent.join(format!("check-{run}")))
+}
+
+fn is_plain_name(name: &str) -> bool {
+    let mut components = std::path::Path::new(name).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    )
 }

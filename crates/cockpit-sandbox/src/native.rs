@@ -253,8 +253,8 @@ const GIT_CONFIG_FILE: &str = "gitconfig";
 pub struct Staged {
     /// The session's folder in the daemon's mount sources: the spec and folder mounts.
     pub mount_dir: PathBuf,
-    /// The session's own home folders' parent, then its own home.
-    pub homes: PathBuf,
+    /// The program's own home, created with its parent: a session's, kept across its
+    /// relaunches, or a check run's.
     pub home_source: PathBuf,
     pub folder_sources: Vec<PathBuf>,
     /// The session's tool configuration folder, and each file Torlek writes there with its
@@ -276,7 +276,6 @@ impl Staged {
         let mut folders = std::fs::DirBuilder::new();
         folders.recursive(true).mode(0o700);
         folders.create(&self.mount_dir)?;
-        folders.create(&self.homes)?;
         folders.create(&self.home_source)?;
         for source in &self.folder_sources {
             folders.create(source)?;
@@ -487,10 +486,6 @@ pub(crate) fn prepare(
     environment.extend(tool_environment.variables);
     let staged = Staged {
         mount_dir,
-        homes: home_source
-            .parent()
-            .map(Path::to_path_buf)
-            .ok_or_else(|| Refusal::new("home", "the program's own home has no parent folder"))?,
         home_source,
         folder_sources: folder_mounts
             .iter()
@@ -894,7 +889,9 @@ fn evidence(
     ));
     let (identity, observed_subject) = match &spec.subject {
         Subject::Session { session } => (session, format!("subject: session {session}")),
-        Subject::Check { run, .. } => (run, format!("subject: check run {run}")),
+        Subject::Check { run, .. } => {
+            (&format!("check-{run}"), format!("subject: check run {run}"))
+        }
     };
     Evidence {
         enforcement: Enforcement::Sandboxed {

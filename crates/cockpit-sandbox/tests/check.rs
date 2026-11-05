@@ -11,7 +11,9 @@ use cockpit_sandbox::{
     AgentSandbox, CheckRequest, Enforcement, HostPaths, NeedsSource, Platform, Prepared, Sandbox,
     Subject, ToolNeeds,
 };
-use common::{MOUNT_SOURCES, NO_BUBBLEWRAP, missing_backend, native_backend, no_host_paths};
+use common::{
+    HOMES, MOUNT_SOURCES, NO_BUBBLEWRAP, missing_backend, native_backend, no_host_paths, wsl2,
+};
 
 const CHECKOUT: &str = "/home/owner/app";
 const EXECUTION: &str = "/home/owner/.local/state/torlek/executions/r7";
@@ -111,7 +113,7 @@ fn a_check_writes_its_checkout_and_its_own_folders_only() {
             PathBuf::from(format!("{EXECUTION}/tmp"))
         ]
     );
-    assert_eq!(spec.home_source, PathBuf::from(format!("{EXECUTION}/home")));
+    assert_eq!(spec.home_source, PathBuf::from(format!("{HOMES}/check-r7")));
 }
 
 #[test]
@@ -167,6 +169,50 @@ fn a_checks_evidence_names_the_run_the_backend_and_the_landlock_abi() {
             == "subject: check run r7 of check unit; no provider, agent socket, launch token \
                 or session identity"),
         "{evidence:?}"
+    );
+}
+
+#[test]
+fn a_check_run_id_that_is_a_path_is_refused_naming_the_run() {
+    let mut request = check_request();
+    request.run = "a/b".to_owned();
+
+    let refused = Sandbox::new(Platform::Linux, agent_host_paths(), native_backend())
+        .prepare_check(AgentSandbox::Required, &request)
+        .unwrap_err();
+
+    assert!(refused.to_string().contains("check run a/b"), "{refused}");
+}
+
+#[test]
+fn a_checks_launch_identity_is_named_for_its_run() {
+    let evidence = required_check().evidence;
+
+    assert!(
+        matches!(&evidence.enforcement, Enforcement::Sandboxed { client_identity, .. }
+            if client_identity.starts_with("check-r7-")),
+        "{evidence:?}"
+    );
+}
+
+#[test]
+fn a_check_on_wsl2_does_not_get_the_windows_interop_socket_variable() {
+    let mut request = check_request();
+    request
+        .environment
+        .push(("WSL_INTEROP".into(), "/run/WSL/1_interop".into()));
+
+    let prepared = Sandbox::new(wsl2(), agent_host_paths(), native_backend())
+        .prepare_check(AgentSandbox::Required, &request)
+        .unwrap();
+
+    assert!(
+        !prepared
+            .environment
+            .iter()
+            .any(|(name, _)| name == "WSL_INTEROP"),
+        "{:?}",
+        prepared.environment
     );
 }
 
