@@ -14,7 +14,9 @@ pub use evidence::{AppliedRule, Enforcement, Evidence};
 #[cfg(feature = "persistence")]
 pub use evidence::{MIGRATIONS, latest_for_session, record};
 pub use launch::{HostPaths, LaunchRequest, Prepared, Sandbox};
-pub use native::{Backend, NativeBackend, ProviderNeeds, Staged};
+pub use native::{
+    Backend, GitIdentity, NativeBackend, ProviderNeeds, Staged, ToolNeeds, ToolSetting,
+};
 #[cfg(feature = "persistence")]
 pub use observations::{ObservationError, record_observations};
 pub use platform::Platform;

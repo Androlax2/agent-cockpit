@@ -1998,7 +1998,12 @@ impl Sessions {
             )
         });
         let needs = provider_needs(self.provider(Some(session.provider.as_str()))?.as_ref())?;
+        let setting = self.owner_settings().sandbox;
+        let tools = self
+            .sandbox_tools(setting, &checkout.path, &session.working_dir, &environment)
+            .await?;
         let prepared = self.prepare_sandbox(
+            setting,
             id.as_str(),
             session.provider.as_str(),
             checkout.path,
@@ -2008,6 +2013,7 @@ impl Sessions {
             environment,
             github,
             needs,
+            tools,
             command.program,
             command.arguments,
         )?;
@@ -2217,15 +2223,17 @@ impl Sessions {
     }
 
     /// How `program` runs for a launch of `provider` in `checkout_root`, started in
-    /// `start_dir`, with the session's own `session_dir` and the project's `github` access:
-    /// unchanged under `agents.sandbox = "off"`; under `"required"`, the native sandbox's
-    /// launcher in its place, or refused on a host without it (#829).
+    /// `start_dir`, with the session's own `session_dir` and the project's `github` access,
+    /// under the owner's `setting`, read once for the launch: unchanged under
+    /// `agents.sandbox = "off"`; under `"required"`, the native sandbox's launcher in its
+    /// place, or refused on a host without it (#829).
     #[allow(
         clippy::too_many_arguments,
         reason = "one launch's facts, each passed straight into the sandbox's request"
     )]
     fn prepare_sandbox(
         &self,
+        setting: cockpit_config::AgentSandbox,
         session: &str,
         provider: &str,
         checkout_root: PathBuf,
@@ -2235,10 +2243,10 @@ impl Sessions {
         environment: Vec<(OsString, OsString)>,
         github: GithubAccess,
         needs: cockpit_sandbox::ProviderNeeds,
+        tools: cockpit_sandbox::ToolNeeds,
         program: PathBuf,
         arguments: Vec<OsString>,
     ) -> Result<cockpit_sandbox::Prepared, Error> {
-        let setting = self.owner_settings().sandbox;
         // A sandboxed agent never holds the project's token (#857): the proxy that will add
         // it on GitHub's hosts alone does not exist yet, so Git and `gh` inside get none.
         let token = match setting {
@@ -2276,11 +2284,35 @@ impl Sessions {
                     denied: github.hidden_owner_login,
                     desktop: self.desktop_session(),
                     needs,
+                    tools,
                 },
                 program,
                 arguments,
             )
             .map_err(Error::Sandbox)
+    }
+
+    /// [`tool_needs`] for a launch in `checkout`, started in `start_dir`, with `environment`
+    /// under `setting`, off the async workers. None under `"off"`, whose agent keeps the
+    /// owner's own caches and configuration, nor without a backend, whose launch is refused.
+    async fn sandbox_tools(
+        &self,
+        setting: cockpit_config::AgentSandbox,
+        checkout: &Path,
+        start_dir: &Path,
+        environment: &[(OsString, OsString)],
+    ) -> Result<cockpit_sandbox::ToolNeeds, Error> {
+        let has_backend = self.settings.sandbox.backend().missing_reason().is_none();
+        if setting == cockpit_config::AgentSandbox::Off || !has_backend {
+            return Ok(cockpit_sandbox::ToolNeeds::none());
+        }
+        let checkout = checkout.to_path_buf();
+        let start_dir = start_dir.to_path_buf();
+        let environment = environment.to_vec();
+        self.blocking("read the checkout's toolchains", move || {
+            tool_needs(&checkout, &start_dir, &environment)
+        })
+        .await
     }
 
     /// The temp folder the dry run stands in for a session's with.
@@ -2303,16 +2335,23 @@ impl Sessions {
         let (checkout, _) = self.checkout_containing(&dir).await?;
         let github = self.github_access(checkout.project.as_str()).await?;
         let needs = provider_needs(self.provider(Some(&provider))?.as_ref())?;
+        let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
+        let setting = self.owner_settings().sandbox;
+        let tools = self
+            .sandbox_tools(setting, &checkout.path, &checkout.path, &environment)
+            .await?;
         self.prepare_sandbox(
+            setting,
             DRY_RUN_SESSION,
             &provider,
             checkout.path.clone(),
             checkout.path,
             self.session_dirs.join(DRY_RUN_SESSION),
             self.dry_run_temp_dir(),
-            with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir()),
+            environment,
             github,
             needs,
+            tools,
             PathBuf::from("<agent>"),
             Vec::new(),
         )
@@ -2525,6 +2564,10 @@ impl Sessions {
         if let Some(home) = self.settings.sandbox.session_home(id.as_str()) {
             paths.push(home.map_err(Error::Sandbox)?);
         }
+        // Its tool configuration holds the owner's Git identity (#859).
+        if let Some(config) = self.settings.sandbox.session_tool_config(id.as_str()) {
+            paths.push(config.map_err(Error::Sandbox)?);
+        }
         let counted = TerminalStep::start(&self.session_lock(id));
         self.blocking("remove the session's directories", move || {
             let _counted = counted;
@@ -2532,7 +2575,7 @@ impl Sessions {
             // folder on the disk; the first failure is returned.
             let mut failure = None;
             for path in paths {
-                match std::fs::remove_dir_all(&path) {
+                match remove_tree(&path) {
                     Ok(()) => {}
                     Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
                     Err(source) => {
@@ -2917,9 +2960,6 @@ fn owner_gh_config_dirs(environment: &cockpit_config::Environment, home: &Path) 
     dirs
 }
 
-/// `environment` with `token` as its only GitHub token (#754): none the daemon or a
-/// provider passed reaches the agent, so a project without one never gets another's or the
-/// owner's.
 /// What `provider`'s adapter declares for the sandbox (#830, #858); a malformed declaration
 /// refuses the launch rather than narrowing it.
 fn provider_needs(provider: &dyn Provider) -> Result<cockpit_sandbox::ProviderNeeds, Error> {
@@ -2962,6 +3002,197 @@ fn provider_needs(provider: &dyn Provider) -> Result<cockpit_sandbox::ProviderNe
     })
 }
 
+/// What the checkout at `checkout`, started in `start_dir`, and Git ask of a sandboxed
+/// launch with `environment` (#859): the ecosystems the toolchain table detects at either
+/// folder, the owner's install roots the launch's `PATH` resolves their tools in, every
+/// cache variable of the table, so a tool of an ecosystem without a marker file still keeps
+/// its cache in the session's own folder, and the owner's Git identity for the checkout.
+fn tool_needs(
+    checkout: &Path,
+    start_dir: &Path,
+    environment: &[(OsString, OsString)],
+) -> Result<cockpit_sandbox::ToolNeeds, Error> {
+    use cockpit_provider_api::toolchains::{COMMON_VARIABLES, TOOLCHAINS};
+
+    let found = [
+        detected_toolchains(checkout),
+        detected_toolchains(start_dir),
+    ]
+    .concat();
+    let detected: Vec<_> = TOOLCHAINS
+        .iter()
+        .filter(|toolchain| found.contains(toolchain))
+        .collect();
+    let path_entries: Vec<PathBuf> = launch_variable(environment, "PATH")
+        .map(|path| std::env::split_paths(path).collect())
+        .unwrap_or_default();
+    let mut install_roots: Vec<PathBuf> = Vec::new();
+    // Without a HOME the sandbox refuses the launch itself.
+    if let Some(home) = launch_variable(environment, "HOME") {
+        for toolchain in &detected {
+            for root in toolchain.roots_to_bind(Path::new(home), &path_entries)? {
+                if !install_roots.contains(&root) {
+                    install_roots.push(root);
+                }
+            }
+        }
+    }
+    let mut variables: Vec<(String, cockpit_sandbox::ToolSetting)> = Vec::new();
+    for (name, setting) in COMMON_VARIABLES
+        .iter()
+        .chain(TOOLCHAINS.iter().flat_map(|toolchain| toolchain.variables))
+    {
+        if !variables.iter().any(|(known, _)| known == name) {
+            variables.push(((*name).to_owned(), tool_setting(*setting)));
+        }
+    }
+    Ok(cockpit_sandbox::ToolNeeds {
+        ecosystems: detected
+            .iter()
+            .map(|toolchain| toolchain.ecosystem.to_owned())
+            .collect(),
+        install_roots,
+        variables,
+        git_identity: owner_git_identity(checkout, environment),
+    })
+}
+
+/// The toolchains whose marker files `folder` holds. A marker that cannot be read, such as a
+/// link loop an agent left in its checkout, detects nothing and is logged: it must not make
+/// every later launch fail, and an undetected toolchain only binds less.
+fn detected_toolchains(folder: &Path) -> Vec<&'static cockpit_provider_api::toolchains::Toolchain> {
+    cockpit_provider_api::toolchains::detect(folder).unwrap_or_else(|error| {
+        tracing::warn!(
+            folder = %folder.display(),
+            %error,
+            "a sandboxed launch detects no toolchain in this folder"
+        );
+        Vec::new()
+    })
+}
+
+fn tool_setting(
+    setting: cockpit_provider_api::toolchains::Setting,
+) -> cockpit_sandbox::ToolSetting {
+    use cockpit_provider_api::toolchains::Setting;
+
+    match setting {
+        Setting::CacheFolder(name) => cockpit_sandbox::ToolSetting::CacheFolder(name.to_owned()),
+        Setting::ConfigFile(name) => cockpit_sandbox::ToolSetting::ConfigFile(name.to_owned()),
+        Setting::Value(value) => cockpit_sandbox::ToolSetting::Value(value.to_owned()),
+        Setting::Flag(flag) => cockpit_sandbox::ToolSetting::Flag(flag.to_owned()),
+    }
+}
+
+/// The last value `environment` gives `name`, as the launched program sees it.
+fn launch_variable<'a>(
+    environment: &'a [(OsString, OsString)],
+    name: &str,
+) -> Option<&'a std::ffi::OsStr> {
+    environment
+        .iter()
+        .rev()
+        .find(|(variable, _)| variable == name)
+        .map(|(_, value)| value.as_os_str())
+}
+
+/// The owner's `user.name` and `user.email` for `checkout`, read by one Git run with the
+/// launch's own `HOME` from inside it, so an `includeIf` on the checkout's folder applies.
+/// An unset or unreadable one is left out, and Git inside the sandbox then asks for it.
+fn owner_git_identity(
+    checkout: &Path,
+    environment: &[(OsString, OsString)],
+) -> cockpit_sandbox::GitIdentity {
+    let mut identity = cockpit_sandbox::GitIdentity::default();
+    let mut command = std::process::Command::new("git");
+    command
+        .env_clear()
+        .arg("-C")
+        .arg(checkout)
+        .args([
+            "config",
+            "--global",
+            "--includes",
+            "--null",
+            "--get-regexp",
+            r"^user\.(name|email)$",
+        ])
+        .stdin(std::process::Stdio::null());
+    for name in ["HOME", "PATH", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"] {
+        if let Some(value) = launch_variable(environment, name) {
+            command.env(name, value);
+        }
+    }
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => {
+            tracing::warn!(%error, "cannot run git to read the owner's identity for a sandboxed session");
+            return identity;
+        }
+    };
+    // Git exits 1 when no key matches.
+    if output.status.code() == Some(1) {
+        return identity;
+    }
+    if !output.status.success() {
+        tracing::warn!(
+            status = %output.status,
+            stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+            "git could not read the owner's identity for a sandboxed session"
+        );
+        return identity;
+    }
+    // Each entry is its key, a newline and its value, ended by NUL; the last one of a key
+    // wins, as in Git.
+    for entry in output.stdout.split(|byte| *byte == 0) {
+        let Ok(entry) = std::str::from_utf8(entry) else {
+            tracing::warn!("an entry of the owner's Git identity is not UTF-8; it is left out");
+            continue;
+        };
+        match entry.split_once('\n') {
+            Some(("user.name", value)) => identity.name = Some(value.to_owned()),
+            Some(("user.email", value)) => identity.email = Some(value.to_owned()),
+            _ => {}
+        }
+    }
+    identity
+}
+
+/// Removes `path` and everything in it. A tool may leave read-only folders, as Go's module
+/// cache is unless `-modcacherw`, which the agent can unset (#859): when removal is denied,
+/// the folders inside are made writable by their owner and removal is tried again.
+fn remove_tree(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            make_folders_writable(path)?;
+            std::fs::remove_dir_all(path)
+        }
+        other => other,
+    }
+}
+
+/// Gives the owner write and search access to `folder` and every folder inside it; links
+/// are not followed.
+fn make_folders_writable(folder: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = std::fs::symlink_metadata(folder)?;
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    let mode = metadata.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(mode | 0o700))?;
+    }
+    for entry in std::fs::read_dir(folder)? {
+        make_folders_writable(&entry?.path())?;
+    }
+    Ok(())
+}
+
+/// `environment` with `token` as its only GitHub token (#754): none the daemon or a
+/// provider passed reaches the agent, so a project without one never gets another's or the
+/// owner's.
 fn with_github_token(
     mut environment: Vec<(OsString, OsString)>,
     token: Option<&cockpit_config::GithubToken>,
@@ -3048,5 +3279,69 @@ mod tests {
             .expect("nothing else locks it");
 
         assert!(session_lock_is_held(&session));
+    }
+
+    /// A launch environment with `home` and nothing on `PATH` but `path_first`.
+    fn tool_environment(home: &Path, path_first: &Path) -> Vec<(OsString, OsString)> {
+        vec![
+            ("HOME".into(), home.into()),
+            ("PATH".into(), path_first.into()),
+        ]
+    }
+
+    #[test]
+    fn a_toolchain_whose_marker_is_in_the_start_folder_alone_is_detected() {
+        let checkout = tempfile::tempdir().unwrap();
+        let web = checkout.path().join("web");
+        std::fs::create_dir(&web).unwrap();
+        std::fs::write(web.join("package.json"), "{}\n").unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let node = home.path().join(".nvm/versions/node/v20.0.0/bin");
+
+        let tools =
+            tool_needs(checkout.path(), &web, &tool_environment(home.path(), &node)).unwrap();
+
+        assert_eq!(tools.ecosystems, vec!["node".to_owned()]);
+        assert_eq!(
+            tools.install_roots,
+            vec![home.path().join(".nvm/versions/node/v20.0.0")]
+        );
+    }
+
+    #[test]
+    fn a_marker_link_loop_an_agent_left_detects_nothing_and_does_not_fail_the_launch() {
+        let checkout = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("Cargo.toml.loop", checkout.path().join("Cargo.toml")).unwrap();
+        std::os::unix::fs::symlink("Cargo.toml", checkout.path().join("Cargo.toml.loop")).unwrap();
+        let home = tempfile::tempdir().unwrap();
+
+        let tools = tool_needs(
+            checkout.path(),
+            checkout.path(),
+            &tool_environment(home.path(), &home.path().join(".cargo/bin")),
+        )
+        .unwrap();
+
+        assert!(tools.ecosystems.is_empty(), "{:?}", tools.ecosystems);
+    }
+
+    #[test]
+    fn a_tree_with_read_only_folders_is_removed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp
+            .path()
+            .join("caches/go-mod/example.com/dependency@v1.0.0");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("go.mod"), "module example.com/dependency\n").unwrap();
+        for folder in [cache.as_path(), cache.parent().unwrap()] {
+            std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        let session = temp.path().join("caches");
+
+        remove_tree(&session).unwrap();
+
+        assert!(!session.exists());
     }
 }

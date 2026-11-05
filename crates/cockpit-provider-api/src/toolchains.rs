@@ -39,6 +39,9 @@ pub enum Setting {
     ConfigFile(&'static str),
     /// This value as it is; an empty one turns a wrapper off.
     Value(&'static str),
+    /// This flag added, after a space, to the value the launch already gives the variable,
+    /// so the owner's own flags stay.
+    Flag(&'static str),
 }
 
 /// Variables every session gets, whatever its ecosystems.
@@ -98,7 +101,7 @@ pub const TOOLCHAINS: [Toolchain; 4] = [
             ("GOCACHE", Setting::CacheFolder("go-build")),
             // The module cache is read-only by default, which leaves a session's cache
             // impossible to remove at its end.
-            ("GOFLAGS", Setting::Value("-modcacherw")),
+            ("GOFLAGS", Setting::Flag("-modcacherw")),
         ],
         // `sum.golang.org` is Go's default checksum database, asked about any module
         // `go.sum` does not list yet.

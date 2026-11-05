@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use cockpit_sandbox::{
     Backend, DesktopSession, HostPaths, LaunchRequest, NativeBackend, Platform, ProfileRequest,
-    ProviderNeeds, Secret, SecretHandling,
+    ProviderNeeds, Secret, SecretHandling, ToolNeeds,
 };
 
 /// The user the fixtures' daemon runs as.
@@ -107,5 +107,6 @@ pub fn launch_request(session: &str, working_dir: &str) -> LaunchRequest {
         denied: Vec::new(),
         desktop: DesktopSession::Withheld,
         needs: ProviderNeeds::floor(),
+        tools: ToolNeeds::none(),
     }
 }

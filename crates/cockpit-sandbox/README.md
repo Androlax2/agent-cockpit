@@ -18,6 +18,14 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   created. The provider's declared credential variables are dropped and its credential files
   masked (#858); no network but loopback until the session proxy (#831), so a placeholder
   secret or a shared desktop session is refused.
+- Toolchains and caches (#859): the caller resolves `ToolNeeds` from the toolchain table of
+  `cockpit-provider-api`. The install roots `PATH` resolves the checkout's ecosystems in are
+  bound read-only; every cache variable points into `caches/` of the session's temp folder;
+  tool configuration files, the session's Git configuration among them, are written by
+  `Staged::write` into a folder of the mount sources bound read-only, which the session's
+  end removes (`Sandbox::session_tool_config`). Git reads no system configuration and no
+  `GIT_CONFIG*` variable of the launch. Nothing of the owner's caches or tool configuration
+  is mounted.
 - `agents.sandbox = "required"` on a host without it (no `bwrap`, a failed probe, Landlock
   below ABI 2): `Sandbox::prepare` returns a `Refusal` naming why. It never degrades to an
   unsandboxed launch.

@@ -182,6 +182,66 @@ impl ProviderNeeds {
     }
 }
 
+/// What the checkout's toolchains and Git ask of a sandboxed launch (#859), resolved by the
+/// caller from the toolchain table. An unsandboxed launch gets none of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolNeeds {
+    /// The ecosystems detected in the checkout, as the evidence names them.
+    pub ecosystems: Vec<String>,
+    /// The owner's install roots where the launch's `PATH` resolves those ecosystems' tools:
+    /// bound read-only when present.
+    pub install_roots: Vec<PathBuf>,
+    /// The variables that keep caches and tool configuration in the session's own folders.
+    pub variables: Vec<(String, ToolSetting)>,
+    /// The owner's Git identity, copied as values into the session's Git configuration.
+    pub git_identity: GitIdentity,
+}
+
+impl ToolNeeds {
+    /// No toolchain, no variable, no identity.
+    pub fn none() -> ToolNeeds {
+        ToolNeeds {
+            ecosystems: Vec::new(),
+            install_roots: Vec::new(),
+            variables: Vec::new(),
+            git_identity: GitIdentity::default(),
+        }
+    }
+}
+
+/// The value a tool variable gets in a sandboxed launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolSetting {
+    /// A folder of this name in the session's cache folder, inside its temp folder.
+    CacheFolder(String),
+    /// An empty file of this name in the session's tool configuration folder, which stands
+    /// in for the owner's configuration and its tokens.
+    ConfigFile(String),
+    /// This value as it is; an empty one turns a wrapper off.
+    Value(String),
+    /// This flag added, after a space, to the value the launch already gives the variable.
+    Flag(String),
+}
+
+/// `user.name` and `user.email` of the owner's Git configuration, each absent when unset.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitIdentity {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// The session's caches, inside its temp folder: removed at its end, counted by
+/// `torlek storage` (#859).
+const CACHE_FOLDER: &str = "caches";
+
+/// The session's tool configuration folder, inside its folder of the daemon's mount
+/// sources, bound read-only: no agent can replace a file the daemon writes there.
+pub(crate) const CONFIG_FOLDER: &str = "config";
+
+/// The Git configuration Torlek writes for a sandboxed session, which `GIT_CONFIG_GLOBAL`
+/// names: the session's home holds none of the owner's.
+const GIT_CONFIG_FILE: &str = "gitconfig";
+
 /// What must exist on disk before the launcher runs: created by [`Staged::write`], the one
 /// place the daemon creates a sandboxed session's mount sources (#482 removes them).
 #[derive(Debug, Clone)]
@@ -192,6 +252,10 @@ pub struct Staged {
     pub homes: PathBuf,
     pub home_source: PathBuf,
     pub folder_sources: Vec<PathBuf>,
+    /// The session's tool configuration folder, and each file Torlek writes there with its
+    /// contents.
+    pub config_dir: PathBuf,
+    pub config_files: Vec<(String, String)>,
     pub spec: LaunchSpec,
 }
 
@@ -211,21 +275,29 @@ impl Staged {
         for source in &self.folder_sources {
             folders.create(source)?;
         }
-        let text = serde_json::to_vec(&self.spec).map_err(std::io::Error::other)?;
-        let path = self.spec_path();
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+        folders.create(&self.config_dir)?;
+        for (name, contents) in &self.config_files {
+            replace_owner_only(&self.config_dir.join(name), contents.as_bytes())?;
         }
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)?;
-        file.write_all(&text)?;
-        file.sync_all()
+        let text = serde_json::to_vec(&self.spec).map_err(std::io::Error::other)?;
+        replace_owner_only(&self.spec_path(), &text)
     }
+}
+
+/// Writes `contents` to a new owner-only file at `path`, replacing one an earlier launch left.
+fn replace_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents)?;
+    file.sync_all()
 }
 
 /// The launch of `program` with `arguments` for `request` through `native`: the launcher in
@@ -282,7 +354,16 @@ pub(crate) fn prepare(
         .read
         .iter()
         .map(|path| in_home(&home, path))
+        .chain(request.tools.install_roots.iter().cloned().map(Ok))
         .collect::<Result<Vec<_>, _>>()?;
+    let config_dir = mount_dir.join(CONFIG_FOLDER);
+    let tool_environment = tool_environment(
+        &request.tools,
+        &request.environment,
+        &profile.temp_dir.join(CACHE_FOLDER),
+        &config_dir,
+        &profile.working_dir,
+    )?;
     let credential_files = request
         .needs
         .credential_files
@@ -322,7 +403,12 @@ pub(crate) fn prepare(
         working_dir: request.start_dir.clone(),
         home,
         home_source: home_source.clone(),
-        read_only: host.read_only.clone(),
+        read_only: host
+            .read_only
+            .iter()
+            .cloned()
+            .chain([config_dir.clone()])
+            .collect(),
         read_only_declared,
         sockets: host.sockets.clone(),
         read_write: vec![
@@ -344,18 +430,27 @@ pub(crate) fn prepare(
     };
     spec.validate()
         .map_err(|error| Refusal::new("launch spec", error.to_string()))?;
-    let environment = request
+    let mut environment: Vec<(OsString, OsString)> = request
         .environment
         .iter()
         .filter(|(name, _)| {
-            !request
+            let is_credential = request
                 .needs
                 .credential_variables
                 .iter()
-                .any(|variable| name == variable.as_str())
+                .any(|variable| name == variable.as_str());
+            let is_replaced = tool_environment
+                .variables
+                .iter()
+                .any(|(variable, _)| variable == name);
+            // `GIT_CONFIG_COUNT` and its pairs, or `GIT_CONFIG_PARAMETERS`, could name a
+            // credential helper again.
+            let is_git_configuration = name.to_string_lossy().starts_with("GIT_CONFIG");
+            !is_credential && !is_replaced && !is_git_configuration
         })
         .cloned()
         .collect();
+    environment.extend(tool_environment.variables);
     let staged = Staged {
         mount_dir,
         homes: host.homes.clone(),
@@ -364,6 +459,8 @@ pub(crate) fn prepare(
             .iter()
             .map(|mount| mount.host.clone())
             .collect(),
+        config_dir,
+        config_files: tool_environment.files,
         spec,
     };
     let evidence = evidence(native, profile, request, &staged);
@@ -411,6 +508,125 @@ fn in_home(home: &Path, declared: &str) -> Result<PathBuf, Refusal> {
             )
         })?;
     Ok(home.join(relative))
+}
+
+/// The variables a sandboxed launch gets from its tools, and the configuration files Torlek
+/// writes for them.
+struct ToolEnvironment {
+    variables: Vec<(OsString, OsString)>,
+    files: Vec<(String, String)>,
+}
+
+fn tool_environment(
+    tools: &ToolNeeds,
+    launch_environment: &[(OsString, OsString)],
+    cache_dir: &Path,
+    config_dir: &Path,
+    checkout: &Path,
+) -> Result<ToolEnvironment, Refusal> {
+    let mut variables: Vec<(OsString, OsString)> = vec![
+        (
+            "GIT_CONFIG_GLOBAL".into(),
+            config_dir.join(GIT_CONFIG_FILE).into_os_string(),
+        ),
+        // `/etc/gitconfig` may name credential helpers, scoped to a host where an empty
+        // generic helper does not reach.
+        ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+    ];
+    let mut files = vec![(
+        GIT_CONFIG_FILE.to_owned(),
+        git_config(&tools.git_identity, checkout)?,
+    )];
+    for (name, setting) in &tools.variables {
+        let value = match setting {
+            ToolSetting::CacheFolder(folder) => cache_dir.join(plain_name(folder)?).into(),
+            ToolSetting::ConfigFile(file) => {
+                let file = plain_name(file)?;
+                if file == GIT_CONFIG_FILE {
+                    return Err(Refusal::new(
+                        format!("tool variable {name}"),
+                        format!("{GIT_CONFIG_FILE} is the session's Git configuration"),
+                    ));
+                }
+                files.push((file.to_owned(), String::new()));
+                config_dir.join(file).into()
+            }
+            ToolSetting::Value(value) => value.into(),
+            ToolSetting::Flag(flag) => {
+                let launch_value = launch_environment
+                    .iter()
+                    .rev()
+                    .find(|(variable, _)| variable == name.as_str())
+                    .map(|(_, value)| value.clone())
+                    .filter(|value| !value.is_empty());
+                match launch_value {
+                    Some(mut value) => {
+                        value.push(" ");
+                        value.push(flag);
+                        value
+                    }
+                    None => flag.into(),
+                }
+            }
+        };
+        variables.push((name.into(), value));
+    }
+    Ok(ToolEnvironment { variables, files })
+}
+
+/// `name` when it is one plain file name, which cannot leave the folder it is joined to.
+fn plain_name(name: &str) -> Result<&str, Refusal> {
+    let mut components = Path::new(name).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(name),
+        _ => Err(Refusal::new(
+            format!("tool setting {name}"),
+            "a cache folder or configuration file is one plain name",
+        )),
+    }
+}
+
+/// The session's Git configuration: the owner's identity as values, the checkout as a safe
+/// directory, and no generic credential helper. `GIT_CONFIG_NOSYSTEM` keeps
+/// `/etc/gitconfig` out, so only the checkout's own configuration, which the agent cannot
+/// change, may name a helper for a host.
+fn git_config(identity: &GitIdentity, checkout: &Path) -> Result<String, Refusal> {
+    let checkout = checkout.to_str().ok_or_else(|| {
+        Refusal::new(
+            "Git configuration",
+            format!("the checkout {} is not UTF-8", checkout.display()),
+        )
+    })?;
+    let mut text = String::from(
+        "# Written by Torlek for one sandboxed session (#859); rewritten at each launch.\n",
+    );
+    if identity.name.is_some() || identity.email.is_some() {
+        text.push_str("[user]\n");
+        for (key, value) in [("name", &identity.name), ("email", &identity.email)] {
+            if let Some(value) = value {
+                text.push_str(&format!("\t{key} = {}\n", git_value(value)));
+            }
+        }
+    }
+    text.push_str(&format!("[safe]\n\tdirectory = {}\n", git_value(checkout)));
+    text.push_str("[credential]\n\thelper = \"\"\n");
+    Ok(text)
+}
+
+/// `value` quoted for a Git configuration file, so no value can start another line.
+fn git_value(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    for character in value.chars() {
+        match character {
+            '\\' => quoted.push_str("\\\\"),
+            '"' => quoted.push_str("\\\""),
+            '\n' => quoted.push_str("\\n"),
+            '\t' => quoted.push_str("\\t"),
+            other => quoted.push(other),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 fn evidence(
@@ -473,11 +689,62 @@ fn evidence(
         ));
     }
     for path in &spec.read_only_declared {
+        let source = if request.tools.install_roots.contains(path) {
+            "toolchain install root"
+        } else {
+            "declared"
+        };
         rules.push(rule(
-            format!("read-only {} when present (declared)", path.display()),
+            format!("read-only {} when present ({source})", path.display()),
             &mount_and_landlock,
         ));
     }
+    let ecosystems = if request.tools.ecosystems.is_empty() {
+        "none".to_owned()
+    } else {
+        request.tools.ecosystems.join(", ")
+    };
+    rules.push(rule(
+        format!("toolchains detected in the checkout: {ecosystems}"),
+        BACKEND_NAME,
+    ));
+    let cache_variables: Vec<&str> = request
+        .tools
+        .variables
+        .iter()
+        .filter(|(_, setting)| matches!(setting, ToolSetting::CacheFolder(_)))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    rules.push(rule(
+        format!(
+            "cache mode: session-own, in {}, removed at its end; none of the owner's caches \
+             is mounted ({})",
+            profile.temp_dir.join(CACHE_FOLDER).display(),
+            cache_variables.join(", ")
+        ),
+        "environment",
+    ));
+    let wrappers_off: Vec<&str> = request
+        .tools
+        .variables
+        .iter()
+        .filter(|(_, setting)| *setting == ToolSetting::Value(String::new()))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    if !wrappers_off.is_empty() {
+        rules.push(rule(
+            format!("compiler wrappers off: {}", wrappers_off.join(", ")),
+            "environment",
+        ));
+    }
+    rules.push(rule(
+        format!(
+            "tool configuration: Torlek's files in {}, read-only; Git gets the owner's \
+             identity as values and no credential helper",
+            staged.config_dir.display()
+        ),
+        "bubblewrap read-only mount",
+    ));
     rules.push(rule(
         "read everything else: not mounted".to_owned(),
         &mount_and_landlock,
@@ -572,6 +839,83 @@ mod tests {
         assert_eq!(
             in_home(Path::new("/home/owner"), "~/.local/share/claude").unwrap(),
             PathBuf::from("/home/owner/.local/share/claude")
+        );
+    }
+
+    #[test]
+    fn an_identity_value_cannot_start_another_configuration_line() {
+        let identity = GitIdentity {
+            name: Some("Owner\n[core]\n\tsshCommand = evil \"x\" \\".to_owned()),
+            email: None,
+        };
+
+        let text = git_config(&identity, Path::new("/work/app")).unwrap();
+
+        assert!(
+            text.contains("\tname = \"Owner\\n[core]\\n\\tsshCommand = evil \\\"x\\\" \\\\\"\n"),
+            "{text}"
+        );
+        assert!(!text.contains("\n[core]"), "{text}");
+    }
+
+    #[test]
+    fn the_sessions_git_configuration_clears_every_credential_helper() {
+        let text = git_config(&GitIdentity::default(), Path::new("/work/app")).unwrap();
+
+        assert!(text.ends_with("[credential]\n\thelper = \"\"\n"), "{text}");
+        assert!(!text.contains("[user]"), "{text}");
+        assert!(text.contains("\tdirectory = \"/work/app\"\n"), "{text}");
+    }
+
+    #[test]
+    fn a_tool_setting_that_is_not_one_plain_name_is_refused() {
+        for name in ["../escape", "nested/name", "/absolute", ""] {
+            let tools = ToolNeeds {
+                variables: vec![(
+                    "CARGO_HOME".to_owned(),
+                    ToolSetting::CacheFolder(name.to_owned()),
+                )],
+                ..ToolNeeds::none()
+            };
+
+            let refused = tool_environment(
+                &tools,
+                &[],
+                Path::new("/tmp/s1/caches"),
+                Path::new("/run/mounts/s1/config"),
+                Path::new("/work/app"),
+            );
+
+            assert!(refused.is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_flag_joins_the_launch_value_of_its_variable() {
+        let tools = ToolNeeds {
+            variables: vec![(
+                "GOFLAGS".to_owned(),
+                ToolSetting::Flag("-modcacherw".to_owned()),
+            )],
+            ..ToolNeeds::none()
+        };
+        let launch = [("GOFLAGS".into(), "-mod=vendor".into())];
+
+        let environment = tool_environment(
+            &tools,
+            &launch,
+            Path::new("/tmp/s1/caches"),
+            Path::new("/run/mounts/s1/config"),
+            Path::new("/work/app"),
+        )
+        .unwrap();
+
+        assert!(
+            environment
+                .variables
+                .contains(&("GOFLAGS".into(), "-mod=vendor -modcacherw".into())),
+            "{:?}",
+            environment.variables
         );
     }
 

@@ -11,7 +11,7 @@ use cockpit_config::{AgentSandbox, DesktopSession};
 
 use crate::{
     Backend, Enforcement, Evidence, Platform, Profile, ProfileRequest, ProviderNeeds,
-    ProviderReach, Refusal, Secret, Staged,
+    ProviderReach, Refusal, Secret, Staged, ToolNeeds,
 };
 
 /// What the daemon's own layout asks of every profile.
@@ -71,6 +71,8 @@ pub struct LaunchRequest {
     pub desktop: DesktopSession,
     /// What the provider adapter declares for the sandbox.
     pub needs: ProviderNeeds,
+    /// What the checkout's toolchains and Git ask of a sandboxed launch (#859).
+    pub tools: ToolNeeds,
 }
 
 /// A launch ready to run: the program and arguments that start the agent and the evidence
@@ -120,6 +122,16 @@ impl Sandbox {
     pub fn session_home(&self, session: &str) -> Option<Result<PathBuf, Refusal>> {
         let host = self.host.as_ref()?;
         Some(session_folder(&host.homes, session))
+    }
+
+    /// `session`'s tool configuration folder under the sandbox, with the owner's Git identity
+    /// in it, which its end removes (#859); None when the daemon read no host paths.
+    pub fn session_tool_config(&self, session: &str) -> Option<Result<PathBuf, Refusal>> {
+        let host = self.host.as_ref()?;
+        Some(
+            session_folder(&host.mount_sources, session)
+                .map(|folder| folder.join(crate::native::CONFIG_FOLDER)),
+        )
     }
 
     /// The host's platform, as the daemon detected it.

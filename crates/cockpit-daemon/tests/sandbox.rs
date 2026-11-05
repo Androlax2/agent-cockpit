@@ -53,13 +53,22 @@ struct Sandboxed {
 /// Starts the daemon with `required` and launches the [`COMMANDED_PROJECT`] agent, after
 /// `prepare` set up the owner's home.
 async fn sandboxed_agent(home: &Home, prepare: impl FnOnce(&Home)) -> Sandboxed {
+    sandboxed_agent_on_path(home, &[], prepare).await
+}
+
+/// [`sandboxed_agent`] with `path_first` ahead on the daemon's and the agent's `PATH`.
+async fn sandboxed_agent_on_path(
+    home: &Home,
+    path_first: &[PathBuf],
+    prepare: impl FnOnce(&Home),
+) -> Sandboxed {
     assert!(
         candidate::program("torlek-sandbox").is_file(),
         "the launcher is built beside the daemon: run the workspace's tests"
     );
     home.write_owner_config(REQUIRED);
     prepare(home);
-    let daemon = home.start();
+    let daemon = home.start_with_path_first(path_first);
     let client = home.connect().await;
     let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
     let session = new_session(&client, &root).await;
@@ -476,4 +485,350 @@ async fn an_agent_may_not_read_a_sessions_sandbox_or_the_profile() {
             "{refused:?}"
         );
     }
+}
+
+/// The checkout of the [`COMMANDED_PROJECT`] agent, before the daemon registers it.
+fn commanded_checkout(home: &Home) -> PathBuf {
+    let root = home.path().join("projects").join(COMMANDED_PROJECT);
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+/// Writes an executable shell script at `path`.
+fn write_program(path: &Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, script).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Every file under `folder`, with its contents, in a fixed order.
+fn snapshot(folder: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut pending = vec![folder.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        for entry in std::fs::read_dir(&current).unwrap().flatten() {
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(path);
+            } else {
+                files.push((path.clone(), std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// A Rust checkout whose owner installed a toolchain in `~/.cargo/bin`, with a registry
+/// token beside it, rustup's toolchains in `~/.rustup` and their own scripts in
+/// `~/.local/bin`, all on the agent's `PATH`. The `cargo` there stands in for a build: it
+/// fetches into `CARGO_HOME` and prints where that is.
+async fn rust_agent(home: &Home) -> Sandboxed {
+    let cargo_bin = home.path().join(".cargo/bin");
+    let local_bin = home.path().join(".local/bin");
+    sandboxed_agent_on_path(home, &[cargo_bin.clone(), local_bin.clone()], |home| {
+        std::fs::write(
+            commanded_checkout(home).join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .unwrap();
+        write_program(
+            &cargo_bin.join("cargo"),
+            "#!/bin/sh\nmkdir -p \"$CARGO_HOME/registry\" && echo fetched > \"$CARGO_HOME/registry/crate\" && echo \"cargo home: $CARGO_HOME\"\n",
+        );
+        std::fs::write(home.path().join(".cargo/credentials.toml"), "token = \"owner's\"\n").unwrap();
+        std::fs::create_dir_all(home.path().join(".cargo/registry")).unwrap();
+        std::fs::write(home.path().join(".cargo/registry/owners-crate"), "owner's\n").unwrap();
+        std::fs::create_dir_all(home.path().join(".rustup/toolchains")).unwrap();
+        std::fs::write(home.path().join(".rustup/settings.toml"), "default_toolchain = \"stable\"\n").unwrap();
+        write_program(&local_bin.join("owner-tool"), "#!/bin/sh\necho owner's tool\n");
+    })
+    .await
+}
+
+/// #859: the toolchain table binds the install root `PATH` resolves the project's tools in,
+/// read-only, with what those tools need beside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_toolchain_on_the_path_runs_from_a_read_only_install_root() {
+    let home = Home::new();
+    let agent = rust_agent(&home).await;
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "cargo >/dev/null && echo cargo-ran; cat ~/.rustup/settings.toml; \
+         touch ~/.cargo/bin/planted || echo bin-refused",
+    )
+    .await;
+
+    assert!(printed.contains("cargo-ran\n"), "{printed}");
+    assert!(printed.contains("default_toolchain"), "{printed}");
+    assert!(printed.contains("bin-refused\n"), "{printed}");
+    assert!(!home.path().join(".cargo/bin/planted").exists());
+}
+
+/// #859: a token beside a toolchain root, and a `PATH` folder outside the table, are not
+/// mounted.
+#[tokio::test(flavor = "multi_thread")]
+async fn nothing_beside_a_toolchain_root_nor_outside_the_table_is_visible() {
+    let home = Home::new();
+    let agent = rust_agent(&home).await;
+
+    for unreadable in [
+        home.path().join(".cargo/credentials.toml"),
+        home.path().join(".local/bin/owner-tool"),
+    ] {
+        let printed = run_in_agent(
+            &home,
+            &agent.root,
+            &format!("cat '{}' || echo refused", unreadable.display()),
+        )
+        .await;
+
+        assert!(
+            printed.ends_with("refused\nexit=0\n"),
+            "{unreadable:?}: {printed}"
+        );
+    }
+}
+
+/// #859 Q1 and Q3: the owner's tool configuration and caches are not mounted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_sees_none_of_the_owners_tool_configuration_or_caches() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        for (file, contents) in [
+            (".config/tool/hosts.yml", "token: owner's\n"),
+            (".cache/sccache/object", "compiled\n"),
+            (".gitconfig", "[credential]\n\thelper = store\n"),
+        ] {
+            let path = home.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+    })
+    .await;
+
+    for unreadable in [
+        ".config/tool/hosts.yml",
+        ".cache/sccache/object",
+        ".gitconfig",
+    ] {
+        let printed = run_in_agent(
+            &home,
+            &agent.root,
+            &format!("cat ~/'{unreadable}' || echo refused"),
+        )
+        .await;
+
+        assert!(
+            printed.ends_with("refused\nexit=0\n"),
+            "{unreadable}: {printed}"
+        );
+    }
+}
+
+/// #859 Q1: a build fetches into the session's own cache; the owner's stays as it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_build_fetches_into_the_sessions_own_cache_and_leaves_the_owners_unchanged() {
+    let home = Home::new();
+    let owners_cargo = home.path().join(".cargo");
+    let agent = rust_agent(&home).await;
+    let before = snapshot(&owners_cargo);
+
+    let printed = run_in_agent(&home, &agent.root, "cargo").await;
+
+    let session_cache = home.session_temp_dir(&agent.session).join("caches/cargo");
+    assert!(
+        printed.contains(&format!("cargo home: {}\n", session_cache.display())),
+        "{printed}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(session_cache.join("registry/crate")).unwrap(),
+        "fetched\n"
+    );
+    assert_eq!(snapshot(&owners_cargo), before);
+}
+
+/// #859 Q1: one session's cache is its own; another session cannot read it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_session_does_not_see_the_first_ones_cache() {
+    let home = Home::new();
+    let first = sandboxed_agent(&home, |_| {}).await;
+    let printed = run_in_agent(
+        &home,
+        &first.root,
+        "mkdir -p \"$CARGO_HOME\" && echo first > \"$CARGO_HOME/marker\" && echo written",
+    )
+    .await;
+    assert!(printed.contains("written\n"), "{printed}");
+    let marker = home
+        .session_temp_dir(&first.session)
+        .join("caches/cargo/marker");
+    assert!(marker.is_file());
+    let client = home.connect().await;
+    let (second_root, _) = home
+        .project_at(
+            &client,
+            &format!("second/{COMMANDED_PROJECT}"),
+            Some("second"),
+        )
+        .await;
+    let _second = new_session(&client, &second_root).await;
+
+    let printed = run_in_agent(
+        &home,
+        &second_root,
+        &format!("cat '{}' || echo refused", marker.display()),
+    )
+    .await;
+
+    assert!(printed.ends_with("refused\nexit=0\n"), "{printed}");
+}
+
+/// #859: Git works in the checkout from the configuration Torlek writes, with the owner's
+/// identity for that checkout copied as values: an `includeIf` on its folder applies.
+#[tokio::test(flavor = "multi_thread")]
+async fn git_commits_in_the_checkout_with_the_owners_identity() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        let projects = home.path().join("projects");
+        std::fs::write(
+            home.path().join(".gitconfig"),
+            format!(
+                "[user]\n\tname = Owner Fixture\n\temail = owner@personal.example\n\
+                 [includeIf \"gitdir:{}/\"]\n\tpath = {}\n",
+                projects.display(),
+                home.path().join("work.gitconfig").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            home.path().join("work.gitconfig"),
+            "[user]\n\temail = owner@example.com\n",
+        )
+        .unwrap();
+    })
+    .await;
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "git commit --quiet --allow-empty -m sandboxed && git log -1 --format='%an <%ae> %s'",
+    )
+    .await;
+
+    assert!(
+        printed.ends_with("Owner Fixture <owner@example.com> sandboxed\nexit=0\n"),
+        "{printed}"
+    );
+}
+
+/// #859: the session's end removes its Go module cache, even as Go leaves it without
+/// `-modcacherw`: read-only folders.
+#[tokio::test(flavor = "multi_thread")]
+async fn ending_the_session_removes_its_populated_go_module_cache() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        std::fs::write(
+            commanded_checkout(home).join("go.mod"),
+            "module example.com/fixture\n",
+        )
+        .unwrap();
+    })
+    .await;
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "module=\"$GOMODCACHE/example.com/dependency@v1.0.0\" && mkdir -p \"$module\" && \
+         echo 'module example.com/dependency' > \"$module/go.mod\" && \
+         chmod -R a-w \"$GOMODCACHE/example.com\" && echo \"flags: $GOFLAGS\"",
+    )
+    .await;
+    assert!(printed.contains("flags: -modcacherw\n"), "{printed}");
+    let temp_dir = home.session_temp_dir(&agent.session);
+    assert!(temp_dir.join("caches/go-mod/example.com").is_dir());
+    let client = home.connect().await;
+
+    client
+        .request(
+            Command::SessionEnd {
+                session: agent.session.clone(),
+            },
+            GENEROUS,
+        )
+        .await
+        .expect("the owner ends the session");
+
+    let deadline = tokio::time::Instant::now() + GENEROUS;
+    while temp_dir.exists() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!temp_dir.exists(), "{}", temp_dir.display());
+}
+
+/// #859: the evidence names the cache mode and the toolchains it detected.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_evidence_names_the_session_own_cache_mode_and_the_detected_toolchains() {
+    let home = Home::new();
+    let agent = rust_agent(&home).await;
+
+    let shown = home
+        .cockpit(&["session", "sandbox", &agent.session], &[])
+        .await;
+
+    assert!(shown.status.success(), "{}", text(&shown.stderr));
+    let printed = text(&shown.stdout);
+    assert!(
+        printed.contains("toolchains detected in the checkout: rust"),
+        "{printed}"
+    );
+    assert!(printed.contains("cache mode: session-own"), "{printed}");
+    assert!(
+        printed.contains(&format!(
+            "read-only {} when present (toolchain install root)",
+            home.path().join(".cargo/bin").display()
+        )),
+        "{printed}"
+    );
+}
+
+/// #859: the session's end removes its tool configuration, which holds the owner's Git
+/// identity.
+#[tokio::test(flavor = "multi_thread")]
+async fn ending_the_session_removes_its_git_configuration() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "echo \"git config: $GIT_CONFIG_GLOBAL\"",
+    )
+    .await;
+    let configuration = PathBuf::from(
+        printed
+            .lines()
+            .find_map(|line| line.strip_prefix("git config: "))
+            .unwrap_or_else(|| panic!("{printed}")),
+    );
+    assert!(configuration.is_file(), "{}", configuration.display());
+    let client = home.connect().await;
+
+    client
+        .request(
+            Command::SessionEnd {
+                session: agent.session.clone(),
+            },
+            GENEROUS,
+        )
+        .await
+        .expect("the owner ends the session");
+
+    let deadline = tokio::time::Instant::now() + GENEROUS;
+    while configuration.exists() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!configuration.exists(), "{}", configuration.display());
 }
