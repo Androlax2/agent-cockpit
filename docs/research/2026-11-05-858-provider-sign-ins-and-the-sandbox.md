@@ -61,7 +61,7 @@ Theo chose the recommended answer on all three questions:
 
 ## What exists today
 
-Code at this branch's base (`56659a6b`); paths are relative to the repository root. Credential
+Code at this branch's base (`26e6e35b`); paths are relative to the repository root. Credential
 files on the research host were inspected for their key names and modes only, never their
 values.
 
@@ -98,7 +98,7 @@ Versions on the research host: Claude Code 2.1.318, codex-cli 0.166.0, OpenCode 
 | Anthropic API key | `ANTHROPIC_API_KEY` (sent as `X-Api-Key`) | No |
 | Claude subscription, `/login` | No: `.credentials.json` under `CLAUDE_CONFIG_DIR` | Yes, rotating refresh token |
 | Claude subscription, `claude setup-token` | `CLAUDE_CODE_OAUTH_TOKEN`: one year, "can only make model requests, so it can't establish Remote Control sessions or fetch claude.ai connectors" ([docs](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token)) | No |
-| OpenAI API key | `codex login --with-api-key`, OpenCode's provider keys | No |
+| OpenAI API key | OpenCode: its provider key variables (the legacy launcher passes `ANTHROPIC_API_KEY`, `opencode:52`). Codex: `codex login --with-api-key` stores it in `auth.json`; whether interactive Codex reads it from an environment variable is unproven. If not, the session's own `auth.json` holds only the placeholder | No |
 | Codex ChatGPT login | No for personal plans: `auth.json` under `CODEX_HOME`. `--with-access-token` exists for ChatGPT Enterprise workspaces whose admin grants it ([docs](https://learn.chatgpt.com/docs/auth)) | Yes, "refreshes tokens automatically during use" |
 | OpenCode OAuth logins | No: `auth.json` | Yes |
 
@@ -130,7 +130,7 @@ Mounting the owner's provider folders, today's shape, is ruled out by #859 Q3.
 
 | Option | Threats left | Cost |
 | --- | --- | --- |
-| A. **Proxy-bound, logins by project grant (recommended).** Every credential the harness takes from its environment is bound at the proxy; the session holds a placeholder. A login that refreshes itself reaches a session only through a per-project grant naming the account (#859 Q3's "extra only by a project grant"); the grant mounts that account's login file, read-write, from a Torlek-owned folder, and the session's other provider files stay its own | T4 everywhere. T1 to T3 only in projects the owner granted a login account, and only for that account (Claude's MCP logins stay out: Torlek's folder holds no `mcpOAuth`). T5 avoided by one shared login file per account, never a copy | About 3 days: binding provider hosts in #832 (2 days), the login grant (1 day) |
+| A. **Proxy-bound, logins by project grant (recommended).** Every credential the harness takes from its environment is bound at the proxy; the session holds a placeholder. A login that refreshes itself reaches a session only through a per-project grant naming the account (#859 Q3's "extra only by a project grant"); the grant mounts that account's login file, read-write, from a Torlek-owned folder, and the session's other provider files stay its own | T4 everywhere. T1 to T3 only for a granted login account, in every project granted that account: its sessions share one login, so this is the one owner-granted exception to #859's "nothing a session writes outside its own folders is read by another session". Claude's MCP logins start outside Torlek's folder, but a granted Claude session that signs in to an MCP server writes `mcpOAuth` into the shared file (T2 again). T5 reduced, not avoided: no copy of a login exists, but two sessions refreshing at once can still race | About 3 days: binding provider hosts in #832 (2 days), the login grant (1 day) |
 | B. **Proxy-bound only.** As A without the grant: a login that refreshes itself is never offered to a sandboxed session | T4 only. Codex's ChatGPT plan and OpenCode's OAuth logins run only with `agents.sandbox = "off"`; no Claude Remote Control or claude.ai connectors in sandboxed sessions | About 2 days |
 | C. **Torlek refreshes.** As B, and for logins that refresh themselves the daemon keeps the refresh token outside and writes only a short-lived access token into the session before it expires | T1 shrinks to the access token's lifetime (hours, unmeasured); T3 and T4 stay | About 2 days per harness for undocumented refresh protocols and client IDs, again after each release that changes them; T5 against the owner's own login of the same account |
 | D. **Torlek-owned login folders mounted for every account**, no proxy binding | T1 to T3 for every session; T4 | About 1 day. Contradicts #859 Q3's rule for credentials: listed only as the cheapest alternative |
@@ -138,9 +138,11 @@ Mounting the owner's provider folders, today's shape, is ruled out by #859 Q3.
 Every option with proxy binding shares these costs: all model traffic of a bound provider passes
 through Torlek's TLS interception (streaming, HTTP/2, WebSocket), each harness needs its
 runtime's trust variable for the per-session CA, and each harness must accept a placeholder of
-its token's shape (unproven). A provider's API host is a credential host by its adapter's
-declaration (#830), so #857 decision 3's reach-before-credential rule holds without a project
-grant.
+its token's shape (unproven). The adapter's declaration (#830) names which hosts can carry a
+provider credential; it grants nothing. Under #857 decision 3 the credential right is the owner's
+act of setting the provider credential, recorded with the provider host's reach so that revoking
+one ends the other; how that record sits beside #857's per-project host records (one per project,
+or one per profile for provider hosts) is #832's to settle.
 
 ### Q2. Switching at a quota stop
 
@@ -175,8 +177,8 @@ itself. **D:** Torlek-owned login folders mounted for every account. Most secure
 **Decided 2026-11-05: A.** Every provider credential the harness accepts from its environment
 is bound at the proxy and never enters the sandbox. A login that refreshes itself reaches a
 session only through a per-project grant naming the account, which the owner decides and can
-revoke; the grant mounts that account's login file from a Torlek-owned folder. Theo accepts
-T1 to T3 for a granted account in that project only.
+revoke; the grant mounts that account's login from a Torlek-owned folder. Theo accepts T1 to
+T3 for a granted account, in the projects granted that account.
 
 **Q2. Switching at a quota stop.** **A (recommended):** relaunch only, as report 18 decided.
 **B:** hot swap for bound accounts. **C:** no automatic switch. Most secure: A (C equal, at the
@@ -194,7 +196,8 @@ Most secure: A.
 **Decided 2026-11-05: A.** Alpha.4 binds one account per provider at the proxy (#832): the
 credential the owner sets for that provider. Several accounts, login grants and routing stay in
 #59 (beta.2). Until then a sandboxed session on Codex's ChatGPT plan or an OpenCode OAuth login
-is not available; the owner's `agents.sandbox = "off"` remains the named opt-out.
+is not available, and a Claude session bound with a `setup-token` token has no Remote Control and
+no claude.ai connectors; the owner's `agents.sandbox = "off"` remains the named opt-out.
 
 ## Changes to the linked issues (proposed text)
 
@@ -216,10 +219,13 @@ as written. Nothing here is applied by this report: Theo applies them.
 >   binds one account per provider; this issue adds several.
 > - **Login accounts.** Usable in a project only through a per-project grant naming the
 >   account, decided by the owner like a network request (#674): who, when and client
->   recorded, revocable, applied at the next launch. The grant mounts that account's login
->   file, read-write, from a Torlek-owned folder, never the owner's own provider folder. Every
->   session on that account shares the one file, never a copy, so a refresh signs nobody out.
->   Without the grant a launch on that account is refused with the grant to ask for.
+>   recorded, revocable, applied at the next launch. The owner signs the account in once
+>   through a guided step into a Torlek-owned folder that holds only that login; it is never
+>   copied from the owner's own provider folder, so the owner's own sign-in keeps its own
+>   refresh tokens. The grant mounts that login read-write (the file, or a folder holding
+>   only it if the harness saves by renaming over the file, which fails on a bind-mounted
+>   file). Every session on that account shares it, never a copy. Without the grant a launch
+>   on that account is refused with the grant to ask for.
 > - **Routing.** Only at launch and at a quota-stop relaunch (report 18): the daemon picks the
 >   next account with capacity from its own records, relaunches with its binding or granted
 >   login and resumes the conversation. No hot swap. The account a session ran on is the
@@ -234,7 +240,10 @@ as written. Nothing here is applied by this report: Theo applies them.
 >   credential.
 > - A login account in a project without its grant is refused, naming the grant; with the
 >   grant the session signs in; after revocation the next launch is refused.
-> - Two sessions on one login account both stay signed in after one of them refreshes.
+> - Two sessions on one login account both stay signed in when they refresh at the same
+>   time, or a second concurrent session on that account is refused with the reason.
+> - A refresh inside a session survives in the shared login: the next session on the
+>   account starts signed in.
 > - A session that rewrites its provider files does not change the account the daemon
 >   records for it.
 >
@@ -245,12 +254,13 @@ as written. Nothing here is applied by this report: Theo applies them.
 > Also (#858, owner decisions 2026-11-05): each adapter declares, apart from its other
 > folders, its **credential paths** (Claude's `.credentials.json`, Codex's `auth.json`,
 > OpenCode's `auth.json` and any other store it knows), the **environment variable** that
-> takes a bound credential (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`, Codex's and
-> OpenCode's API key variables) and which of its **API hosts carry a credential**. No
+> takes a bound credential (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` for Claude, the
+> provider key variables OpenCode reads; for Codex, the variable it reads if one works, else a
+> session-own `auth.json` holding only the placeholder) and which of its **API hosts carry a credential**. No
 > credential path of the owner's provider folders is mounted (#859 Q3). The session's
 > provider folder (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, OpenCode's data folder) is a Torlek-owned
 > folder kept across the session's relaunches, so a quota-stop relaunch resumes the
-> conversation; a granted login (#59) mounts only the account's login file into it.
+> conversation; a granted login (#59) mounts only the account's login into it.
 >
 > Acceptance to add: through the daemon with a fake provider, the owner's
 > `~/.claude/.credentials.json`, `~/.codex/auth.json` and OpenCode `auth.json` are not
@@ -277,9 +287,10 @@ as written. Nothing here is applied by this report: Theo applies them.
 
 ### #829 (add to Acceptance)
 
-> - No provider credential is visible in the session (#858): `~/.claude/.credentials.json`,
->   `~/.codex/auth.json` and OpenCode's `auth.json` are absent from the view, and the
->   environment holds no real provider credential, only #832's placeholders.
+> - No credential of the owner's provider folders is visible in the session (#858):
+>   `~/.claude/.credentials.json`, `~/.codex/auth.json` and OpenCode's `auth.json` are absent
+>   from the view, and the environment holds no real provider credential, only #832's
+>   placeholders. The one exception, from #59, is the login a per-project grant mounts.
 
 ### #674 (add a note)
 
@@ -293,6 +304,9 @@ as written. Nothing here is applied by this report: Theo applies them.
 >   for sandboxed sessions. A provider signed in only through the owner's own folders reports
 >   `missing-prerequisite` for sandboxed sessions, with the credential to set. A Codex ChatGPT
 >   plan or OpenCode OAuth login says it is not available to sandboxed sessions until #59.
+> - A sandboxed Claude launch that asks for Remote Control on a `setup-token` binding is
+>   refused with the reason (the token "can only make model requests"), not started and left
+>   to fail.
 
 Also touched, one line each: #685 gains two probes (read a provider credential from inside;
 send a placeholder to a non-provider host). [Report 18](../design/greenfield/18-usage-quota-and-accounts.md)'s
@@ -302,7 +316,7 @@ stay allowed from the adapter's declaration.
 
 ## Sources, limits and what was not checked
 
-- Code and legacy files as cited, read at `56659a6b`. Issues #59, #830, #829, #831, #832, #833,
+- Code and legacy files as cited, read at `26e6e35b`. Issues #59, #830, #829, #831, #832, #833,
   #674 and #856 with their comments, and the #857 and #859 reports, on 2026-11-05.
 - Credential files on the research host: key names and file modes only.
 - Claude Code: [authentication](https://code.claude.com/docs/en/authentication) (storage,
@@ -312,5 +326,7 @@ stay allowed from the adapter's declaration.
 - Nothing was run against a provider and nothing was prototyped. Unproven, for the
   implementing issues to test: whether each harness accepts a placeholder of its token's shape;
   whether each harness honors its runtime's trust variable for an intercepted provider host;
-  the access-token lifetimes C would rely on; whether a login file mounted alone (without the
-  rest of the account's folder) is enough for each harness.
+  the access-token lifetimes C would rely on; whether a login mounted alone (without the rest
+  of the account's folder) is enough for each harness, and whether its write-back survives a
+  bind-mounted file; whether two harnesses refreshing one login at once both stay signed in;
+  whether interactive Codex takes an API key from its environment.
