@@ -51,6 +51,16 @@ set-option -s terminal-features[11] 'screen*:clipboard'
     )
 }
 
+/// The owner's paste key, as tmux names it: CMD+V is Control+V under Theo's keyd mapping.
+const IMAGE_PASTE_KEY: &str = "C-v";
+/// Set on the viewer pane only: the key binding's test for where the key was pressed.
+const VIEWER_OPTION: &str = "@torlek-viewer";
+/// [`Server::bind_image_paste`]'s script, beside the config.
+const IMAGE_PASTE_SCRIPT: &str = "image-paste";
+
+/// The paste buffer [`Server::paste`] fills and empties.
+const PASTE_BUFFER: &str = "torlek-paste";
+
 /// How long [`Server::close_session`] waits for a server it emptied to exit.
 const SERVER_EXIT_WAIT: Duration = Duration::from_secs(5);
 
@@ -673,6 +683,71 @@ impl Server {
         self.run(&arguments).map(drop)
     }
 
+    /// Binds CMD+V (`C-v`, which kitty sends and Claude Code reads as its image paste) on this
+    /// server: pressed while `viewer` has the keys, it runs `command`, and anywhere else it
+    /// reaches the pane's program as before. `command` handing a `C-v` back to the viewer
+    /// ([`Server::send_keys`]) reaches the session shown there. The words run through a script
+    /// beside the config, each quoted, its output discarded and its errors shown in the
+    /// viewer. Why: `docs/decisions/2026-11-05-848-image-paste-key.md`.
+    pub fn bind_image_paste(&self, viewer: &PaneId, command: &[OsString]) -> Result<(), Error> {
+        let script = self.spec.config_path.with_file_name(IMAGE_PASTE_SCRIPT);
+        let script_path = script
+            .to_str()
+            .filter(|path| path.chars().all(is_plain_path_character))
+            .ok_or_else(|| Error::InvalidArgument {
+                what: "image paste script path (letters, digits and / . _ - + only)",
+                value: script.display().to_string(),
+            })?;
+        write_owner_file(&script, &image_paste_script(command)?, 0o700)?;
+        let is_viewer = format!("#{{{VIEWER_OPTION}}}");
+        let run_script = format!("run-shell -b {script_path}");
+        let pass_key_on = format!("send-keys {IMAGE_PASTE_KEY}");
+        self.run(&words(&[
+            "set-option",
+            "-p",
+            "-t",
+            viewer.as_str(),
+            VIEWER_OPTION,
+            "1",
+            ";",
+            "bind-key",
+            "-n",
+            IMAGE_PASTE_KEY,
+            "if-shell",
+            "-F",
+            &is_viewer,
+            &run_script,
+            &pass_key_on,
+        ]))
+        .map(drop)
+    }
+
+    /// Pastes `text` into `pane` as one bracketed paste when its program asked for that, the
+    /// way a terminal pastes: a program such as Claude Code then takes a pasted image path as
+    /// an attachment. The paste buffer it goes through is deleted, so the owner's paste
+    /// (prefix `]`) never types it again. Text with a control character is refused.
+    pub fn paste(&self, pane: &PaneId, text: &str) -> Result<(), Error> {
+        if text.chars().any(char::is_control) {
+            return Err(Error::InvalidArgument {
+                what: "pasted text (no control characters)",
+                value: text.escape_debug().to_string(),
+            });
+        }
+        let mut arguments = words(&["set-buffer", "-b", PASTE_BUFFER, "--"]);
+        arguments.push(literal_argument(text).into());
+        arguments.extend(words(&[
+            ";",
+            "paste-buffer",
+            "-p",
+            "-d",
+            "-b",
+            PASTE_BUFFER,
+            "-t",
+            pane.as_str(),
+        ]));
+        self.run(&arguments).map(drop)
+    }
+
     /// A pane's visible screen plus up to `history_lines` lines above it, with its colors
     /// and attributes as escape sequences. Untrusted display data: never read state from it.
     pub fn capture(&self, pane: &PaneId, history_lines: u32) -> Result<Vec<u8>, Error> {
@@ -839,6 +914,12 @@ fn is_exiting_server(error: &Error) -> bool {
 
 /// Writes `contents` to `path` with mode 0600, replacing it atomically.
 fn write_private_file(path: &Path, contents: &str) -> Result<(), Error> {
+    write_owner_file(path, contents, 0o600)
+}
+
+/// Replaces `path` with `contents` through a staging file, readable only by the owner with
+/// `mode`.
+fn write_owner_file(path: &Path, contents: &str, mode: u32) -> Result<(), Error> {
     let mut staging = path.as_os_str().to_owned();
     staging.push(".new");
     let staging = PathBuf::from(staging);
@@ -846,12 +927,40 @@ fn write_private_file(path: &Path, contents: &str) -> Result<(), Error> {
         .write(true)
         .create(true)
         .truncate(true)
-        .mode(0o600)
+        .mode(mode)
         .open(&staging)
         .map_err(Error::io("create", &staging))?;
     file.write_all(contents.as_bytes())
         .map_err(Error::io("write", &staging))?;
     fs::rename(&staging, path).map_err(Error::io("replace", path))
+}
+
+/// What tmux's command parser and `run-shell`'s formats leave alone in a path.
+fn is_plain_path_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '/' | '.' | '_' | '-' | '+')
+}
+
+/// A shell script that runs `command`, every word single-quoted. Its output is dropped; its
+/// errors go where its output would, so `run-shell` shows them.
+fn image_paste_script(command: &[OsString]) -> Result<String, Error> {
+    if command.is_empty() {
+        return Err(Error::InvalidArgument {
+            what: "image paste command (at least the program)",
+            value: String::new(),
+        });
+    }
+    let mut quoted = Vec::with_capacity(command.len());
+    for word in command {
+        let word = word.to_str().ok_or_else(|| Error::InvalidArgument {
+            what: "image paste command word (UTF-8)",
+            value: word.to_string_lossy().into_owned(),
+        })?;
+        quoted.push(format!("'{}'", word.replace('\'', "'\\''")));
+    }
+    Ok(format!(
+        "#!/bin/sh\n# Written by Torlek for CMD+V in the viewer (#848).\nexec {} 2>&1 >/dev/null\n",
+        quoted.join(" ")
+    ))
 }
 
 /// `select-pane`'s flag for a pane's input: `-e` on, `-d` off.
