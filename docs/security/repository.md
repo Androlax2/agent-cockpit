@@ -103,7 +103,7 @@ has its own check:
 | Secret scanning, push protection | Both enabled | `gh api $R --jq .security_and_analysis` |
 | Dependabot alerts | Enabled | `gh api -i $R/vulnerability-alerts` → `HTTP/2.0 204` (404 means disabled or unreadable) |
 | Dependabot security updates | Enabled | `gh api $R/automated-security-fixes` → `{"enabled":true,...}` |
-| Dependabot version updates | Monthly, one grouped PR per ecosystem (Actions, root Cargo workspace), at most 2 open | [dependabot.yml](../../.github/dependabot.yml) |
+| Dependabot version updates | Monthly, one grouped PR per ecosystem (Actions, root Cargo workspace), at most 2 open in all | [dependabot.yml](../../.github/dependabot.yml) |
 | Private vulnerability reporting | Enabled | `gh api $R/private-vulnerability-reporting` |
 | CodeQL | [codeql.yml](../../.github/workflows/codeql.yml): Rust and Actions on ready PRs, `main` pushes and weekly; default setup stays `not-configured` (it would conflict) | `gh api "$R/code-scanning/analyses?per_page=10" --jq '.[]\|[.ref,.category,.results_count,.error]'` |
 | Scorecard | [scorecard.yml](../../.github/workflows/scorecard.yml) on `main` pushes and weekly; results published to api.scorecard.dev for the README badge | `gh run list -w Scorecard -L 1` and the [viewer](https://scorecard.dev/viewer/?uri=github.com/Androlax2/agent-cockpit) |
@@ -112,8 +112,11 @@ CodeQL Rust analysis uses `build-mode: none`, which still runs build scripts and
 macros; the job holds only `contents: read` and `security-events: write`, no environment.
 Scorecard publication requires the official action with job-scoped `id-token: write`, no
 `run` steps and only allowed actions; `test_workflow_scanners.py` keeps that shape. The action
-pulls its container by tag `v2.5.0` from its own metadata; the action itself is pinned to commit
-`fa7117db83c52d787ae5a89f350999701505d78e`.
+is pinned to commit `fa7117db83c52d787ae5a89f350999701505d78e` (v2.5.0), but its metadata pulls
+the container `ghcr.io/ossf/scorecard-action:v2.5.0` by a tag that upstream could re-push. That
+is the price of the badge: publication accepts only the official action, not the
+digest-pinned `docker://` image used before. The job holds no secret and only a read token;
+its OIDC token proves the run to api.scorecard.dev and nothing else.
 
 ## Scorecard results
 
@@ -179,8 +182,13 @@ drive them through a fake `gh`.
 
 1. `python3 tools/repository_settings.py require-action-sha-pinning`: turns on
    `sha_pinning_required`, keeping the allowed-actions policy. Exit 0 when set or already set.
-   Every workflow on `main` must already pin by SHA, or its runs will fail.
+   Every workflow on `main` must already pin by SHA, or its runs will fail: on an up-to-date
+   `main` checkout, run `python3 -m unittest discover -s tools/tests -p 'test_workflow_scanners.py'`
+   first.
 2. `python3 tools/repository_settings.py probe-tag-refusal`: tries to create
-   `refs/tags/v0.0.0-ruleset-probe` on `main`'s head as Theo. Exit 0 when a ruleset refuses it;
-   exit 1 when the tag is created or already exists (then the tag rules are broken, and the
-   immutability ruleset keeps the probe tag until they are fixed); exit 2 when inconclusive.
+   `refs/tags/v0.0.0-ruleset-probe` as Theo, on the repository's first commit `3abf9222`, which
+   holds no workflow: a wrongly created tag starts no Release run. Exit 0 when the creation is
+   refused and ruleset `26382178` still reads as the Release App's creation rule. Exit 1 when
+   the tag is created or already exists, or the ruleset differs (the tag rules are broken; the
+   immutability ruleset keeps a created probe tag until they are fixed). Exit 2 when
+   inconclusive, such as a timeout: then check whether the tag exists.

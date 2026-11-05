@@ -10,8 +10,16 @@ SCRIPT = ROOT / "tools/repository_settings.py"
 REPOSITORY = "repos/Androlax2/agent-cockpit"
 PERMISSIONS = f"{REPOSITORY}/actions/permissions"
 REFS = f"{REPOSITORY}/git/refs"
-MAIN = f"{REPOSITORY}/commits/main"
-MAIN_SHA = "0123456789abcdef0123456789abcdef01234567"
+RULESET = f"{REPOSITORY}/rulesets/26382178"
+PROBE_COMMIT = "3abf9222c4e3b4bc819959c9d2f380875f4c2c50"
+PROBE_WORKFLOWS = f"{REPOSITORY}/contents/.github/workflows?ref={PROBE_COMMIT}"
+CREATION_RULESET = {
+    "enforcement": "active",
+    "target": "tag",
+    "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+    "rules": [{"type": "creation"}],
+    "bypass_actors": [{"actor_type": "Integration", "actor_id": 5573576, "bypass_mode": "always"}],
+}
 RULE_VIOLATION = {
     "message": "Repository rule violations found\n\nCannot create ref due to creations being restricted.\n\n",
     "status": "422",
@@ -39,7 +47,9 @@ else:
     response = state.get(endpoint + ":" + method, {"status": 404, "body": {"message": "Not Found"}})
 print(f"HTTP/2.0 {response['status']} Status")
 print()
-if response["body"] is not None:
+if "raw" in response:
+    print(response["raw"])
+elif response["body"] is not None:
     print(json.dumps(response["body"]))
 sys.exit(1 if response["status"] >= 400 else 0)
 """
@@ -59,7 +69,7 @@ class RepositorySettingsTests(unittest.TestCase):
                 "status": 200,
                 "body": {"enabled": True, "allowed_actions": "all", "sha_pinning_required": False},
             },
-            f"{MAIN}:GET": {"status": 200, "body": {"sha": MAIN_SHA}},
+            f"{RULESET}:GET": {"status": 200, "body": CREATION_RULESET},
             f"{REFS}:POST": {"status": 422, "body": RULE_VIOLATION},
         }
         fake = self.bin / "gh"
@@ -130,7 +140,9 @@ class RepositorySettingsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         [post] = self.calls("POST")
         self.assertEqual(post["arguments"][1], REFS)
-        self.assertEqual(post["body"], {"ref": "refs/tags/v0.0.0-ruleset-probe", "sha": MAIN_SHA})
+        self.assertEqual(
+            post["body"], {"ref": "refs/tags/v0.0.0-ruleset-probe", "sha": PROBE_COMMIT}
+        )
         self.assertIn("refused", result.stdout)
 
     def test_tag_probe_fails_loudly_when_the_tag_is_created(self):
@@ -153,6 +165,46 @@ class RepositorySettingsTests(unittest.TestCase):
         result = self.run_script("probe-tag-refusal")
         self.assertEqual(result.returncode, 2)
         self.assertIn("inconclusive", result.stderr)
+
+    def test_tag_probe_fails_when_the_refusal_is_not_the_creation_ruleset(self):
+        self.state_values[f"{RULESET}:GET"]["body"] = {
+            **CREATION_RULESET,
+            "enforcement": "evaluate",
+        }
+        result = self.run_script("probe-tag-refusal")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("enforcement", result.stderr)
+
+    def test_tag_probe_never_tags_a_commit_that_holds_workflows(self):
+        self.state_values[f"{PROBE_WORKFLOWS}:GET"] = {"status": 200, "body": [{"name": "ci.yml"}]}
+        result = self.run_script("probe-tag-refusal")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.calls("POST"), [])
+        self.assertIn("not workflow-free", result.stderr)
+
+    def test_a_non_json_error_page_is_inconclusive(self):
+        self.state_values[f"{REFS}:POST"] = {
+            "status": 502,
+            "body": None,
+            "raw": "<html>Bad gateway",
+        }
+        result = self.run_script("probe-tag-refusal")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("without a JSON body", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_missing_gh_is_inconclusive_without_a_traceback(self):
+        (self.bin / "gh").unlink()
+        result = self.run_script("require-action-sha-pinning")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("gh is not installed", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_sha_pinning_is_inconclusive_without_an_allowed_actions_policy(self):
+        del self.state_values[f"{PERMISSIONS}:GET"]["body"]["allowed_actions"]
+        result = self.run_script("require-action-sha-pinning")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.calls("PUT"), [])
 
     def test_every_request_targets_the_fixed_repository_on_github_com(self):
         self.run_script("require-action-sha-pinning")

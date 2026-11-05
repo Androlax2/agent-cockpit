@@ -61,9 +61,14 @@ class ActionPinningTests(unittest.TestCase):
     # Repository setting sha_pinning_required fails any run whose action is not pinned to a
     # full commit SHA; tools/repository_settings.py turns it on only while this holds (#382).
     def test_every_action_is_pinned_to_a_full_commit_sha(self):
-        for workflow in sorted(WORKFLOWS.glob("*.yml")):
-            for reference in re.findall(r"uses: *([^\s#]+)", workflow.read_text()):
-                with self.subTest(workflow=workflow.name, reference=reference):
+        github = WORKFLOWS.parent
+        files = sorted([*github.rglob("*.yml"), *github.rglob("*.yaml")])
+        self.assertIn(WORKFLOWS / "ci.yml", files)
+        for path in files:
+            for reference in re.findall(r"uses: *['\"]?([^\s#'\"]+)", path.read_text()):
+                if reference.startswith("./"):
+                    continue
+                with self.subTest(path=str(path.relative_to(github)), reference=reference):
                     self.assertRegex(reference, r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 
 
