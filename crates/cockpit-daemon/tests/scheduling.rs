@@ -3,8 +3,8 @@
 //! use for resource admission (#386), and `queue-explain` answers why the rest waits.
 //!
 //! The daemon runs in this process with the fake provider, a real state database, real
-//! processes and a private tmux server. Its periodic pass is left at the fixture's hour and
-//! its idle window at zero, so each pass is the test's own.
+//! processes and a private tmux server. Its periodic pass and exit sweep are left at an hour
+//! and its idle window at zero, so each pass is the test's own.
 #![cfg(target_os = "linux")]
 
 mod candidate;
@@ -66,6 +66,9 @@ impl Home {
             .reading_messages(self.path().join("messages.log"));
             let mut wiring = common::wiring_in(&self.path(), vec![Arc::new(provider)]);
             wiring.scheduling.idle_window = Duration::ZERO;
+            // #825: a test that kills a terminal (the delivery that never arrives) must not have
+            // the exit sweep end the session between two of its passes.
+            wiring.exit_sweep = Duration::from_secs(3600);
             let started = match Instance::acquire(options) {
                 Ok(instance) => {
                     instance

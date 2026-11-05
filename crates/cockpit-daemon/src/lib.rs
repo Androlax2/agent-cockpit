@@ -46,7 +46,7 @@ pub use instance::{Instance, Options};
 pub use lanes::{LaneLimits, StallBudgets};
 pub use manager::Manager;
 pub use routes::{BufferedBatch, Handler, Job, Peer, Route, Routes, StreamJob, WorkClass, refusal};
-pub use serve::{SESSION_TICK, Serve, own_profile, own_program, serve};
+pub use serve::{EXIT_SWEEP, SESSION_TICK, Serve, own_profile, own_program, serve};
 pub use server::Limits;
 pub use session_sockets::SessionTreeSockets;
 
@@ -92,6 +92,11 @@ pub struct Wiring {
     pub desktop_environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
     /// How often the sessions' periodic pass (exits, idle sleep, expiry) runs.
     pub session_tick: Duration,
+    /// How often the exits alone are looked at between ticks (#632): a dead agent shows as
+    /// failed or ended within about this long. [`EXIT_SWEEP`] in the product. There is no sweep
+    /// unless this is shorter than `session_tick`: a test whose passes are its own sets both to
+    /// the hour, so a terminal it kills stays unnoticed.
+    pub exit_sweep: Duration,
     /// How approved commands run ([`run_settings`]).
     pub run_settings: cockpit_approvals::RunSettings,
     /// The owner's environment, for the configuration the checkouts published on the change
@@ -529,7 +534,13 @@ impl Instance {
         let ticking = tokio::spawn(supervisor::supervise(
             "sessions-tick",
             faults.clone(),
-            move || sessions::tick_forever(Arc::clone(&sessions), wiring.session_tick),
+            move || {
+                sessions::tick_forever(
+                    Arc::clone(&sessions),
+                    wiring.session_tick,
+                    wiring.exit_sweep,
+                )
+            },
         ));
         let retained = Arc::clone(&database);
         let feed_changes_kept = storage.retention.feed_changes_kept;
