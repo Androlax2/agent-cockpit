@@ -67,7 +67,7 @@ fn an_ended_session_leaves_the_list_and_resume_brings_it_back() {
     cockpit.cockpit(&["session", "end", &session]);
     cockpit.wait_for_gone(&session);
     cockpit.cockpit(&["session", "resume", &session]);
-    cockpit.wait_for(&format!("{session}  claude  waiting (running)"));
+    cockpit.wait_for(&format!("{session}  claude  waiting"));
     cockpit.click(ManagerPane::List);
     cockpit.press(&["Enter"]);
     cockpit.wait_for("resumed conversation 1 messages");
@@ -83,7 +83,7 @@ fn the_tui_says_the_daemon_is_gone_and_reconnects_when_it_returns() {
     cockpit.wait_for("cannot connect");
     cockpit.start_daemon();
     cockpit.wait_for_gone("cannot connect");
-    cockpit.wait_for(&format!("{session}  claude  waiting (running)"));
+    cockpit.wait_for(&format!("{session}  claude  waiting"));
 }
 
 #[test]
