@@ -33,6 +33,12 @@ set-option -g default-command 'unset TMUX TMUX_PANE; exec /bin/sh'
 set-option -g status off
 # The TUI runs in a pane: an Escape key must not wait for the rest of a sequence.
 set-option -s escape-time 0
+# Copy out (#848): the viewer is a client of this server nested in a pane, so a copy reaches
+# the owner's terminal only when tmux takes OSC 52 from that client too, which `external` refuses.
+set-option -s set-clipboard on
+# `on` would answer a pane's OSC 52 query with the newest paste buffer: what the owner copied,
+# maybe from another session. No pane reads it.
+set-option -s get-clipboard off
 "
     )
 }
