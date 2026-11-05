@@ -119,6 +119,7 @@ fn help_lists_every_key_and_the_log_shows_what_the_tui_did() {
         "{help}"
     );
     assert!(HELP.contains("Detach from the manager"));
+    assert!(HELP.contains("the prefix twice,\n  then ["));
     assert!(
         log.contains("session-show: not-found: no manager session is open"),
         "{log}"
