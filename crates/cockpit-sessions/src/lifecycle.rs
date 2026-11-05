@@ -1408,6 +1408,17 @@ impl Sessions {
                     continue;
                 }
             };
+            match self.fail_if_terminal_lost(&session).await {
+                Ok(Some(_)) => {
+                    report.terminal_lost.push(id);
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    report.errors.push((id, error.to_string()));
+                    continue;
+                }
+            }
             match self.end_if_exited(&session).await {
                 Ok(Some(over)) => report.record_exit(&over),
                 Ok(None) => {}
@@ -1451,7 +1462,19 @@ impl Sessions {
         if execution.phase.is_occupying() {
             return Ok(None);
         }
-        let exit = self.close_terminal_reading_exit(&session.id).await?;
+        let Some(exit) = self.close_terminal_reading_exit(&session.id).await? else {
+            // The terminal went since the pass looked: as when it was already gone.
+            let failed = self
+                .settle_over(
+                    session,
+                    launch,
+                    &crate::exits::unknown(),
+                    &terminal_lost_reason(&session.id),
+                    true,
+                )
+                .await?;
+            return Ok(Some(failed));
+        };
         let reason = crate::exits::reason(exit.status);
         let over = self
             .settle_over(session, launch, &exit, &reason, exit.status.is_failure())
@@ -1486,15 +1509,15 @@ impl Sessions {
             return Ok(None);
         }
         self.stop_previous_agent(session).await?;
-        let reason = format!(
-            "its terminal is gone: its tmux session no longer exists; \
-             `torlek session resume {}` reopens it",
-            session.id
-        );
         let failed = self
-            .settle_over(session, launch, &crate::exits::unknown(), &reason, true)
+            .settle_over(
+                session,
+                launch,
+                &crate::exits::unknown(),
+                &terminal_lost_reason(&session.id),
+                true,
+            )
             .await?;
-        tracing::warn!(session = %session.id, "a session's terminal is gone; it failed");
         Ok(Some(failed))
     }
 
@@ -1544,9 +1567,12 @@ impl Sessions {
     }
 
     /// Closes the session's terminal like [`Self::close_terminal`], first reading how its
-    /// agent exited, in the same step. A read that fails is logged and reads as an unknown
-    /// exit: the session still ends.
-    async fn close_terminal_reading_exit(&self, id: &SessionId) -> Result<AgentExit, Error> {
+    /// agent exited, in the same step; `None` when the terminal was already gone. A read
+    /// that fails is logged and reads as an unknown exit: the session still ends.
+    async fn close_terminal_reading_exit(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<AgentExit>, Error> {
         let tmux = self.tmux()?;
         let name = terminal_name(id)?;
         let counted = TerminalStep::start(&self.session_lock(id));
@@ -1555,7 +1581,7 @@ impl Sessions {
             let _counted = counted;
             let exit = crate::exits::read(&tmux, &name).unwrap_or_else(|error| {
                 tracing::warn!(%session, %error, "an exited agent's terminal could not be read");
-                crate::exits::unknown()
+                Some(crate::exits::unknown())
             });
             close_if_open(&tmux, &name)?;
             Ok(exit)
@@ -2779,6 +2805,14 @@ fn authorization_session(id: &SessionId) -> Result<cockpit_authorization::Sessio
 
 fn holder(id: &SessionId) -> Holder {
     Holder::new(id.as_str()).expect("a session id is a valid holder")
+}
+
+/// The reason of a session failed for its terminal being gone (#844).
+fn terminal_lost_reason(id: &SessionId) -> String {
+    format!(
+        "its terminal is gone: its tmux session no longer exists; \
+         `torlek session resume {id}` reopens it"
+    )
 }
 
 fn terminal_name(id: &SessionId) -> Result<SessionName, Error> {

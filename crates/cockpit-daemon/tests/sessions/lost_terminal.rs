@@ -89,3 +89,24 @@ async fn every_running_session_is_failed_when_the_whole_tmux_server_is_gone() {
     let failed = wait_for_state(&client, &started.id, SessionStateView::Failed).await;
     assert_failed_for_its_terminal(&failed);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_whose_tmux_session_is_gone_is_failed_between_ticks_as_well() {
+    let home = Home::new();
+    let daemon = home
+        .start_wired(|| {
+            let mut wiring = home.wiring(BASELINE, settings());
+            wiring.session_tick = Duration::from_secs(600);
+            wiring
+        })
+        .await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    home.launches(1).await;
+
+    kill_terminal_of(&home, &started.id);
+
+    let failed = wait_for_state(&client, &started.id, SessionStateView::Failed).await;
+    assert_failed_for_its_terminal(&failed);
+}
