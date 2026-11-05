@@ -78,6 +78,7 @@ impl Fixture {
             needs_source: NeedsSource::Floor,
             forwards: Vec::new(),
             egress: self.egress.clone(),
+            interception: None,
         }
     }
 

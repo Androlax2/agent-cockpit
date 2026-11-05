@@ -132,6 +132,13 @@ pub struct Counters {
     pub unreachable: u64,
     pub bytes_out: u64,
     pub bytes_in: u64,
+    /// Requests the bound credential was added to (#832).
+    #[serde(default)]
+    pub credential_added: u64,
+    /// Connections whose client refused the per-session CA's certificate (#832), as a client
+    /// that pins its certificates does.
+    #[serde(default)]
+    pub ca_refused: u64,
     /// Why the last connection was refused or failed.
     pub last_reason: Option<String>,
 }
@@ -143,6 +150,18 @@ impl Counters {
             "allowed {}, refused {}, unreachable {}, {} bytes out, {} bytes in",
             self.allowed, self.refused, self.unreachable, self.bytes_out, self.bytes_in
         );
+        if self.credential_added > 0 {
+            line.push_str(&format!(
+                ", credential added to {} requests",
+                self.credential_added
+            ));
+        }
+        if self.ca_refused > 0 {
+            line.push_str(&format!(
+                ", session CA refused by the client {} times",
+                self.ca_refused
+            ));
+        }
         if let Some(source) = &self.source {
             line = format!("({source}) {line}");
         }

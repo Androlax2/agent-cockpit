@@ -79,6 +79,60 @@ pub fn read_spec(path: &Path) -> Result<LaunchSpec, String> {
     Ok(spec)
 }
 
+/// The bound credentials' values in `mount_dir`'s credentials file, which is removed before
+/// anything else, as the spec is (#832, #434): one per credential `spec` binds. A file
+/// beside a spec that binds none is removed and refused, never left for a later launch.
+pub fn read_credentials(mount_dir: &Path, spec: &LaunchSpec) -> Result<Vec<String>, String> {
+    let path = mount_dir.join(cockpit_sandbox::CREDENTIALS_FILE);
+    let text = match std::fs::read(&path) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "cannot read the credentials file {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    if text.is_some() {
+        std::fs::remove_file(&path).map_err(|error| {
+            format!(
+                "cannot remove the credentials file {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    let bound = spec
+        .interception
+        .as_ref()
+        .map_or(0, |interception| interception.credentials.len());
+    let Some(text) = text else {
+        if bound > 0 {
+            return Err(format!(
+                "the spec binds {bound} credentials, and {} is missing",
+                path.display()
+            ));
+        }
+        return Ok(Vec::new());
+    };
+    if bound == 0 {
+        return Err(format!(
+            "{} is present, and the spec binds no credential",
+            path.display()
+        ));
+    }
+    // The values never appear in an error: serde's message could quote them.
+    let values: Vec<String> = serde_json::from_slice(&text)
+        .map_err(|_| format!("the credentials file {} is malformed", path.display()))?;
+    if values.len() != bound {
+        return Err(format!(
+            "the credentials file holds {} values for {bound} bound credentials",
+            values.len()
+        ));
+    }
+    Ok(values)
+}
+
 /// One mount of the view, applied parents first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Mount {

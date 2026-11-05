@@ -108,5 +108,6 @@ pub fn launch_request(session: &str, working_dir: &str) -> LaunchRequest {
         desktop: DesktopSession::Withheld,
         needs: ProviderNeeds::floor(),
         tools: ToolNeeds::none(),
+        credentials: Vec::new(),
     }
 }

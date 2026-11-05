@@ -13,9 +13,13 @@
 //!   the bubblewrap version and the Landlock ABI the kernel gives a sandboxed process.
 
 #[cfg(target_os = "linux")]
+mod authority;
+#[cfg(target_os = "linux")]
 mod client_hello;
 #[cfg(target_os = "linux")]
 mod handoff;
+#[cfg(target_os = "linux")]
+mod intercept;
 #[cfg(target_os = "linux")]
 mod plan;
 #[cfg(target_os = "linux")]
@@ -79,6 +83,16 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
         .parent()
         .ok_or("the launch spec has no folder")?
         .to_path_buf();
+    // Before the program starts: the credentials file is gone, and the trust files the
+    // program reads at its start are written.
+    let values = plan::read_credentials(&mount_dir, &spec)?;
+    let authority = match &spec.interception {
+        Some(interception) => {
+            let cockpit_sandbox::Subject::Session { session } = &spec.subject;
+            Some(authority::Authority::create(session, interception, values)?)
+        }
+        None => None,
+    };
     let launcher = std::env::current_exe()
         .and_then(|path| path.canonicalize())
         .map_err(|error| format!("cannot find the launcher's own program: {error}"))?;
@@ -108,7 +122,12 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
             return Err(reason);
         }
     };
-    let proxy = proxy::Proxy::new(spec.egress.clone(), spec.subject.clone(), proxy::Network);
+    let proxy = proxy::Proxy::new(
+        spec.egress.clone(),
+        spec.subject.clone(),
+        proxy::Network,
+        authority,
+    );
     let report = mount_dir.join(cockpit_sandbox::EGRESS_FILE);
     proxy.keep_report(report.clone());
     // The owner's decisions (#674) apply before the first connection is served.
