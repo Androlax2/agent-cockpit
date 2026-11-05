@@ -66,8 +66,8 @@ Bug reports
 Elsewhere
   L                  log of what the TUI did
   ?                  this help;  Esc closes it
-  Copy from a session by dragging the mouse over it, or in tmux's copy mode
-  (prefix, then [): the text goes to the desktop clipboard when the terminal
+  Copy from the session in the viewer with its copy mode: the prefix twice,
+  then [. The copied text goes to the desktop clipboard when the terminal
   accepts OSC 52, as kitty does.
   Detach from the manager with tmux's prefix, then d.";
 

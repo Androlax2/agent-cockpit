@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-use cockpit_tmux::PaneId;
+use cockpit_tmux::{PaneId, Viewing};
 use common::{TestServer, eventually, wait_for};
 
 /// Kitty's `TERM` is `xterm-kitty`; tmux gives the clipboard feature to every `xterm*`.
@@ -42,6 +42,8 @@ impl Desktop {
             desktop.socket.as_os_str(),
             "new-session".as_ref(),
             "-d".as_ref(),
+            "-s".as_ref(),
+            "desk".as_ref(),
             "-x".as_ref(),
             "120".as_ref(),
             "-y".as_ref(),
@@ -58,6 +60,20 @@ impl Desktop {
             .env_remove("TMUX")
             .output()
             .expect("tmux runs")
+    }
+
+    /// Types `keys` (tmux key names) into the owner's client, as the owner would.
+    fn type_keys(&self, keys: &[&str]) {
+        let mut arguments: Vec<&std::ffi::OsStr> = vec![
+            "-S".as_ref(),
+            self.socket.as_os_str(),
+            "send-keys".as_ref(),
+            "-t".as_ref(),
+            "=desk:".as_ref(),
+        ];
+        arguments.extend(keys.iter().map(std::ffi::OsStr::new));
+        let typed = self.run(&arguments);
+        assert!(typed.status.success(), "{typed:?}");
     }
 
     /// What the terminal last received with OSC 52, if anything.
@@ -91,7 +107,7 @@ fn agent_shown_on_the_desktop(fixture: &TestServer, agent_script: &str) -> (Desk
     let (agent, agent_pane) = fixture.start_shell("agent-1", agent_script);
     fixture
         .server
-        .show_in_viewer(&viewer, &agent)
+        .show_in_viewer(&viewer, &agent, Viewing::ReadWrite)
         .expect("respawns the viewer");
     let desktop = Desktop::attached_to_cockpit(fixture);
     eventually("both clients have the clipboard feature", || {
@@ -142,7 +158,18 @@ fn a_line_copied_in_copy_mode_reaches_the_desktop_terminal() {
             .contains("owner-selected")
     });
 
-    fixture.tmux(&["copy-mode", "-t", agent_pane.as_str()]);
+    // The owner's keys: the prefix twice sends one prefix on to the viewer's nested client,
+    // whose copy mode then opens on the agent's pane rather than on the viewer.
+    desktop.type_keys(&["C-b", "C-b", "["]);
+    eventually("the agent's pane is in copy mode", || {
+        fixture.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            agent_pane.as_str(),
+            "#{pane_in_mode}",
+        ]) == "1\n"
+    });
     fixture.tmux(&[
         "send-keys",
         "-t",
@@ -171,17 +198,22 @@ fn a_line_copied_in_copy_mode_reaches_the_desktop_terminal() {
 #[test]
 fn a_pane_asking_for_the_clipboard_gets_no_answer() {
     let fixture = TestServer::new();
-    // Raw, unechoed input: whatever tmux answers lands in `answer`, waiting up to a second.
-    let ask = "stty -icanon -echo min 0 time 10; printf '\\033]52;c;?\\007'; \
-               dd bs=4096 count=1 of=answer.part 2>/dev/null; mv answer.part answer";
+    // Raw, unechoed input, read until a second passes without any. The device-attributes
+    // query after the clipboard one is always answered, and tmux answers in order, so its
+    // answer proves the clipboard query was read and had its chance to be answered.
+    let ask = "stty -icanon -echo min 0 time 10; printf '\\033]52;c;?\\007\\033[c'; \
+               dd bs=1 count=4096 of=answer.part 2>/dev/null; mv answer.part answer";
     fixture.start_shell("agent-1", &format!("{}; {ask}; sleep 60", wait_for("ask")));
     fixture.tmux(&["set-buffer", "owner-copied-elsewhere"]);
     let answer = fixture.home.path().join("answer");
 
     fixture.release("ask");
 
-    eventually("the pane stopped waiting for an answer", || answer.exists());
-
-    let answer = fs::read(&answer).expect("readable");
-    assert_eq!(String::from_utf8_lossy(&answer), "");
+    eventually("the pane stopped reading answers", || answer.exists());
+    let answer = String::from_utf8_lossy(&fs::read(&answer).expect("readable")).into_owned();
+    assert!(
+        answer.starts_with("\u{1b}[?"),
+        "the device attributes come back: {answer:?}"
+    );
+    assert!(!answer.contains("]52;"), "no clipboard answer: {answer:?}");
 }
