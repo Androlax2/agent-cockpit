@@ -823,6 +823,11 @@ pub enum Command {
     Readiness {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
+        /// The asker only needs to know that one provider is signed in (#1048): the report
+        /// leaves when the first one says so, and a provider that has not answered by then
+        /// reads `unknown`. With no provider signed in, every one is waited for.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        one_sign_in_suffices: bool,
     },
     /// Owner only: the [`crate::DESKTOP_SESSION_VARIABLES`] later launches get, replacing
     /// the ones the daemon had (#307). Only the set ones travel; a name missing here is

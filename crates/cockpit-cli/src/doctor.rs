@@ -89,8 +89,14 @@ enum Unanswered {
 }
 
 fn ask_daemon(project: Option<String>) -> Result<Vec<RequirementView>, Unanswered> {
-    let answer = daemon::exchange(Command::Readiness { project }, DOCTOR_DEADLINE)
-        .map_err(Unanswered::Failed)?;
+    let answer = daemon::exchange(
+        Command::Readiness {
+            project,
+            one_sign_in_suffices: false,
+        },
+        DOCTOR_DEADLINE,
+    )
+    .map_err(Unanswered::Failed)?;
     match answer {
         Ok(Reply::Readiness { requirements }) => Ok(requirements
             .into_iter()

@@ -72,7 +72,11 @@ impl Home {
         assert_eq!(
             conversation,
             vec![
-                Command::Readiness { project: None },
+                // `torlek` alone needs one signed-in provider, not each one's answer (#1048).
+                Command::Readiness {
+                    project: None,
+                    one_sign_in_suffices: arguments.is_empty(),
+                },
                 Command::ProjectList,
                 Command::SessionList { ended: true },
             ]

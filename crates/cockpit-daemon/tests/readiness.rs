@@ -11,7 +11,7 @@ use std::path::Path;
 
 use cockpit_client::Connection;
 use cockpit_protocol::{Command, ErrorCode, Reply};
-use real_daemon::{GENEROUS, Home};
+use real_daemon::{GENEROUS, Home, new_session};
 
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
@@ -517,6 +517,7 @@ async fn a_relative_project_directory_is_refused_on_the_wire() {
         .request(
             Command::Readiness {
                 project: Some("projects/app".to_owned()),
+                one_sign_in_suffices: false,
             },
             GENEROUS,
         )
@@ -535,7 +536,13 @@ async fn an_agent_may_not_ask_for_the_owners_readiness_report() {
         .await
         .expect("the agent socket accepts the handshake");
     let refused = agent
-        .request(Command::Readiness { project: None }, GENEROUS)
+        .request(
+            Command::Readiness {
+                project: None,
+                one_sign_in_suffices: false,
+            },
+            GENEROUS,
+        )
         .await;
 
     let error = real_daemon_refusal(refused);
@@ -562,6 +569,7 @@ async fn a_project_directory_that_does_not_exist_is_refused_naming_it() {
         .request(
             Command::Readiness {
                 project: Some(missing.display().to_string()),
+                one_sign_in_suffices: false,
             },
             GENEROUS,
         )
@@ -570,4 +578,176 @@ async fn a_project_directory_that_does_not_exist_is_refused_naming_it() {
     let error = real_daemon_refusal(refused);
     assert_eq!(error.code, ErrorCode::InvalidArgument);
     assert!(error.message.contains("typo"), "{error:?}");
+}
+
+const CODEX_SIGNED_IN: &str = "echo 'Logged in using ChatGPT' >&2";
+const CODEX_SIGNED_OUT: &str = "echo 'Not logged in' >&2; exit 1";
+const OPENCODE_SIGNED_IN: &str = "printf '└  1 credentials\\n'";
+const OPENCODE_SIGNED_OUT: &str = "printf '└  0 credentials\\n'";
+
+/// `name` on the daemon's PATH: `--version` answers the adapter's conformance version and
+/// its sign-in status command runs `answer`, a line of shell.
+fn fake_sign_in(home: &Home, name: &str, answer: &str) {
+    let (version, status_command) = match name {
+        "codex" => ("codex-cli 0.166.0", "login status"),
+        "opencode" => ("1.19.5", "auth list"),
+        other => panic!("no fake sign-in for {other}"),
+    };
+    let program = home.path().join("bin").join(name);
+    std::fs::write(
+        &program,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo '{version}'; exit 0; fi\n\
+             [ \"$*\" = '{status_command}' ] || exit 99\n{answer}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// `answer` once `seconds` have passed, leaving `marker` in the home when it does.
+fn slowly(seconds: &str, marker: &str, answer: &str) -> String {
+    format!("sleep {seconds}; : > \"$HOME/{marker}\"; {answer}")
+}
+
+/// A daemon whose owner did every first-run step but the sign-in: the sandbox consent, a
+/// project and a session.
+async fn start_with_the_setup_done(home: &Home) -> real_daemon::Daemon {
+    home.write_owner_config("[agents]\nsandbox = \"off\"\n");
+    let daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+    new_session(&client, &root).await;
+    daemon
+}
+
+/// `torlek` alone, reading the owner's configuration where the daemon reads it.
+async fn torlek_alone(home: &Home) -> std::process::Output {
+    let config_home = home.path().join("config");
+    home.cockpit(&[], &[("XDG_CONFIG_HOME", config_home.to_str().unwrap())])
+        .await
+}
+
+/// The lines of the checklist's step `title`, its heading first.
+fn checklist_step<'checklist>(checklist: &'checklist str, title: &str) -> Vec<&'checklist str> {
+    let step: Vec<&str> = checklist
+        .lines()
+        .skip_while(|line| !line.ends_with(title))
+        .take_while(|line| !line.is_empty())
+        .collect();
+    assert!(!step.is_empty(), "no {title} step in:\n{checklist}");
+    step
+}
+
+/// #1048: each provider's sign-in command answers only once the other's has started, so a
+/// daemon that asked them one after the other would read the first as unknown.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_asks_the_providers_for_their_sign_in_at_the_same_time() {
+    let home = Home::new();
+    let once_the_other_is_asked = |own: &str, other: &str, answer: &str| {
+        format!(
+            ": > \"$HOME/{own}-asked\"\nfor attempt in $(seq 100); do\n\
+             if [ -e \"$HOME/{other}-asked\" ]; then {answer}; exit 0; fi\nsleep 0.05\ndone\nexit 3"
+        )
+    };
+    fake_sign_in(
+        &home,
+        "codex",
+        &once_the_other_is_asked("codex", "opencode", CODEX_SIGNED_IN),
+    );
+    fake_sign_in(
+        &home,
+        "opencode",
+        &once_the_other_is_asked("opencode", "codex", OPENCODE_SIGNED_IN),
+    );
+    let _daemon = home.start();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    for name in ["provider codex sign-in", "provider opencode sign-in"] {
+        let (line, _) = requirement(&report, name);
+        assert_eq!(status(line), "available", "{report}");
+    }
+}
+
+/// #1048: the usage needs one provider signed in, so `torlek` alone answers when the first
+/// one says so; opencode's `auth list` takes most of a second on a real host.
+#[tokio::test(flavor = "multi_thread")]
+async fn torlek_alone_prints_the_usage_without_waiting_for_a_slower_providers_sign_in() {
+    let home = Home::new();
+    fake_sign_in(&home, "codex", CODEX_SIGNED_IN);
+    fake_sign_in(
+        &home,
+        "opencode",
+        &slowly("5", "opencode-answered", OPENCODE_SIGNED_IN),
+    );
+    let _daemon = start_with_the_setup_done(&home).await;
+
+    let alone = torlek_alone(&home).await;
+
+    let has_opencode_answered = home.path().join("opencode-answered").exists();
+    let usage = text(&alone.stderr);
+    assert_eq!(alone.status.code(), Some(2), "{usage}");
+    assert!(usage.starts_with("usage: torlek "), "{usage}");
+    assert!(
+        !has_opencode_answered,
+        "torlek alone waited for the slower provider's sign-in"
+    );
+}
+
+/// #1048: answering early never hides a missing sign-in: with no provider signed in, the
+/// slower provider is waited for and the step is open.
+#[tokio::test(flavor = "multi_thread")]
+async fn torlek_alone_opens_the_sign_in_step_when_no_provider_is_signed_in() {
+    let home = Home::new();
+    fake_sign_in(&home, "codex", CODEX_SIGNED_OUT);
+    fake_sign_in(
+        &home,
+        "opencode",
+        &slowly("0.3", "opencode-answered", OPENCODE_SIGNED_OUT),
+    );
+    let _daemon = start_with_the_setup_done(&home).await;
+
+    let alone = torlek_alone(&home).await;
+
+    let checklist = text(&alone.stdout);
+    assert!(alone.status.success(), "{checklist}{}", text(&alone.stderr));
+    let sign_in = checklist_step(&checklist, ". Sign in to the provider");
+    assert!(sign_in[0].starts_with("[todo"), "{checklist}");
+    for provider in ["codex", "opencode"] {
+        assert!(
+            sign_in.iter().any(|line| line
+                .trim_start()
+                .starts_with(&format!("provider {provider} sign-in: not signed in"))),
+            "{checklist}"
+        );
+    }
+}
+
+/// #1048: the checklist names each provider's own sign-in, as `torlek init` does, also for a
+/// provider that answers after the first signed-in one.
+#[tokio::test(flavor = "multi_thread")]
+async fn torlek_alone_with_a_step_open_lists_the_sign_in_of_every_provider() {
+    let home = Home::new();
+    fake_sign_in(&home, "codex", CODEX_SIGNED_IN);
+    fake_sign_in(
+        &home,
+        "opencode",
+        &slowly("0.3", "opencode-answered", OPENCODE_SIGNED_OUT),
+    );
+    let _daemon = home.start();
+
+    let alone = torlek_alone(&home).await;
+
+    let checklist = text(&alone.stdout);
+    assert!(alone.status.success(), "{checklist}{}", text(&alone.stderr));
+    let sign_in = checklist_step(&checklist, ". Sign in to the provider");
+    assert!(sign_in[0].starts_with("[done"), "{checklist}");
+    assert!(
+        sign_in.iter().any(|line| line
+            .trim_start()
+            .starts_with("provider opencode sign-in: not signed in")),
+        "{checklist}"
+    );
 }

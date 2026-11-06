@@ -212,7 +212,10 @@ fn fixture_reply(command: &Command) -> Reply {
                 "asked_at": 1, "expires_at": 2,
             }],
         }),
-        Command::Readiness { project: None } => json!({
+        Command::Readiness {
+            project: None,
+            one_sign_in_suffices: false,
+        } => json!({
             "kind": "readiness",
             "requirements": [
                 { "name": "tmux", "status": "available", "detail": "/usr/bin/tmux 3.5" },

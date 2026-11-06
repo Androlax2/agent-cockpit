@@ -4,16 +4,27 @@ use cockpit_protocol::{Command, ReadinessStatusView, Reply, RequirementView, dec
 use serde_json::json;
 
 #[test]
-fn a_readiness_request_round_trips_with_and_without_a_project() {
+fn a_readiness_request_round_trips_with_and_without_its_optional_fields() {
     for (wire, command) in [
         (
             json!({"id": 1, "command": {"kind": "readiness"}}),
-            Command::Readiness { project: None },
+            Command::Readiness {
+                project: None,
+                one_sign_in_suffices: false,
+            },
         ),
         (
             json!({"id": 2, "command": {"kind": "readiness", "project": "/p/app"}}),
             Command::Readiness {
                 project: Some("/p/app".to_owned()),
+                one_sign_in_suffices: false,
+            },
+        ),
+        (
+            json!({"id": 3, "command": {"kind": "readiness", "one_sign_in_suffices": true}}),
+            Command::Readiness {
+                project: None,
+                one_sign_in_suffices: true,
             },
         ),
     ] {
