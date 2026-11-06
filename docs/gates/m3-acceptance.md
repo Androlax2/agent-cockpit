@@ -62,7 +62,7 @@ The expanded [#52 inventory](https://github.com/Androlax2/agent-cockpit/issues/5
 
 Baseline [CI run 41388684998](https://github.com/Androlax2/agent-cockpit/actions/runs/41388684998) passed Linux greenfield, macOS, WSL2 and docs. Linux runs the greenfield workspace gate. macOS covers startup/processes/resources/agent identity/TUI; WSL2 covers startup/resources. Neither platform job is a six-cell onboarding or public-install proof. Ignored native tests are not established by a green workspace job.
 
-Codex's additional native receipt is #512 (`a3b09065`), [approval-routing decision](../decisions/2026-11-02-436-approval-routing-evidence.md): a real 0.166.0 TUI with a local fake model received and cancelled delivered-start/steer approvals after the delivery connection closed. The 0.161.0 capability pin was not changed. The signed-in attempt exited 101 at the custom-keymap guard before any model turn, so #436 stays open.
+Codex's additional native receipt is #512 (`a3b09065`), [approval-routing conformance](../../crates/cockpit-codex/README.md#delivered-turn-approval-conformance-436): a real 0.166.0 TUI with a local fake model received and cancelled delivered-start/steer approvals after the delivery connection closed. The 0.161.0 capability pin was not changed. The signed-in attempt exited 101 at the custom-keymap guard before any model turn, so #436 stays open.
 
 | Alpha requirement | Merged implementation / exact proving fixture or receipt | Remaining gap |
 | --- | --- | --- |

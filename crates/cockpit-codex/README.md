@@ -148,6 +148,12 @@ CARGO_BUILD_JOBS=2 COCKPIT_CODEX_PROGRAM=/path/to/codex \
   --run-ignored only -E 'not test(a_signed_in_)' --no-capture
 ```
 
+Production delivery stays unchanged: on 0.166.0 the evidence does not support a persistent
+approval owner or refusing delivery, because the TUI answers the approval itself after the
+delivery connection closes. Cockpit sends no approval response, and the proxy forwards
+bytes unchanged, so only the real TUI can supply a cancellation. A fixture built from a
+protocol schema alone would not prove this routing.
+
 `--no-capture` runs these serially. Both isolated scenarios passed on Linux: a delivered
 start and a delivered steer reach the TUI with `item/commandExecution/requestApproval`
 after their delivery connection closes. The TUI returns `cancel`, the server resolves

@@ -83,6 +83,10 @@ blindly; a registered App or uploaded secret may already exist. No credential ro
 deletion is automated. GitHub secret writes have no conditional-create operation; the
 preflight check cannot protect against a different operator writing concurrently.
 
+Rejected for this setup: assuming fully unattended registration (browser confirmation is
+human-owned), a personal access token, a broader App scope, silently replacing an existing
+secret, and claiming fixture tests prove live setup.
+
 This setup creates no tags, release PRs or releases and dispatches no workflows. Fixture
 tests cover the command entry points and transports. The repository-only App setup and
 unchanged second verification passed through host approval on 2026-11-02;
@@ -290,7 +294,8 @@ archive with separate gates. macOS distribution and acceptance are deferred unde
 the retained future macOS jobs do not establish support. The `compatibility` job runs
 the archive's daemon through protocol-skew and killed-daemon restart fixtures, plus
 linked migration and interrupted-restore tests from the same source
-revision. `make release-compatibility` owns those commands.
+revision. `make release-compatibility` owns those commands. Every gate runs against the
+verified archive, not a build tree.
 
 `make release-responsiveness` is CI-only: five minutes against the verified Linux archive,
 with at most two build stand-ins and two database writers. It requires successful load
@@ -322,7 +327,8 @@ restoration decision, alongside the other beta publication requirements.
 Alpha keeps its explicit upgrade exemption. Development dry runs have no release channel.
 Both run the state and running-session fixtures with the current candidate on both sides and
 print `upgrade=not-run`; that is orchestration coverage, not proof of a previous-release
-upgrade. A beta without a published earlier beta fails by name.
+upgrade. A beta without a published earlier beta fails by name; there is no fallback to a
+draft, alpha or synthetic baseline.
 
 ## Changelog
 
