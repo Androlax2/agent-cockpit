@@ -16,8 +16,8 @@ use cockpit_protocol::{
     RunRequestView, RunStateView, SessionView,
 };
 use real_daemon::{
-    ASKED_QUESTION, COMMANDED_PROJECT, Daemon, GENEROUS, Home, QUESTION_PROJECT, cockpit_program,
-    listed, new_session, wait_for_state,
+    ASKED_QUESTION, COMMANDED_PROJECT, Daemon, GENEROUS, Home, NEW_EFFORT_LEVEL, QUESTION_PROJECT,
+    cockpit_program, listed, new_session, wait_for_state,
 };
 
 const COORDINATOR_GRANTS: [&str; 3] = ["observe-sessions", "message-sessions", "start-sessions"];
@@ -488,6 +488,49 @@ async fn a_start_choosing_its_model_and_effort_shows_them_and_launches_claude_wi
     );
 }
 
+/// #743: a level the installed `claude` lists in its `--help` works through `torlek agent
+/// start` with no Torlek release that knows it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_with_an_effort_only_the_installed_claude_lists_launches_claude_with_it() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (coordinator_root, _) = home.project(&owner, COMMANDED_PROJECT).await;
+    let (new_root, _) = home.project(&owner, "plain").await;
+    let coordinator = new_session(&owner, &coordinator_root).await.id;
+    grant(&owner, &coordinator, "start-sessions").await;
+    let started = home.command_agent(
+        &coordinator_root,
+        &cockpit_line(&[
+            "agent",
+            "start",
+            &new_root.display().to_string(),
+            "--agent",
+            "claude",
+            "--effort",
+            NEW_EFFORT_LEVEL,
+        ]),
+    );
+    let request = asked_start(&owner, &coordinator).await;
+
+    approve(&owner, &request).await;
+    let printed = home.agent_output(&coordinator_root, started).await;
+
+    assert!(printed.ends_with("exit=0\n"), "{printed}");
+    let session = printed
+        .lines()
+        .find_map(|line| line.strip_prefix("started session "))
+        .unwrap_or_else(|| panic!("{printed}"))
+        .to_owned();
+    home.wait_for_launches(&session, 1).await;
+    let words = home.arguments_of(&session);
+    assert!(
+        words[0].contains(&format!("--effort {NEW_EFFORT_LEVEL}")),
+        "{words:?}"
+    );
+}
+
 /// #701: an effort Claude Code does not have is refused before the owner is asked.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_start_with_an_effort_claude_does_not_have_is_refused_before_the_owner_is_asked() {
@@ -517,7 +560,10 @@ async fn a_start_with_an_effort_claude_does_not_have_is_refused_before_the_owner
 
     assert!(!printed.ends_with("exit=0\n"), "{printed}");
     assert!(
-        printed.contains("effort \"extreme\" is not one of low, medium, high, xhigh, max"),
+        printed.contains(
+            "effort \"extreme\" is not one of low, medium, high, ludicrous, the levels \
+             `claude --help` lists (Claude Code 2.1.316)"
+        ),
         "{printed}"
     );
     let (runs, _) = queue(&owner).await;

@@ -279,17 +279,36 @@ fn an_effort_level_is_passed_to_the_program() {
 }
 
 #[test]
-fn an_effort_level_claude_code_does_not_have_is_refused() {
+fn an_effort_level_no_list_of_torlek_knows_is_passed_through_for_claude_code_to_judge() {
     let launch = LaunchRequest {
-        effort: Some("extreme"),
+        effort: Some("a-level-added-next-month"),
         ..request(&Conversation::New)
     };
-    let error = common::claude().launch(&launch).unwrap_err();
+    let words = words(&common::claude().launch(&launch).unwrap().arguments);
 
     assert_eq!(
-        error.reason,
-        "effort \"extreme\" is not one of low, medium, high, xhigh, max"
+        value_after(&words, "--effort"),
+        Some("a-level-added-next-month")
     );
+}
+
+#[test]
+fn an_effort_that_would_read_as_a_flag_or_holds_a_space_is_refused() {
+    for effort in ["--settings", "high xhigh", ""] {
+        let launch = LaunchRequest {
+            effort: Some(effort),
+            ..request(&Conversation::New)
+        };
+        let error = common::claude().launch(&launch).unwrap_err();
+
+        assert!(
+            error.reason.starts_with(&format!(
+                "effort {effort:?} is not a Claude Code effort level"
+            )),
+            "{effort:?}: {}",
+            error.reason
+        );
+    }
 }
 
 #[test]

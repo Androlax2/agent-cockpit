@@ -13,7 +13,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use cockpit_provider_api::{
@@ -26,12 +26,15 @@ use cockpit_provider_api::{
 /// only on it.
 pub const CONFORMANCE_VERSION: &str = "2.1.316";
 
-/// Claude Code's `--effort` levels.
-pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
-
 /// Longest `--model` value: an alias (`opus`), a model id (`claude-opus-5-5[1m]`) or a cloud
 /// provider's id or ARN.
 const MAX_MODEL_BYTES: usize = 200;
+
+/// Longest `--effort` value Torlek hands over; Claude Code's own levels are single words.
+const MAX_EFFORT_BYTES: usize = 64;
+
+/// How long `claude --help` may take when a start chooses an effort.
+const HELP_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Every flag a launch may pass; the conformance test finds each in `claude --help`.
 pub const LAUNCH_FLAGS: [&str; 8] = [
@@ -145,6 +148,11 @@ pub struct ClaudeCode {
     /// The directory each launch adds with `--add-dir`, whose [`instruction_skills_dir`]
     /// holds Cockpit's instruction bundle as a skill (#419).
     instruction_skills: Option<PathBuf>,
+    /// The effort levels `claude --help` lists, read when the first start chooses an effort
+    /// and kept for this adapter's life, which is one harness version (#743). Empty when the
+    /// help lists none (it could not run, or words its option differently): the choice then
+    /// passes through and Claude Code answers for itself.
+    effort_levels: Mutex<Option<Vec<String>>>,
 }
 
 /// Where Claude Code looks for skills in a directory added with `--add-dir`: the bundle is
@@ -162,6 +170,7 @@ impl ClaudeCode {
             version,
             bridge,
             instruction_skills: None,
+            effort_levels: Mutex::new(None),
         }
     }
 
@@ -220,6 +229,21 @@ impl ClaudeCode {
             },
             _ => Provenance::Discovered,
         }
+    }
+
+    /// The effort levels the installed `claude --help` lists, read once and kept; none when
+    /// it could not be read or lists none. A failed read is tried again at the next start.
+    pub fn effort_levels(&self) -> Vec<String> {
+        let mut kept = self
+            .effort_levels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if kept.is_none() {
+            *kept = run_with_deadline(&self.program, "--help", HELP_DEADLINE)
+                .ok()
+                .and_then(|help| effort_levels_in(&help));
+        }
+        kept.clone().unwrap_or_default()
     }
 
     /// `--settings` JSON that runs `bridge` on every hook event it normalizes, and, after
@@ -333,14 +357,7 @@ impl Provider for ClaudeCode {
             }
         };
         if let Some(effort) = request.effort {
-            if !EFFORT_LEVELS.contains(&effort) {
-                return Err(ProviderError {
-                    reason: format!(
-                        "effort {effort:?} is not one of {}",
-                        EFFORT_LEVELS.join(", ")
-                    ),
-                });
-            }
+            check_effort_shape(effort)?;
             arguments.extend(["--effort".into(), effort.into()]);
         }
         if let Some(model) = request.model {
@@ -371,6 +388,35 @@ impl Provider for ClaudeCode {
                 .map(|(name, value)| ((*name).into(), (*value).into()))
                 .collect(),
             conversation: Some(conversation),
+        })
+    }
+
+    /// Asks the installed Claude Code which efforts it has (its `--help`, run once and kept),
+    /// so a level a Claude Code update adds works without a Torlek release and a level it does
+    /// not have is refused naming the ones it lists. A model is not asked about: Claude Code
+    /// refuses one the account cannot use itself.
+    fn check_choices(
+        &self,
+        _model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), ProviderError> {
+        let Some(effort) = effort else {
+            return Ok(());
+        };
+        let levels = self.effort_levels();
+        if levels.is_empty() || levels.iter().any(|level| level == effort) {
+            return Ok(());
+        }
+        let version = self
+            .version
+            .as_deref()
+            .map_or_else(String::new, |version| format!(" {version}"));
+        Err(ProviderError {
+            reason: format!(
+                "effort {effort:?} is not one of {}, the levels `claude --help` lists \
+                 (Claude Code{version})",
+                levels.join(", ")
+            ),
         })
     }
 
@@ -513,6 +559,47 @@ fn check_model(model: &str) -> Result<(), ProviderError> {
              letters, digits and `-._:/@[]`, starting with a letter or digit"
         ),
     })
+}
+
+/// An effort is one plain word that cannot read as a flag; which words Claude Code has is
+/// asked of it ([`Provider::check_choices`]).
+fn check_effort_shape(effort: &str) -> Result<(), ProviderError> {
+    let is_plain = effort.len() <= MAX_EFFORT_BYTES
+        && effort.starts_with(|first: char| first.is_ascii_alphanumeric())
+        && effort
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-._".contains(character));
+    if is_plain {
+        return Ok(());
+    }
+    Err(ProviderError {
+        reason: format!(
+            "effort {effort:?} is not a Claude Code effort level: 1 to {MAX_EFFORT_BYTES} ASCII \
+             letters, digits and `-._`, starting with a letter or digit"
+        ),
+    })
+}
+
+/// The levels in the parenthesis after `--effort` in `claude --help`, which may wrap onto
+/// lines of its own: `--effort <level>  Effort level for the current session (low, medium)`.
+/// None when the option or its list is not there, or a level is not a plain word.
+fn effort_levels_in(help: &str) -> Option<Vec<String>> {
+    let mut lines = help.lines().skip_while(|line| !line.contains("--effort"));
+    let first = lines.next()?;
+    let description: Vec<&str> = std::iter::once(first)
+        .chain(lines.take_while(|line| !line.trim_start().starts_with('-')))
+        .collect();
+    let description = description.join(" ");
+    let (_, listed) = description.split_once('(')?;
+    let (listed, _) = listed.split_once(')')?;
+    let levels: Vec<String> = listed
+        .split(',')
+        .map(|level| level.trim().to_owned())
+        .collect();
+    levels
+        .iter()
+        .all(|level| check_effort_shape(level).is_ok())
+        .then_some(levels)
 }
 
 /// A random (version 4) UUID, the form `--session-id` takes.
