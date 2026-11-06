@@ -148,8 +148,10 @@ visible warnings, matching the reference policy.
 `make ci` runs all checks and the shared full regression suite of `apps/` serially, locally
 only: its CI job was removed on 2026-10-31 (it slowed every greenfield change and leaves at the
 cutover). JavaScript's default warnings remain visible. The [CI workflow](../.github/workflows/ci.yml)
-splits by changed path ([tools/ci-jobs.py](../tools/ci-jobs.py)): `greenfield` runs
-`make greenfield-ci` for `crates/`, the root manifests, the Makefile and `.github/`; `docs` runs
+splits by changed path ([tools/ci-jobs.py](../tools/ci-jobs.py)): for `crates/`, the root
+manifests, the Makefile and `.github/`, `greenfield-lint` runs `make greenfield-lint` and the
+three `greenfield-test` shards each run one hash partition of `make crates-test`, and the
+required `greenfield` check passes only when all of them did; `docs` runs
 `make docs-ci` for `docs/` and any Markdown file; `greenfield-wsl2`
 runs for the crates they build (`PLATFORM_ROOTS` and their dependencies), the root manifests,
 the Makefile and `ci.yml`. A path no job claims (`apps/`, `config/`, `packaging/` included), and a

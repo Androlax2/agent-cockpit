@@ -58,8 +58,9 @@ deny: ## Check dependency advisories, licenses and sources with the reviewed pol
 crates-build: ## Build the greenfield workspace in crates/ (debug profile, into target/)
 	$(build_runner) cargo build --locked --manifest-path Cargo.toml --workspace --all-targets
 
+# TEST_PARTITION runs one CI shard (#997), for example `make crates-test TEST_PARTITION=hash:1/3`.
 crates-test: ## Run the greenfield workspace's tests
-	$(build_runner) cargo nextest run --locked --cargo-quiet --status-level fail --manifest-path Cargo.toml --workspace
+	$(build_runner) cargo nextest run --locked --cargo-quiet --status-level fail --manifest-path Cargo.toml --workspace $(if $(TEST_PARTITION),--partition $(TEST_PARTITION))
 
 .PHONY: provider-conformance
 
@@ -79,7 +80,9 @@ crates-doc: ## Check the greenfield workspace's private and public documentation
 crates-deny: ## Check the greenfield workspace's dependencies with the same reviewed policy
 	$(build_runner) cargo deny --manifest-path Cargo.toml --locked --config .cargo/deny.toml check
 
-greenfield-ci: crates-fmt-check crates-clippy crates-doc crates-deny typos crates-test ## Run the greenfield workspace's gate (CI's greenfield job)
+greenfield-lint: crates-fmt-check crates-clippy crates-doc crates-deny typos ## Run the greenfield gate's checks that run no test (CI's greenfield-lint job)
+
+greenfield-ci: greenfield-lint crates-test ## Run the greenfield workspace's gate (CI's greenfield-lint and greenfield-test jobs)
 
 .PHONY: lint-python lint-shell lint-js lint-markdown lint-lua
 
@@ -106,8 +109,8 @@ check-links: ## Check local Markdown links and heading anchors without network r
 typos: ## Check spelling in tracked files
 	python3 tools/quality.py typos
 
-.PHONY: ci greenfield-ci docs-ci
-.NOTPARALLEL: ci greenfield-ci docs-ci
+.PHONY: ci greenfield-lint greenfield-ci docs-ci
+.NOTPARALLEL: ci greenfield-lint greenfield-ci docs-ci
 
 docs-ci: lint-markdown check-links typos ## Check Markdown style, local links and spelling (CI's docs job)
 

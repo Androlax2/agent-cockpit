@@ -114,10 +114,16 @@ class CiJobSelectionTests(unittest.TestCase):
         self.assertLessEqual(with_programs, set(ci_jobs_module().PLATFORM_ROOTS))
 
     def test_every_program_the_tui_harness_builds_is_a_platform_root(self):
+        # The harness builds every program and example (#997); the test above covers programs.
         harness = (ROOT / "crates/cockpit-tui/tests/e2e/harness.rs").read_text()
-        built = set(re.findall(r'"--package",\s*"(cockpit-[a-z-]+)"', harness))
-        self.assertTrue(built, "expected the harness's cargo build packages")
-        self.assertLessEqual(built, set(ci_jobs_module().PLATFORM_ROOTS))
+        self.assertIn('.args(["--workspace", "--bins", "--examples"])', harness)
+        with_examples = {
+            manifest.parent.name
+            for manifest in (ROOT / "crates").glob("*/Cargo.toml")
+            if "[[example]]" in manifest.read_text() or (manifest.parent / "examples").is_dir()
+        }
+        self.assertIn("cockpit-daemon", with_examples)
+        self.assertLessEqual(with_examples, set(ci_jobs_module().PLATFORM_ROOTS))
 
 
 if __name__ == "__main__":
