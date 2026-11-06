@@ -284,6 +284,7 @@ class RehearsalTest(unittest.TestCase):
         for url in (
             "https://github.com/Androlax2/agent-cockpit",
             "http://192.0.2.1:8765",
+            "http://localhost:8765",
             "http://127.0.0.1",
         ):
             with (

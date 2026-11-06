@@ -186,7 +186,9 @@ maintainer's machine.
    the two shims, and that WSL is unchanged.
 4. Under both shells: `torlek-wsl check` succeeds, and the refusals fire: unknown distribution,
    no distribution named, `TORLEK_WSL_DISTRIBUTION` unset, Torlek not yet installed in WSL, and
-   no `wsl.exe` on `PATH`.
+   no `wsl.exe` on `PATH`. `torlek-wsl check` also runs through Scoop's `.cmd` shim, as a
+   `cmd.exe` user would. If the distribution starts as root (setup-wsl's `wsl-shell-user` applies
+   to its own shell wrapper), the job first makes `cockpit` the distribution's default user.
 5. Declining the consent prompt installs nothing. A tampered archive is refused by `check` and by
    `install -Yes`, and installs nothing.
 6. `torlek-wsl install -Yes` installs; a second install keeps the first; `release.py

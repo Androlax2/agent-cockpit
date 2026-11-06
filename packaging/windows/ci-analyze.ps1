@@ -20,6 +20,19 @@ foreach ($launcher in $launchers) {
     }
 }
 
+# The CI scenario runs only under PowerShell 7; a parse error there would otherwise surface
+# after the job has set up WSL and Scoop.
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+    $ciScript = Join-Path $PSScriptRoot 'ci-install.ps1'
+    $tokens = $null
+    $parseErrors = $null
+    $null = [System.Management.Automation.Language.Parser]::ParseFile($ciScript, [ref] $tokens, [ref] $parseErrors)
+    foreach ($parseError in $parseErrors) {
+        [Console]::Error.WriteLine("$ciScript($($parseError.Extent.StartLineNumber)): $($parseError.Message)")
+        $failed = $true
+    }
+}
+
 if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer | Where-Object { $_.Version -eq [version] $analyzerVersion })) {
     Install-Module -Name PSScriptAnalyzer -RequiredVersion $analyzerVersion -Scope CurrentUser -Force
 }

@@ -71,7 +71,7 @@ function Invoke-InShell {
 
 function Invoke-Wsl {
     <# Runs one program in the distribution, with its Linux home as the starting directory. #>
-    param([Parameter(Mandatory)] [string[]] $Command, [string] $WorkingDirectory)
+    param([Parameter(Mandatory)] [string[]] $Command, [string] $WorkingDirectory, [string] $User)
     $previousUtf8 = $env:WSL_UTF8
     $previousPreference = $ErrorActionPreference
     $env:WSL_UTF8 = '1'
@@ -79,6 +79,7 @@ function Invoke-Wsl {
     try {
         $arguments = @('--distribution', $Distribution)
         if ($WorkingDirectory) { $arguments += @('--cd', $WorkingDirectory) }
+        if ($User) { $arguments += @('--user', $User) }
         $output = & wsl.exe @arguments --exec @Command 2>&1 | Out-String
         return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
     } finally {
@@ -115,7 +116,22 @@ function Assert-True {
 }
 
 function Test-InstalledInWsl {
-    return (Invoke-Wsl -Command @('/bin/sh', '-c', "test -d `$HOME/$linuxRoot/v$Version")).ExitCode -eq 0
+    # A failing wsl.exe must not read as "not installed": the negative checks would pass unseen.
+    $probe = Invoke-Wsl -Command @('/bin/sh', '-c', "if test -d `$HOME/$linuxRoot/v$Version; then echo installed; else echo absent; fi")
+    if ($probe.ExitCode -ne 0 -or $probe.Output.Trim() -notin @('installed', 'absent')) {
+        Write-Host $probe.Output
+        throw "could not look for the Linux install (exit code $($probe.ExitCode))"
+    }
+    return $probe.Output.Trim() -eq 'installed'
+}
+
+function Set-DefaultUser {
+    <# The launchers run wsl.exe without --user, so the distribution's default user must be ordinary. #>
+    param([Parameter(Mandatory)] [string] $User)
+    $configure = Invoke-Wsl -User root -Command @('/bin/sh', '-c', "printf '[user]\ndefault=$User\n' >> /etc/wsl.conf")
+    if ($configure.ExitCode -ne 0) { throw "could not set the default WSL user: $($configure.Output)" }
+    & wsl.exe --terminate $Distribution
+    if ($LASTEXITCODE -ne 0) { throw 'wsl.exe --terminate failed' }
 }
 
 function Get-RegisteredDistribution {
@@ -155,6 +171,10 @@ Write-Host '::group::Preconditions'
 Assert-True 'the checkout is the candidate revision' ((& git rev-parse HEAD) -eq $Revision)
 Assert-True 'the distribution is registered' ((Get-RegisteredDistribution) -contains $Distribution)
 Assert-Result 'the distribution runs a WSL 2 kernel' (Invoke-Wsl -Command @('uname', '-r')) succeeds 'microsoft-standard-WSL2'
+if ((Invoke-Wsl -Command @('id', '-u')).Output.Trim() -eq '0') {
+    # setup-wsl's wsl-shell-user applies to its wsl-bash wrapper; wsl.exe without --user may start root.
+    Set-DefaultUser -User cockpit
+}
 Assert-Result 'the distribution user is not root' (Invoke-Wsl -Command @('/bin/sh', '-c', 'test $(id -u) -ne 0')) succeeds
 Assert-Result 'the distribution starts without Torlek' (Invoke-Wsl -Command @('/bin/sh', '-c', "test ! -e `$HOME/$linuxRoot")) succeeds
 # The user's own state, which uninstalling must leave alone.
@@ -202,9 +222,16 @@ try {
         Assert-Result "torlek-wsl check, no distribution named, under $shellName" (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('check') -Shell $shell) 'is refused' 'Name the distribution'
         Assert-Result "torlek, no distribution named, under $shellName" (Invoke-Launcher -Name 'torlek' -Arguments @('version') -Shell $shell) 'is refused' 'TORLEK_WSL_DISTRIBUTION is not set'
     }
+    # The shim cmd.exe users run: it starts PowerShell itself and forwards the arguments.
+    $cmdShim = Join-Path $shims 'torlek-wsl.cmd'
+    Assert-True 'Scoop wrote a cmd shim' (Test-Path -LiteralPath $cmdShim)
+    $viaCmd = & $cmdShim check -Distribution $Distribution 2>&1 | Out-String
+    $viaCmdExitCode = $LASTEXITCODE
+    Write-Host $viaCmd
+    Assert-True 'torlek-wsl check through the cmd shim' (($viaCmdExitCode -eq 0) -and ($viaCmd -match 'WSL 2 distribution ready'))
     Assert-Result 'torlek before the Linux install' (Invoke-Launcher -Name 'torlek' -Arguments @('version') -Environment @{ TORLEK_WSL_DISTRIBUTION = $Distribution }) 'is refused' 'is not installed in WSL distribution'
-    # PATH without System32: the launcher must report the missing wsl.exe, not fail inside it.
-    Assert-Result 'torlek-wsl check without wsl.exe' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('check', '-Distribution', $Distribution) -Environment @{ PATH = $env:RUNNER_TEMP; TORLEK_WSL_DISTRIBUTION = $null }) 'is refused' 'wsl\.exe was not found'
+    # PATH with pwsh but without System32: the launcher must report the missing wsl.exe.
+    Assert-Result 'torlek-wsl check without wsl.exe' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('check', '-Distribution', $Distribution) -Environment @{ PATH = (Split-Path -Parent $pwshPath); TORLEK_WSL_DISTRIBUTION = $null }) 'is refused' 'wsl\.exe was not found'
 
     Assert-Result 'declining the consent prompt' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('install', '-Distribution', $Distribution) -Stdin 'n') 'is refused' 'Nothing was installed'
     Assert-True 'declining installed nothing' (-not (Test-InstalledInWsl))

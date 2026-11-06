@@ -44,7 +44,7 @@ SUMS_LINE = re.compile(r"([0-9a-f]{64})  (\S+)")
 # The two URL prefixes of the template; a rehearsal serves them from its own loopback server.
 RELEASE_DOWNLOADS = "https://github.com/Androlax2/agent-cockpit/releases/download/v@TAG@"
 TAGGED_SOURCE = "https://raw.githubusercontent.com/Androlax2/agent-cockpit/v@TAG@"
-LOOPBACK_URL = re.compile(r"http://(?:127\.0\.0\.1|localhost):[0-9]+")
+LOOPBACK_URL = re.compile(r"http://127\.0\.0\.1:[0-9]+")
 
 Rehearsal = namedtuple("Rehearsal", ["revision", "url"])
 
