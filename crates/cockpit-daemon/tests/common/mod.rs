@@ -326,7 +326,9 @@ pub async fn once_logged<T: std::fmt::Debug>(count: usize, read: impl Fn() -> Ve
 
 /// What `read` returns once it holds `count` entries and still holds them [`SETTLE`] later:
 /// for checks that no further launch happened, which a single read right after a reply
-/// could not see.
+/// could not see (it would pass vacuously). The niceness and idle-scheduling tests likewise
+/// wait until the leader exec'd the program: before that it is the `nice`/`chrt` shim and
+/// `inspect` truly reports the inherited value.
 pub async fn still_logged<T: std::fmt::Debug>(count: usize, read: impl Fn() -> Vec<T>) -> Vec<T> {
     let mut logged = once_logged(count, &read).await;
     let settled = std::time::Instant::now() + SETTLE;

@@ -19,6 +19,12 @@
 //! The approval test presses `y` again 300 ms after the daemon's grace refusal, as the owner
 //! does, until the TUI's grace covers the daemon's (#337): nothing on the screen or the feed
 //! marks the end of that grace, so it is the suite's one pause.
+//!
+//! A snapshot is compared by waiting until the screen matches, because a capture can land
+//! mid-redraw; a fixed sleep or a single read is slow and flaky. The fake agent is a shell
+//! script: a line starting with `!` runs as a command (Claude running a tool), any other line
+//! gets an answer naming the conversation's first message, which shows whether a restart, wake
+//! or resume kept the conversation.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};

@@ -1,3 +1,14 @@
+//! Bounded retention of the fixture daemon's termination evidence (#191, #537): the latency
+//! candidate copies the four known rotating logs before its temporary home disappears,
+//! including while a panic unwinds. Only the two correlated lifecycle messages qualify, and
+//! the report holds timestamp, session, execution and diagnostics, never arbitrary logger
+//! fields or provider output. Reads are capped at [`FILE_BYTES`] plus one overflow byte per
+//! file, output at [`RECORDS`] records and [`REPORT_BYTES`]. The report is appended after the
+//! last rewrite so the original verdict is preserved. Missing, unreadable, malformed,
+//! partial, uncorrelated or truncated logs are labelled incomplete, and a clean scan with
+//! no matching records is not a verdict that termination succeeded. A normal capture error
+//! fails visibly; the unwind fallback reports a write failure without replacing the panic.
+
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write as _};

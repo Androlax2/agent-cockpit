@@ -148,12 +148,6 @@ CARGO_BUILD_JOBS=2 COCKPIT_CODEX_PROGRAM=/path/to/codex \
   --run-ignored only -E 'not test(a_signed_in_)' --no-capture
 ```
 
-Production delivery stays unchanged: on 0.166.0 the evidence does not support a persistent
-approval owner or refusing delivery, because the TUI answers the approval itself after the
-delivery connection closes. Cockpit sends no approval response, and the proxy forwards
-bytes unchanged, so only the real TUI can supply a cancellation. A fixture built from a
-protocol schema alone would not prove this routing.
-
 `--no-capture` runs these serially. Both isolated scenarios passed on Linux: a delivered
 start and a delivered steer reach the TUI with `item/commandExecution/requestApproval`
 after their delivery connection closes. The TUI returns `cancel`, the server resolves
@@ -166,6 +160,21 @@ execution rules, custom providers, signed-out homes, project settings and custom
 A configured notification sentinel
 does not run during the isolated turn. The probe records a disconnect only after shutting
 down its upstream socket and matches the connection carrying the specific start or steer.
+
+Production delivery stays unchanged: on 0.166.0 the evidence does not support a persistent
+approval owner or refusing delivery, because the TUI answers the approval itself after the
+delivery connection closes. Cockpit sends no approval response, and the proxy forwards
+bytes unchanged, so only the real TUI can supply a cancellation. A fixture built from a
+protocol schema alone would not prove this routing.
+
+Why the probe is built this way: empty TOML tables merge with the owner's config, so
+`mcp_servers={}` cannot disable servers, and the live probe asks Codex for its effective
+config instead; `config/read` without `cwd` omits project layers, so both modes pass the work
+directory; Escape can be rebound to approval, so custom keymaps are refused; `notify=[]`
+disables legacy notify commands for both processes. Codex 0.166.0 drains pending input at a
+protected screen boundary for up to one second, so the probe waits for the prompt and lets
+that interval pass before Escape. The TUI's title helper is a tool-less conversation and must
+not be counted as the delivered turn.
 
 The signed-in test is **separate from the account-free proof**. It passed on Linux
 on 2026-11-02; see the [acceptance receipt](../../docs/acceptance/436-codex-approval-routing.md).
