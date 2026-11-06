@@ -97,8 +97,11 @@ after each release is published.
   archive as an ordinary user, `torlek version --all` and `torlek doctor` run, and a second run
   changes nothing. Neither job is in `publish`'s needs: the one-liner does not gate a tag.
 - `TORLEK_INSTALL_ORIGIN=http://127.0.0.1:PORT` is the tests' only override: no other origin is
-  accepted, provenance is not checked against it, and only there may a dry run's
-  `vX.Y.Z-dev.N` be named.
+  accepted and provenance is not checked against it. A dry run's `vX.Y.Z-dev.N` may be named
+  only there or with `--archive`, never for a download from GitHub, and its provenance is not
+  checked (no tag exists to attest it from).
+- The Windows route's `install-scoop` job runs this script inside a WSL 2 distribution on a dry
+  run's files, through Scoop and `install-in-wsl.sh` ([Windows](windows.md#validation-in-ci)).
 
 Not verified: a real download through GitHub's redirects by the tests (a `--check` against
 v0.1.0-alpha.4 was run by hand on 2026-11-06, provenance included), BusyBox `sh` and `tar`, and
