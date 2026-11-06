@@ -361,8 +361,14 @@ class RehearseCommandTest(unittest.TestCase):
     def test_a_refused_version_exits_1_with_the_reason(self):
         with tempfile.TemporaryDirectory() as folder:
             result = self.run_rehearse(folder, "0.1.0")
-            self.assertEqual(result.returncode, 1)
-            self.assertIn("no stable release", result.stderr)
+            self.assertEqual(
+                (result.returncode, result.stderr),
+                (1, "render.py: '0.1.0': no stable release exists to package\n"),
+            )
+
+    def test_a_refused_version_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.run_rehearse(folder, "0.1.0")
             self.assertFalse((Path(folder) / "bucket").exists())
 
 

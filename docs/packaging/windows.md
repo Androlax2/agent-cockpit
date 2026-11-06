@@ -183,7 +183,7 @@ maintainer's machine.
    fail; `PSAvoidUsingWriteHost` is the one named exclusion, because the launchers talk to the
    console) under PowerShell 7 and Windows PowerShell 5.1.
 2. `render.py rehearse` renders the manifest for the candidate's version (a dry run's `-dev.N`,
-   or the tag's `-alpha.N` on a tag's run, whose release is not published yet): the launchers
+   or the tag's `-alpha.N` or `-beta.N` on a tag's run, whose release is not published yet): the launchers
    are hashed as the candidate commit holds them, and every download points at a loopback
    `http.server` that serves the candidate archive, its `SHA256SUMS` and those launchers.
    `rehearse` refuses any URL that is not loopback, so its manifest cannot be published.
