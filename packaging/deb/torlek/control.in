@@ -3,7 +3,7 @@ Version: @VERSION@
 Architecture: @ARCHITECTURE@
 Maintainer: @MAINTAINER@
 Installed-Size: @INSTALLED_SIZE@
-Depends: libc6 (>= 2.39), libgcc-s1, git, curl, tmux (>= 3.6)
+Depends: libc6 (>= 2.39), libgcc-s1 (>= 4.2), git, curl, tmux (>= 3.6)
 Suggests: systemd
 Section: utils
 Priority: optional

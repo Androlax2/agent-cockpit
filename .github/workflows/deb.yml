@@ -1,0 +1,168 @@
+name: Debian packages
+
+# The torlek .deb packages built from a published release's archives, checked against its
+# SHA256SUMS and build provenance, in a local APT repository signed with a throwaway key; then
+# apt installs, upgrades and removes them on clean Ubuntu 26.04 and Debian 13 containers
+# (#563, docs/packaging/deb.md). Nothing is published and no real signing key is used. The
+# release workflow calls it for each new tag before publish-apt may publish that release.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/deb.yml
+      - packaging/deb/**
+      - tools/tests/test_deb_package.py
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release to package, without its v; empty for the newest published prerelease
+        required: false
+        default: ""
+  workflow_call:
+    inputs:
+      tag:
+        description: Release to package, without its v
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  # gh attestation verify reads the release archives' build provenance.
+  attestations: read
+
+concurrency:
+  group: deb-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  stage:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.releases.outputs.tag }}
+      revision: ${{ steps.releases.outputs.revision }}
+      previous: ${{ steps.releases.outputs.previous }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Choose the published release, and the one before it in its channel
+        id: releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          channel_of() {
+            local rest=${1#*-}
+            printf '%s' "${rest%%.*}"
+          }
+          releases=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 1000 \
+            --json tagName,publishedAt --jq 'sort_by(.publishedAt) | reverse | .[] | "\(.tagName) \(.publishedAt[:10])"')
+          tag="" date="" previous="" previous_date=""
+          while read -r name published; do
+            version=${name#v}
+            case $version in *-alpha.* | *-beta.*) ;; *) continue ;; esac
+            if [ -z "$tag" ]; then
+              if [ -z "$REQUESTED" ] || [ "$version" = "$REQUESTED" ]; then
+                tag=$version date=$published
+              fi
+            elif [ "$(channel_of "$version")" = "$(channel_of "$tag")" ]; then
+              previous=$version previous_date=$published
+              break
+            fi
+          done <<< "$releases"
+          if [ -z "$tag" ]; then
+            printf 'No published prerelease %s\n' "${REQUESTED:-at all}" >&2
+            exit 1
+          fi
+          revision=$(git rev-parse "v$tag^{commit}")
+          printf 'tag=%s\ndate=%s\nrevision=%s\nprevious=%s\nprevious_date=%s\n' \
+            "$tag" "$date" "$revision" "$previous" "$previous_date" | tee -a "$GITHUB_OUTPUT"
+      - name: Download each release's archives, then check their checksums and provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.releases.outputs.tag }}
+          PREVIOUS: ${{ steps.releases.outputs.previous }}
+        run: |
+          set -euo pipefail
+          for tag in "$TAG" ${PREVIOUS:+"$PREVIOUS"}; do
+            bash packaging/deb/fetch-release.sh "$GITHUB_REPOSITORY" "$tag" inputs
+          done
+      - name: Install dpkg-dev and lintian
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes dpkg-dev lintian gpg gpgv binutils
+      - name: Run the packaging tests, dpkg's included
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/tests -p test_deb_package.py -v 2>&1 | tee tests.log
+          if grep -q 'skipped' tests.log; then
+            printf '%s\n' 'A packaging test skipped on a runner that has dpkg and gpg' >&2
+            exit 1
+          fi
+      - name: Build, check and sign the fixture repositories
+        env:
+          TAG: ${{ steps.releases.outputs.tag }}
+          DATE: ${{ steps.releases.outputs.date }}
+          PREVIOUS: ${{ steps.releases.outputs.previous }}
+          PREVIOUS_DATE: ${{ steps.releases.outputs.previous_date }}
+        run: |
+          set -euo pipefail
+          bash packaging/deb/ci-stage.sh inputs fixture "$TAG" "$DATE" ${PREVIOUS:+"$PREVIOUS" "$PREVIOUS_DATE"}
+          # The release's own install check, as it was when the release was cut.
+          git show "v$TAG:tools/release.py" > fixture/release.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: apt-fixture
+          path: fixture
+          if-no-files-found: error
+          retention-days: 3
+
+  install:
+    needs: stage
+    strategy:
+      fail-fast: false
+      matrix:
+        distribution: [ubuntu-26.04, debian-13]
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        include:
+          - distribution: ubuntu-26.04
+            image: ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
+          - distribution: debian-13
+            image: debian:trixie@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apt-fixture
+          path: fixture
+      - name: Serve the fixture, then install through apt in a clean container
+        env:
+          IMAGE: ${{ matrix.image }}
+          TAG: ${{ needs.stage.outputs.tag }}
+          REVISION: ${{ needs.stage.outputs.revision }}
+          PREVIOUS: ${{ needs.stage.outputs.previous }}
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8080 --bind 127.0.0.1 --directory fixture 2> http.log &
+          server=$!
+          trap 'kill "$server"' EXIT
+          for _ in $(seq 50); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8080/torlek-test.asc; then break; fi
+            sleep 0.2
+          done
+          docker run --rm --network host -e GITHUB_ACTIONS=true -v "$PWD:/checkout:ro" "$IMAGE" \
+            bash /checkout/packaging/deb/ci-install.sh http://127.0.0.1:8080 /checkout/fixture \
+            "$TAG" "$REVISION" ${PREVIOUS:+"$PREVIOUS"}

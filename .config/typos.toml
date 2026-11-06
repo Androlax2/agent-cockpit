@@ -12,6 +12,8 @@ extend-ignore-re = [
 
 [default.extend-words]
 ratatui = "ratatui"
+# GnuPG's --with-colons record type for a fingerprint.
+fpr = "fpr"
 
 [default.extend-identifiers]
 # POSIX/rustix write-only open flag; preserve the API spelling.

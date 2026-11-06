@@ -744,3 +744,67 @@ jobs:
           latest=true
           if [ "$PRERELEASE" = true ]; then latest=false; fi
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"
+
+  # The release just published, packaged from its published archives and installed through apt
+  # on clean Ubuntu and Debian containers (deb.yml), before publish-apt may sign it.
+  deb:
+    if: needs.plan.outputs.tag != ''
+    needs: [plan, publish]
+    permissions:
+      contents: read
+      attestations: read
+    uses: ./.github/workflows/deb.yml
+    with:
+      tag: ${{ needs.plan.outputs.version }}
+
+  # The signed APT site: the Pages branch of Androlax2/torlek-apt (docs/packaging/deb.md#publication).
+  # The apt environment holds the only copy of the signing subkey and the site's deploy key,
+  # and each run waits for the owner's approval. Off until the owner sets the repository
+  # variable TORLEK_APT_PUBLISH to true, once that setup exists: a job naming a missing
+  # environment would create it unprotected.
+  publish-apt:
+    environment: apt
+    if: needs.plan.outputs.tag != '' && vars.TORLEK_APT_PUBLISH == 'true'
+    needs: [plan, deb]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    concurrency:
+      group: apt-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the published archives, then check their checksums and provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: bash packaging/deb/fetch-release.sh "$GITHUB_REPOSITORY" "$VERSION" inputs
+      - name: Add the release to the APT site, sign it and push it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          DEPLOY_KEY: ${{ secrets.TORLEK_APT_DEPLOY_KEY }}
+          TORLEK_APT_MAINTAINER: ${{ vars.TORLEK_APT_MAINTAINER }}
+          TORLEK_APT_SIGNING_KEY: ${{ secrets.TORLEK_APT_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          # The release's publication day, as the deb job packaged it, not the approval day.
+          published=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json publishedAt \
+            --jq '.publishedAt[:10]')
+          ssh_dir=$(mktemp -d)
+          trap 'rm -rf "$ssh_dir"' EXIT
+          (umask 077 && printf '%s\n' "$DEPLOY_KEY" > "$ssh_dir/deploy_key")
+          # GitHub's ed25519 host key, as https://api.github.com/meta publishes it.
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' \
+            > "$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ssh_dir/known_hosts"
+          TORLEK_APT_REMOTE=git@github.com:Androlax2/torlek-apt.git \
+            bash packaging/deb/publish.sh inputs "$VERSION" "$published"
+      - name: Check the site GitHub Pages serves, as apt would
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: bash packaging/deb/check-site.sh https://androlax2.github.io/torlek-apt "$VERSION" packaging/deb/torlek.asc
