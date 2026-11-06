@@ -163,10 +163,10 @@ subkey. No agent creates, imports or stores the real key; the tests and CI use t
 in temporary `GNUPGHOME`s.
 
 `publish.sh` signs with every signing subkey the secret holds, and refuses one that is not in
-the committed public key `packaging/deb/torlek.asc` (added in [owner setup](#owner-setup) step 2), which is also what
+the committed public key `packaging/deb/torlek.asc` (committed by [owner setup](#owner-setup) step 2), which is also what
 `verify` and the site check trust. Users check `gpg --show-keys torlek.asc` against the
-primary key's fingerprint, published in this file, the README install section and each
-release's notes, before copying it to `/etc/apt/keyrings/torlek.asc`.
+primary key's fingerprint, published in this file (the README install section and each
+release's notes follow once the first publication is verified), before copying it to `/etc/apt/keyrings/torlek.asc`.
 
 The primary key, certification only, user ID `Torlek APT <contact@theobenoit.fr>`:
 
@@ -175,7 +175,8 @@ CC46 0FBB B9A6 9E1A 5239  A8D4 CABB C6ED 28E3 4720
 ```
 
 Its signing subkey, which signs the repository, is
-`398A9A8B389603FD7D2A5FF7109BE7EFA0AE2BB7`. Only the primary fingerprint is the one to check.
+`398A9A8B389603FD7D2A5FF7109BE7EFA0AE2BB7`. The subkey expires on 2028-11-05; extend it before then (see [Rotation](#rotation-and-compromise)).
+Only the primary fingerprint is the one to check.
 
 ### Owner setup
 
