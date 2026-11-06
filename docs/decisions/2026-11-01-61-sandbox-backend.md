@@ -1,10 +1,9 @@
 # Every agent launches through `cockpit-sandbox`, Greywall its first backend, unsandboxed only by the owner's setting
 
+Status: partly superseded by 2026-11-05-828-remove-sandbox-engines.md: refusing rather than weakening and the launch evidence in the launch's own transaction hold; Greywall is removed, the default is `off`, and `required` refuses every launch until the native backend exists
+
 Issue #61 (option C, decided). The points below were decided by the implementing session,
 within reports 11 and 17 and decision register item 15.
-
-Superseded in part by `2026-11-05-828-remove-sandbox-engines.md`: Greywall is removed, the
-product default is `off`, and `required` refuses every launch until the native backend exists.
 
 - **The daemon launches through the sandbox; no launcher script.** `cockpit-sessions` calls
   `cockpit_sandbox::Sandbox::prepare` for every launch, and the evidence is recorded in the

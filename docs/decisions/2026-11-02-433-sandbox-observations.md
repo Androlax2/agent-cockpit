@@ -1,5 +1,7 @@
 # Launch-bound owner measurements and isolated enforcement checks
 
+Status: partly superseded by 2026-11-05-433-live-enforcement-ci.md: the observation bounds and storage hold; how enforcement is measured is replaced
+
 Issue #433, implementing report 11's distinction between requested, effective and observed
 isolation. The lane brief supersedes the issue's stale source-build route: real checks
 consume `engine-pins.json` through the managed release installer.

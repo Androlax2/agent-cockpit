@@ -1,5 +1,7 @@
 # A project's sessions get its own GitHub token as `GH_TOKEN`; with one, the owner's `gh` login is hidden from them
 
+Status: partly superseded by 2026-11-05-832-selective-tls-interception.md: the token file convention, its mode check and the variable stripping hold; the engine bullets and the greyproxy placeholder rejection are void
+
 Issue #754. Decided by Theo (the issue's expectations, and that workers may use the owner's
 login until each project has a token) and by the worker (the rest, reasons below).
 

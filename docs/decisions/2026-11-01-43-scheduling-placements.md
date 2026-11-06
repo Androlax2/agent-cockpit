@@ -1,5 +1,7 @@
 # Scheduling places work as durable placements it charges itself, project by project
 
+Status: partly superseded by 2026-11-01-385-placement-delivery.md: the placement charging, fairness, aging, gathering and startup headroom rules hold; delivery and the placement charge are replaced
+
 Issue #43. Decided by the implementing session, within report 10's proposals (fairness,
 aging, startup headroom, gathering, explanations) and report 06's split of tasks and
 workflows.
