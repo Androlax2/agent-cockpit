@@ -216,6 +216,9 @@ pub fn run(command: Command) -> ExitCode {
         Reply::Session { session } => {
             out!("{}", session_line(session));
             out!("{}", exit_lines(session));
+            if let Some(needed) = &session.sign_in_needed {
+                eprintln!("sign-in: {needed}");
+            }
         }
         Reply::Sessions { sessions } => sessions.iter().for_each(|session| {
             out!("{}", session_line(session));

@@ -3,7 +3,7 @@
 //! `a9ccc58c`, Apache-2.0: see `crates/cockpit-provider-api/NOTICE-greywall`. Linux paths
 //! only; the README lists what was left out and why.
 
-use cockpit_provider_api::{Credentials, InvalidValue, Needs};
+use cockpit_provider_api::{CredentialHeader, Credentials, InvalidValue, Needs};
 
 /// The hosts Claude Code reaches: the API, claude.ai's connector proxy, its downloads and its
 /// sign-in console.
@@ -39,11 +39,22 @@ pub const CREDENTIAL_VARIABLES: [&str; 2] = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_O
 /// The host that carries a bound credential.
 pub const CREDENTIAL_HOSTS: [&str; 1] = ["api.anthropic.com"];
 
+/// The header each of [`CREDENTIAL_VARIABLES`] travels in: Claude Code sends an API key as
+/// `x-api-key` and a `setup-token` token as Bearer.
+pub const CREDENTIAL_HEADERS: [CredentialHeader; 2] = [
+    CredentialHeader::Named("x-api-key"),
+    CredentialHeader::Bearer,
+];
+
 pub fn needs() -> Result<Needs, InvalidValue> {
     Needs::new(&HOSTS, &READ, &WRITE)
 }
 
 pub fn credentials() -> Result<Credentials, InvalidValue> {
-    let bindings = CREDENTIAL_VARIABLES.map(|variable| (variable, &CREDENTIAL_HOSTS[..]));
+    let bindings: Vec<_> = CREDENTIAL_VARIABLES
+        .into_iter()
+        .zip(CREDENTIAL_HEADERS)
+        .map(|(variable, header)| (variable, header, &CREDENTIAL_HOSTS[..]))
+        .collect();
     Credentials::new(&CREDENTIAL_FILES, &bindings, &needs()?)
 }

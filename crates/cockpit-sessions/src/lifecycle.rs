@@ -2070,8 +2070,19 @@ impl Sessions {
         let output_project = checkout.project.as_str().to_owned();
         let setting = self.owner_settings().sandbox;
         let github = self.github_access(setting, &output_project).await?;
-        // Kept for the clone's harness trust, recorded once the launch passed its gates.
-        let clone_trust = matches!(checkout.kind, CheckoutKind::Parallel { .. }).then(|| {
+        let provider_credential = self
+            .provider_credential(setting, session.provider.as_str())
+            .await?;
+        // Kept for the harness's trust of the checkout, recorded once the launch passed its
+        // gates: a parallel clone's (#702), and under `"required"` the main checkout's too,
+        // since the agent's home is then the session's own, which holds no earlier answer
+        // (#968).
+        let records_trust = match checkout.kind {
+            CheckoutKind::Parallel { .. } => true,
+            CheckoutKind::Main => setting == cockpit_config::AgentSandbox::Required,
+            CheckoutKind::Review { .. } => false,
+        };
+        let harness_trust = records_trust.then(|| {
             (
                 checkout.clone(),
                 with_github_token(environment.clone(), None),
@@ -2103,6 +2114,7 @@ impl Sessions {
             temp_dir,
             environment,
             github,
+            provider_credential,
             needs,
             decisions,
             tools,
@@ -2181,13 +2193,17 @@ impl Sessions {
             write.commit().await?;
             (token, execution)
         };
-        if let Some((checkout, agent_environment)) = &clone_trust {
-            self.trust_clone(
+        if let Some((checkout, agent_environment)) = &harness_trust {
+            self.trust_checkout(
                 id,
                 session.provider.as_str(),
                 checkout,
                 &session.working_dir,
                 agent_environment,
+                prepared
+                    .staged
+                    .as_ref()
+                    .map(|staged| staged.home_source.clone()),
             )
             .await;
         }
@@ -2252,24 +2268,31 @@ impl Sessions {
         Ok(running)
     }
 
-    /// Asks the provider to record its harness's trust of a parallel clone before the agent
-    /// runs there, so the agent does not stop on the harness's folder-trust dialog (#702,
-    /// `docs/decisions/2026-11-04-702-claude-folder-trust.md`): only for a clone of a project
-    /// in the owner's `projects.trusted` whose origin is its project's. Never fails the
-    /// launch: a refusal leaves the dialog to the owner, and the periodic pass shows the
-    /// session as waiting on them.
-    async fn trust_clone(
+    /// Asks the provider to record its harness's trust of the checkout before the agent runs
+    /// there, so the agent does not stop on the harness's folder-trust dialog (#702,
+    /// `docs/decisions/2026-11-04-702-claude-folder-trust.md`): for a parallel clone of a
+    /// project in the owner's `projects.trusted` whose origin is its project's, and for a
+    /// sandboxed launch in such a project's main checkout (#968). A sandboxed agent's home
+    /// is `session_home`, its session's own, where the trust is recorded; never the owner's.
+    /// Never fails the launch: a refusal leaves the dialog to the owner, and the periodic
+    /// pass shows the session as waiting on them.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one launch's facts, each passed straight into the provider's request"
+    )]
+    async fn trust_checkout(
         &self,
         id: &SessionId,
         provider: &str,
         checkout: &Checkout,
         working_dir: &Path,
         environment: &[(OsString, OsString)],
+        session_home: Option<PathBuf>,
     ) {
         let provider = match self.provider(Some(provider)) {
             Ok(provider) => Arc::clone(provider),
             Err(error) => {
-                tracing::warn!(session = %id, %error, "a clone's harness trust is not recorded");
+                tracing::warn!(session = %id, %error, "the harness's trust is not recorded");
                 return;
             }
         };
@@ -2280,26 +2303,27 @@ impl Sessions {
         let environment = environment.to_vec();
         let counted = TerminalStep::start(&self.session_lock(id));
         let recorded = self
-            .blocking("record the harness's trust of the clone", move || {
+            .blocking("record the harness's trust of the checkout", move || {
                 let _counted = counted;
-                Ok(record_clone_trust(
+                Ok(record_harness_trust(
                     provider.as_ref(),
                     &owner_environment,
                     &git,
                     &checkout,
                     &working_dir,
                     &environment,
+                    session_home.as_deref(),
                 ))
             })
             .await
             .unwrap_or_else(|error| Err(error.to_string()));
         match recorded {
             Ok(WorkspaceTrust::Recorded) => {
-                tracing::info!(session = %id, "recorded the harness's trust of a parallel clone");
+                tracing::info!(session = %id, "recorded the harness's trust of the checkout");
             }
             Ok(WorkspaceTrust::AlreadyTrusted | WorkspaceTrust::NotKept) => {}
             Err(reason) => {
-                tracing::warn!(session = %id, %reason, "a clone's harness trust is not recorded");
+                tracing::warn!(session = %id, %reason, "the harness's trust is not recorded");
             }
         }
     }
@@ -2335,9 +2359,56 @@ impl Sessions {
         .await
     }
 
+    /// The credential the session proxy adds for `provider`'s harness on its hosts under
+    /// `"required"` (#858, #968), read now so a credential the owner replaced reaches the next
+    /// launch. None under `"off"`, whose agent signs in from the owner's home, and when the
+    /// owner keeps none: the harness then asks for a sign-in it cannot store.
+    async fn provider_credential(
+        &self,
+        setting: cockpit_config::AgentSandbox,
+        provider: &str,
+    ) -> Result<Option<cockpit_sandbox::BoundCredential>, Error> {
+        if setting == cockpit_config::AgentSandbox::Off {
+            return Ok(None);
+        }
+        let provider = Arc::clone(self.provider(Some(provider))?);
+        let environment = self.settings.owner_environment.clone();
+        self.blocking("read the provider's credential", move || {
+            bound_provider_credential(provider.as_ref(), &environment)
+        })
+        .await
+    }
+
+    /// What a sandboxed launch of `provider` would bind as its sign-in (#968), for `doctor`
+    /// and `session new` to name the file to write when there is none. None under `"off"`
+    /// and for a provider that declares no credential variable.
+    pub async fn sandbox_credential_state(
+        &self,
+        provider: &str,
+    ) -> Result<Option<cockpit_config::ProviderCredentialState>, Error> {
+        if self.owner_settings().sandbox == cockpit_config::AgentSandbox::Off {
+            return Ok(None);
+        }
+        let provider = Arc::clone(self.provider(Some(provider))?);
+        let environment = self.settings.owner_environment.clone();
+        self.blocking("read the provider's credential", move || {
+            let variables = credential_variables(provider.as_ref())?;
+            if variables.is_empty() {
+                return Ok(None);
+            }
+            let variables: Vec<&str> = variables.iter().map(String::as_str).collect();
+            Ok(
+                cockpit_config::provider_credentials_dir(&environment, provider.name().as_str())
+                    .map(|dir| cockpit_config::provider_credential_state(&dir, &variables)),
+            )
+        })
+        .await
+    }
+
     /// How `program` runs for a launch of `provider` in `checkout_root`, started in
-    /// `start_dir`, with the session's own `session_dir` and the project's `github` access,
-    /// under the owner's `setting`, read once for the launch: unchanged under
+    /// `start_dir`, with the session's own `session_dir`, the project's `github` access and
+    /// the provider's bound credential, under the owner's `setting`, read once for the
+    /// launch: unchanged under
     /// `agents.sandbox = "off"`; under `"required"`, the native sandbox's launcher in its
     /// place, or refused on a host without it (#829).
     #[allow(
@@ -2355,6 +2426,7 @@ impl Sessions {
         temp_dir: PathBuf,
         environment: Vec<(OsString, OsString)>,
         github: GithubAccess,
+        provider_credential: Option<cockpit_sandbox::BoundCredential>,
         needs: cockpit_sandbox::ProviderNeeds,
         decisions: cockpit_sandbox::EgressDecisions,
         tools: cockpit_sandbox::ToolNeeds,
@@ -2415,6 +2487,7 @@ impl Sessions {
                         .as_ref()
                         .and_then(|bound| bound.credential.clone())
                         .into_iter()
+                        .chain(provider_credential)
                         .collect(),
                     decisions,
                 },
@@ -2499,6 +2572,7 @@ impl Sessions {
         let github = self
             .github_access(setting, checkout.project.as_str())
             .await?;
+        let provider_credential = self.provider_credential(setting, &provider).await?;
         let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
         let tools = self
             .sandbox_tools(setting, &checkout.path, &checkout.path, &environment)
@@ -2523,6 +2597,7 @@ impl Sessions {
             self.dry_run_temp_dir(),
             environment,
             github,
+            provider_credential,
             needs,
             decisions,
             tools,
@@ -3278,6 +3353,82 @@ fn github_api_credential(
     }
 }
 
+/// The variables `provider`'s harness takes a bound credential from, its alternatives.
+fn credential_variables(provider: &dyn Provider) -> Result<Vec<String>, Error> {
+    Ok(declared_credentials(provider)?
+        .bindings
+        .into_iter()
+        .map(|binding| binding.variable)
+        .collect())
+}
+
+fn declared_credentials(
+    provider: &dyn Provider,
+) -> Result<cockpit_provider_api::Credentials, Error> {
+    provider.credentials().map_err(|error| {
+        Error::Provider(ProviderError {
+            reason: format!("its sandbox declaration is invalid: {error}"),
+        })
+    })
+}
+
+/// The owner's credential for `provider` (#968), bound to the hosts its adapter declares for
+/// the variable the file is named after, in the header the harness sends it in; the agent holds
+/// a placeholder in that variable. None when the owner keeps none, or `environment` names no
+/// home. The adapter's hosts are always in the launch's reach, so every one is bound.
+/// Blocking: it reads the files.
+fn bound_provider_credential(
+    provider: &dyn Provider,
+    environment: &cockpit_config::Environment,
+) -> Result<Option<cockpit_sandbox::BoundCredential>, Error> {
+    let name = provider.name().as_str();
+    let declared = declared_credentials(provider)?;
+    let Some(dir) = cockpit_config::provider_credentials_dir(environment, name) else {
+        return Ok(None);
+    };
+    let variables: Vec<&str> = declared
+        .bindings
+        .iter()
+        .map(|binding| binding.variable.as_str())
+        .collect();
+    let credential =
+        cockpit_config::read_provider_credential(&dir, &variables).map_err(|error| {
+            Error::ProviderCredential {
+                provider: name.to_owned(),
+                error,
+            }
+        })?;
+    let Some(credential) = credential else {
+        return Ok(None);
+    };
+    let binding = declared
+        .bindings
+        .iter()
+        .find(|binding| binding.variable == credential.variable)
+        .expect("a credential is read only from a declared variable's file");
+    let scheme = match binding.header {
+        cockpit_provider_api::CredentialHeader::Bearer => cockpit_sandbox::CredentialScheme::Bearer,
+        cockpit_provider_api::CredentialHeader::Named(header) => {
+            cockpit_sandbox::CredentialScheme::Header {
+                name: header.to_owned(),
+            }
+        }
+    };
+    Ok(Some(cockpit_sandbox::BoundCredential {
+        name: format!("the {name} provider's credential ({})", credential.variable),
+        placeholder_variable: Some(credential.variable.clone()),
+        value: cockpit_sandbox::CredentialValue::new(credential.expose().to_owned()),
+        hosts: binding
+            .hosts
+            .iter()
+            .map(|host| cockpit_sandbox::CredentialHost {
+                host: host.as_str().to_owned(),
+                scheme: scheme.clone(),
+            })
+            .collect(),
+    }))
+}
+
 /// Where the owner's `gh` keeps its login (`hosts.yml`): `~/.config/gh`, which a provider's
 /// profile may let every agent read, and `$XDG_CONFIG_HOME/gh`, where `gh` looks when it is set.
 fn owner_gh_config_dirs(environment: &cockpit_config::Environment, home: &Path) -> Vec<PathBuf> {
@@ -3613,26 +3764,40 @@ fn create_session_dir(dir: &Path) -> Result<(), Error> {
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(failed)
 }
 
-/// The trust check and write of [`Sessions::trust_clone`], blocking: it reads the owner's
-/// configuration, the clone's and its project's Git origins, and the harness's files.
-fn record_clone_trust(
+/// The trust check and write of [`Sessions::trust_checkout`], blocking: it reads the owner's
+/// configuration, the clone's and its project's Git origins, and the harness's files. The
+/// source is the owner's `projects.trusted` alone, never a file the agent wrote (#968).
+fn record_harness_trust(
     provider: &dyn Provider,
     owner_environment: &cockpit_config::Environment,
     git: &Git,
     checkout: &Checkout,
     working_dir: &Path,
     environment: &[(OsString, OsString)],
+    session_home: Option<&Path>,
 ) -> Result<WorkspaceTrust, String> {
     let config = cockpit_config::load(owner_environment, None, &[])
         .map_err(|error| format!("the owner configuration cannot be read: {error}"))?;
     let trusted_roots = cockpit_projects::resolve_trusted_roots(config.trusted_projects.value);
-    let trusted_checkout = cockpit_projects::harness_trust_source(checkout, &trusted_roots, git)?;
+    let trusted_checkout = match checkout.kind {
+        CheckoutKind::Main => match cockpit_projects::trust(checkout, &trusted_roots) {
+            cockpit_projects::Trust::Trusted => checkout.path.clone(),
+            _ => {
+                return Err(format!(
+                    "its project {} is not in projects.trusted",
+                    checkout.path.display()
+                ));
+            }
+        },
+        _ => cockpit_projects::harness_trust_source(checkout, &trusted_roots, git)?,
+    };
     provider
         .trust_workspace(&TrustRequest {
             workspace: &checkout.path,
             working_dir,
             trusted_checkout: &trusted_checkout,
             environment,
+            session_home,
         })
         .map_err(|error| error.reason)
 }

@@ -71,6 +71,8 @@ pub(crate) fn provider_found(provider: &dyn cockpit_provider_api::Provider) -> P
                 "sign-in has not been probed",
                 "run `torlek doctor`",
             )),
+            // Read with each report, under the setting the daemon applies then.
+            sandbox_credential: None,
         }),
     }
 }
@@ -185,6 +187,19 @@ async fn report(
         }
         None => (None, None),
     };
+    for fact in &mut host.providers {
+        if let Ok(found) = fact.found.as_mut() {
+            // A failure that is not the credential file's is no row about the file.
+            found.sandbox_credential = context
+                .sessions
+                .sandbox_credential_state(&fact.name)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(provider = %fact.name, %error, "the sandboxed sign-in is not checked");
+                    None
+                });
+        }
+    }
     let environment = context.environment.clone();
     let config_dir = dir.clone();
     let config = tokio::task::spawn_blocking(move || {

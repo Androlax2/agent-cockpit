@@ -247,6 +247,19 @@ impl Home {
         );
     }
 
+    /// Writes provider `provider`'s credential for sandboxed sessions, in the file named
+    /// after `variable` (#968).
+    pub fn write_provider_credential(
+        &self,
+        provider: &str,
+        variable: &str,
+        contents: &str,
+        mode: u32,
+    ) {
+        let folder = format!("{}/{provider}", cockpit_config::PROVIDER_CREDENTIALS_DIR);
+        self.write_token_file(&folder, variable, contents, mode);
+    }
+
     fn write_token_file(&self, folder: &str, project: &str, contents: &str, mode: u32) {
         let dir = self
             .path()

@@ -1,6 +1,6 @@
 //! What a program declares it needs from the sandbox, validated where it is made (#830, #861).
 
-use cockpit_provider_api::{Credentials, HomePath, Host, Needs, Provider};
+use cockpit_provider_api::{CredentialHeader, Credentials, HomePath, Host, Needs, Provider};
 
 #[test]
 fn a_host_is_a_lower_case_name_or_a_domain_wildcard_with_an_optional_port() {
@@ -141,7 +141,11 @@ fn needs() -> Needs {
 fn a_credential_file_may_lie_in_a_folder_the_session_writes() {
     let credentials = Credentials::new(
         &["~/.example/auth.json"],
-        &[("EXAMPLE_API_KEY", &["api.example.com"])],
+        &[(
+            "EXAMPLE_API_KEY",
+            CredentialHeader::Bearer,
+            &["api.example.com"],
+        )],
         &needs(),
     )
     .unwrap();
@@ -182,7 +186,11 @@ fn a_read_path_a_wildcard_credential_matches_is_refused() {
 fn a_credential_host_the_program_does_not_declare_is_refused() {
     let refused = Credentials::new(
         &[],
-        &[("EXAMPLE_API_KEY", &["api.example.com", "elsewhere.example"])],
+        &[(
+            "EXAMPLE_API_KEY",
+            CredentialHeader::Bearer,
+            &["api.example.com", "elsewhere.example"],
+        )],
         &needs(),
     )
     .unwrap_err();
@@ -199,12 +207,62 @@ fn a_credential_variable_needs_a_valid_name_and_a_host() {
         ("A-KEY", &["api.example.com"][..]),
         ("EXAMPLE_API_KEY", &[][..]),
     ] {
-        let refused = Credentials::new(&[], &[(variable, hosts)], &needs()).unwrap_err();
+        let refused = Credentials::new(
+            &[],
+            &[(variable, CredentialHeader::Bearer, hosts)],
+            &needs(),
+        )
+        .unwrap_err();
         assert_eq!(
             refused.kind, "credential variable",
             "{variable:?} {hosts:?}"
         );
     }
+}
+
+/// #968: the proxy replaces only an extension header, never one that frames or routes the
+/// request.
+#[test]
+fn a_credential_header_is_a_lower_case_extension_header() {
+    for header in [
+        "host",
+        "content-length",
+        "x-",
+        "X-Api-Key",
+        "x-api key",
+        "authorization",
+    ] {
+        let refused = Credentials::new(
+            &[],
+            &[(
+                "EXAMPLE_API_KEY",
+                CredentialHeader::Named(header),
+                &["api.example.com"],
+            )],
+            &needs(),
+        )
+        .unwrap_err();
+        assert_eq!(refused.kind, "credential header", "{header:?}");
+    }
+}
+
+#[test]
+fn an_api_key_header_is_declared_by_its_name() {
+    let credentials = Credentials::new(
+        &[],
+        &[(
+            "EXAMPLE_API_KEY",
+            CredentialHeader::Named("x-api-key"),
+            &["api.example.com"],
+        )],
+        &needs(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        credentials.bindings[0].header,
+        CredentialHeader::Named("x-api-key")
+    );
 }
 
 #[test]

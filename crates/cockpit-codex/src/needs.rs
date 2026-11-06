@@ -2,7 +2,7 @@
 //! (#858). Seeded from Greywall's `internal/profiles/agents/codex.go` at `a9ccc58c`,
 //! Apache-2.0: see `crates/cockpit-provider-api/NOTICE-greywall`. Linux paths only.
 
-use cockpit_provider_api::{Credentials, InvalidValue, Needs};
+use cockpit_provider_api::{CredentialHeader, Credentials, InvalidValue, Needs};
 
 /// The hosts Codex reaches: the API, and for a ChatGPT sign-in ChatGPT's backend and
 /// experiments, and the sign-in host that refreshes its tokens (not in Greywall's profile).
@@ -24,7 +24,7 @@ pub const CREDENTIAL_FILES: [&str; 1] = ["~/.codex/auth.json"];
 /// session-own `auth.json` that holds only the placeholder (#858).
 pub const CREDENTIAL_VARIABLES: [&str; 2] = ["OPENAI_API_KEY", "CODEX_API_KEY"];
 
-/// The host that carries a bound API key.
+/// The host that carries a bound API key, as Bearer.
 pub const CREDENTIAL_HOSTS: [&str; 1] = ["api.openai.com"];
 
 pub fn needs() -> Result<Needs, InvalidValue> {
@@ -32,6 +32,7 @@ pub fn needs() -> Result<Needs, InvalidValue> {
 }
 
 pub fn credentials() -> Result<Credentials, InvalidValue> {
-    let bindings = CREDENTIAL_VARIABLES.map(|variable| (variable, &CREDENTIAL_HOSTS[..]));
+    let bindings = CREDENTIAL_VARIABLES
+        .map(|variable| (variable, CredentialHeader::Bearer, &CREDENTIAL_HOSTS[..]));
     Credentials::new(&CREDENTIAL_FILES, &bindings, &needs()?)
 }

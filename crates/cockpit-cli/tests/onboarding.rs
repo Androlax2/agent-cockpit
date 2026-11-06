@@ -216,6 +216,7 @@ fn session() -> SessionView {
         finished: true,
         coordinator_grants: Vec::new(),
         inbound_message: None,
+        sign_in_needed: None,
     }
 }
 

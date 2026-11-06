@@ -163,6 +163,7 @@ Unknown keys fail with the file and line. See the [current configuration guide](
 | Owner settings | `~/.config/torlek/config.toml` |
 | A project's GitHub token, its unsandboxed sessions' `GH_TOKEN` | `~/.config/torlek/github-tokens/<project>` |
 | A project's GitHub API token, which the session proxy adds for sandboxed sessions | `~/.config/torlek/github-api-tokens/<project>` |
+| A provider's credential, which the session proxy adds for sandboxed sessions | `~/.config/torlek/provider-credentials/<provider>/<VARIABLE>` |
 | Database, session records and instruction bundle | `~/.local/state/torlek/` |
 | Torlek operational logs | `~/.local/state/torlek/logs/` |
 | Each session's temporary files (its `TMPDIR`), removed when the session ends | `~/.local/state/torlek/tmp/<session>/` |
@@ -199,6 +200,22 @@ Use the paths printed by your binary; keep private state and provider credential
 ### Sandbox mode
 
 Where no sandbox backend exists, `sandbox = "required"` under `[agents]` refuses every agent launch and names the missing backend. It never runs an agent unsandboxed.
+
+A sandboxed session never reads your own provider sign-in, such as `~/.claude/.credentials.json`.
+Give each provider one account for its sandboxed sessions instead: save one credential alone in
+`~/.config/torlek/provider-credentials/<provider>/<VARIABLE>`, the file named after the variable
+the provider reads it from (`mkdir -p -m 700` the folder, then `chmod 600` the file). For Claude
+that is an API key in `ANTHROPIC_API_KEY` or a `claude setup-token` token in
+`CLAUDE_CODE_OAUTH_TOKEN`. The session proxy adds it on the provider's hosts; the agent holds a
+placeholder. Two files for one provider, a mode other than `0600` or `0400`, or anything but the
+credential in the file stop that provider's sandboxed sessions from launching. Without one,
+`torlek session new` prints a `sign-in:` line and `torlek doctor` a `sandboxed sign-in` row
+naming the files.
+
+Each sandboxed session has its own home, which starts empty and goes when the session ends.
+For a project in `projects.trusted`, and its parallel clones, Torlek records the folder trust in
+that home's Claude configuration before the agent starts, so Claude does not ask again; a project
+not in it asks at each session.
 
 ### Terminal screen
 

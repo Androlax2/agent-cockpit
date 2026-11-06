@@ -98,6 +98,9 @@ pub struct CredentialHost {
 pub enum CredentialScheme {
     /// `Authorization: Bearer` with the value on every request, replacing the client's.
     Bearer,
+    /// `name: <value>` on every request, replacing the client's (#968): an `x-` header such as
+    /// Anthropic's `x-api-key`, never one that frames or routes the request.
+    Header { name: String },
     /// Git's smart HTTP reads (#857 decision 1): `Authorization: Basic` of `username` and the
     /// value on `info/refs?service=git-upload-pack` and `git-upload-pack` alone, replacing
     /// the client's. Both halves of a push are refused: pushes go through the daemon. Any
@@ -109,6 +112,7 @@ impl CredentialScheme {
     pub fn describe(&self) -> &'static str {
         match self {
             CredentialScheme::Bearer => "as Bearer on every request",
+            CredentialScheme::Header { .. } => "in its own header on every request",
             CredentialScheme::GitReads { .. } => {
                 "as Basic on Git fetches only; Git pushes over HTTPS refused"
             }

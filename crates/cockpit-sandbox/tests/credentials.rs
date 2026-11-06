@@ -242,6 +242,27 @@ fn a_credential_for_a_host_the_session_may_not_reach_is_refused() {
     );
 }
 
+/// #968: the proxy sets a credential in an `x-` header alone, never in one that frames or
+/// routes the request.
+#[test]
+fn a_credential_header_that_is_not_an_extension_header_is_refused() {
+    let bundle = host_bundle();
+    let mut request = bound_request(bundle.path());
+    request.credentials[0].hosts[1].scheme = CredentialScheme::Header {
+        name: "content-length".to_owned(),
+    };
+
+    let refused = native_launch(&request).unwrap_err();
+
+    assert_eq!(refused.rule, "launch spec");
+    assert!(
+        refused
+            .reason
+            .contains("the credential header \"content-length\" for api.github.com"),
+        "{refused}"
+    );
+}
+
 /// #674: a host the owner's grant or allow lets through at launch is reached, so it is bound;
 /// the proxy gets the same decisions.
 #[test]

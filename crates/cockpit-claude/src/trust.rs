@@ -46,6 +46,44 @@ pub enum Recorded {
     Written,
 }
 
+/// What [`record`] does when the config file does not exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhenMissing {
+    /// Refuse, writing nothing: the owner's own Claude Code keeps that file.
+    Refuse,
+    /// Create it, owner-only, holding the trust alone: a sandboxed session's own home, where
+    /// no Claude Code ran yet (#968).
+    Create,
+}
+
+/// The mode of a config file [`record`] creates: Claude Code's own.
+const CREATED_MODE: u32 = 0o600;
+
+/// Claude Code's global config file for a sandboxed agent launched with `environment`, whose
+/// home is backed by `session_home` (#858, #968): the file there that the agent reads as
+/// `~/.claude.json`. Refused when `CLAUDE_CONFIG_DIR` names another folder.
+pub fn session_config_file(
+    environment: &[(OsString, OsString)],
+    session_home: &Path,
+) -> Result<PathBuf, String> {
+    let names_config_dir = environment
+        .iter()
+        .any(|(name, value)| name == "CLAUDE_CONFIG_DIR" && !value.is_empty());
+    if names_config_dir {
+        return Err(
+            "CLAUDE_CONFIG_DIR is set, so the session's home may not hold Claude Code's config"
+                .to_owned(),
+        );
+    }
+    let in_session: Vec<(OsString, OsString)> = environment
+        .iter()
+        .filter(|(name, _)| name != "HOME")
+        .cloned()
+        .chain([("HOME".into(), session_home.as_os_str().to_owned())])
+        .collect();
+    config_file(&in_session)
+}
+
 /// Claude Code's global config file for an agent launched with `environment`, or why it
 /// cannot be known safely.
 pub fn config_file(environment: &[(OsString, OsString)]) -> Result<PathBuf, String> {
@@ -163,28 +201,51 @@ fn compare(
 /// Records Claude Code's trust of `workspace` in `config` as `trusted`: under Claude Code's
 /// own lock, from the file as it is then, changing only that project's trust key. Revoking
 /// only turns an existing `true` to `false`; it never adds an entry. Refuses, writing nothing,
-/// when the file is missing, is a link, cannot be parsed, has an unexpected shape or stays
-/// locked.
-pub fn record(config: &Path, workspace: &Path, trusted: bool) -> Result<Recorded, String> {
+/// when the file is a link, cannot be parsed, has an unexpected shape or stays locked, and
+/// when it is missing unless `when_missing` creates it.
+pub fn record(
+    config: &Path,
+    workspace: &Path,
+    trusted: bool,
+    when_missing: WhenMissing,
+) -> Result<Recorded, String> {
     let workspace = workspace
         .canonicalize()
         .map_err(|error| format!("resolve {}: {error}", workspace.display()))?;
     let key = workspace
         .to_str()
         .ok_or_else(|| format!("{} is not UTF-8", workspace.display()))?;
-    let metadata = fs::symlink_metadata(config)
-        .map_err(|error| format!("read {}: {error}", config.display()))?;
-    if !metadata.is_file() {
-        return Err(format!("{} is not a plain file", config.display()));
-    }
+    // Checked before the lock too, so a file that can never be written takes no lock.
+    existing(config, when_missing)?;
     let _lock = ConfigLock::acquire(config)?;
-    let text = fs::read_to_string(config)
-        .map_err(|error| format!("read {}: {error}", config.display()))?;
+    let (text, mode) = match existing(config, when_missing)? {
+        Some(metadata) => (
+            fs::read_to_string(config)
+                .map_err(|error| format!("read {}: {error}", config.display()))?,
+            metadata.mode() & 0o7777,
+        ),
+        None => ("{}".to_owned(), CREATED_MODE),
+    };
     let Some(edited) = with_trust(&text, key, trusted)? else {
         return Ok(Recorded::Unchanged);
     };
-    replace(config, &metadata, &edited)?;
+    replace(config, mode, &edited)?;
     Ok(Recorded::Written)
+}
+
+/// `config`'s metadata, `None` when it is missing and `when_missing` creates it; refused when
+/// it is missing otherwise or is not a plain file.
+fn existing(config: &Path, when_missing: WhenMissing) -> Result<Option<fs::Metadata>, String> {
+    match fs::symlink_metadata(config) {
+        Ok(metadata) if metadata.is_file() => Ok(Some(metadata)),
+        Ok(_) => Err(format!("{} is not a plain file", config.display())),
+        Err(error)
+            if error.kind() == ErrorKind::NotFound && when_missing == WhenMissing::Create =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(format!("read {}: {error}", config.display())),
+    }
 }
 
 /// `text` with `projects[key].hasTrustDialogAccepted` set to `trusted`, every other byte
@@ -431,9 +492,9 @@ impl Drop for ConfigLock {
     }
 }
 
-/// Replaces `config` with `text` by a rename from a file beside it with the same mode, so a
-/// reader sees the old file or the new one, never a part.
-fn replace(config: &Path, metadata: &fs::Metadata, text: &str) -> Result<(), String> {
+/// Replaces `config` with `text` by a rename from a file beside it with `mode`, so a reader
+/// sees the old file or the new one, never a part.
+fn replace(config: &Path, mode: u32, text: &str) -> Result<(), String> {
     let dir = config
         .parent()
         .ok_or_else(|| format!("{} has no directory", config.display()))?;
@@ -452,9 +513,9 @@ fn replace(config: &Path, metadata: &fs::Metadata, text: &str) -> Result<(), Str
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .mode(metadata.mode() & 0o7777)
+            .mode(mode)
             .open(&temporary)?;
-        file.set_permissions(fs::Permissions::from_mode(metadata.mode() & 0o7777))?;
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
         fs::rename(&temporary, config)

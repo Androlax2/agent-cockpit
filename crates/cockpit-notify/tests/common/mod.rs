@@ -47,6 +47,7 @@ pub fn session(id: &str, checkout: i64, created_at: i64) -> SessionView {
         finished: false,
         coordinator_grants: Vec::new(),
         inbound_message: None,
+        sign_in_needed: None,
     }
 }
 

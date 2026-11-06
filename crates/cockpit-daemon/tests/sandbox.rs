@@ -434,7 +434,7 @@ async fn a_sandboxed_agent_gets_no_providers_credential_variable() {
         .chain(
             cockpit_opencode::needs::CREDENTIAL_BINDINGS
                 .iter()
-                .map(|(variable, _)| *variable),
+                .map(|(variable, _, _)| *variable),
         )
         .map(|variable| (variable, "owner-key"))
         .collect();
@@ -1254,6 +1254,171 @@ async fn an_api_token_is_added_on_a_github_host_the_owner_allowed_always() {
         ),
         "{evidence}"
     );
+}
+
+/// A `claude setup-token` token's shape; a fixture, never a real one.
+const SETUP_TOKEN: &str = "sk-ant-oat01-fixture_value";
+
+/// #968, #858: the owner's Claude credential reaches a sandboxed session through the proxy:
+/// the agent holds the placeholder in the variable the file is named after, the launcher took
+/// the value's file, and the evidence says where it is added.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_providers_credential_is_added_on_its_hosts_and_the_agent_holds_a_placeholder() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        home.write_provider_credential(
+            "claude",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            &format!("{SETUP_TOKEN}\n"),
+            0o600,
+        );
+    })
+    .await;
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "echo \"${CLAUDE_CODE_OAUTH_TOKEN-unset}\"; env | grep -c fixture_value",
+    )
+    .await;
+    let shown = home
+        .cockpit(&["session", "sandbox", &agent.session], &[])
+        .await;
+    let credentials = home
+        .path()
+        .join("run")
+        .join(BUILD_PROFILE_DIR)
+        .join("mounts")
+        .join(&agent.session)
+        .join(cockpit_sandbox::CREDENTIALS_FILE);
+
+    assert_eq!(
+        printed,
+        format!("{}\n0\nexit=1\n", cockpit_sandbox::PLACEHOLDER)
+    );
+    assert!(!credentials.exists(), "{credentials:?}");
+    let evidence = text(&shown.stdout);
+    assert!(
+        evidence.contains(
+            "credential: the claude provider's credential (CLAUDE_CODE_OAUTH_TOKEN) added on \
+             api.anthropic.com:443"
+        ),
+        "{evidence}"
+    );
+}
+
+/// #968: with no credential, `session new` and `doctor` name the files one may go in.
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_credential_session_new_and_doctor_name_the_files_to_write() {
+    let home = Home::new();
+    home.write_owner_config(REQUIRED);
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    let files = home
+        .path()
+        .join("config")
+        .join(BUILD_PROFILE_DIR)
+        .join(cockpit_config::PROVIDER_CREDENTIALS_DIR)
+        .join("claude");
+
+    let started = home
+        .cockpit(
+            &[
+                "session",
+                "new",
+                root.to_str().unwrap(),
+                "--agent",
+                "claude",
+            ],
+            &[],
+        )
+        .await;
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let told = text(&started.stderr);
+    assert!(started.status.success(), "{told}");
+    let sign_in = told
+        .lines()
+        .find_map(|line| line.strip_prefix("sign-in: "))
+        .unwrap_or_else(|| panic!("no sign-in line in:\n{told}"));
+    assert!(
+        sign_in.contains(&files.join("CLAUDE_CODE_OAUTH_TOKEN").display().to_string()),
+        "{sign_in}"
+    );
+    let report = text(&doctor.stdout);
+    let row = report
+        .lines()
+        .find(|line| line.contains("provider claude sandboxed sign-in"))
+        .unwrap_or_else(|| panic!("no sign-in row in:\n{report}"));
+    assert!(row.trim_start().starts_with("needs-authorization"), "{row}");
+    assert!(
+        report.contains(&files.join("ANTHROPIC_API_KEY").display().to_string()),
+        "{report}"
+    );
+}
+
+/// The folder trust Claude reads from `config`, the `.claude.json` of a session's home, for
+/// the project at `root`; `None` when the file or its entry is missing.
+fn claude_trust(config: &Path, root: &Path) -> Option<bool> {
+    let text = std::fs::read_to_string(config).ok()?;
+    let config: serde_json::Value = serde_json::from_str(&text).unwrap();
+    config["projects"][root.to_str().unwrap()]["hasTrustDialogAccepted"].as_bool()
+}
+
+/// #968: the folder trust survives to the next sandboxed start of the same provider in the
+/// same project: Torlek writes it from `projects.trusted` into each session's own Claude
+/// config, never the owner's. A session's home goes when it ends, so each is read while its
+/// session runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_trusted_projects_folder_trust_reaches_each_sandboxed_session_of_it() {
+    let home = Home::new();
+    let root = home.path().join("projects").join(COMMANDED_PROJECT);
+    let agent = sandboxed_agent(&home, |home| {
+        home.write_owner_config(&format!(
+            "{REQUIRED}[projects]\ntrusted = [{:?}]\n",
+            root.to_str().unwrap()
+        ));
+    })
+    .await;
+    let homes = home.state_dir().join("homes");
+    run_in_agent(&home, &agent.root, "true").await;
+    let first = claude_trust(&homes.join(&agent.session).join(".claude.json"), &root);
+    let client = home.connect().await;
+    let ended = client
+        .request(
+            Command::SessionEnd {
+                session: agent.session.clone(),
+            },
+            GENEROUS,
+        )
+        .await;
+    assert!(ended.is_ok(), "{ended:?}");
+    std::fs::remove_dir_all(agent.root.join(".agent")).unwrap();
+
+    let next = new_session(&client, &agent.root).await;
+    run_in_agent(&home, &agent.root, "true").await;
+
+    assert_eq!(first, Some(true));
+    let config = homes.join(&next.id).join(".claude.json");
+    assert_eq!(claude_trust(&config, &root), Some(true), "{config:?}");
+    assert!(!home.path().join(".claude.json").exists());
+}
+
+/// #968: a project the owner did not trust gets no folder trust written for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_not_in_projects_trusted_gets_no_folder_trust() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    run_in_agent(&home, &agent.root, "true").await;
+
+    let config = home
+        .state_dir()
+        .join("homes")
+        .join(&agent.session)
+        .join(".claude.json");
+    assert_eq!(claude_trust(&config, &agent.root), None, "{config:?}");
 }
 
 /// What the owner's `cockpit network VERB...` printed; it must succeed.

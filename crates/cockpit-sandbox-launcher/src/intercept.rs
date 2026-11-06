@@ -421,17 +421,40 @@ fn chunk_size(line: &[u8]) -> Result<u64, String> {
 /// What the proxy does with one request on a credential host.
 #[derive(Debug, PartialEq, Eq)]
 enum Action {
-    /// Sends it with this `Authorization` value in place of the client's.
-    AddCredential(String),
+    /// Sends it with this header in place of the client's.
+    AddCredential(AddedHeader),
     /// Sends it as the client wrote it.
     PassUnchanged,
     Refuse(String),
 }
 
+/// The header a credential goes upstream in, replacing any of that name the client sent.
+#[derive(Debug, PartialEq, Eq)]
+struct AddedHeader {
+    name: String,
+    value: String,
+}
+
+impl AddedHeader {
+    fn authorization(value: String) -> AddedHeader {
+        AddedHeader {
+            name: "Authorization".to_owned(),
+            value,
+        }
+    }
+}
+
 /// What `credential`'s scheme makes of a request for `target`.
 fn decide(credential: &Credential, target: &str) -> Action {
     match &credential.scheme {
-        CredentialScheme::Bearer => Action::AddCredential(format!("Bearer {}", credential.value)),
+        CredentialScheme::Bearer => Action::AddCredential(AddedHeader::authorization(format!(
+            "Bearer {}",
+            credential.value
+        ))),
+        CredentialScheme::Header { name } => Action::AddCredential(AddedHeader {
+            name: name.clone(),
+            value: credential.value.clone(),
+        }),
         CredentialScheme::GitReads { username } => {
             let decoded = percent_decoded(target).to_ascii_lowercase();
             if decoded.contains("git-receive-pack") {
@@ -443,7 +466,10 @@ fn decide(credential: &Credential, target: &str) -> Action {
             }
             if is_upload_pack(&decoded) {
                 let pair = format!("{username}:{}", credential.value);
-                Action::AddCredential(format!("Basic {}", base64(pair.as_bytes())))
+                Action::AddCredential(AddedHeader::authorization(format!(
+                    "Basic {}",
+                    base64(pair.as_bytes())
+                )))
             } else {
                 Action::PassUnchanged
             }
@@ -548,15 +574,15 @@ fn names_host(request: &Request, host: &str) -> Result<(), String> {
 }
 
 /// The head that goes upstream: the client's, `Expect` dropped when the proxy answered it,
-/// and the credential in place of the client's `Authorization` when added.
-fn rewritten_head(request: &Request, authorization: Option<&str>, drops_expect: bool) -> Vec<u8> {
+/// and the credential in place of the client's field of the same name when added.
+fn rewritten_head(request: &Request, added: Option<&AddedHeader>, drops_expect: bool) -> Vec<u8> {
     let mut head = format!(
         "{} {} HTTP/1.{}\r\n",
         request.method, request.target, request.version
     )
     .into_bytes();
     for (name, value) in &request.headers {
-        let is_replaced = authorization.is_some() && name.eq_ignore_ascii_case("authorization");
+        let is_replaced = added.is_some_and(|added| name.eq_ignore_ascii_case(&added.name));
         let is_answered = drops_expect && name.eq_ignore_ascii_case("expect");
         if is_replaced || is_answered || is_connection_field(name.as_bytes()) {
             continue;
@@ -566,9 +592,10 @@ fn rewritten_head(request: &Request, authorization: Option<&str>, drops_expect: 
         head.extend_from_slice(value);
         head.extend_from_slice(b"\r\n");
     }
-    if let Some(authorization) = authorization {
-        head.extend_from_slice(b"Authorization: ");
-        head.extend_from_slice(authorization.as_bytes());
+    if let Some(added) = added {
+        head.extend_from_slice(added.name.as_bytes());
+        head.extend_from_slice(b": ");
+        head.extend_from_slice(added.value.as_bytes());
         head.extend_from_slice(b"\r\n");
     }
     head.extend_from_slice(b"Connection: close\r\n\r\n");
@@ -641,8 +668,8 @@ pub fn relay<C: Read + Write, U: Read + Write>(
                 ),
             };
         }
-        let authorization = match decide(credential, &request.target) {
-            Action::AddCredential(value) => Some(value),
+        let added = match decide(credential, &request.target) {
+            Action::AddCredential(added) => Some(added),
             Action::PassUnchanged => None,
             Action::Refuse(reason) => {
                 return Ended::Refused {
@@ -661,7 +688,7 @@ pub fn relay<C: Read + Write, U: Read + Write>(
             upstream,
             &request,
             body,
-            authorization.as_deref(),
+            added.as_ref(),
             expects_continue,
             tally,
         );
@@ -678,7 +705,7 @@ fn exchange<C: Read + Write, U: Read + Write>(
     upstream: &mut Wire<U>,
     request: &Request,
     body: Body,
-    authorization: Option<&str>,
+    added: Option<&AddedHeader>,
     expects_continue: bool,
     tally: &dyn Fn(Event),
 ) -> Result<(), String> {
@@ -688,9 +715,9 @@ fn exchange<C: Read + Write, U: Read + Write>(
             direction: Direction::Out,
             tally,
         };
-        out.write_all(&rewritten_head(request, authorization, expects_continue))
+        out.write_all(&rewritten_head(request, added, expects_continue))
             .map_err(broke_off)?;
-        if authorization.is_some() {
+        if added.is_some() {
             tally(Event::CredentialAdded);
         }
         if expects_continue {

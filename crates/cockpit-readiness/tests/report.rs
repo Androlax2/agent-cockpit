@@ -48,6 +48,7 @@ fn ready_host() -> HostFacts {
                 version: Some("2.1.316".to_owned()),
                 tested: true,
                 capabilities: vec!["resume".to_owned(), "events".to_owned()],
+                sandbox_credential: None,
             }),
         }],
         controls: vec![ControlFacts {
@@ -780,6 +781,7 @@ fn a_preset_needs_a_provider_that_reports_its_steps_capabilities() {
                     version: None,
                     tested: false,
                     capabilities: capabilities.iter().map(|name| name.to_string()).collect(),
+                    sandbox_credential: None,
                 }),
             }],
             ..ready_host()
@@ -1071,4 +1073,76 @@ fn sign_in_facts_choose_the_status_and_keep_the_providers_next_step() {
             }
         );
     }
+}
+
+/// #968: under the sandbox, a provider without a bound credential names each file one may go
+/// in; it does not block, as a missing sign-in does not.
+#[test]
+fn a_sandboxed_provider_without_a_credential_names_the_files_to_write() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let mut host = ready_host();
+    let found = host.providers[0].found.as_mut().unwrap();
+    found.sandbox_credential = Some(cockpit_config::ProviderCredentialState::Missing {
+        files: vec![
+            PathBuf::from("/config/provider-credentials/claude/ANTHROPIC_API_KEY"),
+            PathBuf::from("/config/provider-credentials/claude/CLAUDE_CODE_OAUTH_TOKEN"),
+        ],
+    });
+
+    let report = assess(&host, &fixture.config(), None);
+
+    let fact = requirement(&report, "provider claude sandboxed sign-in");
+    assert_eq!(fact.status, Status::NeedsAuthorization);
+    let next = fact.next.as_deref().unwrap();
+    assert!(
+        next.contains(
+            "/config/provider-credentials/claude/ANTHROPIC_API_KEY, \
+             /config/provider-credentials/claude/CLAUDE_CODE_OAUTH_TOKEN"
+        ),
+        "{next}"
+    );
+    assert!(next.contains("chmod 600"), "{next}");
+}
+
+/// The launch refuses an unusable credential, so `doctor` must not pass it.
+#[test]
+fn an_unusable_sandboxed_credential_blocks_like_the_launch_it_refuses() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let mut host = ready_host();
+    let found = host.providers[0].found.as_mut().unwrap();
+    found.sandbox_credential = Some(cockpit_config::ProviderCredentialState::Unusable {
+        reason: "/config/provider-credentials/claude/ANTHROPIC_API_KEY is mode 644".to_owned(),
+    });
+
+    let report = assess(&host, &fixture.config(), None);
+
+    let fact = requirement(&report, "provider claude sandboxed sign-in");
+    assert_eq!(fact.status, Status::MissingPrerequisite);
+    assert!(fact.status.blocks());
+}
+
+#[test]
+fn a_sandboxed_provider_with_a_credential_names_its_file_and_variable() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let mut host = ready_host();
+    let found = host.providers[0].found.as_mut().unwrap();
+    found.sandbox_credential = Some(cockpit_config::ProviderCredentialState::Configured {
+        variable: "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+        path: PathBuf::from("/config/provider-credentials/claude/CLAUDE_CODE_OAUTH_TOKEN"),
+    });
+
+    let report = assess(&host, &fixture.config(), None);
+
+    let fact = requirement(&report, "provider claude sandboxed sign-in");
+    assert_eq!(fact.status, Status::Available);
+    assert!(
+        fact.detail.starts_with(
+            "/config/provider-credentials/claude/CLAUDE_CODE_OAUTH_TOKEN (CLAUDE_CODE_OAUTH_TOKEN)"
+        ),
+        "{}",
+        fact.detail
+    );
 }

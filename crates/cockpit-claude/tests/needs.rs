@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use cockpit_claude::ClaudeCode;
-use cockpit_provider_api::{HomePath, Provider};
+use cockpit_provider_api::{CredentialHeader, HomePath, Provider};
 
 fn claude() -> ClaudeCode {
     ClaudeCode::new(PathBuf::from("/usr/bin/claude"), None, None)
@@ -67,6 +67,26 @@ fn it_names_its_credential_file_variables_and_host() {
                 "CLAUDE_CODE_OAUTH_TOKEN",
                 vec!["api.anthropic.com".to_owned()]
             ),
+        ]
+    );
+}
+
+/// #968: Claude Code sends an API key as `x-api-key` and a `setup-token` token as Bearer, so
+/// the proxy replaces the header each one travels in.
+#[test]
+fn it_names_the_header_each_credential_travels_in() {
+    let credentials = claude().credentials().unwrap();
+
+    let headers: Vec<(&str, CredentialHeader)> = credentials
+        .bindings
+        .iter()
+        .map(|binding| (binding.variable.as_str(), binding.header))
+        .collect();
+    assert_eq!(
+        headers,
+        [
+            ("ANTHROPIC_API_KEY", CredentialHeader::Named("x-api-key")),
+            ("CLAUDE_CODE_OAUTH_TOKEN", CredentialHeader::Bearer),
         ]
     );
 }

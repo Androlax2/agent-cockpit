@@ -11,9 +11,11 @@ mod layout;
 mod memory;
 mod notify;
 mod profile;
+mod provider_credential;
 mod show;
 mod start_files;
 mod storage;
+mod token_file;
 pub use memory::MemorySettings;
 pub use notify::{AWAY_HOLD, NOTIFY_EVENTS, NotifyEvents, NotifySettings};
 pub use storage::StorageSettings;
@@ -28,16 +30,21 @@ use toml::Spanned;
 
 pub use github_token::{
     GITHUB_API_TOKENS_DIR, GITHUB_TOKEN_VARIABLE, GITHUB_TOKEN_VARIABLES, GITHUB_TOKENS_DIR,
-    GithubToken, GithubTokenError, GithubTokenState, github_api_token_file, github_token_file,
-    github_token_state, read_github_token,
+    GithubToken, GithubTokenState, github_api_token_file, github_token_file, github_token_state,
+    read_github_token,
 };
 pub use layout::{AGENT_SOCKET, AGENT_SOCKET_DIR, DAEMON_SOCKET, Environment, Layout};
 pub use profile::{
     Build, DEFAULT_PROFILE, DEVELOPMENT_PROFILE, MANIFEST_IN_PREFIX, PROFILE_VARIABLE, Profile,
     ProfileChoice, release_manifest, resolve_profile,
 };
+pub use provider_credential::{
+    PROVIDER_CREDENTIALS_DIR, ProviderCredential, ProviderCredentialError, ProviderCredentialState,
+    provider_credential_state, provider_credentials_dir, read_provider_credential,
+};
 pub use show::{SessionSettings, render};
 pub use start_files::{FileState, KNOWN_PROVIDERS, RecordedFile, StartFile, StartFileSnapshot};
+pub use token_file::TokenFileError;
 
 /// Where the project's own configuration lives, relative to the project directory.
 pub const PROJECT_CONFIG_FILE: &str = ".torlek/config.toml";

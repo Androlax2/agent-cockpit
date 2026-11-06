@@ -58,6 +58,11 @@ pub struct SessionView {
     /// The latest message a coordinator queued to it, with the sender named (#410).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound_message: Option<InboundMessageView>,
+    /// In a `session new` reply alone, under `agents.sandbox = "required"`: the credential to
+    /// set when its provider has none the session proxy can add, so its harness asks for a
+    /// sign-in it cannot keep (#968).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in_needed: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

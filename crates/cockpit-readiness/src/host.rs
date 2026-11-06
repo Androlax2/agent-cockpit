@@ -1,6 +1,8 @@
 //! The requirements every host has, project or not.
 
-use cockpit_config::{AgentSandbox, ConfigFile, EffectiveConfig, KNOWN_PROVIDERS, Sourced};
+use cockpit_config::{
+    AgentSandbox, ConfigFile, EffectiveConfig, KNOWN_PROVIDERS, ProviderCredentialState, Sourced,
+};
 
 use crate::{ControlFacts, Platform, ProviderFacts, ProviderUnusable, Requirement, Status};
 
@@ -252,7 +254,7 @@ fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
         "{version} ({provenance}); reports {}",
         listed(&found.capabilities)
     );
-    vec![
+    let mut requirements = vec![
         Requirement::available(name, detail),
         match found.sign_in.signed_in {
             Some(true) => Requirement::available(
@@ -270,7 +272,55 @@ fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
                 &found.sign_in.next,
             ),
         },
-    ]
+    ];
+    requirements.extend(
+        found
+            .sandbox_credential
+            .as_ref()
+            .map(|state| sandbox_credential(&provider.name, state)),
+    );
+    requirements
+}
+
+/// The sign-in a sandboxed session of `provider` gets: the owner's credential the session
+/// proxy adds on its hosts, or the file to write when there is none (#858, #968). Without one,
+/// the harness asks for a sign-in at every new session and cannot store it.
+fn sandbox_credential(provider: &str, state: &ProviderCredentialState) -> Requirement {
+    let name = format!("provider {provider} sandboxed sign-in");
+    match state {
+        ProviderCredentialState::Configured { variable, path } => Requirement::available(
+            name,
+            format!(
+                "{} ({variable}): the session proxy adds it on {provider}'s hosts; the agent \
+                 holds a placeholder",
+                path.display()
+            ),
+        ),
+        ProviderCredentialState::Missing { files } => Requirement::needs(
+            name,
+            Status::NeedsAuthorization,
+            format!(
+                "none: a sandboxed {provider} session never reads your own sign-in, so it asks \
+                 for one at every new session"
+            ),
+            format!(
+                "write one credential, on one line, to one of {}, then `chmod 600` it; the \
+                 file's name is the variable it stands for",
+                listed(
+                    &files
+                        .iter()
+                        .map(|file| file.display().to_string())
+                        .collect::<Vec<_>>()
+                )
+            ),
+        ),
+        ProviderCredentialState::Unusable { reason } => Requirement::needs(
+            name,
+            Status::MissingPrerequisite,
+            format!("unusable, so its sandboxed sessions do not launch: {reason}"),
+            "fix the file it names, or remove it",
+        ),
+    }
 }
 
 /// Admission works on every host; the controls it cannot enforce are requested only, which
