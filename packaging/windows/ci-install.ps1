@@ -36,6 +36,7 @@ $appDirectory = Join-Path $env:SCOOP 'apps/torlek/current'
 $pwshPath = (Get-Command pwsh -CommandType Application).Source
 $windowsPowerShellPath = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
 $linuxRoot = '.local/lib/torlek'
+$shellTimeoutSeconds = 180
 
 function Invoke-InShell {
     <# Runs one script file in a child shell and returns its exit code and combined output. #>
@@ -51,18 +52,29 @@ function Invoke-InShell {
         $saved[$name] = [Environment]::GetEnvironmentVariable($name)
         [Environment]::SetEnvironmentVariable($name, $Environment[$name])
     }
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
     try {
-        $shellArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) + $Arguments
-        if ($PSBoundParameters.ContainsKey('Stdin')) {
-            $output = $Stdin | & $Shell @shellArguments 2>&1 | Out-String
-        } else {
-            $output = & $Shell @shellArguments 2>&1 | Out-String
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new($Shell)
+        foreach ($argument in (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) + $Arguments)) {
+            $startInfo.ArgumentList.Add($argument)
         }
-        return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardInput = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        $outputTask = $process.StandardOutput.ReadToEndAsync()
+        $errorTask = $process.StandardError.ReadToEndAsync()
+        # Stdin is always closed, so nothing a launcher or wsl.exe runs can wait on a terminal.
+        if ($PSBoundParameters.ContainsKey('Stdin')) { $process.StandardInput.WriteLine($Stdin) }
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit($shellTimeoutSeconds * 1000)) {
+            $process.Kill($true)
+            $process.WaitForExit()
+            throw "$Script hung for more than ${shellTimeoutSeconds}s. Output so far:`n$($outputTask.Result)$($errorTask.Result)"
+        }
+        $process.WaitForExit()
+        return [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $outputTask.Result + $errorTask.Result }
     } finally {
-        $ErrorActionPreference = $previousPreference
         foreach ($name in $saved.Keys) {
             [Environment]::SetEnvironmentVariable($name, $saved[$name])
         }
