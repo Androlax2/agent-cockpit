@@ -252,6 +252,14 @@ try {
     # PATH with pwsh but without System32: the launcher must report the missing wsl.exe.
     Assert-Result 'torlek-wsl check without wsl.exe' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('check', '-Distribution', $Distribution) -Environment @{ PATH = (Split-Path -Parent $pwshPath); TORLEK_WSL_DISTRIBUTION = $null }) 'is refused' 'wsl\.exe was not found'
 
+    # TODO(#565): diagnostic for the consent-decline step; remove once the cause is fixed.
+    Write-Host '::group::diagnostic: what Read-Host returns on redirected stdin'
+    $probeScript = Join-Path $workRoot 'probe-readhost.ps1'
+    Set-Content -LiteralPath $probeScript -Value @('$answer = Read-Host "probe"', 'Write-Output "answer=[$answer]"')
+    Write-Host "plain: $((Invoke-InShell -Shell $pwshPath -Script $probeScript -Stdin 'n').Output)"
+    Set-Content -LiteralPath $probeScript -Value @("& wsl.exe --distribution $Distribution --exec /bin/true", '$answer = Read-Host "probe"', 'Write-Output "answer=[$answer]"')
+    Write-Host "after wsl.exe: $((Invoke-InShell -Shell $pwshPath -Script $probeScript -Stdin 'n').Output)"
+    Write-Host '::endgroup::'
     Assert-Result 'declining the consent prompt' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('install', '-Distribution', $Distribution) -Stdin 'n' -Direct) 'is refused' 'Nothing was installed'
     Assert-True 'declining installed nothing' (-not (Test-InstalledInWsl))
 
