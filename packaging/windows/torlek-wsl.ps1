@@ -66,7 +66,8 @@ if ($Action -eq 'check') { exit 0 }
 if (-not $Yes) {
     $answer = Read-Host ("Install Torlek $tag into WSL distribution '$Distribution' at ~/.local/lib/torlek/v$tag " +
         'and point ~/.local/lib/torlek/current at it? Nothing else in the distribution changes. [y/N]')
-    if ($answer -notmatch '^(y|yes)$') { Exit-Check 'Nothing was installed.' }
+    # Read-Host returns $null at end of input, and `$null -notmatch ...` yields nothing rather than $true.
+    if ([string] $answer -notmatch '^(y|yes)$') { Exit-Check 'Nothing was installed.' }
 }
 Invoke-InDistribution 'install'
 if ($env:TORLEK_WSL_DISTRIBUTION -ne $Distribution) {
