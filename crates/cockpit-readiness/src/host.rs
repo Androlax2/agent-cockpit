@@ -82,15 +82,14 @@ pub(crate) fn sandbox(
     shared_desktop_refusal: Option<&str>,
 ) -> Requirement {
     match (setting, backend) {
-        (AgentSandbox::Required, Ok(_)) if shared_desktop_refusal.is_some() => Requirement::needs(
-            "sandbox",
-            Status::MissingPrerequisite,
-            format!(
-                "{}; agents.sandbox = \"required\" refuses every agent launch",
-                shared_desktop_refusal.unwrap_or_default()
-            ),
-            "set agents.desktop_session = \"withheld\" in the owner config and run `torlek config reload`; to run agents unsandboxed, with your rights, set agents.sandbox = \"off\" instead",
-        ),
+        (AgentSandbox::Required, Ok(_)) if let Some(refusal) = shared_desktop_refusal => {
+            Requirement::needs(
+                "sandbox",
+                Status::MissingPrerequisite,
+                format!("{refusal}; agents.sandbox = \"required\" refuses every agent launch"),
+                "set agents.desktop_session = \"withheld\" in the owner config and run `torlek config reload`; to run agents unsandboxed, with your rights, set agents.sandbox = \"off\" instead",
+            )
+        }
         (AgentSandbox::Required, Ok(backend)) => Requirement::available(
             "sandbox",
             format!(

@@ -849,6 +849,37 @@ fn the_execution_environment_the_project_expects_meets_what_the_owner_granted() 
     }
 }
 
+/// #965: a project expecting the sandbox is not told its agents run there while every launch
+/// is refused over the shared desktop.
+#[test]
+fn the_execution_environment_blocks_while_the_sandbox_refuses_the_shared_desktop() {
+    for environment in ["native", "sandbox"] {
+        let fixture = Fixture::new();
+        fixture.configure(
+            &format!("[execution]\nenvironment = \"{environment}\"\n"),
+            Some(OWNER_REQUIRES_THE_SANDBOX),
+        );
+        let host = HostFacts {
+            sandbox_setting: AgentSandbox::Required,
+            shared_desktop_refusal: Some(SHARED_DESKTOP_REFUSAL.to_owned()),
+            ..ready_host()
+        };
+
+        let report = fixture.report(&host, &fixture.facts());
+
+        let requirement = requirement(&report, "execution environment");
+        assert_eq!(
+            requirement.status,
+            Status::MissingPrerequisite,
+            "{environment}: {requirement:#?}"
+        );
+        assert!(
+            requirement.detail.contains(SHARED_DESKTOP_REFUSAL),
+            "{requirement:#?}"
+        );
+    }
+}
+
 /// #963: with a written `agents.sandbox` the daemon has not read, the line would advise
 /// writing what the owner's file already says. It defers to the `sandbox` line instead.
 #[test]
