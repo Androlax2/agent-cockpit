@@ -1020,6 +1020,7 @@ class GateGapTests(unittest.TestCase):
         workflow = RELEASE_WORKFLOW.read_text()
         job = re.search(r"\n  upgrade-sessions:\n((?:    [^\n]*\n|\n)*)", workflow)[1]
         self.assertIn("needs: [plan, build, upgrade-baseline]", job)
+        self.assertIn("runs-on: ubuntu-26.04", job)
         self.assertIn("name: archive-linux-x86_64", job)
         self.assertIn("apt-get install --no-install-recommends --yes tmux", job)
         self.assertIn("python3 tools/release_upgrade.py sessions", job)
