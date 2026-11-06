@@ -55,7 +55,9 @@ audited with your session and the other one.
   and your `agent sessions` line says the owner's message was delivered while yours waited.
 - `torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL]
   [--effort LEVEL]` (`start-sessions`):
-  `--agent` names the agent to run when Torlek has more than one; `--model` and `--effort`
+  `--agent` names the agent to run and is required when Torlek has more than one; a name no
+  wired agent has, or a missing one, is refused before the request is filed or counted, and
+  the refusal lists the accepted names (a session cannot run `torlek provider list`); `--model` and `--effort`
   are in that agent's own words (Claude Code: `opus`, `claude-opus-5-5`; `low` to `max`),
   kept for every launch of the session, and refused by an agent that cannot set them; waits for
   the owner's approval like `torlek ask run` unless the grant says otherwise;
