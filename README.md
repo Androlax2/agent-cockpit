@@ -3,12 +3,11 @@
 [![Documentation (latest)](https://img.shields.io/badge/docs-latest-lightgrey)](https://androlax2.github.io/agent-cockpit/latest/)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Androlax2/agent-cockpit/badge)](https://scorecard.dev/viewer/?uri=github.com/Androlax2/agent-cockpit)
 
-Torlek runs your coding agents (Claude Code, Codex, OpenCode) side by side, each in its own terminal session.
-Every agent works inside a sandbox and must ask you before it runs anything outside it.
-One screen shows all your agents, their questions and a todo list per project.
+Torlek runs your coding agents (Claude Code, Codex, OpenCode) side by side, each in its own terminal session, and lets an agent ask you to run commands on your machine.
+One screen shows every agent, its questions and a todo list per project.
 
-This is an early test version (Alpha 1) for Linux and for Windows through WSL2.
-It may lose its own data between versions, so keep your work in Git.
+**Alpha 1, Linux and Windows through WSL2.** Torlek may lose its data between versions: keep your work in Git.
+The sandbox is off by default, so agents run with your rights (see [Known gaps](https://github.com/Androlax2/agent-cockpit/blob/main/docs/KNOWN-GAPS.md)).
 
 ## Install with your AI agent
 
@@ -29,8 +28,9 @@ Do not guess other commands, packages or download links.
 4. Run "torlek daemon install", then "torlek init".
 5. Follow what "torlek init" says, one step at a time. Ask me before each step
    that changes my settings. Two things are mine to do, so tell me what to do
-   and wait: writing the sandbox setting in my Torlek config file (that is my
-   consent), and signing in to Claude, Codex or OpenCode.
+   and wait: writing sandbox = "off" under [agents] in my Torlek config file
+   (that is my consent to run agents without a sandbox), and signing in to
+   Claude, Codex or OpenCode.
 6. When "torlek init" has nothing left that you can do, tell me in plain words
    what you did and what is left for me.
 ```

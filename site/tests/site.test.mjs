@@ -23,10 +23,10 @@ test("real site exports the approved guide and generated references under its ve
     if (result.stderr) process.stderr.write(result.stderr);
     assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
   }
-  const quickstart = `${site}dist/get-started/first-session/index.html`;
+  const quickstart = `${site}dist/get-started/quickstart/index.html`;
   assert.ok(existsSync(quickstart), "the product quickstart must be exported");
   const html = readFileSync(quickstart, "utf8");
-  assert.match(html, /Register a Git repository/);
+  assert.match(html, /torlek.*project.*add/s);
   assert.match(html, /torlek.*session.*new/s);
   assert.ok(html.includes(`${env.TORLEK_DOCS_BASE}guide/approvals`));
   assert.match(html, /Edit.*GitHub/);
