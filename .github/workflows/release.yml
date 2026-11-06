@@ -684,7 +684,8 @@ jobs:
             --title "Cockpit $VERSION" --notes-file notes.md "${flags[@]}" dist/*
 
   # Report 13's Rust checks, Clippy, dependency and license checks, crate-graph rules and
-  # tests, on the tagged commit itself. The same steps as ci.yml's greenfield job.
+  # tests, on the tagged commit itself: make greenfield-ci, which ci.yml splits across its
+  # greenfield-lint and greenfield-test jobs (#997), without their sandbox steps.
   gate:
     if: needs.plan.outputs.tag != ''
     needs: plan

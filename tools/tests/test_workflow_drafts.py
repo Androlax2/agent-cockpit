@@ -32,7 +32,9 @@ def allows(expression, context):
     )
     expression = expression.replace("&&", " and ").replace("||", " or ")
     expression = re.sub(r"!(?!=)", " not ", expression)
-    return bool(eval(expression.strip(), {"__builtins__": {}}, {"true": True, "false": False}))
+    # No run is cancelled here: `!cancelled()` holds, as in a run nobody cancelled.
+    names = {"true": True, "false": False, "cancelled": lambda: False}
+    return bool(eval(expression.strip(), {"__builtins__": {}}, names))
 
 
 def context(event, draft=False, branch="feature/example", ref="refs/heads/main", selected="true"):
@@ -95,7 +97,15 @@ class DraftWorkflowTests(unittest.TestCase):
         expected = {
             "codeql.yml": {"analyze"},
             "scorecard.yml": set(),
-            "ci.yml": {"changes", "greenfield", "greenfield-wsl2", "docs"},
+            "ci.yml": {
+                "changes",
+                "greenfield-lint",
+                "greenfield-test",
+                "greenfield-sandbox",
+                "greenfield",
+                "greenfield-wsl2",
+                "docs",
+            },
             "docs.yml": {"catalog", "build", "assemble"},
             "release.yml": {
                 "plan",
@@ -126,7 +136,15 @@ class DraftWorkflowTests(unittest.TestCase):
             (
                 "ci.yml",
                 "push",
-                {"changes", "greenfield", "greenfield-wsl2", "docs"},
+                {
+                    "changes",
+                    "greenfield-lint",
+                    "greenfield-test",
+                    "greenfield-sandbox",
+                    "greenfield",
+                    "greenfield-wsl2",
+                    "docs",
+                },
             ),
             ("docs.yml", "push", {"catalog", "build", "assemble", "deploy"}),
             ("docs.yml", "release", {"catalog", "build", "assemble", "deploy"}),
@@ -209,8 +227,10 @@ class DraftWorkflowTests(unittest.TestCase):
                 self.assertEqual(self.eligible(name, context(event)), jobs)
 
     def test_ready_prs_still_respect_path_selection(self):
+        # The required greenfield check runs alone and passes when no greenfield job is needed.
         self.assertEqual(
-            self.eligible("ci.yml", context("pull_request", selected="false")), {"changes"}
+            self.eligible("ci.yml", context("pull_request", selected="false")),
+            {"changes", "greenfield"},
         )
 
     def test_proposal_credentials_are_available_only_to_main_publication(self):

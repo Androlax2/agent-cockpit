@@ -44,8 +44,9 @@ jobs:
             python3 tools/ci-jobs.py --all >> "$GITHUB_OUTPUT"
           fi
 
-  # The root workspace in crates/.
-  greenfield:
+  # The root workspace in crates/: the checks that run no test (fmt, clippy, doc, deny, typos).
+  # The tests run in greenfield-test's shards; the required check is greenfield, below (#997).
+  greenfield-lint:
     needs: changes
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && needs.changes.outputs.greenfield == 'true'
     runs-on: ubuntu-26.04
@@ -61,11 +62,50 @@ jobs:
       - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
         with:
           fallback: none
-          tool: cargo-nextest@0.9.150,cargo-deny@0.20.2,typos@1.51.1
+          tool: cargo-deny@0.20.2,typos@1.51.1
       # Reviewed pin (#397): main saves, pull requests restore; docs/decisions/2026-11-01-397-ci-cost.md.
+      # Its own entry, keyed by this job's id: clippy and rustdoc build other artifacts than the tests.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-bin: false
+      - name: Configure hosted runner admission
+        if: runner.environment == 'github-hosted'
+        # Disposable hosted runners have no workstation game-guard daemon.
+        run: python3 config/bin/.local/bin/cockpit-game-guard off
+      - name: Run the greenfield gate's checks that run no test
+        run: make greenfield-lint
+
+  # The workspace's tests, split by nextest's hash partition: every test runs in exactly one
+  # shard, and each shard builds the whole workspace (docs/decisions/2026-11-06-997-sharded-greenfield-tests.md).
+  greenfield-test:
+    needs: changes
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && needs.changes.outputs.greenfield == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          fallback: none
+          tool: cargo-nextest@0.9.150
+      # Reviewed pin (#397): main saves, pull requests restore; docs/decisions/2026-11-01-397-ci-cost.md.
+      # `shared-key: greenfield` is the key the single greenfield job saved before #997; every
+      # shard builds the same target, so one shard saves it.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: greenfield
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.shard == 1 }}
           cache-bin: false
       - name: Install tmux and bubblewrap for the real tmux server and sandbox tests
         # Ubuntu's AppArmor refuses unprivileged user namespaces by default; the native sandbox
@@ -82,13 +122,53 @@ jobs:
         if: runner.environment == 'github-hosted'
         # Disposable hosted runners have no workstation game-guard daemon.
         run: python3 config/bin/.local/bin/cockpit-game-guard off
-      - name: Run the greenfield gate
-        run: make greenfield-ci
+      - name: Run this shard of the greenfield workspace's tests
+        run: make crates-test TEST_PARTITION=hash:${{ matrix.shard }}/3
+
+  # The sandbox steps that need the whole build but none of the tests: a second Unix user, and
+  # the live probe. A job beside the shards, so neither lengthens a shard (#997).
+  greenfield-sandbox:
+    needs: changes
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && needs.changes.outputs.greenfield == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          fallback: none
+          tool: cargo-nextest@0.9.150
+      # Reviewed pin (#397). It builds what the test shards build, so it restores their entry
+      # and leaves saving it to shard 1.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: greenfield
+          save-if: false
+          cache-bin: false
+      - name: Install tmux and bubblewrap for the real tmux server and sandbox tests
+        # Ubuntu's AppArmor refuses unprivileged user namespaces by default; the native sandbox
+        # (#829) needs one, as on the hosts it supports.
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes tmux bubblewrap
+          tmux -V
+          bwrap --version
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns > /dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Build the workspace's tests and programs, as a test shard does
+        run: cargo test --no-run --locked --manifest-path Cargo.toml --workspace
       - name: "Run the daemon's sandbox tests, with the ignored one for #628, as a second Unix user"
-        # The gate ran sandboxed sessions as the runner's user; a sandbox that keeps state at a
-        # fixed shared path then fails for anyone else (#628). The second user runs the gate's
-        # own build, copied to a root-owned folder it can read. sudo stays in this disposable
-        # runner.
+        # The test shards ran sandboxed sessions as the runner's user; a sandbox that keeps state
+        # at a fixed shared path then fails for anyone else (#628). The second user runs this
+        # job's build, the shards' own, copied to a root-owned folder it can read. sudo stays in
+        # this disposable runner.
         run: |
           set -euo pipefail
           sudo useradd --create-home torlek-second
@@ -115,6 +195,33 @@ jobs:
         run: >-
           cargo nextest run --locked --manifest-path Cargo.toml --workspace
           --test live_enforcement --run-ignored only --no-capture --retries 2
+
+  # The required check: it passes only when the lint job, every test shard and the sandbox job
+  # passed, or when the change needs no greenfield job at all. Without `!cancelled()` a failed
+  # shard would skip this job, and a skipped required check counts as passed.
+  greenfield:
+    needs: [changes, greenfield-lint, greenfield-test, greenfield-sandbox]
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && !cancelled()
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Require the lint job, every test shard and the sandbox job to pass
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          SELECTED: ${{ needs.changes.outputs.greenfield }}
+          LINT: ${{ needs.greenfield-lint.result }}
+          TESTS: ${{ needs.greenfield-test.result }}
+          SANDBOX: ${{ needs.greenfield-sandbox.result }}
+        run: |
+          echo "changes: $CHANGES, selected: $SELECTED, lint: $LINT, tests: $TESTS, sandbox: $SANDBOX"
+          test "$CHANGES" = success
+          if [ "$SELECTED" != true ]; then
+            test "$SELECTED" = false
+            exit 0
+          fi
+          test "$LINT" = success
+          test "$TESTS" = success
+          test "$SANDBOX" = success
 
   # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
   # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash

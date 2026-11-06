@@ -29,7 +29,8 @@ class CiBootstrapTests(unittest.TestCase):
         # Lowest packaged tmux in the selected Ubuntu release, before security updates.
         packaged_tmux = {"ubuntu-24.04": (3, 4), "ubuntu-26.04": (3, 6)}
         for filename, name in [
-            ("ci.yml", "greenfield"),
+            ("ci.yml", "greenfield-test"),
+            ("ci.yml", "greenfield-sandbox"),
             ("release.yml", "gate"),
             ("release.yml", "compatibility"),
             ("release.yml", "responsiveness"),
@@ -42,16 +43,22 @@ class CiBootstrapTests(unittest.TestCase):
 
     def test_hosted_runner_initializes_admission_before_quality_gate(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        setup = re.search(
-            r"      - name: Configure hosted runner admission\n"
-            r"        if: runner.environment == 'github-hosted'\n"
-            r"(?:        #[^\n]*\n)*"
-            r"        run: ([^\n]+)\n",
-            workflow,
-        )
-        self.assertIsNotNone(setup, "hosted runners need admission setup before make greenfield-ci")
-        self.assertLess(setup.end(), workflow.index("        run: make greenfield-ci"))
-        command = shlex.split(setup[1])
+        commands = set()
+        for job in ("greenfield-lint", "greenfield-test"):
+            with self.subTest(job=job):
+                steps = ci_job(workflow, job)
+                setup = re.search(
+                    r"      - name: Configure hosted runner admission\n"
+                    r"        if: runner.environment == 'github-hosted'\n"
+                    r"(?:        #[^\n]*\n)*"
+                    r"        run: ([^\n]+)\n",
+                    steps,
+                )
+                self.assertIsNotNone(setup, "hosted runners need admission setup before make")
+                self.assertLess(setup.end(), steps.index("        run: make "))
+                commands.add(setup[1])
+        self.assertEqual(len(commands), 1, "every job configures admission the same way")
+        command = shlex.split(commands.pop())
         self.assertEqual(command[:2], ["python3", "config/bin/.local/bin/cockpit-game-guard"])
         loader = importlib.machinery.SourceFileLoader("ci_game_guard", str(ROOT / command[1]))
         guard = importlib.util.module_from_spec(
@@ -93,20 +100,33 @@ class CiBootstrapTests(unittest.TestCase):
 
     def test_cached_jobs_restore_the_pinned_rust_cache_saved_only_on_main(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for job, first_build in [("greenfield", "run: make greenfield-ci")]:
+        # The test shards and the sandbox job keep the entry the single greenfield job saved
+        # before #997, and only shard 1 saves it: they all build the same target.
+        main_only = r"\$\{\{ github\.ref == 'refs/heads/main' \}\}"
+        shared = r"          shared-key: greenfield\n"
+        cases = [
+            ("greenfield-lint", "", main_only, "run: make greenfield-lint"),
+            (
+                "greenfield-test",
+                shared,
+                r"\$\{\{ github\.ref == 'refs/heads/main' && matrix\.shard == 1 \}\}",
+                "run: make crates-test",
+            ),
+            ("greenfield-sandbox", shared, "false", "run: cargo test --no-run"),
+        ]
+        for job, shared_key, save_if, first_build in cases:
             with self.subTest(job=job):
                 steps = ci_job(workflow, job)
                 cache_step = re.search(
                     r"      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0"
                     r" # v2\.9\.3\n"
-                    r"        with:\n"
-                    r"          save-if: \$\{\{ github\.ref == 'refs/heads/main' \}\}\n"
+                    r"        with:\n" + shared_key + r"          save-if: " + save_if + r"\n"
                     r"          cache-bin: false\n",
                     steps,
                 )
                 self.assertIsNotNone(cache_step, "the reviewed cache pin, saved only from main")
                 self.assertLess(cache_step.end(), steps.index(first_build))
-        self.assertEqual(workflow.count("Swatinem/rust-cache@"), 1, "reviewed for this one job")
+        self.assertEqual(workflow.count("Swatinem/rust-cache@"), 3, "reviewed for these jobs")
 
     def test_docs_job_installs_the_reviewed_lychee_release_instead_of_compiling_it(self):
         for filename, job in [("ci.yml", "docs"), ("docs.yml", "build")]:

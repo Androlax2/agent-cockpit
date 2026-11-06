@@ -272,6 +272,12 @@ impl Drop for RunningDaemon {
 /// not depend on the daemon crate (rule `nothing -> daemon`), so Cargo has not built it for
 /// this test: build it here.
 ///
+/// The build selects the workspace and an example, which turns on the dev-dependencies: Cargo
+/// then resolves the features `cargo nextest run --workspace` built with and reuses that run's
+/// daemon as it is. `-p cockpit-daemon` resolves other features, and compiled the daemon and its
+/// workspace crates once more in every gate (#997). Only the daemon's own targets are named, so
+/// the `torlek` under test is never relinked.
+///
 /// Nextest runs every test in its own process, so each would start its own Cargo and queue on
 /// its build lock. Under nextest the processes of one run share a lock and a marker file in
 /// the profile directory: the first builds and records `NEXTEST_RUN_ID` (and the error, when
@@ -324,10 +330,11 @@ fn build_daemon(profile: &str) -> Result<(), String> {
         "--quiet",
         "--profile",
         profile,
-        "--package",
-        "cockpit-daemon",
+        "--workspace",
         "--bin",
         "torlek-daemon",
+        "--example",
+        "cockpit-e2e-daemon",
         "--manifest-path",
     ];
     let built = Command::new(env!("CARGO"))
