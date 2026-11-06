@@ -107,7 +107,7 @@ from the record or the code. "Inbound" counts files outside `docs/decisions/` th
 | `2026-11-01-48-codex-hook-trust-and-honest-capabilities` | ARCH/DEP | MERGE into `2026-11-01-48-codex-delivery-through-a-private-app-server.md` | Same issue and adapter. Keep rejected bypass-trust and `~/.codex/config.toml` writes; drop stale capabilities bullet. | 0 |
 | `2026-11-01-49-agent-context-served-by-daemon` | ARCH | KEEP | Rejected CLI embedding bundle (drift, allow-list) and per-provider files; `crate_graph.rs:271` rule exists. | 0 |
 | `2026-11-01-50-readiness-report` | ARCH | KEEP | Exit-1-only-on-blocking and rejected per-crate `readiness()` / CLI-side report not in README. Annotate two amended bullets. | 0 |
-| `2026-11-01-61-sandbox-backend` | ARCH | SUPERSEDE by `2026-11-05-828-remove-sandbox-engines.md` | Greywall, pin and client-name bullets are dead; "refuse never weaken", evidence-in-launch-transaction survive in 828. Inbound: research 546:522. | 1 |
+| `2026-11-01-61-sandbox-backend` | ARCH | SUPERSEDE (partly) by `2026-11-05-828-remove-sandbox-engines.md` | Greywall, pin and client-name bullets are dead; "refuse never weaken", evidence-in-launch-transaction survive in 828. Inbound: research 546:522. | 1 |
 | `2026-11-02-102-documentation-generator` | DEP | KEEP | Why Astro+Fumadocs over mdBook/Starlight/Next.js is nowhere else. Trim approval log, validation and intended-implementation sections. Inbound: site/README. | 4 |
 | `2026-11-02-120-unpinned-internal-paths` | DEP | KEEP | Reason (versioned path deps block prerelease resolution, stamping rewrites manifests) not in code. Alternative: expand the deny.toml comment. | 0 |
 | `2026-11-02-191-candidate-release-gates` | POLICY | RELOCATE to docs/RELEASING.md#candidate-checks.md | 14 KB is a PR log (host approvals, run IDs, review notes). Durable: archive-based gate, no fallback baseline; RELEASING.md already has most. | 0 |
@@ -150,11 +150,11 @@ from the record or the code. "Inbound" counts files outside `docs/decisions/` th
 | `2026-11-04-713-coordinator-ends-workers` | ARCH | KEEP | Why "finished label, not PR/outcome" is not in code. Part of coordinator family. | 1 |
 | `2026-11-04-714-agent-edits-own-items` | ARCH | KEEP | Non-obvious audit-size and kind-not-editable reasons are not in code. | 1 |
 | `2026-11-04-739-max-active-workers` | ARCH | KEEP | Why per_hour alone fails and why audit counting was rejected are not stated elsewhere. | 0 |
-| `2026-11-04-754-per-project-github-token` | ARCH/DEP | SUPERSEDE by `2026-11-05-832-selective-tls-interception.md` | Partial: engine bullets and "Rejected: placeholder through greyproxy" are void. File convention, mode check and variable stripping still hold; mark them as such. | 2 |
+| `2026-11-04-754-per-project-github-token` | ARCH/DEP | SUPERSEDE (partly) by `2026-11-05-832-selective-tls-interception.md` | Partial: engine bullets and "Rejected: placeholder through greyproxy" are void. File convention, mode check and variable stripping still hold; mark them as such. | 2 |
 | `2026-11-04-767-sweep-on-session-end` | ARCH/POLICY | KEEP | Linked from README and coverage map; rejected merge-tree/GitHub API reasons are only here. | 2 |
 | `2026-11-05-433-live-enforcement-ci` | POLICY | KEEP | Different issue and topic from 997 (live enforcement job, not test sharding); the reviewer suggested merging into 997, not adopted. | 0 |
 | `2026-11-05-674-network-requests` | ARCH | KEEP | Linked from launcher README; "once" = rest of session and the two-file channel rationale are only here. | 1 |
-| `2026-11-05-828-remove-sandbox-engines` | ARCH/POLICY | KEEP | Time-boxed default (returns to `required` at stage 5) but still current. Make the four older records point here. | 0 |
+| `2026-11-05-828-remove-sandbox-engines` | ARCH/POLICY | KEEP | Time-boxed default (returns to `required` at stage 5) but still current. Status lines on 61 (partly) and the removal of 470, 476, 495 (named void by 828) follow in the plan. | 0 |
 | `2026-11-05-829-native-sandbox-launch` | ARCH | KEEP | Oversized (bundles five issues' decisions). Rationale for hand-off and absent-path rules is not in README. Trim status lines. | 0 |
 | `2026-11-05-831-session-proxy-handoff-and-counters` | ARCH/DEP | KEEP | Merge target for 966. Dependency pin choice and rejected in-sandbox relay are not in README. | 0 |
 | `2026-11-05-832-selective-tls-interception` | ARCH/DEP | KEEP | Linked from launcher README. Tmux-cannot-pass-fd and two-token reasons are unique. HTTP framing list is IMPL-heavy. | 1 |

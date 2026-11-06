@@ -22,12 +22,12 @@ Applied to all 165 files in `docs/decisions/` (the 156 that #618 counted, plus 9
 | --- | --- | --- |
 | Keep | 106 | Passes every test below. |
 | Merge | 38 | Sound, but a follow-up or sibling of another record on the same topic; fold into that record as a dated "revisited" entry. |
-| Supersede | 6 | Reversed or replaced; keep for history, mark with a status line. |
+| Supersede | 6 | Reversed or replaced, wholly (279, 94, 43, 433-observations) or partly (61, 754); keep for history, mark with a status line that says what still holds. |
 | Relocate | 7 | Useful rationale that belongs in a test or module doc comment, a crate README, `docs/RELEASING.md` or `CONTRIBUTING`. |
 | Remove | 8 | Nothing durable the issue, code or a later record does not already carry. |
 
-If every row were executed the log would shrink from 165 to **112 files** (-32%), with no rejected
-alternative lost except in the 8 removals, which git history keeps. The per-record table with reasons
+If every row were executed the log would shrink from 165 to **112 files** (-32%), and every rejected
+alternative kept except in the 8 removals, which git history keeps. The per-record table with reasons
 and inbound links is in [`548/dispositions.md`](548/dispositions.md).
 
 The structure is not the problem. One file per decision stays (see [Structure](#structure)); what
@@ -70,7 +70,9 @@ where the merges, relocations and removals concentrate; architecture is 76 keeps
    says "`Stop` now reports `--outcome completed`". `2026-11-01-47-opencode-server-and-plugin` says
    events were "not captured live"; #417 captured them. `2026-11-02-419-native-input-…` says
    "Codex's target remains 0.161.0"; `CONFORMANCE_VERSION` is `0.166.0`
-   (`crates/cockpit-codex/src/lib.rs:30`). A stale record is worse than none: it is read as current.
+   (`crates/cockpit-codex/src/lib.rs:30`). A stale record is worse than none: it is read as current. Each contradiction has its own remedy
+in [Plan](#plan): the 48 pair merges (slice 3), 47 gets its stale bullet struck (slice 2), the
+419 record is removed (slice 5).
 3. **The sandbox-engine records are dead.** `2026-11-05-828-remove-sandbox-engines` states "Supersedes
    the engine parts of" 61, 476, 470 and 495. `crates/cockpit-sandbox/engine-pins.json`, the
    installer and the managed proxy no longer exist. Three of the four hold nothing else; 61 keeps
@@ -122,7 +124,9 @@ This replaces the "Content" section of `docs/decisions/README.md` when approved.
    `Status: partly superseded by <file>: <what still holds>`.
 4. **A revisit is a dated section in the original record:**
    `## Revisited 2026-11-06 (#NNN)` with the change and the reason. A reversal gets the old record's
-   status line and a new record that links it. The follow-up issue's own file is not created for a
+   status line and a new record that links it. The exception is a record the superseding record
+   names as fully void, with no surviving bullet (470, 476, 495 under 828): it is removed, and git
+   history keeps it. The follow-up issue's own file is not created for a
    one-bullet amendment.
 5. **Length:** a title, a status line and about five bullets; over 500 words is a sign the record is a
    work log. Today the median is 331 words and 8 records pass 750.
@@ -135,8 +139,8 @@ Each slice is its own pull request, in this order. Times are for one worker.
 
 | # | Slice | Touches | Time |
 | --- | --- | --- | --- |
-| 1 | README convention, `AGENTS.md`, `CONTRIBUTING.md`, PR template wording; add a test that every `Status: superseded by` names an existing file | `decision_records.rs` extended, not loosened | 1 to 2 hours |
-| 2 | Mark the 6 supersedes and the 8 amendment/contradiction fixes (48 pair, 47, 419, 436) with status lines | 14 records | 1 hour |
+| 1 | README convention, `AGENTS.md`, `CONTRIBUTING.md`, PR template wording; add a test that every `Status: superseded by` and `Status: partly superseded by` line names an existing file | `decision_records.rs` extended, not loosened | 1 to 2 hours |
+| 2 | Status lines on the 6 supersedes (their targets are all keeps, so later slices do not move them); strike the stale bullet in 47 | 7 records | 1 hour |
 | 3 | Merge the 38 siblings into their base records in five batches by area (TUI/approvals, sessions, release/packaging, provider adapters, CI/sandbox); repoint links | about 60 files | 3 to 4 hours |
 | 4 | Relocate the 7: move the surviving sentences, then delete the records; repoint `docs/gates/m1-latency.md`, `docs/gates/m3-acceptance.md`, the `latency.rs` header | 7 records, 6 targets | 1 to 2 hours |
 | 5 | Remove the 8; repoint `docs/research/2026-11-05-546-own-sandbox-and-traffic-control.md` (lines 522-523) | 8 records | 30 minutes |
@@ -144,7 +148,10 @@ Each slice is its own pull request, in this order. Times are for one worker.
 
 Link repair for every move: `git mv` or fold, fix inbound links in the same pull request, then run
 `cargo nextest run --locked -p cockpit-workspace-rules --test decision_records` and
-`cargo fmt --all -- --check`. The inbound list per record is in the appendix.
+`cargo fmt --all -- --check`. The inbound list per record is in the appendix. Decision records
+added after `81f41047` are judged against the admission test in the pull request that adds them;
+each slice starts by listing `docs/decisions/` and checking the new files against the appendix.
+The count of 18 in `decision_records.rs` is for `docs/DECISIONS.md` and is not affected.
 
 Risks. Folding records loses their individual dates in the file list (the dated section keeps
 them). Removal loses only what git history keeps. The reviewers' weakest calls are listed in
@@ -164,7 +171,8 @@ them). Removal loses only what git history keeps. The reviewers' weakest calls a
 
 ## Questions for Theo
 
-Theo answered **A on all five** on 2026-11-06. Each question lists the recommendation first.
+Theo answered **A on all five** on 2026-11-06, in a Torlek reply to the #548 worker; the pull request
+description quotes it, as #618's did. Each question lists the recommendation first.
 
 **Q1. Structure of the log.** A: keep one file per decision, add a status line and write revisits
 in place (recommended). B: one central dated log. C: one file per topic. A keeps the parallel-pull-request
@@ -182,8 +190,8 @@ other (about 10). C: no merges.
 (#66), then retire those 4 and update the count in `decision_records.rs` (recommended). B: convert all 18
 to files now and repoint 5 code comments. C: remove the 4 now.
 
-**Q5. Enforcement.** A: extend `decision_records.rs` so a `Status: superseded by` line must name an
-existing file (recommended). B: README and pull request template wording only.
+**Q5. Enforcement.** A: extend `decision_records.rs` so a `Status: superseded by` or
+`Status: partly superseded by` line must name an existing file (recommended). B: README and pull request template wording only.
 
 ## Sources
 
