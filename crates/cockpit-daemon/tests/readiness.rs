@@ -517,7 +517,7 @@ async fn a_relative_project_directory_is_refused_on_the_wire() {
         .request(
             Command::Readiness {
                 project: Some("projects/app".to_owned()),
-                one_sign_in_suffices: false,
+                is_one_sign_in_enough: false,
             },
             GENEROUS,
         )
@@ -539,7 +539,7 @@ async fn an_agent_may_not_ask_for_the_owners_readiness_report() {
         .request(
             Command::Readiness {
                 project: None,
-                one_sign_in_suffices: false,
+                is_one_sign_in_enough: false,
             },
             GENEROUS,
         )
@@ -569,7 +569,7 @@ async fn a_project_directory_that_does_not_exist_is_refused_naming_it() {
         .request(
             Command::Readiness {
                 project: Some(missing.display().to_string()),
-                one_sign_in_suffices: false,
+                is_one_sign_in_enough: false,
             },
             GENEROUS,
         )
@@ -694,6 +694,32 @@ async fn torlek_alone_prints_the_usage_without_waiting_for_a_slower_providers_si
         !has_opencode_answered,
         "torlek alone waited for the slower provider's sign-in"
     );
+}
+
+/// #1048: a status command an early answer left running is outside the bulk lane, so only
+/// one report's may be: the next `torlek` alone waits for its own instead of adding to them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_torlek_alone_waits_while_the_firsts_status_command_still_runs() {
+    let home = Home::new();
+    fake_sign_in(&home, "codex", CODEX_SIGNED_IN);
+    fake_sign_in(
+        &home,
+        "opencode",
+        &format!("sleep 2; echo answered >> \"$HOME/opencode-answers\"; {OPENCODE_SIGNED_IN}"),
+    );
+    let _daemon = start_with_the_setup_done(&home).await;
+    let answers = || {
+        std::fs::read_to_string(home.path().join("opencode-answers"))
+            .map_or(0, |answers| answers.lines().count())
+    };
+
+    torlek_alone(&home).await;
+    let answers_after_the_first = answers();
+    let second = torlek_alone(&home).await;
+
+    assert_eq!(answers_after_the_first, 0);
+    assert_eq!(second.status.code(), Some(2), "{}", text(&second.stderr));
+    assert_eq!(answers(), 2);
 }
 
 /// #1048: answering early never hides a missing sign-in: with no provider signed in, the

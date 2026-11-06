@@ -10,21 +10,27 @@ on 2026-11-06 (`claude auth status` 125 ms, `codex login status` 50 ms, `opencod
 three sign-ins 141 + 60 + 903 ms, one after the other.
 
 - **The providers are asked together.** The report waits for the slowest status command, not
-  for their sum: `torlek doctor` and `torlek init` went from 1113 ms to 910 ms on the fixture.
+  for their sum: `torlek doctor` and `torlek init` went from 1113 ms to 908 ms on the fixture.
   Proven by `doctor_asks_the_providers_for_their_sign_in_at_the_same_time` in
   `crates/cockpit-daemon/tests/readiness.rs`.
-- **`readiness` takes `one_sign_in_suffices`.** With it the daemon answers when the first
+- **`readiness` takes `is_one_sign_in_enough`.** With it the daemon answers when the first
   provider reports signed in; a provider that has not answered by then keeps the `unknown`
-  "sign-in has not been probed" fact, and its status command ends by itself within its own
-  deadline. With no provider signed in every one is waited for, so a missing sign-in is never
-  hidden. Only `torlek` alone sets it: `doctor`, `init`, the status page and the support bundle
-  ask for every sign-in as before.
+  "sign-in has not been probed" fact. With no provider signed in every one is waited for, so a
+  missing sign-in is never hidden. Only `torlek` alone sets it: `doctor`, `init`, the status
+  page and the support bundle ask for every sign-in as before.
+- **Only one report's status commands run on after its answer.** They are then outside that
+  report's bulk lane place, each bounded by its own 10 s deadline. While they run, the next
+  such report waits for its own, as every report did before, so they cannot pile up: a second
+  `torlek` alone within that second takes as long as `doctor` (913 ms on the fixture). Proven
+  by `a_second_torlek_alone_waits_while_the_firsts_status_command_still_runs`.
 - **`torlek` alone asks twice only when it must.** The first answer decides between the usage
-  and the checklist. The checklist names each provider's own sign-in, so when the sign-in step
-  is done (the only case in which the daemon may have answered early) it asks again for them
-  all; what `torlek` alone prints is unchanged in every state. On the fixture, with the setup
-  done: 1118 ms before, 73 ms with codex signed in, 153 ms with only claude signed in. Proven
-  by the three `torlek_alone_*` tests in the same file.
+  and the checklist. The checklist names each provider's own sign-in, so when the first answer
+  holds a signed-in provider beside an `unknown` one (the only case in which the daemon may
+  have answered early) it asks again for them all; what `torlek` alone prints is unchanged in
+  every state. On the fixture, with the setup done: 1118 ms before, 71 ms with codex signed
+  in, 152 ms with only claude signed in. Proven by the three `torlek_alone_*` tests in the same
+  file and `cockpit_alone_asks_once_when_every_sign_in_answered` in
+  `crates/cockpit-cli/tests/onboarding.rs`.
 - **Rejected: asking the providers together and nothing else.** Bare `torlek` would still wait
   for opencode, about 900 ms.
 - **Rejected: not asking for sign-ins from `torlek` alone**, or asking only when another step

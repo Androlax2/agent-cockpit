@@ -468,6 +468,7 @@ impl Instance {
             sign_in_providers: sign_in_providers.clone(),
             environment: wiring.environment.clone(),
             manager: Arc::clone(&manager),
+            early_answer: readiness::Context::early_answer(),
         };
         let shared = Arc::new(server::Shared {
             owner_uid: self.owner_uid,

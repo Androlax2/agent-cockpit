@@ -214,7 +214,7 @@ fn fixture_reply(command: &Command) -> Reply {
         }),
         Command::Readiness {
             project: None,
-            one_sign_in_suffices: false,
+            is_one_sign_in_enough: false,
         } => json!({
             "kind": "readiness",
             "requirements": [

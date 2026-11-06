@@ -32,6 +32,16 @@ pub(crate) struct Context {
     pub(crate) environment: cockpit_config::Environment,
     /// Copy out of the viewer and CMD+V's image paste into it (#848).
     pub(crate) manager: Arc<crate::manager::Manager>,
+    /// Held while status commands run on after the report that started them left (#1048).
+    /// They are then outside that report's bulk lane place, so only one report's may be: a
+    /// report that finds this taken waits for its own.
+    pub(crate) early_answer: Arc<tokio::sync::Semaphore>,
+}
+
+impl Context {
+    pub(crate) fn early_answer() -> Arc<tokio::sync::Semaphore> {
+        Arc::new(tokio::sync::Semaphore::new(1))
+    }
 }
 
 /// The facts a wired provider reports about itself.
@@ -68,7 +78,7 @@ pub(crate) fn provider_found(provider: &dyn cockpit_provider_api::Provider) -> P
 /// Sign-in and Docker are probed in the request, so the work runs in the bulk lane.
 pub(crate) fn route(
     project: Option<String>,
-    one_sign_in_suffices: bool,
+    is_one_sign_in_enough: bool,
     context: Context,
 ) -> Route {
     let project = match project.map(PathBuf::from) {
@@ -96,7 +106,7 @@ pub(crate) fn route(
                 },
                 None => None,
             };
-            match requirements(project, one_sign_in_suffices, context).await {
+            match requirements(project, is_one_sign_in_enough, context).await {
                 Ok(requirements) => Outcome::Ok(Reply::Readiness { requirements }),
                 Err(error) => {
                     tracing::error!(%error, "the readiness report failed");
@@ -111,13 +121,13 @@ pub(crate) fn route(
 }
 
 /// The readiness report as `torlek doctor` shows it; also the support bundle's section.
-/// `one_sign_in_suffices` is the request's (#1048): `torlek` alone sets it.
+/// `is_one_sign_in_enough` is the request's (#1048): `torlek` alone sets it.
 pub(crate) async fn requirements(
     project: Option<PathBuf>,
-    one_sign_in_suffices: bool,
+    is_one_sign_in_enough: bool,
     context: Context,
 ) -> Result<Vec<RequirementView>, String> {
-    let report = report(project, one_sign_in_suffices, context).await?;
+    let report = report(project, is_one_sign_in_enough, context).await?;
     Ok(report
         .requirements
         .into_iter()
@@ -127,7 +137,7 @@ pub(crate) async fn requirements(
 
 async fn report(
     project: Option<PathBuf>,
-    one_sign_in_suffices: bool,
+    is_one_sign_in_enough: bool,
     context: Context,
 ) -> Result<Report, String> {
     let clipboard = {
@@ -143,6 +153,11 @@ async fn report(
     for provider in context.sign_in_providers.clone() {
         sign_ins.spawn_blocking(move || (provider.name().as_str().to_owned(), provider.sign_in()));
     }
+    let mut early_answer = if is_one_sign_in_enough {
+        Arc::clone(&context.early_answer).try_acquire_owned().ok()
+    } else {
+        None
+    };
     while let Some(answer) = sign_ins.join_next().await {
         let (name, sign_in) = answer.map_err(|error| error.to_string())?;
         let is_signed_in = matches!(sign_in.status, cockpit_provider_api::SignInStatus::SignedIn);
@@ -154,12 +169,15 @@ async fn report(
         {
             found.sign_in = sign_in_fact(sign_in);
         }
-        if one_sign_in_suffices && is_signed_in {
+        if is_signed_in && let Some(early_answer) = early_answer.take() {
+            // Each status command still running ends within its own deadline.
+            tokio::spawn(async move {
+                while sign_ins.join_next().await.is_some() {}
+                drop(early_answer);
+            });
             break;
         }
     }
-    // A status command still running is left to end by itself, within its own deadline.
-    sign_ins.detach_all();
     let (dir, checkout) = match &project {
         Some(dir) => {
             let (dir, checkout) = checkout_of(dir, &context.database).await?;

@@ -133,6 +133,7 @@ impl Routes {
             sign_in_providers: capabilities.sign_in_providers,
             environment: environment.clone(),
             manager: Arc::clone(&capabilities.manager),
+            early_answer: readiness::Context::early_answer(),
         };
         Routes {
             storage: capabilities.storage,
@@ -594,10 +595,10 @@ impl Handler for Routes {
             (
                 Command::Readiness {
                     project,
-                    one_sign_in_suffices,
+                    is_one_sign_in_enough,
                 },
                 Peer::Owner,
-            ) => readiness::route(project, one_sign_in_suffices, self.readiness.clone()),
+            ) => readiness::route(project, is_one_sign_in_enough, self.readiness.clone()),
             (Command::Readiness { .. }, Peer::Agent { .. }) => Route::Answer(owner_only()),
             // The desktop session is the owner's; an agent must not point others at another.
             (Command::DesktopSessionImport { variables }, Peer::Owner) => {

@@ -114,7 +114,7 @@ async fn readiness_names_why_a_providers_declaration_is_refused() {
         .request(
             Command::Readiness {
                 project: None,
-                one_sign_in_suffices: false,
+                is_one_sign_in_enough: false,
             },
             GENEROUS,
         )

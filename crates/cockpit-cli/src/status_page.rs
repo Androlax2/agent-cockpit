@@ -509,7 +509,7 @@ fn fetch_readiness(socket: &Path) -> Result<Readiness, String> {
         socket,
         vec![Command::Readiness {
             project: None,
-            one_sign_in_suffices: false,
+            is_one_sign_in_enough: false,
         }],
         READINESS_DEADLINE,
     )?;

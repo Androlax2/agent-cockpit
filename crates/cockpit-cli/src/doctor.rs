@@ -92,7 +92,7 @@ fn ask_daemon(project: Option<String>) -> Result<Vec<RequirementView>, Unanswere
     let answer = daemon::exchange(
         Command::Readiness {
             project,
-            one_sign_in_suffices: false,
+            is_one_sign_in_enough: false,
         },
         DOCTOR_DEADLINE,
     )

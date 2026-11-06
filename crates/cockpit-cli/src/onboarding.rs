@@ -42,21 +42,18 @@ pub(crate) fn init(arguments: &[OsString]) -> Result<ExitCode, String> {
 /// The usage needs one provider signed in, not each provider's answer, and a status command
 /// can take most of a second (#1048). So the daemon is first asked to answer at the first
 /// signed-in provider; the checklist, which names every provider's sign-in, asks again for
-/// them all when that answer left one out.
+/// them all when that answer may have left one out.
 pub(crate) fn first_run() -> ExitCode {
-    let first_answer = match gather(SignIns::OneSuffices) {
-        Ok(facts) => steps(&facts),
+    let first_answer = match gather(SignIns::OneIsEnough) {
+        Ok(facts) => facts,
         Err(code) => return code,
     };
-    if is_complete(&first_answer) {
+    let first_steps = steps(&first_answer);
+    if is_complete(&first_steps) {
         return crate::usage_error(None);
     }
-    // Only a signed-in provider ends the daemon's wait early, and one completes this step.
-    let may_lack_a_sign_in = first_answer
-        .iter()
-        .any(|step| step.title == SIGN_IN && step.state == State::Done);
-    if !may_lack_a_sign_in {
-        render(&first_answer);
+    if !may_lack_a_sign_in(&first_answer) {
+        render(&first_steps);
         return ExitCode::SUCCESS;
     }
     match gather(SignIns::Every) {
@@ -66,12 +63,28 @@ pub(crate) fn first_run() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Whether the daemon may have answered before a provider's sign-in did. It only does once a
+/// provider is signed in, and one it did not wait for reads `unknown`.
+fn may_lack_a_sign_in(facts: &Facts) -> bool {
+    let Ok(daemon) = &facts.daemon else {
+        return false;
+    };
+    let has_sign_in = |status: ReadinessStatusView| {
+        daemon.requirements.iter().any(|requirement| {
+            requirement.status == status
+                && requirement.name.starts_with("provider ")
+                && requirement.name.ends_with(" sign-in")
+        })
+    };
+    has_sign_in(ReadinessStatusView::Available) && has_sign_in(ReadinessStatusView::Unknown)
+}
+
 /// Which providers' sign-ins the readiness report waits for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SignIns {
     Every,
     /// Until one provider is signed in; all of them when none is.
-    OneSuffices,
+    OneIsEnough,
 }
 
 struct Facts {
@@ -129,7 +142,7 @@ fn ask_daemon(
     let commands = vec![
         Command::Readiness {
             project: None,
-            one_sign_in_suffices: sign_ins == SignIns::OneSuffices,
+            is_one_sign_in_enough: sign_ins == SignIns::OneIsEnough,
         },
         Command::ProjectList,
         Command::SessionList { ended: true },

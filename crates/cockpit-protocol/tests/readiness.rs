@@ -10,21 +10,21 @@ fn a_readiness_request_round_trips_with_and_without_its_optional_fields() {
             json!({"id": 1, "command": {"kind": "readiness"}}),
             Command::Readiness {
                 project: None,
-                one_sign_in_suffices: false,
+                is_one_sign_in_enough: false,
             },
         ),
         (
             json!({"id": 2, "command": {"kind": "readiness", "project": "/p/app"}}),
             Command::Readiness {
                 project: Some("/p/app".to_owned()),
-                one_sign_in_suffices: false,
+                is_one_sign_in_enough: false,
             },
         ),
         (
-            json!({"id": 3, "command": {"kind": "readiness", "one_sign_in_suffices": true}}),
+            json!({"id": 3, "command": {"kind": "readiness", "is_one_sign_in_enough": true}}),
             Command::Readiness {
                 project: None,
-                one_sign_in_suffices: true,
+                is_one_sign_in_enough: true,
             },
         ),
     ] {
