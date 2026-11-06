@@ -131,6 +131,13 @@ pub(crate) fn unapplied_sandbox(
             format!("every agent launch is still refused: {reason}")
         }
     };
+    let refused_once_applied = match (written.value, backend) {
+        (AgentSandbox::Required, Err(reason)) => format!(
+            "; this host has no sandbox ({reason}), so \"required\" then refuses every launch \
+             until that is fixed"
+        ),
+        _ => String::new(),
+    };
     Requirement::needs(
         "sandbox",
         Status::MissingPrerequisite,
@@ -141,8 +148,10 @@ pub(crate) fn unapplied_sandbox(
             written.source,
             applied.as_str()
         ),
-        "run `torlek config reload`, which applies the owner config to the agents launched \
-         after it; restarting the daemon applies it too",
+        format!(
+            "run `torlek config reload`, which applies the owner config to the agents launched \
+             after it; restarting the daemon applies it too{refused_once_applied}"
+        ),
     )
 }
 

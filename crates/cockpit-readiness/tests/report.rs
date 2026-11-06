@@ -19,6 +19,14 @@ const NO_BUBBLEWRAP: &str = "bubblewrap (`bwrap`) is not on the daemon's PATH";
 /// The owner's file of a daemon that applies `required`: the file it read says so.
 const OWNER_REQUIRES_THE_SANDBOX: &str = "[agents]\nsandbox = \"required\"\n";
 
+/// The owner's file `host`'s daemon last read: nothing changed since.
+fn owner_file_as_applied(host: &HostFacts) -> String {
+    format!(
+        "[agents]\nsandbox = \"{}\"\n",
+        host.sandbox_setting.as_str()
+    )
+}
+
 fn ready_host() -> HostFacts {
     HostFacts {
         platform: Platform::Linux,
@@ -287,9 +295,7 @@ fn a_host_fact_decides_its_requirement_status() {
     ];
     for (host, name, status) in cases {
         let fixture = Fixture::new();
-        if host.sandbox_setting == AgentSandbox::Required {
-            fixture.configure("", Some(OWNER_REQUIRES_THE_SANDBOX));
-        }
+        fixture.configure("", Some(&owner_file_as_applied(&host)));
 
         let report = assess(&host, &fixture.owner_config(), None);
 
@@ -534,6 +540,28 @@ fn a_sandbox_setting_the_daemon_has_not_read_blocks_naming_what_still_applies() 
     }
 }
 
+/// #963: the reload the line names brings `required` into force, and a host without the
+/// sandbox then refuses every launch. The next action says so before the owner reloads.
+#[test]
+fn a_written_required_on_a_host_without_the_sandbox_warns_that_launches_are_then_refused() {
+    let fixture = Fixture::new();
+    fixture.configure("", Some(OWNER_REQUIRES_THE_SANDBOX));
+    let host = HostFacts {
+        sandbox_backend: Err(NO_BUBBLEWRAP.to_owned()),
+        ..ready_host()
+    };
+
+    let report = assess(&host, &fixture.owner_config(), None);
+
+    let next = requirement(&report, "sandbox").next.as_deref().unwrap();
+    assert!(
+        next.contains("`torlek config reload`")
+            && next.contains(NO_BUBBLEWRAP)
+            && next.contains("\"required\" then refuses every launch"),
+        "{next}"
+    );
+}
+
 /// #963: a line the owner deleted leaves the product default, which the daemon has not read
 /// either.
 #[test]
@@ -751,15 +779,15 @@ fn the_execution_environment_the_project_expects_meets_what_the_owner_granted() 
     ];
     for (environment, setting, backend, status) in cases {
         let fixture = Fixture::new();
-        fixture.configure(
-            &format!("[execution]\nenvironment = \"{environment}\"\n"),
-            None,
-        );
         let host = HostFacts {
             sandbox_setting: setting,
             sandbox_backend: backend.clone(),
             ..ready_host()
         };
+        fixture.configure(
+            &format!("[execution]\nenvironment = \"{environment}\"\n"),
+            Some(&owner_file_as_applied(&host)),
+        );
 
         let report = fixture.report(&host, &fixture.facts());
 
@@ -767,6 +795,37 @@ fn the_execution_environment_the_project_expects_meets_what_the_owner_granted() 
         assert_eq!(
             requirement.status, status,
             "{environment} {setting:?} {backend:?}: {requirement:#?}"
+        );
+    }
+}
+
+/// #963: with a written `agents.sandbox` the daemon has not read, the line would advise
+/// writing what the owner's file already says. It defers to the `sandbox` line instead.
+#[test]
+fn the_execution_environment_is_unknown_while_the_written_sandbox_setting_is_not_in_force() {
+    for environment in ["native", "sandbox"] {
+        let fixture = Fixture::new();
+        fixture.configure(
+            &format!("[execution]\nenvironment = \"{environment}\"\n"),
+            Some(OWNER_REQUIRES_THE_SANDBOX),
+        );
+
+        let report = fixture.report(&ready_host(), &fixture.facts());
+
+        let requirement = requirement(&report, "execution environment");
+        assert_eq!(requirement.status, Status::Unknown, "{requirement:#?}");
+        assert!(
+            requirement.detail.contains(&format!(
+                "the project expects {environment} (project config "
+            )) && requirement
+                .detail
+                .contains("agents.sandbox = \"required\", which the running daemon has not read"),
+            "{requirement:#?}"
+        );
+        let next = requirement.next.as_deref().unwrap();
+        assert!(
+            next.contains("`sandbox` line") && !next.contains("set agents.sandbox"),
+            "{requirement:#?}"
         );
     }
 }

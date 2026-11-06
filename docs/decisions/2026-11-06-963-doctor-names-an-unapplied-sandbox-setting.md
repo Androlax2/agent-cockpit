@@ -15,6 +15,13 @@ ruled out reading the file at each use.
 - **The next action is `torlek config reload`, with the restart named second.** The issue asked
   for a restart, but the reload has applied `agents.sandbox` to later launches since #61
   (`crates/cockpit-daemon/tests/config_reload.rs`), and it keeps the running sessions.
+- **A written `required` on a host without the sandbox is announced before the reload:** the
+  next action adds that every launch is then refused, with the probe's reason.
+- **A project's `execution environment` is `unknown` meanwhile.** It is assessed against the
+  applied value, so its advice would be to write what the file already says; it points at the
+  `sandbox` line instead. A project that expects Docker is not concerned.
+- **A project file that does not read leaves nothing to compare.** Readiness has one merged
+  configuration; `config` blocks on that file first, and the comparison shows once it reads.
 - **`config show`'s note on stderr lists `agents.sandbox` too.** It named the three other
   settings a reload applies, which read as if the sandbox needed none.
 - **Only `agents.sandbox` is compared.** The other reloaded settings (`agents.desktop_session`
