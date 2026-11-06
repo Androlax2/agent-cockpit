@@ -126,12 +126,11 @@ impl Desktop {
     }
 
     /// One low-urgency notification of what was held and still needs the owner, once the
-    /// last hold ended.
+    /// last hold ended; `notices` is not empty.
     fn summary_arguments(notices: &[&Notice]) -> Vec<String> {
         let mut ordered = notices.to_vec();
         ordered.sort_by_key(|notice| notice.event);
         let summary = match ordered.len() {
-            0 => return Vec::new(),
             1 => "While you were held: 1 thing still needs you".to_owned(),
             count => format!("While you were held: {count} things still need you"),
         };
@@ -276,14 +275,18 @@ pub struct Outlets {
 
 impl Outlets {
     /// Tells, without a sound, what a hold kept back and still needs the owner (#62): one
-    /// low-urgency notification, for the events turned on for the desktop.
+    /// low-urgency notification, for the events turned on for either outlet.
     pub fn tell_summary(&self, notices: &[Notice]) {
         let Some(desktop) = &self.desktop else {
             return;
         };
+        // An event on only for sound was kept too: the summary is the one place it is told.
         let shown: Vec<&Notice> = notices
             .iter()
-            .filter(|notice| self.desktop_events.contains(&notice.event))
+            .filter(|notice| {
+                self.desktop_events.contains(&notice.event)
+                    || self.sound_events.contains(&notice.event)
+            })
             .collect();
         if shown.is_empty() {
             return;

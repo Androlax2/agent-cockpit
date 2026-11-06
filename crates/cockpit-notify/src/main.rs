@@ -18,8 +18,8 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_notify::{
-    Desktop, Detector, Event, FeedEvent, Hold, HoldSources, Host, Notifier, Outlets, Sound, Status,
-    follow_feed, names, write_status,
+    Desktop, Detector, Detectors, Event, FeedEvent, Hold, Host, Notice, Notifier, Outlets, Sound,
+    Status, follow_feed, names, standing_holds, write_status,
 };
 use cockpit_protocol::{Command, Reply};
 use tokio::sync::{mpsc, watch};
@@ -127,11 +127,13 @@ fn notify(options: Options) -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|error| format!("cannot start the runtime: {error}"))?;
-    let holds = HoldSources::new(options.away_file, options.detectors);
     let outcome = runtime.block_on(run(
         options.socket,
         outlets,
-        holds,
+        HoldPlaces {
+            away_file: options.away_file,
+            detectors: Detectors::new(options.detectors),
+        },
         options.status_file.clone(),
     ));
     if let Err(problem) = &outcome {
@@ -161,14 +163,23 @@ fn find_outlets(host: &Host, options: &Options) -> Outlets {
     }
 }
 
+/// Where the holds come from.
+struct HoldPlaces {
+    away_file: Option<PathBuf>,
+    detectors: Detectors,
+}
+
 async fn run(
     socket: PathBuf,
     outlets: Outlets,
-    mut holds: HoldSources,
+    holds: HoldPlaces,
     status_file: Option<PathBuf>,
 ) -> Result<(), String> {
     let (feed_events, mut feed) = mpsc::channel::<FeedEvent>(1);
     tokio::spawn(follow_feed(socket.clone(), feed_events));
+    let (detected_updates, mut detected) = watch::channel(BTreeSet::new());
+    tokio::spawn(keep_detecting(holds.detectors, detected_updates));
+    let away_file = holds.away_file;
     let (status_updates, status_view) = watch::channel(None);
     if let Some(path) = status_file {
         tokio::spawn(keep_status_file(path, status_view));
@@ -188,10 +199,14 @@ async fn run(
     refresh.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         let commands = tokio::select! {
-            _ = refresh.tick() => {
-                let standing = holds.standing().await;
-                outlets.tell_summary(&hold.set_standing(standing, &notifier));
-                Notifier::refresh_commands()
+            _ = refresh.tick() => Notifier::refresh_commands(),
+            changed = detected.changed() => {
+                if changed.is_err() {
+                    return Err("the hold detection task stopped".to_owned());
+                }
+                // Seen: the holds are read where they are told.
+                detected.borrow_and_update();
+                Vec::new()
             }
             event = feed.recv() => match event {
                 None => return Err("the change feed task stopped".to_owned()),
@@ -199,7 +214,8 @@ async fn run(
                     let outcome = notifier.apply_changes(&batch);
                     is_feed_current = outcome.is_ok();
                     let notices = outcome.as_ref().map(Vec::as_slice).unwrap_or_default();
-                    outlets.tell(&hold.pass(notices));
+                    let standing = standing_holds(away_file.as_deref(), &detected.borrow());
+                    tell(&outlets, &mut hold, standing, &notifier, notices);
                     // The feed task waits on this answer; it is gone only when we stop.
                     let _ = applied.send(outcome.map(drop));
                     notifier.changed_view_commands()
@@ -212,21 +228,56 @@ async fn run(
             },
         };
         for command in commands {
-            match daemon.request(command.clone()).await {
-                Ok(reply) => outlets.tell(&hold.pass(&notifier.answer(&command, Ok(reply)))),
-                Err(Failure::Refused(problem)) => {
-                    outlets.tell(&hold.pass(&notifier.answer(&command, Err(problem))));
-                }
+            let answer = match daemon.request(command.clone()).await {
+                Ok(reply) => Ok(reply),
+                Err(Failure::Refused(problem)) => Err(problem),
                 // Not an answer: what the notifier starts on must come from the daemon, or
                 // everything already waiting would be news once it answers.
                 Err(Failure::Unreachable) => break,
-            }
+            };
+            let notices = notifier.answer(&command, answer);
+            let standing = standing_holds(away_file.as_deref(), &detected.borrow());
+            tell(&outlets, &mut hold, standing, &notifier, &notices);
         }
+        // After the answers, so a summary lists only what they left standing.
+        let standing = standing_holds(away_file.as_deref(), &detected.borrow());
+        tell(&outlets, &mut hold, standing, &notifier, &[]);
         let status = notifier.status(daemon.pause.is_none() && is_feed_current, hold.standing());
         status_updates.send_if_modified(|shown| {
             let is_new = shown.as_ref() != Some(&status);
             if is_new {
                 *shown = Some(status);
+            }
+            is_new
+        });
+    }
+}
+
+/// Tells `notices`, kept back while a hold in `standing` stands; first, when the last hold
+/// has just ended, the quiet summary of what was kept and still stands.
+fn tell(
+    outlets: &Outlets,
+    hold: &mut Hold,
+    standing: BTreeSet<String>,
+    notifier: &Notifier,
+    notices: &[Notice],
+) {
+    outlets.tell_summary(&hold.set_standing(standing, notifier));
+    outlets.tell(&hold.pass(notices));
+}
+
+/// Runs the owner's hold detectors at every refresh, apart from the requests and the feed,
+/// which a slow detector must not hold up.
+async fn keep_detecting(mut detectors: Detectors, updates: watch::Sender<BTreeSet<String>>) {
+    let mut refresh = tokio::time::interval(REFRESH);
+    refresh.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    while !updates.is_closed() {
+        refresh.tick().await;
+        let standing = detectors.standing().await;
+        updates.send_if_modified(|shown| {
+            let is_new = *shown != standing;
+            if is_new {
+                *shown = standing;
             }
             is_new
         });

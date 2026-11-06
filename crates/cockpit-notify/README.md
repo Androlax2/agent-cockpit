@@ -43,13 +43,15 @@ after ten seconds; nothing waits on it. macOS stays with #568.
 While a hold stands the notifier keeps quiet: no notification, no sound (report 19, the
 owner's choice on #62). What it would have told is kept, once per session and event; when the
 last hold ends, one low-urgency notification without a sound lists what of it still stands.
-The holds are checked every five seconds:
 
-- `away` stands while the `--away-file` exists; `torlek notify away on|off` writes and removes
-  it, beside the status file, so it ends at logout with the runtime directory.
-- `--hold NAME=PROGRAM` stands while `PROGRAM` exits 0 within three seconds. One that fails,
-  cannot start or runs longer does not hold, and is logged once. `torlek notify` passes the
-  owner's `[notify.hold]` programs.
+- `away` stands while the `--away-file` exists, checked at every notice; `torlek notify away
+  on|off` writes and removes it beside the status file, so it ends at logout when that is in
+  `$XDG_RUNTIME_DIR`.
+- `--hold NAME=PROGRAM` stands while `PROGRAM` exits 0 within three seconds. Every program
+  runs at once, every five seconds, in a task of its own, so a slow one holds up nothing else.
+  One that fails, cannot start or runs longer does not hold, and is logged once; only the
+  program itself is stopped, so a script should end its children or `exec` its last command.
+  `torlek notify` passes the owner's `[notify.hold]` programs.
 
 A hold is not the `hold` event: that one tells a session is held on the owner's permission.
 

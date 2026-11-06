@@ -5,8 +5,8 @@
 //! profile's runtime directory: it describes the running notifier, not lasting state.
 //!
 //! `torlek notify away on|off` sets the `away` hold (report 19) with a file in the same
-//! directory, which the notifier checks every five seconds: like the session it marks, it
-//! ends when the runtime directory is cleared at logout.
+//! directory, which the notifier checks at every notice: like the session it marks, it ends
+//! at logout when that directory is `$XDG_RUNTIME_DIR`.
 
 use std::ffi::OsString;
 use std::fs::{DirBuilder, OpenOptions};
@@ -49,8 +49,9 @@ fn config_and_runtime() -> Result<(cockpit_config::EffectiveConfig, PathBuf), Ex
     Ok((config, runtime))
 }
 
+/// Needs only the runtime directory, so a configuration error cannot keep the owner away.
 fn set_away(is_away: bool) -> Result<ExitCode, ExitCode> {
-    let (_, runtime) = config_and_runtime()?;
+    let runtime = crate::agent::socket_dir()?;
     let away = runtime.join(AWAY_FILE);
     if is_away {
         DirBuilder::new()

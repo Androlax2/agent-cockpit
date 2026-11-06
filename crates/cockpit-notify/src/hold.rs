@@ -4,7 +4,7 @@
 //! exit status 0 means it stands (a meeting, a game). The daemon knows none of them.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -41,39 +41,59 @@ impl Detector {
     }
 }
 
-/// Where the holds come from, and what each detector last answered, so a detector that
-/// fails is logged once rather than at every refresh.
+/// The holds that stand now: `away` while `away_file` exists, and those `detected` last.
+/// Checked at every notice, so `torlek notify away on` holds from the next one on.
+pub fn standing_holds(away_file: Option<&Path>, detected: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut standing = detected.clone();
+    if away_file.is_some_and(Path::exists) {
+        standing.insert(AWAY.to_owned());
+    }
+    standing
+}
+
+/// The owner's detector programs, and which failed when last run, so a detector that fails
+/// is logged once rather than at every refresh.
 #[derive(Debug)]
-pub struct HoldSources {
-    away_file: Option<PathBuf>,
+pub struct Detectors {
     detectors: Vec<Detector>,
     failing: BTreeSet<String>,
 }
 
-impl HoldSources {
-    pub fn new(away_file: Option<PathBuf>, detectors: Vec<Detector>) -> HoldSources {
-        HoldSources {
-            away_file,
+impl Detectors {
+    pub fn new(detectors: Vec<Detector>) -> Detectors {
+        Detectors {
             detectors,
             failing: BTreeSet::new(),
         }
     }
 
-    /// The holds that stand now: `away` while its file exists, and each detector that exits
-    /// 0 within its deadline. One that cannot run, or runs too long, does not hold.
+    /// The detectors that hold now: those that exit 0 within their deadline, all run at
+    /// once. One that cannot run, or runs too long, does not hold.
     pub async fn standing(&mut self) -> BTreeSet<String> {
-        let mut standing = BTreeSet::new();
-        if self.away_file.as_ref().is_some_and(|file| file.exists()) {
-            standing.insert(AWAY.to_owned());
-        }
+        let mut running = tokio::task::JoinSet::new();
         for detector in &self.detectors {
-            match detect(detector).await {
+            let detector = detector.clone();
+            running.spawn(async move {
+                let outcome = detect(&detector).await;
+                (detector, outcome)
+            });
+        }
+        let mut standing = BTreeSet::new();
+        while let Some(joined) = running.join_next().await {
+            let (detector, outcome) = match joined {
+                Ok(finished) => finished,
+                Err(error) => {
+                    tracing::error!(%error, "a hold's detector task failed");
+                    continue;
+                }
+            };
+            match outcome {
                 Ok(holds) => {
                     if self.failing.remove(&detector.name) {
                         tracing::info!(hold = detector.name, "the hold's detector runs again");
                     }
                     if holds {
-                        standing.insert(detector.name.clone());
+                        standing.insert(detector.name);
                     }
                 }
                 Err(problem) => {
@@ -119,18 +139,20 @@ pub struct Hold {
 
 impl Hold {
     /// The notices to tell now: all of them while no hold stands; none while one does, kept
-    /// for the summary.
+    /// for the summary, the latest of each session's event.
     pub fn pass(&mut self, notices: &[Notice]) -> Vec<Notice> {
         if self.standing.is_empty() {
             return notices.to_vec();
         }
         for notice in notices {
-            let is_kept = self
+            let kept = self
                 .held
-                .iter()
-                .any(|held| held.session == notice.session && held.event == notice.event);
-            if !is_kept {
-                self.held.push(notice.clone());
+                .iter_mut()
+                .find(|held| held.session == notice.session && held.event == notice.event);
+            match kept {
+                // The latest says what stands now.
+                Some(kept) => *kept = notice.clone(),
+                None => self.held.push(notice.clone()),
             }
         }
         Vec::new()

@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use cockpit_notify::{AWAY, Detector, Hold, HoldSources, Notice, Notifier};
+use cockpit_notify::{AWAY, Detector, Detectors, Hold, Notice, Notifier, standing_holds};
 use cockpit_protocol::SessionView;
 use common::{change_session, loaded, report, session};
 
@@ -71,6 +71,21 @@ fn what_no_longer_stands_when_the_hold_ends_is_not_in_the_summary() {
 }
 
 #[test]
+fn the_summary_keeps_the_latest_detail_of_a_session_s_event() {
+    let (notifier, notices) = finished();
+    let mut hold = Hold::default();
+    hold.set_standing(holds(&[AWAY]), &notifier);
+    let later = Notice {
+        detail: Some("done again".to_owned()),
+        ..notices[0].clone()
+    };
+    hold.pass(&notices);
+    hold.pass(std::slice::from_ref(&later));
+
+    assert_eq!(hold.set_standing(holds(&[]), &notifier), [later]);
+}
+
+#[test]
 fn one_hold_ending_while_another_stands_tells_nothing() {
     let (notifier, notices) = finished();
     let mut hold = Hold::default();
@@ -105,24 +120,32 @@ fn script(dir: &Path, name: &str, body: &str) -> Detector {
 }
 
 #[tokio::test]
-async fn the_away_file_and_each_detector_that_exits_0_stand() {
+async fn each_detector_that_exits_0_stands() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut detectors = Detectors::new(vec![
+        script(dir.path(), "meeting", "exit 0"),
+        script(dir.path(), "game", "exit 1"),
+        Detector {
+            name: "gone".to_owned(),
+            program: dir.path().join("no-such-program"),
+        },
+    ]);
+
+    assert_eq!(detectors.standing().await, holds(&["meeting"]));
+}
+
+#[test]
+fn away_stands_while_its_file_exists_beside_what_was_detected() {
     let dir = tempfile::tempdir().unwrap();
     let away_file = dir.path().join("away");
+    let detected = holds(&["meeting"]);
     std::fs::write(&away_file, "").unwrap();
-    let mut sources = HoldSources::new(
-        Some(away_file.clone()),
-        vec![
-            script(dir.path(), "meeting", "exit 0"),
-            script(dir.path(), "game", "exit 1"),
-            Detector {
-                name: "gone".to_owned(),
-                program: dir.path().join("no-such-program"),
-            },
-        ],
+
+    assert_eq!(
+        standing_holds(Some(&away_file), &detected),
+        holds(&[AWAY, "meeting"])
     );
 
-    assert_eq!(sources.standing().await, holds(&[AWAY, "meeting"]));
-
     std::fs::remove_file(&away_file).unwrap();
-    assert_eq!(sources.standing().await, holds(&["meeting"]));
+    assert_eq!(standing_holds(Some(&away_file), &detected), detected);
 }

@@ -227,8 +227,8 @@ question = false    # no sound for a question
 
 The events are `failure`, `hold`, `question`, `quota` and `finished`.
 
-To keep it quiet for a while, `torlek notify away on`; `torlek notify away off` ends it, and
-logging out ends it too. Your own programs can hold it quiet as well: a program that exits 0
+To keep it quiet for a while, `torlek notify away on`; `torlek notify away off` ends it, and so
+does logging out where your desktop sets `XDG_RUNTIME_DIR`. Your own programs can hold it quiet as well: a program that exits 0
 while you are in a meeting or playing, named in the owner configuration with an absolute path,
 which the notifier runs every five seconds:
 
