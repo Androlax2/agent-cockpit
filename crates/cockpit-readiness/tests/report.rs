@@ -16,6 +16,9 @@ const NATIVE_BACKEND: &str = "torlek-sandbox with bubblewrap 0.13.1 and Landlock
 
 const NO_BUBBLEWRAP: &str = "bubblewrap (`bwrap`) is not on the daemon's PATH";
 
+/// The owner's file of a daemon that applies `required`: the file it read says so.
+const OWNER_REQUIRES_THE_SANDBOX: &str = "[agents]\nsandbox = \"required\"\n";
+
 fn ready_host() -> HostFacts {
     HostFacts {
         platform: Platform::Linux,
@@ -76,6 +79,15 @@ impl Fixture {
         };
         cockpit_config::load(&environment, Some(&self.project_dir()), &[])
             .map_err(|error| error.to_string())
+    }
+
+    /// The owner's configuration alone, as a report without a project reads it.
+    fn owner_config(&self) -> Result<EffectiveConfig, String> {
+        let environment = Environment {
+            home: Some(self.home.path().into()),
+            ..Environment::default()
+        };
+        cockpit_config::load(&environment, None, &[]).map_err(|error| error.to_string())
     }
 
     fn facts(&self) -> ProjectFacts {
@@ -143,7 +155,7 @@ fn every_requirement_that_is_not_available_names_its_next_action() {
     let fixture = Fixture::new();
     fixture.configure(
         "[workflow]\npreset = \"nope\"\n[needs]\ncpu_millis = 99000\n[[checks]]\nname = \"t\"\ncommand = \"x\"\nworking_directory = \"missing\"\n",
-        None,
+        Some(OWNER_REQUIRES_THE_SANDBOX),
     );
     let host = HostFacts {
         platform: Platform::Unsupported("freebsd".to_owned()),
@@ -177,7 +189,7 @@ fn every_requirement_that_is_not_available_names_its_next_action() {
 #[test]
 fn a_required_sandbox_without_a_backend_blocks_naming_why() {
     let fixture = Fixture::new();
-    fixture.configure("", None);
+    fixture.configure("", Some(OWNER_REQUIRES_THE_SANDBOX));
     let host = HostFacts {
         sandbox_setting: AgentSandbox::Required,
         sandbox_backend: Err(NO_BUBBLEWRAP.to_owned()),
@@ -204,7 +216,7 @@ fn a_required_sandbox_without_a_backend_blocks_naming_why() {
 #[test]
 fn a_required_sandbox_with_the_native_backend_is_available_naming_it() {
     let fixture = Fixture::new();
-    fixture.configure("", None);
+    fixture.configure("", Some(OWNER_REQUIRES_THE_SANDBOX));
     let host = HostFacts {
         sandbox_setting: AgentSandbox::Required,
         ..ready_host()
@@ -274,7 +286,12 @@ fn a_host_fact_decides_its_requirement_status() {
         ),
     ];
     for (host, name, status) in cases {
-        let report = assess(&host, &Ok(owner_only_config()), None);
+        let fixture = Fixture::new();
+        if host.sandbox_setting == AgentSandbox::Required {
+            fixture.configure("", Some(OWNER_REQUIRES_THE_SANDBOX));
+        }
+
+        let report = assess(&host, &fixture.owner_config(), None);
 
         assert_eq!(requirement(&report, name).status, status, "{report:#?}");
     }
@@ -449,6 +466,108 @@ fn an_unsandboxed_owner_is_reported_as_such() {
         "{sandbox:#?}"
     );
     assert!(sandbox.next.is_some(), "{sandbox:#?}");
+}
+
+/// #963: the daemon applies the setting it last read. One written since is not in force, so
+/// the line names both values, what still happens to agents and the command that applies the
+/// file, and it blocks.
+#[test]
+fn a_sandbox_setting_the_daemon_has_not_read_blocks_naming_what_still_applies() {
+    let native: Result<String, String> = Ok(NATIVE_BACKEND.to_owned());
+    let missing: Result<String, String> = Err(NO_BUBBLEWRAP.to_owned());
+    let cases = [
+        (
+            "required",
+            AgentSandbox::Off,
+            &native,
+            "agents still run UNSANDBOXED".to_owned(),
+        ),
+        (
+            "off",
+            AgentSandbox::Required,
+            &native,
+            format!("every agent still runs in {NATIVE_BACKEND}"),
+        ),
+        (
+            "off",
+            AgentSandbox::Required,
+            &missing,
+            format!("every agent launch is still refused: {NO_BUBBLEWRAP}"),
+        ),
+    ];
+    for (written, applied, backend, effect) in cases {
+        let fixture = Fixture::new();
+        fixture.configure("", Some(&format!("[agents]\nsandbox = \"{written}\"\n")));
+        let host = HostFacts {
+            sandbox_setting: applied,
+            sandbox_backend: backend.clone(),
+            ..ready_host()
+        };
+
+        let report = assess(&host, &fixture.owner_config(), None);
+
+        let sandbox = requirement(&report, "sandbox");
+        assert_eq!(sandbox.status, Status::MissingPrerequisite, "{sandbox:#?}");
+        assert!(
+            sandbox
+                .detail
+                .starts_with(&format!("agents.sandbox = \"{written}\" (user config ")),
+            "{sandbox:#?}"
+        );
+        assert!(
+            sandbox.detail.contains(&format!(
+                "the running daemon still applies \"{}\"",
+                applied.as_str()
+            )),
+            "{sandbox:#?}"
+        );
+        assert!(sandbox.detail.contains(&effect), "{sandbox:#?}");
+        assert!(
+            sandbox
+                .next
+                .as_deref()
+                .unwrap()
+                .contains("`torlek config reload`"),
+            "{sandbox:#?}"
+        );
+        assert!(!report.is_ready());
+    }
+}
+
+/// #963: a line the owner deleted leaves the product default, which the daemon has not read
+/// either.
+#[test]
+fn a_sandbox_setting_removed_from_the_owner_file_is_named_as_the_product_default() {
+    let host = HostFacts {
+        sandbox_setting: AgentSandbox::Required,
+        ..ready_host()
+    };
+
+    let report = assess(&host, &Ok(owner_only_config()), None);
+
+    let sandbox = requirement(&report, "sandbox");
+    assert!(
+        sandbox
+            .detail
+            .starts_with("agents.sandbox = \"off\" (product default) is not in force"),
+        "{sandbox:#?}"
+    );
+}
+
+/// #963: a file that does not read has no setting to compare, and `config` already blocks on
+/// it: the line stays what the daemon applies.
+#[test]
+fn an_unreadable_configuration_leaves_the_sandbox_line_to_what_the_daemon_applies() {
+    let host = HostFacts {
+        sandbox_setting: AgentSandbox::Required,
+        ..ready_host()
+    };
+
+    let report = assess(&host, &Err("config.toml:2: unknown value".to_owned()), None);
+
+    let sandbox = requirement(&report, "sandbox");
+    assert_eq!(sandbox.status, Status::Available, "{sandbox:#?}");
+    assert!(sandbox.detail.starts_with("sandboxed: "), "{sandbox:#?}");
 }
 
 #[test]

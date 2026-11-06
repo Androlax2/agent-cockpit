@@ -582,7 +582,8 @@ fn show_tells_the_owner_a_running_daemon_applies_session_settings_after_config_r
     assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("agents.desktop_session")
+        stderr.contains("agents.sandbox")
+            && stderr.contains("agents.desktop_session")
             && stderr.contains("after `torlek config reload`"),
         "{stderr}"
     );

@@ -332,6 +332,66 @@ async fn the_default_unsandboxed_setting_is_reported_loudly_without_blocking() {
     assert!(next.unwrap().contains("agents.sandbox"), "{report}");
 }
 
+/// #963: the daemon holds `agents.sandbox` from its last read of the owner's file. A value
+/// written since is not in force, and `doctor` says so with the command that applies it rather
+/// than advise the owner to write what they just wrote.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandbox_setting_written_while_the_daemon_runs_blocks_doctor_naming_the_reload() {
+    let home = Home::new();
+    let _daemon = home.start();
+    home.write_owner_config("[agents]\nsandbox = \"required\"\n");
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    assert_eq!(doctor.status.code(), Some(1), "{report}");
+    let (sandbox, next) = requirement(&report, "sandbox");
+    assert_eq!(status(sandbox), "missing-prerequisite", "{sandbox}");
+    assert!(
+        sandbox.contains("agents.sandbox = \"required\"")
+            && sandbox.contains("config.toml:2")
+            && sandbox.contains("the running daemon still applies \"off\"")
+            && sandbox.contains("UNSANDBOXED"),
+        "{sandbox}"
+    );
+    let next = next.unwrap();
+    assert!(
+        next.contains("`torlek config reload`") && next.contains("restarting the daemon"),
+        "{next}"
+    );
+}
+
+/// #963: the reload `doctor` named brings the written value into force, and `doctor` reports
+/// that value alone. The daemon starts without `bwrap`, so `required` refuses every launch.
+#[tokio::test(flavor = "multi_thread")]
+async fn after_the_reload_doctor_reports_the_written_sandbox_setting_as_in_force() {
+    let home = Home::new();
+    home.write_owner_config("[agents]\nsandbox = \"required\"\n");
+    let _daemon = home.start_without_bubblewrap();
+    home.write_owner_config("[agents]\nsandbox = \"off\"\n");
+    let stale = home.cockpit(&["doctor"], &[]).await;
+    let reloaded = home.cockpit(&["config", "reload"], &[]).await;
+    assert!(reloaded.status.success(), "{}", text(&reloaded.stderr));
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let stale = text(&stale.stdout);
+    let (stale_sandbox, _) = requirement(&stale, "sandbox");
+    assert!(
+        stale_sandbox.contains("the running daemon still applies \"required\"")
+            && stale_sandbox.contains("every agent launch is still refused"),
+        "{stale_sandbox}"
+    );
+    let report = text(&doctor.stdout);
+    assert!(doctor.status.success(), "{report}");
+    let (sandbox, _) = requirement(&report, "sandbox");
+    assert_eq!(status(sandbox), "available", "{sandbox}");
+    assert!(
+        sandbox.contains("agents run UNSANDBOXED") && !sandbox.contains("still applies"),
+        "{sandbox}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unregistered_directory_names_the_project_add_command() {
     let home = Home::new();

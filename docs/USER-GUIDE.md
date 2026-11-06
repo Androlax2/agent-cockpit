@@ -79,6 +79,7 @@ Use the same profile throughout. To isolate a preview's state from an existing i
    A profile used with Torlek's removed Greywall and Greyproxy engines may still hold their `torlek-greyproxy-<profile>` service and state: `torlek doctor` lists them, and once no session an earlier release launched in Greywall still runs, `torlek doctor --remove-old-sandbox` stops the service and deletes them.
    The default desktop setting is `shared`, which exposes your display and filtered session bus to agents; choose it only if you want desktop access.
    Run `torlek config reload` after changing session settings on a running daemon.
+   Until then the daemon keeps the `agents.sandbox` it last read, and `torlek doctor` blocks on its `sandbox` line, naming both values and that command.
    The TUI rings the terminal bell when a session finishes, asks a question or fails; add `[tui]` with `attention_bell = false` to turn that off, then close the manager session and run `torlek tui` again.
 
 3. Choose a provider and follow `torlek init`'s sign-in instruction in your terminal:
