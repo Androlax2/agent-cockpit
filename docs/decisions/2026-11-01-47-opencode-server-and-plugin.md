@@ -36,7 +36,3 @@ Issue #47. Decided by the worker, from OpenCode 1.19.5's source and documentatio
 - **A minimal HTTP/1.1 client on the standard library** (`src/http.rs`): loopback only, one
   request per connection. Rejected: an HTTP client crate, for five JSON requests to a local
   server.
-- **The pinned events are written from 1.19.5's schemas**, not captured live: this session
-  could not run OpenCode. `tests/conformance.rs` (ignored) checks the installed binary and
-  passed against the official 1.19.5 release, run on Theo's machine; capturing live events
-  stays an open `validate` item.

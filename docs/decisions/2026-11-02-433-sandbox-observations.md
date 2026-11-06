@@ -1,5 +1,7 @@
 # Launch-bound owner measurements and isolated enforcement checks
 
+Status: superseded by 2026-11-05-433-live-enforcement-ci.md
+
 Issue #433, implementing report 11's distinction between requested, effective and observed
 isolation. The lane brief supersedes the issue's stale source-build route: real checks
 consume `engine-pins.json` through the managed release installer.

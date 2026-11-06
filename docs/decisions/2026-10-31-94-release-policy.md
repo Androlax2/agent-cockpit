@@ -1,5 +1,7 @@
 # Cockpit releases follow OpenLogi's model, with alphas until M5 and stable 0.x from M5
 
+Status: superseded by 2026-11-01-389-release-channels-follow-milestones.md
+
 Issue #94. Decided by Theo: the OpenLogi model and stable `v0.x.y` only from the M5 cutover,
 as promoted betas. The choices below are the worker's, where the reference is silent; the
 policy is [Releasing](../RELEASING.md).

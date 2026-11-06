@@ -1,5 +1,7 @@
 # The daemon holds an agent's request until its launch's process tree is recorded
 
+Status: superseded by 2026-11-01-316-root-before-agent.md
+
 Issue #279. Decided by the worker: the issue left the daemon hold and a CLI retry open.
 
 - **The daemon waits, read-only and at most 5 s, while the request's launch token names a
