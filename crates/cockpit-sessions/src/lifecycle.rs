@@ -26,8 +26,8 @@ use crate::model::{LaunchPurpose, validate_link};
 use crate::store::{self, NewSession};
 use crate::{
     AgentExit, AgentState, Ender, Error, Launch, LaunchKind, QuestionSource, RestartAll, Restored,
-    Session, SessionId, SessionReport, SessionState, Settings, SleepRefusal, StartRequest,
-    StopTarget, TickReport, WakeCause,
+    Session, SessionBundle, SessionId, SessionReport, SessionState, Settings, SleepRefusal,
+    StartRequest, StopTarget, TickReport, WakeCause,
 };
 
 /// The variable that hands the agent its one-time launch token (report 17).
@@ -344,6 +344,12 @@ impl Sessions {
     pub async fn list(&self, include_ended: bool) -> Result<Vec<Session>, Error> {
         let read = self.database.read().await?;
         store::sessions(&read, include_ended).await
+    }
+
+    /// The bundle each session whose agent is starting, running or stopping launched with.
+    pub async fn live_bundles(&self) -> Result<Vec<SessionBundle>, Error> {
+        let read = self.database.read().await?;
+        store::live_bundles(&read).await
     }
 
     pub async fn get(&self, id: &SessionId) -> Result<Session, Error> {
@@ -2091,7 +2097,16 @@ impl Sessions {
                 false,
             )
             .await?;
-            store::insert_launch(&write, id, kind, purpose, execution, &start_files).await?;
+            store::insert_launch(
+                &write,
+                id,
+                kind,
+                purpose,
+                execution,
+                &start_files,
+                self.settings.bundle.as_ref(),
+            )
+            .await?;
             cockpit_sandbox::record(&write, execution.0, id.as_str(), &prepared.evidence).await?;
             crate::delivery_context::record_launch(
                 &write,

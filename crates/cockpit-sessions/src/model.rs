@@ -202,6 +202,24 @@ pub struct Launch {
     pub launched_at: i64,
 }
 
+/// The release whose helpers and instruction bundle a launch runs with (report 13, #64):
+/// the daemon's own, since the bundle installs as one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchBundle {
+    pub release: String,
+    /// The id of the instruction manifest the launch's brief names.
+    pub instruction_manifest: String,
+}
+
+/// What a session's latest launch started with; `bundle` is `None` for a launch recorded
+/// before launches kept it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionBundle {
+    pub id: SessionId,
+    pub state: SessionState,
+    pub bundle: Option<LaunchBundle>,
+}
+
 /// How a launch's agent ended, as its terminal showed it just before the session closed it
 /// (#629): kept so an agent that exits at start can be diagnosed after its pane is gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -505,6 +523,9 @@ pub struct Settings {
     /// clone (#702). The default names no home, so no configuration is read and no trust is
     /// recorded.
     pub owner_environment: cockpit_config::Environment,
+    /// What every launch records it ran with. `None` records nothing, which `version --all`
+    /// shows as not recorded.
+    pub bundle: Option<LaunchBundle>,
 }
 
 impl Default for Settings {
@@ -539,6 +560,7 @@ impl Default for Settings {
             report_deadline: Duration::from_secs(30),
             agentless_after: Duration::from_secs(10 * 60),
             owner_environment: cockpit_config::Environment::default(),
+            bundle: None,
         }
     }
 }

@@ -18,6 +18,7 @@ mod sessions;
 mod storage;
 mod tasks;
 mod verification;
+mod versions;
 mod workflows;
 
 pub use agent::{
@@ -82,6 +83,7 @@ pub use verification::{
     CheckArtifactView, CheckClaimView, CheckOutcomeView, CheckReceiptView, CheckStatusView,
     GateCheckView, GateOutcomeView, GateView, PendingCheckView, StaleReasonView,
 };
+pub use versions::{LaunchBundleView, SchemaOwnerView, SessionBundleView, VersionReportView};
 pub use workflows::{
     WorkflowBlockedActionView, WorkflowBlockedView, WorkflowCheckpointView, WorkflowGoalView,
     WorkflowHandoffRecordView, WorkflowHandoffView, WorkflowNextView, WorkflowPacketView,

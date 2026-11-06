@@ -54,6 +54,38 @@ pub fn scripted_conversation(
     })
 }
 
+/// Accepts one connection on `socket` for each of `outcomes`, in turn: each answers the
+/// handshake, then its one request with its outcome. Returns the commands received, in order.
+pub fn scripted_connections(
+    socket: &Path,
+    outcomes: Vec<Outcome>,
+) -> tokio::task::JoinHandle<Vec<Command>> {
+    let listener = UnixListener::bind(socket).unwrap();
+    tokio::spawn(async move {
+        let mut received = Vec::new();
+        for outcome in outcomes {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut lines = BufReader::new(read_half).lines();
+            lines.next_line().await.unwrap().expect("a hello");
+            let welcome = HandshakeReply::Accepted(Welcome {
+                protocol_version: ProtocolVersion(1),
+                capabilities: Vec::new(),
+            });
+            send(&mut write_half, serde_json::to_value(welcome).unwrap()).await;
+            let line = lines.next_line().await.unwrap().expect("a request");
+            let request: Request = serde_json::from_str(&line).unwrap();
+            received.push(request.command);
+            let response = ServerFrame::Response(Response {
+                id: request.id,
+                outcome,
+            });
+            send(&mut write_half, serde_json::to_value(response).unwrap()).await;
+        }
+        received
+    })
+}
+
 pub async fn send(writer: &mut tokio::net::unix::OwnedWriteHalf, frame: serde_json::Value) {
     let mut line = serde_json::to_vec(&frame).unwrap();
     line.push(b'\n');

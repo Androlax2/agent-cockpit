@@ -267,6 +267,16 @@ impl Handler for Routes {
                 Peer::Agent { .. } => Route::Answer(owner_only()),
                 Peer::Owner => bug_reports::route(command, Peer::Owner, self.bug_reports.clone()),
             },
+            // Which sessions run which bundle is the owner's to read.
+            (Command::VersionReport, Peer::Owner) => Route::Run {
+                class: WorkClass::Control,
+                job: Box::pin(crate::versions::report(
+                    Arc::clone(&self.database),
+                    Arc::clone(&self.sessions),
+                    &crate::MIGRATION_SETS,
+                )),
+            },
+            (Command::VersionReport, Peer::Agent { .. }) => Route::Answer(owner_only()),
             // The bundle is the product's own text: anyone the daemon serves may read it.
             (command @ (Command::InstructionCatalog | Command::InstructionsRead { .. }), _) => {
                 Route::Answer(agent_context::instructions(command))

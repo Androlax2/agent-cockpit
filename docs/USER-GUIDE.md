@@ -267,6 +267,7 @@ Torlek tells you when a newer release is available. It never downloads, installs
   | `torlek update check` | Asks the release list now, even with checks off. |
 
 - **The update route.** For an installation unpacked as the README shows, `torlek update` prints the README's download, checksum and unpack commands for the new version, then `torlek daemon install`, which replaces the running daemon (stop, then start) while agent sessions keep running. Alpha releases may reset your data: read the release notes first.
+- **After an update.** `torlek version --all` names the release the running daemon runs and each live session's bundle, so "installed, but this daemon and these sessions still run the previous release" reads as a normal, explained state. A daemon of another release than the installed one is told to stop and start; a session keeps its bundle until it is restarted.
 - **Not supported yet.** An installation that is not a release archive unpacked in `~/.local/lib/torlek` as the README shows (a distribution package once #562, #563 and #565 publish them, an archive unpacked elsewhere, or a build from source) is told so, with no commands: update it the way you installed it. There is no macOS build (#568). The check needs `curl`, which the install route needs as well.
 
 ## Help and support

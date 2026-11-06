@@ -2100,3 +2100,6 @@ async fn a_session_in_the_main_checkout_never_records_harness_trust() {
 
 #[path = "sessions/lost_terminal.rs"]
 mod lost_terminal;
+
+#[path = "sessions/version_report.rs"]
+mod version_report;
