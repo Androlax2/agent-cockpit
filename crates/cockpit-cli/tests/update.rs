@@ -541,6 +541,19 @@ fn machine_readable_commands_never_check_or_print_a_notice() {
 }
 
 #[test]
+fn a_check_on_a_fresh_home_creates_the_state_folder_private_to_the_owner() {
+    let setup = Setup::archive_install();
+    newer_alpha_published(&setup);
+    let output = setup.torlek(&["update", "check"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let mode = fs::metadata(setup.state_path().parent().unwrap())
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700, "mode is {:o}", mode & 0o777);
+}
+
+#[test]
 fn a_damaged_state_file_is_reported_by_update_and_never_interrupts_another_command() {
     let setup = Setup::archive_install();
     newer_alpha_published(&setup);

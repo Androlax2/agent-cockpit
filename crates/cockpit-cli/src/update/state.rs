@@ -3,8 +3,9 @@
 //! file in the profile's state directory. The rules for when to check and when to speak are
 //! pure functions of this state and the clock, so tests drive them without either.
 
-use std::fs;
+use std::fs::{self, DirBuilder};
 use std::io::ErrorKind;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
 use serde_json::{Map, Value, json};
@@ -109,7 +110,13 @@ pub(super) fn save(path: &Path, state: &UpdateState) -> Result<(), String> {
     let directory = path
         .parent()
         .ok_or_else(|| format!("{}: has no directory", path.display()))?;
-    fs::create_dir_all(directory).map_err(|error| format!("{}: {error}", directory.display()))?;
+    // 0700 because the daemon refuses a state directory any wider, and on a fresh install
+    // this check can create it first (#961).
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(directory)
+        .map_err(|error| format!("{}: {error}", directory.display()))?;
     // Written beside the file and renamed over it, so a reader never sees half a file; the
     // process id keeps two commands running at once off each other's temporary file.
     let temporary = path.with_extension(format!("json.{}.new", std::process::id()));
