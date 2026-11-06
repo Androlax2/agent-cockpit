@@ -316,7 +316,7 @@ fn sandbox_credential(provider: &str, state: &ProviderCredentialState) -> Requir
         ),
         ProviderCredentialState::Unusable { reason } => Requirement::needs(
             name,
-            Status::NeedsAuthorization,
+            Status::MissingPrerequisite,
             format!("unusable, so its sandboxed sessions do not launch: {reason}"),
             "fix the file it names, or remove it",
         ),

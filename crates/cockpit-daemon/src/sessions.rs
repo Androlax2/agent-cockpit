@@ -67,7 +67,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
                 })
                 .await?;
             let mut view = current_view(&sessions, &started, &inputs).await?;
-            view.sign_in_needed = sign_in_needed(&sessions, started.provider.as_str()).await?;
+            view.sign_in_needed = sign_in_needed(&sessions, started.provider.as_str()).await;
             Ok(Reply::Session {
                 session: Box::new(view),
             })
@@ -675,11 +675,20 @@ fn session_view(
 }
 
 /// What `session new` tells the owner to set when the started session's provider has no
-/// credential its sandbox can add (#968); `None` when it has one or agents run unsandboxed.
-async fn sign_in_needed(sessions: &Sessions, provider: &str) -> Result<Option<String>, Error> {
+/// credential its sandbox can add (#968); `None` when it has one, agents run unsandboxed or
+/// the state cannot be read.
+async fn sign_in_needed(sessions: &Sessions, provider: &str) -> Option<String> {
     use cockpit_config::ProviderCredentialState;
 
-    Ok(match sessions.sandbox_credential_state(provider).await? {
+    // The session already started: a failed hint must not turn it into an error reply.
+    let state = match sessions.sandbox_credential_state(provider).await {
+        Ok(state) => state,
+        Err(error) => {
+            tracing::warn!(%provider, %error, "the sandboxed sign-in hint is not shown");
+            return None;
+        }
+    };
+    match state {
         None | Some(ProviderCredentialState::Configured { .. }) => None,
         Some(ProviderCredentialState::Missing { files }) => {
             let files: Vec<String> = files
@@ -696,5 +705,5 @@ async fn sign_in_needed(sessions: &Sessions, provider: &str) -> Result<Option<St
         Some(ProviderCredentialState::Unusable { reason }) => Some(format!(
             "the {provider} provider's credential is unusable: {reason}"
         )),
-    })
+    }
 }

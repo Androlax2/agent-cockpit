@@ -189,14 +189,14 @@ async fn report(
     };
     for fact in &mut host.providers {
         if let Ok(found) = fact.found.as_mut() {
+            // A failure that is not the credential file's is no row about the file.
             found.sandbox_credential = context
                 .sessions
                 .sandbox_credential_state(&fact.name)
                 .await
                 .unwrap_or_else(|error| {
-                    Some(cockpit_config::ProviderCredentialState::Unusable {
-                        reason: error.to_string(),
-                    })
+                    tracing::warn!(provider = %fact.name, %error, "the sandboxed sign-in is not checked");
+                    None
                 });
         }
     }

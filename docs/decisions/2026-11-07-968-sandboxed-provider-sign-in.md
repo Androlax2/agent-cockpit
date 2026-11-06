@@ -24,7 +24,11 @@ Torlek from `projects.trusted` (answer A, relayed by the coordinator).
 - **Rejected:** mounting or copying the owner's `~/.claude/.credentials.json` or `~/.claude.json`
   into the sandbox (#858): either shows the owner's account to a sandboxed agent.
 - **Residual:** a project not in `projects.trusted` asks for the folder trust at each sandboxed
-  session; Codex and OpenCode bindings are declared but not exercised with a real harness.
+  session. In a trusted main checkout the trust covers the `.claude/` settings an earlier
+  session left there, as the owner's own answer did unsandboxed. OpenCode's two keys sit on
+  different hosts but count as two accounts, so only one binds. Whether Claude Code's
+  first-run screens show in a fresh session home is not verified with a real harness, nor are
+  the Codex and OpenCode bindings.
 
 Evidence: `crates/cockpit-daemon/tests/sandbox.rs`
 (`the_providers_credential_is_added_on_its_hosts_and_the_agent_holds_a_placeholder`,

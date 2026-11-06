@@ -1105,6 +1105,24 @@ fn a_sandboxed_provider_without_a_credential_names_the_files_to_write() {
     assert!(next.contains("chmod 600"), "{next}");
 }
 
+/// The launch refuses an unusable credential, so `doctor` must not pass it.
+#[test]
+fn an_unusable_sandboxed_credential_blocks_like_the_launch_it_refuses() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let mut host = ready_host();
+    let found = host.providers[0].found.as_mut().unwrap();
+    found.sandbox_credential = Some(cockpit_config::ProviderCredentialState::Unusable {
+        reason: "/config/provider-credentials/claude/ANTHROPIC_API_KEY is mode 644".to_owned(),
+    });
+
+    let report = assess(&host, &fixture.config(), None);
+
+    let fact = requirement(&report, "provider claude sandboxed sign-in");
+    assert_eq!(fact.status, Status::MissingPrerequisite);
+    assert!(fact.status.blocks());
+}
+
 #[test]
 fn a_sandboxed_provider_with_a_credential_names_its_file_and_variable() {
     let fixture = Fixture::new();
