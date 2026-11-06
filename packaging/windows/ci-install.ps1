@@ -36,6 +36,9 @@ $appDirectory = Join-Path $env:SCOOP 'apps/torlek/current'
 $pwshPath = (Get-Command pwsh -CommandType Application).Source
 $windowsPowerShellPath = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
 $linuxRoot = '.local/lib/torlek'
+# install.sh's layout (#1047): the bundle beside earlier ones, and ~/.local/bin/torlek linked into it.
+$linuxBundle = "$linuxRoot/$bundleName"
+$linuxLink = '.local/bin/torlek'
 $shellTimeoutSeconds = 180
 
 function Invoke-InShell {
@@ -132,7 +135,7 @@ function Assert-True {
 
 function Test-InstalledInWsl {
     # A failing wsl.exe must not read as "not installed": the negative checks would pass unseen.
-    $probe = Invoke-Wsl -Command @('/bin/sh', '-c', "if test -d `$HOME/$linuxRoot/v$Version; then echo installed; else echo absent; fi")
+    $probe = Invoke-Wsl -Command @('/bin/sh', '-c', "if test -d `$HOME/$linuxBundle; then echo installed; else echo absent; fi")
     if ($probe.ExitCode -ne 0 -or $probe.Output.Trim() -notin @('installed', 'absent')) {
         Write-Host $probe.Output
         throw "could not look for the Linux install (exit code $($probe.ExitCode))"
@@ -229,17 +232,17 @@ try {
     Write-Host '::endgroup::'
 
     $installedFiles = @(Get-ChildItem -LiteralPath $appDirectory -File | ForEach-Object Name | Where-Object { $_ -notin @('scoop-manifest.json', 'scoop-install.json') } | Sort-Object)
-    $expectedFiles = @('SHA256SUMS', 'install-in-wsl.sh', "$bundleName.archive", 'torlek-wsl.ps1', 'torlek.ps1') | Sort-Object
+    $expectedFiles = @('SHA256SUMS', 'install-in-wsl.sh', 'install.sh', "$bundleName.archive", 'torlek-wsl.ps1', 'torlek.ps1') | Sort-Object
     Write-Host "installed files: $($installedFiles -join ', ')"
     Write-Host "expected files:  $($expectedFiles -join ', ')"
-    Assert-True 'Scoop downloaded exactly the five bound files' (($installedFiles -join ',') -eq ($expectedFiles -join ','))
+    Assert-True 'Scoop downloaded exactly the six bound files' (($installedFiles -join ',') -eq ($expectedFiles -join ','))
     Assert-True 'Scoop shimmed torlek and torlek-wsl' ((Test-Path (Join-Path $shims 'torlek.ps1')) -and (Test-Path (Join-Path $shims 'torlek-wsl.ps1')))
     Assert-True 'scoop install changed nothing in WSL' (-not (Test-InstalledInWsl))
 
     foreach ($shell in @($pwshPath, $windowsPowerShellPath)) {
         $shellName = Split-Path -Leaf $shell
         $ready = Invoke-Launcher -Name 'torlek-wsl' -Arguments @('check', '-Distribution', $Distribution) -Shell $shell
-        Assert-Result "torlek-wsl check under $shellName" $ready succeeds "WSL 2 distribution ready for Torlek $([regex]::Escape($Version))"
+        Assert-Result "torlek-wsl check under $shellName" $ready succeeds "verified; installing would unpack Torlek v$([regex]::Escape($Version))"
         Assert-Result "torlek-wsl check, unknown distribution, under $shellName" (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('check', '-Distribution', 'NoSuchDistribution') -Shell $shell) 'is refused' 'is not registered'
         Assert-Result "torlek-wsl check, no distribution named, under $shellName" (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('check') -Shell $shell) 'is refused' 'Name the distribution'
         Assert-Result "torlek, no distribution named, under $shellName" (Invoke-Launcher -Name 'torlek' -Arguments @('version') -Shell $shell) 'is refused' 'TORLEK_WSL_DISTRIBUTION is not set'
@@ -250,7 +253,7 @@ try {
     $viaCmd = & $cmdShim check -Distribution $Distribution 2>&1 | Out-String
     $viaCmdExitCode = $LASTEXITCODE
     Write-Host $viaCmd
-    Assert-True 'torlek-wsl check through the cmd shim' (($viaCmdExitCode -eq 0) -and ($viaCmd -match 'WSL 2 distribution ready'))
+    Assert-True 'torlek-wsl check through the cmd shim' (($viaCmdExitCode -eq 0) -and ($viaCmd -match 'verified; installing would unpack'))
     Assert-Result 'torlek before the Linux install' (Invoke-Launcher -Name 'torlek' -Arguments @('version') -Environment @{ TORLEK_WSL_DISTRIBUTION = $Distribution }) 'is refused' 'is not installed in WSL distribution'
     # PATH with pwsh but without System32: the launcher must report the missing wsl.exe.
     Assert-Result 'torlek-wsl check without wsl.exe' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('check', '-Distribution', $Distribution) -Environment @{ PATH = (Split-Path -Parent $pwshPath); TORLEK_WSL_DISTRIBUTION = $null }) 'is refused' 'wsl\.exe was not found'
@@ -271,10 +274,10 @@ try {
 
     $installed = Invoke-Launcher -Name 'torlek-wsl' -Arguments @('install', '-Distribution', $Distribution, '-Yes')
     Write-Host $installed.Output
-    Assert-Result 'torlek-wsl install' $installed succeeds "Installed Torlek $([regex]::Escape($Version))"
-    Assert-Result 'a second install keeps the first' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('install', '-Distribution', $Distribution, '-Yes')) 'is refused' 'already exists and is kept'
+    Assert-Result 'torlek-wsl install' $installed succeeds "installed Torlek v$([regex]::Escape($Version))"
+    Assert-Result 'a second install changes nothing' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('install', '-Distribution', $Distribution, '-Yes')) succeeds 'is already installed at .*; nothing changed'
 
-    $verify = Invoke-Wsl -WorkingDirectory $repositoryRoot -Command @('/bin/sh', '-c', "python3 tools/release.py verify-install `$HOME/$linuxRoot/v$Version --revision $Revision")
+    $verify = Invoke-Wsl -WorkingDirectory $repositoryRoot -Command @('/bin/sh', '-c', "python3 tools/release.py verify-install `$HOME/$linuxBundle --revision $Revision")
     Write-Host $verify.Output
     Assert-Result 'the installed bundle verifies against the candidate revision' $verify succeeds
 
@@ -297,7 +300,7 @@ try {
     Assert-True 'uninstall removed the app directory and shims' (-not (Test-Path (Join-Path $env:SCOOP 'apps/torlek')) -and -not (Test-Path (Join-Path $shims 'torlek.ps1')))
     Assert-True 'uninstall kept the distribution' ((Get-RegisteredDistribution) -contains $Distribution)
     Assert-True 'uninstall kept the Linux install' (Test-InstalledInWsl)
-    Assert-Result 'uninstall kept the current link' (Invoke-Wsl -Command @('/bin/sh', '-c', "test `$(readlink `$HOME/$linuxRoot/current) = v$Version")) succeeds
+    Assert-Result 'uninstall kept the torlek link' (Invoke-Wsl -Command @('/bin/sh', '-c', "test `$(readlink `$HOME/$linuxLink) = `$HOME/$linuxBundle/bin/torlek")) succeeds
     Assert-Result 'uninstall kept the user state' (Invoke-Wsl -Command @('/bin/sh', '-c', 'test $(cat $HOME/torlek-user-state/marker) = kept')) succeeds
 } finally {
     Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue

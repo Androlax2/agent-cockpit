@@ -39,6 +39,7 @@ LAUNCHER_FILES = {
     "@SHA256_TORLEK_PS1@": "packaging/windows/torlek.ps1",
     "@SHA256_TORLEK_WSL_PS1@": "packaging/windows/torlek-wsl.ps1",
     "@SHA256_INSTALL_IN_WSL_SH@": "packaging/windows/install-in-wsl.sh",
+    "@SHA256_INSTALL_SH@": "install.sh",
 }
 SUMS_LINE = re.compile(r"([0-9a-f]{64})  (\S+)")
 # The two URL prefixes of the template; a rehearsal serves them from its own loopback server.

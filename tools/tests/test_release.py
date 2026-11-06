@@ -1191,6 +1191,10 @@ class ReleaseTriggerTests(unittest.TestCase):
                 "packaging/windows/torlek-wsl.ps1",
                 "packaging/windows/torlek.ps1",
                 "tools/tests/test_windows_package.py",
+                "install.sh",
+                "packaging/install/ci-install.sh",
+                "tools/tests/fake_release_server.py",
+                "tools/tests/test_install_script.py",
             },
         )
 

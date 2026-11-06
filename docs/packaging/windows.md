@@ -102,36 +102,39 @@ permanently deletes a distribution's data; nothing here calls it.
 
 | File | Role |
 | --- | --- |
-| [packaging/windows/scoop/torlek.json.in](../../packaging/windows/scoop/torlek.json.in) | The reviewed Scoop manifest, with the tag and five checksums as `@TOKEN@`s |
+| [packaging/windows/scoop/torlek.json.in](../../packaging/windows/scoop/torlek.json.in) | The reviewed Scoop manifest, with the tag and six checksums as `@TOKEN@`s |
 | [packaging/windows/render.py](../../packaging/windows/render.py) | `render` fills it from one release's `SHA256SUMS` and the `v<tag>` git tag |
 | [packaging/windows/torlek.ps1](../../packaging/windows/torlek.ps1) | The `torlek` command on Windows: forwards its arguments to the Linux `torlek` in WSL |
 | [packaging/windows/torlek-wsl.ps1](../../packaging/windows/torlek-wsl.ps1) | `torlek-wsl check` and `torlek-wsl install`: Windows-side checks and the consent prompt |
-| [packaging/windows/install-in-wsl.sh](../../packaging/windows/install-in-wsl.sh) | Runs inside the distribution: WSL 2 kernel, architecture, user, checksum, then the unpack |
+| [packaging/windows/install-in-wsl.sh](../../packaging/windows/install-in-wsl.sh) | Runs inside the distribution: WSL 2 kernel, architecture and user, then [install.sh](install-script.md) on the downloaded files |
 | [packaging/windows/ci-analyze.ps1](../../packaging/windows/ci-analyze.ps1) | Parses the two launchers and runs PSScriptAnalyzer on them; the workflow runs it under PowerShell 7 and Windows PowerShell 5.1 |
 | [packaging/windows/ci-install.ps1](../../packaging/windows/ci-install.ps1) | The `install-scoop` job's scenario on a Windows runner; never for a host |
 | [tools/tests/test_windows_package.py](../../tools/tests/test_windows_package.py) | Rendering, checksum binding, tag handling, the in-WSL refusals, and source checks of the PowerShell |
 
-The manifest downloads five files, each with its own SHA-256: the release's `linux-x86_64`
-archive and its `SHA256SUMS` from the GitHub release, and the three scripts from
-`raw.githubusercontent.com` at the `v<tag>` git tag. The renderer hashes the scripts as that git
+The manifest downloads six files, each with its own SHA-256: the release's `linux-x86_64`
+archive and its `SHA256SUMS` from the GitHub release, and the three scripts above plus
+[install.sh](install-script.md), the one installer of every archive route, from
+`raw.githubusercontent.com` at the `v<tag>` git tag. A tag older than install.sh (#1047) has no
+`install.sh`, so the renderer refuses it. The renderer hashes the scripts as that git
 tag holds them (`git show v<tag>:<path>`), not the working tree, and the checksum file as given.
 There is no placeholder checksum, no `latest` URL, no `checkver` or `autoupdate`: a new release is
 rendered and reviewed, not bumped by a bot.
 
 ## How it works
 
-1. `scoop install torlek` downloads and verifies the five files into the app directory and
+1. `scoop install torlek` downloads and verifies the six files into the app directory and
    shims `torlek` and `torlek-wsl`. It runs no install script and changes nothing in WSL.
 2. `torlek-wsl check -Distribution <name>` reports, without changing anything: WSL missing,
    no distribution registered, the named one not registered, then inside it a non-WSL 2
    kernel, an architecture other than `x86_64`, root as the default user, missing `sha256sum`,
    `tar` or `awk`, and an archive whose SHA-256 differs from `SHA256SUMS`.
 3. `torlek-wsl install -Distribution <name>` repeats the check, asks
-   `Install Torlek <tag> into WSL distribution '<name>' at ~/.local/lib/torlek/v<tag> …? [y/N]`
-   (or takes `-Yes`), refuses archive members outside the bundle directory and links, unpacks into
-   `~/.local/lib/torlek/v<tag>` and points `~/.local/lib/torlek/current` at it. It never
-   replaces an installed version.
-4. `torlek …` on Windows runs `$HOME/.local/lib/torlek/current/bin/torlek …` in the
+   `Install Torlek <tag> into WSL distribution '<name>' at ~/.local/lib/torlek/torlek-v<tag>-linux-x86_64 …? [y/N]`
+   (or takes `-Yes`), then runs `install.sh --archive … --sums … --version v<tag>` without the
+   network: it refuses archive members outside the bundle directory and links, unpacks into
+   `~/.local/lib/torlek/torlek-v<tag>-linux-x86_64` and links `~/.local/bin/torlek` to it, the
+   README's layout. Run again, it changes nothing.
+4. `torlek …` on Windows runs `$HOME/.local/bin/torlek …` in the
    distribution named by `TORLEK_WSL_DISTRIBUTION`. There is no default distribution: an unset
    variable stops with the command that sets it, which the user runs.
 
@@ -155,16 +158,17 @@ apply: tmux 3.6 or newer (Ubuntu 24.04 ships 3.4), Git, curl and a systemd user 
 
 - **Update:** `scoop update torlek` replaces the Windows files with the next rendered release.
   The Linux side changes only when the user runs `torlek-wsl install` again, which adds
-  `v<new tag>` beside the old one and moves `current`. User services written by
-  `torlek daemon install` point at the resolved old path: run `torlek daemon install` again after
-  moving `current`, as with any archive upgrade.
+  `torlek-v<new tag>-linux-x86_64` beside the old one and moves the `~/.local/bin/torlek` link.
+  User services written by `torlek daemon install` point at the resolved old path: run
+  `torlek daemon install` again after the link moves, as with any archive upgrade.
 - **Uninstall:** `scoop uninstall torlek` removes only Scoop's app directory and shims. The
-  manifest has no uninstaller, so it never touches a WSL distribution, `~/.local/lib/torlek`, a
-  profile's state, or user services inside WSL. Removing them is the user's choice: inside WSL,
-  stop the services, then delete `~/.local/lib/torlek/v<tag>`. A distribution is never
+  manifest has no uninstaller, so it never touches a WSL distribution, `~/.local/lib/torlek`,
+  `~/.local/bin/torlek`, a profile's state, or user services inside WSL. Removing them is the
+  user's choice: inside WSL, stop the services, then delete
+  `~/.local/lib/torlek/torlek-v<tag>-linux-x86_64` and the link. A distribution is never
   unregistered by this package.
-- **Going back:** an older installed version is selected with
-  `ln -sfn v<tag> ~/.local/lib/torlek/current` inside WSL; the refusal message prints that command.
+- **Going back:** an older installed version is selected inside WSL with
+  `ln -sfn ~/.local/lib/torlek/torlek-v<tag>-linux-x86_64/bin/torlek ~/.local/bin/torlek`.
 
 ## Validation in CI
 
@@ -183,7 +187,7 @@ maintainer's machine.
    `http.server` that serves the candidate archive, its `SHA256SUMS` and those launchers.
    `rehearse` refuses any URL that is not loopback, so its manifest cannot be published.
 3. A pinned Scoop (v0.6.0, run from a checkout of commit `e6aa3b36`, not from its installer,
-   which follows `master`) installs that manifest. The job checks the five downloaded files and
+   which follows `master`) installs that manifest. The job checks the six downloaded files and
    the two shims, and that WSL is unchanged.
 4. Under both shells: `torlek-wsl check` succeeds, and the refusals fire: unknown distribution,
    no distribution named, `TORLEK_WSL_DISTRIBUTION` unset, Torlek not yet installed in WSL, and
@@ -192,11 +196,11 @@ maintainer's machine.
    to its own shell wrapper), the job first makes `cockpit` the distribution's default user.
 5. Declining the consent prompt installs nothing. A tampered archive is refused by `check` and by
    `install -Yes`, and installs nothing.
-6. `torlek-wsl install -Yes` installs; a second install keeps the first; `release.py
+6. `torlek-wsl install -Yes` installs; a second install changes nothing; `release.py
    verify-install` accepts the installed bundle against the candidate revision; `torlek version
    --all` and `torlek doctor` run through the Windows launcher.
 7. `scoop uninstall torlek` removes the app directory and shims, and the job checks that the
-   distribution, the Linux install, its `current` link and a seeded file in the user's home are
+   distribution, the Linux install, its `~/.local/bin/torlek` link and a seeded file in the user's home are
    still there.
 
 Not covered by this job: a WSL 1 distribution and an arm64 machine (the in-WSL script's refusals
@@ -243,6 +247,6 @@ this list grants none. For each published `vX.Y.Z-alpha.N` tag:
 - No release exists, so no real archive was rendered, downloaded or installed; the job uses a
   dry run's `-dev.N` archive.
 - A published bucket, a WSL 1 distribution, an arm64 machine and the #97 onboarding are unrun.
-- The in-WSL layout `~/.local/lib/torlek/v<tag>` and `current` is this route's own; #97 has not
-  yet published the archive route's install instructions. If #97 picks another layout, change
-  the scripts to match it before publishing.
+- The in-WSL layout is the README's archive layout since #1047, which #97 published; the earlier
+  `~/.local/lib/torlek/v<tag>` plus `current` layout was never released. `install-scoop`
+  checks it from this change on; run 42282361877 above checked the earlier layout.

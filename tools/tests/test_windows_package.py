@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WINDOWS = ROOT / "packaging/windows"
 RENDER = WINDOWS / "render.py"
 INSTALL_IN_WSL = WINDOWS / "install-in-wsl.sh"
+INSTALL_SH = ROOT / "install.sh"
 TAG = "0.1.0-alpha.1"
 DEV_TAG = "0.1.0-dev.4"
 LOOPBACK = "http://127.0.0.1:8765"
@@ -344,20 +345,21 @@ class RenderCommandTest(unittest.TestCase):
             self.assertEqual((Path(folder) / "torlek.json").read_text(), "kept\n")
 
 
-def build_archive(folder):
-    binaries = Path(folder) / "binaries"
+def build_archive(folder, tag=TAG, channel="alpha"):
+    binaries = Path(folder) / f"binaries-{tag}"
     binaries.mkdir()
     for binary in release.BINARIES:
         (binaries / binary).write_text(f"#!/bin/sh\necho {binary}\n")
     built = release.package(
-        TAG, "alpha", "linux-x86_64", REVISION, binaries, Path(folder) / "out", ROOT
+        tag, channel, "linux-x86_64", REVISION, binaries, Path(folder) / "out", ROOT
     )
     return Path(built["archive"])
 
 
 class InstallInWslTest(unittest.TestCase):
     """install-in-wsl.sh as torlek-wsl.ps1 starts it inside WSL: its own directory holds the
-    Scoop downloads; uname and id are faked to describe the distribution."""
+    Scoop downloads, install.sh among them; uname and id are faked to describe the distribution.
+    tools/tests/test_install_script.py covers install.sh's own refusals."""
 
     @classmethod
     def setUpClass(cls):
@@ -379,15 +381,21 @@ class InstallInWslTest(unittest.TestCase):
         self.fakes = self.work / "fakes"
         self.fakes.mkdir()
         shutil.copyfile(INSTALL_IN_WSL, self.app / "install-in-wsl.sh")
+        shutil.copyfile(INSTALL_SH, self.app / "install.sh")
         shutil.copyfile(self.archive, self.app / f"{BUNDLE}.archive")
         self.write_sums(release.sha256_of(self.archive))
         self.describe_distribution()
+        # A logged-out gh, whatever the host has: provenance is install.sh's test's concern.
+        self.fake("gh", "exit 1")
 
     def write_sums(self, digest):
         (self.app / "SHA256SUMS").write_text(release_sums(x86_64=digest))
 
     def describe_distribution(self, kernel=WSL2_KERNEL, machine="x86_64", uid=1000):
-        self.fake("uname", f'case "$1" in -r) echo {kernel} ;; -m) echo {machine} ;; esac')
+        self.fake(
+            "uname",
+            f'case "$1" in -r) echo {kernel} ;; -s) echo Linux ;; -m) echo {machine} ;; esac',
+        )
         self.fake("id", f'[ "$1" = -u ] && echo {uid}')
 
     def fake(self, name, body):
@@ -402,42 +410,66 @@ class InstallInWslTest(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
-            env={"PATH": f"{self.fakes}:/usr/bin:/bin", "HOME": str(self.home)},
+            env={
+                "PATH": f"{self.fakes}:/usr/bin:/bin",
+                "HOME": str(self.home),
+                "TMPDIR": str(self.work),
+            },
         )
 
     @property
     def install_root(self):
         return self.home / ".local/lib/torlek"
 
+    @property
+    def link(self):
+        return self.home / ".local/bin/torlek"
+
     def assert_refused(self, result, message):
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn(message, result.stderr)
-        self.assertFalse((self.install_root / f"v{TAG}").exists())
+        self.assertFalse((self.install_root / BUNDLE).exists())
+        self.assertFalse(self.link.exists())
 
     def test_check_reports_a_ready_distribution_without_changing_it(self):
         result = self.run_step("check")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Not installed yet", result.stdout)
-        self.assertFalse(self.install_root.exists())
+        self.assertIn("verified; installing would unpack", result.stdout)
+        self.assertFalse((self.home / ".local").exists())
 
-    def test_install_unpacks_the_whole_bundle_and_points_current_at_it(self):
+    def test_install_unpacks_the_whole_bundle_where_install_sh_does_and_links_it(self):
         result = self.run_step("install")
         self.assertEqual(result.returncode, 0, result.stderr)
-        bundle = self.install_root / f"v{TAG}"
-        self.assertEqual(os.readlink(self.install_root / "current"), f"v{TAG}")
+        bundle = self.install_root / BUNDLE
+        self.assertEqual(os.readlink(self.link), f"{bundle}/bin/torlek")
         manifest = json.loads((bundle / release.MANIFEST_PATH).read_text())
         release.refuse_changed_contents(bundle, manifest)
-        self.assertTrue(os.access(self.install_root / "current/bin/torlek", os.X_OK))
+        self.assertTrue(os.access(self.link, os.X_OK))
         self.assertIn("torlek doctor", result.stdout)
 
-    def test_install_never_replaces_an_installed_version(self):
+    def test_install_again_changes_nothing(self):
         self.assertEqual(self.run_step("install").returncode, 0)
-        marker = self.install_root / f"v{TAG}/user-file"
+        marker = self.install_root / f"{BUNDLE}/user-file"
         marker.write_text("kept\n")
         result = self.run_step("install")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("already exists and is kept", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already installed", result.stdout)
         self.assertEqual(marker.read_text(), "kept\n")
+
+    def test_check_verifies_the_downloaded_archive_even_when_installed(self):
+        self.assertEqual(self.run_step("install").returncode, 0)
+        with open(self.app / f"{BUNDLE}.archive", "ab") as archive:
+            archive.write(b"\0")
+        result = self.run_step("check")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("integrity check failed", result.stderr)
+
+    def test_runs_without_the_network(self):
+        self.assertNotIn("curl", os.listdir(self.fakes))
+        self.fake("curl", "echo curl must not run >&2; exit 7")
+        result = self.run_step("install")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("not looked up on GitHub", result.stdout)
 
     def test_refuses_a_wsl1_or_non_wsl_kernel(self):
         self.describe_distribution(kernel="4.4.0-19041-Microsoft")
@@ -486,16 +518,18 @@ class InstallInWslTest(unittest.TestCase):
         self.assert_refused(self.run_step("install"), "holds links or special files")
 
     def test_refuses_a_tag_outside_the_release_grammar(self):
-        self.assert_refused(self.run_step("install", tag="latest"), "not a Torlek prerelease tag")
+        self.assert_refused(self.run_step("install", tag="latest"), "is not a Torlek release tag")
 
-    def test_accepts_a_dry_runs_dev_version(self):
+    def test_installs_a_dry_runs_dev_version(self):
+        dev_archive = build_archive(self.work, DEV_TAG, "dev")
         dev_bundle = f"torlek-v{DEV_TAG}-linux-x86_64"
-        shutil.copyfile(self.archive, self.app / f"{dev_bundle}.archive")
+        shutil.copyfile(dev_archive, self.app / f"{dev_bundle}.archive")
         (self.app / "SHA256SUMS").write_text(
-            f"{release.sha256_of(self.archive)}  {dev_bundle}.tar.gz\n"
+            f"{release.sha256_of(dev_archive)}  {dev_bundle}.tar.gz\n"
         )
-        result = self.run_step("check", tag=DEV_TAG)
+        result = self.run_step("install", tag=DEV_TAG)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(os.readlink(self.link), f"{self.install_root / dev_bundle}/bin/torlek")
 
 
 class LauncherConsentTest(unittest.TestCase):

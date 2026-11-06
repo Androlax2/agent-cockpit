@@ -45,6 +45,10 @@ on:
       - packaging/windows/torlek-wsl.ps1
       - packaging/windows/torlek.ps1
       - tools/tests/test_windows_package.py
+      - install.sh
+      - packaging/install/ci-install.sh
+      - tools/tests/fake_release_server.py
+      - tools/tests/test_install_script.py
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     # Nightly from main: a dry run whose archives stay as workflow artifacts (#179).
@@ -618,13 +622,17 @@ jobs:
           python3 tools/release_upgrade.py sessions --candidate "${roots[0]}" \
             --revision "$REVISION" --downloads baseline/linux-x86_64
 
-  # Checksums over every archive; with the archive-* artifacts, the nightly's download.
+  # Checksums over every archive and install.sh (#1047), so the draft attests both; with the
+  # archive-* artifacts, the nightly's download.
   assemble:
     needs: [plan, build]
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: archive-*
@@ -633,7 +641,8 @@ jobs:
       - name: Write SHA256SUMS
         working-directory: dist
         run: |
-          sha256sum -- *.tar.gz > SHA256SUMS
+          cp ../install.sh install.sh
+          sha256sum -- *.tar.gz install.sh > SHA256SUMS
           cat SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -641,6 +650,65 @@ jobs:
           path: dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: install-script
+          path: dist/install.sh
+          if-no-files-found: error
+          retention-days: 14
+
+  # install.sh's own tests (#1047) under the runner's /bin/sh, dash, which they require here.
+  install-script-test:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test install.sh and the Windows route that runs it
+        run: |
+          readlink -f /bin/sh
+          python3 -m unittest -v tools/tests/test_install_script.py tools/tests/test_windows_package.py
+
+  # The attached install.sh on a clean Ubuntu (/bin/sh is dash) and a clean Arch container,
+  # installing this run's assets as an ordinary user from a loopback stand-in for GitHub, then
+  # `torlek doctor` (docs/packaging/install-script.md). Not in publish's needs: the README's
+  # one-liner does not gate the tag, as the AUR route does not.
+  install-script:
+    needs: [plan, assemble]
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          # Pinned like the actions; Arch's pacman -Syu still brings it to the current Arch.
+          - ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+          - archlinux:base-devel@sha256:767de6eaa40dcfeda5263a48737ea03a782caabdf3a403b6e6a203c7fd333681
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: archive-linux-x86_64
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: checksums
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: install-script
+          path: dist
+      - name: Install with install.sh as an ordinary user, run torlek doctor, re-run
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: bash packaging/install/ci-install.sh dist "$VERSION"
 
   # A tag only: build provenance over the checksummed archives, then the draft with every
   # asset. Dry runs never attest, so no unreleased build verifies as this repository's.
@@ -663,6 +731,10 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: checksums
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: install-script
           path: dist
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
