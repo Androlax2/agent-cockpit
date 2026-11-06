@@ -534,7 +534,8 @@ class LauncherConsentTest(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    shutil.which("pwsh"), "needs PowerShell 7 (preinstalled on GitHub's Ubuntu runners)"
+    os.name == "posix" and shutil.which("pwsh"),
+    "needs PowerShell 7 on a POSIX host: the fake wsl.exe is a shell script",
 )
 class LauncherPromptTest(unittest.TestCase):
     """Runs torlek-wsl.ps1 under pwsh against a fake wsl.exe that logs what it is asked to run."""

@@ -70,7 +70,10 @@ function Invoke-InShell {
         if (-not $process.WaitForExit($shellTimeoutSeconds * 1000)) {
             $process.Kill($true)
             $process.WaitForExit()
-            throw "$Script hung for more than ${shellTimeoutSeconds}s. Output so far:`n$($outputTask.Result)$($errorTask.Result)"
+            # A descendant that outlived the kill could still hold a pipe open: do not wait on it.
+            [void] [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]] @($outputTask, $errorTask), 5000)
+            $partialOutput = (@($outputTask, $errorTask) | ForEach-Object { if ($_.IsCompleted) { $_.Result } }) -join ''
+            throw "$Script hung for more than ${shellTimeoutSeconds}s. Output so far:`n$partialOutput"
         }
         $process.WaitForExit()
         return [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $outputTask.Result + $errorTask.Result }
