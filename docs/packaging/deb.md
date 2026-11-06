@@ -251,7 +251,27 @@ The [Debian packages workflow](../../.github/workflows/deb.yml) runs on pull req
 change the packaging, by hand for any published prerelease, and from the release workflow.
 It packages the newest published prerelease and the one before it in its channel.
 
-CI_EVIDENCE_PLACEHOLDER
+Run [42258338412](https://github.com/Androlax2/agent-cockpit/actions/runs/42258338412) on
+`5317bea8`, 2026-11-06, packaged `v0.1.0-alpha.4` (revision `87274175`) and `v0.1.0-alpha.3`
+from their release archives after `sha256sum --check` and `gh attestation verify`:
+
+| Package | SHA-256 |
+| --- | --- |
+| `torlek_0.1.0~alpha.4-1_amd64.deb` | `83c818f9c7d1a88226a2ba306e9c87373e94983f575fbb65a72c5940b8e4d103` |
+| `torlek_0.1.0~alpha.4-1_arm64.deb` | `afe7e9d8be03c6ec01356ac3867cc98f45a18ea12fb3587689b1d9aa6b799598` |
+| `torlek_0.1.0~alpha.3-1_amd64.deb` | `3c5062e94257eff8b59fd481b85230c5b3cb6cd5863f34055de9f81411b83e71` |
+| `torlek_0.1.0~alpha.3-1_arm64.deb` | `0c0aa72c751e5093056db8767592da442a81d09e102341de34de94b4934fe571` |
+
+The fixture packages carry the CI maintainer, so a published package's checksum differs.
+
+- `stage`: the packaging tests ran 72 with none skipped; lintian passed with the findings
+  below; `dpkg-shlibdeps` computed `libc6 (>= 2.39), libgcc-s1 (>= 4.2)`, both in `Depends`.
+- `install` on Ubuntu 26.04.1 LTS and Debian 13 (trixie), each on `amd64` and `arm64`: apt
+  refused the index signed by another key (`sqv`: missing key) and the changed package (hash
+  sum mismatch), installed `0.1.0~alpha.3-1`, upgraded to `0.1.0~alpha.4-1`, passed
+  `dpkg --verify`, `torlek version --all`, `torlek doctor` and the tag's
+  `release.py verify-install` (`version=0.1.0-alpha.4`, `files=10`), then removed and purged
+  it with the tester's files unchanged.
 
 ### lintian findings
 
