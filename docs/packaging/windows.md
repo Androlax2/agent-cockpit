@@ -84,8 +84,8 @@ All read on 2026-11-03; Scoop sources at
   so the WSL-side check refuses an aarch64 distribution with an actionable message.
 - `Compare-Version` orders `alpha` and `beta` before the release of the same core and compares
   numbers numerically ([versions.ps1](https://github.com/ScoopInstaller/Scoop/blob/e6aa3b366bdee8ed138c1e0f7b85192ebdd35d0f/lib/versions.ps1#L110-L185)),
-  so the manifest's `version` is the tag itself, `0.1.0-alpha.1`. Not run: `install-scoop` installs a
-  dry run's `X.Y.Z-dev.N`, not an alpha tag.
+  so the manifest's `version` is the tag itself, `0.1.0-alpha.1`. On a tag's release run,
+  `install-scoop` installs that version; on a dry run, the dry run's `X.Y.Z-dev.N`.
 
 ### WSL commands the launchers use
 
@@ -182,7 +182,8 @@ maintainer's machine.
 1. `ci-analyze.ps1` parses both launchers and runs PSScriptAnalyzer 1.24.0 (errors and warnings
    fail; `PSAvoidUsingWriteHost` is the one named exclusion, because the launchers talk to the
    console) under PowerShell 7 and Windows PowerShell 5.1.
-2. `render.py rehearse` renders the manifest for the candidate's `-dev.N` version: the launchers
+2. `render.py rehearse` renders the manifest for the candidate's version (a dry run's `-dev.N`,
+   or the tag's `-alpha.N` on a tag's run, whose release is not published yet): the launchers
    are hashed as the candidate commit holds them, and every download points at a loopback
    `http.server` that serves the candidate archive, its `SHA256SUMS` and those launchers.
    `rehearse` refuses any URL that is not loopback, so its manifest cannot be published.
@@ -217,7 +218,7 @@ this list grants none. For each published `vX.Y.Z-alpha.N` tag:
 2. In a checkout that has the `v$TAG` tag, render the manifest:
    `python3 packaging/windows/render.py render --tag "$TAG" --sums "$WORK/SHA256SUMS" --out "$WORK/bucket"`
 3. Check that the tag's release run passed `install-scoop` (the same scenario on the release's
-   own archive, rendered for its `-dev.N` rehearsal). Record its run URL on #565.
+   own archive, rehearsed for the tag's own version). Record its run URL on #565.
 4. On a clean Windows 11 x64 machine with WSL 2 and a fresh Ubuntu 24.04 distribution with tmux
    3.6 or newer: `scoop install "$WORK/bucket/torlek.json"`, then `torlek-wsl check`,
    `torlek-wsl install`, `torlek doctor` and the #97 onboarding scenario from Windows Terminal.
@@ -244,8 +245,10 @@ this list grants none. For each published `vX.Y.Z-alpha.N` tag:
   (fixed, with a regression test).
 - `install-in-wsl.sh` also ran on an Arch host with faked `uname` and `id`, not in a WSL kernel
   (`install-scoop` runs it in one).
-- No release exists, so no real archive was rendered, downloaded or installed; the job uses a
-  dry run's `-dev.N` archive.
+- No published release archive was rendered, downloaded or installed. `v0.1.0-alpha.5`'s run
+  (42298786664) failed `install-scoop` before Scoop ran: `rehearse` then took only a `-dev.N`
+  version and refused `0.1.0-alpha.5`. It now takes a tag's version too; the first tag run with
+  that fix is the first evidence for a real release.
 - A published bucket, a WSL 1 distribution, an arm64 machine and the #97 onboarding are unrun.
 - The in-WSL layout is the README's archive layout since #1047, which #97 published; the earlier
   `~/.local/lib/torlek/v<tag>` plus `current` layout was never released. `install-scoop`

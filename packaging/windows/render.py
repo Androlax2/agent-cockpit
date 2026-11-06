@@ -10,11 +10,12 @@ checksum from the release's SHA256SUMS, the checksum of that SHA256SUMS file its
 checksums of the launcher scripts as the v<tag> git tag holds them, since Scoop downloads them
 from that tag.
 
-`rehearse` is the release workflow's dry run (install-scoop): a dry run has no tag and no
-GitHub Release, so it renders the same template for a `-dev.N` version, hashes the launchers
-as the given revision holds them, points every download at a loopback server, and lays out
-what that server serves under DIR (release/ and source/). The manifest it writes cannot be
-published: its URLs are loopback only.
+`rehearse` is the release workflow's install-scoop rehearsal, on a dry run's `-dev.N` version
+or on a tag run's release version: a dry run has no tag, and a tag run's GitHub Release is not
+published yet, so it renders the same template for that version, hashes the launchers as the
+given revision holds them, points every download at a loopback server, and lays out what that
+server serves under DIR (release/ and source/). The manifest it writes cannot be published:
+its URLs are loopback only.
 
 Nothing here downloads, installs or publishes.
 """
@@ -61,17 +62,23 @@ def release_tool():
     return module
 
 
-def checked_tag(tag, is_development=False):
-    """Scoop's version is the tag itself: its Compare-Version orders alpha < beta < stable."""
+def checked_tag(tag, is_rehearsal=False):
+    """Scoop's version is the tag itself: its Compare-Version orders alpha < beta < stable.
+
+    A rehearsal also takes a dry run's version, since install-scoop runs on dry runs and on tags.
+    """
     release = release_tool()
-    if is_development:
-        # release.py dry-run-version's shape: the workspace core, then the commits since the base.
-        if not re.fullmatch(rf"{release.CORE_PATTERN}-dev\.(?:0|[1-9][0-9]*)", tag):
-            raise Refusal(f"{tag!r}: a rehearsal takes a dry run's X.Y.Z-dev.N")
+    # release.py dry-run-version's shape: the workspace core, then the commits since the base.
+    if is_rehearsal and re.fullmatch(rf"{release.CORE_PATTERN}-dev\.(?:0|[1-9][0-9]*)", tag):
         return tag
     try:
         channel = release.parse_tag(f"v{tag}")["channel"]
     except release.Refusal as error:
+        if is_rehearsal:
+            raise Refusal(
+                f"{tag!r}: neither a dry run's X.Y.Z-dev.N nor a release tag given without its v: "
+                f"{error}"
+            ) from error
         raise Refusal(f"{tag!r}: not a release tag, given without its v: {error}") from error
     if channel == "stable":
         raise Refusal(f"{tag!r}: no stable release exists to package")
@@ -125,7 +132,7 @@ def with_rehearsal_urls(text, rehearsal):
 
 
 def manifest(tag, sums_bytes, repo=ROOT, rehearsal=None):
-    tag = checked_tag(tag, is_development=rehearsal is not None)
+    tag = checked_tag(tag, is_rehearsal=rehearsal is not None)
     values = {
         "@SHA256_ARCHIVE@": archive_checksum(tag, sums_bytes.decode()),
         "@SHA256_SUMS@": hashlib.sha256(sums_bytes).hexdigest(),

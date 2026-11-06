@@ -6,9 +6,10 @@
 # software and changes the user's PATH-visible shims.
 #
 # Usage: ci-install.ps1 -Dist DIST -Version VERSION -Revision REVISION -ScoopCore DIR
-#   DIST holds SHA256SUMS and torlek-vVERSION-linux-x86_64.tar.gz; VERSION is a dry run's
-#   X.Y.Z-dev.N; REVISION is the commit the launchers are hashed at; SCOOP_CORE is a checkout of
-#   Scoop at a pinned commit, run in place so that the test does not follow Scoop's master.
+#   DIST holds SHA256SUMS and torlek-vVERSION-linux-x86_64.tar.gz; VERSION is the candidate's, a
+#   dry run's X.Y.Z-dev.N or a tag run's X.Y.Z-alpha.N; REVISION is the commit the launchers are
+#   hashed at; SCOOP_CORE is a checkout of Scoop at a pinned commit, run in place so that the
+#   test does not follow Scoop's master.
 param(
     [Parameter(Mandatory)] [string] $Dist,
     [Parameter(Mandatory)] [string] $Version,
@@ -19,6 +20,14 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# The web log folds a failure printed inside an open ::group:: out of sight (#565, alpha.5's tag
+# run); closing the group and annotating the error puts it on the run's page.
+trap {
+    Write-Host '::endgroup::'
+    $annotation = "$_" -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+    Write-Host "::error title=install-scoop::$annotation"
+    break
+}
 
 if ($env:GITHUB_ACTIONS -ne 'true') {
     throw 'ci-install.ps1: refusing to run outside GitHub Actions'
