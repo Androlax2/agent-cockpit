@@ -23,8 +23,9 @@ case "$action" in
 check | install) ;;
 *) fail "unknown action '$action': use check or install" ;;
 esac
-# The release tag grammar of tools/release.py, without the v and without stable (none exists).
-printf '%s\n' "$tag" | grep -Eqx '(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(alpha|beta)\.[1-9][0-9]*' ||
+# The release tag grammar of tools/release.py, without the v and without stable (none exists),
+# plus a dry run's X.Y.Z-dev.N, which only the release workflow's install-scoop job installs.
+printf '%s\n' "$tag" | grep -Eqx '(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-((alpha|beta)\.[1-9][0-9]*|dev\.(0|[1-9][0-9]*))' ||
     fail "'$tag' is not a Torlek prerelease tag (X.Y.Z-alpha.N or X.Y.Z-beta.N)"
 
 kernel=$(uname -r)

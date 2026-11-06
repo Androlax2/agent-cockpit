@@ -13,12 +13,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-function Stop-Check([string] $Message) {
+function Exit-Check([string] $Message) {
     [Console]::Error.WriteLine("torlek-wsl: $Message")
     exit 1
 }
 
-function Get-RegisteredDistributions {
+function Get-RegisteredDistribution {
     # wsl.exe writes UTF-16 to a pipe unless WSL_UTF8=1; restore the caller's value afterwards,
     # because this script runs inside the user's PowerShell session.
     $previous = $env:WSL_UTF8
@@ -33,25 +33,25 @@ function Get-RegisteredDistributions {
 }
 
 if (-not (Get-Command wsl.exe -CommandType Application -ErrorAction SilentlyContinue)) {
-    Stop-Check ('wsl.exe was not found: WSL is not installed. Torlek runs only inside WSL 2 and will not install it for you. ' +
+    Exit-Check ('wsl.exe was not found: WSL is not installed. Torlek runs only inside WSL 2 and will not install it for you. ' +
         'If you choose to, run in an elevated terminal: wsl.exe --install --no-distribution ' +
         '(it enables Windows features and may need a restart), then add a distribution.')
 }
-$registered = Get-RegisteredDistributions
+$registered = Get-RegisteredDistribution
 if ($registered.Count -eq 0) {
-    Stop-Check ('No WSL distribution is registered. Adding one is your decision, for example: ' +
+    Exit-Check ('No WSL distribution is registered. Adding one is your decision, for example: ' +
         'wsl.exe --install --distribution Ubuntu-24.04')
 }
 if (-not $Distribution) {
-    Stop-Check ("Name the distribution to use: torlek-wsl $Action -Distribution <name>. Registered: " + ($registered -join ', '))
+    Exit-Check ("Name the distribution to use: torlek-wsl $Action -Distribution <name>. Registered: " + ($registered -join ', '))
 }
 if ($registered -notcontains $Distribution) {
-    Stop-Check ("WSL distribution '$Distribution' is not registered. Registered: " + ($registered -join ', '))
+    Exit-Check ("WSL distribution '$Distribution' is not registered. Registered: " + ($registered -join ', '))
 }
 
 $archives = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'torlek-v*-linux-x86_64.archive')
 if ($archives.Count -ne 1 -or $archives[0].Name -notmatch '^torlek-v(?<tag>.+)-linux-x86_64\.archive$') {
-    Stop-Check "expected one torlek-v<tag>-linux-x86_64.archive in $PSScriptRoot, found $($archives.Count); reinstall the Scoop package"
+    Exit-Check "expected one torlek-v<tag>-linux-x86_64.archive in $PSScriptRoot, found $($archives.Count); reinstall the Scoop package"
 }
 $tag = $Matches['tag']
 
@@ -66,7 +66,7 @@ if ($Action -eq 'check') { exit 0 }
 if (-not $Yes) {
     $answer = Read-Host ("Install Torlek $tag into WSL distribution '$Distribution' at ~/.local/lib/torlek/v$tag " +
         'and point ~/.local/lib/torlek/current at it? Nothing else in the distribution changes. [y/N]')
-    if ($answer -notmatch '^(y|yes)$') { Stop-Check 'Nothing was installed.' }
+    if ($answer -notmatch '^(y|yes)$') { Exit-Check 'Nothing was installed.' }
 }
 Invoke-InDistribution 'install'
 if ($env:TORLEK_WSL_DISTRIBUTION -ne $Distribution) {

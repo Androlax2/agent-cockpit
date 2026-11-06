@@ -1,10 +1,11 @@
 # Windows: Scoop and WinGet for Torlek inside WSL 2
 
 **Status:** the Scoop manifest template, its renderer, the two Windows launcher scripts and the
-script they run inside WSL are written and tested on Linux (#565). None of them has run on
-Windows. No bucket exists, nothing is published, and no release exists yet to bind the manifest
-to. Do not document `scoop install` as an install route until the
-[publication checklist](#publication-checklist) has passed.
+script they run inside WSL are written and tested on Linux, and the release workflow's
+`install-scoop` job runs them on a hosted Windows runner with a WSL 2 distribution
+([below](#validation-in-ci)) (#565). No bucket exists, nothing is published, and no release
+exists yet to bind the manifest to. Do not document `scoop install` as an install route until
+the [publication checklist](#publication-checklist) has passed.
 
 Torlek is a Linux program. On Windows it runs **inside a WSL 2 distribution**, from the
 `linux-x86_64` release archive ([user guide](../USER-GUIDE.md#platforms-and-prerequisites)). There
@@ -105,6 +106,8 @@ permanently deletes a distribution's data; nothing here calls it.
 | [packaging/windows/torlek.ps1](../../packaging/windows/torlek.ps1) | The `torlek` command on Windows: forwards its arguments to the Linux `torlek` in WSL |
 | [packaging/windows/torlek-wsl.ps1](../../packaging/windows/torlek-wsl.ps1) | `torlek-wsl check` and `torlek-wsl install`: Windows-side checks and the consent prompt |
 | [packaging/windows/install-in-wsl.sh](../../packaging/windows/install-in-wsl.sh) | Runs inside the distribution: WSL 2 kernel, architecture, user, checksum, then the unpack |
+| [packaging/windows/ci-analyze.ps1](../../packaging/windows/ci-analyze.ps1) | Parses the two launchers and runs PSScriptAnalyzer on them; the workflow runs it under PowerShell 7 and Windows PowerShell 5.1 |
+| [packaging/windows/ci-install.ps1](../../packaging/windows/ci-install.ps1) | The `install-scoop` job's scenario on a Windows runner; never for a host |
 | [tools/tests/test_windows_package.py](../../tools/tests/test_windows_package.py) | Rendering, checksum binding, tag handling, the in-WSL refusals, and source checks of the PowerShell |
 
 The manifest downloads five files, each with its own SHA-256: the release's `linux-x86_64`
@@ -162,6 +165,41 @@ apply: tmux 3.6 or newer (Ubuntu 24.04 ships 3.4), Git, curl and a systemd user 
 - **Going back:** an older installed version is selected with
   `ln -sfn v<tag> ~/.local/lib/torlek/current` inside WSL; the refusal message prints that command.
 
+## Validation in CI
+
+The release workflow's `install-scoop` job (`windows-2025`, with an Ubuntu 24.04 WSL 2
+distribution from the same pinned action as `install-wsl2`) runs on every dry run, a nightly,
+a dispatch and a tag, and on pull requests that change these files. It is not in `publish`'s
+needs: the route is unpublished and does not gate a tag
+([decision](../decisions/2026-11-06-565-scoop-validated-in-windows-ci.md)). Nothing runs on a
+maintainer's machine.
+
+1. `ci-analyze.ps1` parses both launchers and runs PSScriptAnalyzer 1.24.0 (errors and warnings
+   fail; `PSAvoidUsingWriteHost` is the one named exclusion, because the launchers talk to the
+   console) under PowerShell 7 and Windows PowerShell 5.1.
+2. `render.py rehearse` renders the manifest for the candidate's `-dev.N` version: the launchers
+   are hashed as the candidate commit holds them, and every download points at a loopback
+   `http.server` that serves the candidate archive, its `SHA256SUMS` and those launchers.
+   `rehearse` refuses any URL that is not loopback, so its manifest cannot be published.
+3. A pinned Scoop (v0.6.0, run from a checkout of commit `e6aa3b36`, not from its installer,
+   which follows `master`) installs that manifest. The job checks the five downloaded files and
+   the two shims, and that WSL is unchanged.
+4. Under both shells: `torlek-wsl check` succeeds, and the refusals fire: unknown distribution,
+   no distribution named, `TORLEK_WSL_DISTRIBUTION` unset, Torlek not yet installed in WSL, and
+   no `wsl.exe` on `PATH`.
+5. Declining the consent prompt installs nothing. A tampered archive is refused by `check` and by
+   `install -Yes`, and installs nothing.
+6. `torlek-wsl install -Yes` installs; a second install keeps the first; `release.py
+   verify-install` accepts the installed bundle against the candidate revision; `torlek version
+   --all` and `torlek doctor` run through the Windows launcher.
+7. `scoop uninstall torlek` removes the app directory and shims, and the job checks that the
+   distribution, the Linux install, its `current` link and a seeded file in the user's home are
+   still there.
+
+Not covered by this job: a WSL 1 distribution and an arm64 machine (the in-WSL script's refusals
+for both are tested with a faked `uname`), a machine without WSL installed at all (only a `PATH`
+without `wsl.exe` is simulated), the real bucket, and the #97 onboarding.
+
 ## Publication checklist
 
 Each step that downloads, creates a repository, installs or publishes needs its own approval;
@@ -171,16 +209,13 @@ this list grants none. For each published `vX.Y.Z-alpha.N` tag:
    [AUR checklist](aur.md#publication-checklist), steps 1 to 3, for `linux-x86_64`.
 2. In a checkout that has the `v$TAG` tag, render the manifest:
    `python3 packaging/windows/render.py render --tag "$TAG" --sums "$WORK/SHA256SUMS" --out "$WORK/bucket"`
-3. On a clean Windows 11 x64 machine with WSL 2 and a fresh Ubuntu 24.04 distribution with tmux
+3. Check that the tag's release run passed `install-scoop` (the same scenario on the release's
+   own archive, rendered for its `-dev.N` rehearsal). Record its run URL on #565.
+4. On a clean Windows 11 x64 machine with WSL 2 and a fresh Ubuntu 24.04 distribution with tmux
    3.6 or newer: `scoop install "$WORK/bucket/torlek.json"`, then `torlek-wsl check`,
    `torlek-wsl install`, `torlek doctor` and the #97 onboarding scenario from Windows Terminal.
-   Then check each refusal: no WSL, no or unknown distribution, a WSL 1 distribution, an arm64
-   machine, a tampered archive in the app directory. Run `scoop uninstall torlek` and confirm
-   that the distribution, `~/.local/lib/torlek` and the profile state are still there. Record the
-   commands and output on #565.
-4. Run [PSScriptAnalyzer](https://learn.microsoft.com/en-us/powershell/utility-modules/psscriptanalyzer/overview)
-   on the two `.ps1` files under both Windows PowerShell 5.1 and PowerShell 7, and explain or fix
-   every finding.
+   Then check a WSL 1 distribution and an arm64 machine, which CI does not. Record the commands
+   and output on #565.
 5. Publish, only with Theo's approval: create the bucket repository he names, add the rendered
    `torlek.json` under `bucket/`, and push it.
 6. Check the published route on a new machine: `scoop bucket add <name> <url>`,
@@ -188,15 +223,18 @@ this list grants none. For each published `vX.Y.Z-alpha.N` tag:
 
 ## Not yet verified
 
-- Nothing ran on Windows: no PowerShell, `wsl.exe`, Scoop or WinGet exists here, and there is
-  no PowerShell parser or PSScriptAnalyzer, so the `.ps1` files are not even syntax-checked. The
-  tests read their source for forbidden commands and the consent order; that is not execution.
-- Untested assumptions that step 3 must confirm: `wsl.exe --exec` passes each argument intact
-  (Windows PowerShell 5.1 does not escape embedded double quotes or empty arguments for native
-  commands); `--cd` accepts Scoop's `current` junction; `@args` carries named parameters through
-  Scoop's `.ps1` shim; `wsl.exe --list --quiet` output under `WSL_UTF8=1`.
-- `install-in-wsl.sh` ran on this Arch host with faked `uname` and `id`, not in a WSL kernel.
-- No release exists, so no real archive was rendered, downloaded or installed.
+- The `install-scoop` job is new: until its first green run is recorded on #565, nothing here has
+  run on Windows. The PowerShell files are written without a PowerShell to parse them locally.
+- Untested assumptions the job's first runs must confirm: `wsl.exe --exec` passes each argument
+  intact (Windows PowerShell 5.1 does not escape embedded double quotes or empty arguments for
+  native commands); `--cd` accepts Scoop's `current` junction; `@args` carries named parameters
+  through Scoop's `.ps1` shim; `wsl.exe --list --quiet` output under `WSL_UTF8=1`; a runner's
+  `python` can serve loopback.
+- `install-in-wsl.sh` also ran on an Arch host with faked `uname` and `id`, not in a WSL kernel
+  (`install-scoop` runs it in one).
+- No release exists, so no real archive was rendered, downloaded or installed; the job uses a
+  dry run's `-dev.N` archive.
+- A published bucket, a WSL 1 distribution, an arm64 machine and the #97 onboarding are unrun.
 - The in-WSL layout `~/.local/lib/torlek/v<tag>` and `current` is this route's own; #97 has not
   yet published the archive route's install instructions. If #97 picks another layout, change
   the scripts to match it before publishing.

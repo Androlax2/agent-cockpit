@@ -36,6 +36,14 @@ on:
       - packaging/aur/render.py
       - packaging/aur/torlek-bin/PKGBUILD.in
       - tools/tests/test_aur_package.py
+      - packaging/windows/ci-analyze.ps1
+      - packaging/windows/ci-install.ps1
+      - packaging/windows/install-in-wsl.sh
+      - packaging/windows/render.py
+      - packaging/windows/scoop/torlek.json.in
+      - packaging/windows/torlek-wsl.ps1
+      - packaging/windows/torlek.ps1
+      - tools/tests/test_windows_package.py
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     # Nightly from main: a dry run whose archives stay as workflow artifacts (#179).
@@ -310,6 +318,59 @@ jobs:
           prefix=$(mktemp -d)
           tar -xzf dist/*.tar.gz -C "$prefix"
           python3 tools/release.py verify-install "$prefix"/torlek-v* --revision "$revision"
+
+  # The Scoop route on a clean Windows runner with a WSL 2 distribution (#565,
+  # docs/packaging/windows.md): the launchers parse and pass PSScriptAnalyzer under PowerShell 7
+  # and Windows PowerShell 5.1, the manifest rendered for this candidate installs with a pinned
+  # Scoop, every refusal fires, Torlek installs into WSL after the consent prompt, and
+  # `scoop uninstall` leaves the distribution and its files alone. Not in publish's needs: the
+  # route is unpublished and does not gate the tag (docs/decisions/2026-11-06-565-scoop-validated-in-windows-ci.md);
+  # the publication checklist requires this job's success for the release it renders.
+  install-scoop:
+    needs: [plan, assemble]
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Scoop v0.6.0, run from its checkout: its installer follows master, a test should not.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ScoopInstaller/Scoop
+          ref: e6aa3b366bdee8ed138c1e0f7b85192ebdd35d0f
+          path: scoop-core
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: archive-linux-x86_64
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: checksums
+          path: dist
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          wsl-shell-user: cockpit
+          additional-packages: ca-certificates python3
+      - name: Parse and analyze the launchers under both PowerShells
+        shell: pwsh
+        run: |
+          foreach ($powerShell in 'pwsh', 'powershell') {
+            & $powerShell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/ci-analyze.ps1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Install with Scoop, check the refusals, install into WSL and uninstall
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          REVISION: ${{ needs.plan.outputs.revision }}
+        run: >-
+          ./packaging/windows/ci-install.ps1 -Dist dist -Version $env:VERSION
+          -Revision $env:REVISION -ScoopCore scoop-core
 
   # Protocol skew/restart use the archive; migration/crash fixtures use its source revision.
   compatibility:
