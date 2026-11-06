@@ -249,11 +249,13 @@ The eight-name study's earlier "morning choice" between Crewkiln and Runlark is 
 Its trademark and browser blockers (`1820d58f`) still describe what the sandbox could not reach;
 Theo ran the USPTO, TMview and WIPO searches for Torlek in his own browser.
 
-**Still open, carried by #560's pre-launch checklist:**
+**Open items, settled by [the name-gate decision](../decisions/2026-11-06-893-name-gate-before-public-steps.md) (#893):**
 
-- legal clearance, including a similar-mark and phonetic analysis
-- the official Nix index (partial evidence only) and `.sh` (not needed: no domain will be bought)
-- a native-speaker slang check
-- a GitHub organization name, since `torlek` is a personal account
+- legal clearance, including a similar-mark and phonetic analysis: waived for prereleases,
+  required before v0.1.0 stable
+- the official Nix index: checked 2026-11-06, no `torlek` package; `.sh` is not needed (no
+  domain will be bought)
+- a native-speaker slang check: waived for prereleases, required before v0.1.0 stable
+- the GitHub name: the personal account, so #570 renames to `Androlax2/torlek`
 
 Review and verification evidence belongs in PR #534.
