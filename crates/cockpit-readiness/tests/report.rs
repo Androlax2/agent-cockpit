@@ -235,7 +235,7 @@ fn a_required_sandbox_with_the_native_backend_is_available_naming_it() {
     let sandbox = requirement(&report, "sandbox");
     assert_eq!(sandbox.status, Status::Available, "{sandbox:?}");
     assert!(sandbox.detail.contains(NATIVE_BACKEND), "{sandbox:?}");
-    assert!(sandbox.detail.contains("loopback"), "{sandbox:?}");
+    assert!(sandbox.detail.contains("torlek network"), "{sandbox:?}");
 }
 
 /// Each case: host facts changed from a ready host, the requirement and the status it gets.

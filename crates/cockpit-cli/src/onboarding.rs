@@ -278,8 +278,9 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
     let mut lines = vec![
         "sandbox: agents.sandbox = \"off\" runs agents UNSANDBOXED, with your rights; \
          \"required\" runs them in Torlek's native sandbox (bubblewrap, Landlock and \
-         seccomp), with no network but loopback until the session proxy exists (#831), and \
-         refuses every launch on a host without it"
+         seccomp), reaching the network only through a per-session egress proxy (you allow once, \
+         allow always or deny a refused host with `torlek network`), and refuses every launch \
+         on a host without it"
             .to_owned(),
         "needs you: a command an agent asks you to run (`torlek ask run`) or a step only a \
          person can do (`torlek ask guide`); an agent cannot approve its own request"
