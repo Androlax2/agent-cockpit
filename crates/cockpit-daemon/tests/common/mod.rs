@@ -301,7 +301,9 @@ pub fn unix_now() -> i64 {
 /// own shell after tmux starts it: the daemon's reply about a launch can arrive before the
 /// agent's line, and an agent stopped before it writes never does, so a test waits for a
 /// launch before it reads it or stops that agent (#231, #235, #257). Panics on more than
-/// `count`, or when [`GENEROUS`] runs out first.
+/// `count`, or when [`GENEROUS`] runs out first. The fake provider's launch cannot instead
+/// return after the agent logged: a provider only builds the command and the daemon spawns
+/// it, so that would need a product hook for a test.
 pub async fn once_logged<T: std::fmt::Debug>(count: usize, read: impl Fn() -> Vec<T>) -> Vec<T> {
     let deadline = std::time::Instant::now() + GENEROUS;
     loop {
@@ -324,7 +326,9 @@ pub async fn once_logged<T: std::fmt::Debug>(count: usize, read: impl Fn() -> Ve
 
 /// What `read` returns once it holds `count` entries and still holds them [`SETTLE`] later:
 /// for checks that no further launch happened, which a single read right after a reply
-/// could not see.
+/// could not see (it would pass vacuously). The niceness and idle-scheduling tests likewise
+/// wait until the leader exec'd the program: before that it is the `nice`/`chrt` shim and
+/// `inspect` truly reports the inherited value.
 pub async fn still_logged<T: std::fmt::Debug>(count: usize, read: impl Fn() -> Vec<T>) -> Vec<T> {
     let mut logged = once_logged(count, &read).await;
     let settled = std::time::Instant::now() + SETTLE;

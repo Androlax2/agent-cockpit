@@ -6,6 +6,25 @@
 //! control-mode client of the test's tmux server announces every write the TUI (or an agent
 //! in the viewer) makes, and the screen is read again after each one. A state wait blocks
 //! on the daemon's change feed. Both give up after [`GENEROUS`], showing the last screen.
+//!
+//! The owner's terminal is a tmux server the test owns (`-S` in the scratch home), so keys
+//! travel a human's path: terminal, the client `cockpit tui` attaches to the daemon's private
+//! server, the manager's active pane. Running the TUI directly in the private server would
+//! bypass `cockpit tui` and the attach. Idle sleep runs on `cockpit-e2e-daemon`, because the
+//! product binary has no test switch every installation would carry. The tests drive tmux as
+//! a process because the crate-graph rule (`tui -> client/protocol/diagnostics only`) counts
+//! dev-dependencies, and a test-support crate would add a workspace member and `Cargo.lock`
+//! entry for code only these tests use. The modules that need the agent channel build on
+//! Linux only: it refuses every sender on macOS until it reads process trees there (#336).
+//! The approval test presses `y` again 300 ms after the daemon's grace refusal, as the owner
+//! does, until the TUI's grace covers the daemon's (#337): nothing on the screen or the feed
+//! marks the end of that grace, so it is the suite's one pause.
+//!
+//! A snapshot is compared by waiting until the screen matches, because a capture can land
+//! mid-redraw; a fixed sleep or a single read is slow and flaky. The fake agent is a shell
+//! script: a line starting with `!` runs as a command (Claude running a tool), any other line
+//! gets an answer naming the conversation's first message, which shows whether a restart, wake
+//! or resume kept the conversation.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};

@@ -3,8 +3,7 @@
 Proof for [gate #37](https://github.com/Androlax2/agent-cockpit/issues/37)'s "latency run
 recorded" and "executions survive daemon restart" items, and for report 15's claim "control
 path stays responsive under load". The workload is defined in
-[the decision record](../decisions/2026-10-31-36-latency-workload.md); the harness is
-`crates/cockpit-daemon/tests/latency.rs`.
+the header of [the harness](../../crates/cockpit-daemon/tests/latency.rs).
 
 ## Recorded run, 2026-10-31
 

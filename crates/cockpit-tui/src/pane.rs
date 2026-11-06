@@ -82,6 +82,11 @@ pub struct Pane {
     accepts_input_at: Option<Instant>,
     /// Column focuses asked for and not yet answered: the runtime answers every command,
     /// with the daemon's reply or a failure at its deadline, so this always returns to zero.
+    /// A count, not a flag (#439): a request can show, the queue empty and the next one show
+    /// with both answers on their way, and a flag the first answer cleared would let the
+    /// second restart the grace after the hint offered `y`. A late answer restarts the grace
+    /// rather than being ignored, because the keys it brings may be the owner typing to an
+    /// agent and would otherwise reach the pane at once and could approve.
     keys_on_their_way: usize,
     typing: Option<Typing>,
     typed: String,

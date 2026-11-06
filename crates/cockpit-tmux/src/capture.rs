@@ -82,7 +82,9 @@ impl CaptureStream {
             match event {
                 // tmux runs a client's commands in order, so output it sends before the
                 // reply to a snapshot was on the screen when the snapshot ran: the snapshot
-                // already shows it, and a client must not draw it before (#267).
+                // already shows it, and a client must not draw it before (#267). Clients
+                // do not tolerate leading output instead: that would hide a broken ordering
+                // contract every client would have to work around (#257).
                 ControlEvent::Output { pane, .. } if self.is_snapshot_pending(&pane) => {}
                 ControlEvent::Output { pane, bytes } => {
                     return Ok(Some(CaptureFrame::Output { pane, bytes }));

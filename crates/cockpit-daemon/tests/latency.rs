@@ -6,7 +6,28 @@
 //! daemon is killed with its sessions running and started again: each is reattached and
 //! none is launched again.
 //!
-//! The loads (workload decided in docs/decisions/2026-10-31-36-latency-workload.md):
+//! "Input latency" here is the round trip of control-lane requests (`ping`, `session-list`,
+//! `agent-reports`, `approval-queue`, `provider-list`): keystrokes to an agent go from the
+//! attached terminal to tmux and never pass through the daemon, so its share of "input" is
+//! what a client asks to show status and answer approvals. Report 15 leaves the hardware
+//! and workload definition open; this is the worker's definition of #36, replaceable by
+//! Theo. The duration comes from `COCKPIT_LATENCY_SECONDS`.
+//!
+//! The daemon is the real binary in its own process, with the production wiring (a script
+//! as Claude Code on `PATH`, tmux under `TMUX_TMPDIR` in the test home), so the probe and
+//! the loads never share its runtime. The recorded run uses the release profile, as
+//! installed; the CI smoke variant runs 3 s with one build process. Targets are reported,
+//! not asserted: report 03's numbers stay `validate`, and a missed target is recorded with
+//! its gap in docs/gates/m1-latency.md.
+//!
+//! Rejected: an in-process daemon (the probe and loads would share its Tokio runtime); a
+//! real `cargo build` as the build load (needs a toolchain and network, and its length
+//! differs per machine; output to a file would also sit in memory on a tmpfs home); driving
+//! the owner's control lane to saturation (one human owner does not send hundreds of
+//! requests at once, and `overload::control_requests_are_answered_while_bulk_work_saturates_its_workers`
+//! covers lane saturation).
+//!
+//! The loads:
 //! - build: per build process, `head -c 64M /dev/urandom | gzip -1` to nowhere, looped,
 //!   outside the daemon as builds run in agent terminals;
 //! - log flood: a session whose agent writes to its terminal without pause, and a viewer
