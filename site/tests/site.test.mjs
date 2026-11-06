@@ -31,6 +31,16 @@ test("real site exports the approved guide and generated references under its ve
   assert.ok(html.includes(`${env.TORLEK_DOCS_BASE}guide/approvals`));
   assert.match(html, /Edit.*GitHub/);
   assert.match(html, /rel="canonical"/);
+  const install = readFileSync(`${site}dist/get-started/install-release/index.html`, "utf8");
+  assert.match(install, /sha256sum/);
+  const installSource = readFileSync(`${site}content/docs/get-started/install-release.mdx`, "utf8");
+  for (const command of ["sha256sum --check", "torlek daemon install", "torlek init"])
+    assert.ok(installSource.includes(command), `staged install steps must include: ${command}`);
+  const installStatus = readFileSync(`${site}dist/get-started/install/index.html`, "utf8");
+  assert.ok(
+    installStatus.includes(`${env.TORLEK_DOCS_BASE}get-started/install-release`),
+    "the install status page must link to the on-site install steps, not the GitHub README",
+  );
   const cli = readFileSync(`${site}dist/reference/cli/index.html`, "utf8");
   assert.match(cli, /Generated from/);
   assert.match(cli, /torlek.*approval.*approve/s);
