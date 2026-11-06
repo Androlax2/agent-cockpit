@@ -79,9 +79,9 @@ impl Leftovers {
                 found.join(", ")
             ),
             next: Some(format!(
-                "once no such session runs, `torlek --profile {} doctor {REMOVE_FLAG}` stops \
+                "once no such session runs, `{} doctor {REMOVE_FLAG}` stops \
                  the service and deletes them",
-                self.profile
+                crate::profile::command()
             )),
         })
     }
