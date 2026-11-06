@@ -2701,27 +2701,38 @@ impl Sessions {
         }
         // Its folder of mount sources holds the owner's Git identity (#859) and the folders
         // its sandbox mounted (#482).
-        if let Some(mount_sources) = self.settings.sandbox.session_mount_sources(id.as_str()) {
-            paths.push(mount_sources.map_err(Error::Sandbox)?);
-        }
+        let mount_sources = self
+            .settings
+            .sandbox
+            .session_mount_sources(id.as_str())
+            .transpose()
+            .map_err(Error::Sandbox)?;
+        let sandbox = self.settings.sandbox.clone();
         let counted = TerminalStep::start(&self.session_lock(id));
         self.blocking("remove the session's directories", move || {
             let _counted = counted;
             // Each removal is tried, so a stuck runtime directory never keeps a large temp
             // folder on the disk; the first failure is returned.
             let mut failure = None;
-            for path in paths {
-                match remove_tree(&path) {
-                    Ok(()) => {}
-                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(source) => {
-                        failure.get_or_insert(Error::Io {
-                            action: "remove",
-                            path,
-                            source,
-                        });
-                    }
+            let mut remove = |path: PathBuf| match remove_tree(&path) {
+                Ok(()) => {}
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    failure.get_or_insert(Error::Io {
+                        action: "remove",
+                        path,
+                        source,
+                    });
                 }
+            };
+            for path in paths {
+                remove(path);
+            }
+            if let Some(path) = mount_sources {
+                // The network loop rewrites the decisions file in it: removed under that
+                // loop's lock, never while a write adds an entry to it (#1003).
+                let _writes = sandbox.hold_mount_writes();
+                remove(path);
             }
             failure.map_or(Ok(()), Err)
         })
