@@ -227,8 +227,21 @@ question = false    # no sound for a question
 
 The events are `failure`, `hold`, `question`, `quota` and `finished`.
 
+To keep it quiet for a while, `torlek notify away on`; `torlek notify away off` ends it, and so
+does logging out where your desktop sets `XDG_RUNTIME_DIR`. Your own programs can hold it quiet as well: a program that exits 0
+while you are in a meeting or playing, named in the owner configuration with an absolute path,
+which the notifier runs every five seconds:
+
+```toml
+[notify.hold]
+meeting = "/home/me/bin/in-a-meeting"
+```
+
+While a hold stands nothing shows and nothing plays; when the last one ends, one quiet
+notification lists what still needs you.
+
 While it runs, `torlek notify` also keeps a status file for your bar: the sessions, what each
-needs you for and how many need you now. It sits in the profile's runtime directory
+needs you for, how many need you now and which holds stand. It sits in the profile's runtime directory
 (`paths.runtime_dir` in `torlek config show`), usually `$XDG_RUNTIME_DIR/torlek/status.json`
 (`torlek-NAME` for a named profile). Its schema is in the
 [cockpit-notify README](../crates/cockpit-notify/README.md#status-file). The notifier rewrites

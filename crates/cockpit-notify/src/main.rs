@@ -1,8 +1,10 @@
 //! `torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS]
-//! [--status-file FILE]`: tells the owner, with a desktop notification and a sound, when a
-//! session of the daemon at `PATH` needs them. `EVENTS` is `none` or a comma-separated list
-//! of `failure`, `hold`, `question`, `quota` and `finished`; left out, every event is on. It
-//! logs under `DIR`, and keeps `FILE` up to date for bars (the README's schema).
+//! [--status-file FILE] [--away-file FILE] [--hold NAME=PROGRAM]...`: tells the owner, with a
+//! desktop notification and a sound, when a session of the daemon at `PATH` needs them.
+//! `EVENTS` is `none` or a comma-separated list of `failure`, `hold`, `question`, `quota` and
+//! `finished`; left out, every event is on. It logs under `DIR`, keeps the status file up to
+//! date for bars (the README's schema), and keeps quiet while the away file exists or a
+//! hold's program exits 0.
 //!
 //! A host without a session bus, `notify-send` or a sound player runs it all the same: that
 //! outlet is off and the log says why.
@@ -16,8 +18,8 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_notify::{
-    Desktop, Event, FeedEvent, Host, Notifier, Outlets, Sound, Status, follow_feed, names,
-    write_status,
+    Desktop, Detector, Detectors, Event, FeedEvent, Hold, Host, Notice, Notifier, Outlets, Sound,
+    Status, follow_feed, names, standing_holds, write_status,
 };
 use cockpit_protocol::{Command, Reply};
 use tokio::sync::{mpsc, watch};
@@ -32,7 +34,7 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 /// stays out of reach, as the feed's own retry does.
 const LONGEST_PAUSE: Duration = Duration::from_secs(30);
 
-const USAGE: &str = "usage: torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS] [--status-file FILE] | --version
+const USAGE: &str = "usage: torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS] [--status-file FILE] [--away-file FILE] [--hold NAME=PROGRAM]... | --version
 EVENTS: none, or a comma-separated list of failure, hold, question, quota, finished (default: all)";
 
 struct Options {
@@ -41,6 +43,8 @@ struct Options {
     desktop_events: BTreeSet<Event>,
     sound_events: BTreeSet<Event>,
     status_file: Option<PathBuf>,
+    away_file: Option<PathBuf>,
+    detectors: Vec<Detector>,
 }
 
 fn main() -> ExitCode {
@@ -71,6 +75,8 @@ fn parse(arguments: &[String]) -> Result<Options, String> {
     let mut desktop_events = BTreeSet::from(Event::ALL);
     let mut sound_events = BTreeSet::from(Event::ALL);
     let mut status_file = None;
+    let mut away_file = None;
+    let mut detectors = Vec::new();
     let mut words = arguments.iter();
     while let Some(flag) = words.next() {
         let value = words
@@ -82,6 +88,8 @@ fn parse(arguments: &[String]) -> Result<Options, String> {
             "--desktop" => desktop_events = Event::parse_list(value)?,
             "--sound" => sound_events = Event::parse_list(value)?,
             "--status-file" => status_file = Some(PathBuf::from(value)),
+            "--away-file" => away_file = Some(PathBuf::from(value)),
+            "--hold" => detectors.push(Detector::parse(value)?),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -91,6 +99,8 @@ fn parse(arguments: &[String]) -> Result<Options, String> {
         desktop_events,
         sound_events,
         status_file,
+        away_file,
+        detectors,
     })
 }
 
@@ -117,7 +127,15 @@ fn notify(options: Options) -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|error| format!("cannot start the runtime: {error}"))?;
-    let outcome = runtime.block_on(run(options.socket, outlets, options.status_file.clone()));
+    let outcome = runtime.block_on(run(
+        options.socket,
+        outlets,
+        HoldPlaces {
+            away_file: options.away_file,
+            detectors: Detectors::new(options.detectors),
+        },
+        options.status_file.clone(),
+    ));
     if let Err(problem) = &outcome {
         tracing::error!(problem, "the notifier stopped");
     }
@@ -145,13 +163,23 @@ fn find_outlets(host: &Host, options: &Options) -> Outlets {
     }
 }
 
+/// Where the holds come from.
+struct HoldPlaces {
+    away_file: Option<PathBuf>,
+    detectors: Detectors,
+}
+
 async fn run(
     socket: PathBuf,
     outlets: Outlets,
+    holds: HoldPlaces,
     status_file: Option<PathBuf>,
 ) -> Result<(), String> {
     let (feed_events, mut feed) = mpsc::channel::<FeedEvent>(1);
     tokio::spawn(follow_feed(socket.clone(), feed_events));
+    let (detected_updates, mut detected) = watch::channel(BTreeSet::new());
+    tokio::spawn(keep_detecting(holds.detectors, detected_updates));
+    let away_file = holds.away_file;
     let (status_updates, status_view) = watch::channel(None);
     if let Some(path) = status_file {
         tokio::spawn(keep_status_file(path, status_view));
@@ -165,19 +193,29 @@ async fn run(
         pause: None,
     };
     let mut notifier = Notifier::default();
+    let mut hold = Hold::default();
     let mut refresh = tokio::time::interval(REFRESH);
     // A slow daemon delays the next refresh rather than earning a burst of them.
     refresh.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         let commands = tokio::select! {
             _ = refresh.tick() => Notifier::refresh_commands(),
+            changed = detected.changed() => {
+                if changed.is_err() {
+                    return Err("the hold detection task stopped".to_owned());
+                }
+                // Seen: the holds are read where they are told.
+                detected.borrow_and_update();
+                Vec::new()
+            }
             event = feed.recv() => match event {
                 None => return Err("the change feed task stopped".to_owned()),
                 Some(FeedEvent::Batch { batch, applied }) => {
                     let outcome = notifier.apply_changes(&batch);
                     is_feed_current = outcome.is_ok();
                     let notices = outcome.as_ref().map(Vec::as_slice).unwrap_or_default();
-                    outlets.tell(notices);
+                    let standing = standing_holds(away_file.as_deref(), &detected.borrow());
+                    tell(&outlets, &mut hold, standing, &notifier, notices);
                     // The feed task waits on this answer; it is gone only when we stop.
                     let _ = applied.send(outcome.map(drop));
                     notifier.changed_view_commands()
@@ -190,21 +228,56 @@ async fn run(
             },
         };
         for command in commands {
-            match daemon.request(command.clone()).await {
-                Ok(reply) => outlets.tell(&notifier.answer(&command, Ok(reply))),
-                Err(Failure::Refused(problem)) => {
-                    outlets.tell(&notifier.answer(&command, Err(problem)));
-                }
+            let answer = match daemon.request(command.clone()).await {
+                Ok(reply) => Ok(reply),
+                Err(Failure::Refused(problem)) => Err(problem),
                 // Not an answer: what the notifier starts on must come from the daemon, or
                 // everything already waiting would be news once it answers.
                 Err(Failure::Unreachable) => break,
-            }
+            };
+            let notices = notifier.answer(&command, answer);
+            let standing = standing_holds(away_file.as_deref(), &detected.borrow());
+            tell(&outlets, &mut hold, standing, &notifier, &notices);
         }
-        let status = notifier.status(daemon.pause.is_none() && is_feed_current);
+        // After the answers, so a summary lists only what they left standing.
+        let standing = standing_holds(away_file.as_deref(), &detected.borrow());
+        tell(&outlets, &mut hold, standing, &notifier, &[]);
+        let status = notifier.status(daemon.pause.is_none() && is_feed_current, hold.standing());
         status_updates.send_if_modified(|shown| {
             let is_new = shown.as_ref() != Some(&status);
             if is_new {
                 *shown = Some(status);
+            }
+            is_new
+        });
+    }
+}
+
+/// Tells `notices`, kept back while a hold in `standing` stands; first, when the last hold
+/// has just ended, the quiet summary of what was kept and still stands.
+fn tell(
+    outlets: &Outlets,
+    hold: &mut Hold,
+    standing: BTreeSet<String>,
+    notifier: &Notifier,
+    notices: &[Notice],
+) {
+    outlets.tell_summary(&hold.set_standing(standing, notifier));
+    outlets.tell(&hold.pass(notices));
+}
+
+/// Runs the owner's hold detectors at every refresh, apart from the requests and the feed,
+/// which a slow detector must not hold up.
+async fn keep_detecting(mut detectors: Detectors, updates: watch::Sender<BTreeSet<String>>) {
+    let mut refresh = tokio::time::interval(REFRESH);
+    refresh.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    while !updates.is_closed() {
+        refresh.tick().await;
+        let standing = detectors.standing().await;
+        updates.send_if_modified(|shown| {
+            let is_new = *shown != standing;
+            if is_new {
+                *shown = standing;
             }
             is_new
         });

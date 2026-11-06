@@ -27,6 +27,7 @@ const MISTAKES: &[(&[&str], &str)] = &[
     (&["doctor", "--bogus"], "doctor"),
     (&["tui", "--bogus"], "tui"),
     (&["notify", "--bogus"], "notify"),
+    (&["notify", "away", "maybe"], "notify"),
     (&["update", "bogus"], "update"),
     (&["version", "--bogus"], "version"),
     (&["daemon", "install", "--bogus"], "daemon"),

@@ -457,3 +457,55 @@ fn the_status_file_shows_the_finished_session_for_a_bar() {
         "{written}"
     );
 }
+
+#[test]
+fn away_keeps_the_finished_session_quiet_and_its_end_tells_it_once_quietly() {
+    let setup = Setup::new();
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+    let away = setup.dir.path().join("away");
+    fs::write(&away, "").unwrap();
+    let status_file = setup.dir.path().join("status.json");
+    let _notifier = setup.start(
+        &[
+            "--away-file",
+            away.to_str().unwrap(),
+            "--status-file",
+            status_file.to_str().unwrap(),
+        ],
+        true,
+    );
+
+    let deadline = Instant::now() + GENEROUS;
+    let mut written = serde_json::Value::Null;
+    while Instant::now() < deadline {
+        if let Ok(text) = fs::read_to_string(&status_file) {
+            written = serde_json::from_str(&text).unwrap();
+            if written["sessions"][0]["needs"] == serde_json::json!(["finished"]) {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(written["holds"], serde_json::json!(["away"]), "{written}");
+    assert_eq!(
+        written["sessions"][0]["needs"],
+        serde_json::json!(["finished"]),
+        "{written}"
+    );
+    assert_eq!(
+        setup.calls(0),
+        Vec::<String>::new(),
+        "nothing told while away"
+    );
+
+    fs::remove_file(&away).unwrap();
+
+    assert_eq!(
+        setup.calls(1),
+        [format!(
+            "notify-send [--app-name=Torlek] [--urgency=low] [--] \
+             [While you were held: 1 thing still needs you] [{WORKER} finished]"
+        )]
+    );
+}

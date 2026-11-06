@@ -3,6 +3,8 @@
 
 mod common;
 
+use std::collections::BTreeSet;
+
 use cockpit_notify::{Notifier, SessionState, Status, write_status};
 use cockpit_protocol::{
     AgentExitView, AgentState, EntityKind, ExitStatusView, QuestionSource, SessionReport,
@@ -19,7 +21,7 @@ fn worker() -> SessionView {
 }
 
 fn status_of(notifier: &Notifier) -> Status {
-    notifier.status(true)
+    notifier.status(true, &BTreeSet::new())
 }
 
 #[test]
@@ -159,10 +161,11 @@ fn a_checkout_of_a_kind_this_version_does_not_know_still_names_its_project() {
 
 #[test]
 fn a_daemon_out_of_reach_or_not_yet_loaded_is_not_reachable() {
-    assert!(!Notifier::default().status(true).reachable);
+    let no_hold = BTreeSet::new();
+    assert!(!Notifier::default().status(true, &no_hold).reachable);
     assert!(
         !loaded(&[worker()], vec![report(WORKER)])
-            .status(false)
+            .status(false, &no_hold)
             .reachable
     );
 }
@@ -183,6 +186,7 @@ fn the_file_carries_its_schema_and_when_it_was_written() {
             "schema": 1,
             "written_at": 1_700_000_000,
             "reachable": true,
+            "holds": [],
             "needs_you": 0,
             "sessions": [{
                 "id": WORKER,

@@ -1,8 +1,15 @@
 //! Owner-only: which events `torlek notify` tells with a desktop notification and which with
-//! a sound (#62, #682). Read when the notifier starts.
-use crate::{Layer, Source, Sourced};
+//! a sound (#62, #682), and the detectors that hold both (report 19). Read when the notifier
+//! starts.
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use crate::{ConfigError, Layer, Source, Sourced};
 use serde::Deserialize;
 use toml::Spanned;
+
+/// The hold `torlek notify away on` sets; no detector may take its name.
+pub const AWAY_HOLD: &str = "away";
 
 /// The events the notifier tells, in its names, most urgent first.
 pub const NOTIFY_EVENTS: [&str; 5] = ["failure", "hold", "question", "quota", "finished"];
@@ -62,6 +69,9 @@ pub struct NotifySettings {
     pub desktop: NotifyEvents,
     /// What plays a sound.
     pub sound: NotifyEvents,
+    /// Each hold's detector, by the hold's name: a program the notifier runs at every refresh,
+    /// whose exit status 0 means the hold stands (a meeting, a game). None by default.
+    pub holds: BTreeMap<String, Sourced<PathBuf>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,6 +79,7 @@ pub struct NotifySettings {
 pub(super) struct NotifyTable {
     desktop: Option<NotifyEventsTable>,
     sound: Option<NotifyEventsTable>,
+    hold: Option<BTreeMap<String, Spanned<String>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,10 +92,11 @@ struct NotifyEventsTable {
     finished: Option<Spanned<bool>>,
 }
 
-pub(super) fn settings(layers: &[Layer]) -> NotifySettings {
+pub(super) fn settings(layers: &[Layer]) -> Result<NotifySettings, ConfigError> {
     let mut result = NotifySettings {
         desktop: NotifyEvents::all_on(),
         sound: NotifyEvents::all_on(),
+        holds: BTreeMap::new(),
     };
     for layer in layers {
         let Some(table) = &layer.settings.notify else {
@@ -97,8 +109,47 @@ pub(super) fn settings(layers: &[Layer]) -> NotifySettings {
         if let Some(sound) = &table.sound {
             apply(layer, sound, &mut result.sound);
         }
+        for (name, program) in table.hold.iter().flatten() {
+            let source = layer.source_at(program.span());
+            let detector = hold_detector(name, program.get_ref(), &source)?;
+            result
+                .holds
+                .insert(name.clone(), Sourced::new(detector, source));
+        }
     }
-    result
+    Ok(result)
+}
+
+/// A detector's program, refused when the notifier could not run it as named: a relative
+/// path would depend on the directory `torlek notify` starts in.
+fn hold_detector(name: &str, program: &str, source: &Source) -> Result<PathBuf, ConfigError> {
+    let invalid = |reason: String| ConfigError::Invalid {
+        key: format!("notify.hold.{name}"),
+        source: source.clone(),
+        reason,
+    };
+    let is_plain_name = !name.is_empty()
+        && name.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        });
+    if !is_plain_name {
+        return Err(invalid(
+            "a hold's name is lowercase letters, digits and dashes".to_owned(),
+        ));
+    }
+    if name == AWAY_HOLD {
+        return Err(invalid(format!(
+            "`{AWAY_HOLD}` is the hold `torlek notify away on` sets"
+        )));
+    }
+    let program = PathBuf::from(program);
+    if !program.is_absolute() {
+        return Err(invalid(format!(
+            "{}: name the detector by its absolute path",
+            program.display()
+        )));
+    }
+    Ok(program)
 }
 
 fn apply(layer: &Layer, table: &NotifyEventsTable, events: &mut NotifyEvents) {

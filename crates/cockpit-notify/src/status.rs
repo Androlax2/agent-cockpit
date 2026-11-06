@@ -18,6 +18,9 @@ pub struct Status {
     /// The daemon answered the notifier's last request and everything the notifier starts on
     /// is loaded. While false, `sessions` is what was last known, or empty.
     pub reachable: bool,
+    /// The holds that stand, by name: `away`, or a detector's. While any stands the
+    /// notifier keeps quiet.
+    pub holds: Vec<String>,
     /// How many sessions are in the `needs-you` state.
     pub needs_you: usize,
     /// Every session that has not ended, by id.

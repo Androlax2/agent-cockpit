@@ -110,22 +110,8 @@ impl Desktop {
             let body = only.detail.as_deref().map(body_text).unwrap_or_default();
             (headline(only), body)
         } else {
-            let mut lines: Vec<String> = ordered
-                .iter()
-                .take(LISTED_NOTICES)
-                .map(|notice| match &notice.detail {
-                    Some(detail) => {
-                        format!("{}: {}", escaped(&headline(notice)), body_text(detail))
-                    }
-                    None => escaped(&headline(notice)),
-                })
-                .collect();
-            let unlisted = ordered.len().saturating_sub(LISTED_NOTICES);
-            if unlisted > 0 {
-                lines.push(format!("and {unlisted} more"));
-            }
             let summary = format!("{} ({} more)", headline(first), ordered.len() - 1);
-            (summary, lines.join("\n"))
+            (summary, listed(&ordered))
         };
         let mut arguments = vec![
             format!("--app-name={APP_NAME}"),
@@ -138,6 +124,42 @@ impl Desktop {
         }
         arguments
     }
+
+    /// One low-urgency notification of what was held and still needs the owner, once the
+    /// last hold ended; `notices` is not empty.
+    fn summary_arguments(notices: &[&Notice]) -> Vec<String> {
+        let mut ordered = notices.to_vec();
+        ordered.sort_by_key(|notice| notice.event);
+        let summary = match ordered.len() {
+            1 => "While you were held: 1 thing still needs you".to_owned(),
+            count => format!("While you were held: {count} things still need you"),
+        };
+        vec![
+            format!("--app-name={APP_NAME}"),
+            "--urgency=low".to_owned(),
+            "--".to_owned(),
+            summary,
+            listed(&ordered),
+        ]
+    }
+}
+
+/// `ordered` as a notification body: one line each, up to [`LISTED_NOTICES`], then how many
+/// more.
+fn listed(ordered: &[&Notice]) -> String {
+    let mut lines: Vec<String> = ordered
+        .iter()
+        .take(LISTED_NOTICES)
+        .map(|notice| match &notice.detail {
+            Some(detail) => format!("{}: {}", escaped(&headline(notice)), body_text(detail)),
+            None => escaped(&headline(notice)),
+        })
+        .collect();
+    let unlisted = ordered.len().saturating_sub(LISTED_NOTICES);
+    if unlisted > 0 {
+        lines.push(format!("and {unlisted} more"));
+    }
+    lines.join("\n")
 }
 
 fn headline(notice: &Notice) -> String {
@@ -252,6 +274,30 @@ pub struct Outlets {
 }
 
 impl Outlets {
+    /// Tells, without a sound, what a hold kept back and still needs the owner (#62): one
+    /// low-urgency notification, for the events turned on for either outlet.
+    pub fn tell_summary(&self, notices: &[Notice]) {
+        let Some(desktop) = &self.desktop else {
+            return;
+        };
+        // An event on only for sound was kept too: the summary is the one place it is told.
+        let shown: Vec<&Notice> = notices
+            .iter()
+            .filter(|notice| {
+                self.desktop_events.contains(&notice.event)
+                    || self.sound_events.contains(&notice.event)
+            })
+            .collect();
+        if shown.is_empty() {
+            return;
+        }
+        let arguments = Desktop::summary_arguments(&shown);
+        start(
+            desktop.program.clone(),
+            arguments.into_iter().map(Into::into).collect(),
+        );
+    }
+
     /// Tells the owner about `notices` that landed together: one desktop notification and one
     /// sound, the most urgent event's, each for the events turned on for it. Never waits for
     /// the programs, and a program that fails is only logged.
