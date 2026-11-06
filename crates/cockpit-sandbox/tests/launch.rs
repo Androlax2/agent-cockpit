@@ -626,3 +626,58 @@ fn staging_a_launch_removes_the_egress_counters_of_the_last_launch() {
 
     assert_eq!(sandbox.egress_report("s1").unwrap(), None);
 }
+
+/// #984: a launch staging its files while the daemon rewrites the session's decisions, as its
+/// resync does every second for each live session, both succeed: neither takes the other's
+/// staged file from under it.
+#[test]
+fn staging_a_launch_while_its_decisions_are_rewritten_succeeds() {
+    let state = tempfile::tempdir().unwrap();
+    let host_paths = HostPaths {
+        mount_sources: state.path().join("mounts"),
+        homes: state.path().join("homes"),
+        ..no_host_paths()
+    };
+    let sandbox = Sandbox::new(Platform::Linux, host_paths, native_backend());
+    let (program, arguments) = agent_words();
+    let staged = sandbox
+        .prepare(
+            AgentSandbox::Required,
+            &launch_request("s1", state.path().join("app").to_str().unwrap()),
+            program,
+            arguments,
+        )
+        .unwrap()
+        .staged
+        .unwrap();
+    staged.write().unwrap();
+    let denial = |request| cockpit_sandbox::EgressDecisions {
+        allowed: Vec::new(),
+        denied: vec![cockpit_sandbox::DeniedDestination {
+            host: "denied.example.com".to_owned(),
+            port: 443,
+            request,
+        }],
+    };
+    let launching = std::sync::atomic::AtomicBool::new(true);
+
+    std::thread::scope(|scope| {
+        let resync = scope.spawn(|| {
+            let mut request = 0;
+            while launching.load(std::sync::atomic::Ordering::Relaxed) {
+                request += 1;
+                sandbox
+                    .write_egress_decisions("s1", &denial(request))
+                    .unwrap_or_else(|error| panic!("rewrite {request}: {error}"));
+            }
+        });
+        for launch in 0..300 {
+            if let Err(error) = staged.write() {
+                launching.store(false, std::sync::atomic::Ordering::Relaxed);
+                panic!("launch {launch}: {error}");
+            }
+        }
+        launching.store(false, std::sync::atomic::Ordering::Relaxed);
+        resync.join().unwrap();
+    });
+}

@@ -342,10 +342,14 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
 }
 
 /// Writes `contents` to `path`, owner-only, through a file beside it: a reader polling `path`
-/// sees the old contents or the new, never none (#674).
+/// sees the old contents or the new, never none (#674). The file beside it is this write's
+/// own: a launch staging the decisions and the daemon's resync rewriting them at once each
+/// rename their own file, never take the other's (#984).
 pub(crate) fn replace_atomically(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let write = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut staged = path.as_os_str().to_owned();
-    staged.push(".staged");
+    staged.push(format!(".staged-{write}"));
     let staged = PathBuf::from(staged);
     replace_owner_only(&staged, contents)?;
     std::fs::rename(&staged, path)
