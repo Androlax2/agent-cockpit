@@ -2,7 +2,8 @@
 
 Immediate: a worker question appears or changes, a worker still idle without a merged PR after
 a grace period (once per idle spell; a short working blip does not end it), a CI failure on a
-PR's current head commit (once per commit and check), a PR merged or closed. Everything else that changed is batched into one summary every 10 minutes.
+PR's current head commit (once per commit and check), a PR merged or closed. Everything else
+that changed is batched into one summary every 10 minutes.
 State persists in the state file so a re-armed monitor does not repeat what it already reported.
 
 When `torlek agent sessions --watch` ends, or a helper thread dies, it prints `WATCH ENDED`, kills
@@ -213,6 +214,10 @@ class Watcher:
     def report_idle(self, session_id, previous, current, tag, seeding):
         merged = self.is_merged(current["branch"])
         with lock:
+            latest = self.sessions.get(session_id)
+            # gh ran without the lock; a worker that resumed meanwhile is not idle.
+            if latest is None or latest["state"] != "waiting" or latest["question"]:
+                return
             if merged is None:
                 reason = f"IDLE, merge state unknown (gh failed) {tag}: doing={current['doing']!r}"
                 print(reason, flush=True)

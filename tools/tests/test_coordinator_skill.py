@@ -580,10 +580,10 @@ esac
 
         self.assertEqual(result.stdout.count("IDLE without merged PR"), 2, result.stdout)
 
-    def stream_sessions(self, *steps):
+    def stream_sessions(self, *steps, hold_seconds=3):
         """Makes `torlek agent sessions --watch` print each line after its delay, then end."""
         commands = [f"sleep {delay}; printf '%s\\n' '{line}'" for delay, line in steps]
-        self.shim("torlek", "; ".join(commands) + "; sleep 1.5; exit 3")
+        self.shim("torlek", "; ".join(commands) + f"; sleep {hold_seconds}; exit 3")
 
     def test_it_stays_quiet_when_a_worker_works_again_within_the_idle_grace_period(self):
         self.stream_sessions(
@@ -591,7 +591,7 @@ esac
             (0.3, self.session("greenfield-6-idle", "working", "applying review fixes")),
         )
 
-        result = self.watch(extra_arguments=("--idle-grace-seconds", "0.8"))
+        result = self.watch(extra_arguments=("--idle-grace-seconds", "1"))
 
         self.assertNotIn("IDLE", result.stdout)
 
@@ -602,8 +602,10 @@ esac
 
         self.assertEqual(result.stdout.count("IDLE without merged PR"), 1, result.stdout)
 
-    def test_it_waits_out_the_idle_grace_period_before_reporting(self):
-        self.stream_sessions((0, self.session("greenfield-6-idle", "waiting", "watching CI")))
+    def test_it_does_not_report_an_idle_worker_before_the_idle_grace_period_ends(self):
+        self.stream_sessions(
+            (0, self.session("greenfield-6-idle", "waiting", "watching CI")), hold_seconds=1.5
+        )
 
         result = self.watch(extra_arguments=("--idle-grace-seconds", "5"))
 
