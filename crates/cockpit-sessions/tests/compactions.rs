@@ -237,7 +237,7 @@ async fn an_end_whose_start_was_lost_is_recorded_without_seconds() {
 }
 
 #[tokio::test]
-async fn a_new_launch_does_not_show_the_last_launchs_compaction() {
+async fn a_new_launch_does_not_show_the_previous_launches_compaction() {
     let dir = tempfile::tempdir().unwrap();
     let database = reporting_session(dir.path()).await;
     compact(&database, moment(CompactionPhase::Started))
