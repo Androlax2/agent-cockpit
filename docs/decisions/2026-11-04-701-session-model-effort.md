@@ -1,5 +1,7 @@
 # A session's model and effort are chosen at its start, in the provider's own words
 
+Status: partly superseded by `2026-11-06-743-harness-choices-are-discovered.md`: the Claude adapter no longer checks effort against its own list; the rest holds.
+
 Issue #701. Decided by the worker, as the smallest choice consistent with the existing
 `LaunchRequest::effort` contract; none of it touches security, so the owner was not asked.
 
@@ -10,11 +12,10 @@ Issue #701. Decided by the worker, as the smallest choice consistent with the ex
 - **Validation: the adapter, before anything is recorded or asked.** `Sessions::start` and
   the coordinator's `agent-start` build a trial `Provider::launch`, which only builds words,
   before the session row or the approval request exists: a refused value leaves nothing to
-  clean up and never reaches the owner's queue. The Claude adapter checks a model only for its shape
-  (one word, not a flag; efforts are asked of the harness since
-  [#743](2026-11-06-743-harness-choices-are-discovered.md)): Claude Code takes any alias or
-  model id and itself refuses one the account cannot use. Approvals check only that each is
-  one word, as they do for `--agent`.
+  clean up and never reaches the owner's queue. The Claude adapter checks effort against
+  `EFFORT_LEVELS` and a model only for its shape (one word, not a flag): Claude Code takes
+  any alias or model id and itself refuses one the account cannot use. Approvals check only
+  that each is one word, as they do for `--agent`.
 - **Providers without the capability: refused.** A model needs the new `Capability::Model`,
   as effort needs `Capability::Effort`; Codex and OpenCode report neither, so a start that
   chooses one is refused naming the capability. Starting without it would run a session on
