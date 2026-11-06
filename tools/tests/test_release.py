@@ -1181,6 +1181,14 @@ class ReleaseTriggerTests(unittest.TestCase):
                 "packaging/aur/render.py",
                 "packaging/aur/torlek-bin/PKGBUILD.in",
                 "tools/tests/test_aur_package.py",
+                "packaging/windows/ci-analyze.ps1",
+                "packaging/windows/ci-install.ps1",
+                "packaging/windows/install-in-wsl.sh",
+                "packaging/windows/render.py",
+                "packaging/windows/scoop/torlek.json.in",
+                "packaging/windows/torlek-wsl.ps1",
+                "packaging/windows/torlek.ps1",
+                "tools/tests/test_windows_package.py",
             },
         )
 

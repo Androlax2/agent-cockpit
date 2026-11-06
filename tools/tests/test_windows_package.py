@@ -17,6 +17,8 @@ WINDOWS = ROOT / "packaging/windows"
 RENDER = WINDOWS / "render.py"
 INSTALL_IN_WSL = WINDOWS / "install-in-wsl.sh"
 TAG = "0.1.0-alpha.1"
+DEV_TAG = "0.1.0-dev.4"
+LOOPBACK = "http://127.0.0.1:8765"
 BUNDLE = f"torlek-v{TAG}-linux-x86_64"
 REVISION = "c" * 40
 WSL2_KERNEL = "6.6.87.2-microsoft-standard-WSL2"
@@ -206,6 +208,103 @@ class ManifestTest(unittest.TestCase):
             render.manifest("0.1.0-alpha.2", release_sums(tag="0.1.0-alpha.2").encode(), self.repo)
 
 
+def head_revision(repo):
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+class RehearsalTest(unittest.TestCase):
+    """The release workflow's dry run: a -dev.N version, launchers from a revision, loopback URLs."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.work = Path(folder.name)
+        self.repo = tagged_repository(self.work)
+        self.revision = head_revision(self.repo)
+        self.archive = self.work / f"torlek-v{DEV_TAG}-linux-x86_64.tar.gz"
+        self.archive.write_bytes(b"archive bytes")
+        self.sums = self.work / "SHA256SUMS"
+        self.sums.write_text(release_sums(tag=DEV_TAG, x86_64=release.sha256_of(self.archive)))
+        self.out = self.work / "served"
+
+    def rehearse(self, tag=DEV_TAG, url=LOOPBACK, archive=None):
+        rehearsal = render.Rehearsal(self.revision, url)
+        return render.rehearse(
+            tag, self.sums, archive or self.archive, rehearsal, self.out, self.repo
+        )
+
+    def test_renders_the_dev_version_with_every_download_on_the_loopback_server(self):
+        manifest = json.loads(self.rehearse().read_text())
+        self.assertEqual(manifest["version"], DEV_TAG)
+        for url in manifest["architecture"]["64bit"]["url"]:
+            with self.subTest(url=url):
+                self.assertTrue(
+                    url.startswith(f"{LOOPBACK}/release/") or url.startswith(f"{LOOPBACK}/source/")
+                )
+
+    def test_serves_exactly_the_files_the_manifest_names(self):
+        manifest = json.loads(self.rehearse().read_text())
+        for url, digest in zip(
+            manifest["architecture"]["64bit"]["url"],
+            manifest["architecture"]["64bit"]["hash"],
+            strict=True,
+        ):
+            served = self.out / url.removeprefix(f"{LOOPBACK}/").split("#", 1)[0]
+            with self.subTest(url=url):
+                self.assertEqual(hashlib.sha256(served.read_bytes()).hexdigest(), digest)
+
+    def test_binds_the_launchers_to_the_revision_not_a_later_edit(self):
+        path = render.LAUNCHER_FILES["@SHA256_TORLEK_PS1@"]
+        committed = (self.repo / path).read_bytes()
+        (self.repo / path).write_text("# edited after the revision\n")
+        git(self.repo, "commit", "--quiet", "-am", "edit")
+        self.rehearse()
+        self.assertEqual((self.out / "source" / path).read_bytes(), committed)
+
+    def test_the_rehearsed_manifest_has_the_published_shape(self):
+        rehearsed = json.loads(self.rehearse().read_text())
+        published = json.loads(render.manifest(TAG, release_sums().encode(), self.repo))
+        for manifest in (rehearsed, published):
+            manifest["version"] = ""
+            manifest["architecture"]["64bit"].pop("url")
+            manifest["architecture"]["64bit"].pop("hash")
+        self.assertEqual(rehearsed, published)
+
+    def test_refuses_a_release_tag(self):
+        with self.assertRaisesRegex(render.Refusal, "dry run's X.Y.Z-dev.N"):
+            self.rehearse(tag=TAG)
+
+    def test_a_release_render_refuses_a_dev_version(self):
+        with self.assertRaisesRegex(render.Refusal, "not a release tag"):
+            render.manifest(DEV_TAG, release_sums(tag=DEV_TAG).encode(), self.repo)
+
+    def test_refuses_a_url_that_is_not_loopback(self):
+        for url in (
+            "https://github.com/Androlax2/agent-cockpit",
+            "http://192.0.2.1:8765",
+            "http://localhost:8765",
+            "http://127.0.0.1",
+        ):
+            with (
+                self.subTest(url=url),
+                self.assertRaisesRegex(render.Refusal, "127.0.0.1:PORT only"),
+            ):
+                self.rehearse(url=url)
+
+    def test_refuses_an_archive_of_another_version(self):
+        other = self.work / f"torlek-v{TAG}-linux-x86_64.tar.gz"
+        other.write_bytes(b"x")
+        with self.assertRaisesRegex(render.Refusal, "expected the file"):
+            self.rehearse(archive=other)
+
+    def test_refuses_to_replace_an_existing_manifest(self):
+        self.rehearse()
+        with self.assertRaisesRegex(render.Refusal, "exists"):
+            self.rehearse()
+
+
 class RenderCommandTest(unittest.TestCase):
     def run_render(self, folder, *extra):
         sums = Path(folder) / "SHA256SUMS"
@@ -388,6 +487,15 @@ class InstallInWslTest(unittest.TestCase):
 
     def test_refuses_a_tag_outside_the_release_grammar(self):
         self.assert_refused(self.run_step("install", tag="latest"), "not a Torlek prerelease tag")
+
+    def test_accepts_a_dry_runs_dev_version(self):
+        dev_bundle = f"torlek-v{DEV_TAG}-linux-x86_64"
+        shutil.copyfile(self.archive, self.app / f"{dev_bundle}.archive")
+        (self.app / "SHA256SUMS").write_text(
+            f"{release.sha256_of(self.archive)}  {dev_bundle}.tar.gz\n"
+        )
+        result = self.run_step("check", tag=DEV_TAG)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class LauncherConsentTest(unittest.TestCase):
