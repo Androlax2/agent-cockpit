@@ -172,7 +172,7 @@ The release workflow's `install-scoop` job (`windows-2025`, with an Ubuntu 24.04
 distribution from the same pinned action as `install-wsl2`) runs on every dry run, a nightly,
 a dispatch and a tag, and on pull requests that change these files. It is not in `publish`'s
 needs: the route is unpublished and does not gate a tag
-([decision](../decisions/2026-11-06-565-scoop-validated-in-windows-ci.md)). Nothing runs on a
+([decision](../decisions/2026-11-03-565-scoop-bucket-winget-needs-native-launcher.md)). Nothing runs on a
 maintainer's machine.
 
 1. `ci-analyze.ps1` parses both launchers and runs PSScriptAnalyzer 1.24.0 (errors and warnings

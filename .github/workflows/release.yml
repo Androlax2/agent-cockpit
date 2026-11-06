@@ -5,8 +5,7 @@ name: Release
 # The nightly schedule and a manual dispatch (the build before a tag) run the same build and
 # install checks as a dry run: no tag, attestation, draft or release. Pull requests start it
 # only when they change the release machinery itself; ci.yml builds and tests crate changes.
-# Tool choices: docs/decisions/2026-10-31-96-release-tooling.md; nightlies:
-# docs/decisions/2026-10-31-96-nightly-builds.md.
+# Tool choices and why nightlies are not a release: docs/decisions/2026-10-31-96-release-tooling.md.
 
 on:
   push:
@@ -256,7 +255,7 @@ jobs:
 
   # The torlek-bin AUR recipe on a clean Arch container, from the x86_64 archive and the
   # checksums (#562, docs/packaging/aur.md). Not in publish's needs: the AUR route does not
-  # gate the tag (docs/decisions/2026-11-03-562-arch-packaging-alpha1.md); the AUR checklist
+  # gate the tag (docs/decisions/2026-11-06-562-committed-aur-recipe.md); the AUR checklist
   # requires this job's success for the release it submits.
   install-arch:
     needs: [plan, assemble]
@@ -343,7 +342,7 @@ jobs:
   # and Windows PowerShell 5.1, the manifest rendered for this candidate installs with a pinned
   # Scoop, every refusal fires, Torlek installs into WSL after the consent prompt, and
   # `scoop uninstall` leaves the distribution and its files alone. Not in publish's needs: the
-  # route is unpublished and does not gate the tag (docs/decisions/2026-11-06-565-scoop-validated-in-windows-ci.md);
+  # route is unpublished and does not gate the tag (docs/decisions/2026-11-03-565-scoop-bucket-winget-needs-native-launcher.md);
   # the publication checklist requires this job's success for the release it renders.
   install-scoop:
     needs: [plan, assemble]

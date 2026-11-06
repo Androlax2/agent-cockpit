@@ -14,7 +14,7 @@ Existing desktop users can find their commands and demo screenshots in the [lega
 ## Install status
 
 Install a release archive as the [README](../README.md#install-from-the-command-line) shows.
-Alpha 1 uses archive installation; other packaging (#563/#565) is deferred to Alpha 2. The Arch AUR recipe (#562) is prepared in Alpha 1 beside the archive, not as its prerequisite ([decision](decisions/2026-11-03-562-arch-packaging-alpha1.md), [recipe](packaging/aur.md)). macOS delivery and Homebrew are deferred beyond Alpha 1 under [#568](https://github.com/Androlax2/agent-cockpit/issues/568), with no restoration milestone assigned.
+Alpha 1 uses archive installation; other packaging (#563/#565) is deferred to Alpha 2. The Arch AUR recipe (#562) is prepared in Alpha 1 beside the archive, not as its prerequisite ([decision](decisions/2026-11-06-562-committed-aur-recipe.md), [recipe](packaging/aur.md)). macOS delivery and Homebrew are deferred beyond Alpha 1 under [#568](https://github.com/Androlax2/agent-cockpit/issues/568), with no restoration milestone assigned.
 The root `make install` installs the legacy desktop setup; it is not the Alpha installer.
 
 Developers can build the current greenfield binaries with the pinned Rust toolchain:
