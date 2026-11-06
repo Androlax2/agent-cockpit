@@ -124,6 +124,37 @@ fn bearer_replaces_whatever_authorization_the_client_sent() {
     assert_eq!(relayed.credentials_added, 1);
 }
 
+/// #968: Anthropic's API key travels in `x-api-key`, which the proxy replaces; the client's
+/// `Authorization`, if any, passes as it was.
+#[test]
+fn a_named_header_replaces_the_clients_field_of_that_name() {
+    let api_key = Credential::new(
+        "the claude provider's credential".to_owned(),
+        CredentialScheme::Header {
+            name: "x-api-key".to_owned(),
+        },
+        SECRET.to_owned(),
+    )
+    .unwrap();
+    let relayed = relay_through(
+        "api.anthropic.com",
+        &api_key,
+        "POST /v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\n\
+         X-Api-Key: torlek-placeholder\r\nContent-Length: 2\r\n\r\n{}",
+        OK_EMPTY,
+    );
+
+    assert_eq!(relayed.ended, Ended::Closed);
+    assert_eq!(
+        relayed.sent,
+        format!(
+            "POST /v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\nContent-Length: 2\r\n\
+             x-api-key: {SECRET}\r\nConnection: close\r\n\r\n{{}}"
+        )
+    );
+    assert_eq!(relayed.credentials_added, 1);
+}
+
 /// A server may close a kept-alive connection while it sits idle, and a client cannot
 /// retry a request that met the close: each tunnel carries one exchange, both heads saying so.
 #[test]

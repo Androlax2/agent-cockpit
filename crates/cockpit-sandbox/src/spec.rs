@@ -326,6 +326,13 @@ fn check_interception(
                     credential.name
                 )));
             }
+            if let CredentialScheme::Header { name } = &bound_host.scheme
+                && !is_credential_header(name)
+            {
+                return Err(InvalidSpec(format!(
+                    "the credential header {name:?} for {host} is not a lower-case `x-` header"
+                )));
+            }
             if let CredentialScheme::GitReads { username } = &bound_host.scheme {
                 let is_valid = !username.is_empty()
                     && username
@@ -340,6 +347,19 @@ fn check_interception(
         }
     }
     Ok(())
+}
+
+/// `x-` then lower-case ASCII letters, digits and `-`: a header the proxy may set to a
+/// credential, never one that frames or routes the request. The adapters' declarations are
+/// held to the same rule (`cockpit_provider_api::is_credential_header`); the spec checks it
+/// again since the launcher trusts nothing the daemon did not write.
+fn is_credential_header(name: &str) -> bool {
+    name.strip_prefix("x-").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    })
 }
 
 /// An absolute path without `.` or `..`: what the launcher binds is what the spec names.

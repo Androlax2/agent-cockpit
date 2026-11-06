@@ -126,7 +126,11 @@ mod tests {
         read: &'static [&'static str],
         write: &'static [&'static str],
         credential_files: &'static [&'static str],
-        credential_bindings: &'static [(&'static str, &'static [&'static str])],
+        credential_bindings: &'static [(
+            &'static str,
+            cockpit_provider_api::CredentialHeader,
+            &'static [&'static str],
+        )],
     }
 
     impl Provider for Declaring {
@@ -272,7 +276,11 @@ mod tests {
             read: &[],
             write: &[],
             credential_files: &[],
-            credential_bindings: &[("TOKEN", &["undeclared.example.com"])],
+            credential_bindings: &[(
+                "TOKEN",
+                cockpit_provider_api::CredentialHeader::Bearer,
+                &["undeclared.example.com"],
+            )],
         })];
 
         let refused = refused_declarations(&providers);

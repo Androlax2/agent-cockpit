@@ -4,7 +4,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use cockpit_config::{GithubTokenError, read_github_token};
+use cockpit_config::{TokenFileError, read_github_token};
 
 const TOKEN: &str = "github_pat_11AAAAAAA0abcdefghijklmnopqrstuvwxyz0123456789";
 
@@ -55,7 +55,7 @@ fn a_file_with_any_mode_but_0600_or_0400_is_refused_naming_the_fix() {
         let error = read_github_token(&path).unwrap_err();
 
         assert!(
-            matches!(error, GithubTokenError::TooOpen { mode: refused, .. } if refused == mode),
+            matches!(error, TokenFileError::TooOpen { mode: refused, .. } if refused == mode),
             "{mode:o}: {error:?}"
         );
         assert!(error.to_string().contains("chmod 600"), "{error}");
@@ -71,10 +71,7 @@ fn a_symbolic_link_is_refused() {
 
     let error = read_github_token(&link).unwrap_err();
 
-    assert!(
-        matches!(error, GithubTokenError::NotAFile { .. }),
-        "{error}"
-    );
+    assert!(matches!(error, TokenFileError::NotAFile { .. }), "{error}");
 }
 
 #[test]
@@ -84,10 +81,7 @@ fn a_folder_is_refused() {
 
     let error = read_github_token(&dir.path().join("app")).unwrap_err();
 
-    assert!(
-        matches!(error, GithubTokenError::NotAFile { .. }),
-        "{error}"
-    );
+    assert!(matches!(error, TokenFileError::NotAFile { .. }), "{error}");
 }
 
 #[test]
@@ -106,7 +100,7 @@ fn malformed_files_are_refused_without_their_contents_in_the_error() {
         let error = read_github_token(&path).unwrap_err();
 
         assert!(
-            matches!(error, GithubTokenError::Malformed { .. }),
+            matches!(error, TokenFileError::Malformed { .. }),
             "{case}: {error:?}"
         );
         let shown = format!("{error} {error:?}");
@@ -124,8 +118,5 @@ fn a_file_larger_than_any_token_is_refused() {
 
     let error = read_github_token(&path).unwrap_err();
 
-    assert!(
-        matches!(error, GithubTokenError::Malformed { .. }),
-        "{error}"
-    );
+    assert!(matches!(error, TokenFileError::Malformed { .. }), "{error}");
 }

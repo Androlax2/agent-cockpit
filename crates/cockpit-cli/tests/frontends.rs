@@ -127,6 +127,7 @@ async fn session_show_asks_the_daemon_to_show_the_session_and_prints_it() {
                 finished: false,
                 coordinator_grants: Vec::new(),
                 inbound_message: None,
+                sign_in_needed: None,
             }),
         }),
     );

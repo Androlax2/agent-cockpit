@@ -2,7 +2,7 @@
 //! (#858). Seeded from Greywall's `internal/profiles/agents/opencode.go` at `a9ccc58c`,
 //! Apache-2.0: see `crates/cockpit-provider-api/NOTICE-greywall`.
 
-use cockpit_provider_api::{Credentials, InvalidValue, Needs};
+use cockpit_provider_api::{CredentialHeader, Credentials, InvalidValue, Needs};
 
 /// The hosts OpenCode reaches: the two model APIs Greywall's profile allowed, and the model
 /// catalog OpenCode fetches at start (not in Greywall's profile), since the session's cache
@@ -31,10 +31,18 @@ pub const CREDENTIAL_FILES: [&str; 3] = [
     "~/.config/github-copilot",
 ];
 
-/// Each provider key variable OpenCode reads, with the host that carries it.
-pub const CREDENTIAL_BINDINGS: [(&str, &[&str]); 2] = [
-    ("ANTHROPIC_API_KEY", &["api.anthropic.com"]),
-    ("OPENAI_API_KEY", &["api.openai.com"]),
+/// Each provider key variable OpenCode reads, with the header and host that carry it.
+pub const CREDENTIAL_BINDINGS: [(&str, CredentialHeader, &[&str]); 2] = [
+    (
+        "ANTHROPIC_API_KEY",
+        CredentialHeader::Named("x-api-key"),
+        &["api.anthropic.com"],
+    ),
+    (
+        "OPENAI_API_KEY",
+        CredentialHeader::Bearer,
+        &["api.openai.com"],
+    ),
 ];
 
 pub fn needs() -> Result<Needs, InvalidValue> {

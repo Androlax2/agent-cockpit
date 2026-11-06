@@ -65,6 +65,7 @@ fn a_session_view_names_its_state_and_latest_launch_on_the_wire() {
         finished: false,
         coordinator_grants: Vec::new(),
         inbound_message: None,
+        sign_in_needed: None,
     };
 
     let wire = serde_json::to_value(Reply::Session {

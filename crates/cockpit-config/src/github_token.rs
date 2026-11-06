@@ -4,10 +4,9 @@
 //! launch's private environment: errors name the file and what is wrong, never its contents.
 
 use std::fmt;
-use std::io::{ErrorKind, Read};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use crate::token_file::{TokenFileError, TokenRule, read_token_file};
 use crate::{Environment, Layout};
 
 /// The folder of [`Layout::config_dir`] that holds one token file per project, named as the
@@ -72,127 +71,19 @@ impl fmt::Debug for GithubToken {
     }
 }
 
-/// Why a token file cannot be used. Each says what to fix; none carries the file's contents.
-#[derive(Debug)]
-pub enum GithubTokenError {
-    Unreadable {
-        path: PathBuf,
-        error: String,
-    },
-    NotAFile {
-        path: PathBuf,
-    },
-    /// Its mode is not `0600` or `0400`: others may reach it, or it is executable or setuid.
-    TooOpen {
-        path: PathBuf,
-        mode: u32,
-    },
-    Malformed {
-        path: PathBuf,
-        reason: &'static str,
-    },
-}
-
-impl GithubTokenError {
-    pub fn path(&self) -> &Path {
-        match self {
-            Self::Unreadable { path, .. }
-            | Self::NotAFile { path }
-            | Self::TooOpen { path, .. }
-            | Self::Malformed { path, .. } => path,
-        }
-    }
-}
-
-impl fmt::Display for GithubTokenError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unreadable { path, error } => {
-                write!(formatter, "{} cannot be read: {error}", path.display())
-            }
-            Self::NotAFile { path } => write!(
-                formatter,
-                "{} is not a regular file; a symbolic link is refused too",
-                path.display()
-            ),
-            Self::TooOpen { path, mode } => write!(
-                formatter,
-                "{} has mode {mode:04o}, not 0600 or 0400; `chmod 600` it",
-                path.display()
-            ),
-            Self::Malformed { path, reason } => write!(formatter, "{} {reason}", path.display()),
-        }
-    }
-}
-
-impl std::error::Error for GithubTokenError {}
+/// A GitHub token (`github_pat_…`, `ghp_…`): letters, digits and `_`.
+const GITHUB_TOKEN_RULE: TokenRule = TokenRule {
+    max_bytes: MAX_TOKEN_BYTES,
+    too_large: "is larger than a GitHub token",
+    is_token_character: |character| character.is_ascii_alphanumeric() || character == '_',
+    not_one: "is not one GitHub token: only letters, digits and `_`, on one line",
+};
 
 /// The token in `path`, or `None` when there is no such file: that project has no token.
 /// Blocking: it reads the file. A symbolic link, a file other users may reach or a value
 /// that cannot be a GitHub token is refused, never used.
-pub fn read_github_token(path: &Path) -> Result<Option<GithubToken>, GithubTokenError> {
-    let unreadable = |error: std::io::Error| GithubTokenError::Unreadable {
-        path: path.to_owned(),
-        error: error.kind().to_string(),
-    };
-    let link = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(unreadable(error)),
-    };
-    if !link.file_type().is_file() {
-        return Err(GithubTokenError::NotAFile {
-            path: path.to_owned(),
-        });
-    }
-    let file = std::fs::File::open(path).map_err(unreadable)?;
-    let opened = file.metadata().map_err(unreadable)?;
-    // The file checked above is the one opened, not one swapped in between.
-    if (opened.dev(), opened.ino()) != (link.dev(), link.ino()) {
-        return Err(GithubTokenError::NotAFile {
-            path: path.to_owned(),
-        });
-    }
-    let mode = opened.permissions().mode() & 0o7777;
-    if mode & !0o600 != 0 {
-        return Err(GithubTokenError::TooOpen {
-            path: path.to_owned(),
-            mode,
-        });
-    }
-    let malformed = |reason| GithubTokenError::Malformed {
-        path: path.to_owned(),
-        reason,
-    };
-    if opened.len() > MAX_TOKEN_BYTES {
-        return Err(malformed("is larger than a GitHub token"));
-    }
-    let mut contents = String::new();
-    file.take(MAX_TOKEN_BYTES + 1)
-        .read_to_string(&mut contents)
-        .map_err(|error| match error.kind() {
-            ErrorKind::InvalidData => malformed("is not UTF-8 text"),
-            _ => unreadable(error),
-        })?;
-    // The file grew after its size was checked.
-    if contents.len() as u64 > MAX_TOKEN_BYTES {
-        return Err(malformed("is larger than a GitHub token"));
-    }
-    let token = contents.trim_end_matches(['\n', '\r']);
-    if token.is_empty() {
-        return Err(malformed("is empty"));
-    }
-    // GitHub's tokens (`github_pat_…`, `ghp_…`) are letters, digits and `_`. Anything else,
-    // a second line or a space included, is not one and would reach `gh` mangled.
-    if !token
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || character == '_')
-    {
-        return Err(malformed(
-            "is not one GitHub token: only letters, digits and `_`, on one line",
-        ));
-    }
-    Ok(Some(GithubToken(token.to_owned())))
+pub fn read_github_token(path: &Path) -> Result<Option<GithubToken>, TokenFileError> {
+    Ok(read_token_file(path, &GITHUB_TOKEN_RULE)?.map(GithubToken))
 }
 
 /// Whether a project has a usable token, for what Torlek shows: never the value.

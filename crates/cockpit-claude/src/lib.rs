@@ -508,7 +508,17 @@ impl Provider for ClaudeCode {
     /// branch earned.
     fn trust_workspace(&self, request: &TrustRequest<'_>) -> Result<WorkspaceTrust, ProviderError> {
         let refused = |reason: String| ProviderError { reason };
-        let config = trust::config_file(request.environment).map_err(refused)?;
+        let (config, when_missing) = match request.session_home {
+            Some(session_home) => (
+                trust::session_config_file(request.environment, session_home),
+                trust::WhenMissing::Create,
+            ),
+            None => (
+                trust::config_file(request.environment),
+                trust::WhenMissing::Refuse,
+            ),
+        };
+        let config = config.map_err(refused)?;
         let vetted = trust::unexpected_settings(
             request.workspace,
             request.trusted_checkout,
@@ -529,14 +539,14 @@ impl Provider for ClaudeCode {
             ))
         });
         if let Err(reason) = vetted {
-            let revoked = match trust::record(&config, request.workspace, false) {
+            let revoked = match trust::record(&config, request.workspace, false, when_missing) {
                 Ok(trust::Recorded::Written) => "; its earlier trust is revoked".to_owned(),
                 Ok(trust::Recorded::Unchanged) => String::new(),
                 Err(error) => format!("; its earlier trust, if any, could not be revoked: {error}"),
             };
             return Err(refused(format!("{reason}{revoked}")));
         }
-        match trust::record(&config, request.workspace, true).map_err(refused)? {
+        match trust::record(&config, request.workspace, true, when_missing).map_err(refused)? {
             trust::Recorded::Unchanged => Ok(WorkspaceTrust::AlreadyTrusted),
             trust::Recorded::Written => Ok(WorkspaceTrust::Recorded),
         }

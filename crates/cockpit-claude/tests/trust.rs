@@ -72,7 +72,13 @@ impl Fixture {
 fn a_new_clone_gets_claude_codes_own_entry_and_every_other_byte_stays() {
     let fixture = Fixture::new(CONFIG);
 
-    let recorded = trust::record(&fixture.config(), &fixture.workspace(), true).unwrap();
+    let recorded = trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        true,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap();
 
     assert_eq!(recorded, Recorded::Written);
     let written = fixture.read();
@@ -96,7 +102,13 @@ fn an_entry_that_refused_trust_has_only_its_value_turned_true() {
     let config = config.replace("WORKSPACE", &fixture.key());
     fs::write(fixture.config(), &config).unwrap();
 
-    trust::record(&fixture.config(), &fixture.workspace(), true).unwrap();
+    trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        true,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap();
 
     assert_eq!(
         fixture.read(),
@@ -116,7 +128,13 @@ fn an_entry_without_the_trust_key_gets_only_that_key() {
     );
     fs::write(fixture.config(), &config).unwrap();
 
-    trust::record(&fixture.config(), &fixture.workspace(), true).unwrap();
+    trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        true,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap();
 
     assert_eq!(
         fixture.read(),
@@ -131,7 +149,13 @@ fn an_entry_without_the_trust_key_gets_only_that_key() {
 fn a_config_without_projects_gets_the_projects_member() {
     let fixture = Fixture::new("{\"numStartups\": 1}");
 
-    trust::record(&fixture.config(), &fixture.workspace(), true).unwrap();
+    trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        true,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap();
 
     assert_eq!(
         fixture.trust_of(&fixture.key()),
@@ -148,7 +172,13 @@ fn an_already_trusted_clone_leaves_the_file_untouched() {
     fs::write(fixture.config(), &config).unwrap();
     let before = fs::metadata(fixture.config()).unwrap().modified().unwrap();
 
-    let recorded = trust::record(&fixture.config(), &fixture.workspace(), true).unwrap();
+    let recorded = trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        true,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap();
 
     assert_eq!(recorded, Recorded::Unchanged);
     assert_eq!(fixture.read(), config);
@@ -162,7 +192,13 @@ fn an_already_trusted_clone_leaves_the_file_untouched() {
 fn the_write_keeps_the_files_mode_and_releases_the_lock() {
     let fixture = Fixture::new(CONFIG);
 
-    trust::record(&fixture.config(), &fixture.workspace(), true).unwrap();
+    trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        true,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap();
 
     let mode = fs::metadata(fixture.config()).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
@@ -179,7 +215,13 @@ fn the_write_keeps_the_files_mode_and_releases_the_lock() {
 fn a_config_that_cannot_be_parsed_is_refused_and_left_as_it_is() {
     let fixture = Fixture::new("{\"projects\": {");
 
-    let refused = trust::record(&fixture.config(), &fixture.workspace(), true).unwrap_err();
+    let refused = trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        true,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap_err();
 
     assert!(refused.starts_with("the config is not JSON"), "{refused}");
     assert_eq!(fixture.read(), "{\"projects\": {");
@@ -192,7 +234,13 @@ fn a_project_named_twice_is_refused() {
     let config = format!("{{\"projects\": {{{key}: {{}}, {key}: {{}}}}}}");
     fs::write(fixture.config(), &config).unwrap();
 
-    let refused = trust::record(&fixture.config(), &fixture.workspace(), true).unwrap_err();
+    let refused = trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        true,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap_err();
 
     assert!(refused.contains("twice"), "{refused}");
     assert_eq!(fixture.read(), config);
@@ -203,7 +251,13 @@ fn a_config_held_locked_by_claude_code_is_refused() {
     let fixture = Fixture::new(CONFIG);
     fs::create_dir(fixture.dir.path().join(".claude.json.lock")).unwrap();
 
-    let refused = trust::record(&fixture.config(), &fixture.workspace(), true).unwrap_err();
+    let refused = trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        true,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap_err();
 
     assert!(refused.contains("stayed locked"), "{refused}");
     assert_eq!(fixture.read(), CONFIG);
@@ -217,7 +271,13 @@ fn a_config_that_is_a_link_is_refused() {
     fs::rename(fixture.config(), &target).unwrap();
     std::os::unix::fs::symlink(&target, fixture.config()).unwrap();
 
-    let refused = trust::record(&fixture.config(), &fixture.workspace(), true).unwrap_err();
+    let refused = trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        true,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap_err();
 
     assert!(refused.contains("not a plain file"), "{refused}");
     assert_eq!(fs::read_to_string(&target).unwrap(), CONFIG);
@@ -229,7 +289,13 @@ fn revoking_turns_only_the_clones_existing_trust_false() {
     let config = CONFIG.replace("/home/owner/other", &fixture.key());
     fs::write(fixture.config(), &config).unwrap();
 
-    let revoked = trust::record(&fixture.config(), &fixture.workspace(), false).unwrap();
+    let revoked = trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        false,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap();
 
     assert_eq!(revoked, Recorded::Written);
     assert_eq!(
@@ -245,7 +311,13 @@ fn revoking_turns_only_the_clones_existing_trust_false() {
 fn revoking_a_clone_never_trusted_adds_nothing() {
     let fixture = Fixture::new(CONFIG);
 
-    let revoked = trust::record(&fixture.config(), &fixture.workspace(), false).unwrap();
+    let revoked = trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        false,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap();
 
     assert_eq!(revoked, Recorded::Unchanged);
     assert_eq!(fixture.read(), CONFIG);
@@ -390,6 +462,7 @@ fn trust_through_the_adapter(
             working_dir: clone,
             trusted_checkout: main,
             environment: &environment(&[("HOME", home)]),
+            session_home: None,
         })
         .map_err(|error| error.reason)
 }
@@ -420,4 +493,107 @@ fn a_reused_clone_whose_settings_changed_loses_the_trust_an_earlier_launch_recor
         config["projects"][key.to_str().unwrap()]["hasTrustDialogAccepted"],
         false
     );
+}
+
+/// #968: a sandboxed session's home holds no config before its first Claude Code runs, so
+/// the trust is written into a new owner-only file holding it alone.
+#[test]
+fn a_missing_config_the_caller_may_create_is_created_owner_only_with_the_trust() {
+    let fixture = Fixture::new(CONFIG);
+    fs::remove_file(fixture.config()).unwrap();
+
+    let recorded = trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        true,
+        trust::WhenMissing::Create,
+    )
+    .unwrap();
+
+    assert_eq!(recorded, Recorded::Written);
+    assert_eq!(fixture.trust_of(&fixture.key()), Some(true.into()));
+    let mode = fs::metadata(fixture.config()).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
+fn a_missing_config_is_refused_unless_the_caller_may_create_it() {
+    let fixture = Fixture::new(CONFIG);
+    fs::remove_file(fixture.config()).unwrap();
+
+    let refused = trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        true,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap_err();
+
+    assert!(refused.starts_with("read "), "{refused}");
+    assert!(!fixture.config().exists());
+}
+
+#[test]
+fn revoking_in_a_missing_config_creates_nothing() {
+    let fixture = Fixture::new(CONFIG);
+    fs::remove_file(fixture.config()).unwrap();
+
+    let recorded = trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        false,
+        trust::WhenMissing::Create,
+    )
+    .unwrap();
+
+    assert_eq!(recorded, Recorded::Unchanged);
+    assert!(!fixture.config().exists());
+}
+
+/// #968: a sandboxed agent's `~/.claude.json` lies in its session's home; the owner's own file
+/// is never touched.
+#[test]
+fn a_sandboxed_launch_records_the_trust_in_the_sessions_home_not_the_owners() {
+    let (dir, main, clone) = adapter_fixture(|_| CONFIG.to_owned());
+    let session_home = dir.path().join("session-home");
+    fs::create_dir(&session_home).unwrap();
+    let claude = ClaudeCode::new(PathBuf::from("/usr/bin/claude"), None, None);
+
+    let trusted = claude.trust_workspace(&TrustRequest {
+        workspace: &clone,
+        working_dir: &clone,
+        trusted_checkout: &main,
+        environment: &environment(&[("HOME", dir.path())]),
+        session_home: Some(&session_home),
+    });
+
+    assert_eq!(
+        trusted.map_err(|error| error.reason),
+        Ok(WorkspaceTrust::Recorded)
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join(".claude.json")).unwrap(),
+        CONFIG
+    );
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(session_home.join(".claude.json")).unwrap())
+            .unwrap();
+    let key = clone.canonicalize().unwrap();
+    assert_eq!(
+        written["projects"][key.to_str().unwrap()]["hasTrustDialogAccepted"],
+        true
+    );
+}
+
+#[test]
+fn a_session_config_is_refused_when_claude_config_dir_names_another_folder() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let refused = trust::session_config_file(
+        &environment(&[("HOME", dir.path()), ("CLAUDE_CONFIG_DIR", dir.path())]),
+        &dir.path().join("session-home"),
+    )
+    .unwrap_err();
+
+    assert!(refused.contains("CLAUDE_CONFIG_DIR"), "{refused}");
 }

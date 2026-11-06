@@ -20,7 +20,9 @@ pub use commands::{CommandResult, NativeCommand};
 pub use events::{
     Activity, Confidence, EventKind, Observation, ObservedBy, ProviderEvent, TurnOutcome,
 };
-pub use needs::{CredentialBinding, Credentials, HomePath, Host, Needs};
+pub use needs::{
+    CredentialBinding, CredentialHeader, Credentials, HomePath, Host, Needs, is_credential_header,
+};
 pub use sign_in::{SignIn, SignInStatus};
 pub use terminal::{Action, Delivered, Key, TerminalInput};
 
@@ -330,14 +332,19 @@ pub trait Provider: Send + Sync + 'static {
 /// A workspace whose harness trust [`Provider::trust_workspace`] records.
 #[derive(Debug, Clone, Copy)]
 pub struct TrustRequest<'a> {
-    /// The parallel clone's root.
+    /// The checkout's root: a parallel clone, or under the sandbox a trusted main checkout.
     pub workspace: &'a Path,
-    /// Where the agent starts, inside the clone: the harness reads settings there too.
+    /// Where the agent starts, inside the checkout: the harness reads settings there too.
     pub working_dir: &'a Path,
-    /// The project's main checkout, whose trust the clone inherits.
+    /// The project's main checkout, whose trust the workspace inherits; the workspace itself
+    /// when it is that checkout.
     pub trusted_checkout: &'a Path,
     /// The environment the agent launches with, which locates the harness's own files.
     pub environment: &'a [(OsString, OsString)],
+    /// The folder that backs the agent's home when it runs sandboxed, its session's own
+    /// (#858, #968): the harness's files under `HOME` are there, and the adapter may create
+    /// them. `None` when the agent's home is the owner's.
+    pub session_home: Option<&'a Path>,
 }
 
 /// What [`Provider::trust_workspace`] did.

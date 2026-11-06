@@ -66,7 +66,11 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
                     started_by: None,
                 })
                 .await?;
-            reply(&sessions, &started, &inputs).await
+            let mut view = current_view(&sessions, &started, &inputs).await?;
+            view.sign_in_needed = sign_in_needed(&sessions, started.provider.as_str()).await?;
+            Ok(Reply::Session {
+                session: Box::new(view),
+            })
         }),
         Command::SessionRestartAll => job(async move {
             // Read before restarting: a failed read must not report a restart that ran.
@@ -466,7 +470,8 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::Provider(_)
         | Error::TmuxUnavailable { .. }
         | Error::Sandbox(_)
-        | Error::GithubToken { .. } => ErrorCode::Refused,
+        | Error::GithubToken { .. }
+        | Error::ProviderCredential { .. } => ErrorCode::Refused,
         Error::Projects(error) => crate::projects::error_code(error),
         _ => ErrorCode::Internal,
     }
@@ -665,5 +670,31 @@ fn session_view(
         finished: is_finished(session, &inputs.items),
         coordinator_grants: inputs.coordination.grants_of(session.id.as_str()),
         inbound_message: inputs.coordination.inbound_message_of(session.id.as_str()),
+        sign_in_needed: None,
     }
+}
+
+/// What `session new` tells the owner to set when the started session's provider has no
+/// credential its sandbox can add (#968); `None` when it has one or agents run unsandboxed.
+async fn sign_in_needed(sessions: &Sessions, provider: &str) -> Result<Option<String>, Error> {
+    use cockpit_config::ProviderCredentialState;
+
+    Ok(match sessions.sandbox_credential_state(provider).await? {
+        None | Some(ProviderCredentialState::Configured { .. }) => None,
+        Some(ProviderCredentialState::Missing { files }) => {
+            let files: Vec<String> = files
+                .iter()
+                .map(|file| file.display().to_string())
+                .collect();
+            Some(format!(
+                "a sandboxed {provider} session never reads your own sign-in, so this one asks \
+                 for one it cannot keep; write one credential, on one line, to one of {}, \
+                 `chmod 600` it, then start a new session",
+                files.join(", ")
+            ))
+        }
+        Some(ProviderCredentialState::Unusable { reason }) => Some(format!(
+            "the {provider} provider's credential is unusable: {reason}"
+        )),
+    })
 }

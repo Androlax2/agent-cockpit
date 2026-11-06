@@ -91,6 +91,7 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
         finished: false,
         coordinator_grants: Vec::new(),
         inbound_message: None,
+        sign_in_needed: None,
     }
 }
 
@@ -476,6 +477,7 @@ async fn session_list_marks_a_finished_session_in_its_work_column() {
                     finished: true,
                     coordinator_grants: Vec::new(),
                     inbound_message: None,
+                    sign_in_needed: None,
                     ..view("s000000000001", SessionStateView::Running)
                 },
                 view("s000000000002", SessionStateView::Running),

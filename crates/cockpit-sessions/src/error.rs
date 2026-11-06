@@ -86,7 +86,13 @@ pub enum Error {
     /// is refused rather than run without it or with the owner's own login.
     GithubToken {
         project: String,
-        error: cockpit_config::GithubTokenError,
+        error: cockpit_config::TokenFileError,
+    },
+    /// The provider's credential for a sandboxed launch cannot be used (#968); the launch is
+    /// refused rather than run without it.
+    ProviderCredential {
+        provider: String,
+        error: cockpit_config::ProviderCredentialError,
     },
     Authorization(cockpit_authorization::Error),
     Io {
@@ -212,6 +218,11 @@ impl fmt::Display for Error {
                 "project {project}'s GitHub token cannot be used, so its sessions do not \
                  launch: {error}; fix the file, or remove it to launch without a token"
             ),
+            Error::ProviderCredential { provider, error } => write!(
+                formatter,
+                "the {provider} provider's credential cannot be used, so its sandboxed sessions \
+                 do not launch: {error}"
+            ),
             Error::Authorization(error) => write!(formatter, "authorization: {error}"),
             Error::Io {
                 action,
@@ -289,6 +300,7 @@ impl std::error::Error for Error {
             Error::Sql(source) => Some(source),
             Error::SandboxObservations(source) => Some(source),
             Error::GithubToken { error, .. } => Some(error),
+            Error::ProviderCredential { error, .. } => Some(error),
             _ => None,
         }
     }

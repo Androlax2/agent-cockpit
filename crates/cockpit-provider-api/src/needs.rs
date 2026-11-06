@@ -215,12 +215,22 @@ fn home_paths(paths: &[&str]) -> Result<Vec<HomePath>, InvalidValue> {
 }
 
 /// One credential a harness takes from its environment, and the hosts that carry it. The
-/// session holds a placeholder in `variable`; the proxy adds the real value on `hosts` only
-/// (#832, #858).
+/// session holds a placeholder in `variable`; the proxy adds the real value on `hosts` only,
+/// in `header` (#832, #858).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialBinding {
     pub variable: String,
+    pub header: CredentialHeader,
     pub hosts: Vec<Host>,
+}
+
+/// The request header the harness sends a credential in, which the proxy replaces (#968).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialHeader {
+    /// `Authorization: Bearer <value>`.
+    Bearer,
+    /// `<name>: <value>`, a lower-case `x-` header such as Anthropic's `x-api-key`.
+    Named(&'static str),
 }
 
 /// Where an adapter's harness keeps and takes its credentials (#858).
@@ -246,7 +256,7 @@ impl Credentials {
     /// covers a credential file.
     pub fn new(
         files: &[&str],
-        bindings: &[(&str, &[&str])],
+        bindings: &[(&str, CredentialHeader, &[&str])],
         needs: &Needs,
     ) -> Result<Credentials, InvalidValue> {
         let files = home_paths(files)?;
@@ -263,7 +273,7 @@ impl Credentials {
         }
         let bindings = bindings
             .iter()
-            .map(|(variable, hosts)| credential_binding(variable, hosts, needs))
+            .map(|(variable, header, hosts)| credential_binding(variable, *header, hosts, needs))
             .collect::<Result<_, _>>()?;
         Ok(Credentials { files, bindings })
     }
@@ -271,6 +281,7 @@ impl Credentials {
 
 fn credential_binding(
     variable: &str,
+    header: CredentialHeader,
     hosts: &[&str],
     needs: &Needs,
 ) -> Result<CredentialBinding, InvalidValue> {
@@ -279,6 +290,15 @@ fn credential_binding(
             kind: "credential variable",
             value: variable.to_owned(),
             rule: "ASCII letters, digits and `_`, not starting with a digit",
+        });
+    }
+    if let CredentialHeader::Named(name) = header
+        && !is_credential_header(name)
+    {
+        return Err(InvalidValue {
+            kind: "credential header",
+            value: name.to_owned(),
+            rule: "`x-` then lower-case ASCII letters, digits and `-`",
         });
     }
     let hosts: Vec<Host> = hosts
@@ -302,6 +322,18 @@ fn credential_binding(
     }
     Ok(CredentialBinding {
         variable: variable.to_owned(),
+        header,
         hosts,
+    })
+}
+
+/// A header the proxy may set to a credential: an `x-` extension header, never one that frames
+/// or routes the request (`Host`, `Content-Length`, `Transfer-Encoding`).
+pub fn is_credential_header(name: &str) -> bool {
+    name.strip_prefix("x-").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
     })
 }
