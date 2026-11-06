@@ -325,14 +325,27 @@ def private_home(old, old_manifest, old_text, candidate, manifest, text):
 
 
 def stop_tmux_servers(tmux_tmpdir):
-    """Stops every tmux server the home's daemons started; their agents end with them."""
+    """Stops every tmux server the home's daemons started; their agents end with them. It runs
+    while a failure may be on its way out, so a server that does not stop is reported, not
+    raised over that failure."""
     for socket in sorted(tmux_tmpdir.glob("tmux-*/*")):
-        subprocess.run(
-            ["tmux", "-S", str(socket), "kill-server"],
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
+        try:
+            stopped = subprocess.run(
+                ["tmux", "-S", str(socket), "kill-server"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"release upgrade: tmux server {socket} did not stop in 10s", file=sys.stderr)
+            continue
+        if stopped.returncode:
+            print(
+                f"release upgrade: stopping tmux server {socket} failed "
+                f"(exit {stopped.returncode}): {stopped.stderr.strip()}",
+                file=sys.stderr,
+            )
 
 
 def verify_state(old, old_manifest, old_text, candidate, manifest, text):
@@ -437,12 +450,12 @@ def verify_sessions(old, old_manifest, old_text, candidate, manifest, text):
             # `id  state  agent  launch ...`: what a daemon lists of the session's run.
             rows = [row.split("\t") for row in cli("session", "list").splitlines()]
             matching = [row[:4] for row in rows if row[0] == session]
-            if len(matching) != 1:
+            if len(matching) > 1:
                 raise release.Refusal(f"session {session} is listed {len(matching)} times")
-            return matching[0]
+            return matching[0] if matching else None
 
         def running(row):
-            return row if row[1] == "running" else None
+            return row if row and row[1] == "running" else None
 
         installed.symlink_to(old)
         with running_daemon(installed, environment):
@@ -466,7 +479,9 @@ def verify_sessions(old, old_manifest, old_text, candidate, manifest, text):
         installed.unlink()
         installed.symlink_to(candidate)
         with running_daemon(installed, environment):
-            after = shown(session)
+            after = wait_for(
+                "the candidate to list the session running", lambda: running(shown(session))
+            )
             if after != before:
                 raise release.Refusal(f"candidate shows {after!r}, not the running {before!r}")
             cli("session", "send", session, REACHED)
