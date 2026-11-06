@@ -216,7 +216,7 @@ def head_revision(repo):
 
 
 class RehearsalTest(unittest.TestCase):
-    """The release workflow's dry run: a -dev.N version, launchers from a revision, loopback URLs."""
+    """install-scoop's rehearsal: the candidate's version, launchers from a revision, loopback URLs."""
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -273,9 +273,17 @@ class RehearsalTest(unittest.TestCase):
             manifest["architecture"]["64bit"].pop("hash")
         self.assertEqual(rehearsed, published)
 
-    def test_refuses_a_release_tag(self):
-        with self.assertRaisesRegex(render.Refusal, "dry run's X.Y.Z-dev.N"):
-            self.rehearse(tag=TAG)
+    def test_refuses_a_stable_tag_until_one_exists(self):
+        with self.assertRaisesRegex(render.Refusal, "no stable release"):
+            self.rehearse(tag="0.1.0")
+
+    def test_refuses_a_version_that_is_neither_a_dry_run_nor_a_release_tag(self):
+        for tag in ["v0.1.0-alpha.5", "0.1.0-alpha.0", "0.1.0-rc.1", "0.1.0-dev.01", "latest"]:
+            with (
+                self.subTest(tag=tag),
+                self.assertRaisesRegex(render.Refusal, "neither a dry run's X.Y.Z-dev.N"),
+            ):
+                self.rehearse(tag=tag)
 
     def test_a_release_render_refuses_a_dev_version(self):
         with self.assertRaisesRegex(render.Refusal, "not a release tag"):
@@ -304,6 +312,64 @@ class RehearsalTest(unittest.TestCase):
         self.rehearse()
         with self.assertRaisesRegex(render.Refusal, "exists"):
             self.rehearse()
+
+
+class RehearseCommandTest(unittest.TestCase):
+    """render.py rehearse as ci-install.ps1 runs it: a tag's run rehearses the tag's version (#565)."""
+
+    def run_rehearse(self, folder, tag):
+        work = Path(folder)
+        archive = work / f"torlek-v{tag}-linux-x86_64.tar.gz"
+        archive.write_bytes(b"archive bytes")
+        sums = work / "SHA256SUMS"
+        sums.write_text(release_sums(tag=tag, x86_64=release.sha256_of(archive)))
+        repo = tagged_repository(folder)
+        return subprocess.run(
+            [
+                sys.executable,
+                str(RENDER),
+                "rehearse",
+                "--tag",
+                tag,
+                "--sums",
+                str(sums),
+                "--archive",
+                str(archive),
+                "--revision",
+                head_revision(repo),
+                "--url",
+                LOOPBACK,
+                "--out",
+                str(work / "bucket"),
+                "--repo",
+                str(repo),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_rehearses_the_version_of_a_dry_run_or_of_a_release_tag(self):
+        for tag in [DEV_TAG, "0.1.0-alpha.5", "0.2.0-beta.1"]:
+            with self.subTest(tag=tag), tempfile.TemporaryDirectory() as folder:
+                result = self.run_rehearse(folder, tag)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                bucket = Path(folder) / "bucket"
+                self.assertEqual(json.loads((bucket / "torlek.json").read_text())["version"], tag)
+                self.assertTrue((bucket / f"release/torlek-v{tag}-linux-x86_64.tar.gz").is_file())
+
+    def test_a_refused_version_exits_1_with_the_reason(self):
+        with tempfile.TemporaryDirectory() as folder:
+            result = self.run_rehearse(folder, "0.1.0")
+            self.assertEqual(
+                (result.returncode, result.stderr),
+                (1, "render.py: '0.1.0': no stable release exists to package\n"),
+            )
+
+    def test_a_refused_version_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.run_rehearse(folder, "0.1.0")
+            self.assertFalse((Path(folder) / "bucket").exists())
 
 
 class RenderCommandTest(unittest.TestCase):

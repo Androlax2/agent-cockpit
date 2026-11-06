@@ -6,9 +6,10 @@
 # software and changes the user's PATH-visible shims.
 #
 # Usage: ci-install.ps1 -Dist DIST -Version VERSION -Revision REVISION -ScoopCore DIR
-#   DIST holds SHA256SUMS and torlek-vVERSION-linux-x86_64.tar.gz; VERSION is a dry run's
-#   X.Y.Z-dev.N; REVISION is the commit the launchers are hashed at; SCOOP_CORE is a checkout of
-#   Scoop at a pinned commit, run in place so that the test does not follow Scoop's master.
+#   DIST holds SHA256SUMS and torlek-vVERSION-linux-x86_64.tar.gz; VERSION is the candidate's, a
+#   dry run's X.Y.Z-dev.N or a tag run's X.Y.Z-alpha.N or X.Y.Z-beta.N; REVISION is the commit the launchers are
+#   hashed at; SCOOP_CORE is a checkout of Scoop at a pinned commit, run in place so that the
+#   test does not follow Scoop's master.
 param(
     [Parameter(Mandatory)] [string] $Dist,
     [Parameter(Mandatory)] [string] $Version,
@@ -19,6 +20,14 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# The web log folds a failure printed inside an open ::group:: out of sight (#565, alpha.5's tag
+# run); closing the group and annotating the error puts it on the run's page.
+trap {
+    Write-Host '::endgroup::'
+    $annotation = "$_" -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+    Write-Host "::error title=install-scoop::$annotation"
+    break
+}
 
 if ($env:GITHUB_ACTIONS -ne 'true') {
     throw 'ci-install.ps1: refusing to run outside GitHub Actions'
@@ -121,8 +130,8 @@ function Assert-Result {
         $problem = "output does not match /$Pattern/"
     }
     if ($problem) {
-        Write-Host $Result.Output
-        throw "${Name}: $problem"
+        # The output goes in the message so that the trap's annotation carries the cause too.
+        throw "${Name}: $problem`n$($Result.Output)"
     }
     Write-Host "ok: $Name $Expectation"
 }
@@ -206,10 +215,11 @@ Write-Host '::endgroup::'
 Write-Host '::group::Render the manifest and serve its files from loopback'
 # The runner also lists the Microsoft Store stub; PATH order puts the real interpreter first.
 $python = @(Get-Command python -CommandType Application -ErrorAction Stop)[0]
-& $python.Source packaging/windows/render.py rehearse --tag $Version `
+$rendered = & $python.Source packaging/windows/render.py rehearse --tag $Version `
     --sums (Join-Path $dist 'SHA256SUMS') --archive (Join-Path $dist "$bundleName.tar.gz") `
-    --revision $Revision --url "http://127.0.0.1:$Port" --out $bucket
-if ($LASTEXITCODE -ne 0) { throw 'render.py rehearse failed' }
+    --revision $Revision --url "http://127.0.0.1:$Port" --out $bucket 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { throw "render.py rehearse failed: $rendered" }
+Write-Host $rendered
 $server = Start-Process -FilePath $python.Source -PassThru -NoNewWindow `
     -ArgumentList @('-m', 'http.server', "$Port", '--bind', '127.0.0.1', '--directory', $bucket)
 Write-Host '::endgroup::'

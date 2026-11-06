@@ -47,8 +47,9 @@ validated by a release-workflow job on a Windows runner, against a loopback rehe
   and is not in `publish`'s needs.** It tests the candidate archive the release builds, so it
   belongs where the archive exists. No bucket is published, so a failure of it must not stop a
   tag; the publication checklist requires its success for the release it renders.
-- **A dry run is rendered with `render.py rehearse`.** A dry run has no `v<tag>` git tag and no
-  GitHub Release, so the manifest is rendered for its `-dev.N` version, the launchers are hashed
+- **A dry run and a tag's run are rendered with `render.py rehearse`.** A dry run has no
+  `v<tag>` git tag, and a tag's GitHub Release is not published while its run tests it, so the
+  manifest is rendered for the candidate's version (`-dev.N` or the tag's), the launchers are hashed
   as the candidate commit holds them, and the downloads come from a loopback `http.server`.
   Scoop's own downloader, hash check and shims run unchanged. The rendered manifest refuses any
   non-loopback URL, so a rehearsal cannot be published by mistake.
