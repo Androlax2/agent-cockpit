@@ -173,11 +173,22 @@ export function stage({
       .slice(0, sections.find((match) => match[1] === "First project and session").index)
       .replace(/^# .+\n/, ""),
   );
+  const quickstart = read("docs/QUICKSTART.md");
+  const quickstartTitle = quickstart.match(/^# (.+)/m)?.[1];
+  if (!quickstartTitle) throw new Error("docs/QUICKSTART.md has no title heading");
+  add(
+    "docs/QUICKSTART.md",
+    "get-started/quickstart",
+    quickstartTitle,
+    quickstart.replace(/^# .+\n/, ""),
+  );
   for (const [name, route] of [
     ["First project and session", "get-started/first-session"],
     ["Approvals", "guide/approvals"],
     ["Providers and capability evidence", "guide/providers"],
     ["Configuration and state", "guide/configuration"],
+    ["Updates", "guide/updates"],
+    ["Phone status page", "guide/phone-status"],
     ["Help and support", "guide/support"],
   ])
     add("docs/USER-GUIDE.md", route, name, section(name));
@@ -188,7 +199,6 @@ export function stage({
       .map((name) => `${dir}/${name}`);
   for (const [dir, prefix] of [
     ["docs/design/greenfield", "project/design"],
-    ["docs/decisions", "project/decisions"],
     ["crates/cockpit-agent-context/bundle/references", "reference/instructions"],
   ]) {
     for (const source of files(dir)) {
@@ -262,6 +272,8 @@ export function stage({
     ["approvals", "guide/approvals"],
     ["providers-and-capability-evidence", "guide/providers"],
     ["configuration-and-state", "guide/configuration"],
+    ["updates", "guide/updates"],
+    ["phone-status-page", "guide/phone-status"],
     ["help-and-support", "guide/support"],
   ])
     anchors.set(`docs/USER-GUIDE.md#${heading}`, route);
@@ -305,11 +317,11 @@ export function stage({
   meta("", { pages: ["get-started", "guide", "reference", "project"] });
   meta("get-started", {
     title: "Get started",
-    pages: ["install-release", "install", "first-session"],
+    pages: ["install-release", "install", "quickstart", "first-session"],
   });
   meta("guide", {
     title: "User guide",
-    pages: ["approvals", "providers", "configuration", "support"],
+    pages: ["approvals", "providers", "configuration", "updates", "phone-status", "support"],
   });
   meta("reference", {
     title: "Reference",
@@ -318,10 +330,9 @@ export function stage({
   meta("reference/instructions", { title: "Instruction topics" });
   meta("project", {
     title: "Project",
-    pages: ["comparison", "design", "decisions", "development", "contributing"],
+    pages: ["comparison", "design", "development", "contributing"],
   });
   meta("project/design", { title: "Design reports" });
-  meta("project/decisions", { title: "Decision records" });
   writeFileSync(path.join(site, ".source-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
 }

@@ -41,6 +41,9 @@ test("real site exports the approved guide and generated references under its ve
     installStatus.includes(`${env.TORLEK_DOCS_BASE}get-started/install-release`),
     "the install status page must link to the on-site install steps, not the GitHub README",
   );
+  for (const route of ["get-started/quickstart", "guide/updates", "guide/phone-status"])
+    assert.ok(existsSync(`${site}dist/${route}/index.html`), `${route} must be exported`);
+  assert.ok(!existsSync(`${site}dist/project/decisions`), "decision records stay out of the site");
   const cli = readFileSync(`${site}dist/reference/cli/index.html`, "utf8");
   assert.match(cli, /Generated from/);
   assert.match(cli, /torlek.*approval.*approve/s);
