@@ -1,5 +1,6 @@
-//! `cockpit provider list`, `cockpit session show` and `cockpit tui` (#35) driven as a process against a
-//! scripted daemon socket: each verb's request and its output.
+//! `cockpit provider list`, `cockpit session show`, `cockpit tui` (#35) and `torlek notify`
+//! (#62) driven as a process against a scripted daemon socket: each verb's request and its
+//! output.
 
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -279,4 +280,108 @@ async fn tui_version_requires_the_sibling_binary() {
     let output = home.run(cockpit, &["tui", "--version"]).await;
     assert_eq!(output.status.code(), Some(1));
     assert!(text(&output.stderr).contains("install torlek-tui beside torlek"));
+}
+
+/// Installs a `torlek-notify` beside `cockpit` that prints each argument on its own line.
+fn install_echoing_notifier(cockpit: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let notify = cockpit.with_file_name("torlek-notify");
+    std::fs::write(&notify, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+    std::fs::set_permissions(&notify, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[tokio::test]
+async fn notify_runs_the_notifier_beside_cockpit_with_the_socket_state_and_settings() {
+    let home = Home::new();
+    let socket = home.daemon_socket();
+    let cockpit = home.installed_cockpit(false);
+    install_echoing_notifier(&cockpit);
+    let config = home.dir.path().join(".config/torlek-dev/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        "[notify.desktop]\nfinished = false\n[notify.sound]\nfailure = false\nhold = false\n\
+         question = false\nquota = false\nfinished = false\n",
+    )
+    .unwrap();
+
+    let output = home.run(cockpit, &["notify"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        format!(
+            "--socket\n{}\n--state-dir\n{}\n--desktop\nfailure,hold,question,quota\n--sound\nnone\n",
+            socket.display(),
+            home.dir.path().join(".local/state/torlek-dev").display()
+        )
+    );
+}
+
+#[tokio::test]
+async fn notify_refuses_an_invalid_notify_setting_before_starting_the_notifier() {
+    let home = Home::new();
+    home.daemon_socket();
+    let cockpit = home.installed_cockpit(false);
+    install_echoing_notifier(&cockpit);
+    let config = home.dir.path().join(".config/torlek-dev/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "[notify.sound]\nlogin = false\n").unwrap();
+
+    let output = home.run(cockpit, &["notify"]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(text(&output.stdout), "");
+    assert!(
+        text(&output.stderr).contains("login"),
+        "{}",
+        text(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn notify_version_executes_the_installed_sibling_without_a_daemon() {
+    let home = Home::new();
+    let cockpit = home.installed_cockpit(false);
+    install_echoing_notifier(&cockpit);
+
+    let output = home.run(cockpit, &["notify", "--version"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "--version\n");
+}
+
+#[tokio::test]
+async fn notify_without_the_notifier_beside_cockpit_exits_1_naming_the_missing_file() {
+    let home = Home::new();
+    home.daemon_socket();
+    let cockpit = home.installed_cockpit(false);
+
+    let output = home.run(cockpit.clone(), &["notify"]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stderr),
+        format!(
+            "torlek: {} is missing: install torlek-notify beside torlek\n",
+            cockpit.with_file_name("torlek-notify").display()
+        )
+    );
+}
+
+#[tokio::test]
+async fn notify_refuses_an_extra_argument() {
+    let home = Home::new();
+    let cockpit = home.installed_cockpit(false);
+    install_echoing_notifier(&cockpit);
+
+    let output = home.run(cockpit, &["notify", "--loud"]).await;
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        text(&output.stderr).contains("unknown argument --loud"),
+        "{}",
+        text(&output.stderr)
+    );
 }

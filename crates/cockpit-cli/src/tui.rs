@@ -80,21 +80,8 @@ fn manager_open() -> Result<Command, ExitCode> {
     })
 }
 
-/// `cockpit-tui` installed beside this `cockpit`; never one found on PATH, which could be
-/// another build.
 fn tui_binary() -> Result<String, String> {
-    let cockpit = std::env::current_exe()
-        .map_err(|error| format!("cannot find this program's path: {error}"))?;
-    let tui = cockpit.with_file_name(TUI_BINARY);
-    if !tui.is_file() {
-        return Err(format!(
-            "{} is missing: install {TUI_BINARY} beside torlek",
-            tui.display()
-        ));
-    }
-    tui.to_str()
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{}: not UTF-8", tui.display()))
+    crate::profile::sibling_program(TUI_BINARY)
 }
 
 fn utf8(path: &Path) -> Result<String, ExitCode> {

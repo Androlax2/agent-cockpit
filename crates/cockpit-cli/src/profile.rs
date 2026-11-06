@@ -58,6 +58,22 @@ pub(crate) fn this_program() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|error| format!("cannot find this program's path: {error}"))
 }
 
+/// The program `name` installed beside this `torlek` (`torlek-tui`, `torlek-notify`); never
+/// one found on PATH, which could be another build.
+pub(crate) fn sibling_program(name: &str) -> Result<String, String> {
+    let sibling = this_program()?.with_file_name(name);
+    if !sibling.is_file() {
+        return Err(format!(
+            "{} is missing: install {name} beside torlek",
+            sibling.display()
+        ));
+    }
+    sibling
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{}: not UTF-8", sibling.display()))
+}
+
 /// The command an owner types to reach the active profile, for every hint a verb prints:
 /// `torlek-next` when that name selected it, bare `torlek` when nothing selected a profile
 /// (the build's own is what bare `torlek` reaches), else `torlek --profile NAME`. A hint that

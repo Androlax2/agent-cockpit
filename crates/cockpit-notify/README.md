@@ -46,6 +46,8 @@ follows the change feed for sessions and view stamps, asks the daemon for the ag
 the approval queue and the network requests when their stamp moves and every five seconds,
 and logs under `DIR/logs/notify` (report 12). A daemon out of reach is asked again after a
 pause that doubles up to thirty seconds; nothing is news until it has answered all three.
+`torlek notify` starts it with the daemon's socket, the profile's state directory and the
+owner's `[notify.desktop]` and `[notify.sound]` settings.
 
 ## Dependency edges
 

@@ -73,7 +73,9 @@ HELPERS = (
     "torlek-opencode-bridge",
     "torlek-sandbox",
 )
-BINARIES = ("torlek", "torlek-daemon", "torlek-tui", *HELPERS)
+# Programs `torlek VERB` runs from its own directory: `torlek tui`, `torlek notify` (#62).
+FRONTENDS = {"tui": "torlek-tui", "notify": "torlek-notify"}
+BINARIES = ("torlek", "torlek-daemon", *FRONTENDS.values(), *HELPERS)
 # No CHANGELOG.md: the committed file lags the tag (release-plz regenerates it, #101); the
 # release notes are on the GitHub Release.
 DOCUMENTS = ("LICENSE", "README.md")
@@ -602,12 +604,14 @@ def verify_install(root, revision):
 def run_install_checks(root, manifest, manifest_text, revision, home):
     environment = {"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     refuse_wrong_version_output(root, manifest, manifest_text, revision, environment)
-    code, stdout, stderr = run_bounded([str(root / "bin/torlek"), "tui", "--version"], environment)
-    expected = f"torlek-tui {manifest['version']}"
-    if code != 0 or stdout.strip() != expected:
-        raise Refusal(
-            f"torlek tui --version: exit {code}, expected {expected!r}, got {stdout!r} {stderr!r}"
-        )
+    for verb, frontend in FRONTENDS.items():
+        code, stdout, stderr = run_bounded([str(root / "bin/torlek"), verb, "--version"], environment)
+        expected = f"{frontend} {manifest['version']}"
+        if code != 0 or stdout.strip() != expected:
+            raise Refusal(
+                f"torlek {verb} --version: exit {code}, expected {expected!r}, "
+                f"got {stdout!r} {stderr!r}"
+            )
     # Stand-in providers, so the daemon checks each bridge it ships (#203, #411, #415).
     stand_in_dir = Path(home) / "stand-in-bin"
     stand_in_dir.mkdir()
