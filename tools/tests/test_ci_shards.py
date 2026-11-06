@@ -18,8 +18,14 @@ def required_check_script():
     return "\n".join(line.removeprefix("          ") for line in script.splitlines())
 
 
-def run_required_check(changes, selected, lint, tests):
-    results = {"CHANGES": changes, "SELECTED": selected, "LINT": lint, "TESTS": tests}
+def run_required_check(changes, selected, lint, tests, sandbox):
+    results = {
+        "CHANGES": changes,
+        "SELECTED": selected,
+        "LINT": lint,
+        "TESTS": tests,
+        "SANDBOX": sandbox,
+    }
     # GitHub runs `run:` scripts with `bash -e`.
     return subprocess.run(
         ["/bin/bash", "-e", "-c", required_check_script()],
@@ -47,37 +53,44 @@ class ShardedGreenfieldTests(unittest.TestCase):
 
     def test_the_required_check_needs_every_greenfield_job(self):
         steps = ci_job(WORKFLOW, "greenfield")
-        self.assertIn("    needs: [changes, greenfield-lint, greenfield-test]\n", steps)
+        self.assertIn(
+            "    needs: [changes, greenfield-lint, greenfield-test, greenfield-sandbox]\n", steps
+        )
         condition = re.search(r"^    if: (.*)$", steps, re.MULTILINE)[1]
         self.assertIn("!cancelled()", condition, "a failed shard must not skip the check")
         self.assertNotIn("needs.changes.outputs", condition, "the script decides, not a skip")
 
-    def test_the_required_check_passes_only_when_lint_and_every_shard_pass(self):
-        cases = [
-            ("success", "true", "success", "success", 0),
-            ("success", "true", "failure", "success", 1),
-            ("success", "true", "success", "failure", 1),
-            ("success", "true", "success", "cancelled", 1),
-            ("success", "true", "skipped", "success", 1),
-            ("success", "true", "success", "skipped", 1),
-            ("success", "false", "skipped", "skipped", 0),
-            ("success", "", "skipped", "skipped", 1),
-            ("failure", "", "skipped", "skipped", 1),
-            ("skipped", "", "skipped", "skipped", 1),
+    def test_the_required_check_passes_only_when_every_greenfield_job_passes(self):
+        passed = ("success", "true", "success", "success", "success")
+        cases = [(passed, 0)]
+        for position, result in [(2, "failure"), (3, "failure"), (4, "failure"), (3, "cancelled")]:
+            cases.append((passed[:position] + (result,) + passed[position + 1 :], 1))
+        for position in (2, 3, 4):
+            cases.append((passed[:position] + ("skipped",) + passed[position + 1 :], 1))
+        skipped = ("skipped", "skipped", "skipped")
+        cases += [
+            (("success", "false", *skipped), 0),
+            (("success", "", *skipped), 1),
+            (("failure", "", *skipped), 1),
+            (("skipped", "", *skipped), 1),
         ]
-        for changes, selected, lint, tests, expected in cases:
-            with self.subTest(changes=changes, selected=selected, lint=lint, tests=tests):
-                self.assertEqual(run_required_check(changes, selected, lint, tests), expected)
+        for results, expected in cases:
+            with self.subTest(results=results):
+                self.assertEqual(run_required_check(*results), expected)
 
-    def test_one_shard_each_runs_the_second_user_and_live_probe_steps(self):
-        steps = ci_job(WORKFLOW, "greenfield-test")
-        for name, shard in [
-            ("Run the daemon's sandbox tests, with the ignored one for #628", 1),
-            ("Probe the native sandbox live", 2),
+    def test_the_sandbox_steps_run_beside_the_shards_on_the_shards_build(self):
+        sandbox = ci_job(WORKFLOW, "greenfield-sandbox")
+        for name in [
+            "Run the daemon's sandbox tests, with the ignored one for #628",
+            "Probe the native sandbox live",
         ]:
             with self.subTest(step=name):
-                step = steps.split(name, 1)[1].split("\n      - ", 1)[0]
-                self.assertIn(f"        if: matrix.shard == {shard}\n", step)
+                self.assertIn(name, sandbox)
+                self.assertNotIn(name, ci_job(WORKFLOW, "greenfield-test"))
+        self.assertIn(
+            "cargo test --no-run --locked --manifest-path Cargo.toml --workspace\n", sandbox
+        )
+        self.assertNotIn("matrix.", sandbox)
 
 
 if __name__ == "__main__":

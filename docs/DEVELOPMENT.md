@@ -150,7 +150,8 @@ only: its CI job was removed on 2026-10-31 (it slowed every greenfield change an
 cutover). JavaScript's default warnings remain visible. The [CI workflow](../.github/workflows/ci.yml)
 splits by changed path ([tools/ci-jobs.py](../tools/ci-jobs.py)): for `crates/`, the root
 manifests, the Makefile and `.github/`, `greenfield-lint` runs `make greenfield-lint` and the
-three `greenfield-test` shards each run one hash partition of `make crates-test`, and the
+three `greenfield-test` shards each run one hash partition of `make crates-test`,
+`greenfield-sandbox` runs the sandbox tests as a second Unix user and the live probe, and the
 required `greenfield` check passes only when all of them did; `docs` runs
 `make docs-ci` for `docs/` and any Markdown file; `greenfield-wsl2`
 runs for the crates they build (`PLATFORM_ROOTS` and their dependencies), the root manifests,
