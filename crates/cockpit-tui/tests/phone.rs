@@ -12,8 +12,8 @@ use cockpit_protocol::{
 };
 use cockpit_tui::{App, HELP, INPUT_GRACE, Key, PHONE_TYPING_TIMEOUT};
 use common::{
-    answer, app_with, folded, press, queue, run, screen, sent, session, sized_screen, typing,
-    waiting_run,
+    answer, app_with, folded, press, queue, run, screen, sent, session, shown, sized_screen,
+    typing, waiting_run,
 };
 
 const SESSION: &str = "s00000000000a";
@@ -526,6 +526,26 @@ fn a_command_waiting_for_input_takes_no_line_until_the_end_of_its_tall_card_is_o
             .any(|command| matches!(command, Command::ApprovalInput { .. })),
         "{unseen:?}"
     );
+}
+
+#[test]
+fn a_line_typed_on_the_phone_card_for_a_command_is_masked() {
+    let now = Instant::now();
+    let mut app = phone_app(40, 20, now);
+    let sudo = RunRequestView {
+        waiting_prompt: Some(shown("[sudo] password for theo: ")),
+        ..waiting_run(3, SESSION)
+    };
+    asking(&mut app, vec![sudo], now);
+    let later = after_grace(now);
+    press(&mut app, &[Key::Char('i')], later);
+    typing(&mut app, "hunter2", later);
+
+    let rows = sized_screen(&app, later, 40, 20).join("\n");
+
+    assert!(rows.contains("Prompt: [sudo] password for theo:"), "{rows}");
+    assert!(!rows.contains("hunter2"), "{rows}");
+    assert!(rows.contains("*******_"), "{rows}");
 }
 
 #[test]

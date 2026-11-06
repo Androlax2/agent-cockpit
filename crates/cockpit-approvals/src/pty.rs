@@ -433,13 +433,69 @@ impl Runner {
                     .output
                     .lock()
                     .expect("the output lock is never poisoned");
-                kept.total > 0
-                    && kept.bytes.last() != Some(&b'\n')
-                    && now.duration_since(kept.last_output) >= PROMPT_IDLE
+                is_at_prompt(&kept, now)
             })
             .map(|(id, _)| *id)
             .collect()
     }
+
+    /// What `id` asks while it waits for input (#1010): the line a terminal shows after its
+    /// output's last newline. `None` unless the run waits at a prompt now, when the line is
+    /// blank, or when its start was dropped to keep the output bounded: a secret cut there
+    /// would no longer match a redaction pattern.
+    pub fn prompt(&self, id: RunId) -> Option<String> {
+        let live = self
+            .live
+            .lock()
+            .expect("the live runs lock is never poisoned")
+            .get(&id)
+            .cloned()?;
+        // Copied out, so the reader is not held up while the line is redacted.
+        let line = {
+            let kept = live
+                .output
+                .lock()
+                .expect("the output lock is never poisoned");
+            if !is_at_prompt(&kept, Instant::now()) {
+                return None;
+            }
+            let read = &kept.bytes[kept.bytes.len().saturating_sub(ANSWER_MAX_BYTES)..];
+            match read.iter().rposition(|byte| *byte == b'\n') {
+                Some(newline) => read[newline + 1..].to_vec(),
+                None if read.len() as u64 == kept.total => read.to_vec(),
+                None => return None,
+            }
+        };
+        prompt_line(&line)
+    }
+}
+
+/// Whether the run's output stopped mid-line a while ago: it probably waits at a prompt.
+fn is_at_prompt(kept: &Kept, now: Instant) -> bool {
+    kept.total > 0
+        && kept.bytes.last() != Some(&b'\n')
+        && now.duration_since(kept.last_output) >= PROMPT_IDLE
+}
+
+/// The most characters of a prompt shown; a longer line shows its end.
+pub const PROMPT_MAX_CHARS: usize = 200;
+
+/// What a terminal shows of `line`, output after the last newline: the last segment a carriage
+/// return started that is not blank, without terminal controls, redacted, at most
+/// [`PROMPT_MAX_CHARS`] from its end.
+fn prompt_line(line: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(line);
+    let drawn = text
+        .split('\r')
+        .map(strip_terminal_controls)
+        .rfind(|segment| !segment.trim().is_empty())?;
+    let (redacted, _) = redact_secrets(&drawn);
+    let length = redacted.chars().count();
+    if length <= PROMPT_MAX_CHARS {
+        return Some(redacted);
+    }
+    let end: String = redacted.chars().skip(length - PROMPT_MAX_CHARS).collect();
+    Some(format!("…{end}"))
 }
 
 /// The most output bytes an answer quotes; what came before is counted in the omission line.

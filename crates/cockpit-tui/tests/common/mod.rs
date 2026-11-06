@@ -93,6 +93,7 @@ pub fn run(id: i64, session: &str, command: &str) -> RunRequestView {
         asked_at: 1,
         expires_at: 1000,
         waiting_for_input: false,
+        waiting_prompt: None,
         decision: None,
         result: None,
         note: None,

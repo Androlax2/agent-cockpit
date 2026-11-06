@@ -50,6 +50,7 @@ Approval pane (Tab moves between the list and the pane)
   x                  decline the command / close the guide
   m                  show the whole command, or fold it again
   i                  type a line for a command waiting for input; Enter sends it
+  Tab                while typing that line: show it, or mask it again (masked first)
   s                  stuck on the guide step: type why, Enter sends it
   Keys are ignored for a moment after a request appears or the pane takes focus.
 Phone layout (narrower than tui.phone_below_columns, 60 columns by default)
@@ -510,7 +511,7 @@ fn draw_pane(app: &App, frame: &mut Frame<'_>, area: Rect, now: Instant) {
         None => Vec::new(),
     };
     if let Some((typing, typed)) = pane.typing() {
-        lines.push(typing_line(typing, typed));
+        lines.push(typing_line(typing, typed, pane.is_input_revealed()));
     } else if pane.in_grace(now) {
         lines.push("Read it first: keys work again in a moment.".to_owned());
     } else {
@@ -529,14 +530,32 @@ fn draw_pane(app: &App, frame: &mut Frame<'_>, area: Rect, now: Instant) {
     );
 }
 
-/// What the owner types into the pane, with its prompt.
-pub(crate) fn typing_line(typing: Typing, typed: &str) -> String {
-    let prompt = match typing {
-        Typing::Input => "Line for the command",
-        Typing::Answer => "Answer",
-        Typing::StuckNote => "Stuck because",
+/// What the owner types into the pane, with its prompt. A line for a command shows one `*`
+/// per character unless `is_input_revealed`: it may be a password (#1010).
+pub(crate) fn typing_line(typing: Typing, typed: &str, is_input_revealed: bool) -> String {
+    let (prompt, reveal) = match typing {
+        Typing::Input => (
+            "Line for the command",
+            format!(", {}", reveal_hint(is_input_revealed)),
+        ),
+        Typing::Answer => ("Answer", String::new()),
+        Typing::StuckNote => ("Stuck because", String::new()),
     };
-    format!("{prompt}: {typed}_   (Enter sends, Esc cancels)")
+    let shown = if typing == Typing::Input && !is_input_revealed {
+        "*".repeat(typed.chars().count())
+    } else {
+        typed.to_owned()
+    };
+    format!("{prompt}: {shown}_   (Enter sends{reveal}, Esc cancels)")
+}
+
+/// What Tab does to the line typed for a command.
+pub(crate) fn reveal_hint(is_input_revealed: bool) -> &'static str {
+    if is_input_revealed {
+        "Tab hides it"
+    } else {
+        "Tab shows it"
+    }
 }
 
 pub(crate) fn pane_keys(shown: Option<&Shown>) -> &'static str {
@@ -587,6 +606,9 @@ pub(crate) fn run_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> 
             .map(|project| format!(" (project {project})"))
             .unwrap_or_default(),
     )];
+    if let Some(prompt) = run.waiting_prompt.as_ref().filter(|_| waiting) {
+        lines.push(format!("Prompt: {}", prompt.text));
+    }
     let outside = if run.outside_project {
         "  [outside the project]"
     } else {
@@ -607,7 +629,9 @@ pub(crate) fn run_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> 
     if let Some(asked) = &run.asked_command {
         lines.push(format!("Edited from what the agent asked: {asked}"));
     }
-    let warnings = warnings(&[&run.shown_command, &run.shown_cwd, &run.shown_reason]);
+    let mut shown_texts = vec![&run.shown_command, &run.shown_cwd, &run.shown_reason];
+    shown_texts.extend(run.waiting_prompt.as_ref().filter(|_| waiting));
+    let warnings = warnings(&shown_texts);
     if !warnings.is_empty() {
         lines.push(format!("Warning: {warnings}"));
     }
