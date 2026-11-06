@@ -578,6 +578,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-notify"
+version = "0.1.0"
+dependencies = [
+ "cockpit-client",
+ "cockpit-diagnostics",
+ "cockpit-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cockpit-opencode"
 version = "0.1.0"
 dependencies = [
