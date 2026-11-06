@@ -92,7 +92,10 @@ fn ask_daemon(project: Option<String>) -> Result<Vec<RequirementView>, Unanswere
     let answer = daemon::exchange(Command::Readiness { project }, DOCTOR_DEADLINE)
         .map_err(Unanswered::Failed)?;
     match answer {
-        Ok(Reply::Readiness { requirements }) => Ok(requirements),
+        Ok(Reply::Readiness { requirements }) => Ok(requirements
+            .into_iter()
+            .map(crate::profile::localize_requirement)
+            .collect()),
         Ok(other) => Err(Unanswered::Failed(daemon::unexpected(&other))),
         Err(error @ ClientError::Connect { .. }) => Err(Unanswered::Unreachable(error.to_string())),
         Err(error) => Err(Unanswered::Failed(daemon::failed(&error))),
@@ -124,9 +127,10 @@ fn offline(project: Option<&str>, unreachable: String) -> Vec<RequirementView> {
             name: "config".to_owned(),
             status: ReadinessStatusView::MissingPrerequisite,
             detail: error.to_string(),
-            next: Some(
-                "fix the file and line named here; `torlek config show` reads it again".to_owned(),
-            ),
+            next: Some(format!(
+                "fix the file and line named here; `{} config show` reads it again",
+                crate::profile::command()
+            )),
         },
     };
     vec![
@@ -135,7 +139,11 @@ fn offline(project: Option<&str>, unreachable: String) -> Vec<RequirementView> {
             name: "daemon".to_owned(),
             status: ReadinessStatusView::MissingPrerequisite,
             detail: unreachable,
-            next: Some("start `torlek-daemon`, then run `torlek doctor` again".to_owned()),
+            next: Some(format!(
+                "start `{}`, then run `{} doctor` again",
+                crate::profile::daemon_command(),
+                crate::profile::command()
+            )),
         },
         RequirementView {
             name: "host".to_owned(),
@@ -199,9 +207,9 @@ fn print_installations() -> Result<(), String> {
     match own_unit {
         Some(unit) => outln!("unit {}: installed", unit.path.display()),
         None => outln!(
-            "unit {}: not installed (`torlek --profile {} daemon install`)",
+            "unit {}: not installed (`{} daemon install`)",
             manager.unit_file_name(&profile.value),
-            profile.value
+            crate::profile::command()
         ),
     }
 

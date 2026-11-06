@@ -65,7 +65,7 @@ struct DaemonFacts {
 /// Why the daemon's facts are missing, and what fixes that.
 struct DaemonProblem {
     detail: String,
-    next: &'static str,
+    next: String,
 }
 
 /// Exit 1 only when the client cannot run at all; every other failure is a step to show.
@@ -78,14 +78,20 @@ fn gather() -> Result<Facts, ExitCode> {
         Err(DaemonProblem {
             detail: "not asked: this runs inside a Torlek session, and init is the owner's"
                 .to_owned(),
-            next: "run `torlek init` from your own terminal, outside any Torlek session",
+            next: format!(
+                "run `{} init` from your own terminal, outside any Torlek session",
+                crate::profile::command()
+            ),
         })
     } else {
         match crate::agent::locate_socket_dir() {
             Ok(dir) => ask_daemon(&dir.join(cockpit_config::DAEMON_SOCKET))?,
             Err(error) => Err(DaemonProblem {
                 detail: format!("cannot locate its socket: {error}"),
-                next: "fix what is named here so `torlek` finds the daemon's socket",
+                next: format!(
+                    "fix what is named here so `{}` finds the daemon's socket",
+                    crate::profile::command()
+                ),
             }),
         }
     };
@@ -103,8 +109,12 @@ fn ask_daemon(socket: &Path) -> Result<Result<DaemonFacts, DaemonProblem>, ExitC
             Ok(replies) => daemon_facts(replies),
             Err(error @ ClientError::Connect { .. }) => Err(DaemonProblem {
                 detail: format!("not running ({error})"),
-                next: "`torlek daemon install` runs it as a user service (or run `torlek-daemon` \
-                   in another terminal)",
+                next: format!(
+                    "`{} daemon install` runs it as a user service (or run `{}` in another \
+                     terminal)",
+                    crate::profile::command(),
+                    crate::profile::daemon_command()
+                ),
             }),
             Err(error) => Err(failing_daemon(&error.to_string())),
         },
@@ -114,8 +124,11 @@ fn ask_daemon(socket: &Path) -> Result<Result<DaemonFacts, DaemonProblem>, ExitC
 fn failing_daemon(detail: &str) -> DaemonProblem {
     DaemonProblem {
         detail: format!("running, but it failed to answer: {detail}"),
-        next: "read the daemon's log, then restart `torlek-daemon`; a `torlek` and a daemon \
-               of different releases refuse each other",
+        next: format!(
+            "read the daemon's log, then restart `{}`; a client and a daemon of different \
+             releases refuse each other",
+            crate::profile::daemon_command()
+        ),
     }
 }
 
@@ -123,7 +136,10 @@ fn daemon_facts(replies: Vec<Reply>) -> Result<DaemonFacts, DaemonProblem> {
     let mut replies = replies.into_iter();
     let unexpected = |reply: Option<Reply>| failing_daemon(&format!("unexpected reply {reply:?}"));
     let requirements = match replies.next() {
-        Some(Reply::Readiness { requirements }) => requirements,
+        Some(Reply::Readiness { requirements }) => requirements
+            .into_iter()
+            .map(crate::profile::localize_requirement)
+            .collect(),
         other => return Err(unexpected(other)),
     };
     let projects = match replies.next() {
@@ -229,15 +245,16 @@ fn readiness_step(facts: &Facts) -> Step {
     if let Err(error) = &facts.config {
         blocks = true;
         lines.push(format!("config: {error}"));
-        next = Some(
-            "fix what is named here; `torlek config show` reads the configuration again".to_owned(),
-        );
+        next = Some(format!(
+            "fix what is named here; `{} config show` reads the configuration again",
+            crate::profile::command()
+        ));
     }
     match &facts.daemon {
         Err(problem) => {
             blocks = true;
             lines.push(format!("daemon: {}", problem.detail));
-            next.get_or_insert_with(|| problem.next.to_owned());
+            next.get_or_insert_with(|| problem.next.clone());
         }
         Ok(daemon) => {
             for requirement in daemon
@@ -259,7 +276,10 @@ fn readiness_step(facts: &Facts) -> Step {
     if !blocks && lines.is_empty() {
         lines.push("tmux and resource controls are ready".to_owned());
     }
-    lines.push("`torlek doctor` shows every requirement".to_owned());
+    lines.push(format!(
+        "`{} doctor` shows every requirement",
+        crate::profile::command()
+    ));
     Step {
         title: READINESS,
         state: if blocks { State::Open } else { State::Done },
@@ -275,19 +295,22 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
         return Step::waiting(SANDBOX, "the configuration reads");
     };
     let setting = &config.agents_sandbox;
+    let command = crate::profile::command();
     let mut lines = vec![
         "sandbox: agents.sandbox = \"off\" runs agents UNSANDBOXED, with your rights; \
          \"required\" runs them in Torlek's native sandbox (bubblewrap, Landlock and \
          seccomp), with no network but loopback until the session proxy exists (#831), and \
          refuses every launch on a host without it"
             .to_owned(),
-        "needs you: a command an agent asks you to run (`torlek ask run`) or a step only a \
-         person can do (`torlek ask guide`); an agent cannot approve its own request"
-            .to_owned(),
-        "approvals: `torlek approval list` (or the approval pane of `torlek tui`) shows the \
-         exact command, its directory and the content it runs; an approval runs that command \
-         once, a decline tells the agent"
-            .to_owned(),
+        format!(
+            "needs you: a command an agent asks you to run (`{command} ask run`) or a step only \
+             a person can do (`{command} ask guide`); an agent cannot approve its own request"
+        ),
+        format!(
+            "approvals: `{command} approval list` (or the approval pane of `{command} tui`) \
+             shows the exact command, its directory and the content it runs; an approval runs \
+             that command once, a decline tells the agent"
+        ),
         format!(
             "desktop: agents get your display and session bus while agents.desktop_session = \
              \"shared\" (now \"{}\")",
@@ -482,9 +505,10 @@ fn project_step(projects: &[ProjectView]) -> Step {
             title: PROJECT,
             state: State::Open,
             lines: vec!["no project is registered".to_owned()],
-            next: Some(
-                "`torlek project add DIR` registers the Git repository agents work in".to_owned(),
-            ),
+            next: Some(format!(
+                "`{} project add DIR` registers the Git repository agents work in",
+                crate::profile::command()
+            )),
         };
     }
     done(
@@ -501,8 +525,9 @@ fn session_step(daemon: &DaemonFacts, available: &[&str], is_host_ready: bool) -
         return done(
             SESSION,
             vec![format!(
-                "{} session(s) started; `torlek tui` shows them",
-                daemon.sessions.len()
+                "{} session(s) started; `{} tui` shows them",
+                daemon.sessions.len(),
+                crate::profile::command()
             )],
         );
     }
@@ -524,9 +549,9 @@ fn session_step(daemon: &DaemonFacts, available: &[&str], is_host_ready: bool) -
         state: State::Open,
         lines: vec!["no session has started yet".to_owned()],
         next: Some(format!(
-            "`torlek session new {}{agent}` starts an agent there; \
-             `torlek tui` shows it",
-            shell_word(&project.root)
+            "`{command} session new {}{agent}` starts an agent there; `{command} tui` shows it",
+            shell_word(&project.root),
+            command = crate::profile::command()
         )),
     }
 }
@@ -581,11 +606,14 @@ fn render(steps: &[Step]) {
     outln!("");
     match steps.iter().find(|step| step.state == State::Open) {
         Some(step) => outln!(
-            "next: {} (then run `torlek init` again)",
-            step.next.as_deref().unwrap_or(step.title)
+            "next: {} (then run `{} init` again)",
+            step.next.as_deref().unwrap_or(step.title),
+            crate::profile::command()
         ),
         None => outln!(
-            "Torlek is set up: `torlek tui` opens the manager, `torlek --help` lists every verb"
+            "Torlek is set up: `{command} tui` opens the manager, `{command} --help` lists every \
+             verb",
+            command = crate::profile::command()
         ),
     }
 }
