@@ -80,8 +80,9 @@ pub(crate) fn sandbox(setting: AgentSandbox, backend: &Result<String, String>) -
         (AgentSandbox::Required, Ok(backend)) => Requirement::available(
             "sandbox",
             format!(
-                "sandboxed: every agent runs in {backend}, with no network but loopback until \
-                 the session proxy exists (#831)"
+                "sandboxed: every agent runs in {backend} and reaches the network only through \
+                 its own egress proxy; a host it may not reach is refused at once and you decide \
+                 with `torlek network`"
             ),
         ),
         (AgentSandbox::Required, Err(reason)) => Requirement::needs(
@@ -101,8 +102,9 @@ pub(crate) fn sandbox(setting: AgentSandbox, backend: &Result<String, String>) -
         )
         .with_advice(match backend {
             Ok(backend) => format!(
-                "agents.sandbox = \"required\" runs them in {backend}, with no network but \
-                 loopback until the session proxy exists (#831)"
+                "agents.sandbox = \"required\" runs them in {backend}; there each session reaches \
+                 the network only through its own egress proxy, and you allow once, allow always or \
+                 deny a refused host with `torlek network`"
             ),
             Err(reason) => format!(
                 "this host has no sandbox ({reason}); until it has, agents.sandbox = \

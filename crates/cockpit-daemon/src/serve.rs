@@ -312,7 +312,7 @@ pub(crate) fn log_sandbox_setting(
             tracing::info!(
                 source = %setting.source,
                 backend = %native.describe(),
-                "agents.sandbox = \"required\": every agent launches in the native sandbox, with no network but loopback until the session proxy exists (#831)"
+                "agents.sandbox = \"required\": every agent launches in the native sandbox, reaching the network only through its own egress proxy; the owner decides a refused host with `torlek network`"
             );
         }
         (cockpit_config::AgentSandbox::Required, cockpit_sandbox::Backend::Missing { reason }) => {

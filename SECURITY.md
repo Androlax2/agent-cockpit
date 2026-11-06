@@ -50,8 +50,9 @@ Out of scope:
 - **Sandbox.** By default (`agents.sandbox = "off"`) agents run unsandboxed, with the
   owner's rights, so grants do not bind them; the daemon logs that risk at its start and at
   every launch. An explicit `required` runs each agent in Torlek's native sandbox (#829):
-  bubblewrap's namespaces and mount view, then Landlock and a seccomp filter, with no network
-  but loopback until the session proxy (#831). On a host without it, `required` refuses every
+  bubblewrap's namespaces and mount view, then Landlock and a seccomp filter, reaching the
+  network only through a per-session egress proxy (#831) whose refused hosts the owner decides
+  with `torlek network` (#674). On a host without it, `required` refuses every
   launch and never runs an agent unsandboxed. The sandbox decides which paths, hosts and
   system calls are reachable, and a gap in it is a vulnerability, not a feature.
 - **Host actions.** Installs, Git writes and other host commands an agent asks for run
