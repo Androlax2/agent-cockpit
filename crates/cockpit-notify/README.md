@@ -27,8 +27,11 @@ coordinator holds (#710).
 
 - **Desktop:** `notify-send`, over the session bus (`DBUS_SESSION_BUS_ADDRESS` or
   `$XDG_RUNTIME_DIR/bus`). A failure is critical, everything else normal.
-- **Sound:** `canberra-gtk-play --id=NAME`, which plays the owner's sound theme; without it,
-  `pw-play` or `paplay` plays `sounds/freedesktop/stereo/NAME.oga` from `XDG_DATA_DIRS`.
+- **Sound:** `canberra-gtk-play --id=NAME`, which plays the owner's sound theme, when there
+  is a display (`DISPLAY` or `WAYLAND_DISPLAY`); otherwise `pw-play` or `paplay` plays
+  `sounds/freedesktop/stereo/NAME.oga` from `XDG_DATA_DIRS`.
+- **Text:** the agent writes the names and details, so each shows on one line, cut short, its
+  markup escaped (notification servers read the body as markup).
 
 No new crate is needed: both are programs every Linux desktop has. A host without a session
 bus, `notify-send` or a player runs the notifier all the same (#62's headless acceptance):
@@ -41,7 +44,8 @@ after ten seconds; nothing waits on it. macOS stays with #568.
 `EVENTS` is `none` or a comma-separated list of event names; left out, every event is on. It
 follows the change feed for sessions and view stamps, asks the daemon for the agents' reports,
 the approval queue and the network requests when their stamp moves and every five seconds,
-and logs under `DIR/logs/notify` (report 12).
+and logs under `DIR/logs/notify` (report 12). A daemon out of reach is asked again after a
+pause that doubles up to thirty seconds; nothing is news until it has answered all three.
 
 ## Dependency edges
 

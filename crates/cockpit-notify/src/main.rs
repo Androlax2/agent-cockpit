@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use tokio::time::{Instant, MissedTickBehavior};
+
 use cockpit_client::{ClientError, Connection};
 use cockpit_notify::{
     Desktop, Event, FeedEvent, Host, Notifier, Outlets, Sound, follow_feed, names,
@@ -24,6 +26,9 @@ use tokio::sync::mpsc;
 const REFRESH: Duration = Duration::from_secs(5);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(2);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
+/// How long the notifier stops asking after it could not reach the daemon, doubling while it
+/// stays out of reach, as the feed's own retry does.
+const LONGEST_PAUSE: Duration = Duration::from_secs(30);
 
 const USAGE: &str = "usage: torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS] | --version
 EVENTS: none, or a comma-separated list of failure, hold, question, quota, finished (default: all)";
@@ -135,9 +140,12 @@ async fn run(socket: PathBuf, outlets: Outlets) -> Result<(), String> {
     let mut daemon = Daemon {
         socket,
         connection: None,
+        pause: None,
     };
     let mut notifier = Notifier::default();
     let mut refresh = tokio::time::interval(REFRESH);
+    // A slow daemon delays the next refresh rather than earning a burst of them.
+    refresh.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         let commands = tokio::select! {
             _ = refresh.tick() => Notifier::refresh_commands(),
@@ -158,10 +166,25 @@ async fn run(socket: PathBuf, outlets: Outlets) -> Result<(), String> {
             },
         };
         for command in commands {
-            let answer = daemon.request(command.clone()).await;
-            outlets.tell(&notifier.answer(&command, answer));
+            match daemon.request(command.clone()).await {
+                Ok(reply) => outlets.tell(&notifier.answer(&command, Ok(reply))),
+                Err(Failure::Refused(problem)) => {
+                    outlets.tell(&notifier.answer(&command, Err(problem)));
+                }
+                // Not an answer: what the notifier starts on must come from the daemon, or
+                // everything already waiting would be news once it answers.
+                Err(Failure::Unreachable) => break,
+            }
         }
     }
+}
+
+/// Why a request has no reply.
+enum Failure {
+    /// The daemon answered with an error.
+    Refused(String),
+    /// The daemon could not be reached, or did not answer in time; logged when it starts.
+    Unreachable,
 }
 
 /// One connection to the daemon, opened again after it was lost. Requests are sent one at a
@@ -169,31 +192,65 @@ async fn run(socket: PathBuf, outlets: Outlets) -> Result<(), String> {
 struct Daemon {
     socket: PathBuf,
     connection: Option<Connection>,
+    /// Out of reach since the last request: no request before `until`.
+    pause: Option<Pause>,
+}
+
+struct Pause {
+    until: Instant,
+    length: Duration,
 }
 
 impl Daemon {
-    async fn request(&mut self, command: Command) -> Result<Reply, String> {
+    async fn request(&mut self, command: Command) -> Result<Reply, Failure> {
+        if self
+            .pause
+            .as_ref()
+            .is_some_and(|pause| Instant::now() < pause.until)
+        {
+            return Err(Failure::Unreachable);
+        }
         let connection = match &mut self.connection {
             Some(connection) => connection,
-            None => self.connection.insert(
-                Connection::open(&self.socket, CONNECT_DEADLINE)
-                    .await
-                    .map_err(|error| describe(&error))?,
-            ),
+            None => match Connection::open(&self.socket, CONNECT_DEADLINE).await {
+                Ok(opened) => self.connection.insert(opened),
+                Err(error) => return Err(self.out_of_reach(&error)),
+            },
         };
-        let answer = connection.request(command, REQUEST_DEADLINE).await;
-        if let Err(ClientError::Closed(reason)) = &answer {
-            tracing::warn!(?reason, "lost the daemon connection");
-            self.connection = None;
+        match connection.request(command, REQUEST_DEADLINE).await {
+            Ok(reply) => {
+                if self.pause.take().is_some() {
+                    tracing::info!("the daemon answers again");
+                }
+                Ok(reply)
+            }
+            Err(ClientError::Daemon(error)) => Err(Failure::Refused(format!(
+                "{}: {}",
+                error.code.as_str(),
+                error.message
+            ))),
+            // A connection that timed out may never answer again: the next request opens
+            // a new one.
+            Err(error) => {
+                self.connection = None;
+                Err(self.out_of_reach(&error))
+            }
         }
-        answer.map_err(|error| describe(&error))
     }
-}
 
-fn describe(error: &ClientError) -> String {
-    match error {
-        ClientError::Daemon(error) => format!("{}: {}", error.code.as_str(), error.message),
-        error => error.to_string(),
+    fn out_of_reach(&mut self, error: &ClientError) -> Failure {
+        let length = match &self.pause {
+            None => {
+                tracing::warn!(%error, "cannot reach the daemon; asking again later");
+                REFRESH
+            }
+            Some(pause) => (pause.length * 2).min(LONGEST_PAUSE),
+        };
+        self.pause = Some(Pause {
+            until: Instant::now() + length,
+            length,
+        });
+        Failure::Unreachable
     }
 }
 

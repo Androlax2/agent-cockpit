@@ -15,18 +15,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
-    Capability, ChangeBatch, Command, EntityKind, Hello, Outcome, Reply, Request, Response,
-    SUPPORTED_VERSIONS, ServerFrame, SessionStateView, SessionView, negotiate,
+    AgentState, Capability, ChangeBatch, Command, EntityKind, Hello, Outcome, QuestionSource,
+    Reply, Request, Response, SUPPORTED_VERSIONS, ServerFrame, SessionReport, SessionStateView,
+    SessionView, negotiate,
 };
-use common::{after_snapshot, session, snapshot, upsert};
+use common::{after_snapshot, report, session, snapshot, upsert};
 
 const WORKER: &str = "s00000000000a";
 const GENEROUS: Duration = Duration::from_secs(15);
 
-/// A daemon that answers the feed with a snapshot of one working session, every request for
-/// reports, the queue and the network with an empty list, and once all three were answered,
-/// sends `later` on the feed.
-fn scripted_daemon(socket: &Path, later: ChangeBatch) {
+/// A daemon that answers the feed with a snapshot of one working session, the reports request
+/// with `reports`, the queue and the network with an empty list, and once all three were
+/// answered, sends `later` on the feed.
+fn scripted_daemon(socket: &Path, reports: Vec<SessionReport>, later: ChangeBatch) {
     let listener = UnixListener::bind(socket).unwrap();
     let answered = Arc::new(AtomicUsize::new(0));
     let has_sent_later = Arc::new(AtomicBool::new(false));
@@ -36,7 +37,8 @@ fn scripted_daemon(socket: &Path, later: ChangeBatch) {
             let answered = Arc::clone(&answered);
             let has_sent_later = Arc::clone(&has_sent_later);
             let later = later.clone();
-            std::thread::spawn(move || serve(stream, &answered, &has_sent_later, later));
+            let reports = reports.clone();
+            std::thread::spawn(move || serve(stream, &answered, &has_sent_later, reports, later));
         }
     });
 }
@@ -45,6 +47,7 @@ fn serve(
     stream: UnixStream,
     answered: &Arc<AtomicUsize>,
     has_sent_later: &Arc<AtomicBool>,
+    reports: Vec<SessionReport>,
     later: ChangeBatch,
 ) {
     let writer = Arc::new(Mutex::new(stream.try_clone().unwrap()));
@@ -70,7 +73,7 @@ fn serve(
                 cursor: first.cursor.clone(),
             },
             Command::AgentReports => Reply::AgentReports {
-                reports: Vec::new(),
+                reports: reports.clone(),
             },
             Command::ApprovalQueue => Reply::ApprovalQueue {
                 runs: Vec::new(),
@@ -164,11 +167,13 @@ impl Setup {
         let bin = dir.path().join("bin");
         fs::create_dir(&bin).unwrap();
         let record = dir.path().join("record");
-        scripted_daemon(&dir.path().join("daemon.sock"), later);
-        Setup { dir, bin, record }
+        let setup = Setup { dir, bin, record };
+        setup.bind(Vec::new(), later);
+        setup
     }
 
-    fn start(&self, extra: &[&str], has_session_bus: bool) -> Running {
+    /// Starts the notifier; `is_desktop` gives it a session bus and a display.
+    fn start(&self, extra: &[&str], is_desktop: bool) -> Running {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek-notify"));
         command
             .arg("--socket")
@@ -182,10 +187,25 @@ impl Setup {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        if has_session_bus {
-            command.env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/bus");
+        if is_desktop {
+            command
+                .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/bus")
+                .env("WAYLAND_DISPLAY", "wayland-test");
         }
         Running(command.spawn().unwrap())
+    }
+
+    /// Starts no daemon yet: [`Setup::bind`] does.
+    fn without_daemon() -> Setup {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let record = dir.path().join("record");
+        Setup { dir, bin, record }
+    }
+
+    fn bind(&self, reports: Vec<SessionReport>, later: ChangeBatch) {
+        scripted_daemon(&self.dir.path().join("daemon.sock"), reports, later);
     }
 
     /// The recorded calls once `count` are in, or what is there after [`GENEROUS`].
@@ -328,5 +348,54 @@ fn events_that_land_together_make_one_notification_and_one_sound() {
             ),
             format!("{WORKER} finished]"),
         ]
+    );
+}
+
+#[test]
+fn without_a_display_the_player_plays_instead_of_canberra() {
+    let setup = Setup::new();
+    let stereo = setup.dir.path().join("share/sounds/freedesktop/stereo");
+    fs::create_dir_all(&stereo).unwrap();
+    fs::write(stereo.join("complete.oga"), b"").unwrap();
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+    fake_program(&setup.bin, "paplay", &setup.record);
+    let _notifier = setup.start(&[], false);
+
+    let calls = setup.calls(1);
+
+    assert_eq!(
+        calls,
+        [format!(
+            "paplay [{}]",
+            stereo.join("complete.oga").display()
+        )]
+    );
+}
+
+#[test]
+fn what_waited_before_the_daemon_could_be_reached_is_not_news() {
+    let setup = Setup::without_daemon();
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    let _notifier = setup.start(&["--sound", "none"], true);
+    // The notifier tried the socket and found nothing there.
+    let deadline = Instant::now() + GENEROUS;
+    while !setup.log().contains("cannot reach the daemon") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let waiting = SessionReport {
+        state: Some(AgentState::Waiting),
+        needs_input: Some("Which branch?".to_owned()),
+        question_source: Some(QuestionSource::Agent),
+        ..report(WORKER)
+    };
+
+    setup.bind(vec![waiting], finished());
+    let calls = setup.calls(1);
+
+    assert_eq!(
+        calls,
+        [format!(
+            "notify-send [--app-name=Torlek] [--urgency=normal] [--] [{WORKER} finished]"
+        )]
     );
 }

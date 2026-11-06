@@ -20,9 +20,10 @@ pub struct Notice {
 }
 
 /// The daemon's state arrives from four places. What is raised before all four answered once
-/// is the state the notifier started on, not news. A place whose request failed counts as
-/// answered: a notifier that waits for a daemon that never answers would stay silent for the
-/// whole run, and a notice for what was already waiting is the safer error.
+/// is the state the notifier started on, not news. A place the daemon answered with an error
+/// counts as answered: a notifier that waits for a request the daemon always refuses would
+/// stay silent for the whole run. A daemon out of reach answered nothing; the runtime does
+/// not pass that on, or everything already waiting would be news once it answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum StartSource {
     Sessions,
@@ -79,7 +80,8 @@ impl Notifier {
         commands
     }
 
-    /// Takes the daemon's answer to `command`, and returns what it newly raised.
+    /// Takes the daemon's answer to `command`, a reply or the error it answered with, and
+    /// returns what it newly raised.
     pub fn answer(&mut self, command: &Command, answer: Result<Reply, String>) -> Vec<Notice> {
         let source = match command {
             Command::AgentReports => StartSource::Reports,
@@ -94,7 +96,7 @@ impl Notifier {
             Ok(reply) => {
                 tracing::warn!(?command, ?reply, "the daemon answered something else");
             }
-            Err(problem) => tracing::warn!(?command, problem, "the daemon did not answer"),
+            Err(problem) => tracing::warn!(?command, problem, "the daemon refused the request"),
         }
         self.look(Some(source))
     }
