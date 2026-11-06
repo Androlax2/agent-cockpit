@@ -476,6 +476,47 @@ async fn the_evidence_is_read_back_as_recorded_for_the_sessions_latest_launch() 
     assert_eq!(none, None);
 }
 
+/// #969: the home that keeps a session's conversation is its first launch's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sessions_first_launch_says_whether_it_ran_sandboxed() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = cockpit_turso::Database::open(&dir.path().join("state.db"), &[MIGRATIONS])
+        .await
+        .unwrap();
+    let evidence = |enforcement| Evidence {
+        enforcement,
+        platform: "linux".to_owned(),
+        rules: Vec::new(),
+        observed: Vec::new(),
+    };
+    let sandboxed = evidence(Enforcement::Sandboxed {
+        backend: "torlek-sandbox".to_owned(),
+        engine: "bubblewrap".to_owned(),
+        client_identity: "cockpit-s1-0001".to_owned(),
+    });
+    let unsandboxed = evidence(Enforcement::Unsandboxed {
+        reason: "no sandbox: agents.sandbox = \"off\"".to_owned(),
+    });
+    let write = database.write().await.unwrap();
+    cockpit_sandbox::record(&write, 1, "s1", &unsandboxed)
+        .await
+        .unwrap();
+    cockpit_sandbox::record(&write, 2, "s1", &sandboxed)
+        .await
+        .unwrap();
+    cockpit_sandbox::record(&write, 3, "s2", &sandboxed)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let read = database.read().await.unwrap();
+    let first = |session| cockpit_sandbox::first_launch_was_sandboxed(&read, session);
+
+    assert_eq!(first("s1").await.unwrap(), Some(false));
+    assert_eq!(first("s2").await.unwrap(), Some(true));
+    assert_eq!(first("s3").await.unwrap(), None);
+}
+
 fn claude_hosts() -> Vec<cockpit_sandbox::AllowEntry> {
     vec![
         cockpit_sandbox::AllowEntry {

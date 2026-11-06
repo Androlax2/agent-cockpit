@@ -28,7 +28,7 @@ pub use egress::{
 };
 pub use evidence::{AppliedRule, Enforcement, Evidence};
 #[cfg(feature = "persistence")]
-pub use evidence::{MIGRATIONS, latest_for_session, record};
+pub use evidence::{MIGRATIONS, first_launch_was_sandboxed, latest_for_session, record};
 pub use launch::{CheckRequest, HostPaths, LaunchRequest, Prepared, Sandbox};
 pub use native::{
     Backend, GitIdentity, NativeBackend, ProviderNeeds, Staged, ToolNeeds, ToolSetting,

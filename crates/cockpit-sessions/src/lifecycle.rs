@@ -471,7 +471,7 @@ impl Sessions {
         self.tmux()?;
         let operation = self.lock(id).await;
         let session = self.get(id).await?;
-        self.restart_conversation(&session)?;
+        self.restart_conversation(&session).await?;
         self.restart_from(&operation, id, &RESTARTABLE, LaunchPurpose::Work)
             .await
     }
@@ -479,6 +479,9 @@ impl Sessions {
     /// Restarts a running session's agent on the current start files (`restart --all` and
     /// its deferred restart), keeping its finished label; the caller holds its lock.
     async fn restart_locked(&self, lock: &Operation, id: &SessionId) -> Result<Session, Error> {
+        // Checked before the stop: the setting may have changed since the restart was
+        // deferred, and a refused restart keeps its agent running (#969).
+        self.restart_conversation(&self.get(id).await?).await?;
         self.restart_from(lock, id, &[SessionState::Running], LaunchPurpose::Upkeep)
             .await
     }
@@ -518,7 +521,7 @@ impl Sessions {
         if changed.is_empty() {
             return Ok(RestartStep::Current);
         }
-        self.restart_conversation(&session)?;
+        self.restart_conversation(&session).await?;
         if turn_refusal(&session, agent_report.as_ref()).is_none() {
             return Ok(RestartStep::Restarted(
                 self.restart_locked(&operation, id).await?,
@@ -624,6 +627,7 @@ impl Sessions {
             });
         }
         let conversation = self.resumable(&session, "wake")?;
+        self.refuse_sandbox_change(&session, "wake").await?;
         // Waking reopens the conversation as resume does, so it is refused the same way.
         self.refuse_if_agent_alive_elsewhere(&session, "wake")
             .await?;
@@ -658,6 +662,7 @@ impl Sessions {
         let operation = self.lock(id).await;
         let session = self.get(id).await?;
         let conversation = self.resumable(&session, "resume")?;
+        self.refuse_sandbox_change(&session, "resume").await?;
         self.refuse_if_agent_alive_elsewhere(&session, "resume")
             .await?;
         if matches!(session.state, SessionState::Ended | SessionState::Failed) {
@@ -920,7 +925,7 @@ impl Sessions {
             return Ok(Restored::StopFinished(id, stopped.state));
         }
         // Who asked for the interrupted restart is not kept: a working one ([`LaunchPurpose`]).
-        let conversation = self.restart_conversation(&stopped);
+        let conversation = self.restart_conversation(&stopped).await;
         match self
             .relaunch(&operation, &stopped, LaunchPurpose::Work, conversation)
             .await
@@ -969,6 +974,15 @@ impl Sessions {
                 .fail_restore(session, format!("restore refused: {error}"))
                 .await;
         }
+        match self.refuse_sandbox_change(session, "restore").await {
+            Ok(()) => {}
+            Err(error) if error.is_database() => return Err(error),
+            Err(error) => {
+                return self
+                    .fail_restore(session, format!("restore refused: {error}"))
+                    .await;
+            }
+        }
         let kind = if self.launching_for_restart(session).await? {
             LaunchKind::Restart
         } else {
@@ -990,11 +1004,12 @@ impl Sessions {
             LaunchPurpose::Upkeep
         };
         let conversation = match kind {
-            LaunchKind::Restart => self.restart_conversation(session),
+            LaunchKind::Restart => self.restart_conversation(session).await,
             _ => self.resumable(session, "restore"),
         };
         let conversation = match conversation {
             Ok(conversation) => conversation,
+            Err(error) if error.is_database() => return Err(error),
             Err(error) => {
                 return self
                     .fail_restore(session, format!("restore failed: {error}"))
@@ -1683,16 +1698,59 @@ impl Sessions {
         Ok(Conversation::Resume(conversation))
     }
 
+    /// Refuses to launch `session`'s conversation again when the owner's sandbox setting no
+    /// longer matches its first launch (#969). A sandboxed agent's home is the session's own
+    /// folder, so its provider keeps the conversation there; an unsandboxed one keeps it in
+    /// the owner's home. Neither agent sees the other's, so the launch could only fail, and
+    /// copying the conversation in would show a sandboxed agent what an unsandboxed one read.
+    async fn refuse_sandbox_change(
+        &self,
+        session: &Session,
+        operation: &'static str,
+    ) -> Result<(), Error> {
+        // An unnamed conversation has had no turn to lose (#647).
+        if session.conversation.is_none() {
+            return Ok(());
+        }
+        let first_was_sandboxed = {
+            let read = self.database.read().await?;
+            cockpit_sandbox::first_launch_was_sandboxed(&read, session.id.as_str()).await?
+        };
+        // A named conversation without evidence was launched before #61 recorded any, all
+        // unsandboxed, so it is in the owner's home.
+        let first_was_sandboxed = first_was_sandboxed.unwrap_or(false);
+        let is_sandboxed = self.owner_settings().sandbox == cockpit_config::AgentSandbox::Required;
+        if first_was_sandboxed == is_sandboxed {
+            return Ok(());
+        }
+        let reason = if first_was_sandboxed {
+            "it was first launched sandboxed, so its conversation is in the session's own \
+             home, which an unsandboxed agent does not use; run it again with \
+             agents.sandbox = \"required\" or start a new session"
+        } else {
+            "it was first launched with the sandbox off, so its conversation is in the \
+             owner's home, which a sandboxed agent never sees; run it again with \
+             agents.sandbox = \"off\" or start a new session"
+        };
+        Err(Error::CannotResume {
+            session: session.id.clone(),
+            operation,
+            reason: reason.to_owned(),
+        })
+    }
+
     /// The conversation a restart launches: the session's own, or a new one while its
     /// provider has named none (#647). A provider names its conversation at launch or with
     /// its agent's first report, so an unnamed one has had no turn to lose. Decided on the
     /// session alone, the same before the stop, after it and on restore.
-    fn restart_conversation(&self, session: &Session) -> Result<Conversation, Error> {
+    async fn restart_conversation(&self, session: &Session) -> Result<Conversation, Error> {
         if session.conversation.is_none() {
             self.provider(Some(session.provider.as_str()))?;
             return Ok(Conversation::New);
         }
-        self.resumable(session, "restart")
+        let conversation = self.resumable(session, "restart")?;
+        self.refuse_sandbox_change(session, "restart").await?;
+        Ok(conversation)
     }
 
     /// [`store::transition`] in a transaction of its own.
@@ -1782,7 +1840,7 @@ impl Sessions {
         let _launching = lock.launching();
         let stopped = self.finish_stop(id, to, None).await?;
         // Chosen again after the stop: the provider may have named it in between.
-        let conversation = self.restart_conversation(&stopped);
+        let conversation = self.restart_conversation(&stopped).await;
         self.relaunch(lock, &stopped, purpose, conversation).await
     }
 
