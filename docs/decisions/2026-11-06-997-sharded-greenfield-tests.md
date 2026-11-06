@@ -24,12 +24,16 @@ pull request.
   `greenfield-lint` gets its own entry: clippy and rustdoc build other artifacts.
 - **Shard 1 runs the second-user sandbox step, shard 2 the live probe**, so neither adds
   to the same shard.
-- **The CLI and TUI end-to-end harnesses build `--workspace --bins --examples`.** With
-  `-p cockpit-daemon` Cargo resolved other features than the gate's
-  `cargo nextest run --workspace` and compiled the daemon and its workspace crates a second
-  time, inside the test run, while every CLI test that starts the daemon waited on that
-  build (about 40 s each locally). Examples turn on the dev-dependencies, as the test build
-  does, so the harnesses now reuse the gate's own programs.
+- **The CLI and TUI end-to-end harnesses build their programs with `--workspace` and the
+  `cockpit-e2e-daemon` example.** With `-p cockpit-daemon` Cargo resolved other features than
+  the gate's `cargo nextest run --workspace` and compiled the daemon and its workspace crates
+  a second time, inside the test run, while every CLI test that starts the daemon waited on
+  that build (about 40 s each locally). An example turns on the dev-dependencies, as the test
+  build does, so the harnesses now reuse the gate's own programs. They still name only the
+  targets they run: `--bins` would relink the `torlek` a focused `-p cockpit-cli` run tests.
+- **The shards' cache entry still holds the old job's clippy and rustdoc output** until the
+  key next changes (a `Cargo.lock` or toolchain change); restoring it costs seconds, and
+  rewriting the entry on purpose would need a second key.
 - **Rejected:** a `cargo nextest archive` build job feeding the shards (above); a fourth
   shard (each one repeats the build and setup for about 35 s less test time); renaming the
   required check (an owner change to the ruleset for no gain).

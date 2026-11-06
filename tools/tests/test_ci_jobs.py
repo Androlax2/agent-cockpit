@@ -114,16 +114,19 @@ class CiJobSelectionTests(unittest.TestCase):
         self.assertLessEqual(with_programs, set(ci_jobs_module().PLATFORM_ROOTS))
 
     def test_every_program_the_tui_harness_builds_is_a_platform_root(self):
-        # The harness builds every program and example (#997); the test above covers programs.
         harness = (ROOT / "crates/cockpit-tui/tests/e2e/harness.rs").read_text()
-        self.assertIn('.args(["--workspace", "--bins", "--examples"])', harness)
-        with_examples = {
-            manifest.parent.name
-            for manifest in (ROOT / "crates").glob("*/Cargo.toml")
-            if "[[example]]" in manifest.read_text() or (manifest.parent / "examples").is_dir()
-        }
-        self.assertIn("cockpit-daemon", with_examples)
-        self.assertLessEqual(with_examples, set(ci_jobs_module().PLATFORM_ROOTS))
+        programs = set(re.findall(r'"--bin",\s*"([a-z0-9-]+)"', harness))
+        examples = set(re.findall(r'"--example",\s*"([a-z0-9-]+)"', harness))
+        self.assertTrue(programs and examples, "expected the harness's cargo build targets")
+        owners = set()
+        for manifest in (ROOT / "crates").glob("*/Cargo.toml"):
+            text = manifest.read_text()
+            declared = set(re.findall(r'^name = "([a-z0-9-]+)"$', text, re.MULTILINE))
+            found = {path.stem for path in (manifest.parent / "examples").glob("*.rs")}
+            if declared & programs or found & examples:
+                owners.add(manifest.parent.name)
+        self.assertEqual(owners, {"cockpit-cli", "cockpit-claude", "cockpit-daemon"})
+        self.assertLessEqual(owners, set(ci_jobs_module().PLATFORM_ROOTS))
 
 
 if __name__ == "__main__":

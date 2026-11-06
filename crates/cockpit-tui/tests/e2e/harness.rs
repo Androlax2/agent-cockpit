@@ -109,8 +109,8 @@ struct Programs {
 
 /// `cockpit-tui` is this crate's; the others belong to crates the TUI may not depend on
 /// (rule `tui -> client/protocol/diagnostics only`), so Cargo built none of them for this
-/// test: build them here, a no-op once they are up to date. The whole workspace's programs and
-/// examples, as `cockpit-cli`'s tests build the daemon: Cargo then resolves the features of
+/// test: build them here, a no-op once they are up to date. `--workspace` with an example, as
+/// `cockpit-cli`'s tests build the daemon: Cargo then resolves the features of
 /// `cargo nextest run --workspace` and reuses that run's programs instead of compiling
 /// another variant of them (#997).
 fn programs() -> &'static Programs {
@@ -125,7 +125,10 @@ fn programs() -> &'static Programs {
         };
         let built = Command::new(env!("CARGO"))
             .args(["build", "--locked", "--quiet", "--profile", profile])
-            .args(["--workspace", "--bins", "--examples"])
+            .arg("--workspace")
+            .args(["--bin", "torlek", "--bin", "torlek-daemon"])
+            .args(["--example", "cockpit-e2e-daemon"])
+            .args(["--bin", "torlek-claude-hook"])
             .arg("--manifest-path")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml"))
             .output()
