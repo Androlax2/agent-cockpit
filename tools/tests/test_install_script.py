@@ -214,7 +214,7 @@ class InstallScriptTest(InstallFixture):
         outside = [path for path in touched if not path.startswith(".local/lib/torlek")]
         self.assertEqual(outside, [".local", ".local/bin", ".local/bin/torlek", ".local/lib"])
 
-    def test_the_default_is_the_newest_alpha_even_when_a_beta_is_newer(self):
+    def test_the_default_is_the_newest_alpha_and_a_newer_beta_is_named(self):
         self.publish(NEWER)
         listed = json.loads((self.releases / "releases.json").read_text())
         beta = fake_server.release_entry("v0.2.0-beta.1")
@@ -222,6 +222,15 @@ class InstallScriptTest(InstallFixture):
         result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_installed(NEWER)
+        self.assertIn("v0.2.0-beta.1, a beta, is newer than the newest alpha", result.stderr)
+        self.assertIn("--version v0.2.0-beta.1", result.stderr)
+
+    def test_the_newest_alpha_is_the_highest_version_not_the_first_listed(self):
+        self.publish(OLDER, NEWER)
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_installed(NEWER)
+        self.assertNotIn("a beta", result.stderr)
 
     def test_release_notes_cannot_forge_the_newest_tag(self):
         self.publish(
@@ -252,6 +261,24 @@ class InstallScriptTest(InstallFixture):
         self.assertIn("already installed", result.stdout)
         self.assertEqual(self.requests()[len(before) :], ["/api/releases?per_page=100"])
         self.assert_installed(NEWER)
+
+    def test_a_reinstall_over_a_dangling_link_names_no_previous_release(self):
+        self.publish(NEWER)
+        self.assertEqual(self.install().returncode, 0)
+        shutil.rmtree(self.library / bundle_name(NEWER))
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_installed(NEWER)
+        self.assertNotIn("previous release", result.stdout)
+
+    def test_a_failed_unpack_leaves_no_staging_directory(self):
+        self.publish(NEWER)
+        real_tar = shutil.which("tar")
+        self.fake("tar", f'case "$1" in -xzf) exit 2 ;; esac\nexec {real_tar} "$@"')
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(list(self.library.iterdir()), [])
+        self.assertFalse(self.link.exists())
 
     def test_a_pinned_version_installs_that_release(self):
         self.publish(NEWER, OLDER)

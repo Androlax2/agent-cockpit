@@ -168,7 +168,7 @@ apply: tmux 3.6 or newer (Ubuntu 24.04 ships 3.4), Git, curl and a systemd user 
   `~/.local/lib/torlek/torlek-v<tag>-linux-x86_64` and the link. A distribution is never
   unregistered by this package.
 - **Going back:** an older installed version is selected inside WSL with
-  `sh install.sh --version v<tag>`, which relinks an already unpacked release without a download.
+  `ln -sfn ~/.local/lib/torlek/torlek-v<tag>-linux-x86_64/bin/torlek ~/.local/bin/torlek`.
 
 ## Validation in CI
 

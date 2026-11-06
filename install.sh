@@ -51,16 +51,17 @@ USAGE
 # The release tag grammar of tools/release.py: no stable release exists yet. A dry run's
 # X.Y.Z-dev.N is never published: only the loopback test server and the files the release
 # workflow's install-scoop job passes with --archive carry one.
+# Usage: tag_has_suffix TAG SUFFIX, with SUFFIX an extended regular expression.
+tag_has_suffix() {
+    printf '%s\n' "$1" | grep -Eqx "v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-$2"
+}
+
 is_release_tag() {
-    printf '%s\n' "$1" | grep -Eqx 'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(alpha|beta)\.[1-9][0-9]*'
+    tag_has_suffix "$1" '(alpha|beta)\.[1-9][0-9]*'
 }
 
 is_dry_run_tag() {
-    printf '%s\n' "$1" | grep -Eqx 'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-dev\.(0|[1-9][0-9]*)'
-}
-
-is_alpha_tag() {
-    printf '%s\n' "$1" | grep -Eqx 'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha\.[1-9][0-9]*'
+    tag_has_suffix "$1" 'dev\.(0|[1-9][0-9]*)'
 }
 
 fetch() {
@@ -75,16 +76,31 @@ release_fields() {
     tr ',{}' '\n\n\n' <"$1"
 }
 
+# The listed alpha and beta tags as `MAJOR MINOR PATCH CHANNEL N TAG`, CHANNEL 0 for alpha and
+# 1 for beta, oldest version first: the order of tools/release.py, not GitHub's creation order.
+ordered_release_tags() {
+    release_fields "$1" | sed -n 's/^ *"tag_name": *"\([^"]*\)" *$/\1/p' |
+        while IFS= read -r candidate; do
+            if is_release_tag "$candidate"; then
+                printf '%s\n' "$candidate"
+            fi
+        done |
+        sed -e 's/^v\([0-9]*\)\.\([0-9]*\)\.\([0-9]*\)-alpha\.\([0-9]*\)$/\1 \2 \3 0 \4 &/' \
+            -e 's/^v\([0-9]*\)\.\([0-9]*\)\.\([0-9]*\)-beta\.\([0-9]*\)$/\1 \2 \3 1 \4 &/' |
+        sort -k1,1n -k2,2n -k3,3n -k4,4n -k5,5n
+}
+
+# The alpha channel's newest release; a newer beta is named but not chosen (#1047).
 newest_alpha_tag() {
     fetch "$api/releases?per_page=100" "$work/releases.json" ||
         fail "could not read the release list from $api/releases"
-    release_fields "$work/releases.json" | sed -n 's/^ *"tag_name": *"\([^"]*\)" *$/\1/p' |
-        while IFS= read -r candidate; do
-            if is_alpha_tag "$candidate"; then
-                printf '%s\n' "$candidate"
-                break
-            fi
-        done
+    ordered_release_tags "$work/releases.json" >"$work/ordered"
+    newest=$(awk '$4 == 0 { tag = $6 } END { print tag }' "$work/ordered")
+    newest_beta=$(awk '{ tag = $6; channel = $4 } END { if (channel == 1) print tag }' "$work/ordered")
+    if [ -n "$newest_beta" ]; then
+        warn "$newest_beta, a beta, is newer than the newest alpha; this installs alphas unless told otherwise: add --version $newest_beta to install it"
+    fi
+    printf '%s\n' "$newest"
 }
 
 # Unauthenticated, GitHub answers 404 for a draft or a tag without a release.
@@ -92,8 +108,9 @@ require_published() {
     fetch "$api/releases/tags/$1" "$work/release.json" ||
         fail "$1 is not a published Torlek release, or GitHub could not be reached (curl says why above; releases: https://github.com/$REPOSITORY/releases)"
     tag_pattern=$(printf '%s\n' "$1" | sed 's/\./\\./g')
-    if ! release_fields "$work/release.json" | grep -Eqx " *\"tag_name\": *\"$tag_pattern\" *" ||
-        ! release_fields "$work/release.json" | grep -Eqx ' *"draft": *false *'; then
+    fields=$(release_fields "$work/release.json")
+    if ! printf '%s\n' "$fields" | grep -Eqx " *\"tag_name\": *\"$tag_pattern\" *" ||
+        ! printf '%s\n' "$fields" | grep -Eqx ' *"draft": *false *'; then
         fail "$1 is not a published Torlek release: GitHub's answer does not describe it"
     fi
 }
@@ -155,6 +172,12 @@ verify_members() {
         fail "$archive holds links or special files, which a Torlek bundle never does; nothing was installed"
 }
 
+verify_archive() {
+    verify_checksum
+    verify_provenance
+    verify_members
+}
+
 unpack() {
     mkdir -p "$library"
     staging=$(mktemp -d "$library/.staging.XXXXXX")
@@ -163,8 +186,11 @@ unpack() {
         rm -rf "$staging"
         fail "$archive has no executable bin/torlek; nothing was installed"
     }
+    # Another run may have installed it meanwhile; mv would then nest the bundle inside it.
+    [ ! -e "$target" ] || fail "$target appeared while this ran; run this again"
     mv "$staging/$bundle" "$target"
     rmdir "$staging"
+    staging=
 }
 
 # The link may be replaced only when this script or the README made it.
@@ -262,7 +288,8 @@ main() {
     done
 
     work=$(mktemp -d)
-    trap 'rm -rf "$work"' EXIT
+    staging=
+    trap 'rm -rf "$work" ${staging:+"$staging"}' EXIT
     trap 'exit 1' HUP INT TERM
 
     if [ -z "$archive" ]; then
@@ -282,6 +309,11 @@ main() {
     wanted_link=$target/bin/torlek
     previous=$(linked_release)
 
+    # Given files are always checked, so that --check reports on them even when installed.
+    if [ -n "$archive" ]; then
+        say "release $tag from $archive and $sums, not looked up on GitHub"
+        verify_archive
+    fi
     if [ -d "$target" ]; then
         [ -x "$wanted_link" ] ||
             fail "$target exists but has no executable bin/torlek; move it away, then run this again"
@@ -308,12 +340,8 @@ main() {
         fetch "$downloads/$tag/SHA256SUMS" "$sums" || fail "could not download SHA256SUMS of $tag"
         fetch "$downloads/$tag/$bundle.tar.gz" "$archive" ||
             fail "could not download $bundle.tar.gz: does $tag have a linux-$arch archive?"
-    else
-        say "release $tag from $archive and $sums, not looked up on GitHub"
+        verify_archive
     fi
-    verify_checksum
-    verify_provenance
-    verify_members
 
     if [ "$mode" = check ]; then
         say "verified; installing would unpack Torlek $tag into $target and point $link at it"
@@ -323,7 +351,7 @@ main() {
     mkdir -p "$bin_dir"
     ln -sfn "$wanted_link" "$link"
     say "installed Torlek $tag at $target; $link points at it"
-    if [ -n "$previous" ]; then
+    if [ -n "$previous" ] && [ "$previous" != "$wanted_link" ]; then
         say "the previous release stays in $(dirname "$(dirname "$previous")"); remove it once $tag works"
     fi
     print_next_steps

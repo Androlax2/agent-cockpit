@@ -13,9 +13,11 @@ curl -fsSL https://github.com/Androlax2/agent-cockpit/releases/download/v<tag>/i
 1. Refuses, before any download: a tag outside the release grammar (`vX.Y.Z-alpha.N` or
    `vX.Y.Z-beta.N`), a system other than Linux, a machine other than x86_64 or aarch64, root,
    and a missing `curl`, `tar`, `sha256sum`, `awk` or `mktemp`. It never calls sudo.
-2. Picks the release: the newest published alpha from GitHub's release list, or the one
-   `--version vTAG` names, which must be a published release (GitHub answers 404 for a draft or
-   a tag without a release).
+2. Picks the release: the highest-versioned published alpha in GitHub's release list (by
+   version, not by creation date), or the one `--version vTAG` names, which must be a published
+   release (GitHub answers 404 for a draft or a tag without a release). A newer beta is named
+   with the `--version` to install it, never chosen: the issue asks for the alpha channel, and
+   the default moves once betas replace alphas.
 3. Downloads only that release's `torlek-vTAG-linux-ARCH.tar.gz` and `SHA256SUMS`.
 4. Checks the archive's SHA-256 against its one `SHA256SUMS` entry, then its build provenance
    with `gh attestation verify` when a logged-in `gh` is present, then that every member is a
@@ -31,7 +33,8 @@ release beside the old one, which it keeps. It refuses to replace a `~/.local/bi
 is not a link into `~/.local/lib/torlek/torlek-v*/`. It never touches the profile's config or
 state, never installs, starts or stops the daemon, and never removes a release.
 
-`--check` does steps 1 to 4 and reports what installing would change, changing nothing.
+`--check` does steps 1 to 4 and reports what installing would change, changing nothing. Files
+given with `--archive` and `--sums` are checked even when that release is already installed.
 
 ### Layout
 

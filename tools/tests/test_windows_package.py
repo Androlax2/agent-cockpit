@@ -456,6 +456,14 @@ class InstallInWslTest(unittest.TestCase):
         self.assertIn("already installed", result.stdout)
         self.assertEqual(marker.read_text(), "kept\n")
 
+    def test_check_verifies_the_downloaded_archive_even_when_installed(self):
+        self.assertEqual(self.run_step("install").returncode, 0)
+        with open(self.app / f"{BUNDLE}.archive", "ab") as archive:
+            archive.write(b"\0")
+        result = self.run_step("check")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("integrity check failed", result.stderr)
+
     def test_runs_without_the_network(self):
         self.assertNotIn("curl", os.listdir(self.fakes))
         self.fake("curl", "echo curl must not run >&2; exit 7")
