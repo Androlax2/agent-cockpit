@@ -26,7 +26,7 @@ marker is refused as `Replaced` instead of being acted on.
   128 clones, 500,000 directory entries and three seconds per clone (30 seconds per report),
   64 directory levels. A clone over its limit is incomplete and names how far the walk got.
   Symbolic links are never followed. Concurrent changes prevent an atomic snapshot; occupancy is the registration snapshot, not permission to prune. See the
-  [decision](../../docs/decisions/2026-11-03-406-clone-storage-report.md).
+  [decision](../../docs/decisions/2026-11-03-406-target-pruning.md).
 - **Target pruning.** A registered clone's `target/` is pruned only under the owner's policy
   and an immutable confirmed plan, never while the clone has a commit on no remote (the
   sweep's rule). `prune_verdict` tells the storage report what prune would decide now, from
