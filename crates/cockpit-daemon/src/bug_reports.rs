@@ -552,7 +552,7 @@ async fn readiness_section(context: &Context, origin: Origin) -> serde_json::Val
     }
     let requirements = tokio::time::timeout(
         READINESS_DEADLINE,
-        crate::readiness::requirements(None, context.readiness.clone()),
+        crate::readiness::requirements(None, false, context.readiness.clone()),
     )
     .await
     .unwrap_or_else(|_| {

@@ -133,6 +133,7 @@ impl Routes {
             sign_in_providers: capabilities.sign_in_providers,
             environment: environment.clone(),
             manager: Arc::clone(&capabilities.manager),
+            early_answer: readiness::Context::early_answer(),
         };
         Routes {
             storage: capabilities.storage,
@@ -591,9 +592,13 @@ impl Handler for Routes {
             (Command::ProviderList, Peer::Agent { .. }) => Route::Answer(owner_only()),
             // What the host has, the owner's settings and the owner's projects are the
             // owner's to see (report 11).
-            (Command::Readiness { project }, Peer::Owner) => {
-                readiness::route(project, self.readiness.clone())
-            }
+            (
+                Command::Readiness {
+                    project,
+                    is_one_sign_in_enough,
+                },
+                Peer::Owner,
+            ) => readiness::route(project, is_one_sign_in_enough, self.readiness.clone()),
             (Command::Readiness { .. }, Peer::Agent { .. }) => Route::Answer(owner_only()),
             // The desktop session is the owner's; an agent must not point others at another.
             (Command::DesktopSessionImport { variables }, Peer::Owner) => {

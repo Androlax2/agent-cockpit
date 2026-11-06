@@ -29,7 +29,7 @@ pub(crate) fn init(arguments: &[OsString]) -> Result<ExitCode, String> {
             argument.to_string_lossy()
         ));
     }
-    let steps = match gather() {
+    let steps = match gather(SignIns::Every) {
         Ok(facts) => steps(&facts),
         Err(code) => return Ok(code),
     };
@@ -38,16 +38,53 @@ pub(crate) fn init(arguments: &[OsString]) -> Result<ExitCode, String> {
 }
 
 /// `cockpit` alone: the checklist while a step is open, the usage once the setup is done.
+///
+/// The usage needs one provider signed in, not each provider's answer, and a status command
+/// can take most of a second (#1048). So the daemon is first asked to answer at the first
+/// signed-in provider; the checklist, which names every provider's sign-in, asks again for
+/// them all when that answer may have left one out.
 pub(crate) fn first_run() -> ExitCode {
-    let steps = match gather() {
-        Ok(facts) => steps(&facts),
+    let first_answer = match gather(SignIns::OneIsEnough) {
+        Ok(facts) => facts,
         Err(code) => return code,
     };
-    if is_complete(&steps) {
+    let first_steps = steps(&first_answer);
+    if is_complete(&first_steps) {
         return crate::usage_error(None);
     }
-    render(&steps);
+    if !may_lack_a_sign_in(&first_answer) {
+        render(&first_steps);
+        return ExitCode::SUCCESS;
+    }
+    match gather(SignIns::Every) {
+        Ok(facts) => render(&steps(&facts)),
+        Err(code) => return code,
+    }
     ExitCode::SUCCESS
+}
+
+/// Whether the daemon may have answered before a provider's sign-in did. It only does once a
+/// provider is signed in, and one it did not wait for reads `unknown`.
+fn may_lack_a_sign_in(facts: &Facts) -> bool {
+    let Ok(daemon) = &facts.daemon else {
+        return false;
+    };
+    let has_sign_in = |status: ReadinessStatusView| {
+        daemon.requirements.iter().any(|requirement| {
+            requirement.status == status
+                && requirement.name.starts_with("provider ")
+                && requirement.name.ends_with(" sign-in")
+        })
+    };
+    has_sign_in(ReadinessStatusView::Available) && has_sign_in(ReadinessStatusView::Unknown)
+}
+
+/// Which providers' sign-ins the readiness report waits for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SignIns {
+    Every,
+    /// Until one provider is signed in; all of them when none is.
+    OneIsEnough,
 }
 
 struct Facts {
@@ -69,7 +106,7 @@ struct DaemonProblem {
 }
 
 /// Exit 1 only when the client cannot run at all; every other failure is a step to show.
-fn gather() -> Result<Facts, ExitCode> {
+fn gather(sign_ins: SignIns) -> Result<Facts, ExitCode> {
     let config = cockpit_config::load(&crate::profile::environment(), None, &[])
         .map_err(|error| error.to_string());
     // The daemon refuses every one of init's reads on the agent socket, and a session never
@@ -85,7 +122,7 @@ fn gather() -> Result<Facts, ExitCode> {
         })
     } else {
         match crate::agent::locate_socket_dir() {
-            Ok(dir) => ask_daemon(&dir.join(cockpit_config::DAEMON_SOCKET))?,
+            Ok(dir) => ask_daemon(&dir.join(cockpit_config::DAEMON_SOCKET), sign_ins)?,
             Err(error) => Err(DaemonProblem {
                 detail: format!("cannot locate its socket: {error}"),
                 next: format!(
@@ -98,9 +135,15 @@ fn gather() -> Result<Facts, ExitCode> {
     Ok(Facts { config, daemon })
 }
 
-fn ask_daemon(socket: &Path) -> Result<Result<DaemonFacts, DaemonProblem>, ExitCode> {
+fn ask_daemon(
+    socket: &Path,
+    sign_ins: SignIns,
+) -> Result<Result<DaemonFacts, DaemonProblem>, ExitCode> {
     let commands = vec![
-        Command::Readiness { project: None },
+        Command::Readiness {
+            project: None,
+            is_one_sign_in_enough: sign_ins == SignIns::OneIsEnough,
+        },
         Command::ProjectList,
         Command::SessionList { ended: true },
     ];

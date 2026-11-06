@@ -32,6 +32,16 @@ pub(crate) struct Context {
     pub(crate) environment: cockpit_config::Environment,
     /// Copy out of the viewer and CMD+V's image paste into it (#848).
     pub(crate) manager: Arc<crate::manager::Manager>,
+    /// Held while status commands run on after the report that started them left (#1048).
+    /// They are then outside that report's bulk lane place, so only one report's may be: a
+    /// report that finds this taken waits for its own.
+    pub(crate) early_answer: Arc<tokio::sync::Semaphore>,
+}
+
+impl Context {
+    pub(crate) fn early_answer() -> Arc<tokio::sync::Semaphore> {
+        Arc::new(tokio::sync::Semaphore::new(1))
+    }
 }
 
 /// The facts a wired provider reports about itself.
@@ -55,7 +65,8 @@ pub(crate) fn provider_found(provider: &dyn cockpit_provider_api::Provider) -> P
                 .map(|(capability, _)| capability.as_str().to_owned())
                 .collect(),
             // Startup diagnostics do not probe authentication. Readiness refreshes it
-            // on its bulk worker for every request, so a login needs no daemon restart.
+            // on its bulk worker for every request, so a login needs no daemon restart. A
+            // provider keeps this fact in a report that left before its answer (#1048).
             sign_in: sign_in_fact(cockpit_provider_api::SignIn::unknown(
                 "sign-in has not been probed",
                 "run `torlek doctor`",
@@ -65,7 +76,11 @@ pub(crate) fn provider_found(provider: &dyn cockpit_provider_api::Provider) -> P
 }
 
 /// Sign-in and Docker are probed in the request, so the work runs in the bulk lane.
-pub(crate) fn route(project: Option<String>, context: Context) -> Route {
+pub(crate) fn route(
+    project: Option<String>,
+    is_one_sign_in_enough: bool,
+    context: Context,
+) -> Route {
     let project = match project.map(PathBuf::from) {
         Some(dir) if !dir.is_absolute() => {
             return Route::Answer(refusal(
@@ -91,7 +106,7 @@ pub(crate) fn route(project: Option<String>, context: Context) -> Route {
                 },
                 None => None,
             };
-            match requirements(project, context).await {
+            match requirements(project, is_one_sign_in_enough, context).await {
                 Ok(requirements) => Outcome::Ok(Reply::Readiness { requirements }),
                 Err(error) => {
                     tracing::error!(%error, "the readiness report failed");
@@ -106,11 +121,13 @@ pub(crate) fn route(project: Option<String>, context: Context) -> Route {
 }
 
 /// The readiness report as `torlek doctor` shows it; also the support bundle's section.
+/// `is_one_sign_in_enough` is the request's (#1048): `torlek` alone sets it.
 pub(crate) async fn requirements(
     project: Option<PathBuf>,
+    is_one_sign_in_enough: bool,
     context: Context,
 ) -> Result<Vec<RequirementView>, String> {
-    let report = report(project, context).await?;
+    let report = report(project, is_one_sign_in_enough, context).await?;
     Ok(report
         .requirements
         .into_iter()
@@ -118,7 +135,11 @@ pub(crate) async fn requirements(
         .collect())
 }
 
-async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, String> {
+async fn report(
+    project: Option<PathBuf>,
+    is_one_sign_in_enough: bool,
+    context: Context,
+) -> Result<Report, String> {
     let clipboard = {
         let context = context.clone();
         tokio::task::spawn_blocking(move || clipboard_requirements(&context))
@@ -126,22 +147,37 @@ async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, St
             .map_err(|error| error.to_string())?
     };
     let mut host = host_facts(&context);
-    let providers = context.sign_in_providers.clone();
-    host.providers = tokio::task::spawn_blocking(move || {
-        let mut facts = host.providers;
-        for provider in providers {
-            if let Some(found) = facts
-                .iter_mut()
-                .find(|fact| fact.name == provider.name().as_str())
-                .and_then(|fact| fact.found.as_mut().ok())
-            {
-                found.sign_in = sign_in_fact(provider.sign_in());
-            }
+    // Each provider's status command takes its own time (opencode's most of a second), so
+    // they are asked together and the report waits for the slowest, not for their sum (#1048).
+    let mut sign_ins = tokio::task::JoinSet::new();
+    for provider in context.sign_in_providers.clone() {
+        sign_ins.spawn_blocking(move || (provider.name().as_str().to_owned(), provider.sign_in()));
+    }
+    let mut early_answer = if is_one_sign_in_enough {
+        Arc::clone(&context.early_answer).try_acquire_owned().ok()
+    } else {
+        None
+    };
+    while let Some(answer) = sign_ins.join_next().await {
+        let (name, sign_in) = answer.map_err(|error| error.to_string())?;
+        let is_signed_in = matches!(sign_in.status, cockpit_provider_api::SignInStatus::SignedIn);
+        if let Some(found) = host
+            .providers
+            .iter_mut()
+            .find(|fact| fact.name == name)
+            .and_then(|fact| fact.found.as_mut().ok())
+        {
+            found.sign_in = sign_in_fact(sign_in);
         }
-        facts
-    })
-    .await
-    .map_err(|error| error.to_string())?;
+        if is_signed_in && let Some(early_answer) = early_answer.take() {
+            // Each status command still running ends within its own deadline.
+            tokio::spawn(async move {
+                while sign_ins.join_next().await.is_some() {}
+                drop(early_answer);
+            });
+            break;
+        }
+    }
     let (dir, checkout) = match &project {
         Some(dir) => {
             let (dir, checkout) = checkout_of(dir, &context.database).await?;

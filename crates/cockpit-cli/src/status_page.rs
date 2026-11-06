@@ -507,7 +507,10 @@ impl SessionRow {
 fn fetch_readiness(socket: &Path) -> Result<Readiness, String> {
     let replies = exchange(
         socket,
-        vec![Command::Readiness { project: None }],
+        vec![Command::Readiness {
+            project: None,
+            is_one_sign_in_enough: false,
+        }],
         READINESS_DEADLINE,
     )?;
     let Ok([Reply::Readiness { requirements }]) = <[Reply; 1]>::try_from(replies) else {

@@ -111,7 +111,13 @@ async fn readiness_names_why_a_providers_declaration_is_refused() {
         .unwrap();
 
     let reply = client
-        .request(Command::Readiness { project: None }, GENEROUS)
+        .request(
+            Command::Readiness {
+                project: None,
+                is_one_sign_in_enough: false,
+            },
+            GENEROUS,
+        )
         .await
         .unwrap();
 

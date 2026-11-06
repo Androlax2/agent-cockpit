@@ -72,7 +72,11 @@ impl Home {
         assert_eq!(
             conversation,
             vec![
-                Command::Readiness { project: None },
+                // `torlek` alone needs one signed-in provider, not each one's answer (#1048).
+                Command::Readiness {
+                    project: None,
+                    is_one_sign_in_enough: arguments.is_empty(),
+                },
                 Command::ProjectList,
                 Command::SessionList { ended: true },
             ]
@@ -678,6 +682,27 @@ async fn once_the_setup_is_done_cockpit_alone_prints_the_usage() {
     let usage = text(&output.stderr);
     assert!(usage.starts_with("usage: torlek "), "{usage}");
     assert!(usage.contains("\n       torlek init\n"), "{usage}");
+}
+
+/// #1048: the second request is for a sign-in the first answer may lack; with each provider's
+/// answer in it, the scripted daemon's one conversation is all `torlek` alone needs.
+#[tokio::test]
+async fn cockpit_alone_asks_once_when_every_sign_in_answered() {
+    let home = Home::new();
+    home.accept_sandbox();
+    let daemon = Daemon::ready().replace(available("provider claude sign-in", "signed in"));
+
+    let output = home.against(&daemon, &[]).await;
+
+    let checklist = text(&output.stdout);
+    assert!(
+        step(&checklist, "Sign in to the provider").starts_with("[done"),
+        "{checklist}"
+    );
+    assert!(
+        step(&checklist, "Add a project").starts_with("[todo"),
+        "{checklist}"
+    );
 }
 
 #[tokio::test]
