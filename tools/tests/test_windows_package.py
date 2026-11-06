@@ -533,5 +533,82 @@ class LauncherConsentTest(unittest.TestCase):
         self.assertIn("Nothing was installed.", source)
 
 
+@unittest.skipUnless(
+    os.name == "posix" and shutil.which("pwsh"),
+    "needs PowerShell 7 on a POSIX host: the fake wsl.exe is a shell script",
+)
+class LauncherPromptTest(unittest.TestCase):
+    """Runs torlek-wsl.ps1 under pwsh against a fake wsl.exe that logs what it is asked to run."""
+
+    FAKE_WSL = """#!/bin/sh
+case "$1" in --list) echo Ubuntu-24.04; exit 0;; esac
+echo "$@" >> "$FAKE_WSL_LOG"
+"""
+    INSTALL_CALL = re.compile(r"install-in-wsl\.sh install ")
+
+    def setUp(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        self.bin = directory / "bin"
+        self.bin.mkdir()
+        (self.bin / "wsl.exe").write_text(self.FAKE_WSL)
+        (self.bin / "wsl.exe").chmod(0o755)
+        self.script = directory / "torlek-wsl.ps1"
+        shutil.copy(WINDOWS / "torlek-wsl.ps1", self.script)
+        (directory / "torlek-v1.0.0-alpha.1-linux-x86_64.archive").touch()
+        self.log = directory / "wsl.log"
+
+    def install(self, stdin, *extra):
+        environment = dict(
+            os.environ,
+            PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+            FAKE_WSL_LOG=str(self.log),
+        )
+        environment.pop("TORLEK_WSL_DISTRIBUTION", None)
+        return subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(self.script),
+                "install",
+                "-Distribution",
+                "Ubuntu-24.04",
+                *extra,
+            ],
+            input=stdin,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+    def installed(self):
+        return bool(self.log.exists() and self.INSTALL_CALL.search(self.log.read_text()))
+
+    def test_anything_but_an_explicit_yes_installs_nothing(self):
+        for answer in ["", "\n", "n\n", "no\n", "maybe\n"]:
+            with self.subTest(answer=answer):
+                self.log.unlink(missing_ok=True)
+                result = self.install(answer)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("Nothing was installed.", result.stderr)
+                self.assertFalse(self.installed())
+
+    def test_yes_installs(self):
+        for answer in ["y\n", "yes\n"]:
+            with self.subTest(answer=answer):
+                self.log.unlink(missing_ok=True)
+                result = self.install(answer)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue(self.installed())
+
+    def test_the_yes_switch_skips_the_prompt(self):
+        result = self.install("", "-Yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.installed())
+
+
 if __name__ == "__main__":
     unittest.main()

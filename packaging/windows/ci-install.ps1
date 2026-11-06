@@ -36,6 +36,7 @@ $appDirectory = Join-Path $env:SCOOP 'apps/torlek/current'
 $pwshPath = (Get-Command pwsh -CommandType Application).Source
 $windowsPowerShellPath = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
 $linuxRoot = '.local/lib/torlek'
+$shellTimeoutSeconds = 180
 
 function Invoke-InShell {
     <# Runs one script file in a child shell and returns its exit code and combined output. #>
@@ -51,18 +52,32 @@ function Invoke-InShell {
         $saved[$name] = [Environment]::GetEnvironmentVariable($name)
         [Environment]::SetEnvironmentVariable($name, $Environment[$name])
     }
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
     try {
-        $shellArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) + $Arguments
-        if ($PSBoundParameters.ContainsKey('Stdin')) {
-            $output = $Stdin | & $Shell @shellArguments 2>&1 | Out-String
-        } else {
-            $output = & $Shell @shellArguments 2>&1 | Out-String
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new($Shell)
+        foreach ($argument in (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) + $Arguments)) {
+            $startInfo.ArgumentList.Add($argument)
         }
-        return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardInput = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        $outputTask = $process.StandardOutput.ReadToEndAsync()
+        $errorTask = $process.StandardError.ReadToEndAsync()
+        # Stdin is always closed, so nothing a launcher or wsl.exe runs can wait on a terminal.
+        if ($PSBoundParameters.ContainsKey('Stdin')) { $process.StandardInput.WriteLine($Stdin) }
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit($shellTimeoutSeconds * 1000)) {
+            $process.Kill($true)
+            $process.WaitForExit()
+            # A descendant that outlived the kill could still hold a pipe open: do not wait on it.
+            [void] [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]] @($outputTask, $errorTask), 5000)
+            $partialOutput = (@($outputTask, $errorTask) | ForEach-Object { if ($_.IsCompleted) { $_.Result } }) -join ''
+            throw "$Script hung for more than ${shellTimeoutSeconds}s. Output so far:`n$partialOutput"
+        }
+        $process.WaitForExit()
+        return [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $outputTask.Result + $errorTask.Result }
     } finally {
-        $ErrorActionPreference = $previousPreference
         foreach ($name in $saved.Keys) {
             [Environment]::SetEnvironmentVariable($name, $saved[$name])
         }
@@ -155,11 +170,15 @@ function Invoke-Launcher {
         [string[]] $Arguments = @(),
         [string] $Shell = $pwshPath,
         [string] $Stdin,
-        [hashtable] $Environment = @{ TORLEK_WSL_DISTRIBUTION = $null }
+        [hashtable] $Environment = @{ TORLEK_WSL_DISTRIBUTION = $null },
+        # Scoop's .ps1 shim turns piped input into pipeline input for the script, which the
+        # launcher does not accept; a person answers the prompt at the keyboard, so the
+        # scripted answer goes to the installed script itself.
+        [switch] $Direct
     )
     $parameters = @{
         Shell = $Shell
-        Script = (Join-Path $shims "$Name.ps1")
+        Script = (Join-Path ($Direct ? $appDirectory : $shims) "$Name.ps1")
         Arguments = $Arguments
         Environment = $Environment
     }
@@ -209,8 +228,10 @@ try {
     Assert-Result 'scoop install of the rendered manifest' $install succeeds
     Write-Host '::endgroup::'
 
-    $installedFiles = @(Get-ChildItem -LiteralPath $appDirectory -File | ForEach-Object Name | Where-Object { $_ -notin @('manifest.json', 'install.json') } | Sort-Object)
+    $installedFiles = @(Get-ChildItem -LiteralPath $appDirectory -File | ForEach-Object Name | Where-Object { $_ -notin @('scoop-manifest.json', 'scoop-install.json') } | Sort-Object)
     $expectedFiles = @('SHA256SUMS', 'install-in-wsl.sh', "$bundleName.archive", 'torlek-wsl.ps1', 'torlek.ps1') | Sort-Object
+    Write-Host "installed files: $($installedFiles -join ', ')"
+    Write-Host "expected files:  $($expectedFiles -join ', ')"
     Assert-True 'Scoop downloaded exactly the five bound files' (($installedFiles -join ',') -eq ($expectedFiles -join ','))
     Assert-True 'Scoop shimmed torlek and torlek-wsl' ((Test-Path (Join-Path $shims 'torlek.ps1')) -and (Test-Path (Join-Path $shims 'torlek-wsl.ps1')))
     Assert-True 'scoop install changed nothing in WSL' (-not (Test-InstalledInWsl))
@@ -234,7 +255,7 @@ try {
     # PATH with pwsh but without System32: the launcher must report the missing wsl.exe.
     Assert-Result 'torlek-wsl check without wsl.exe' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('check', '-Distribution', $Distribution) -Environment @{ PATH = (Split-Path -Parent $pwshPath); TORLEK_WSL_DISTRIBUTION = $null }) 'is refused' 'wsl\.exe was not found'
 
-    Assert-Result 'declining the consent prompt' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('install', '-Distribution', $Distribution) -Stdin 'n') 'is refused' 'Nothing was installed'
+    Assert-Result 'declining the consent prompt' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('install', '-Distribution', $Distribution) -Stdin 'n' -Direct) 'is refused' 'Nothing was installed'
     Assert-True 'declining installed nothing' (-not (Test-InstalledInWsl))
 
     $archivePath = Join-Path $appDirectory "$bundleName.archive"

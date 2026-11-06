@@ -84,7 +84,8 @@ All read on 2026-11-03; Scoop sources at
   so the WSL-side check refuses an aarch64 distribution with an actionable message.
 - `Compare-Version` orders `alpha` and `beta` before the release of the same core and compares
   numbers numerically ([versions.ps1](https://github.com/ScoopInstaller/Scoop/blob/e6aa3b366bdee8ed138c1e0f7b85192ebdd35d0f/lib/versions.ps1#L110-L185)),
-  so the manifest's `version` is the tag itself, `0.1.0-alpha.1`. Not run here: no PowerShell.
+  so the manifest's `version` is the tag itself, `0.1.0-alpha.1`. Not run: `install-scoop` installs a
+  dry run's `X.Y.Z-dev.N`, not an alpha tag.
 
 ### WSL commands the launchers use
 
@@ -225,13 +226,18 @@ this list grants none. For each published `vX.Y.Z-alpha.N` tag:
 
 ## Not yet verified
 
-- The `install-scoop` job is new: until its first green run is recorded on #565, nothing here has
-  run on Windows. The PowerShell files are written without a PowerShell to parse them locally.
-- Untested assumptions the job's first runs must confirm: `wsl.exe --exec` passes each argument
-  intact (Windows PowerShell 5.1 does not escape embedded double quotes or empty arguments for
-  native commands); `--cd` accepts Scoop's `current` junction; `@args` carries named parameters
-  through Scoop's `.ps1` shim; `wsl.exe --list --quiet` output under `WSL_UTF8=1`; a runner's
-  `python` can serve loopback.
+- `install-scoop` first went green on run 42282361877 (#1007, version `0.1.0-dev.316`): every
+  step of "Validation in CI" passed on a Windows runner, including the Windows PowerShell 5.1
+  and cmd.exe paths. The assumptions that run confirmed: `wsl.exe --exec` passes each argument
+  intact; `--cd` accepts Scoop's `current` junction; `@args` carries named parameters through
+  Scoop's `.ps1` shim; `wsl.exe --list --quiet` output under `WSL_UTF8=1`; a runner's `python`
+  serves loopback. One hosted run, not a soak: a flaky download (the PowerShell Gallery has
+  timed out once) can still fail it, and the job retries that download.
+- The run also found three things worth knowing: Scoop 0.6.0 writes `scoop-manifest.json` and
+  `scoop-install.json` next to the five bound files; Scoop's `.ps1` shim turns piped input into
+  pipeline input for the script, so a scripted answer to the consent prompt goes to the
+  installed script, not the shim; and `torlek-wsl install` once treated a missing answer as yes
+  (fixed, with a regression test).
 - `install-in-wsl.sh` also ran on an Arch host with faked `uname` and `id`, not in a WSL kernel
   (`install-scoop` runs it in one).
 - No release exists, so no real archive was rendered, downloaded or installed; the job uses a
