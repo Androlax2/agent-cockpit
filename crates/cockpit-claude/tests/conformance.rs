@@ -33,9 +33,20 @@ fn the_installed_claude_code_documents_every_flag_the_adapter_passes() {
     for flag in cockpit_claude::LAUNCH_FLAGS {
         assert!(help.contains(flag), "{flag} is not in --help");
     }
-    for level in cockpit_claude::EFFORT_LEVELS {
-        assert!(help.contains(level), "effort {level} is not in --help");
-    }
+}
+
+/// #743: Torlek reads the levels from `--help`; a rewording that hides them would silently
+/// turn the check into a pass-through.
+#[test]
+#[ignore = "needs an installed Claude Code (COCKPIT_CLAUDE_PROGRAM)"]
+fn the_installed_claude_code_lists_its_effort_levels_where_the_adapter_reads_them() {
+    let claude = ClaudeCode::discover(&common::installed(), None).unwrap();
+
+    let levels = claude.effort_levels();
+
+    assert!(!levels.is_empty(), "no effort levels in `claude --help`");
+    assert!(claude.check_choices(None, Some(&levels[0])).is_ok());
+    assert!(claude.check_choices(None, Some("no-such-level")).is_err());
 }
 
 /// A variable the binary no longer reads would silently stop protecting the launch; what

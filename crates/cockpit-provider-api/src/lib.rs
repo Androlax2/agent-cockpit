@@ -230,6 +230,22 @@ pub trait Provider: Send + Sync + 'static {
     /// ([`LaunchRequest::require`]).
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError>;
 
+    /// Refuses a model or effort the installed harness does not have, asking the harness
+    /// itself (its help, a list command or its server) instead of a list of Torlek's own, so
+    /// a level or model a harness update adds works without a Torlek release (#743). Said
+    /// with the harness's own words and version. A harness that lists nothing passes the
+    /// choice through for itself to refuse. Run after the shape checks of [`Provider::launch`],
+    /// before a session is recorded; may block for a few seconds, so callers run it off their
+    /// async workers. The default accepts.
+    fn check_choices(
+        &self,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), ProviderError> {
+        let _ = (model, effort);
+        Ok(())
+    }
+
     /// The terminal input that takes `action` while the agent is in `activity` (`None`:
     /// unknown). Refuses an action whose capability it does not report, and one the
     /// activity makes unsafe, such as typing into an open dialog.

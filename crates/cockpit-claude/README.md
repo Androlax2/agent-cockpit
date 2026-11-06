@@ -21,7 +21,9 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 - **Launch.** A new conversation runs under a `--session-id` UUID the adapter mints, so it
   is named from the start; a resumed one runs `--resume <id>`. `--remote-control` comes
   first (its optional name would take the next plain word), the first message last after
-  `--`. `--effort` takes one of `EFFORT_LEVELS`; `--model` takes Claude Code's own alias or
+  `--`. `--effort` takes one of the levels the installed `claude --help` lists, read once per build
+  by `Provider::check_choices` before a start and passed through when the help lists none (#743);
+  `--model` takes Claude Code's own alias or
   model id, checked only for its shape, since Claude Code refuses a model the account cannot
   use (#701). Every launch passes `--settings` with the hook bridge; the hooks therefore run only
   in this conversation, never in a nested `claude` a tool starts. Every launch also sets

@@ -80,13 +80,21 @@ pub const ASKED_COMMAND: &str = "echo asked from the agent";
 /// The guide the [`ASK_GUIDE_PROJECT`] agent hands the owner, one step.
 pub const ASKED_GUIDE: &str = "# Asked from the agent\nLook at the panel\n";
 
+/// An effort level the fake `claude` lists in its `--help` that no Torlek release has had.
+pub const NEW_EFFORT_LEVEL: &str = "ludicrous";
+
 /// The agent acts as the last component of its working directory says ([`FLOOD_PROJECT`],
 /// [`STALL_PROJECT`], [`REPORT_PROJECT`], [`ENVIRONMENT_PROJECT`], [`ASK_RUN_PROJECT`],
 /// [`ASK_GUIDE_PROJECT`], [`COMMANDED_PROJECT`], [`QUESTION_PROJECT`], [`ONBOARD_PROJECT`]);
 /// anything else sleeps. `--version` answers
-/// the version the adapter's conformance tests ran on.
+/// the version the adapter's conformance tests ran on, and `--help` lists `--effort` levels
+/// with one ([`NEW_EFFORT_LEVEL`]) no Torlek release has known (#743).
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
+if [ "$1" = --help ]; then
+  printf '  --effort <level>   Effort level for the current session\n                     (low, medium, high, @NEW_EFFORT@)\n  --env  x\n'
+  exit 0
+fi
 if [ "$*" = 'auth status' ]; then exit 2; fi
 printf '%s pid=%s\n' "$TORLEK_SESSION" "$$" >> '@LOG@'
 printf '%s %s\n' "$TORLEK_SESSION" "$*" >> '@LOG@.arguments'
@@ -176,6 +184,7 @@ impl Home {
                 .replace("@LOG@", &utf8(&home.launch_log()))
                 .replace("@TEMP_LOG@", &utf8(&home.temp_log()))
                 .replace("@GITHUB_LOG@", &utf8(&home.github_log()))
+                .replace("@NEW_EFFORT@", NEW_EFFORT_LEVEL)
                 .replace("@FLOOD@", FLOOD_PROJECT)
                 .replace("@STALL@", STALL_PROJECT)
                 .replace("@REPORT@", REPORT_PROJECT)

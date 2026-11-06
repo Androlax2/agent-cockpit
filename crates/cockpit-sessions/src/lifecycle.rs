@@ -426,8 +426,9 @@ impl Sessions {
 
     /// Refuses a model or effort `provider` would not launch, before a session is recorded or
     /// the owner is asked to start one (#701): the provider reports the capability and knows
-    /// the value. [`Provider::launch`] only builds words, so a trial build is the provider's
-    /// own check; the paths it is given are never used.
+    /// the value. [`Provider::launch`] only builds words, so a trial build checks the
+    /// capability and the value's shape (the paths it is given are never used), then
+    /// [`Provider::check_choices`] asks the harness which values it has (#743).
     pub async fn check_launch_choices(
         &self,
         provider: Option<&str>,
@@ -458,6 +459,7 @@ impl Sessions {
                 model: model.as_deref(),
                 remote_control: false,
             })?;
+            provider.check_choices(model.as_deref(), effort.as_deref())?;
             Ok(())
         })
         .await

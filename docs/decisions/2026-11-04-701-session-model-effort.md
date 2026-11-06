@@ -1,5 +1,7 @@
 # A session's model and effort are chosen at its start, in the provider's own words
 
+Status: partly superseded by `2026-11-06-743-harness-choices-are-discovered.md`: the Claude adapter no longer checks effort against its own list; the rest holds.
+
 Issue #701. Decided by the worker, as the smallest choice consistent with the existing
 `LaunchRequest::effort` contract; none of it touches security, so the owner was not asked.
 
