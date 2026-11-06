@@ -4,7 +4,8 @@ Issue [#618](https://github.com/Androlax2/agent-cockpit/issues/618).
 **Research and proposal, 2026-11-06. Theo chose the recommended option on all five
 [questions](#questions-for-theo) the same day.** Merging this document accepts research delivery
 only. It rewrites, moves and deletes nothing; each slice in [Plan](#plan) is still its own PR and
-waits for Theo's go-ahead. Decision records are covered only as far as this plan
+waits for Theo's go-ahead. The answers are Theo's replies to the #618 worker (Torlek session,
+2026-11-06); the pull request description quotes them. Decision records are covered only as far as this plan
 needs; [#548](https://github.com/Androlax2/agent-cockpit/issues/548) owns them.
 
 ## Answer
@@ -114,8 +115,8 @@ Derived from the evidence above and from the repetition measured here. Ten, not 
 4. **Reference only describes.** No story, advice or history in a reference page; generate it when
    the binary can.
 5. **State what is true now.** No issue numbers, milestones, "no longer" or "since" in user pages.
-   Status goes in KNOWN-GAPS and release notes. Issue numbers belong in contributor pages and
-   records, where they locate the rationale.
+   Status goes in KNOWN-GAPS and release notes. Issue numbers belong in contributor pages,
+   records and KNOWN-GAPS, where they locate the rationale or the tracking issue.
 6. **A caveat appears once, at the step that needs it.** Security and data-loss caveats keep their
    full wording (unsandboxed agents act with your rights; an approval runs once). Delete the
    repeats, not the warning.
@@ -145,17 +146,18 @@ Before (77 words, intro):
 > This is an early test version (Alpha 1) for Linux and for Windows through WSL2. It may lose its
 > own data between versions, so keep your work in Git.
 
-After (about 75 words, and true):
+After (74 words):
 
 > Torlek runs your coding agents (Claude Code, Codex, OpenCode) side by side, each in its own
-> terminal session, and asks you before an agent runs anything outside its project. One screen
-> shows every agent, its questions and a todo list per project.
+> terminal session, and lets an agent ask you to run commands on your machine. One screen shows
+> every agent, its questions and a todo list per project.
 >
 > **Alpha 1, Linux and Windows through WSL2.** Torlek may lose its data between versions: keep your
 > work in Git. There is no sandbox yet, so agents run with your rights (see Known gaps).
 
-Fixes the sandbox contradiction; wording follows USER-GUIDE and must be rechecked when the sandbox
-ships. The proposed README keeps four parts: this opening, **Install** (the existing command block
+The length is the same (74 words against 77): the change is accuracy. The wording follows
+USER-GUIDE. Slice 2 adds the no-sandbox line to KNOWN-GAPS, which the link needs; whoever ships
+the sandbox ([#546](https://github.com/Androlax2/agent-cockpit/issues/546)) rewrites both. The proposed README keeps four parts: this opening, **Install** (the existing command block
 and the sandbox consent sentence, unchanged), **First session** (`torlek daemon install`,
 `torlek init`, link to QUICKSTART) and **More** (guide, contributing, security, legacy guide). Whether
 the 200-word agent-install prompt stays in the README is [question 3](#questions-for-theo).
@@ -166,7 +168,7 @@ Before (224 words): the sandbox opt-out, the `required` mode's refusal, a cleanu
 Greywall/Greyproxy services, the `shared` desktop default, `config reload`, and the TUI bell setting
 in one list item.
 
-After (about 85 words):
+After (about 95 words):
 
 > 2. Accept running agents without a sandbox. Add this to the owner configuration file
 >    (`torlek config show` prints its path):
@@ -179,10 +181,12 @@ After (about 85 words):
 >
 >    `sandbox = "off"` records that you accept this: an unsandboxed agent has your rights and can act
 >    as you, so Torlek's grants do not bind it. `desktop_session = "withheld"` keeps agents off your
->    screen and desktop session; the default, `shared`, exposes your display.
+>    screen and desktop session; the default, `shared`, exposes your display. If the daemon is
+>    already running, run `torlek config reload`.
 
 Moved, not lost: `sandbox = "required"` behaviour and the bell setting to the guide's Configuration
-section; Greywall cleanup to Updates. Lost: nothing a first-session reader needs.
+section; Greywall cleanup to Updates. `config reload` stays, because a running daemon keeps the old
+settings until it runs. Lost: nothing a first-session reader needs.
 
 ### Crate README: dependency edges
 
@@ -248,19 +252,21 @@ Two tests, run once before Alpha 2 and again when a slice changes the path they 
    `docs/design/`, `docs/decisions/` or `docs/research/`.
 
 Ongoing checks stay light: `typos` and `lychee` already run on all Markdown in CI. Add one test in
-`cockpit-workspace-rules`, beside `decision_records.rs`, that fails when a Markdown file outside
-`apps/` is missing from `docs/README.md` (slice 1). That keeps the map true without a reviewer.
+`cockpit-workspace-rules`, beside `decision_records.rs`, that fails when a root Markdown file, a
+file directly in `docs/`, or a directory under `docs/` is not named in `docs/README.md` (slice 1).
+Records directories are listed once each, not per file, so the map stays about 100 lines. That
+keeps the map true without a reviewer.
 
 ## Plan
 
 Owners are the worker of the issue named. Each slice is its own PR.
 
-| # | Slice | Size | Needs |
+| # | Slice | Size | Answers and gates |
 | --- | --- | --- | --- |
-| 1 | `docs/README.md` (the map and writing rules, about 80 lines), a row in `AGENTS.md`, a line in CONTRIBUTING, the map test | 1 to 2 hours | Questions 4 and 5 |
-| 2 | First-run authority: QUICKSTART fixed and staged; guide's first session trimmed to settings; README sandbox sentence fixed | half a day | Question 2; #98 owner |
-| 3 | Site feed (`content.mjs`): QUICKSTART, Updates and Phone status published; decision records out of navigation | 2 to 3 hours | Question 1; #102 owner |
-| 4 | Crate READMEs: drop dependency lists and issue numbers, one crate per PR as touched | 10 minutes each | none |
+| 1 | `docs/README.md` (the map and writing rules, about 100 lines), a row in `AGENTS.md`, a line in CONTRIBUTING, the map test | 1 to 2 hours | Q4 A, Q5 A; Theo's go-ahead |
+| 2 | First-run authority: QUICKSTART fixed and staged; guide's first session trimmed to settings; README sandbox sentence fixed | half a day | Q2 A; #98 owner; adds the no-sandbox line to KNOWN-GAPS |
+| 3 | Site feed (`content.mjs`): QUICKSTART, Updates and Phone status published; decision records out of navigation | 2 to 3 hours | Q1 B; #102 owner |
+| 4 | Crate READMEs: drop dependency lists and issue numbers, one crate per PR as touched | 10 minutes each | Theo's go-ahead |
 | 5 | Cutover: rewrite ARCHITECTURE, retire `docs/legacy` and the `apps/` documents, trim DEVELOPMENT | half a day | #66, #126 |
 | 6 | Records: apply #548; move or index `docs/superpowers/` | after #548 | #548's answer |
 
@@ -288,7 +294,10 @@ Answered 2026-11-06: **1B, 2A, 3A, 4A, 5A** (all recommended). Each answer shape
 
 ## Sources
 
-All accessed 2026-11-06. Word counts are mine.
+All accessed 2026-11-06. Method: `curl -fsSL RAW_URL | wc -w` for each file named, so counts include
+markup; the 26-word ripgrep guide is that file in full; "no mention of decision records" is
+`grep -i -E 'adr|decision'` over the five contributor guides, which matched only uv's
+`needs-decision` label.
 
 - READMEs and contributor guides, raw files on each default branch: tmux/tmux (`README`),
   helix-editor/helix, syncthing/syncthing, cli/cli (plus `.github/CONTRIBUTING.md`),
