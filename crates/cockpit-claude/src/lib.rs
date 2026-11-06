@@ -5,6 +5,7 @@ mod sign_in;
 pub mod hooks;
 pub mod needs;
 mod screen;
+pub mod transcript;
 pub mod trust;
 
 use std::ffi::{OsStr, OsString};

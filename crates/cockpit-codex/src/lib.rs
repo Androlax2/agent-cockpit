@@ -8,6 +8,7 @@ pub mod delivery;
 pub mod hooks;
 pub mod needs;
 pub mod reports;
+pub mod rollout;
 pub mod turns;
 
 use std::ffi::{OsStr, OsString};

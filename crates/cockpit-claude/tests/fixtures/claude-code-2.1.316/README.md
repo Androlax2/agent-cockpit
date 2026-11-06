@@ -22,3 +22,11 @@ server-side 429 (`transient`). Both carry `error: "rate_limit"`.
 `tests/live_hooks.rs` re-runs the bridge against the installed Claude Code (ignored by
 default). `cockpit-claude`'s `CONFORMANCE_VERSION` names this directory; a new pinned
 version gets a new directory and the tests move to it.
+
+`pre-compact.json` and `post-compact.json` (#782) are the exception too: written from the
+documented `PreCompact` (`trigger`, `custom_instructions`) and `PostCompact` (`trigger`,
+`compact_summary`) inputs (code.claude.com/docs/en/hooks, read 2026-11-07), not captured,
+because a compaction needs a model reply. `transcript-compaction.jsonl` is a made-up
+transcript tail with the fields the adapter reads: an assistant record's `message.usage`,
+a sidechain record that must be skipped, and a `compact_boundary` record's `compactMetadata`
+(field names from report 686's measurement appendix).

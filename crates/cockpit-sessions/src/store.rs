@@ -246,6 +246,26 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 instruction_manifest TEXT NOT NULL CHECK (instruction_manifest <> '')
             );",
         },
+        // #782: each context compaction a harness announced. Seconds come from the daemon's
+        // own clock between the start and the end; a compaction whose start was not seen has
+        // no start time.
+        Migration {
+            version: 14,
+            sql: "CREATE TABLE session_compactions (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                launch_id INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+                trigger TEXT CHECK (trigger IN ('auto', 'manual')),
+                tokens_before INTEGER CHECK (tokens_before >= 0),
+                tokens_after INTEGER CHECK (tokens_after >= 0),
+                started_at INTEGER,
+                ended_at INTEGER,
+                reported_at INTEGER NOT NULL
+            );
+            CREATE INDEX session_compactions_by_session
+                ON session_compactions (session_id, launch_id, id);",
+        },
     ],
 };
 

@@ -34,6 +34,7 @@ fn reported_doing(app: &mut App, session: &str, doing: &str, now: Instant) {
         Command::AgentReports,
         Reply::AgentReports {
             reports: vec![SessionReport {
+                compaction: None,
                 session: session.to_owned(),
                 state: None,
                 label: None,

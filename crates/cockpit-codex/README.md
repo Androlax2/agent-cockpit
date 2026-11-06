@@ -39,11 +39,14 @@ provider and nothing above the contract sees a Codex type (#48).
   a nested `codex` a tool starts, and the owner's persisted trust and the project's untrusted
   hooks stay as they are; `--dangerously-bypass-hook-trust` is never passed.
 - **Hook bridge.** `torlek-codex-hook <torlek>` runs on `SessionStart`, `UserPromptSubmit`,
-  `PostToolUse`, `PermissionRequest`, `Stop` and `Interrupt`, normalizes the payload
+  `PostToolUse`, `PermissionRequest`, `Stop`, `Interrupt`, `PreCompact` and `PostCompact`,
+  normalizes the payload
   (`hooks::normalize`) and reports through `torlek agent report`, naming the thread it comes
   from (`--conversation`, the payload's `session_id`). A permission request reports a plain
   `--dialog` question, never the tool input; `Stop` reports `waiting --outcome completed`,
-  `Interrupt` reports `waiting`. It prints nothing on standard output, so it never answers a
+  `Interrupt` reports `waiting`. A compaction reports `--compaction started|ended` with its
+  trigger and, best effort, the sizes read from the thread's rollout (`rollout`): the first
+  `token_count` after the latest `compacted` record is the size after it (#782). It prints nothing on standard output, so it never answers a
   permission request, and never exits 2. A subagent's (`agent_id`) activity and a
   `SessionStart` after a compaction report nothing; a subagent's permission request still
   reports `--dialog`. `torlek-codex-hook --version` and `torlek-codex-session --version`

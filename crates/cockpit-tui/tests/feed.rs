@@ -188,6 +188,7 @@ fn a_card_in_a_39_column_list_shows_that_it_needs_you_its_label_and_its_doing() 
         Command::AgentReports,
         Reply::AgentReports {
             reports: vec![SessionReport {
+                compaction: None,
                 session: "s00000000000d".to_owned(),
                 state: Some(AgentState::Waiting),
                 label: Some("acceptance label".to_owned()),

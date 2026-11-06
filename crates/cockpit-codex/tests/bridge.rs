@@ -240,3 +240,39 @@ fn without_its_cockpit_argument_it_exits_1_with_its_usage() {
         "{output:?}"
     );
 }
+
+/// #782: a compaction's two hooks reach the agent channel as compaction reports, and the
+/// post-compaction `SessionStart` reports no state (it still returns the brief).
+#[test]
+fn a_compaction_is_reported_through_the_cockpit_program_and_its_session_start_reports_no_state() {
+    let cockpit = FakeCockpit::exiting_with(0);
+
+    let output = run_hook(
+        &cockpit.program(),
+        &common::fixture("pre-compact"),
+        Some("token-1"),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let arguments = cockpit.arguments().unwrap();
+    assert_eq!(
+        arguments[..4],
+        ["agent", "report", "--compaction", "started"]
+    );
+
+    let cockpit = FakeCockpit::exiting_with(0);
+    let output = run_hook(
+        &cockpit.program(),
+        &common::fixture("session-start-compact"),
+        Some("token-1"),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        cockpit.arguments(),
+        None,
+        "a compaction's restart is no wait"
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains(BRIEF));
+}

@@ -37,6 +37,7 @@ async fn agent_reports(report: SessionReport) -> Output {
 
 fn dialog_over(covered_question: &str) -> SessionReport {
     SessionReport {
+        compaction: None,
         session: "s1".to_owned(),
         state: Some(AgentState::Waiting),
         label: None,

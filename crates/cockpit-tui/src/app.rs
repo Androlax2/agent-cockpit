@@ -372,7 +372,7 @@ impl App {
                     self.form = None;
                     Step::used("new-session-cancel")
                 }
-                FormOutcome::Submit(command) => Step::sending("new-session", command),
+                FormOutcome::Submit(command) => Step::sending("new-session", *command),
             };
         }
         if let Some(form) = &mut self.bug_form {
@@ -382,7 +382,7 @@ impl App {
                     self.bug_form = None;
                     Step::used("bug-report-cancel")
                 }
-                FormOutcome::Submit(command) => Step::sending("bug-report-new", command),
+                FormOutcome::Submit(command) => Step::sending("bug-report-new", *command),
             };
         }
         if let Some(tasks) = &mut self.tasks

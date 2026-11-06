@@ -39,7 +39,8 @@ provider and nothing above the contract sees an OpenCode type (#47).
   the owner set is kept, the plugin joining its list; one it cannot join refuses the launch), and tells it the bridge, the
   `torlek` program and its server's port. The plugin forwards `session.created`,
   `session.status` (`busy`, `idle`), `permission.asked`, `question.asked`, a tool part that
-  completed or failed, and an assistant message that ended its turn, in order, to
+  completed or failed, an assistant message that ended its turn and
+  `session.compaction.started`, `ended` and `failed`, in order, to
   `torlek-opencode-bridge <torlek>`, which normalizes the event (`events::normalize`) and
   reports through `torlek agent report --conversation <session>`. Subagents' child sessions
   are dropped, except the permission and question dialogs they open, which wait in the same
@@ -49,6 +50,9 @@ provider and nothing above the contract sees an OpenCode type (#47).
   `quota-stopped`, and a turn the owner interrupted (`MessageAbortedError`) has no outcome.
   The bridge gives up on a report after 5 seconds, so a stalled one never holds back the
   next event. Questions and reasons are cut to what the agent channel accepts.
+  A compaction reports `--compaction` with the `reason` OpenCode names as its trigger and the sizes its
+  `ended` event carries (tokens before: input plus cache; after: output). OpenCode 2.2.5
+  puts these events' payload under `data`, not `properties`; both are read (#782).
 - **Terminal actions.** A message is typed then entered while it waits or works (OpenCode
   queues it behind the turn), refused while a dialog is open or the activity is unknown,
   and refused when typing it would open a menu (`/`, `!` first, any `@`) or quit

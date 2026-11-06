@@ -4,7 +4,9 @@
 mod common;
 
 use cockpit_codex::hooks::{self, HOOK_EVENTS};
-use cockpit_provider_api::{ConversationId, EventKind, TurnOutcome};
+use cockpit_provider_api::{
+    CompactionMoment, CompactionPhase, CompactionTrigger, ConversationId, EventKind, TurnOutcome,
+};
 
 const THREAD: &str = "01a19800-e8f3-70e3-b788-d9601b03debb";
 
@@ -62,7 +64,7 @@ fn every_pinned_payload_matches_its_pinned_input_schema() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 10);
+    assert_eq!(checked, 13);
 }
 
 #[test]
@@ -233,14 +235,117 @@ fn a_subagents_permission_request_still_needs_you() {
     );
 }
 
+/// A compaction can run in the middle of a turn: its `SessionStart` proves no wait. It is a
+/// known event of the compaction, not an unknown one (#782).
 #[test]
-fn a_session_start_after_a_compaction_reports_nothing() {
-    let payload = common::fixture("session-start").replace("\"startup\"", "\"compact\"");
+fn a_session_start_after_a_compaction_is_a_known_event_that_reports_nothing() {
+    let event = hooks::normalize(&common::fixture("session-start-compact")).unwrap();
 
-    let event = hooks::normalize(&payload).unwrap();
-
-    assert_eq!(event.kind, EventKind::Unknown);
+    assert_eq!(event.kind, EventKind::ContextCompacted);
+    assert_eq!(event.observation(), None);
     assert_eq!(hooks::bridge_arguments(&event), None);
+    assert!(hooks::starts_context(&event), "the brief must still return");
+}
+
+#[test]
+fn a_pre_compact_and_a_post_compact_are_the_two_moments_of_a_compaction() {
+    assert_eq!(
+        kind("pre-compact"),
+        EventKind::Compaction(CompactionMoment {
+            phase: CompactionPhase::Started,
+            trigger: Some(CompactionTrigger::Auto),
+            tokens_before: None,
+            tokens_after: None,
+        })
+    );
+    assert_eq!(
+        kind("post-compact"),
+        EventKind::Compaction(CompactionMoment {
+            phase: CompactionPhase::Ended,
+            trigger: Some(CompactionTrigger::Manual),
+            tokens_before: None,
+            tokens_after: None,
+        })
+    );
+}
+
+#[test]
+fn a_compaction_reports_itself_and_no_state() {
+    assert_eq!(
+        report("pre-compact"),
+        reported(&[
+            "agent",
+            "report",
+            "--compaction",
+            "started",
+            "--compaction-trigger",
+            "auto",
+            "--conversation",
+            THREAD
+        ])
+    );
+}
+
+/// The rollout holds the sizes: at `PreCompact` its last `token_count`, at `PostCompact` the
+/// first one after the `compacted` record.
+#[test]
+fn a_compaction_reports_the_context_sizes_the_rollout_holds() {
+    let directory = tempfile::tempdir().unwrap();
+    let rollout = directory.path().join("rollout.jsonl");
+    let records =
+        std::fs::read_to_string(common::fixtures_dir().join("rollout-compaction.jsonl")).unwrap();
+    let measured = |fixture: &str, records: &str| {
+        std::fs::write(&rollout, records).unwrap();
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&common::fixture(fixture)).unwrap();
+        payload["transcript_path"] = rollout.to_str().unwrap().into();
+        hooks::measured_arguments(&hooks::normalize(&payload.to_string()).unwrap()).unwrap()
+    };
+    let until_compaction: String = records
+        .lines()
+        .take(3)
+        .map(|line| format!("{line}\n"))
+        .collect();
+
+    let before = measured("pre-compact", &until_compaction);
+    let after = measured("post-compact", &records);
+    let after_without_a_model_call_yet = measured(
+        "post-compact",
+        &records
+            .lines()
+            .take(4)
+            .map(|line| format!("{line}\n"))
+            .collect::<String>(),
+    );
+
+    assert!(
+        before
+            .windows(2)
+            .any(|pair| pair == ["--compaction-tokens-before", "243752"]),
+        "{before:?}"
+    );
+    assert!(
+        after
+            .windows(2)
+            .any(|pair| pair == ["--compaction-tokens-after", "30525"]),
+        "{after:?}"
+    );
+    assert!(
+        !after_without_a_model_call_yet
+            .iter()
+            .any(|argument| argument == "--compaction-tokens-after"),
+        "{after_without_a_model_call_yet:?}"
+    );
+}
+
+#[test]
+fn a_compaction_whose_rollout_cannot_be_read_reports_without_sizes() {
+    let event = hooks::normalize(&common::fixture("pre-compact")).unwrap();
+
+    assert_eq!(
+        hooks::measured_arguments(&event),
+        hooks::bridge_arguments(&event)
+    );
 }
 
 #[test]
@@ -256,12 +361,12 @@ fn a_session_end_reports_nothing() {
 
 #[test]
 fn an_unknown_event_is_kept_raw() {
-    let payload = r#"{"hook_event_name":"PreCompact","session_id":"t"}"#;
+    let payload = r#"{"hook_event_name":"PreToolUse","session_id":"t"}"#;
 
     let event = hooks::normalize(payload).unwrap();
 
     assert_eq!(event.kind, EventKind::Unknown);
-    assert_eq!(event.name, "PreCompact");
+    assert_eq!(event.name, "PreToolUse");
     assert_eq!(event.raw, payload);
 }
 

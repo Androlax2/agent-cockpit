@@ -3,12 +3,12 @@
 
 use cockpit_agent_channel::{PeerAncestry, Refusal};
 use cockpit_authorization::{Actor, Outcome, Permission, Scope, SessionId};
-use cockpit_provider_api::{ConversationId, TurnOutcome};
+use cockpit_provider_api::{CompactionMoment, ConversationId, TurnOutcome};
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 
 use crate::store::now;
-use crate::{Error, conversations};
+use crate::{Error, compactions, conversations};
 
 const LABEL_MAX_CHARS: usize = 60;
 const DOING_MAX_CHARS: usize = 80;
@@ -94,6 +94,9 @@ pub struct Report {
     /// `conversation` ends and the agent goes on in another (`/clear`, `/resume`): the session
     /// follows the next conversation reported. Comes alone with `conversation`.
     pub is_conversation_ending: bool,
+    /// A moment of a context compaction (#782). It reports nothing about what the agent does,
+    /// so it comes alone with `conversation`, and the latest report stays as it is.
+    pub compaction: Option<CompactionMoment>,
 }
 
 /// A session's report as the channel last recorded it.
@@ -163,6 +166,16 @@ pub async fn report(
         }
         None => false,
     };
+    if let Some(compaction) = &report.compaction {
+        let launch = launch.ok_or_else(|| {
+            refused(invalid(
+                "compaction",
+                "the session has no launch to record it for".to_owned(),
+            ))
+        })?;
+        compactions::record(write, &session, launch, compaction).await?;
+        return Ok(previous.unwrap_or_else(|| unreported(&session)));
+    }
     // An announced end reports nothing about the agent: the latest report stays as it is.
     if report.is_conversation_ending {
         return Ok(previous.unwrap_or_else(|| unreported(&session)));
@@ -434,8 +447,22 @@ fn validate(report: Report) -> Result<(Report, Option<ConversationId>), Refusal>
     let reported = Report {
         conversation: None,
         is_conversation_ending: false,
+        compaction: None,
         ..report.clone()
     };
+    if report.compaction.is_some() {
+        if report.is_conversation_ending || reported != Report::default() {
+            return Err(invalid(
+                "compaction",
+                "comes with fields to report; a compaction reports nothing else".to_owned(),
+            ));
+        }
+        let compaction = Report {
+            compaction: report.compaction,
+            ..Report::default()
+        };
+        return Ok((compaction, conversation));
+    }
     if report.is_conversation_ending {
         if conversation.is_none() {
             return Err(invalid(
@@ -547,6 +574,7 @@ fn validate(report: Report) -> Result<(Report, Option<ConversationId>), Refusal>
             outcome,
             conversation: None,
             is_conversation_ending: false,
+            compaction: None,
         },
         conversation,
     ))

@@ -62,7 +62,7 @@ impl Tasks {
                     handled("task-form-cancel", vec![])
                 }
                 FormOutcome::Editing => handled("task-form-edit", vec![]),
-                FormOutcome::Submit(command) => handled("task-save", vec![command]),
+                FormOutcome::Submit(command) => handled("task-save", vec![*command]),
             };
         }
         if self.explaining.is_some() {

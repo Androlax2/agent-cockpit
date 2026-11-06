@@ -18,6 +18,7 @@ const WORKER: &str = "s00000000000a";
 
 fn report(session: &str) -> SessionReport {
     SessionReport {
+        compaction: None,
         session: session.to_owned(),
         state: Some(AgentState::Working),
         label: None,

@@ -59,6 +59,7 @@ fn observed(id: &str, doing: &str) -> ObservedSessionView {
         state: SessionStateView::Running,
         working_dir: format!("/work/{id}"),
         report: Some(SessionReport {
+            compaction: None,
             session: id.to_owned(),
             state: Some(AgentState::Working),
             label: None,

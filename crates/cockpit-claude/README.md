@@ -32,12 +32,17 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS=10000`, so a `SessionEnd` hook has the report's
   deadline instead of being killed after 1.5 s (#219).
 - **Hook bridge.** `torlek-claude-hook <torlek>` runs on `SessionStart`,
-  `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop`, `StopFailure` and `SessionEnd`,
-  normalizes the payload (`hooks::normalize`) and reports through `torlek agent report`.
+  `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop`, `StopFailure`, `SessionEnd`,
+  `PreCompact` and `PostCompact`, normalizes the payload (`hooks::normalize`) and reports through `torlek agent report`.
   Every report names the conversation it comes from (`--conversation`, the payload's
   `session_id`); a `SessionEnd` of `/clear` or an in-session `/resume` reports
   `--conversation-ends` for the conversation that ends, so the daemon follows the next one
   and refuses a report of any other (#219).
+  A compaction reports `--compaction started|ended` with its trigger and, best effort, its
+  sizes read from the transcript (`transcript::tokens_before`, `tokens_after`): the
+  transcript is written after the hook runs, so a size that is not there yet is left out
+  rather than guessed (#782). It proves no activity, and a `SessionStart` that follows one
+  (`source: compact`) reports nothing and is not an unknown event.
   It prints nothing on standard output and never exits 2. `torlek-claude-hook --version`
   answers its name and version: `Bridge::check`, run by the daemon at its start, proves the
   bridge runs here (#203). A question the agent channel

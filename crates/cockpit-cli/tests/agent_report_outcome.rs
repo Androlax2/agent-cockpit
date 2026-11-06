@@ -41,6 +41,7 @@ async fn cockpit(home: &Path, arguments: &[&str]) -> Output {
 
 fn session_report(outcome: Option<TurnOutcome>) -> SessionReport {
     SessionReport {
+        compaction: None,
         session: "s1".to_owned(),
         state: Some(AgentState::Waiting),
         label: None,

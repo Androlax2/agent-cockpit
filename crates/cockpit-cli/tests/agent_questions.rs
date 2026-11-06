@@ -51,6 +51,7 @@ impl Home {
 
 fn dialog_report() -> SessionReport {
     SessionReport {
+        compaction: None,
         session: "s1".to_owned(),
         state: Some(AgentState::Waiting),
         label: None,

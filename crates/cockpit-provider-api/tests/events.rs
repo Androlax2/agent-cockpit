@@ -2,7 +2,8 @@
 //! are observed from structured sources, so their observation is never a screen guess.
 
 use cockpit_provider_api::{
-    Activity, ConversationId, EventKind, Observation, ObservedBy, ProviderEvent, TurnOutcome,
+    Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ConversationId, EventKind,
+    Observation, ObservedBy, ProviderEvent, TurnOutcome,
 };
 
 fn event(kind: EventKind) -> ProviderEvent {
@@ -48,6 +49,16 @@ fn each_event_kind_names_the_activity_it_proves() {
             observed(Activity::Waiting),
         ),
         (EventKind::Ended, None),
+        (EventKind::ContextCompacted, None),
+        (
+            EventKind::Compaction(CompactionMoment {
+                phase: CompactionPhase::Started,
+                trigger: Some(CompactionTrigger::Auto),
+                tokens_before: None,
+                tokens_after: None,
+            }),
+            None,
+        ),
         (EventKind::Unknown, None),
     ] {
         assert_eq!(event(kind.clone()).observation(), expected, "{kind:?}");

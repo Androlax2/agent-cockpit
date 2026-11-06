@@ -1,0 +1,6 @@
+{"type":"assistant","isSidechain":false,"message":{"model":"claude-opus-5-5","stop_reason":"tool_use","usage":{"input_tokens":10,"cache_read_input_tokens":200000,"cache_creation_input_tokens":5000,"output_tokens":300}}}
+{"type":"user","isSidechain":false,"message":{"content":[{"type":"tool_result","content":"ok"}]}}
+{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-5-5","usage":{"input_tokens":5,"cache_read_input_tokens":900,"cache_creation_input_tokens":0}}}
+{"type":"assistant","isSidechain":false,"message":{"model":"claude-opus-5-5","stop_reason":"tool_use","usage":{"input_tokens":12,"cache_read_input_tokens":250000,"cache_creation_input_tokens":18000,"output_tokens":200}}}
+{"type":"system","subtype":"compact_boundary","isSidechain":false,"compactMetadata":{"trigger":"auto","preTokens":268012,"postTokens":23678,"durationMs":76000}}
+{"type":"user","isCompactSummary":true,"message":{"content":"Summary of the compacted conversation..."}}

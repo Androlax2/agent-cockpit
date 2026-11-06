@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod compactions;
 mod conversations;
 mod declarations;
 mod delivery_context;
@@ -13,6 +14,7 @@ mod retention;
 mod store;
 
 pub use cockpit_config::DesktopSession;
+pub use compactions::{Compaction, CompactionStatus, latest_compaction};
 pub use declarations::{RefusedDeclaration, refused_declarations};
 pub use delivery_context::{ConnectSessionSocket, DeliveryContext};
 pub use error::Error;

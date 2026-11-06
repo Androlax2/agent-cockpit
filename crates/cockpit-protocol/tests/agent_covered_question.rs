@@ -5,6 +5,7 @@ use serde_json::json;
 #[test]
 fn a_session_report_carries_the_question_a_dialog_covers() {
     let report = SessionReport {
+        compaction: None,
         session: "s1".to_owned(),
         state: Some(AgentState::Waiting),
         label: None,

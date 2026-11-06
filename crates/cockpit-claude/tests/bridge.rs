@@ -242,3 +242,51 @@ fn a_missing_cockpit_program_exits_1() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
 }
+
+/// #782: a compaction's two hooks reach the agent channel as compaction reports, with the
+/// sizes the transcript holds, and print nothing for Claude Code's context.
+#[test]
+fn a_compaction_is_reported_through_the_cockpit_program_with_its_sizes() {
+    let directory = tempfile::tempdir().unwrap();
+    let transcript = directory.path().join("transcript.jsonl");
+    std::fs::copy(common::transcript("transcript-compaction"), &transcript).unwrap();
+    for (fixture, expected) in [
+        (
+            "pre-compact",
+            vec![
+                "--compaction",
+                "started",
+                "--compaction-tokens-before",
+                "268012",
+            ],
+        ),
+        (
+            "post-compact",
+            vec![
+                "--compaction",
+                "ended",
+                "--compaction-tokens-after",
+                "23678",
+            ],
+        ),
+    ] {
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&common::fixture(fixture)).unwrap();
+        payload["transcript_path"] = transcript.to_str().unwrap().into();
+        let cockpit = FakeCockpit::exiting_with(0);
+
+        let output = run_hook(&cockpit.program(), &payload.to_string(), Some("token-1"));
+
+        assert!(output.status.success(), "{fixture}: {output:?}");
+        assert!(output.stdout.is_empty(), "{fixture}");
+        let arguments = cockpit.arguments().unwrap();
+        assert_eq!(arguments[..2], ["agent", "report"], "{fixture}");
+        for pair in expected.windows(2).step_by(2) {
+            assert!(
+                arguments.windows(2).any(|found| found == pair),
+                "{fixture}: {pair:?} in {arguments:?}"
+            );
+        }
+        assert_eq!(cockpit.token(), "token-1");
+    }
+}

@@ -4,7 +4,9 @@
 mod common;
 
 use cockpit_claude::hooks::{self, HOOK_EVENTS};
-use cockpit_provider_api::{ConversationId, EventKind, TurnOutcome};
+use cockpit_provider_api::{
+    CompactionMoment, CompactionPhase, CompactionTrigger, ConversationId, EventKind, TurnOutcome,
+};
 
 fn kind(fixture: &str) -> EventKind {
     hooks::normalize(&common::fixture(fixture)).unwrap().kind
@@ -96,11 +98,11 @@ fn the_raw_payload_and_its_event_name_are_kept() {
 
 #[test]
 fn an_event_the_adapter_does_not_know_is_kept_raw_as_unknown() {
-    let payload = r#"{"hook_event_name":"PreCompact","trigger":"auto"}"#;
+    let payload = r#"{"hook_event_name":"PreToolUse","tool_name":"Bash"}"#;
     let event = hooks::normalize(payload).unwrap();
 
     assert_eq!(event.kind, EventKind::Unknown);
-    assert_eq!(event.name, "PreCompact");
+    assert_eq!(event.name, "PreToolUse");
     assert_eq!(event.raw, payload);
 }
 
@@ -137,10 +139,102 @@ fn a_failure_without_its_reason_says_none() {
     );
 }
 
-/// An auto-compaction fires `SessionStart` in the middle of a turn: it proves no waiting.
+/// An auto-compaction fires `SessionStart` in the middle of a turn: it proves no waiting, and
+/// it is a known event of the compaction, not an unknown one (#782).
 #[test]
-fn a_session_start_after_compaction_is_unknown() {
-    assert_eq!(kind("session-start-compact"), EventKind::Unknown);
+fn a_session_start_after_compaction_is_a_known_event_that_proves_no_wait() {
+    let event = hooks::normalize(&common::fixture("session-start-compact")).unwrap();
+
+    assert_eq!(event.kind, EventKind::ContextCompacted);
+    assert_eq!(event.observation(), None);
+    assert_eq!(hooks::bridge_arguments(&event), None);
+    assert!(hooks::starts_context(&event), "the brief must still return");
+}
+
+#[test]
+fn a_pre_compact_starts_a_compaction_with_its_trigger() {
+    assert_eq!(
+        kind("pre-compact"),
+        EventKind::Compaction(CompactionMoment {
+            phase: CompactionPhase::Started,
+            trigger: Some(CompactionTrigger::Auto),
+            tokens_before: None,
+            tokens_after: None,
+        })
+    );
+}
+
+#[test]
+fn a_post_compact_ends_a_compaction_with_its_trigger() {
+    assert_eq!(
+        kind("post-compact"),
+        EventKind::Compaction(CompactionMoment {
+            phase: CompactionPhase::Ended,
+            trigger: Some(CompactionTrigger::Manual),
+            tokens_before: None,
+            tokens_after: None,
+        })
+    );
+}
+
+#[test]
+fn a_compaction_reports_itself_and_no_state() {
+    let event = hooks::normalize(&common::fixture("pre-compact")).unwrap();
+
+    assert_eq!(
+        hooks::bridge_arguments(&event),
+        words(&[
+            "agent",
+            "report",
+            "--compaction",
+            "started",
+            "--compaction-trigger",
+            "auto",
+            "--conversation",
+            "49d695c9-4342-47df-a3fc-9cec34484f36",
+        ])
+    );
+}
+
+/// The transcript holds the sizes: the last main-chain model call before the compaction, and
+/// the boundary record's `postTokens` after it.
+#[test]
+fn a_compaction_reports_the_context_sizes_the_transcript_holds() {
+    let directory = tempfile::tempdir().unwrap();
+    let transcript = directory.path().join("transcript.jsonl");
+    std::fs::copy(common::transcript("transcript-compaction"), &transcript).unwrap();
+    let with_transcript = |fixture: &str| {
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&common::fixture(fixture)).unwrap();
+        payload["transcript_path"] = transcript.to_str().unwrap().into();
+        hooks::normalize(&payload.to_string()).unwrap()
+    };
+
+    let before = hooks::measured_arguments(&with_transcript("pre-compact")).unwrap();
+    let after = hooks::measured_arguments(&with_transcript("post-compact")).unwrap();
+
+    assert!(
+        before
+            .windows(2)
+            .any(|pair| pair == ["--compaction-tokens-before", "268012"]),
+        "{before:?}"
+    );
+    assert!(
+        after
+            .windows(2)
+            .any(|pair| pair == ["--compaction-tokens-after", "23678"]),
+        "{after:?}"
+    );
+}
+
+#[test]
+fn a_compaction_whose_transcript_cannot_be_read_reports_without_sizes() {
+    let event = hooks::normalize(&common::fixture("pre-compact")).unwrap();
+
+    assert_eq!(
+        hooks::measured_arguments(&event),
+        hooks::bridge_arguments(&event)
+    );
 }
 
 #[test]

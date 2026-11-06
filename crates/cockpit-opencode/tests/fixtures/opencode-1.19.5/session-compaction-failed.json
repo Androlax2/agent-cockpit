@@ -1,0 +1,1 @@
+{"id":"evt_e3b0c44200000032","type":"session.compaction.failed","data":{"sessionID":"ses_1c4f2e8a3ffeJ7qkR2mWbXzD0v","reason":"manual","error":{"type":"api","message":"overloaded"},"inputID":"msg_1c4f2e8a4001Kp0m3nXyZq8Rt5","cost":0,"tokens":{"input":900,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}}

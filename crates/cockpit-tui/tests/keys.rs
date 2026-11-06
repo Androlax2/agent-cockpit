@@ -45,6 +45,7 @@ fn n_opens_the_next_session_that_needs_you_wrapping_around() {
         Command::AgentReports,
         Reply::AgentReports {
             reports: vec![SessionReport {
+                compaction: None,
                 session: "s00000000000a".to_owned(),
                 state: Some(AgentState::Waiting),
                 label: None,
@@ -228,6 +229,7 @@ fn reported_question(
         Command::AgentReports,
         Reply::AgentReports {
             reports: vec![SessionReport {
+                compaction: None,
                 session: "s00000000000a".to_owned(),
                 state: Some(state),
                 label: None,

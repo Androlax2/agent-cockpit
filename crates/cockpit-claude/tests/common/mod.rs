@@ -45,3 +45,11 @@ pub fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
 }
+
+/// A made-up transcript tail beside the pinned payloads.
+pub fn transcript(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(format!("claude-code-{CONFORMANCE_VERSION}"))
+        .join(format!("{name}.jsonl"))
+}

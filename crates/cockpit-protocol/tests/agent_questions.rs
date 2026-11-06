@@ -61,6 +61,7 @@ fn a_new_prompt_report_round_trips_through_its_wire_form() {
 #[test]
 fn a_session_report_names_its_questions_source() {
     let report = SessionReport {
+        compaction: None,
         session: "s1".to_owned(),
         state: Some(AgentState::Waiting),
         label: None,

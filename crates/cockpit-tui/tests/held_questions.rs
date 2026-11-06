@@ -13,6 +13,7 @@ const COORDINATOR: &str = "s00000000000a";
 
 fn asked(held_by: Option<&str>) -> SessionReport {
     SessionReport {
+        compaction: None,
         session: WORKER.to_owned(),
         state: Some(AgentState::Waiting),
         label: None,
