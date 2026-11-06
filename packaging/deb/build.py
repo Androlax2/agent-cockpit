@@ -125,7 +125,9 @@ def unpack_bundle(archive, top_directory, destination):
 
 
 def refuse_foreign_bundle(bundle, tag, channel, platform):
-    """The archive's own manifest must name this release and still describe every file."""
+    """The archive's own manifest must name this release and still describe every file. Which
+    programs a bundle holds is the rule of the release that made it, checked when it was cut:
+    an earlier release predates programs this checkout's release.py now requires."""
     release = release_tool()
     manifest_file = bundle / release.MANIFEST_PATH
     if not manifest_file.is_file():
@@ -145,10 +147,23 @@ def refuse_foreign_bundle(bundle, tag, channel, platform):
     ]
     if problems:
         raise Refusal(f"bundle manifest: {'; '.join(problems)}")
-    try:
-        release.refuse_changed_contents(bundle, manifest)
-    except release.Refusal as error:
-        raise Refusal(f"bundle contents differ from its manifest: {error}") from error
+    listed = manifest.get("contents")
+    if not isinstance(listed, dict):
+        raise Refusal("bundle manifest: no contents")
+    problems = []
+    for relative, expected in sorted(listed.items()):
+        path = bundle / relative
+        if not path.is_file():
+            problems.append(f"{relative}: missing")
+        elif release.sha256_of(path) != expected:
+            problems.append(f"{relative}: checksum differs from the manifest")
+    problems.extend(
+        f"{relative}: not listed in the manifest"
+        for relative in release.bundle_files(bundle)
+        if relative not in listed
+    )
+    if problems:
+        raise Refusal(f"bundle contents differ from its manifest: {'; '.join(problems)}")
 
 
 def changelog(version, channel, tag, maintainer, release_date):

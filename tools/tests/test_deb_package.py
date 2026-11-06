@@ -311,6 +311,31 @@ class ArchiveRefusalTest(ReleaseFixture):
         result = run_build(tampered, self.resummed(tampered), self.out("debs"))
         self.assertRefused(result, "bin/extra: not listed in the manifest")
 
+    def test_refuses_a_file_the_manifest_lists_but_the_archive_lacks(self):
+        def drop_the_tui(bundle):
+            (bundle / "bin/torlek-tui").unlink()
+
+        tampered = self.out("upload") / self.amd64_archive.name
+        tampered.parent.mkdir(parents=True)
+        repack(self.amd64_archive, tampered, drop_the_tui)
+        result = run_build(tampered, self.resummed(tampered), self.out("debs"))
+        self.assertRefused(result, "bin/torlek-tui: missing")
+
+    def test_packages_an_earlier_release_without_a_program_added_since(self):
+        def predate_the_sandbox_launcher(bundle):
+            (bundle / "bin/torlek-sandbox").unlink()
+            manifest_file = bundle / release.MANIFEST_PATH
+            manifest = json.loads(manifest_file.read_text())
+            del manifest["contents"]["bin/torlek-sandbox"]
+            del manifest["helpers"]["torlek-sandbox"]
+            manifest_file.write_text(json.dumps(manifest))
+
+        earlier = self.out("upload") / self.amd64_archive.name
+        earlier.parent.mkdir(parents=True)
+        repack(self.amd64_archive, earlier, predate_the_sandbox_launcher)
+        result = run_build(earlier, self.resummed(earlier), self.out("debs"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_refuses_another_versions_bundle_under_this_name(self):
         def claim_another_version(bundle):
             manifest_file = bundle / release.MANIFEST_PATH
