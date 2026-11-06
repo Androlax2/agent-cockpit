@@ -68,7 +68,7 @@ Practices that recur, and what each means here:
 What does not fit, and why: a **separate documentation repository** (Syncthing, Astral), because we
 need one authority per topic and the site already stages the repository's Markdown; **translations**
 (Starship); a **new generator** (mdBook, MkDocs), because Theo approved the Fumadocs site in
-#102 and nothing here is blocked by it; **word limits**, because the evidence shows a navigable long
+issue #102 and nothing here is blocked by it; **word limits**, because the evidence shows a navigable long
 page works and a repeated short one does not.
 
 ## Documentation map
@@ -170,19 +170,19 @@ in one list item.
 
 After (about 95 words):
 
-> 2. Accept running agents without a sandbox. Add this to the owner configuration file
->    (`torlek config show` prints its path):
+> **Step 2.** Accept running agents without a sandbox. Add this to the owner configuration file
+> (`torlek config show` prints its path):
 >
->    ```toml
->    [agents]
->    sandbox = "off"
->    desktop_session = "withheld"
->    ```
+> ```toml
+> [agents]
+> sandbox = "off"
+> desktop_session = "withheld"
+> ```
 >
->    `sandbox = "off"` records that you accept this: an unsandboxed agent has your rights and can act
->    as you, so Torlek's grants do not bind it. `desktop_session = "withheld"` keeps agents off your
->    screen and desktop session; the default, `shared`, exposes your display. If the daemon is
->    already running, run `torlek config reload`.
+> `sandbox = "off"` records that you accept this: an unsandboxed agent has your rights and can act
+> as you, so Torlek's grants do not bind it. `desktop_session = "withheld"` keeps agents off your
+> screen and desktop session; the default, `shared`, exposes your display. If the daemon is
+> already running, run `torlek config reload`.
 
 Moved, not lost: `sandbox = "required"` behaviour and the bell setting to the guide's Configuration
 section; Greywall cleanup to Updates. `config reload` stays, because a running daemon keeps the old
