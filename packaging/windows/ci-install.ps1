@@ -182,7 +182,8 @@ Assert-Result 'user state is seeded' (Invoke-Wsl -Command @('/bin/sh', '-c', 'mk
 Write-Host '::endgroup::'
 
 Write-Host '::group::Render the manifest and serve its files from loopback'
-$python = Get-Command python -CommandType Application -ErrorAction Stop
+# The runner also lists the Microsoft Store stub; PATH order puts the real interpreter first.
+$python = @(Get-Command python -CommandType Application -ErrorAction Stop)[0]
 & $python.Source packaging/windows/render.py rehearse --tag $Version `
     --sums (Join-Path $dist 'SHA256SUMS') --archive (Join-Path $dist "$bundleName.tar.gz") `
     --revision $Revision --url "http://127.0.0.1:$Port" --out $bucket
