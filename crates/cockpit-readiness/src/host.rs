@@ -102,8 +102,8 @@ pub(crate) fn sandbox(setting: AgentSandbox, backend: &Result<String, String>) -
         )
         .with_advice(match backend {
             Ok(backend) => format!(
-                "agents.sandbox = \"required\" runs them in {backend}; each session reaches the \
-                 network only through its own egress proxy, and you allow once, allow always or \
+                "agents.sandbox = \"required\" runs them in {backend}; there each session reaches \
+                 the network only through its own egress proxy, and you allow once, allow always or \
                  deny a refused host with `torlek network`"
             ),
             Err(reason) => format!(
