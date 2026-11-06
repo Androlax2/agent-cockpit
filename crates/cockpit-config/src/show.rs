@@ -252,6 +252,13 @@ pub fn render(config: &EffectiveConfig) -> String {
             ));
         }
     }
+    for (name, program) in &config.notify.holds {
+        lines.push(line(
+            &format!("notify.hold.{name}"),
+            &Value::from(program.value.display().to_string()).to_string(),
+            &program.source,
+        ));
+    }
     // Before the start files and checks, which list last as they grow.
     lines.push(line(
         "execution.environment",

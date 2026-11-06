@@ -119,3 +119,57 @@ fn config_show_prints_each_event_with_its_source() {
         "{shown}"
     );
 }
+
+#[test]
+fn a_clean_home_has_no_hold_detector() {
+    let home = TempDir::new().unwrap();
+
+    assert!(load(home.path(), None).unwrap().notify.holds.is_empty());
+}
+
+#[test]
+fn the_owner_names_a_hold_detector_by_its_absolute_path() {
+    let home = TempDir::new().unwrap();
+    write_user_config(
+        home.path(),
+        "[notify.hold]\nmeeting = \"/usr/local/bin/in-a-meeting\"\n",
+    );
+
+    let config = load(home.path(), None).unwrap();
+
+    let meeting = &config.notify.holds["meeting"];
+    assert_eq!(meeting.value, Path::new("/usr/local/bin/in-a-meeting"));
+    assert_eq!(
+        meeting.source,
+        Source::UserFile {
+            path: config.user_file.path.clone(),
+            line: 2
+        }
+    );
+    assert!(
+        cockpit_config::render(&config)
+            .contains("notify.hold.meeting = \"/usr/local/bin/in-a-meeting\"  # user config"),
+        "{}",
+        cockpit_config::render(&config)
+    );
+}
+
+#[test]
+fn a_hold_detector_that_cannot_be_run_as_named_is_refused() {
+    for (line, reason) in [
+        ("meeting = \"in-a-meeting\"", "absolute path"),
+        ("away = \"/bin/true\"", "torlek notify away on"),
+        ("Meeting = \"/bin/true\"", "lowercase letters"),
+    ] {
+        let home = TempDir::new().unwrap();
+        write_user_config(home.path(), &format!("[notify.hold]\n{line}\n"));
+
+        let error = load(home.path(), None).unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::Invalid { key, .. } if key.starts_with("notify.hold.")),
+            "{line}: {error}"
+        );
+        assert!(error.to_string().contains(reason), "{line}: {error}");
+    }
+}

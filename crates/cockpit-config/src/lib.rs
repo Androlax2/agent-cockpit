@@ -15,7 +15,7 @@ mod show;
 mod start_files;
 mod storage;
 pub use memory::MemorySettings;
-pub use notify::{NOTIFY_EVENTS, NotifyEvents, NotifySettings};
+pub use notify::{AWAY_HOLD, NOTIFY_EVENTS, NotifyEvents, NotifySettings};
 pub use storage::StorageSettings;
 
 use std::fmt;
@@ -133,7 +133,8 @@ pub struct EffectiveConfig {
     pub storage: StorageSettings,
     /// What the daemon and its tmux server may hold in memory (#406).
     pub memory: MemorySettings,
-    /// Which events `torlek notify` tells on the desktop and with a sound (#62, #682).
+    /// Which events `torlek notify` tells on the desktop and with a sound (#62, #682), and
+    /// what holds them.
     pub notify: NotifySettings,
     pub layout: Layout,
     pub user_file: ConfigFile,
@@ -515,7 +516,7 @@ pub fn load(
     Ok(EffectiveConfig {
         storage: storage::settings(&layers)?,
         memory: memory::settings(&layers)?,
-        notify: notify::settings(&layers),
+        notify: notify::settings(&layers)?,
         layout,
         user_file,
         project_file,

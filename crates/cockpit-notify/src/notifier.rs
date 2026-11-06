@@ -120,9 +120,16 @@ impl Notifier {
         news
     }
 
+    /// Whether the event `notice` told is still raised for its session.
+    pub fn still_raises(&self, notice: &Notice) -> bool {
+        self.raised
+            .iter()
+            .any(|raised| raised.session == notice.session && raised.event == notice.event)
+    }
+
     /// What the status file shows now; `is_reachable` says whether the daemon answered the
-    /// last request and the change feed is current.
-    pub fn status(&self, is_reachable: bool) -> Status {
+    /// last request and the change feed is current, `holds` which holds stand.
+    pub fn status(&self, is_reachable: bool, holds: &BTreeSet<String>) -> Status {
         let mut needs_by_session: BTreeMap<&str, BTreeSet<Event>> = BTreeMap::new();
         for raised in &self.raised {
             needs_by_session
@@ -175,6 +182,7 @@ impl Notifier {
         }
         Status {
             reachable: is_reachable && self.is_loaded(),
+            holds: holds.iter().cloned().collect(),
             needs_you: sessions
                 .iter()
                 .filter(|session| session.state == SessionState::NeedsYou)
