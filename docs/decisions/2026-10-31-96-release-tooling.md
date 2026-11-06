@@ -41,7 +41,7 @@ fits Cockpit's release policy worse than a short workflow of our own. The policy
 - **git-cliff notes and release-plz proposals.** `cliff.toml` groups conventional subjects by type and
   puts the earlier, unconventional ones under "Other" rather than dropping them. release-plz
   now generates local draft proposals under #192; its history-preserving orchestration is
-  recorded in [the later decision](2026-11-02-192-history-preserving-proposals.md).
+  recorded in [the later decision](2026-11-02-192-exact-prerelease-proposals.md).
   Pre-release calculation follows the newer #389 bootstrap rule. Alpha notes append
   `docs/KNOWN-GAPS.md` (#97); the workflow refuses an alpha without it.
 - **Only tags are attested.** Dry runs (pull requests, nightlies, dispatches) never get
@@ -50,7 +50,22 @@ fits Cockpit's release policy worse than a short workflow of our own. The policy
   `RELEASE_APP_PRIVATE_KEY`), which Theo creates; the dry run needs neither.
 - **Nightly builds are dry runs.** The schedule builds and installs `main` as
   `X.Y.Z-dev.N` and keeps the archives as workflow artifacts for 14 days. A rolling `nightly`
-  pre-release would move a tag: [decided against](2026-10-31-96-nightly-builds.md) in #179.
+  pre-release would move a tag: decided against in the #179 section below.
 - **Rejected:** cargo-dist for the build half only (two release owners for one GitHub
   Release); nfpm and minisign now (packages and signatures belong to #64 and #97, and adding
   them later changes no tag or asset name); a Rust `xtask` crate (outside report 02's graph).
+
+## Revisited 2026-10-31 (#179)
+
+Decided by Theo (option A). Nightly builds stay workflow artifacts; there is no rolling
+`nightly` release.
+
+- **Nightlies are dry runs of the release workflow.** The schedule builds, installs and
+  checks `main` as `X.Y.Z-dev.N`, a version no release tag can have, and keeps the archives
+  and `SHA256SUMS` as workflow artifacts for 14 days (`gh run download`). No tag, no draft,
+  no release, no attestation.
+- **Why:** [Releasing](../RELEASING.md) allows three tag shapes and never moves a tag, and the
+  repository keeps immutable releases on; a rolling release breaks both.
+- **Rejected:** a rolling `nightly` pre-release (moves its tag every night, needs immutable
+  releases off); a `vX.Y.Z-nightly.YYYYMMDD` tag per night (a fourth tag shape and one release
+  a day).

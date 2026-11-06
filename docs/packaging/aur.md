@@ -165,6 +165,6 @@ is still a draft, or a pair that differs from the committed one.
   and checks it against the recipe. There is no official Arch image for aarch64.
 - `install-arch` is not in `publish`'s needs, so a tag publishes even when it fails: step 6
   stops the AUR submission instead
-  ([decision](../decisions/2026-11-03-562-arch-packaging-alpha1.md)).
+  ([decision](../decisions/2026-11-06-562-committed-aur-recipe.md)).
 - On the Ubuntu runners, the `.SRCINFO`, `vercmp` and fixture tests report themselves as
   skipped. Both Arch jobs run them.
