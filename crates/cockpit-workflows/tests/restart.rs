@@ -4,7 +4,7 @@
 mod common;
 
 use cockpit_tasks::{Edit, Kind};
-use cockpit_workflows::{Actor, NextAction, StepStatus};
+use cockpit_workflows::{Actor, NextAction, RESEARCH, StepStatus};
 use common::{Fixture, NOW, completion, handoff};
 
 #[tokio::test]
@@ -158,4 +158,46 @@ async fn the_packet_passes_on_what_the_awaited_items_decided() {
             .collect::<Vec<_>>(),
         [Some("Use the built-in one.")]
     );
+}
+
+/// Issue #789: the research rules reach a worker in the packet of the step each governs, with
+/// no skill installed.
+#[tokio::test]
+async fn the_research_packets_carry_the_three_research_rules() {
+    let fixture = Fixture::new().await;
+    let item = fixture
+        .item("cockpit", "Compare queues", Kind::Research)
+        .await;
+    let run = fixture.start(item.id, &RESEARCH).await.unwrap();
+    let session = fixture.session("s1", "cockpit").await;
+    for (step, rules) in [
+        ("investigate", &["primary sources"][..]),
+        (
+            "synthesize",
+            &[
+                "one Markdown file that cites its sources",
+                "the repository's convention",
+            ],
+        ),
+    ] {
+        fixture.begin(&session, run.id).await.unwrap();
+        let definition = fixture
+            .packet(&session, run.id)
+            .await
+            .step
+            .unwrap()
+            .definition;
+        assert_eq!(definition.name, step);
+        for rule in rules {
+            assert!(
+                definition.purpose.contains(rule),
+                "{step}: {:?} lacks {rule:?}",
+                definition.purpose
+            );
+        }
+        fixture
+            .complete(&session, run.id, completion(&format!("Did {step}")))
+            .await
+            .unwrap();
+    }
 }

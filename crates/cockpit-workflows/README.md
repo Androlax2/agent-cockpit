@@ -14,13 +14,18 @@ names to [`complete`]) and never launches agents.
 
 | Preset (version) | Steps (doer) | Requirements |
 | --- | --- | --- |
-| `research` (1) | investigate, synthesize, deliver (agent) | none |
+| `research` (2) | investigate, synthesize, deliver (agent) | none |
 | `code-change` (1) | implement, check, deliver (agent) | `check`: `checks`, `review` |
 | `design-led` (1) | design-approval (owner), implement, verify (agent) | `verify`: `checks`, `design-match` |
 
 Every agent step requires the provider capabilities `events` and `outcome`: a prompt the
 agent accepted is not work it completed. A run keeps the preset version it started with;
 reading a run whose version this release no longer has fails loud.
+
+`research` version 2 states the three research rules in its step text, so a worker follows
+them with no skill installed: primary sources (`investigate`), one Markdown file that cites its
+sources, placed and named by the repository's convention (`synthesize`). Version 1 stays for
+the runs that started on it.
 
 The preset a task follows: the one the owner names, else the project's `workflow.preset`
 (`cockpit-config`), else `research` for a research item and `code-change` for any other

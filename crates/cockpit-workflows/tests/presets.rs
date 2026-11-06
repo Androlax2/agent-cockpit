@@ -3,8 +3,8 @@
 use cockpit_provider_api::{Capabilities, Capability, Provenance};
 use cockpit_tasks::Kind;
 use cockpit_workflows::{
-    CODE_CHANGE, DESIGN_LED, Doer, PRESETS, RESEARCH, Refusal, check_capabilities, preset,
-    preset_version, presets, select_preset,
+    CODE_CHANGE, DESIGN_LED, Doer, PRESETS, RESEARCH, RESEARCH_V1, Refusal, check_capabilities,
+    preset, preset_version, presets, select_preset,
 };
 
 #[test]
@@ -15,7 +15,7 @@ fn the_product_ships_research_code_change_and_design_led() {
         .collect();
     assert_eq!(
         names,
-        [("research", 1), ("code-change", 1), ("design-led", 1)]
+        [("research", 2), ("code-change", 1), ("design-led", 1)]
     );
 }
 
@@ -57,6 +57,12 @@ fn a_preset_version_is_found_exactly() {
     assert_eq!(preset_version("code-change", 1), Some(&CODE_CHANGE));
     assert_eq!(preset_version("code-change", 2), None);
     assert_eq!(preset("design-led"), Some(&DESIGN_LED));
+}
+
+#[test]
+fn a_run_started_on_research_version_1_still_finds_its_steps() {
+    assert_eq!(preset_version("research", 1), Some(&RESEARCH_V1));
+    assert_eq!(preset("research"), Some(&RESEARCH));
 }
 
 #[test]

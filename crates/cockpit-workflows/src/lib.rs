@@ -18,7 +18,7 @@ pub use model::{
 };
 pub use packet::{Goal, Packet, packet};
 pub use presets::{
-    CODE_CHANGE, DESIGN_LED, Doer, PRESETS, Preset, RESEARCH, StepDefinition, preset,
+    CODE_CHANGE, DESIGN_LED, Doer, PRESETS, Preset, RESEARCH, RESEARCH_V1, StepDefinition, preset,
     preset_version, presets, select_preset,
 };
 pub use runs::{

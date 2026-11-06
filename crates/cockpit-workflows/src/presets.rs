@@ -67,7 +67,9 @@ impl Preset {
 /// accepted is not work it completed (report 08).
 const OBSERVED: &[Capability] = &[Capability::Events, Capability::Outcome];
 
-pub const RESEARCH: Preset = Preset {
+/// What research runs started before version 2 follow: its steps do not name the research
+/// rules.
+pub const RESEARCH_V1: Preset = Preset {
     name: "research",
     version: 1,
     summary: "investigate, synthesize, deliver",
@@ -89,6 +91,38 @@ pub const RESEARCH: Preset = Preset {
         StepDefinition {
             name: "deliver",
             purpose: "hand the answer over where the task asks for it",
+            doer: Doer::Agent,
+            required_capabilities: OBSERVED,
+            requirements: &[],
+        },
+    ],
+};
+
+/// Version 2 puts the three research rules in the step text, so a worker follows them with no
+/// skill installed (#789): primary sources, one cited file, the repository's convention.
+pub const RESEARCH: Preset = Preset {
+    name: "research",
+    version: 2,
+    summary: "investigate, synthesize, deliver",
+    steps: &[
+        StepDefinition {
+            name: "investigate",
+            purpose: "gather the facts the question needs from primary sources, not summaries of them",
+            doer: Doer::Agent,
+            required_capabilities: OBSERVED,
+            requirements: &[],
+        },
+        StepDefinition {
+            name: "synthesize",
+            purpose: "turn the findings into one Markdown file that cites its sources, placed and \
+                      named by the repository's convention",
+            doer: Doer::Agent,
+            required_capabilities: OBSERVED,
+            requirements: &[],
+        },
+        StepDefinition {
+            name: "deliver",
+            purpose: "hand the file over where the task asks for it",
             doer: Doer::Agent,
             required_capabilities: OBSERVED,
             requirements: &[],
@@ -156,7 +190,7 @@ pub const DESIGN_LED: Preset = Preset {
 
 /// Every version of every preset. A version is never removed while a stored run may follow
 /// it: reading such a run fails loud instead of guessing its steps.
-pub const PRESETS: &[&Preset] = &[&RESEARCH, &CODE_CHANGE, &DESIGN_LED];
+pub const PRESETS: &[&Preset] = &[&RESEARCH_V1, &RESEARCH, &CODE_CHANGE, &DESIGN_LED];
 
 /// The newest version of the preset named `name`.
 pub fn preset(name: &str) -> Option<&'static Preset> {
