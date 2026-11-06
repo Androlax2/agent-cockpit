@@ -1,5 +1,7 @@
 # Only the Nix index and the GitHub name gate the public Torlek steps; clearance waits for v0.1.0
 
+Status: accepted
+
 Issue #893. Decided by Theo on 2026-11-06 (relayed by the coordinator). Settles the "Not established" list of
 [the product-name record](2026-11-02-339-product-name.md).
 
