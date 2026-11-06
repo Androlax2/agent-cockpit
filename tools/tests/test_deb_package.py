@@ -340,6 +340,19 @@ class ArchiveRefusalTest(ReleaseFixture):
         result = run_build(earlier, self.resummed(earlier), self.out("debs"))
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_refuses_a_helper_another_version_built(self):
+        def age_the_codex_hook(bundle):
+            manifest_file = bundle / release.MANIFEST_PATH
+            manifest = json.loads(manifest_file.read_text())
+            manifest["helpers"]["torlek-codex-hook"] = "0.0.9"
+            manifest_file.write_text(json.dumps(manifest))
+
+        tampered = self.out("upload") / self.amd64_archive.name
+        tampered.parent.mkdir(parents=True)
+        repack(self.amd64_archive, tampered, age_the_codex_hook)
+        result = run_build(tampered, self.resummed(tampered), self.out("debs"))
+        self.assertRefused(result, "helpers: torlek-codex-hook is '0.0.9'")
+
     def test_refuses_another_versions_bundle_under_this_name(self):
         def claim_another_version(bundle):
             manifest_file = bundle / release.MANIFEST_PATH
@@ -976,6 +989,60 @@ class PublishTest(unittest.TestCase):
         result = self.publish("0.1.0-alpha.2")
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("InRelease: signature refused", result.stderr)
+        self.assertEqual(self.branches(), before)
+
+    def change_published_site(self, change):
+        site = self.published()
+        change(site)
+        subprocess.run(["git", "-C", str(site), "add", "--all"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(site),
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "change the site",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(site), "push", "--quiet", "origin", "gh-pages"], check=True
+        )
+
+    def test_refuses_to_add_to_a_site_whose_other_suite_the_committed_key_did_not_sign(self):
+        self.assertPublished(self.publish("0.1.0-alpha.1"))
+
+        def add_an_unsigned_beta_suite(site):
+            shutil.copytree(site / "dists/alpha", site / "dists/beta")
+            (site / "dists/beta/InRelease").write_text("not signed\n")
+
+        self.change_published_site(add_an_unsigned_beta_suite)
+        before = self.branches()
+        result = self.publish("0.1.0-alpha.2")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("InRelease", result.stderr)
+        self.assertEqual(self.branches(), before)
+
+    def test_refuses_to_add_to_a_site_whose_pool_holds_an_unindexed_package(self):
+        self.assertPublished(self.publish("0.1.0-alpha.1"))
+
+        def plant_a_package(site):
+            (site / repository.POOL / "torlek_0.1.0~alpha.0-1_amd64.deb").write_bytes(b"planted")
+
+        self.change_published_site(plant_a_package)
+        before = self.branches()
+        result = self.publish("0.1.0-alpha.2")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(
+            f"no signed index lists: {repository.POOL}/torlek_0.1.0~alpha.0-1_amd64.deb",
+            result.stderr,
+        )
         self.assertEqual(self.branches(), before)
 
     def test_refuses_to_publish_a_release_twice(self):

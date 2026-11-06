@@ -229,8 +229,10 @@ After `publish` releases a tag, [release.yml](../../.github/workflows/release.ym
    clean-container installs and upgrade.
 2. **`publish-apt`**, in the `apt` environment, after Theo approves it:
    [fetch-release.sh](../../packaging/deb/fetch-release.sh) checks the published archives again;
-   [publish.sh](../../packaging/deb/publish.sh) clones the site, verifies it against the
-   committed key, builds the two packages, prunes, indexes, signs, verifies and pushes; then
+   [publish.sh](../../packaging/deb/publish.sh) clones the site, verifies every suite in it
+   against the committed key, refuses a pool file no verified index lists, builds the two
+   packages dated to the release's publication day, prunes, indexes, signs, verifies and
+   pushes; then
    [check-site.sh](../../packaging/deb/check-site.sh) downloads the suite from
    `androlax2.github.io` until one whole copy verifies, for up to ten minutes.
 
@@ -288,6 +290,9 @@ lintian fails the job on any error. The warnings and notes left, with the reason
 
 ## Not yet verified
 
+- `publish-apt` builds the packages again with the real maintainer; they differ from the
+  installed fixtures only in the `Maintainer` field and the changelog's signature line, and
+  are not themselves installed before the push.
 - No publication: `torlek-apt`, the `apt` environment and the real key do not exist, so
   `publish-apt`, the deploy key, the force-push and `check-site.sh` against GitHub Pages
   (including `~` in file names) have not run. Their logic is tested against a local Git remote

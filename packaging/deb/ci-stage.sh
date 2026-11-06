@@ -65,7 +65,7 @@ declared=$(dpkg-deb --field "$newest_amd64" Depends)
 IFS=',' read -ra terms <<<"${needed#shlibs:Depends=}"
 for term in "${terms[@]}"; do
     term=${term# }
-    if ! grep -qF -- "$term" <<<", $declared,"; then
+    if [[ ", $declared," != *", $term,"* ]]; then
         printf 'Depends %q lacks the dpkg-shlibdeps term %q\n' "$declared" "$term" >&2
         exit 1
     fi

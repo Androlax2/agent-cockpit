@@ -19,13 +19,15 @@ worker's, with the reasons given. Supersedes the open questions of
 - **The pool keeps the ten newest versions of the channel.** A package is about 12 MB and
   alphas came out daily, so keeping every version would fill the 1 GB Pages limit in about
   forty releases.
-- **The published site is verified against the committed key before anything is added,** and
-  the served site again after the push. The site is the pool's only copy.
+- **The published site is verified against the committed key before anything is added:**
+  every suite in it, and no pool file outside a verified index, since `index` signs the whole
+  pool. The served site is verified again after the push. The site is the pool's only copy.
 - **`publish-apt` runs only once the repository variable `TORLEK_APT_PUBLISH` is `true`.** A job
   that names a missing environment creates it without protection rules.
 - **Packages are built from the published release's assets, checked again against
   `SHA256SUMS` and build provenance,** after `publish`, and after the Debian packages workflow
-  has installed them on clean containers. Neither job gates the release.
+  has installed the same archives, packaged with the CI maintainer, on clean containers.
+  Neither job gates the release.
 - **`build.py` checks an archive against its own manifest, not against today's bundle rules.**
   An earlier release predates programs this checkout's `release.py` requires; the install job
   runs the release's own `verify-install` instead.

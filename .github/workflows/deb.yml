@@ -64,7 +64,7 @@ jobs:
             local rest=${1#*-}
             printf '%s' "${rest%%.*}"
           }
-          releases=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 100 \
+          releases=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 1000 \
             --json tagName,publishedAt --jq 'sort_by(.publishedAt) | reverse | .[] | "\(.tagName) \(.publishedAt[:10])"')
           tag="" date="" previous="" previous_date=""
           while read -r name published; do

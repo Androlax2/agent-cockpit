@@ -127,7 +127,8 @@ def unpack_bundle(archive, top_directory, destination):
 def refuse_foreign_bundle(bundle, tag, channel, platform):
     """The archive's own manifest must name this release and still describe every file. Which
     programs a bundle holds is the rule of the release that made it, checked when it was cut:
-    an earlier release predates programs this checkout's release.py now requires."""
+    an earlier release predates programs this checkout's release.py now requires. Each helper
+    it lists must still be in it and carry the bundle's version."""
     release = release_tool()
     manifest_file = bundle / release.MANIFEST_PATH
     if not manifest_file.is_file():
@@ -162,6 +163,20 @@ def refuse_foreign_bundle(bundle, tag, channel, platform):
         for relative in release.bundle_files(bundle)
         if relative not in listed
     )
+    helpers = manifest.get("helpers")
+    if not isinstance(helpers, dict) or not helpers:
+        problems.append("helpers: none listed")
+    else:
+        problems.extend(
+            f"helpers: {helper} is {version!r}, expected {tag!r}"
+            for helper, version in sorted(helpers.items())
+            if version != tag
+        )
+        problems.extend(
+            f"helpers: bin/{helper} is not in the bundle"
+            for helper in sorted(helpers)
+            if f"bin/{helper}" not in listed
+        )
     if problems:
         raise Refusal(f"bundle contents differ from its manifest: {'; '.join(problems)}")
 

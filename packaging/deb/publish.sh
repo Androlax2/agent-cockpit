@@ -73,9 +73,23 @@ if git ls-remote --exit-code --heads "$remote" "$branch" >"$work/head"; then
     git clone --quiet --depth 1 --branch "$branch" "$remote" "$work/clone"
     mv "$work/clone" "$site"
     rm -rf "$site/.git"
-    if [ -d "$site/dists/$channel" ]; then
-        python3 "$packaging/repository.py" verify --repo "$site" --suite "$channel" \
+    for suite in "$site"/dists/*/; do
+        [ -d "$suite" ] || continue
+        python3 "$packaging/repository.py" verify --repo "$site" --suite "$(basename "$suite")" \
             --keyring "$public_key"
+    done
+    # index signs every package in the pool, so one no verified index lists would gain a
+    # signature it never had.
+    if [ -d "$site/pool" ]; then
+        indexes=("$site"/dists/*/main/binary-*/Packages)
+        listed=
+        if [ -e "${indexes[0]}" ]; then
+            listed=$(sed -n 's/^Filename: //p' "${indexes[@]}" | sort -u)
+        fi
+        unlisted=$(cd "$site" && find pool -type f | sort | comm -23 - <(printf '%s\n' "$listed"))
+        if [ -n "$unlisted" ]; then
+            refuse "the site's pool holds files no signed index lists: $(tr '\n' ' ' <<<"$unlisted")"
+        fi
     fi
 else
     status=$?

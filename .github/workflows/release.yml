@@ -705,12 +705,16 @@ jobs:
         run: bash packaging/deb/fetch-release.sh "$GITHUB_REPOSITORY" "$VERSION" inputs
       - name: Add the release to the APT site, sign it and push it
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.plan.outputs.version }}
           DEPLOY_KEY: ${{ secrets.TORLEK_APT_DEPLOY_KEY }}
           TORLEK_APT_MAINTAINER: ${{ vars.TORLEK_APT_MAINTAINER }}
           TORLEK_APT_SIGNING_KEY: ${{ secrets.TORLEK_APT_SIGNING_KEY }}
         run: |
           set -euo pipefail
+          # The release's publication day, as the deb job packaged it, not the approval day.
+          published=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json publishedAt \
+            --jq '.publishedAt[:10]')
           ssh_dir=$(mktemp -d)
           trap 'rm -rf "$ssh_dir"' EXIT
           (umask 077 && printf '%s\n' "$DEPLOY_KEY" > "$ssh_dir/deploy_key")
@@ -719,7 +723,7 @@ jobs:
             > "$ssh_dir/known_hosts"
           export GIT_SSH_COMMAND="ssh -i $ssh_dir/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ssh_dir/known_hosts"
           TORLEK_APT_REMOTE=git@github.com:Androlax2/torlek-apt.git \
-            bash packaging/deb/publish.sh inputs "$VERSION" "$(date -u +%F)"
+            bash packaging/deb/publish.sh inputs "$VERSION" "$published"
       - name: Check the site GitHub Pages serves, as apt would
         env:
           VERSION: ${{ needs.plan.outputs.version }}
