@@ -144,13 +144,27 @@ export function stage({
   const read = (file) => readFileSync(path.join(root, file), "utf8");
   const add = (source, route, title, body, extra = {}) =>
     entries.push({ source, route, title, body, sourceHash: digest(read(source)), ...extra });
+  const sectionReader = (markdown, file) => {
+    const headings = [...markdown.matchAll(/^## (.+)$/gm)];
+    return (name) => {
+      const i = headings.findIndex((match) => match[1] === name);
+      if (i < 0) throw new Error(`${file} section missing: ${name}`);
+      return markdown
+        .slice(headings[i].index + headings[i][0].length, headings[i + 1]?.index)
+        .trim();
+    };
+  };
   const guide = read("docs/USER-GUIDE.md");
   const sections = [...guide.matchAll(/^## (.+)$/gm)];
-  const section = (name) => {
-    const i = sections.findIndex((match) => match[1] === name);
-    if (i < 0) throw new Error(`user guide section missing: ${name}`);
-    return guide.slice(sections[i].index + sections[i][0].length, sections[i + 1]?.index).trim();
-  };
+  const section = sectionReader(guide, "docs/USER-GUIDE.md");
+  const readmeSection = sectionReader(read("README.md"), "README.md");
+  const installSections = ["Install with your AI agent", "Install from the command line"];
+  add(
+    "README.md",
+    "get-started/install-release",
+    "Install a release",
+    installSections.map((name) => `## ${name}\n\n${readmeSection(name)}`).join("\n\n"),
+  );
   add(
     "docs/USER-GUIDE.md",
     "get-started/install",
@@ -235,7 +249,12 @@ export function stage({
   );
   const pages = new Map(entries.map((entry) => [entry.source, entry.route]));
   pages.set("docs/USER-GUIDE.md", "get-started/install");
-  const anchors = new Map();
+  const anchors = new Map(
+    installSections.map((name) => [
+      `README.md#${name.toLowerCase().replaceAll(" ", "-")}`,
+      "get-started/install-release",
+    ]),
+  );
   for (const [heading, route] of [
     ["first-project-and-session", "get-started/first-session"],
     ["approvals", "guide/approvals"],
@@ -282,7 +301,10 @@ export function stage({
     writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
   };
   meta("", { pages: ["get-started", "guide", "reference", "project"] });
-  meta("get-started", { title: "Get started", pages: ["install", "first-session"] });
+  meta("get-started", {
+    title: "Get started",
+    pages: ["install-release", "install", "first-session"],
+  });
   meta("guide", {
     title: "User guide",
     pages: ["approvals", "providers", "configuration", "support"],

@@ -51,12 +51,13 @@ pass. No install/session walkthrough or live release-tag deployment is claimed.
 
 ## Open release checkpoints
 
-- A released version publishes its tagged copy without losing older copies. The
-  catalog/paths are fixture-tested; no release tag existed at first publication.
-- Final public installation instructions following the merged installer/release
-  implementation. The #470 installer and #495 proxy wiring are merged and the
-  canonical README documents their commands, prerequisites and current platform
-  blockers; public archive onboarding remains unmeasured.
+- A released version publishes its tagged copy without losing older copies:
+  measured below once releases existed (see
+  [released-version publication](#released-version-publication)).
+- Public installation instructions on the site itself. The install page stages the
+  README's archive steps (checksum, unpack, `torlek daemon install`, `torlek init`)
+  from their canonical source, so a reader no longer has to leave for GitHub.
+  Their use by a reader remains unmeasured.
 - A reader installs and starts a session from the published site alone, coordinated
   with Chief. No volunteer has completed this acceptance walk yet.
 - #98's greenfield fixture image is complete in PR #536; its
@@ -66,6 +67,39 @@ pass. No install/session walkthrough or live release-tag deployment is claimed.
 
 The [build guide](../../site/README.md) owns executable commands and tooling limits.
 This record does not close either issue's live-validation criteria.
+
+## Released-version publication
+
+Measured 2026-11-06 against the live site and main workflow run
+[42251269940](https://github.com/Androlax2/agent-cockpit/actions/runs/42251269940),
+built from main revision `5174ca1f6870fe60b039027d5fa48610f9790ed0`. Anonymous
+HTTP only; no credentials, provider or user state.
+
+| Copy | Live | `build.json` revision | Pages | Build artifact |
+| --- | --- | --- | --- | --- |
+| latest | 200 | `5174ca1f6870` (main) | 201 | 7.6 MB |
+| v0.1.0-alpha.4 | 200 | `87274175a5d5` (its tag) | 199 | 7.5 MB |
+| v0.1.0-alpha.3 | 200 | `e1132851b779` (its tag) | 187 | 6.8 MB |
+| v0.1.0-alpha.2 | 200 | `fb683e93a779` (its tag) | 173 | 5.9 MB |
+| v0.1.0-alpha.1 | 200 | `2f620da3f8a7` (its tag) | 170 | 5.7 MB |
+
+Every copy lists all five versions in its switcher. The assembled Pages artifact
+was 33.2 MB. Each build job took about one minute (serial, `max-parallel: 1`),
+assembly 21 seconds and deployment 1 min 45 s. Rebuilding every copy per publish
+therefore costs about five minutes and grows by roughly 6 to 8 MB per release;
+the preservation strategy needs no change at this size.
+
+## Install steps on the site
+
+The live install page linked to the README on GitHub and carried none of its
+commands (no `sha256sum` or `torlek init` on `get-started/install`). The site now
+stages the README's "Install with your AI agent" and "Install from the command
+line" sections as `get-started/install-release`, and the install status page links
+there. `site/tests/site.test.mjs` asserts the built page carries the checksum,
+daemon-install and init steps and that the status page links to it.
+
+Still owner or volunteer work, not claimed here: a reader walking install and a
+first session from the published site alone, and a custom domain (#339).
 
 ## Hosted CI bootstrap correction
 

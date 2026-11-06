@@ -3,7 +3,8 @@
 Issue #102. This static Astro/Fumadocs site renders canonical repository content,
 with the [approved r4 layout](../docs/design/102-documentation-layout-r4.md).
 Published at [GitHub Pages](https://androlax2.github.io/agent-cockpit/).
-Public installation and reader onboarding acceptance remain open.
+The install page carries the README's archive steps; a volunteer's site-only
+session walkthrough remains open.
 
 ## Build and check
 
@@ -32,8 +33,8 @@ writable sandbox-local cache. Lifecycle scripts remain disabled.
 ## Content and provenance
 
 `site/scripts/content.mjs` stages canonical Markdown into ignored `content/docs/`:
-README guide sections, development/contribution guidance, the shipped agent
-instruction bundle, greenfield reports and dated decisions. It preserves code
+the README's two install sections, user guide sections, development/contribution
+guidance, the shipped agent instruction bundle, greenfield reports and dated decisions. It preserves code
 fences, rewrites mapped links to the selected version and leaves other source
 links on GitHub. `site/content/` contains the comparison and explicitly planned
 protocol reference. No generated protocol schema is claimed before #295.
@@ -65,9 +66,10 @@ Build jobs have read-only repository permissions. A separate deployment job has
 Pages/OIDC write permissions and uses the `github-pages` environment. The version
 assembler validates the complete catalog before replacing its output; a missing
 or incompatible historical build fails publication instead of removing that
-version. There are currently no published releases. Rebuilding the whole catalog
-is the initial preservation strategy; revisit storage when its measured cost
-warrants it. A release predating this site cannot be silently skipped.
+version. Rebuilding the whole catalog is the initial preservation strategy; revisit
+storage when its measured cost warrants it. A release predating this site cannot be
+silently skipped. The measured cost of five copies is in the
+[acceptance record](../docs/acceptance/102-documentation-site.md#released-version-publication).
 
 Workflow pushes, Pages enablement, environment policy, deployment and repository
 website settings require their separate host review. No custom domain is set
