@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cockpit_client::{ClientError, Connection};
-use cockpit_protocol::{Command, ErrorCode};
+use cockpit_protocol::{Command, ErrorCode, SessionStateView, SessionView};
 use real_daemon::{
-    BUILD_PROFILE_DIR, COMMANDED_PROJECT, Daemon, GENEROUS, Home, SETTLE, new_session,
-    session_new_command,
+    BUILD_PROFILE_DIR, COMMANDED_PROJECT, Daemon, GENEROUS, Home, SETTLE, is_alive, listed,
+    new_session, session_new_command,
 };
 
 const REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
@@ -1543,4 +1543,149 @@ async fn withholding_the_desktop_session_makes_a_required_sandbox_ready_after_a_
         .find(|line| line.contains("  sandbox: "))
         .unwrap_or_else(|| panic!("no sandbox requirement in:\n{report}"));
     assert!(sandbox.trim_start().starts_with("available"), "{report}");
+}
+
+/// What a reboot leaves: the daemon killed, then every agent with its tmux server, so the
+/// next daemon restores their sessions.
+fn reboot(home: &Home, daemon: Daemon) {
+    daemon.kill();
+    let killed = std::process::Command::new("tmux")
+        .env_remove("TMUX")
+        .arg("-S")
+        .arg(home.tmux_socket_of(BUILD_PROFILE_DIR))
+        .arg("kill-server")
+        .output()
+        .unwrap();
+    assert!(killed.status.success(), "{}", text(&killed.stderr));
+}
+
+/// #969: a session first launched with the sandbox off, rebooted, and restored by a daemon
+/// whose owner since set `required`: the daemon running and the session as it restored it.
+async fn restored_after_turning_the_sandbox_on(home: &Home) -> (Daemon, SessionView) {
+    let daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+    let started = new_session(&client, &root).await;
+    let agent = home.wait_for_launches(&started.id, 1).await[0].clone();
+    drop(client);
+    reboot(home, daemon);
+    let deadline = std::time::Instant::now() + GENEROUS;
+    while is_alive(agent.pid) {
+        assert!(std::time::Instant::now() < deadline, "the agent outlived its tmux server");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    home.write_owner_config(REQUIRED);
+
+    let daemon = home.start();
+    let client = home.connect().await;
+    // Restored before the daemon accepts a request.
+    let restored = listed(&client, &started.id).await;
+    (daemon, restored)
+}
+
+/// #969: its conversation is in the owner's home, which a sandboxed agent never sees, so the
+/// restore is refused before launch, naming the change, instead of an agent that fails.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_first_launched_unsandboxed_is_refused_a_sandboxed_restore() {
+    let home = Home::new();
+
+    let (_daemon, restored) = restored_after_turning_the_sandbox_on(&home).await;
+
+    assert_eq!(restored.state, SessionStateView::Failed, "{restored:?}");
+    let reason = restored.reason.unwrap_or_default();
+    assert!(
+        reason.starts_with("restore refused: ")
+            && reason.contains("first launched with the sandbox off")
+            && reason.contains("agents.sandbox = \"off\""),
+        "{reason}"
+    );
+    assert_eq!(home.launches_of(&restored.id).len(), 1, "never launched again");
+}
+
+/// #969: the owner's own resume is refused the same way while the setting differs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_first_launched_unsandboxed_is_refused_a_sandboxed_resume() {
+    let home = Home::new();
+    let (_daemon, restored) = restored_after_turning_the_sandbox_on(&home).await;
+    let client = home.connect().await;
+
+    let resumed = client
+        .request(
+            Command::SessionResume {
+                session: restored.id.clone(),
+            },
+            GENEROUS,
+        )
+        .await;
+
+    assert!(
+        matches!(&resumed, Err(ClientError::Daemon(error))
+            if error.code == ErrorCode::Conflict
+                && error.message.contains("first launched with the sandbox off")),
+        "{resumed:?}"
+    );
+    assert_eq!(listed(&client, &restored.id).await.state, SessionStateView::Failed);
+    assert_eq!(home.launches_of(&restored.id).len(), 1, "never launched again");
+}
+
+/// #969: the refusal keeps the conversation: with the sandbox off again, a resume reopens it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_session_resumes_its_conversation_once_the_sandbox_is_off_again() {
+    let home = Home::new();
+    let (daemon, restored) = restored_after_turning_the_sandbox_on(&home).await;
+    daemon.kill();
+    home.write_owner_config("");
+    let _daemon = home.start();
+    let client = home.connect().await;
+
+    let resumed = client
+        .request(
+            Command::SessionResume {
+                session: restored.id.clone(),
+            },
+            GENEROUS,
+        )
+        .await;
+
+    assert!(resumed.is_ok(), "{resumed:?}");
+    home.wait_for_launches(&restored.id, 2).await;
+    let conversation = restored.conversation.expect("Claude Code names it at launch");
+    let arguments = home.arguments_of(&restored.id);
+    assert!(
+        arguments
+            .last()
+            .is_some_and(|last| last.contains(&format!("--resume {conversation}"))),
+        "{arguments:?}"
+    );
+}
+
+/// #969, the reverse: a sandboxed session's conversation is in the session's own home, which
+/// an unsandboxed agent does not use, so restoring it with the sandbox off is refused too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_first_launched_sandboxed_is_refused_an_unsandboxed_restore() {
+    let home = Home::new();
+    let Sandboxed {
+        _daemon: daemon,
+        root,
+        session,
+    } = sandboxed_agent(&home, |_| {}).await;
+    // A sandboxed agent cannot write the launch log: its line proves it ran.
+    assert_eq!(run_in_agent(&home, &root, "true").await, "exit=0\n");
+    let launched = listed(&home.connect().await, &session).await.launch;
+    reboot(&home, daemon);
+    home.write_owner_config("");
+
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let restored = listed(&client, &session).await;
+
+    assert_eq!(restored.state, SessionStateView::Failed, "{restored:?}");
+    let reason = restored.reason.unwrap_or_default();
+    assert!(
+        reason.starts_with("restore refused: ")
+            && reason.contains("first launched sandboxed")
+            && reason.contains("agents.sandbox = \"required\""),
+        "{reason}"
+    );
+    assert_eq!(restored.launch, launched, "never launched again");
 }

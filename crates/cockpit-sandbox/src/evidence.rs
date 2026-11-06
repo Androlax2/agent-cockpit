@@ -148,6 +148,27 @@ pub async fn record(
     Ok(())
 }
 
+/// Whether `session`'s first recorded launch ran sandboxed; `None` when it has none. Its
+/// provider keeps the conversation in the home that launch had (#969).
+#[cfg(feature = "persistence")]
+pub async fn first_launch_was_sandboxed(
+    connection: &Connection,
+    session: &str,
+) -> Result<Option<bool>, cockpit_turso::Error> {
+    let mut rows = connection
+        .query(
+            "SELECT enforcement FROM sandbox_launches WHERE session_id = ?1
+             ORDER BY id LIMIT 1",
+            [session],
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(None);
+    };
+    let enforcement: String = row.get(0)?;
+    Ok(Some(enforcement == "sandboxed"))
+}
+
 /// The evidence of `session`'s latest recorded launch, if it has one.
 #[cfg(feature = "persistence")]
 pub async fn latest_for_session(
