@@ -174,6 +174,10 @@ impl Setup {
 
     /// Starts the notifier; `is_desktop` gives it a session bus and a display.
     fn start(&self, extra: &[&str], is_desktop: bool) -> Running {
+        Running(self.notifier(extra, is_desktop).spawn().unwrap())
+    }
+
+    fn notifier(&self, extra: &[&str], is_desktop: bool) -> std::process::Command {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek-notify"));
         command
             .arg("--socket")
@@ -192,7 +196,7 @@ impl Setup {
                 .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/bus")
                 .env("WAYLAND_DISPLAY", "wayland-test");
         }
-        Running(command.spawn().unwrap())
+        command
     }
 
     /// Starts no daemon yet: [`Setup::bind`] does.
@@ -398,4 +402,29 @@ fn what_waited_before_the_daemon_could_be_reached_is_not_news() {
             "notify-send [--app-name=Torlek] [--urgency=normal] [--] [{WORKER} finished]"
         )]
     );
+}
+
+#[test]
+fn a_second_notifier_for_the_same_state_directory_exits_without_telling_twice() {
+    let setup = Setup::new();
+    let mut first = setup.start(&[], false);
+    let deadline = Instant::now() + GENEROUS;
+    while !setup.log().contains("the notifier started") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let second = setup
+        .notifier(&[], false)
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+
+    assert_eq!(second.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    // The log directory's guard (cockpit-diagnostics) is what keeps it to one per profile.
+    assert!(
+        stderr.contains("another process already logs to"),
+        "{stderr}"
+    );
+    assert_eq!(first.0.try_wait().unwrap(), None, "the first keeps running");
 }

@@ -210,6 +210,23 @@ per session. Enter opens a session full screen and read-only; `i` types a line i
 goes back. `[tui] phone_below_columns` in the owner configuration changes the width, and `0`
 turns it off.
 
+### Desktop notifications and sounds
+
+`torlek notify`, run from your desktop session, shows a desktop notification and plays a sound
+when a session fails, is held on your permission, asks a question, stops at its usage limit or
+finishes. It runs until you stop it and needs `notify-send` for notifications and
+`canberra-gtk-play`, `pw-play` or `paplay` for sounds; without them it keeps running and logs
+which outlet is off. Turn single events off in the owner configuration, then start it again:
+
+```toml
+[notify.desktop]
+finished = false    # no notification when a session finishes
+[notify.sound]
+question = false    # no sound for a question
+```
+
+The events are `failure`, `hold`, `question`, `quota` and `finished`.
+
 ## Updates
 
 Torlek tells you when a newer release is available. It never downloads, installs, restarts the daemon or stops a session for you: it prints the commands, and you run them.

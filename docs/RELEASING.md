@@ -380,8 +380,9 @@ README's `install.sh` URL is the exception: step 4 of [Cut a release](#cut-a-rel
 
 ## Archive TUI smoke check
 
-The archive includes `torlek-tui` beside `torlek`. The release install jobs run
-`tools/release.py verify-install` on the unpacked archive; it checks the manifest checksums
-and runs `torlek tui --version` to execute that sibling and check its compiled version.
+The archive includes `torlek-tui` and `torlek-notify` beside `torlek`. The release install
+jobs run `tools/release.py verify-install` on the unpacked archive; it checks the manifest
+checksums and runs `torlek tui --version` and `torlek notify --version` to execute each
+sibling and check its compiled version.
 This headless check needs no terminal or manager session; interactive TUI coverage remains
 in the existing terminal tests.

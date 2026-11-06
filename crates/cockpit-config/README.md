@@ -96,6 +96,21 @@ attention_bell = true     # ring the terminal bell when a session needs the owne
 phone_below_columns = 60  # 0 never switches
 ```
 
+## Notify
+
+Which events `torlek notify` (#62) tells with a desktop notification and which with a sound,
+read when it starts. Every event is on by default; an unknown event name fails the parse.
+
+```toml
+[notify.desktop]
+failure = true    # failed, or its agent exited by itself
+hold = true       # held on the owner's permission
+question = true   # asks a question or waits for input
+quota = true      # stopped at the plan's usage limit
+finished = true   # finished its work
+[notify.sound]    # the same five events
+```
+
 ## Start files
 
 Files an agent reads only at launch. The product declares the provider-owned ones

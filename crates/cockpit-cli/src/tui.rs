@@ -17,12 +17,12 @@ const TUI_BINARY: &str = "torlek-tui";
 
 pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     if arguments == ["--version"] {
-        let tui = match tui_binary() {
+        let tui = match crate::profile::sibling_program(TUI_BINARY) {
             Ok(tui) => tui,
             Err(problem) => return Ok(fail(&problem)),
         };
         let error = std::process::Command::new(&tui).arg("--version").exec();
-        return Ok(fail(&format!("cannot run {tui}: {error}")));
+        return Ok(fail(&format!("cannot run {}: {error}", tui.display())));
     }
     if let Some(extra) = arguments.first() {
         return Err(format!("unknown argument {}", extra.to_string_lossy()));
@@ -46,7 +46,8 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
 }
 
 fn manager_open() -> Result<Command, ExitCode> {
-    let tui = tui_binary().map_err(|problem| fail(&problem))?;
+    let tui =
+        utf8(&crate::profile::sibling_program(TUI_BINARY).map_err(|problem| fail(&problem))?)?;
     let socket = crate::agent::socket_dir()?.join(cockpit_config::DAEMON_SOCKET);
     let environment = crate::profile::environment();
     let home = environment
@@ -78,23 +79,6 @@ fn manager_open() -> Result<Command, ExitCode> {
             "paste-image".to_owned(),
         ],
     })
-}
-
-/// `cockpit-tui` installed beside this `cockpit`; never one found on PATH, which could be
-/// another build.
-fn tui_binary() -> Result<String, String> {
-    let cockpit = std::env::current_exe()
-        .map_err(|error| format!("cannot find this program's path: {error}"))?;
-    let tui = cockpit.with_file_name(TUI_BINARY);
-    if !tui.is_file() {
-        return Err(format!(
-            "{} is missing: install {TUI_BINARY} beside torlek",
-            tui.display()
-        ));
-    }
-    tui.to_str()
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{}: not UTF-8", tui.display()))
 }
 
 fn utf8(path: &Path) -> Result<String, ExitCode> {

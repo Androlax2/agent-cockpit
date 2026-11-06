@@ -132,6 +132,7 @@ fn a_profile_name_that_is_not_a_plain_name_or_names_a_program_is_refused() {
         "a/b",
         "daemon",
         "tui",
+        "notify",
         "claude-hook",
         "abcdefghijklmnopqrstuvwxy",
     ] {

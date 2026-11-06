@@ -9,11 +9,13 @@
 mod github_token;
 mod layout;
 mod memory;
+mod notify;
 mod profile;
 mod show;
 mod start_files;
 mod storage;
 pub use memory::MemorySettings;
+pub use notify::{NOTIFY_EVENTS, NotifyEvents, NotifySettings};
 pub use storage::StorageSettings;
 
 use std::fmt;
@@ -131,6 +133,8 @@ pub struct EffectiveConfig {
     pub storage: StorageSettings,
     /// What the daemon and its tmux server may hold in memory (#406).
     pub memory: MemorySettings,
+    /// Which events `torlek notify` tells on the desktop and with a sound (#62, #682).
+    pub notify: NotifySettings,
     pub layout: Layout,
     pub user_file: ConfigFile,
     pub project_file: Option<ConfigFile>,
@@ -348,6 +352,7 @@ struct SettingsFile {
     sessions: Option<Spanned<SessionsTable>>,
     agents: Option<Spanned<AgentsTable>>,
     tui: Option<Spanned<TuiTable>>,
+    notify: Option<Spanned<notify::NotifyTable>>,
     checks: Option<Spanned<Vec<Spanned<CheckEntry>>>>,
     execution: Option<Spanned<ExecutionTable>>,
     needs: Option<Spanned<NeedsTable>>,
@@ -510,6 +515,7 @@ pub fn load(
     Ok(EffectiveConfig {
         storage: storage::settings(&layers)?,
         memory: memory::settings(&layers)?,
+        notify: notify::settings(&layers),
         layout,
         user_file,
         project_file,
@@ -582,6 +588,7 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         sessions,
         agents,
         tui,
+        notify,
         workflow: _,
         checks: _,
         execution: _,
@@ -634,6 +641,12 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         return Err(ConfigError::OwnerOnly {
             key: "tui",
             source: layer.source_at(tui.span()),
+        });
+    }
+    if let Some(notify) = notify {
+        return Err(ConfigError::OwnerOnly {
+            key: "notify",
+            source: layer.source_at(notify.span()),
         });
     }
     Ok(())

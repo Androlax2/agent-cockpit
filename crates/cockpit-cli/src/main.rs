@@ -36,6 +36,7 @@ mod instructions;
 mod logs;
 mod mcp;
 mod network;
+mod notify;
 mod old_sandbox;
 mod onboarding;
 mod profile;
@@ -115,6 +116,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek init
        torlek doctor [--project DIR | --remove-old-sandbox]
        torlek tui [--version]
+       torlek notify [--version]
        torlek version [--all]
        torlek update [check | later | skip | checks on|off]
        torlek daemon install
@@ -297,6 +299,8 @@ fn main() -> ExitCode {
         [Some("update"), ..] => update::run(&arguments[1..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("tui"), ..] => tui::run(&arguments[1..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
+        [Some("notify"), ..] => notify::run(&arguments[1..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         _ => usage_error(None),
     }

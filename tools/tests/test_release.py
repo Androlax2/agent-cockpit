@@ -549,6 +549,7 @@ FAKE_COCKPIT = """#!/bin/sh
 if [ "$1" = provider ]; then cat "$HOME/providers"; exit; fi
 prefix=$(cd "$(dirname "$0")/.." && pwd)
 if [ "$1" = tui ]; then shift; exec "$prefix/bin/torlek-tui" "$@"; fi
+if [ "$1" = notify ]; then shift; exec "$prefix/bin/torlek-notify" "$@"; fi
 echo "torlek 0.1.0-alpha.7 (revision 0123abcd)"
 echo "bundle manifest $prefix/share/torlek/manifest.json:"
 cat "$prefix/share/torlek/manifest.json"
@@ -599,6 +600,10 @@ class PackagingTestCase(unittest.TestCase):
         self.write_fake(
             "torlek-tui",
             '#!/bin/sh\n[ "$1" = --version ] || exit 2\necho "torlek-tui 0.1.0-alpha.7"\n',
+        )
+        self.write_fake(
+            "torlek-notify",
+            '#!/bin/sh\n[ "$1" = --version ] || exit 2\necho "torlek-notify 0.1.0-alpha.7"\n',
         )
         for helper in release.HELPERS:
             self.write_fake(helper, FAKE_HOOK_BRIDGE)
@@ -655,6 +660,7 @@ class PackageTests(PackagingTestCase):
                 f"{prefix}/bin/torlek",
                 f"{prefix}/bin/torlek-daemon",
                 f"{prefix}/bin/torlek-tui",
+                f"{prefix}/bin/torlek-notify",
                 f"{prefix}/share/torlek/manifest.json",
                 f"{prefix}/LICENSE",
                 f"{prefix}/README.md",
@@ -799,6 +805,13 @@ class VerifyInstallTests(PackagingTestCase):
         code, _, error = self.verify(outputs["root"])
         self.assertEqual(code, 1)
         self.assertIn("torlek tui --version", error)
+
+    def test_a_notifier_that_cannot_run_fails_the_install_check(self):
+        self.write_fake("torlek-notify", "#!/bin/sh\nexit 126\n")
+        _, outputs, _ = self.package()
+        code, _, error = self.verify(outputs["root"])
+        self.assertEqual(code, 1)
+        self.assertIn("torlek notify --version", error)
 
     def test_a_missing_or_changed_file_fails_naming_it(self):
         _code, outputs, _error = self.package()

@@ -240,6 +240,18 @@ pub fn render(config: &EffectiveConfig) -> String {
         &config.tui_phone_below_columns.value.to_string(),
         &config.tui_phone_below_columns.source,
     ));
+    for (outlet, events) in [
+        ("desktop", &config.notify.desktop),
+        ("sound", &config.notify.sound),
+    ] {
+        for (event, setting) in events.by_name() {
+            lines.push(line(
+                &format!("notify.{outlet}.{event}"),
+                &setting.value.to_string(),
+                &setting.source,
+            ));
+        }
+    }
     // Before the start files and checks, which list last as they grow.
     lines.push(line(
         "execution.environment",
