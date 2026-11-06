@@ -46,7 +46,7 @@ pub use platform::Platform;
 pub use profile::{
     BASELINE_DENIED_READ, BASELINE_DENIED_WRITE, CODEX_SOCKET_FOLDER_NAME, DESKTOP_VARIABLES,
     DesktopEndpoint, EndpointKind, FolderMount, Profile, ProfileRequest, ProviderReach, Refusal,
-    Secret, SecretHandling,
+    Secret, SecretHandling, shared_desktop_refusal,
 };
 pub use spec::{
     Folder, Forward, InvalidSpec, LANDLOCK_ABI_FLOOR, LaunchSpec, NeedsSource, Protected,

@@ -14,6 +14,8 @@ use tempfile::TempDir;
 
 const NATIVE_BACKEND: &str = "torlek-sandbox with bubblewrap 0.13.1 and Landlock ABI 9";
 
+const SHARED_DESKTOP_REFUSAL: &str = "the sandbox refuses `desktop session shared`: the native sandbox does not show the owner's desktop yet (DISPLAY names /tmp/.X11-unix/X1)";
+
 const NO_BUBBLEWRAP: &str = "bubblewrap (`bwrap`) is not on the daemon's PATH";
 
 /// The owner's file of a daemon that applies `required`: the file it read says so.
@@ -34,6 +36,7 @@ fn ready_host() -> HostFacts {
         // The product default; `required` runs agents in the native sandbox (#829).
         sandbox_setting: AgentSandbox::Off,
         sandbox_backend: Ok(NATIVE_BACKEND.to_owned()),
+        shared_desktop_refusal: None,
         providers: vec![ProviderFacts {
             name: "claude".to_owned(),
             found: Ok(ProviderFound {
@@ -170,6 +173,7 @@ fn every_requirement_that_is_not_available_names_its_next_action() {
         tmux: Err("no tmux".to_owned()),
         sandbox_setting: AgentSandbox::Required,
         sandbox_backend: Err(NO_BUBBLEWRAP.to_owned()),
+        shared_desktop_refusal: None,
         providers: vec![ProviderFacts {
             name: "claude".to_owned(),
             found: Err(ProviderUnusable::NotOnPath),
@@ -236,6 +240,52 @@ fn a_required_sandbox_with_the_native_backend_is_available_naming_it() {
     assert_eq!(sandbox.status, Status::Available, "{sandbox:?}");
     assert!(sandbox.detail.contains(NATIVE_BACKEND), "{sandbox:?}");
     assert!(sandbox.detail.contains("loopback"), "{sandbox:?}");
+}
+
+/// #965: `required` with a backend still blocks while the sandbox refuses the shared
+/// desktop session, with the launch refusal's own message and fix.
+#[test]
+fn a_required_sandbox_that_refuses_the_shared_desktop_blocks_naming_the_fix() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let host = HostFacts {
+        sandbox_setting: AgentSandbox::Required,
+        shared_desktop_refusal: Some(SHARED_DESKTOP_REFUSAL.to_owned()),
+        ..ready_host()
+    };
+
+    let report = fixture.report(&host, &fixture.facts());
+
+    let sandbox = requirement(&report, "sandbox");
+    assert_eq!(sandbox.status, Status::MissingPrerequisite, "{sandbox:?}");
+    assert!(
+        sandbox.detail.contains(SHARED_DESKTOP_REFUSAL),
+        "{sandbox:?}"
+    );
+    assert!(
+        sandbox
+            .next
+            .as_deref()
+            .unwrap()
+            .contains("agents.desktop_session = \"withheld\""),
+        "{sandbox:?}"
+    );
+    assert!(!report.is_ready());
+}
+
+#[test]
+fn a_desktop_refusal_does_not_block_an_unsandboxed_owner() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let host = HostFacts {
+        sandbox_setting: AgentSandbox::Off,
+        shared_desktop_refusal: Some(SHARED_DESKTOP_REFUSAL.to_owned()),
+        ..ready_host()
+    };
+
+    let report = fixture.report(&host, &fixture.facts());
+
+    assert_eq!(requirement(&report, "sandbox").status, Status::Available);
 }
 
 /// Each case: host facts changed from a ready host, the requirement and the status it gets.

@@ -316,6 +316,7 @@ fn host_facts(context: &Context) -> HostFacts {
             cockpit_sandbox::Backend::Native(native) => Ok(native.describe()),
             cockpit_sandbox::Backend::Missing { reason } => Err(reason.clone()),
         },
+        shared_desktop_refusal: context.sessions.shared_desktop_refusal(),
         providers: context.providers.clone(),
         controls: context
             .admission

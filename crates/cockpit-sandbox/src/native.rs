@@ -402,15 +402,7 @@ pub(crate) fn prepare(
     arguments: Vec<OsString>,
 ) -> Result<Prepared, Refusal> {
     if let Some(endpoint) = profile.desktop_endpoints.first() {
-        return Err(Refusal::new(
-            "desktop session shared",
-            format!(
-                "the native sandbox does not show the owner's desktop yet ({} names {}); \
-                 set agents.desktop_session = \"withheld\" to launch under the sandbox",
-                endpoint.variable,
-                endpoint.path.display()
-            ),
-        ));
+        return Err(Refusal::shared_desktop(endpoint));
     }
     if let Some(secret) = profile
         .secrets
