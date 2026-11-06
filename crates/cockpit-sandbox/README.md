@@ -75,7 +75,8 @@ launch, `torlek doctor` and `torlek init` say so.
    `deny_network_request` and `revoke_network_grant` record who decided, when and through
    which client; an allow within `NETWORK_ALLOW_GRACE_SECONDS` of the request is refused.
    `egress_decisions` is what the session's launcher is given: `Staged::write` writes it
-   as `egress-decisions.json`, the daemon rewrites it after each decision.
+   as `egress-decisions.json`, with the requests still asking, which allow nothing; the
+   daemon rewrites it after each decision and each request it files.
 
 Edges: `cockpit-config` (the owner's `DesktopSession` and `AgentSandbox` values) and `cockpit-turso` (the evidence and network request tables, behind the default `persistence`
 feature). `cockpit-sessions` calls it for every launch.

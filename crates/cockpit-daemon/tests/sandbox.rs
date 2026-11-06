@@ -1013,10 +1013,7 @@ async fn a_sandboxed_agent_is_refused_an_unknown_host_at_once_with_a_reason() {
 
     let printed = run_in_agent(&home, &agent.root, &connect_line("unknown.example.com:443")).await;
 
-    assert!(
-        printed.starts_with("HTTP/1.1 403 Forbidden\r\n"),
-        "{printed}"
-    );
+    assert!(printed.starts_with("HTTP/1.1 403 Forbidden: "), "{printed}");
     assert!(printed.contains("error=http_request_denied"), "{printed}");
     assert!(
         printed.contains(&format!(
@@ -1046,7 +1043,7 @@ async fn a_sandboxed_agent_is_refused_ip_literals_loopback_private_and_metadata_
         let printed = run_in_agent(&home, &agent.root, &connect_line(target)).await;
 
         assert!(
-            printed.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+            printed.starts_with("HTTP/1.1 403 Forbidden: "),
             "{target}: {printed}"
         );
         assert!(
@@ -1286,7 +1283,7 @@ async fn connect_until(home: &Home, root: &Path, is_done: impl Fn(&str) -> bool)
 }
 
 fn is_refused(printed: &str) -> bool {
-    printed.starts_with("HTTP/1.1 403 Forbidden\r\n")
+    printed.starts_with("HTTP/1.1 403 Forbidden")
 }
 
 /// #674: the refusal comes at once and says the owner is asked and how it is unblocked; the
@@ -1316,6 +1313,31 @@ async fn a_refused_host_is_asked_of_the_owner_and_listed_for_them() {
         "{}{}",
         text(&approvals.stdout),
         text(&approvals.stderr)
+    );
+}
+
+/// #966: once the daemon filed the request, a retry reads its number and the owner's command
+/// on the status line, the part of a failed `CONNECT` that clients print.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_names_the_filed_request_and_the_owners_command_on_its_status_line() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    run_in_agent(&home, &agent.root, &connect_line(ASKED_HOST)).await;
+
+    let printed = connect_until(&home, &agent.root, |printed| {
+        printed.contains("network request 1")
+    })
+    .await;
+
+    let status_line = printed.lines().next().unwrap_or_default();
+    assert_eq!(
+        status_line,
+        format!(
+            "HTTP/1.1 403 Forbidden: torlek-sandbox: {ASKED_HOST} is not allowed: no entry of \
+             the allowlist names it; the owner is asked in network request 1: \
+             `torlek network allow 1` lets it through"
+        ),
+        "{printed}"
     );
 }
 

@@ -252,6 +252,7 @@ fn a_credential_for_a_host_the_owners_decisions_reach_is_bound() {
     request.decisions = EgressDecisions {
         allowed: github_hosts(),
         denied: Vec::new(),
+        asking: Vec::new(),
     };
 
     let staged = native_launch(&request).unwrap().staged.unwrap();

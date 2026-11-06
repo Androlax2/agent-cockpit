@@ -20,10 +20,10 @@ pub use credentials::{
     SESSION_CA_FILE, SYSTEM_BUNDLES, SpecCredential,
 };
 pub use egress::{
-    AllowEntry, AllowSource, Allowed, Allowlist, AskedDestination, Counters as EgressCounters,
-    DECISIONS_FILE, DeniedDestination, EGRESS_FILE, EgressDecisions, EgressReport, EgressRequests,
-    MAX_ASKED_DESTINATIONS, MAX_REPORTED_DESTINATIONS, PROXY_ADDRESS, REQUESTS_FILE,
-    Refusal as EgressRefusal, TLS_PORT, Target, destination, is_askable_destination,
+    AllowEntry, AllowSource, Allowed, Allowlist, AskedDestination, AskingDestination,
+    Counters as EgressCounters, DECISIONS_FILE, DeniedDestination, EGRESS_FILE, EgressDecisions,
+    EgressReport, EgressRequests, MAX_ASKED_DESTINATIONS, MAX_REPORTED_DESTINATIONS, PROXY_ADDRESS,
+    REQUESTS_FILE, Refusal as EgressRefusal, TLS_PORT, Target, destination, is_askable_destination,
     non_public_class, normalized_name,
 };
 pub use evidence::{AppliedRule, Enforcement, Evidence};

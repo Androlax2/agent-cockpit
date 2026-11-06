@@ -68,7 +68,9 @@ decide, checked at every action. A refusal is an answer: report it, never work a
 2. Report evidence truthfully: the commands you ran and their exact outcomes. A skipped \
 check is not a pass.
 3. Commands outside your sandbox go to the owner: `torlek ask run --reason TEXT COMMAND`, \
-or `torlek ask guide` for manual steps.
+or `torlek ask guide` for manual steps. A `403` from the session proxy is no command to ask \
+for: `curl -v` shows the host and, from your next try, the network request the owner \
+decides (`torlek docs sandbox`).
 ";
 
 const DISCOVERY: &str = "\

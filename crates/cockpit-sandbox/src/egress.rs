@@ -56,6 +56,18 @@ pub struct EgressDecisions {
     pub allowed: Vec<AllowEntry>,
     /// What the owner denied this subject.
     pub denied: Vec<DeniedDestination>,
+    /// The requests still waiting on the owner, so a refusal names the one to decide (#966).
+    /// It allows nothing. Absent from a daemon before it: none.
+    #[serde(default)]
+    pub asking: Vec<AskingDestination>,
+}
+
+/// A destination asked of the owner, and the request that asks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskingDestination {
+    pub host: String,
+    pub port: u16,
+    pub request: i64,
 }
 
 /// A destination the owner denied, and the request denied.
@@ -73,6 +85,14 @@ impl EgressDecisions {
             .iter()
             .find(|denied| denied.port == port && denied.host == host)
             .map(|denied| denied.request)
+    }
+
+    /// The request waiting on the owner for `host` on `port`, if the daemon filed one.
+    pub fn asking(&self, host: &str, port: u16) -> Option<i64> {
+        self.asking
+            .iter()
+            .find(|asking| asking.port == port && asking.host == host)
+            .map(|asking| asking.request)
     }
 
     /// Whether the owner decided on `host` on `port`: allowed by name or denied.
