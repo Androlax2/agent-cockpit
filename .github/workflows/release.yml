@@ -501,6 +501,43 @@ jobs:
           export COCKPIT_CANDIDATE_ROOT="${roots[0]}"
           BASELINE_DOWNLOADS=baseline/linux-x86_64 make release-upgrade
 
+  # Report 13's running sessions during an upgrade (#736): a session started under the earlier
+  # channel release keeps its one agent through the old daemon's SIGTERM, the installed bundle's
+  # swap and the candidate's start, and the owner and the agent both reach it through the
+  # candidate. A fixture provider, a private home and its own tmux server; no account. Alpha
+  # and dry runs restart the candidate onto itself and print `upgrade=not-run`.
+  upgrade-sessions:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: [plan, build, upgrade-baseline]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: archive-linux-x86_64
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: upgrade-baseline
+          path: baseline
+      - name: Install tmux for the session's private server
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes tmux
+          tmux -V
+      - name: Keep a running session through the upgrade to the candidate
+        env:
+          REVISION: ${{ needs.plan.outputs.revision }}
+        run: |
+          prefix=$(mktemp -d)
+          tar -xzf dist/*.tar.gz -C "$prefix"
+          roots=("$prefix"/torlek-v*)
+          python3 tools/release_upgrade.py sessions --candidate "${roots[0]}" \
+            --revision "$REVISION" --downloads baseline/linux-x86_64
+
   # Checksums over every archive; with the archive-* artifacts, the nightly's download.
   assemble:
     needs: [plan, build]
@@ -600,7 +637,7 @@ jobs:
   publish:
     environment: release
     if: needs.plan.outputs.tag != ''
-    needs: [plan, draft, gate, install, install-wsl2, compatibility, responsiveness, upgrade, upgrade-wsl2]
+    needs: [plan, draft, gate, install, install-wsl2, compatibility, responsiveness, upgrade, upgrade-wsl2, upgrade-sessions]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     concurrency:

@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import json
+import os
 import queue
 import re
 import shutil
@@ -12,6 +13,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 from pathlib import Path, PurePosixPath
 
 import release
@@ -205,6 +207,7 @@ def running_daemon(root, environment):
             expected = str(Path(environment["XDG_RUNTIME_DIR"]) / "torlek-release-gate/daemon.sock")
             if line.strip() == "ready " + expected:
                 yield
+                stop_daemon(process)
                 return
         finally:
             release.stop_group(process)
@@ -214,7 +217,22 @@ def running_daemon(root, environment):
         raise release.Refusal(f"daemon did not become ready: {line!r}; {stderr.read()}")
 
 
-def verify(candidate, revision, downloaded=None):
+def stop_daemon(process):
+    """SIGTERM, as `systemctl --user restart` stops it during an upgrade, so the daemon's own
+    shutdown runs; one that outlives the command timeout fails the check."""
+    process.terminate()
+    try:
+        process.wait(timeout=release.COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise release.Refusal(
+            f"daemon did not stop within {release.COMMAND_TIMEOUT_SECONDS}s of SIGTERM"
+        ) from error
+
+
+def verify(candidate, revision, downloaded, fixture):
+    """Runs `fixture` from the previous channel release to the candidate; alpha and dev run it
+    from the candidate to itself and say the cross-version upgrade was not run."""
+    check, name, proves = fixture
     candidate = candidate.resolve()
     manifest, text = checked_manifest(candidate, revision)
     if not {f"bin/{binary}" for binary in release.BINARIES} <= manifest["contents"].keys():
@@ -229,13 +247,13 @@ def verify(candidate, revision, downloaded=None):
     if channel == "dev" and re.fullmatch(
         r"[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+", manifest["version"]
     ):
-        verify_state(candidate, manifest, text, candidate, manifest, text)
-        return "upgrade=not-run (dev: no release channel); same-candidate state fixture passed"
+        check(candidate, manifest, text, candidate, manifest, text)
+        return f"upgrade=not-run (dev: no release channel); same-candidate {name} fixture passed"
     if release.parse_tag("v" + manifest["version"])["channel"] != channel:
         raise release.Refusal("version and channel disagree")
     if channel == "alpha":
-        verify_state(candidate, manifest, text, candidate, manifest, text)
-        return "upgrade=not-run (alpha: explicit exemption); same-candidate state fixture passed"
+        check(candidate, manifest, text, candidate, manifest, text)
+        return f"upgrade=not-run (alpha: explicit exemption); same-candidate {name} fixture passed"
     if channel != "beta" or release.parse_tag("v" + manifest["version"])["channel"] != channel:
         raise release.Refusal("candidate is not an enabled release channel")
     with tempfile.TemporaryDirectory(prefix="torlek-upgrade-") as downloads:
@@ -250,11 +268,14 @@ def verify(candidate, revision, downloaded=None):
         old, old_manifest, old_text = unpack_previous(
             manifest["version"], manifest["platform"], directory
         )
-        verify_state(old, old_manifest, old_text, candidate, manifest, text)
-    return f"upgrade=passed ({old_manifest['version']} -> {manifest['version']}; project/task persistence)"
+        check(old, old_manifest, old_text, candidate, manifest, text)
+    return f"upgrade=passed ({old_manifest['version']} -> {manifest['version']}; {proves})"
 
 
-def verify_state(old, old_manifest, old_text, candidate, manifest, text):
+@contextlib.contextmanager
+def private_home(old, old_manifest, old_text, candidate, manifest, text):
+    """A temporary home with stand-in providers first on `PATH`, after both bundles answered
+    their own version in it, and a git project to add; yields the home and its environment."""
     # A short private home keeps Unix socket paths within macOS's limit.
     with tempfile.TemporaryDirectory(prefix="cu-", dir="/tmp") as home_name:
         home = Path(home_name)
@@ -263,6 +284,8 @@ def verify_state(old, old_manifest, old_text, candidate, manifest, text):
             ("XDG_RUNTIME_DIR", "run"),
             ("XDG_STATE_HOME", "state"),
             ("XDG_CONFIG_HOME", "config"),
+            # The daemons' tmux server lives in the home, never on the host's default socket.
+            ("TMUX_TMPDIR", "tmux"),
         ):
             path = home / suffix
             path.mkdir(mode=0o700)
@@ -295,12 +318,35 @@ def verify_state(old, old_manifest, old_text, candidate, manifest, text):
         ]
         checked_command([*git, "init", "--quiet"], environment)
         checked_command([*git, "commit", "--allow-empty", "--quiet", "-m", "fixture"], environment)
+        try:
+            yield home, environment
+        finally:
+            stop_tmux_servers(Path(environment["TMUX_TMPDIR"]))
+
+
+def stop_tmux_servers(tmux_tmpdir):
+    """Stops every tmux server the home's daemons started; their agents end with them."""
+    for socket in sorted(tmux_tmpdir.glob("tmux-*/*")):
+        subprocess.run(
+            ["tmux", "-S", str(socket), "kill-server"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+
+
+def verify_state(old, old_manifest, old_text, candidate, manifest, text):
+    with private_home(old, old_manifest, old_text, candidate, manifest, text) as (
+        home,
+        environment,
+    ):
 
         def cli(root, *arguments):
             return checked_command(
                 [root / "bin/torlek", "--profile", "release-gate", *arguments], environment
             )
 
+        project = home / "project"
         title = "retained task before upgrade"
         with running_daemon(old, environment):
             cli(old, "project", "add", str(project), "--name", "upgrade")
@@ -320,14 +366,137 @@ def verify_state(old, old_manifest, old_text, candidate, manifest, text):
                 raise release.Refusal("candidate cannot persist new state after upgrade")
 
 
+# The provider of the session that lives through the upgrade: it logs its launch, then reports
+# each line its terminal receives through the installed `torlek`, as an agent's hook does.
+SESSION_AGENT = """#!/bin/sh
+if [ "$1" = --version ]; then echo '{version}'; exit 0; fi
+# The daemon's other probes, such as `auth status`, run outside any session.
+if [ -z "${{TORLEK_SESSION-}}" ]; then exit 1; fi
+printf '%s %s\\n' "$TORLEK_SESSION" "$$" >> '{home}/launches.log'
+'{home}/installed/bin/torlek' agent report --state waiting > '{home}/waiting.partial' 2>&1
+printf 'exit=%s\\n' "$?" >> '{home}/waiting.partial'
+mv '{home}/waiting.partial' '{home}/waiting.log'
+while IFS= read -r line; do
+  '{home}/installed/bin/torlek' agent report --state waiting --label "$line" \\
+    > '{home}/report.partial' 2>&1
+  printf 'exit=%s\\n%s\\n' "$?" "$line" >> '{home}/report.partial'
+  mv '{home}/report.partial' '{home}/report.log'
+done
+"""
+REACHED = "reached after the upgrade"
+
+
+def wait_for(what, probe):
+    """`probe()`'s first truthy answer, polled until the command timeout names `what`."""
+    deadline = time.monotonic() + release.COMMAND_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        answer = probe()
+        if answer:
+            return answer
+        time.sleep(0.1)
+    raise release.Refusal(f"timed out waiting for {what}")
+
+
+def read_if_written(path):
+    """What the agent wrote whole to `path`, or None before it renamed the file into place."""
+    return path.read_text() if path.exists() else None
+
+
+def launches(home):
+    log = home / "launches.log"
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def is_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def verify_sessions(old, old_manifest, old_text, candidate, manifest, text):
+    """A session started under the old daemon keeps its one agent through stop, swap of the
+    installed bundle and start, and both the owner and the agent reach it through the candidate."""
+    with private_home(old, old_manifest, old_text, candidate, manifest, text) as (
+        home,
+        environment,
+    ):
+        agent = home / "bin/claude"
+        agent.write_text(
+            SESSION_AGENT.format(version=release.STAND_IN_VERSIONS["claude"], home=home)
+        )
+        installed = home / "installed"
+
+        def cli(*arguments):
+            return checked_command(
+                [installed / "bin/torlek", "--profile", "release-gate", *arguments], environment
+            )
+
+        def shown(session):
+            # `id  state  agent  launch ...`: what a daemon lists of the session's run.
+            rows = [row.split("\t") for row in cli("session", "list").splitlines()]
+            matching = [row[:4] for row in rows if row[0] == session]
+            if len(matching) != 1:
+                raise release.Refusal(f"session {session} is listed {len(matching)} times")
+            return matching[0]
+
+        def running(row):
+            return row if row[1] == "running" else None
+
+        installed.symlink_to(old)
+        with running_daemon(installed, environment):
+            cli("project", "add", str(home / "project"), "--name", "upgrade")
+            session = cli("session", "new", str(home / "project"), "--agent", "claude")
+            session = session.split("\t", 1)[0]
+            before = wait_for("the session to run", lambda: running(shown(session)))
+            waiting = wait_for(
+                "the agent's first report", lambda: read_if_written(home / "waiting.log")
+            )
+            if not waiting.endswith("exit=0\n"):
+                raise release.Refusal(
+                    f"the agent could not report to the previous release: {waiting!r}"
+                )
+            launched = launches(home)
+        if len(launched) != 1 or not launched[0].startswith(session + " "):
+            raise release.Refusal(f"previous release launched {launched!r}")
+        pid = int(launched[0].split()[1])
+        if not is_alive(pid):
+            raise release.Refusal("the session's agent ended with the previous daemon")
+        installed.unlink()
+        installed.symlink_to(candidate)
+        with running_daemon(installed, environment):
+            after = shown(session)
+            if after != before:
+                raise release.Refusal(f"candidate shows {after!r}, not the running {before!r}")
+            cli("session", "send", session, REACHED)
+            report = wait_for(
+                "the agent's report through the candidate",
+                lambda: read_if_written(home / "report.log"),
+            )
+            if report != f"reported for session {session}\nexit=0\n{REACHED}\n":
+                raise release.Refusal(
+                    f"the session's agent did not reach the candidate: {report!r}"
+                )
+            if launches(home) != launched or not is_alive(pid):
+                raise release.Refusal(f"candidate did not keep the one agent: {launches(home)!r}")
+
+
+FIXTURES = {
+    "verify": (verify_state, "state", "project/task persistence"),
+    "sessions": (verify_sessions, "running-session", "a running session kept and reachable"),
+}
+
+
 def main(arguments):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("select").add_argument("--version", required=True)
-    check = commands.add_parser("verify")
-    check.add_argument("--candidate", required=True, type=Path)
-    check.add_argument("--revision", required=True)
-    check.add_argument("--downloads", type=Path)
+    for name in FIXTURES:
+        check = commands.add_parser(name)
+        check.add_argument("--candidate", required=True, type=Path)
+        check.add_argument("--revision", required=True)
+        check.add_argument("--downloads", type=Path)
     fetch = commands.add_parser("fetch")
     fetch.add_argument("--version", required=True)
     fetch.add_argument("--channel", required=True)
@@ -340,7 +509,9 @@ def main(arguments):
         elif options.command == "fetch":
             result = fetch_previous(options.version, options.channel, options.platform, options.out)
         else:
-            result = verify(options.candidate, options.revision, options.downloads)
+            result = verify(
+                options.candidate, options.revision, options.downloads, FIXTURES[options.command]
+            )
         print(result)
     except (
         release.Refusal,
