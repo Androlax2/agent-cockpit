@@ -2,8 +2,7 @@
 
 Issues #213, #216, #225, #250. The conversation reset was decided by Theo in #311 (option A);
 the rest by the worker, from the options the issues list. Amends the clearing rules of
-`2026-10-31-182-question-sources.md`, `2026-10-31-183-turn-outcome.md` and the wire point of
-`2026-10-31-214-dialog-stacking.md`.
+`2026-10-31-183-turn-outcome.md` and of the two revisited sections below (#182, #214).
 
 - **A new conversation is treated like a new launch.** Once a session follows the
   conversation that replaced an announced end (`--conversation-ends`, #219: `/clear` and an
@@ -29,3 +28,51 @@ Evidence: `crates/cockpit-sessions/tests/report_conversation_reset.rs`,
 `crates/cockpit-daemon/tests/agent_question_resets.rs`,
 `crates/cockpit-protocol/tests/agent_covered_question.rs`,
 `crates/cockpit-cli/tests/agent_covered_question.rs`.
+
+## Revisited 2026-10-31 (#182)
+
+Decided by Theo in #200 (option C). An open question records where it came from, and its
+source decides what clears it.
+
+- **Two sources, two clearing rules.** `cockpit agent report --needs-input Q` is the agent's
+  own question: it stays open through tool use, turn ends and idle, until a report with
+  `--prompt` (the bridge sends it on UserPromptSubmit) or a report from a newer launch.
+  `--dialog Q` is a dialog the provider bridge saw (permission prompt, elicitation): the next
+  report of any kind clears it, since any later event means the dialog was answered. Fixes
+  the stale question left by an answered dialog followed by a turn end.
+- **One open question per session.** `session_reports.question_source` (`agent` or `dialog`,
+  set exactly when `needs_input` is; `cockpit-sessions` migration 4) sits beside the text.
+  A dialog arriving over the agent's own question first replaced it; the #214 section below
+  stacks it instead.
+- **The agent's question may stand while the session reports working.** A tool run after
+  asking keeps the question; the owner's views show it from the moment it is asked.
+- **Questions recorded before migration 4 become the agent's own,** the source that stays
+  visible, so no question is hidden by the upgrade.
+- **Rejected:** clearing on any `waiting` report (#200 A) and an explicit clear flag sent at
+  turn end (#200 B): both clear the agent's own question at the end of the turn that asked it.
+
+Evidence: `crates/cockpit-sessions/tests/report_questions.rs`,
+`crates/cockpit-daemon/tests/agent_questions.rs`, `crates/cockpit-cli/tests/agent_questions.rs`,
+`crates/cockpit-protocol/tests/agent_questions.rs`, `crates/cockpit-claude/tests/hooks.rs`.
+
+## Revisited 2026-10-31 (#214)
+
+Decided by the worker, as the issue's fix states. A dialog stacks on the agent's own open
+question instead of replacing it; this amends "one open question per session" from #182 (the
+clearing rules stay).
+
+- **The agent's question waits beside an open dialog.** `session_reports.covered_question`
+  (`cockpit-sessions` migration 5) holds the agent's own question while `needs_input` shows
+  the dialog; the schema allows it only while `question_source` is `dialog`. Once any report
+  answers the dialog, the agent's question is the open question again, with source `agent`.
+- **Each source keeps its clearing rule.** A new prompt or a newer launch clears the agent's
+  question, covered or not; a new `--needs-input` replaces it; a second dialog replaces the
+  first and keeps the agent's question beneath.
+- **The wire is unchanged.** Owners still read one open question with its source; the
+  covered question stays inside `cockpit-sessions` until it shows again. The third bullet
+  at the top of this record later put it on the wire (`SessionReport.covered_question`, #225).
+- **Rejected:** rebuilding the table into `agent_question` and `dialog` columns: same
+  behaviour, but it rewrites every row and migration 4's schema guarantees for no reader.
+
+Evidence: `crates/cockpit-sessions/tests/report_dialog_stacking.rs`,
+`crates/cockpit-daemon/tests/agent_dialog_stacking.rs`.
