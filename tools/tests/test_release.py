@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -909,6 +910,49 @@ class VerifyInstallTests(PackagingTestCase):
             code, _verified, error = self.verify(outputs["root"])
         self.assertEqual(code, 1)
         self.assertIn("did not find a runnable bridge for claude, codex, opencode", error)
+
+    def verify_in_scratch_parent(self, root, refusal=None):
+        scratch_parent = self.root / "homes"
+        scratch_parent.mkdir()
+        with patch.object(release, "VERIFY_HOME_PARENT", str(scratch_parent)):
+            if refusal is None:
+                release.verify_install(root, "0123abcd")
+            else:
+                with self.assertRaisesRegex(release.Refusal, refusal):
+                    release.verify_install(root, "0123abcd")
+        return scratch_parent
+
+    def write_daemon_recording_its_pid(self, ready_script):
+        pid_file = self.root / "daemon.pid"
+        self.write_fake("torlek-daemon", f'#!/bin/sh\necho $$ > "{pid_file}"\n{ready_script}')
+        return pid_file
+
+    def test_a_passing_check_removes_its_temporary_home(self):
+        _code, outputs, _error = self.package()
+        scratch_parent = self.verify_in_scratch_parent(outputs["root"])
+        self.assertEqual(list(scratch_parent.iterdir()), [])
+
+    def test_a_failing_cli_check_removes_its_temporary_home(self):
+        self.write_fake("torlek", '#!/bin/sh\ntouch "$HOME/left-behind"\nexit 1\n')
+        _code, outputs, _error = self.package()
+        scratch_parent = self.verify_in_scratch_parent(
+            outputs["root"], "torlek tui --version|torlek version --all"
+        )
+        self.assertEqual(list(scratch_parent.iterdir()), [])
+
+    def test_a_failing_daemon_check_stops_the_daemon_and_removes_the_home(self):
+        pid_file = self.write_daemon_recording_its_pid(
+            'echo "ready $HOME/daemon.sock"\nexec sleep 600\n'
+        )
+        _code, outputs, _error = self.package()
+        with patch.object(release, "STAND_IN_PROVIDER", "#!/bin/sh\nexit 1\n"):
+            scratch_parent = self.verify_in_scratch_parent(
+                outputs["root"], "did not find a runnable bridge"
+            )
+        self.assertEqual(list(scratch_parent.iterdir()), [])
+        daemon_pid = int(pid_file.read_text())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(daemon_pid, 0)
 
     def test_a_daemon_that_does_not_become_ready_fails(self):
         self.write_fake("torlek-daemon", "#!/bin/sh\necho 'no state dir' >&2\nexit 1\n")

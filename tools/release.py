@@ -81,6 +81,9 @@ MANIFEST_PATH = "share/torlek/manifest.json"
 MANIFEST_SCHEMA = 1
 # How long verify-install waits for `torlek version --all` and for the daemon's ready line.
 COMMAND_TIMEOUT_SECONDS = 60
+# Not tempfile.gettempdir(): macOS's long temp path would break the 104-byte socket limit.
+# A constant so tests can point it at a fixture directory.
+VERIFY_HOME_PARENT = "/tmp"
 # The providers verify-install puts first on the daemon's PATH: each answers only
 # `--version`, which is all the daemon runs of it at its start, in the words its adapter reads.
 STAND_IN_VERSIONS = {
@@ -589,8 +592,14 @@ def verify_install(root, revision):
         )
     refuse_changed_contents(root, manifest)
     refuse_other_install_version(root, manifest["version"])
-    # Short and fresh: a clean home, and a socket path under macOS's 104-byte limit.
-    home = tempfile.mkdtemp(prefix="torlek-home-", dir="/tmp")
+    # Short and fresh: a clean home, and a socket path under macOS's 104-byte limit. Removed on
+    # every exit; the helpers stop their process groups before it goes.
+    with tempfile.TemporaryDirectory(prefix="torlek-home-", dir=VERIFY_HOME_PARENT) as home:
+        run_install_checks(root, manifest, manifest_text, revision, home)
+    return {"version": manifest["version"], "files": str(len(manifest["contents"]))}
+
+
+def run_install_checks(root, manifest, manifest_text, revision, home):
     environment = {"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     refuse_wrong_version_output(root, manifest, manifest_text, revision, environment)
     code, stdout, stderr = run_bounded([str(root / "bin/torlek"), "tui", "--version"], environment)
@@ -608,7 +617,6 @@ def verify_install(root, revision):
         stand_in.chmod(0o755)
     environment = {**environment, "PATH": f"{stand_in_dir}:{environment['PATH']}"}
     refuse_daemon_not_ready(root, environment)
-    return {"version": manifest["version"], "files": str(len(manifest["contents"]))}
 
 
 def refuse_changed_contents(root, manifest):
