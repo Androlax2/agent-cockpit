@@ -984,13 +984,13 @@ class GateGapTests(unittest.TestCase):
         self.assertIn("needs: [plan, build]", compatibility)
         self.assertIn("make release-compatibility", workflow)
 
-    def test_beta_keeps_the_macos_restoration_and_running_session_gaps(self):
+    def test_beta_keeps_only_the_macos_restoration_gap(self):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
             code = release.main(["gate-gaps", "beta"], cwd=ROOT)
         self.assertEqual(code, 1)
+        self.assertEqual(stdout.getvalue().count("\n"), 1, stdout.getvalue())
         self.assertIn("#568", stdout.getvalue())
-        self.assertIn("running sessions", stdout.getvalue())
 
     def test_an_unproven_gate_check_blocks_publishing_by_name(self):
         with patch.dict(release.GATE_CHECKS, {"unproven fixture gate": (None, ())}):
@@ -1002,13 +1002,29 @@ class GateGapTests(unittest.TestCase):
             self.assertIn("unproven fixture gate", stdout.getvalue())
             self.assertIn("publishing waits", error.getvalue())
 
-    def test_unmeasured_cross_version_sessions_still_block_beta_publication(self):
-        stdout, error = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(error):
-            code = release.main(["gate-gaps", "beta"], cwd=ROOT)
-        self.assertEqual(code, 1)
-        self.assertIn("running sessions survive a previous-channel upgrade", stdout.getvalue())
-        self.assertIn("publishing waits", error.getvalue())
+    def test_a_beta_publishes_only_after_its_running_sessions_survived_the_upgrade(self):
+        self.assertEqual(
+            release.GATE_CHECKS["running sessions survive a previous-channel upgrade"],
+            ("upgrade-sessions", ("alpha",)),
+        )
+        proven = {check: gate for check, gate in release.GATE_CHECKS.items() if gate[0]}
+        jobs = {job for job, exempt in proven.values() if "beta" not in exempt}
+        results = {job: {"result": "success"} for job in jobs | {"plan", "draft"}}
+        with patch.dict(release.GATE_CHECKS, proven, clear=True):
+            release.verify_gates("beta", json.dumps(results))
+            results["upgrade-sessions"]["result"] = "failure"
+            with self.assertRaisesRegex(release.Refusal, "did not succeed: upgrade-sessions"):
+                release.verify_gates("beta", json.dumps(results))
+
+    def test_the_running_session_job_upgrades_from_the_earlier_channel_release(self):
+        workflow = RELEASE_WORKFLOW.read_text()
+        job = re.search(r"\n  upgrade-sessions:\n((?:    [^\n]*\n|\n)*)", workflow)[1]
+        self.assertIn("needs: [plan, build, upgrade-baseline]", job)
+        self.assertIn("runs-on: ubuntu-26.04", job)
+        self.assertIn("name: archive-linux-x86_64", job)
+        self.assertIn("apt-get install --no-install-recommends --yes tmux", job)
+        self.assertIn("python3 tools/release_upgrade.py sessions", job)
+        self.assertIn("--downloads baseline/linux-x86_64", job)
 
     def test_an_alpha_is_not_blocked_by_the_upgrade_check(self):
         stdout = io.StringIO()

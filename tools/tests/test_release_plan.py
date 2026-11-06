@@ -19,6 +19,7 @@ REQUIRED = {
     "responsiveness",
     "upgrade",
     "upgrade-wsl2",
+    "upgrade-sessions",
 }
 
 

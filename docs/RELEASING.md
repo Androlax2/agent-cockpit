@@ -303,19 +303,26 @@ gate. Load draining and build cleanup are bounded. Do not run it as a local stre
 `make release-upgrade-fetch` selects the newest published earlier release of the same
 channel and downloads its matching archive and checksums with read-only GitHub access.
 `make release-upgrade` verifies the checksum, manifest and source revision, then stops the
-old daemon before starting the candidate in one private temporary home. Project/task state
-must survive, and new writes must work. Tested processes receive no GitHub credentials.
+old daemon with SIGTERM, as `systemctl --user restart` does, before starting the candidate in
+one private temporary home. Project/task state must survive, and new writes must work. Tested
+processes receive no GitHub credentials.
+
+The `upgrade-sessions` job (#736) runs `tools/release_upgrade.py sessions` on the same Linux
+x86_64 archives. A fixture `claude` starts a session under the earlier release and reports
+that it waits at its prompt. The old daemon stops, the installed bundle is swapped for the
+candidate, and the candidate starts. The candidate must list the session running on the same
+launch, with no new launch of its agent. The owner's `session send` must reach the agent's
+terminal, and the agent's `agent report` must reach the candidate. The home has its own tmux
+server, which the check stops at the end.
+
 Alpha1 publication requires successful applicable Linux and WSL2 jobs; their presence
 is not proof of acceptance. Future macOS gates remain pending a separate verified
 restoration decision, alongside the other beta publication requirements.
 
 Alpha keeps its explicit upgrade exemption. Development dry runs have no release channel.
-Both run the state fixture twice with the current candidate and print `upgrade=not-run`;
-that is orchestration coverage, not proof of a previous-release upgrade. A beta without a
-published earlier beta fails by name. Cross-version running-session retention is not yet
-covered by this fixture and remains a named beta publication blocker in `GATE_CHECKS`;
-same-candidate restart tests are separate evidence. Track these
-unmeasured outcomes in [#191](https://github.com/Androlax2/agent-cockpit/issues/191).
+Both run the state and running-session fixtures with the current candidate on both sides and
+print `upgrade=not-run`; that is orchestration coverage, not proof of a previous-release
+upgrade. A beta without a published earlier beta fails by name.
 
 ## Changelog
 

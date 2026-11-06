@@ -109,6 +109,7 @@ class DraftWorkflowTests(unittest.TestCase):
                 "upgrade-baseline",
                 "upgrade",
                 "upgrade-wsl2",
+                "upgrade-sessions",
             },
             "release-plz.yml": {"check"},
         }
@@ -148,6 +149,7 @@ class DraftWorkflowTests(unittest.TestCase):
                     "upgrade-baseline",
                     "upgrade",
                     "upgrade-wsl2",
+                    "upgrade-sessions",
                 },
             ),
             (
@@ -165,6 +167,7 @@ class DraftWorkflowTests(unittest.TestCase):
                     "upgrade-baseline",
                     "upgrade",
                     "upgrade-wsl2",
+                    "upgrade-sessions",
                 },
             ),
             (
@@ -182,6 +185,7 @@ class DraftWorkflowTests(unittest.TestCase):
                     "upgrade-baseline",
                     "upgrade",
                     "upgrade-wsl2",
+                    "upgrade-sessions",
                 },
             ),
         ]

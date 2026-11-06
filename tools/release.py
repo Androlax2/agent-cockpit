@@ -120,7 +120,7 @@ GATE_CHECKS = {
     "sustained responsiveness run (report 03) against the candidate": ("responsiveness", ()),
     "upgrade from the previous release of the channel": ("upgrade", ("alpha",)),
     "upgrade from the previous release of the channel inside WSL2": ("upgrade-wsl2", ("alpha",)),
-    "running sessions survive a previous-channel upgrade": (None, ("alpha",)),
+    "running sessions survive a previous-channel upgrade": ("upgrade-sessions", ("alpha",)),
 }
 CHANNELS = ("alpha", "beta")
 
@@ -787,8 +787,9 @@ def verify_gates(channel, encoded_results):
         raise Refusal("invalid job-results JSON") from error
     if not isinstance(results, dict):
         raise Refusal("job results must be an object")
-    # Alpha's upgrade jobs still prove same-candidate state retention, never cross-version.
-    required = {"plan", "draft", "upgrade", "upgrade-wsl2"} | {
+    # Alpha's upgrade jobs still prove same-candidate state and running-session retention,
+    # never cross-version.
+    required = {"plan", "draft", "upgrade", "upgrade-wsl2", "upgrade-sessions"} | {
         job for job, exempt in GATE_CHECKS.values() if job is not None and channel not in exempt
     }
     failed = [

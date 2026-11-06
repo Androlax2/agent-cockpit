@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -34,6 +35,8 @@ class UpgradeTests(unittest.TestCase):
         self.assets = self.root / "assets"
         self.assets.mkdir()
         self.events = self.root / "events.jsonl"
+        self.agents = self.root / "agents.log"
+        self.tmux_log = self.root / "tmux.log"
         self.gh_log = self.root / "gh.log"
         gh = self.bin / "gh"
         gh.write_text(
@@ -53,6 +56,15 @@ class UpgradeTests(unittest.TestCase):
             "    for path in source.iterdir():\n        if path.is_file(): shutil.copyfile(path, destination / path.name)\n"
         )
         gh.chmod(0o755)
+        # Stops the fake server a fake daemon's session wrote: its agent's pid.
+        tmux = self.bin / "tmux"
+        tmux.write_text(
+            f"#!{sys.executable}\nimport os, pathlib, signal, sys\n"
+            f"with open({str(self.tmux_log)!r}, 'a') as log: log.write(repr(sys.argv[1:]) + '\\n')\n"
+            "assert sys.argv[1] == '-S' and sys.argv[3:] == ['kill-server'], sys.argv\n"
+            "os.kill(int(pathlib.Path(sys.argv[2]).read_text()), signal.SIGTERM)\n"
+        )
+        tmux.chmod(0o755)
         self.environment = {
             "HOME": str(self.root),
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
@@ -94,7 +106,16 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("no published earlier beta release", result.stderr)
 
-    def bundle(self, version, revision, *, fail_start=False, lose_data=False):
+    def bundle(
+        self,
+        version,
+        revision,
+        *,
+        fail_start=False,
+        lose_data=False,
+        end_sessions=False,
+        refuse_agents=False,
+    ):
         binaries = self.root / (version + "-bin")
         binaries.mkdir()
         common = f"""#!{sys.executable}
@@ -112,11 +133,21 @@ if args == ['version', '--all']:
     print('torlek ' + manifest['version'] + ' (revision ' + manifest['source_revision'] + ')')
     print((root / 'share/torlek/manifest.json').read_text(), end='')
     sys.exit(0)
+if args[:3] == ['agent', 'report', '--state']:
+    os.kill(int((home / 'daemon-live').read_text()), 0)
+    if {refuse_agents!r}:
+        print('torlek: unknown session', file=sys.stderr)
+        sys.exit(1)
+    print('reported for session ' + os.environ['TORLEK_SESSION'])
+    sys.exit(0)
 assert args[:2] == ['--profile', 'release-gate'], args
 args = args[2:]
 os.kill(int((home / 'daemon-live').read_text()), 0)
 tasks = home / 'tasks.json'
 items = json.loads(tasks.read_text()) if tasks.exists() else []
+sessions = home / 'sessions.json'
+known = json.loads(sessions.read_text()) if sessions.exists() else {{}}
+terminal = home / 'terminal'
 if args[:2] == ['project', 'add']:
     assert pathlib.Path(args[2]).is_dir()
 elif args[:2] == ['todo', 'add']:
@@ -124,6 +155,26 @@ elif args[:2] == ['todo', 'add']:
     tasks.write_text(json.dumps(items))
 elif args[:2] == ['todo', 'list']:
     for item in ([] if {lose_data!r} else items): print('\\t'.join(map(str, item)))
+elif args[:2] == ['session', 'new']:
+    import subprocess
+    os.mkfifo(terminal)
+    agent = subprocess.Popen(
+        ['claude'], cwd=args[2], stdin=os.open(terminal, os.O_RDWR),
+        env=dict(os.environ, TORLEK_SESSION='s1'), start_new_session=True,
+    )
+    known['s1'] = {{'pid': agent.pid, 'state': 'running'}}
+    sessions.write_text(json.dumps(known))
+    with open({str(self.agents)!r}, 'a') as agents: agents.write(f'{{agent.pid}}\\n')
+    server = pathlib.Path(os.environ['TMUX_TMPDIR']) / f'tmux-{{os.getuid()}}'
+    server.mkdir()
+    (server / 'torlek-release-gate').write_text(str(agent.pid))
+    print('s1\\tlaunching\\tclaude\\tstart')
+elif args[:2] == ['session', 'list']:
+    for session, run in known.items():
+        print('\\t'.join([session, run['state'], 'claude', 'start', '-', '-', '-', '-', '-']))
+elif args[:2] == ['session', 'send']:
+    with open(terminal, 'w') as typed: typed.write(args[3] + '\\n')
+    print('delivered to session ' + args[2])
 else:
     raise AssertionError(args)
 """
@@ -142,6 +193,17 @@ with open({str(self.events)!r}, 'a') as events:
 if {fail_start!r}:
     print('fixture startup failure', file=sys.stderr)
     sys.exit(1)
+if {end_sessions!r}:
+    import signal
+    def end_sessions(*_):
+        sessions = home / 'sessions.json'
+        known = json.loads(sessions.read_text())
+        for run in known.values():
+            os.kill(run['pid'], signal.SIGKILL)
+            run['state'] = 'ended'
+        sessions.write_text(json.dumps(known))
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, end_sessions)
 pidfile.write_text(str(os.getpid()))
 print('ready ' + str(home / 'run/torlek-release-gate/daemon.sock'), flush=True)
 time.sleep(60)
@@ -193,6 +255,60 @@ time.sleep(60)
             self.assertFalse(Path(event["home"]).exists())
             with self.assertRaises(ProcessLookupError):
                 os.kill(event["pid"], 0)
+
+    def verify_sessions(self, candidate):
+        return self.run_tool("sessions", "--candidate", str(candidate), "--revision", "2" * 40)
+
+    def assert_agents_stopped(self):
+        pids = [int(line) for line in self.agents.read_text().splitlines()]
+        self.assertEqual(len(pids), 1)
+        for _ in range(100):
+            if not release_upgrade.is_alive(pids[0]):
+                return
+            time.sleep(0.05)
+        self.fail(f"agent {pids[0]} outlived the check")
+
+    def test_a_running_session_keeps_its_agent_and_reaches_the_candidate(self):
+        self.prepare_upgrade()
+        candidate, _ = self.bundle("0.1.0-beta.2", "2" * 40)
+        result = self.verify_sessions(candidate)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "upgrade=passed (0.1.0-beta.1 -> 0.1.0-beta.2; a running session", result.stdout
+        )
+        events = [json.loads(line) for line in self.events.read_text().splitlines()]
+        self.assertEqual([event["version"] for event in events], ["0.1.0-beta.1", "0.1.0-beta.2"])
+
+    def test_the_session_check_stops_its_tmux_server_and_agent(self):
+        self.prepare_upgrade()
+        candidate, _ = self.bundle("0.1.0-beta.2", "2" * 40)
+        result = self.verify_sessions(candidate)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("'kill-server'", self.tmux_log.read_text())
+        self.assert_agents_stopped()
+
+    def test_a_previous_daemon_that_ends_its_sessions_on_stop_fails_the_check(self):
+        self.prepare_upgrade(end_sessions=True)
+        candidate, _ = self.bundle("0.1.0-beta.2", "2" * 40)
+        result = self.verify_sessions(candidate)
+        self.assertEqual(result.returncode, 1)
+        self.assertRegex(result.stderr, "ended with the previous daemon|not the running")
+
+    def test_an_agent_the_candidate_does_not_answer_fails_the_check(self):
+        self.prepare_upgrade()
+        candidate, _ = self.bundle("0.1.0-beta.2", "2" * 40, refuse_agents=True)
+        result = self.verify_sessions(candidate)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("did not reach the candidate", result.stderr)
+        self.assertIn("unknown session", result.stderr)
+
+    def test_alpha_runs_the_session_fixture_on_the_candidate_alone(self):
+        candidate, _ = self.bundle("0.1.0-alpha.2", "2" * 40)
+        result = self.verify_sessions(candidate)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("upgrade=not-run (alpha", result.stdout)
+        self.assertIn("same-candidate running-session fixture passed", result.stdout)
+        self.assertFalse(self.gh_log.exists())
 
     def test_lost_state_is_not_a_successful_upgrade(self):
         self.prepare_upgrade()
