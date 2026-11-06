@@ -26,12 +26,12 @@ fn entries_of(directory: &Path) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// Code spans a page must contain, for example `README.md`, `docs/KNOWN-GAPS.md`, `docs/design/`.
+/// Table rows a page must start with, for example `| `README.md` |`, `| `docs/design/` |`.
 fn expected_code_spans(root: &Path) -> Vec<String> {
     let root_files = entries_of(root)
         .into_iter()
         .filter(|(name, is_directory)| !is_directory && name.ends_with(".md"))
-        .map(|(name, _)| format!("`{name}`"));
+        .map(|(name, _)| format!("| `{name}` |"));
     let docs_entries = entries_of(&root.join("docs"))
         .into_iter()
         .filter(|(name, is_directory)| {
@@ -39,7 +39,7 @@ fn expected_code_spans(root: &Path) -> Vec<String> {
         })
         .map(|(name, is_directory)| {
             let suffix = if is_directory { "/" } else { "" };
-            format!("`docs/{name}{suffix}`")
+            format!("| `docs/{name}{suffix}` |")
         });
     root_files.chain(docs_entries).collect()
 }
@@ -67,12 +67,12 @@ fn every_root_page_and_docs_entry_is_named_in_the_docs_map() {
 fn a_page_missing_from_the_map_is_reported() {
     let map = "| `README.md` | front door |\n| `docs/QUICKSTART.md` | first session |";
     let expected = vec![
-        "`README.md`".to_owned(),
-        "`docs/NEW-PAGE.md`".to_owned(),
-        "`docs/new-records/`".to_owned(),
+        "| `README.md` |".to_owned(),
+        "| `docs/NEW-PAGE.md` |".to_owned(),
+        "| `docs/new-records/` |".to_owned(),
     ];
     assert_eq!(
         missing_from(map, &expected),
-        ["`docs/NEW-PAGE.md`", "`docs/new-records/`"]
+        ["| `docs/NEW-PAGE.md` |", "| `docs/new-records/` |"]
     );
 }

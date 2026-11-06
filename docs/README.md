@@ -2,7 +2,7 @@
 
 Read this before you add, move or rewrite a page under `docs/` or a Markdown file at the
 repository root. It tells you which page owns a topic and how to write it. Humans and agents
-read this one file; [AGENTS.md](../AGENTS.md) and [CONTRIBUTING](../CONTRIBUTING.md) link here.
+read this one file for documentation rules; [AGENTS.md](../AGENTS.md) and [CONTRIBUTING](../CONTRIBUTING.md) link here.
 
 A page serves one reader. A fact has one authority; every other page links to it.
 The plan behind this map is [the documentation plan](research/2026-11-06-618-documentation-plan.md).
@@ -10,7 +10,7 @@ The plan behind this map is [the documentation plan](research/2026-11-06-618-doc
 ## Where things live
 
 Every root Markdown file, every file directly in `docs/` and every directory under `docs/`
-appears below. A test in `cockpit-workspace-rules` fails when one is missing.
+appears below as the first cell of a table row. A test in `cockpit-workspace-rules` fails when one is missing.
 
 ### Front door and policy
 
@@ -116,4 +116,5 @@ stays deleted.
 
 1. Pick the reader and the task. If an authority above covers it, edit that page instead.
 2. Add the page to the table it belongs to, in the same pull request.
-3. Run `cargo nextest run --locked -p cockpit-workspace-rules --test docs_map`.
+3. Run the `docs_map` test of `cockpit-workspace-rules`; [Development](DEVELOPMENT.md) and
+   [AGENTS.md](../AGENTS.md) give the cargo commands.
