@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RENDER = ROOT / "packaging/aur/render.py"
+COMMITTED = ROOT / "packaging/aur/torlek-bin"
 TAG = "0.1.0-alpha.1"
 REVISION = "b" * 40
 
@@ -224,6 +226,32 @@ class RecipeTest(unittest.TestCase):
             result = run_render("render", "--tag", TAG, "--sums", str(sums), "--out", folder)
             self.assertEqual(result.returncode, 1)
             self.assertEqual((Path(folder) / "PKGBUILD").read_text(), "kept\n")
+
+
+class CommittedRecipeTest(unittest.TestCase):
+    """packaging/aur/torlek-bin's PKGBUILD and .SRCINFO, the pair an AUR push carries.
+    ci-install.sh --published checks its checksums against the published release."""
+
+    def test_is_the_template_rendered_for_a_release_tag(self):
+        text = (COMMITTED / "PKGBUILD").read_text()
+        tag = re.search(r"^_tag=(\S+)$", text, re.MULTILINE)[1]
+        pkgrel = int(re.search(r"^pkgrel=(\d+)$", text, re.MULTILINE)[1])
+        checksums = {
+            architecture: re.search(
+                rf"^sha256sums_{architecture}=\('([0-9a-f]{{64}})'\)$", text, re.MULTILINE
+            )[1]
+            for architecture in render.ARCHITECTURES
+        }
+        self.assertEqual(text, render.recipe(tag, release_sums(tag, **checksums), pkgrel))
+
+    @unittest.skipUnless(HAS_MAKEPKG, "makepkg is not installed")
+    def test_srcinfo_is_the_one_makepkg_prints(self):
+        # A copy: makepkg wants a folder it can write, and a CI checkout is another user's.
+        with tempfile.TemporaryDirectory() as folder:
+            for name in ("PKGBUILD", ".SRCINFO"):
+                shutil.copy(COMMITTED / name, folder)
+            result = run_render("check-srcinfo", folder)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 @unittest.skipUnless(CAN_BUILD, "makepkg is not installed or this runs as root")

@@ -1180,6 +1180,8 @@ class ReleaseTriggerTests(unittest.TestCase):
                 "packaging/aur/ci-install.sh",
                 "packaging/aur/render.py",
                 "packaging/aur/torlek-bin/PKGBUILD.in",
+                "packaging/aur/torlek-bin/PKGBUILD",
+                "packaging/aur/torlek-bin/.SRCINFO",
                 "tools/tests/test_aur_package.py",
             },
         )

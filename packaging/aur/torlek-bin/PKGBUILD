@@ -1,0 +1,37 @@
+# Maintainer: Androlax2 (AUR account to be confirmed before submission)
+#
+# Rendered by packaging/aur/render.py from PKGBUILD.in and a published release's SHA256SUMS
+# (docs/packaging/aur.md): change PKGBUILD.in, never a rendered PKGBUILD.
+# makepkg consumes these globals after sourcing the recipe.
+# shellcheck disable=SC2034
+
+pkgname=torlek-bin
+_tag=0.1.0-alpha.4
+pkgver=0.1.0alpha.4
+pkgrel=1
+pkgdesc='Agent session cockpit: CLI, terminal UI and per-user daemon (prebuilt release)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/Androlax2/agent-cockpit'
+license=('Apache-2.0')
+depends=('glibc' 'libgcc' 'git' 'curl' 'tmux>=3.6')
+optdepends=('systemd: the per-user daemon service, torlek daemon install'
+            'bubblewrap: the native agent sandbox, agents.sandbox = "required"'
+            'github-cli: file a bug report as a GitHub issue')
+provides=('torlek')
+conflicts=('torlek')
+options=('!strip' '!debug')
+source_x86_64=("$url/releases/download/v$_tag/torlek-v$_tag-linux-x86_64.tar.gz")
+source_aarch64=("$url/releases/download/v$_tag/torlek-v$_tag-linux-aarch64.tar.gz")
+sha256sums_x86_64=('7aabe12ff02948a6b77e58a73f8032cbfd42cd55b908b33776222326d24dc270')
+sha256sums_aarch64=('ce55c83dc7a651973f907d486f8ae5d4df1c62209e97cb1ad1c036cc6fe12523')
+
+# The bundle stays whole under /usr/lib/torlek: torlek finds torlek-tui, the daemon its
+# helpers and both the release manifest through their own resolved path (bin/../share).
+package() {
+    : "${srcdir:?makepkg source directory is required}" "${pkgdir:?makepkg package directory is required}"
+    local bundle="$srcdir/torlek-v$_tag-linux-$CARCH"
+    install -d "$pkgdir/usr/lib/torlek" "$pkgdir/usr/bin" "$pkgdir/usr/share/licenses/$pkgname"
+    cp -a --no-preserve=ownership "$bundle/." "$pkgdir/usr/lib/torlek/"
+    ln -s ../lib/torlek/bin/torlek "$pkgdir/usr/bin/torlek"
+    ln -s ../../../lib/torlek/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

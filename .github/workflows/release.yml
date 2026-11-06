@@ -35,6 +35,8 @@ on:
       - packaging/aur/ci-install.sh
       - packaging/aur/render.py
       - packaging/aur/torlek-bin/PKGBUILD.in
+      - packaging/aur/torlek-bin/PKGBUILD
+      - packaging/aur/torlek-bin/.SRCINFO
       - tools/tests/test_aur_package.py
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
@@ -274,6 +276,23 @@ jobs:
           CHANNEL: ${{ needs.plan.outputs.channel }}
           REVISION: ${{ needs.plan.outputs.revision }}
         run: bash packaging/aur/ci-install.sh dist "$VERSION" "$CHANNEL" "$REVISION"
+
+  # The committed torlek-bin recipe, the pair an AUR push carries: it must be the rendering of
+  # its release's published SHA256SUMS, and makepkg downloads the archives it names (#562,
+  # docs/packaging/aur.md). It needs no job of this run: the recipe names an earlier release,
+  # so a tag's own run checks the previous one.
+  install-arch-published:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: archlinux:base-devel@sha256:767de6eaa40dcfeda5263a48737ea03a782caabdf3a403b6e6a203c7fd333681
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build, install, verify and remove the committed torlek-bin
+        run: bash packaging/aur/ci-install.sh --published
 
   # WSL2 has no archive of its own: it installs the Linux x86_64 one (report 13). Setup as in
   # ci.yml's greenfield-wsl2 job (docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md).
