@@ -170,10 +170,15 @@ async fn the_research_packets_carry_the_three_research_rules() {
         .await;
     let run = fixture.start(item.id, &RESEARCH).await.unwrap();
     let session = fixture.session("s1", "cockpit").await;
-    for (step, rule) in [
-        ("investigate", "primary sources"),
-        ("synthesize", "one Markdown file that cites"),
-        ("deliver", "the repository's convention"),
+    for (step, rules) in [
+        ("investigate", &["primary sources"][..]),
+        (
+            "synthesize",
+            &[
+                "one Markdown file that cites its sources",
+                "the repository's convention",
+            ],
+        ),
     ] {
         fixture.begin(&session, run.id).await.unwrap();
         let definition = fixture
@@ -183,11 +188,13 @@ async fn the_research_packets_carry_the_three_research_rules() {
             .unwrap()
             .definition;
         assert_eq!(definition.name, step);
-        assert!(
-            definition.purpose.contains(rule),
-            "{step}: {:?} lacks {rule:?}",
-            definition.purpose
-        );
+        for rule in rules {
+            assert!(
+                definition.purpose.contains(rule),
+                "{step}: {:?} lacks {rule:?}",
+                definition.purpose
+            );
+        }
         fixture
             .complete(&session, run.id, completion(&format!("Did {step}")))
             .await
