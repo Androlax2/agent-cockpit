@@ -65,7 +65,7 @@ Use the same profile for every command. To keep a preview's state apart from an 
 
    `sandbox = "off"` records that you accept this: an unsandboxed agent runs with your rights, can reach the owner socket and act as you, so Torlek's grants do not bind it. The daemon logs that risk at its start and at every launch.
    `desktop_session = "withheld"` keeps agents off your screen and desktop session; the default, `shared`, exposes your display and filtered session bus.
-   To refuse every unsandboxed launch instead, see [Sandbox mode](#sandbox-mode).
+   To refuse every unsandboxed launch instead, see Sandbox mode in [Configuration and state](USER-GUIDE.md#configuration-and-state).
    If the daemon is already running, run `torlek config reload`. Until then it keeps the `agents.sandbox` it last read, and `torlek doctor` blocks on its `sandbox` line, naming both values.
 
 2. Sign in to a provider. Run `torlek provider list` to see the installed names, then `torlek init` and follow its sign-in instruction in your terminal. A sign-in marked `unknown` needs the manual check `init` names.
