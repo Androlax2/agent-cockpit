@@ -50,7 +50,7 @@ The platform checks are described in [Development](DEVELOPMENT.md#verification-p
 ## First project and session
 
 The [quickstart](QUICKSTART.md) walks through your first project and session. This section holds the settings behind it.
-Run `torlek daemon install` and `torlek init` first, as the [README](../README.md#install-from-the-command-line) shows.
+Run `torlek daemon install` and `torlek init` first, as the [README](../README.md#install-from-the-command-line) shows, make the settings below, then follow the quickstart.
 
 A source build uses the profile `dev` and release bundles use `torlek`; `torlek config show` and `torlek doctor` show which profile and paths you are using.
 Use the same profile for every command. To keep a preview's state apart from an existing installation, put `--profile next` before every command, including `daemon install`.
@@ -65,9 +65,10 @@ Use the same profile for every command. To keep a preview's state apart from an 
 
    `sandbox = "off"` records that you accept this: an unsandboxed agent runs with your rights, can reach the owner socket and act as you, so Torlek's grants do not bind it. The daemon logs that risk at its start and at every launch.
    `desktop_session = "withheld"` keeps agents off your screen and desktop session; the default, `shared`, exposes your display and filtered session bus.
+   To refuse every unsandboxed launch instead, see [Sandbox mode](#sandbox-mode).
    If the daemon is already running, run `torlek config reload`. Until then it keeps the `agents.sandbox` it last read, and `torlek doctor` blocks on its `sandbox` line, naming both values.
 
-2. Sign in to a provider. Run `torlek provider list` to see the installed names, then `torlek init` and follow its sign-in instruction in your terminal.
+2. Sign in to a provider. Run `torlek provider list` to see the installed names, then `torlek init` and follow its sign-in instruction in your terminal. A sign-in marked `unknown` needs the manual check `init` names.
    A local sign-in check does not prove your account has model access or remaining quota.
    Provider accounts and usage are managed by the provider.
 
