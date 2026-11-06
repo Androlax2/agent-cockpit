@@ -1,7 +1,7 @@
 # Install script: one-line verified install from the release archives
 
 **Status:** [install.sh](../../install.sh) is written and tested (#1047). It is attached to every
-release from v0.1.0-alpha.5 on; no published release carries it yet. The README shows it beside
+release from v0.1.0-alpha.5 on. The README shows it beside
 the commands by hand, which stay valid.
 
 ```sh
