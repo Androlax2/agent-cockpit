@@ -211,6 +211,8 @@ try {
 
     $installedFiles = @(Get-ChildItem -LiteralPath $appDirectory -File | ForEach-Object Name | Where-Object { $_ -notin @('manifest.json', 'install.json') } | Sort-Object)
     $expectedFiles = @('SHA256SUMS', 'install-in-wsl.sh', "$bundleName.archive", 'torlek-wsl.ps1', 'torlek.ps1') | Sort-Object
+    Write-Host "installed files: $($installedFiles -join ', ')"
+    Write-Host "expected files:  $($expectedFiles -join ', ')"
     Assert-True 'Scoop downloaded exactly the five bound files' (($installedFiles -join ',') -eq ($expectedFiles -join ','))
     Assert-True 'Scoop shimmed torlek and torlek-wsl' ((Test-Path (Join-Path $shims 'torlek.ps1')) -and (Test-Path (Join-Path $shims 'torlek-wsl.ps1')))
     Assert-True 'scoop install changed nothing in WSL' (-not (Test-InstalledInWsl))
