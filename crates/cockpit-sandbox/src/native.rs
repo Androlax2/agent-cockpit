@@ -349,10 +349,14 @@ pub(crate) fn replace_atomically(path: &Path, contents: &[u8]) -> std::io::Resul
     static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let write = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut staged = path.as_os_str().to_owned();
-    staged.push(format!(".staged-{write}"));
+    staged.push(format!(".staged-{}-{write}", std::process::id()));
     let staged = PathBuf::from(staged);
-    replace_owner_only(&staged, contents)?;
-    std::fs::rename(&staged, path)
+    replace_owner_only(&staged, contents)
+        .and_then(|()| std::fs::rename(&staged, path))
+        .inspect_err(|_| {
+            // No later write reuses this name: the write's own error is the one returned.
+            let _ = std::fs::remove_file(&staged);
+        })
 }
 
 /// Writes `contents` to a new owner-only file at `path`, replacing one an earlier launch left.

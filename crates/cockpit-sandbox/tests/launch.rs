@@ -658,26 +658,35 @@ fn staging_a_launch_while_its_decisions_are_rewritten_succeeds() {
             port: 443,
             request,
         }],
+        asking: Vec::new(),
     };
-    let launching = std::sync::atomic::AtomicBool::new(true);
+    let both_started = std::sync::Barrier::new(2);
 
     std::thread::scope(|scope| {
         let resync = scope.spawn(|| {
-            let mut request = 0;
-            while launching.load(std::sync::atomic::Ordering::Relaxed) {
-                request += 1;
+            both_started.wait();
+            for request in 1..=300 {
                 sandbox
                     .write_egress_decisions("s1", &denial(request))
                     .unwrap_or_else(|error| panic!("rewrite {request}: {error}"));
             }
         });
-        for launch in 0..300 {
-            if let Err(error) = staged.write() {
-                launching.store(false, std::sync::atomic::Ordering::Relaxed);
-                panic!("launch {launch}: {error}");
-            }
+        both_started.wait();
+        for launch in 1..=300 {
+            staged
+                .write()
+                .unwrap_or_else(|error| panic!("launch {launch}: {error}"));
         }
-        launching.store(false, std::sync::atomic::Ordering::Relaxed);
         resync.join().unwrap();
     });
+
+    let folder = state.path().join("mounts/s1");
+    let written = std::fs::read(folder.join(cockpit_sandbox::DECISIONS_FILE)).unwrap();
+    serde_json::from_slice::<cockpit_sandbox::EgressDecisions>(&written).unwrap();
+    let left_staged: Vec<_> = std::fs::read_dir(&folder)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().contains(".staged"))
+        .collect();
+    assert_eq!(left_staged, Vec::<std::ffi::OsString>::new());
 }
