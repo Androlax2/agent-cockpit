@@ -54,8 +54,13 @@ The line under the title is one of:
 - `Status: superseded by <file>`
 - `Status: partly superseded by <file>: <what still holds>`
 
-`<file>` is the name of a record in this directory, such as `2026-11-05-828-remove-sandbox-engines.md`,
-on the same line. Records written before 2026-11-06 may have no status line; read that as accepted.
+`<file>` is the name of another record in this directory, such as
+`2026-11-05-828-remove-sandbox-engines.md`, plain or in backticks, on the same line. Put the
+status line under the title. Records written before 2026-11-06 may have no status line; read
+that as accepted.
+
+Write "superseded by" only to name that file: the test reads every such phrase in a record as a
+reference.
 
 ## Revisiting a decision
 
@@ -64,10 +69,11 @@ on the same line. Records written before 2026-11-06 may have no status line; rea
   one-bullet amendment.
 - **A reversal keeps the old record.** Give it a superseded status line and write a new record
   that links it. The exception is a record the new one names as fully void, with no surviving
-  bullet: remove it, and git history keeps it.
+  bullet: remove it, and git history keeps it. In the same change, edit every "superseded by"
+  line that named the removed file.
 
 ## Checks
 
 `crates/cockpit-workspace-rules/tests/decision_records.rs` checks the file names, that
 `docs/DECISIONS.md` gains no entries, that every status line has one of the forms above and
-that every "superseded by" in a record names a file that exists here.
+that every "superseded by" in a record names another file that exists here.

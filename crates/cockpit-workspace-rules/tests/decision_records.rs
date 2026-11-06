@@ -140,14 +140,14 @@ fn every_superseded_by_line_names_an_existing_decision_record() {
             let Some(successor) = successor_named_on(line) else {
                 continue;
             };
-            if !is_existing_record(&decisions_directory, successor) {
+            if successor == record || !is_existing_record(&decisions_directory, successor) {
                 offenders.push(format!("{record}: {line:?}"));
             }
         }
     }
     assert!(
         offenders.is_empty(),
-        "'superseded by' must be followed by the file name of a record in docs/decisions/: {offenders:#?}"
+        "'superseded by' must be followed by the file name of another record in docs/decisions/: {offenders:#?}"
     );
 }
 
