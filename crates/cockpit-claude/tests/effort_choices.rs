@@ -100,13 +100,51 @@ fn a_start_without_an_effort_does_not_ask_claude_code_anything() {
 }
 
 #[test]
-fn the_help_is_read_once_per_adapter_and_so_per_harness_version() {
+fn the_help_is_read_once_per_build_of_the_program() {
     let dir = tempfile::tempdir().unwrap();
     let claude = claude_whose_help_is(dir.path(), &help_listing(dir.path(), "low, high"));
     assert_eq!(claude.effort_levels(), ["low", "high"]);
-    std::fs::remove_file(dir.path().join("claude")).unwrap();
+    let help = dir.path().join("help.txt");
+    std::fs::write(&help, "  --effort <level>  x\n  (low, high, medium)\n").unwrap();
 
-    assert!(claude.check_choices(None, Some("medium")).is_err());
+    assert_eq!(
+        claude.effort_levels(),
+        ["low", "high"],
+        "the same build is not asked twice"
+    );
+}
+
+#[test]
+fn a_claude_code_updated_while_the_daemon_runs_is_read_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let claude = claude_whose_help_is(dir.path(), &help_listing(dir.path(), "low, high"));
+    assert!(claude.check_choices(None, Some("ludicrous")).is_err());
+
+    let updated = help_listing(dir.path(), "low, high, ludicrous");
+    common::script(
+        dir.path(),
+        "claude",
+        &format!(
+            "if [ \"$1\" = --version ]; then echo '10.0.0 (Claude Code)'; exit 0; fi\n{updated}"
+        ),
+    );
+
+    assert_eq!(claude.check_choices(None, Some("ludicrous")), Ok(()));
+    let error = claude.check_choices(None, Some("max")).unwrap_err();
+    assert!(
+        error.reason.ends_with("(Claude Code 10.0.0)"),
+        "{}",
+        error.reason
+    );
+}
+
+#[test]
+fn a_remark_in_parentheses_before_the_list_is_passed_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let help = "printf '  --effort <level>  Effort (applies per session) (low, medium, high)\\n'";
+    let claude = claude_whose_help_is(dir.path(), help);
+
+    assert_eq!(claude.effort_levels(), ["low", "medium", "high"]);
 }
 
 #[test]

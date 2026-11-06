@@ -45,11 +45,15 @@ fn constant_items(source: &str) -> Vec<&str> {
         .match_indices("const ")
         .chain(source.match_indices("static "))
     {
+        // Not the `static` of `&'static str`, nor a `const fn`.
         let starts_a_word = source[..at]
             .chars()
             .next_back()
-            .is_none_or(|before| !before.is_alphanumeric() && before != '_');
+            .is_none_or(|before| !before.is_alphanumeric() && !"_'".contains(before));
         let rest = &source[at..];
+        if rest.split_whitespace().nth(1) == Some("fn") {
+            continue;
+        }
         let end = rest
             .find('=')
             .and_then(|equals| rest[equals..].find(';').map(|semicolon| equals + semicolon));
@@ -99,6 +103,7 @@ fn the_list_check_catches_a_const_of_levels_or_models() {
         r#"pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];"#,
         r#"static MODELS: &[&str] = &["opus", "sonnet"];"#,
         r#"const DEFAULT_MODEL: &str = "claude-opus-5-5";"#,
+        r#"fn name() -> &'static str { "x" } const LEVELS: [&str; 2] = ["low", "high"];"#,
     ] {
         let items = constant_items(caught);
         assert!(items.iter().any(|item| lists_a_choice(item)), "{caught}");
@@ -107,6 +112,7 @@ fn the_list_check_catches_a_const_of_levels_or_models() {
         r#"const HOSTS: [&str; 3] = ["api.openai.com", "api.anthropic.com", "models.dev"];"#,
         "const MAX_MODEL_BYTES: usize = 200;",
         r#"const LAUNCH_FLAGS: [&str; 2] = ["--effort", "--model"];"#,
+        r#"fn label() -> &'static str { "low" }"#,
     ] {
         let items = constant_items(passed);
         assert!(!items.iter().any(|item| lists_a_choice(item)), "{passed}");

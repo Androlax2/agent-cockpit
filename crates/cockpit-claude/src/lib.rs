@@ -148,11 +148,22 @@ pub struct ClaudeCode {
     /// The directory each launch adds with `--add-dir`, whose [`instruction_skills_dir`]
     /// holds Cockpit's instruction bundle as a skill (#419).
     instruction_skills: Option<PathBuf>,
-    /// The effort levels `claude --help` lists, read when the first start chooses an effort
-    /// and kept for this adapter's life, which is one harness version (#743). Empty when the
-    /// help lists none (it could not run, or words its option differently): the choice then
-    /// passes through and Claude Code answers for itself.
-    effort_levels: Mutex<Option<Vec<String>>>,
+    /// What `claude --help` said, read when a start first chooses an effort and read again
+    /// when the program file changes, since a Claude Code update replaces it (#743).
+    help: Mutex<Option<HelpRead>>,
+}
+
+/// The effort levels one build of `claude` lists in its `--help`.
+#[derive(Debug, Clone)]
+struct HelpRead {
+    /// The program file's modification time and size when read: another build has another.
+    stamp: Option<(std::time::SystemTime, u64)>,
+    /// The version that build printed, for the refusal to name.
+    version: Option<String>,
+    /// Empty when the help could not be read or lists none (or words its option differently):
+    /// the choice then passes through and Claude Code answers for itself. Kept as read, so a
+    /// slow or broken `claude` is asked once per build, not at every start.
+    levels: Vec<String>,
 }
 
 /// Where Claude Code looks for skills in a directory added with `--add-dir`: the bundle is
@@ -170,7 +181,7 @@ impl ClaudeCode {
             version,
             bridge,
             instruction_skills: None,
-            effort_levels: Mutex::new(None),
+            help: Mutex::new(None),
         }
     }
 
@@ -231,19 +242,45 @@ impl ClaudeCode {
         }
     }
 
-    /// The effort levels the installed `claude --help` lists, read once and kept; none when
-    /// it could not be read or lists none. A failed read is tried again at the next start.
+    /// The effort levels the installed `claude --help` lists; none when it could not be read
+    /// or lists none. Read once per build of the program, so a Claude Code update that adds
+    /// or removes a level shows without restarting the daemon.
     pub fn effort_levels(&self) -> Vec<String> {
+        self.help_read().levels
+    }
+
+    fn help_read(&self) -> HelpRead {
         let mut kept = self
-            .effort_levels
+            .help
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if kept.is_none() {
-            *kept = run_with_deadline(&self.program, "--help", HELP_DEADLINE)
-                .ok()
-                .and_then(|help| effort_levels_in(&help));
+        let stamp = std::fs::metadata(&self.program)
+            .and_then(|metadata| Ok((metadata.modified()?, metadata.len())))
+            .ok();
+        if let Some(read) = kept.as_ref().filter(|read| read.stamp == stamp) {
+            return read.clone();
         }
-        kept.clone().unwrap_or_default()
+        let version = run_with_deadline(&self.program, "--version", HELP_DEADLINE)
+            .ok()
+            .and_then(|output| {
+                output
+                    .split_whitespace()
+                    .next()
+                    .filter(|word| is_dotted_version(word))
+                    .map(str::to_owned)
+            })
+            .or_else(|| self.version.clone());
+        let levels = run_with_deadline(&self.program, "--help", HELP_DEADLINE)
+            .ok()
+            .and_then(|help| effort_levels_in(&help))
+            .unwrap_or_default();
+        let read = HelpRead {
+            stamp,
+            version,
+            levels,
+        };
+        *kept = Some(read.clone());
+        read
     }
 
     /// `--settings` JSON that runs `bridge` on every hook event it normalizes, and, after
@@ -391,7 +428,7 @@ impl Provider for ClaudeCode {
         })
     }
 
-    /// Asks the installed Claude Code which efforts it has (its `--help`, run once and kept),
+    /// Asks the installed Claude Code which efforts it has (its `--help`, read once per build of the program),
     /// so a level a Claude Code update adds works without a Torlek release and a level it does
     /// not have is refused naming the ones it lists. A model is not asked about: Claude Code
     /// refuses one the account cannot use itself.
@@ -403,14 +440,13 @@ impl Provider for ClaudeCode {
         let Some(effort) = effort else {
             return Ok(());
         };
-        let levels = self.effort_levels();
+        let HelpRead {
+            levels, version, ..
+        } = self.help_read();
         if levels.is_empty() || levels.iter().any(|level| level == effort) {
             return Ok(());
         }
-        let version = self
-            .version
-            .as_deref()
-            .map_or_else(String::new, |version| format!(" {version}"));
+        let version = version.map_or_else(String::new, |version| format!(" {version}"));
         Err(ProviderError {
             reason: format!(
                 "effort {effort:?} is not one of {}, the levels `claude --help` lists \
@@ -568,38 +604,42 @@ fn check_effort_shape(effort: &str) -> Result<(), ProviderError> {
         && effort.starts_with(|first: char| first.is_ascii_alphanumeric())
         && effort
             .chars()
-            .all(|character| character.is_ascii_alphanumeric() || "-._".contains(character));
+            .all(|character| character.is_ascii_alphanumeric() || "-._:+/@".contains(character));
     if is_plain {
         return Ok(());
     }
     Err(ProviderError {
         reason: format!(
             "effort {effort:?} is not a Claude Code effort level: 1 to {MAX_EFFORT_BYTES} ASCII \
-             letters, digits and `-._`, starting with a letter or digit"
+             letters, digits and `-._:+/@`, starting with a letter or digit"
         ),
     })
 }
 
 /// The levels in the parenthesis after `--effort` in `claude --help`, which may wrap onto
 /// lines of its own: `--effort <level>  Effort level for the current session (low, medium)`.
-/// None when the option or its list is not there, or a level is not a plain word.
+/// The first parenthesis that holds two or more plain words separated by commas; a remark
+/// such as `(applies per session)` is passed over. None when there is no such list.
 fn effort_levels_in(help: &str) -> Option<Vec<String>> {
     let mut lines = help.lines().skip_while(|line| !line.contains("--effort"));
     let first = lines.next()?;
     let description: Vec<&str> = std::iter::once(first)
         .chain(lines.take_while(|line| !line.trim_start().starts_with('-')))
         .collect();
-    let description = description.join(" ");
-    let (_, listed) = description.split_once('(')?;
-    let (listed, _) = listed.split_once(')')?;
-    let levels: Vec<String> = listed
-        .split(',')
-        .map(|level| level.trim().to_owned())
-        .collect();
-    levels
-        .iter()
-        .all(|level| check_effort_shape(level).is_ok())
-        .then_some(levels)
+    description
+        .join(" ")
+        .split('(')
+        .skip(1)
+        .filter_map(|after_open| after_open.split_once(')').map(|(listed, _)| listed))
+        .map(|listed| {
+            listed
+                .split(',')
+                .map(|level| level.trim().to_owned())
+                .collect::<Vec<String>>()
+        })
+        .find(|levels| {
+            levels.len() >= 2 && levels.iter().all(|level| check_effort_shape(level).is_ok())
+        })
 }
 
 /// A random (version 4) UUID, the form `--session-id` takes.

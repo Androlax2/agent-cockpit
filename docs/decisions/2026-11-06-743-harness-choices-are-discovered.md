@@ -3,16 +3,18 @@
 Issue #743. Decided by Theo (2026-11-04: Torlek must not assume which models, effort levels
 or capabilities a harness has); the mechanism is the worker's, as the smallest one that meets it.
 
-- **Effort levels: asked of the harness, once per adapter.** `Provider::check_choices` runs
+- **Effort levels: asked of the harness, once per build.** `Provider::check_choices` runs
   after the trial launch of `Sessions::check_launch_choices`, before a session is recorded or
   the owner is asked. The Claude adapter reads the levels `claude --help` lists after
-  `--effort`, on the first start that chooses one, and keeps them for its life: an adapter
-  is bound to one harness version, so that is "cached per harness version". A level a Claude
-  Code update adds works at once; one it removes is refused at once, naming the levels and the
-  version they were read from. A read that fails is tried again at the next start.
+  `--effort`, with the version `claude --version` prints, on the first start that chooses one,
+  and reads them again when the program file's modification time or size changes: that is
+  "cached per harness version", and an update while the daemon runs shows at the next start.
+  A level an update adds works at once; one it removes is refused at once, naming the levels
+  and the version they were read from.
 - **Help that lists nothing: pass through.** When `--help` cannot run or no longer words the
   option with its levels in parentheses, the value passes through and Claude Code answers for
-  itself. Refusing everything would make a rewording of the help text a Torlek outage.
+  itself, and the miss is cached for that build so a broken `claude` is asked once, not at
+  every start. Refusing everything would make a rewording of the help text a Torlek outage.
 - **Models: shape only, unchanged.** `check_model` still checks one word that cannot read as
   a flag; Claude Code refuses a model the account cannot use. `Provider::launch` checks only
   the same shape of an effort, so a restart, wake or restore never asks the harness again and
