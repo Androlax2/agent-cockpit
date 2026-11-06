@@ -911,14 +911,15 @@ class VerifyInstallTests(PackagingTestCase):
         self.assertEqual(code, 1)
         self.assertIn("did not find a runnable bridge for claude, codex, opencode", error)
 
-    def verify_in_scratch_parent(self, root):
+    def verify_in_scratch_parent(self, root, refusal=None):
         scratch_parent = self.root / "homes"
         scratch_parent.mkdir()
         with patch.object(release, "VERIFY_HOME_PARENT", str(scratch_parent)):
-            try:
+            if refusal is None:
                 release.verify_install(root, "0123abcd")
-            except release.Refusal:
-                pass
+            else:
+                with self.assertRaisesRegex(release.Refusal, refusal):
+                    release.verify_install(root, "0123abcd")
         return scratch_parent
 
     def write_daemon_recording_its_pid(self, ready_script):
@@ -934,7 +935,9 @@ class VerifyInstallTests(PackagingTestCase):
     def test_a_failing_cli_check_removes_its_temporary_home(self):
         self.write_fake("torlek", '#!/bin/sh\ntouch "$HOME/left-behind"\nexit 1\n')
         _code, outputs, _error = self.package()
-        scratch_parent = self.verify_in_scratch_parent(outputs["root"])
+        scratch_parent = self.verify_in_scratch_parent(
+            outputs["root"], "torlek tui --version|torlek version --all"
+        )
         self.assertEqual(list(scratch_parent.iterdir()), [])
 
     def test_a_failing_daemon_check_stops_the_daemon_and_removes_the_home(self):
@@ -943,7 +946,9 @@ class VerifyInstallTests(PackagingTestCase):
         )
         _code, outputs, _error = self.package()
         with patch.object(release, "STAND_IN_PROVIDER", "#!/bin/sh\nexit 1\n"):
-            scratch_parent = self.verify_in_scratch_parent(outputs["root"])
+            scratch_parent = self.verify_in_scratch_parent(
+                outputs["root"], "did not find a runnable bridge"
+            )
         self.assertEqual(list(scratch_parent.iterdir()), [])
         daemon_pid = int(pid_file.read_text())
         with self.assertRaises(ProcessLookupError):

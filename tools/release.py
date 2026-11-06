@@ -81,6 +81,8 @@ MANIFEST_PATH = "share/torlek/manifest.json"
 MANIFEST_SCHEMA = 1
 # How long verify-install waits for `torlek version --all` and for the daemon's ready line.
 COMMAND_TIMEOUT_SECONDS = 60
+# Not tempfile.gettempdir(): macOS's long temp path would break the 104-byte socket limit.
+# A constant so tests can point it at a fixture directory.
 VERIFY_HOME_PARENT = "/tmp"
 # The providers verify-install puts first on the daemon's PATH: each answers only
 # `--version`, which is all the daemon runs of it at its start, in the words its adapter reads.
