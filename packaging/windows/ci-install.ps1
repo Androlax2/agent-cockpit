@@ -167,11 +167,15 @@ function Invoke-Launcher {
         [string[]] $Arguments = @(),
         [string] $Shell = $pwshPath,
         [string] $Stdin,
-        [hashtable] $Environment = @{ TORLEK_WSL_DISTRIBUTION = $null }
+        [hashtable] $Environment = @{ TORLEK_WSL_DISTRIBUTION = $null },
+        # Scoop's .ps1 shim turns piped input into pipeline input for the script, which the
+        # launcher does not accept; a person answers the prompt at the keyboard, so the
+        # scripted answer goes to the installed script itself.
+        [switch] $Direct
     )
     $parameters = @{
         Shell = $Shell
-        Script = (Join-Path $shims "$Name.ps1")
+        Script = (Join-Path ($Direct ? $appDirectory : $shims) "$Name.ps1")
         Arguments = $Arguments
         Environment = $Environment
     }
@@ -248,7 +252,7 @@ try {
     # PATH with pwsh but without System32: the launcher must report the missing wsl.exe.
     Assert-Result 'torlek-wsl check without wsl.exe' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('check', '-Distribution', $Distribution) -Environment @{ PATH = (Split-Path -Parent $pwshPath); TORLEK_WSL_DISTRIBUTION = $null }) 'is refused' 'wsl\.exe was not found'
 
-    Assert-Result 'declining the consent prompt' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('install', '-Distribution', $Distribution) -Stdin 'n') 'is refused' 'Nothing was installed'
+    Assert-Result 'declining the consent prompt' (Invoke-Launcher -Name 'torlek-wsl' -Arguments @('install', '-Distribution', $Distribution) -Stdin 'n' -Direct) 'is refused' 'Nothing was installed'
     Assert-True 'declining installed nothing' (-not (Test-InstalledInWsl))
 
     $archivePath = Join-Path $appDirectory "$bundleName.archive"
