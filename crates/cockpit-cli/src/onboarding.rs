@@ -297,12 +297,13 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
     let setting = &config.agents_sandbox;
     let command = crate::profile::command();
     let mut lines = vec![
-        "sandbox: agents.sandbox = \"off\" runs agents UNSANDBOXED, with your rights; \
-         \"required\" runs them in Torlek's native sandbox (bubblewrap, Landlock and \
-         seccomp), reaching the network only through a per-session egress proxy (you allow once, \
-         allow always or deny a refused host with `torlek network`), and refuses every launch \
-         on a host without it"
-            .to_owned(),
+        format!(
+            "sandbox: agents.sandbox = \"off\" runs agents UNSANDBOXED, with your rights; \
+             \"required\" runs them in Torlek's native sandbox (bubblewrap, Landlock and \
+             seccomp), reaching the network only through a per-session egress proxy (you allow \
+             once, allow always or deny a refused host with `{command} network`), and refuses \
+             every launch on a host without it"
+        ),
         format!(
             "needs you: a command an agent asks you to run (`{command} ask run`) or a step only \
              a person can do (`{command} ask guide`); an agent cannot approve its own request"
