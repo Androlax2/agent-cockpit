@@ -14,6 +14,11 @@ crate dependency needs his approval.
   crate enters the build, and a host without them loses only that outlet.
 - **#57 does not block it.** #57 is the Beta 1 gate (upgrades keep data, Teams and Chief);
   the notifier needs only the change feed, the reports, the queue and the network requests.
+- **A hold silences, then sums up once (Theo's choice A, 2026-11-06).** While `away` or an
+  owner's hold program stands, nothing shows and nothing plays; the status file names the
+  holds; when the last one ends, one low-urgency notification without a sound lists what still
+  needs the owner. Holds other than `away` are the owner's programs (exit 0 holds), so
+  Torlek detects no meeting or game itself.
 - **Rejected:** `notify-rust` (zbus) and `rodio` (ALSA, a C library on the build host), two
   dependency trees for what two programs already do; notifications in the daemon (report 19,
   decision 11); notifications in the TUI, which would stop when it is closed.

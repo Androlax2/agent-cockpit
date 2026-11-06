@@ -302,7 +302,8 @@ async fn notify_runs_the_notifier_beside_cockpit_with_the_socket_state_settings_
     std::fs::write(
         &config,
         "[notify.desktop]\nfinished = false\n[notify.sound]\nfailure = false\nhold = false\n\
-         question = false\nquota = false\nfinished = false\n",
+         question = false\nquota = false\nfinished = false\n\
+         [notify.hold]\nmeeting = \"/opt/hold/in-a-meeting\"\n",
     )
     .unwrap();
 
@@ -313,12 +314,48 @@ async fn notify_runs_the_notifier_beside_cockpit_with_the_socket_state_settings_
         text(&output.stdout),
         format!(
             "--socket\n{}\n--state-dir\n{}\n--desktop\nfailure,hold,question,quota\n--sound\nnone\n\
-             --status-file\n{}\n",
+             --status-file\n{}\n--away-file\n{}\n--hold\nmeeting=/opt/hold/in-a-meeting\n",
             socket.display(),
             home.dir.path().join(".local/state/torlek-dev").display(),
-            socket.with_file_name("status.json").display()
+            socket.with_file_name("status.json").display(),
+            socket.with_file_name("away").display()
         )
     );
+}
+
+#[tokio::test]
+async fn notify_away_on_writes_the_away_file_beside_the_socket_and_off_removes_it() {
+    let home = Home::new();
+    let away = home.dir.path().join("run/torlek-dev/away");
+
+    let on = home.cockpit(&["notify", "away", "on"]).await;
+
+    assert!(on.status.success(), "{}", text(&on.stderr));
+    assert!(
+        text(&on.stdout).starts_with("away: on"),
+        "{}",
+        text(&on.stdout)
+    );
+    assert!(away.is_file());
+
+    let off = home.cockpit(&["notify", "away", "off"]).await;
+
+    assert!(off.status.success(), "{}", text(&off.stderr));
+    assert!(
+        text(&off.stdout).starts_with("away: off"),
+        "{}",
+        text(&off.stdout)
+    );
+    assert!(!away.exists());
+}
+
+#[tokio::test]
+async fn notify_away_off_when_not_away_succeeds() {
+    let home = Home::new();
+
+    let off = home.cockpit(&["notify", "away", "off"]).await;
+
+    assert!(off.status.success(), "{}", text(&off.stderr));
 }
 
 #[tokio::test]

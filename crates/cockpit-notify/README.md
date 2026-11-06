@@ -38,6 +38,21 @@ bus, `notify-send` or a player runs the notifier all the same (#62's headless ac
 that outlet is off and its log says why. A program that fails or hangs is logged and stopped
 after ten seconds; nothing waits on it. macOS stays with #568.
 
+## Holds
+
+While a hold stands the notifier keeps quiet: no notification, no sound (report 19, the
+owner's choice on #62). What it would have told is kept, once per session and event; when the
+last hold ends, one low-urgency notification without a sound lists what of it still stands.
+The holds are checked every five seconds:
+
+- `away` stands while the `--away-file` exists; `torlek notify away on|off` writes and removes
+  it, beside the status file, so it ends at logout with the runtime directory.
+- `--hold NAME=PROGRAM` stands while `PROGRAM` exits 0 within three seconds. One that fails,
+  cannot start or runs longer does not hold, and is logged once. `torlek notify` passes the
+  owner's `[notify.hold]` programs.
+
+A hold is not the `hold` event: that one tells a session is held on the owner's permission.
+
 ## Status file
 
 With `--status-file FILE` the notifier keeps `FILE` up to date for a bar (report 19): at once
@@ -54,6 +69,7 @@ profile's runtime directory (`paths.runtime_dir` in `torlek config show`): usual
   "schema": 1,
   "written_at": 1762470000,
   "reachable": true,
+  "holds": [],
   "needs_you": 1,
   "sessions": [
     {
@@ -73,6 +89,8 @@ profile's runtime directory (`paths.runtime_dir` in `torlek config show`): usual
   fifteen seconds old was left by a notifier that is gone: show nothing from it.
 - `reachable`: the daemon answered the last request, the change feed is current and the
   notifier has loaded its state; while false, `sessions` is what was last known, or empty.
+- `holds`: the holds that stand, by name (`away`, or a `[notify.hold]` name); while any
+  does, the notifier keeps quiet.
 - `sessions`: every session that has not ended, by id. `name` is the label the agent
   reported, else the id; `project` is `null` until the feed names its checkout.
 - `state`: `needs-you` when the session needs the owner for anything but having finished (a
@@ -87,14 +105,15 @@ yet.
 ## How it runs
 
 `torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS]
-[--status-file FILE]`, where
+[--status-file FILE] [--away-file FILE] [--hold NAME=PROGRAM]...`, where
 `EVENTS` is `none` or a comma-separated list of event names; left out, every event is on. It
 follows the change feed for sessions and view stamps, asks the daemon for the agents' reports,
 the approval queue and the network requests when their stamp moves and every five seconds,
 and logs under `DIR/logs/notify` (report 12). A daemon out of reach is asked again after a
 pause that doubles up to thirty seconds; nothing is news until it has answered all three.
 `torlek notify` starts it with the daemon's socket, the profile's state directory, the
-owner's `[notify.desktop]` and `[notify.sound]` settings and the status file.
+owner's `[notify.desktop]`, `[notify.sound]` and `[notify.hold]` settings, the status file
+and the away file.
 
 ## Dependency edges
 

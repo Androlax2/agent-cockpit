@@ -117,6 +117,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek doctor [--project DIR | --remove-old-sandbox]
        torlek tui [--version]
        torlek notify [--version]
+       torlek notify away on|off
        torlek version [--all]
        torlek update [check | later | skip | checks on|off]
        torlek daemon install

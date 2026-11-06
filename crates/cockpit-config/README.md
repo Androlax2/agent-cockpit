@@ -111,6 +111,15 @@ finished = true   # finished its work
 [notify.sound]    # the same five events
 ```
 
+`[notify.hold]` names the owner's hold programs: while one exits 0 the notifier keeps quiet
+(report 19). A name is lowercase letters, digits and dashes, and not `away`, which
+`torlek notify away on` sets; a program is an absolute path.
+
+```toml
+[notify.hold]
+meeting = "/home/me/bin/in-a-meeting"
+```
+
 ## Start files
 
 Files an agent reads only at launch. The product declares the provider-owned ones
