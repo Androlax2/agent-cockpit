@@ -34,7 +34,18 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
 }
 
 if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer | Where-Object { $_.Version -eq [version] $analyzerVersion })) {
-    Install-Module -Name PSScriptAnalyzer -RequiredVersion $analyzerVersion -Scope CurrentUser -Force
+    # The PowerShell Gallery times out now and then (a merged run lost its job to one download).
+    $maximumAttempts = 4
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            Install-Module -Name PSScriptAnalyzer -RequiredVersion $analyzerVersion -Scope CurrentUser -Force
+            break
+        } catch {
+            if ($attempt -ge $maximumAttempts) { throw }
+            Write-Host "PSScriptAnalyzer download failed (attempt $attempt of $maximumAttempts): $($_.Exception.Message)"
+            Start-Sleep -Seconds (15 * $attempt)
+        }
+    }
 }
 Import-Module PSScriptAnalyzer -RequiredVersion $analyzerVersion
 foreach ($launcher in $launchers) {
