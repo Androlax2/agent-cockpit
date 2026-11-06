@@ -403,6 +403,8 @@ esac
                 "0.2",
                 "--summary-seconds",
                 "1000",
+                "--idle-grace-seconds",
+                "0",
                 *extra_arguments,
             ],
             env=self.environment,
@@ -578,6 +580,60 @@ esac
 
         self.assertEqual(result.stdout.count("IDLE without merged PR"), 2, result.stdout)
 
+    def stream_sessions(self, *steps, hold_seconds=3):
+        """Makes `torlek agent sessions --watch` print each line after its delay, then end."""
+        commands = [f"sleep {delay}; printf '%s\\n' '{line}'" for delay, line in steps]
+        self.shim("torlek", "; ".join(commands) + f"; sleep {hold_seconds}; exit 3")
+
+    def test_it_stays_quiet_when_a_worker_works_again_within_the_idle_grace_period(self):
+        self.stream_sessions(
+            (0, self.session("greenfield-6-idle", "waiting", "waiting for /code-review")),
+            (0.3, self.session("greenfield-6-idle", "working", "applying review fixes")),
+        )
+
+        result = self.watch(extra_arguments=("--idle-grace-seconds", "1"))
+
+        self.assertNotIn("IDLE", result.stdout)
+
+    def test_it_reports_a_worker_still_idle_after_the_idle_grace_period(self):
+        self.stream_sessions((0, self.session("greenfield-6-idle", "waiting", "watching CI")))
+
+        result = self.watch(extra_arguments=("--idle-grace-seconds", "0.5"))
+
+        self.assertEqual(result.stdout.count("IDLE without merged PR"), 1, result.stdout)
+
+    def test_it_does_not_report_an_idle_worker_before_the_idle_grace_period_ends(self):
+        self.stream_sessions(
+            (0, self.session("greenfield-6-idle", "waiting", "watching CI")), hold_seconds=1.5
+        )
+
+        result = self.watch(extra_arguments=("--idle-grace-seconds", "5"))
+
+        self.assertNotIn("IDLE", result.stdout)
+
+    def test_it_reports_the_idle_spell_that_follows_one_cut_short_by_the_grace_period(self):
+        self.stream_sessions(
+            (0, self.session("greenfield-6-idle", "waiting", "waiting for /code-review")),
+            (0.2, self.session("greenfield-6-idle", "working", "applying review fixes")),
+            (0.2, self.session("greenfield-6-idle", "waiting", "watching CI")),
+        )
+
+        result = self.watch(extra_arguments=("--idle-grace-seconds", "0.6"))
+
+        self.assertEqual(result.stdout.count("IDLE without merged PR"), 1, result.stdout)
+        self.assertIn("watching CI", result.stdout)
+
+    def test_it_stays_quiet_when_an_idle_worker_asks_a_question_within_the_grace_period(self):
+        self.stream_sessions(
+            (0, self.session("greenfield-6-idle", "waiting", "coding")),
+            (0.2, self.session("greenfield-6-idle", "waiting", "asking", question="Which?")),
+        )
+
+        result = self.watch(extra_arguments=("--idle-grace-seconds", "0.6"))
+
+        self.assertIn("QUESTION s-greenfield-6-idle", result.stdout)
+        self.assertNotIn("IDLE", result.stdout)
+
     def test_it_gives_up_on_a_hung_gh_and_says_the_merge_state_is_unknown(self):
         self.shim(
             "gh",
@@ -662,6 +718,7 @@ class WatcherStateTests(FakeCommandsTestCase):
                 seed_seconds=0,
                 poll_seconds=1,
                 working_seconds=120,
+                idle_grace_seconds=0,
                 summary_seconds=1,
                 state_file=state_file,
             )
