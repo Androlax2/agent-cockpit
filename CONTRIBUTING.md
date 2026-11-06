@@ -21,6 +21,7 @@ exists today under `apps/`. Everyone follows the
    issue is a checkpoint that closes later with its proof linked, not a blocker.
 3. Read the reports named on the issue's **Read** line, and nothing more.
 4. Read [Development](docs/DEVELOPMENT.md) for prerequisites and the check commands.
+5. Before writing or moving documentation, read the [documentation map and writing rules](docs/README.md).
 
 Follow the reports according to that status legend. When a change needs a decision the
 reports do not make, open an issue labelled `decision-needed` and stop on that point

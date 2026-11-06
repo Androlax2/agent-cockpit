@@ -16,6 +16,7 @@ Read the [architecture map](docs/ARCHITECTURE.md) and the relevant scoped rule:
 | Shell, Python, JavaScript/TypeScript, Lua | [Script rules](.agents/rules/scripts.md) |
 | Requests, session identity, persisted state | [Protocol rules](.agents/rules/protocol.md) |
 | Makefile, tests and CI | [Verification rules](.agents/rules/ci.md) |
+| Documentation pages and prose | [Documentation map and writing rules](docs/README.md) |
 
 This index is explicit: clients need not interpret another client's path-scoped rule
 metadata. Project guidance supplements the user's global instructions.
