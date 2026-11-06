@@ -19,7 +19,7 @@ library, installed native harnesses and real tmux.
 
 **Spec:** [Issue #419](https://github.com/Androlax2/agent-cockpit/issues/419), its
 current comments, and
-[the native skill decision](../../decisions/2026-11-01-419-native-skill-per-harness.md).
+[the native skill decision](../../decisions/2026-11-01-419-brief-delivery-per-harness.md).
 
 ## Constraints
 

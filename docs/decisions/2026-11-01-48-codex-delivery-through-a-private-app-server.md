@@ -50,3 +50,27 @@ Codex 0.161.0 with a fresh `CODEX_HOME`.
   short-lived connection was not measured without a signed-in account (#436). One delivery
   makes up to seven calls of at most 5 seconds each, plus 2 seconds of listing retries, so a
   stalled server holds it for about half a minute.
+
+## Revisited 2026-11-01 (#48, hook trust)
+
+Decided by the worker: Codex 0.161.0 runs no hook without recorded trust, and its failed
+turns send no hook (both measured with a fresh `CODEX_HOME`). Codex hooks run with trust
+scoped to the launch. The earlier version of this decision also said "outcome is not
+reported" and left submit and cancel to #407; the delivery section above replaces that, so
+only the trust rules are kept here.
+
+- **Each launch trusts exactly its own hooks.** The launch passes the hooks with `--config`
+  and a `hooks.state` entry holding each hook's trusted hash, computed as Codex does
+  (`cockpit-codex` `hooks::trusted_hash`, proven by `conformance::codex_trusts_every_hook_a_launch_subscribes`).
+  Codex files both under its session-flags source, so the trust lives and dies with the
+  conversation, and a hook whose command differs is not run.
+- **Rejected:** `--dangerously-bypass-hook-trust`, because it also runs every untrusted hook a
+  cloned project declares; writing trust into the owner's `~/.codex/config.toml`, because it
+  changes the owner's files and outlives the launch.
+- **A launch without the bridge, so without the private app-server, passes `--no-daemon`.**
+  With the bridge, the private server above keeps Codex's shared background server out of
+  the way. That shared server runs hooks with the environment of whichever launch started it,
+  so reports would carry another session's launch token (the #184 failure for Claude Code).
+- **Capabilities: resume without the bridge; with it, events, and submit, cancel and outcome
+  through the delivery above.** Effort, compact, billing and screen reading were untested when
+  this was decided, so they are not claimed.
