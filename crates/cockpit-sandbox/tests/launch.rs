@@ -626,3 +626,67 @@ fn staging_a_launch_removes_the_egress_counters_of_the_last_launch() {
 
     assert_eq!(sandbox.egress_report("s1").unwrap(), None);
 }
+
+/// #984: a launch staging its files while the daemon rewrites the session's decisions, as its
+/// resync does every second for each live session, both succeed: neither takes the other's
+/// staged file from under it.
+#[test]
+fn staging_a_launch_while_its_decisions_are_rewritten_succeeds() {
+    let state = tempfile::tempdir().unwrap();
+    let host_paths = HostPaths {
+        mount_sources: state.path().join("mounts"),
+        homes: state.path().join("homes"),
+        ..no_host_paths()
+    };
+    let sandbox = Sandbox::new(Platform::Linux, host_paths, native_backend());
+    let (program, arguments) = agent_words();
+    let staged = sandbox
+        .prepare(
+            AgentSandbox::Required,
+            &launch_request("s1", state.path().join("app").to_str().unwrap()),
+            program,
+            arguments,
+        )
+        .unwrap()
+        .staged
+        .unwrap();
+    staged.write().unwrap();
+    let denial = |request| cockpit_sandbox::EgressDecisions {
+        allowed: Vec::new(),
+        denied: vec![cockpit_sandbox::DeniedDestination {
+            host: "denied.example.com".to_owned(),
+            port: 443,
+            request,
+        }],
+        asking: Vec::new(),
+    };
+    let both_started = std::sync::Barrier::new(2);
+
+    std::thread::scope(|scope| {
+        let resync = scope.spawn(|| {
+            both_started.wait();
+            for request in 1..=300 {
+                sandbox
+                    .write_egress_decisions("s1", &denial(request))
+                    .unwrap_or_else(|error| panic!("rewrite {request}: {error}"));
+            }
+        });
+        both_started.wait();
+        for launch in 1..=300 {
+            staged
+                .write()
+                .unwrap_or_else(|error| panic!("launch {launch}: {error}"));
+        }
+        resync.join().unwrap();
+    });
+
+    let folder = state.path().join("mounts/s1");
+    let written = std::fs::read(folder.join(cockpit_sandbox::DECISIONS_FILE)).unwrap();
+    serde_json::from_slice::<cockpit_sandbox::EgressDecisions>(&written).unwrap();
+    let left_staged: Vec<_> = std::fs::read_dir(&folder)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().contains(".staged"))
+        .collect();
+    assert_eq!(left_staged, Vec::<std::ffi::OsString>::new());
+}
