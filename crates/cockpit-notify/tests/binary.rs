@@ -428,3 +428,31 @@ fn a_second_notifier_for_the_same_state_directory_exits_without_telling_twice() 
     );
     assert_eq!(first.0.try_wait().unwrap(), None, "the first keeps running");
 }
+
+#[test]
+fn the_status_file_shows_the_finished_session_for_a_bar() {
+    let setup = Setup::new();
+    let status_file = setup.dir.path().join("status.json");
+    let _notifier = setup.start(&["--status-file", status_file.to_str().unwrap()], false);
+
+    let deadline = Instant::now() + GENEROUS;
+    let mut written = serde_json::Value::Null;
+    while Instant::now() < deadline {
+        if let Ok(text) = fs::read_to_string(&status_file) {
+            written = serde_json::from_str(&text).unwrap();
+            if written["sessions"][0]["needs"] == serde_json::json!(["finished"]) {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    assert_eq!(written["schema"], 1, "{written}");
+    assert_eq!(written["reachable"], true, "{written}");
+    assert_eq!(written["sessions"][0]["id"], WORKER, "{written}");
+    assert_eq!(
+        written["sessions"][0]["needs"],
+        serde_json::json!(["finished"]),
+        "{written}"
+    );
+}

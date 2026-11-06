@@ -292,7 +292,7 @@ fn install_echoing_notifier(cockpit: &Path) {
 }
 
 #[tokio::test]
-async fn notify_runs_the_notifier_beside_cockpit_with_the_socket_state_and_settings() {
+async fn notify_runs_the_notifier_beside_cockpit_with_the_socket_state_settings_and_status_file() {
     let home = Home::new();
     let socket = home.daemon_socket();
     let cockpit = home.installed_cockpit(false);
@@ -312,9 +312,11 @@ async fn notify_runs_the_notifier_beside_cockpit_with_the_socket_state_and_setti
     assert_eq!(
         text(&output.stdout),
         format!(
-            "--socket\n{}\n--state-dir\n{}\n--desktop\nfailure,hold,question,quota\n--sound\nnone\n",
+            "--socket\n{}\n--state-dir\n{}\n--desktop\nfailure,hold,question,quota\n--sound\nnone\n\
+             --status-file\n{}\n",
             socket.display(),
-            home.dir.path().join(".local/state/torlek-dev").display()
+            home.dir.path().join(".local/state/torlek-dev").display(),
+            socket.with_file_name("status.json").display()
         )
     );
 }

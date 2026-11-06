@@ -3,10 +3,11 @@
 
 use std::collections::BTreeSet;
 
-use cockpit_protocol::{ChangeBatch, Command, Reply, ViewArea};
+use cockpit_protocol::{AgentState, ChangeBatch, Command, Reply, SessionStateView, ViewArea};
 
 use crate::board::{Board, FeedError, Raised};
 use crate::event::Event;
+use crate::status::{SessionStatus, Status};
 
 /// One event to tell the owner about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +118,61 @@ impl Notifier {
         };
         self.raised = raised;
         news
+    }
+
+    /// What the status file shows now; `is_reachable` says whether the daemon answered the
+    /// last request.
+    pub fn status(&self, is_reachable: bool) -> Status {
+        let mut sessions = Vec::new();
+        for session in self.board.sessions() {
+            let needs: BTreeSet<Event> = self
+                .raised
+                .iter()
+                .filter(|raised| raised.session == session.id)
+                .map(|raised| raised.event)
+                .collect();
+            if session.state == SessionStateView::Ended && needs.is_empty() {
+                continue;
+            }
+            let report = self.board.report(&session.id);
+            let state = if needs.iter().any(|event| *event != Event::Finished) {
+                "needs-you"
+            } else {
+                match &session.state {
+                    SessionStateView::Launching => "launching",
+                    SessionStateView::Running => match report.and_then(|report| report.state) {
+                        Some(AgentState::Working) => "working",
+                        Some(AgentState::Waiting) => "waiting",
+                        None => "running",
+                    },
+                    SessionStateView::Stopping { .. } => "stopping",
+                    SessionStateView::Asleep => "asleep",
+                    SessionStateView::Ended => "ended",
+                    // Failed always raises a failure; a state this version does not know
+                    // is shown as such.
+                    SessionStateView::Failed | SessionStateView::Unknown => "unknown",
+                }
+            };
+            sessions.push(SessionStatus {
+                id: session.id.clone(),
+                name: self.board.name_of(&session.id),
+                project: self.board.project_of(session).map(str::to_owned),
+                state,
+                needs: needs.iter().map(|event| event.name()).collect(),
+                doing: report.and_then(|report| report.doing.clone()),
+                changed_at: report.map_or(session.changed_at, |report| {
+                    report.reported_at.max(session.changed_at)
+                }),
+            });
+        }
+        Status {
+            reachable: is_reachable && self.is_loaded(),
+            needs_you: sessions
+                .iter()
+                .filter(|session| session.state == "needs-you")
+                .count(),
+            sessions,
+        }
     }
 
     fn notice(&self, raised: &Raised) -> Notice {

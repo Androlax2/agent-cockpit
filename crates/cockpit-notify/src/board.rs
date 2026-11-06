@@ -1,12 +1,13 @@
 //! What the notifier knows of the daemon's state: the sessions from the change feed, and the
 //! agents' reports, the approval queue and the network requests the daemon answers by request.
-//! From them it derives what each session needs the owner for now.
+//! From them it derives what each session needs the owner for now. The checkouts on the feed
+//! name each session's project for the status file.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cockpit_protocol::{
-    Change, ChangeBatch, EntityKind, FeedPosition, GuideStateView, GuideView,
+    Change, ChangeBatch, CheckoutView, EntityKind, FeedPosition, GuideStateView, GuideView,
     NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, QuestionSource,
     RunRequestView, RunStateView, SessionReport, SessionStateView, SessionView, TurnOutcome,
     ViewArea, ViewStamp,
@@ -58,6 +59,8 @@ impl std::error::Error for FeedError {}
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Board {
     sessions: BTreeMap<String, SessionView>,
+    /// Each checkout's project, by checkout id.
+    projects: BTreeMap<i64, String>,
     reports: BTreeMap<String, SessionReport>,
     runs: Vec<RunRequestView>,
     guides: Vec<GuideView>,
@@ -70,12 +73,14 @@ pub(crate) struct Board {
 enum Edit {
     PutSession(Box<SessionView>),
     RemoveSession(String),
+    PutCheckout(i64, String),
+    RemoveCheckout(i64),
     PutStamp(ViewArea, ViewStamp),
 }
 
 impl Board {
-    /// Applies `batch` whole: sessions and view stamps change, other kinds are not read. A
-    /// snapshot replaces the sessions.
+    /// Applies `batch` whole: sessions, checkouts and view stamps change, other kinds are not
+    /// read. A snapshot replaces the sessions and the checkouts.
     pub(crate) fn apply(&mut self, batch: &ChangeBatch) -> Result<(), FeedError> {
         // Every change is decoded before any is applied: only decoding can fail.
         let mut edits = Vec::with_capacity(batch.changes.len());
@@ -91,6 +96,17 @@ impl Board {
                 (EntityKind::Session, Change::Tombstone) => {
                     Edit::RemoveSession(event.entity.id.clone())
                 }
+                (EntityKind::Checkout, Change::Upsert { state }) => {
+                    let checkout: CheckoutView = decode(state).map_err(refused)?;
+                    Edit::PutCheckout(checkout.id, checkout.project)
+                }
+                (EntityKind::Checkout, Change::Tombstone) => Edit::RemoveCheckout(
+                    event
+                        .entity
+                        .id
+                        .parse()
+                        .map_err(|_| refused("a checkout id is a number".to_owned()))?,
+                ),
                 (EntityKind::ViewStamp, Change::Upsert { state }) => {
                     // An area this version does not know has no view here to ask for.
                     let Some(area) = ViewArea::from_id(&event.entity.id) else {
@@ -103,6 +119,7 @@ impl Board {
         }
         if batch.follows == FeedPosition::Snapshot {
             self.sessions.clear();
+            self.projects.clear();
         }
         for edit in edits {
             match edit {
@@ -111,6 +128,12 @@ impl Board {
                 }
                 Edit::RemoveSession(id) => {
                     self.sessions.remove(&id);
+                }
+                Edit::PutCheckout(id, project) => {
+                    self.projects.insert(id, project);
+                }
+                Edit::RemoveCheckout(id) => {
+                    self.projects.remove(&id);
                 }
                 Edit::PutStamp(area, stamp) => {
                     if self.stamps.insert(area, stamp) != Some(stamp) {
@@ -204,6 +227,19 @@ impl Board {
             raised.push(raise(Event::Hold, Cause::Network(request.id)));
         }
         raised
+    }
+
+    pub(crate) fn sessions(&self) -> impl Iterator<Item = &SessionView> {
+        self.sessions.values()
+    }
+
+    pub(crate) fn report(&self, session: &str) -> Option<&SessionReport> {
+        self.reports.get(session)
+    }
+
+    /// The project of the checkout `session` runs in, when the feed named it.
+    pub(crate) fn project_of(&self, session: &SessionView) -> Option<&str> {
+        self.projects.get(&session.checkout).map(String::as_str)
     }
 
     /// The name the owner knows `session` by: the label its agent reported, else its id.

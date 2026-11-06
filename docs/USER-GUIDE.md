@@ -227,6 +227,17 @@ question = false    # no sound for a question
 
 The events are `failure`, `hold`, `question`, `quota` and `finished`.
 
+While it runs, `torlek notify` also keeps a status file for your bar at
+`$XDG_RUNTIME_DIR/torlek/status.json` (`torlek-NAME` for a named profile): the sessions, what
+each needs you for and how many need you now. Its schema is in the
+[cockpit-notify README](../crates/cockpit-notify/README.md#status-file). For example, a
+waybar `custom` module can show the count with:
+
+```sh
+jq -c '{text: "\(.needs_you)", class: (if .needs_you > 0 then "needs-you" else "idle" end)}' \
+  "$XDG_RUNTIME_DIR/torlek/status.json"
+```
+
 ## Updates
 
 Torlek tells you when a newer release is available. It never downloads, installs, restarts the daemon or stops a session for you: it prints the commands, and you run them.
