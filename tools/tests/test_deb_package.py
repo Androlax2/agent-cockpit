@@ -11,11 +11,14 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "packaging/deb/build.py"
 REPOSITORY = ROOT / "packaging/deb/repository.py"
+PUBLISH = ROOT / "packaging/deb/publish.sh"
+CHECK_SITE = ROOT / "packaging/deb/check-site.sh"
 TAG = "0.1.0-alpha.1"
 VERSION = "0.1.0~alpha.1-1"
 REVISION = "b" * 40
@@ -38,6 +41,7 @@ HAS_DPKG = shutil.which("dpkg") is not None
 HAS_DPKG_DEB = shutil.which("dpkg-deb") is not None
 HAS_AR = shutil.which("ar") is not None
 HAS_GPG = shutil.which("gpg") is not None and shutil.which("gpgv") is not None
+HAS_GIT = shutil.which("git") is not None
 
 
 def dpkg_order(character):
@@ -470,6 +474,13 @@ class BuiltPackageTest(ReleaseFixture):
                 self.assertEqual(member.mode, 0o755)
                 self.assertEqual((member.uid, member.gid, member.uname), (0, 0, "root"))
 
+    def test_every_entry_is_dated_to_the_release_day_not_1970(self):
+        release_day = int(datetime.fromisoformat(f"{RELEASE_DATE}T00:00:00+00:00").timestamp())
+        control = tar_members(self.members["amd64"]["control.tar.xz"])
+        for name, member in [*self.data["amd64"].items(), *control.items()]:
+            with self.subTest(name=name):
+                self.assertEqual(member.mtime, release_day)
+
     def test_copyright_is_where_debian_policy_looks(self):
         copyright_file = self.installed_root("amd64") / "usr/share/doc/torlek/copyright"
         text = copyright_file.read_text()
@@ -746,6 +757,277 @@ class RepositoryTest(unittest.TestCase):
         shutil.copy(next((repo / repository.POOL).glob("*.deb")), repo / "pool")
         result = self.run_repository("index", "--repo", str(repo), "--suite", "alpha")
         self.assertRefused(result, "outside pool/main/t/torlek")
+
+
+class PruneTest(unittest.TestCase):
+    """alpha.1, alpha.2, alpha.2 rebuilt as revision 2, and alpha.10, both architectures each."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        cls.work = Path(cls.folder.name)
+        cls.debs = cls.work / "debs"
+        for tag, revisions in (
+            ("0.1.0-alpha.1", [1]),
+            ("0.1.0-alpha.2", [1, 2]),
+            ("0.1.0-alpha.10", [1]),
+        ):
+            archives, sums = release_fixture(cls.work, tag)
+            for revision in revisions:
+                for archive in archives.values():
+                    result = run_build(
+                        archive, sums, cls.debs, "--debian-revision", str(revision), tag=tag
+                    )
+                    if result.returncode != 0:
+                        raise AssertionError(result.stderr)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.folder.cleanup()
+
+    def pruned(self, keep):
+        repo = self.work / "repos" / self.id().rsplit(".", 1)[-1]
+        shutil.copytree(self.debs, repo / repository.POOL)
+        result = run_tool(
+            REPOSITORY, "prune", "--repo", str(repo), "--suite", "alpha", "--keep", str(keep)
+        )
+        return result, sorted(path.name for path in (repo / repository.POOL).glob("*.deb"))
+
+    def test_keeps_both_architectures_of_the_newest_versions_in_dpkg_order(self):
+        result, kept = self.pruned(2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            kept,
+            [
+                "torlek_0.1.0~alpha.10-1_amd64.deb",
+                "torlek_0.1.0~alpha.10-1_arm64.deb",
+                "torlek_0.1.0~alpha.2-2_amd64.deb",
+                "torlek_0.1.0~alpha.2-2_arm64.deb",
+            ],
+        )
+
+    def test_keeping_more_versions_than_exist_removes_nothing(self):
+        result, kept = self.pruned(10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(kept), 8)
+
+    def test_refuses_to_keep_no_version(self):
+        result, kept = self.pruned(0)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("keep at least the newest version", result.stderr)
+        self.assertEqual(len(kept), 8)
+
+
+@unittest.skipUnless(HAS_GPG and HAS_GIT, "gpg, gpgv and git are not installed")
+class PublishTest(unittest.TestCase):
+    """publish.sh against a bare Git repository standing in for the Pages repository, with a
+    throwaway certification key whose signing subkey alone is handed over, as in CI."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        cls.work = Path(cls.folder.name)
+        cls.gnupg_home = cls.work / "gnupg"
+        cls.gnupg_home.mkdir(mode=0o700)
+        cls.gpg_environment = {**os.environ, "GNUPGHOME": str(cls.gnupg_home)}
+        cls.public_key, cls.signing_subkey = cls.certification_key(
+            "Torlek test <t@example.invalid>"
+        )
+        cls.other_public_key, cls.other_signing_subkey = cls.certification_key(
+            "Someone else <o@example.invalid>"
+        )
+        cls.releases = {
+            tag: release_fixture(cls.work, tag) for tag in ("0.1.0-alpha.1", "0.1.0-alpha.2")
+        }
+
+    @classmethod
+    def certification_key(cls, user_id):
+        """A primary key that only certifies, a signing subkey, and the subkey's secret alone."""
+
+        def gpg(*arguments):
+            return subprocess.run(
+                ["gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", *arguments],
+                env=cls.gpg_environment,
+                capture_output=True,
+                check=True,
+            ).stdout
+
+        gpg("--quick-gen-key", user_id, "ed25519", "cert", "never")
+        listing = gpg("--with-colons", "--list-keys", user_id).decode()
+        primary = re.findall(r"^fpr:+([0-9A-F]{40}):", listing, re.MULTILINE)[0]
+        gpg("--quick-add-key", primary, "ed25519", "sign", "never")
+        listing = gpg("--with-colons", "--list-keys", primary).decode()
+        subkey = re.findall(r"^fpr:+([0-9A-F]{40}):", listing, re.MULTILINE)[1]
+        public_key = cls.work / f"{primary}.asc"
+        public_key.write_bytes(gpg("--armor", "--export", primary))
+        return public_key, gpg("--armor", "--export-secret-subkeys", f"{subkey}!").decode()
+
+    @classmethod
+    def tearDownClass(cls):
+        subprocess.run(
+            ["gpgconf", "--kill", "gpg-agent"],
+            env=cls.gpg_environment,
+            capture_output=True,
+            check=False,
+        )
+        cls.folder.cleanup()
+
+    def setUp(self):
+        self.case = self.work / "cases" / self.id().rsplit(".", 1)[-1]
+        self.remote = self.case / "site.git"
+        subprocess.run(["git", "init", "--quiet", "--bare", str(self.remote)], check=True)
+        self.inputs = self.case / "inputs"
+        for tag, (archives, sums) in self.releases.items():
+            (self.inputs / tag).mkdir(parents=True)
+            shutil.copyfile(sums, self.inputs / tag / "SHA256SUMS")
+            for archive in archives.values():
+                shutil.copyfile(archive, self.inputs / tag / archive.name)
+
+    def publish(self, tag, signing_key=None, public_key=None, keep=10):
+        # publish.sh imports the key into a GNUPGHOME of its own, under TMPDIR.
+        environment = {
+            **os.environ,
+            "TMPDIR": str(self.case),
+            "TORLEK_APT_REMOTE": str(self.remote),
+            "TORLEK_APT_MAINTAINER": MAINTAINER,
+            "TORLEK_APT_SIGNING_KEY": signing_key or self.signing_subkey,
+            "TORLEK_APT_PUBLIC_KEY": str(public_key or self.public_key),
+            "TORLEK_APT_KEEP": str(keep),
+        }
+        return subprocess.run(
+            ["bash", str(PUBLISH), str(self.inputs), tag, RELEASE_DATE],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment,
+        )
+
+    def published(self):
+        site = self.case / "checkout"
+        shutil.rmtree(site, ignore_errors=True)
+        subprocess.run(
+            ["git", "clone", "--quiet", "--branch", "gh-pages", str(self.remote), str(site)],
+            check=True,
+        )
+        return site
+
+    def assertPublished(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_first_publication_creates_a_signed_suite_with_both_architectures(self):
+        self.assertPublished(self.publish("0.1.0-alpha.1"))
+        site = self.published()
+        result = run_tool(
+            REPOSITORY,
+            "verify",
+            "--repo",
+            str(site),
+            "--suite",
+            "alpha",
+            "--keyring",
+            str(self.public_key),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("for 2 packages", result.stdout)
+
+    def test_the_site_serves_its_public_key_without_a_jekyll_build(self):
+        self.assertPublished(self.publish("0.1.0-alpha.1"))
+        site = self.published()
+        self.assertEqual((site / "torlek.asc").read_bytes(), self.public_key.read_bytes())
+        self.assertTrue((site / ".nojekyll").is_file())
+
+    def test_a_later_release_joins_the_suite_in_a_single_commit(self):
+        self.assertPublished(self.publish("0.1.0-alpha.1"))
+        self.assertPublished(self.publish("0.1.0-alpha.2"))
+        site = self.published()
+        packages = sorted(path.name for path in (site / repository.POOL).glob("*.deb"))
+        self.assertEqual(len(packages), 4, packages)
+        commits = subprocess.run(
+            ["git", "-C", str(site), "rev-list", "--count", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertEqual(commits.strip(), "1")
+
+    def test_keeps_only_the_newest_versions(self):
+        self.assertPublished(self.publish("0.1.0-alpha.1"))
+        self.assertPublished(self.publish("0.1.0-alpha.2", keep=1))
+        packages = sorted(path.name for path in (self.published() / repository.POOL).glob("*"))
+        self.assertEqual(
+            packages, ["torlek_0.1.0~alpha.2-1_amd64.deb", "torlek_0.1.0~alpha.2-1_arm64.deb"]
+        )
+
+    def test_refuses_a_signing_key_the_committed_public_key_does_not_hold(self):
+        result = self.publish("0.1.0-alpha.1", signing_key=self.other_signing_subkey)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"is not in {self.public_key}", result.stderr)
+        self.assertEqual(self.branches(), "")
+
+    def test_refuses_to_add_to_a_site_the_committed_key_did_not_sign(self):
+        self.assertPublished(
+            self.publish(
+                "0.1.0-alpha.1",
+                signing_key=self.other_signing_subkey,
+                public_key=self.other_public_key,
+            )
+        )
+        before = self.branches()
+        result = self.publish("0.1.0-alpha.2")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("InRelease: signature refused", result.stderr)
+        self.assertEqual(self.branches(), before)
+
+    def test_refuses_to_publish_a_release_twice(self):
+        self.assertPublished(self.publish("0.1.0-alpha.1"))
+        before = self.branches()
+        result = self.publish("0.1.0-alpha.1")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("exists; build into a directory without it", result.stderr)
+        self.assertEqual(self.branches(), before)
+
+    def test_refuses_without_a_committed_public_key(self):
+        result = self.publish("0.1.0-alpha.1", public_key=self.case / "missing.asc")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("commit the public key first", result.stderr)
+
+    def check_site(self, site, tag="0.1.0-alpha.1"):
+        return subprocess.run(
+            ["bash", str(CHECK_SITE), site.as_uri(), tag, str(self.public_key), "0"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "TMPDIR": str(self.case)},
+        )
+
+    def test_the_site_check_accepts_the_published_site(self):
+        self.assertPublished(self.publish("0.1.0-alpha.1"))
+        result = self.check_site(self.published())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("serves torlek 0.1.0~alpha.1-1, signed and complete", result.stdout)
+
+    def test_the_site_check_refuses_a_site_without_the_release(self):
+        self.assertPublished(self.publish("0.1.0-alpha.1"))
+        result = self.check_site(self.published(), tag="0.1.0-alpha.2")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("does not list torlek 0.1.0~alpha.2-1 yet", result.stderr)
+
+    def test_the_site_check_refuses_a_package_changed_after_signing(self):
+        self.assertPublished(self.publish("0.1.0-alpha.1"))
+        site = self.published()
+        package = next((site / repository.POOL).glob("*_amd64.deb"))
+        package.write_bytes(package.read_bytes()[:-1] + b"X")
+        result = self.check_site(site)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("size or SHA256 differs from the signed index", result.stderr)
+
+    def branches(self):
+        return subprocess.run(
+            ["git", "-C", str(self.remote), "show-ref"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
 
 
 if __name__ == "__main__":

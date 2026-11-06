@@ -2,11 +2,14 @@
 """Index and sign the torlek APT repository, and check it as apt would (docs/packaging/deb.md, #563).
 
 Usage: repository.py index --repo DIR --suite alpha|beta
+       repository.py prune --repo DIR --suite SUITE --keep N
        repository.py sign --repo DIR --suite SUITE --key FINGERPRINT [--key FINGERPRINT]
        repository.py verify --repo DIR --suite SUITE --keyring PUBLIC_KEY.asc
 
 `index` reads every .deb under DIR/pool/main/t/torlek/ and writes the suite's Packages
-indexes and Release, removing any signature of an earlier index. `sign` writes InRelease and
+indexes and Release, removing any signature of an earlier index. `prune` deletes the pool's
+packages of all but the suite's N newest versions, so the site stays under GitHub Pages' 1 GB
+limit; run `index` after it. `sign` writes InRelease and
 Release.gpg with the caller's GnuPG keys, each named by its full fingerprint. `verify` checks the
 InRelease signature against one public key, then every index and package against the signed
 hashes. Nothing here creates keys, downloads or publishes.
@@ -28,7 +31,10 @@ POOL = "pool/main/t/torlek"
 COMPONENT = "main"
 SUITES = ("alpha", "beta")
 FINGERPRINT = re.compile(r"[0-9A-F]{40}")
-DEBIAN_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+~(?P<channel>alpha|beta)\.[0-9]+-[0-9]+")
+DEBIAN_VERSION = re.compile(
+    r"(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.(?P<patch>[0-9]+)"
+    r"~(?P<channel>alpha|beta)\.(?P<number>[0-9]+)-(?P<revision>[0-9]+)"
+)
 SIGNATURES = ("InRelease", "Release.gpg")
 
 
@@ -110,6 +116,30 @@ def packages_indexes(repo, suite):
         if not entries:
             raise Refusal(f"no {architecture} package in {POOL}")
     return {architecture: "\n".join(entries) for architecture, entries in stanzas.items()}
+
+
+def version_order(version):
+    """dpkg's order for versions of one channel: every part is a number."""
+    parts = DEBIAN_VERSION.fullmatch(version)
+    return tuple(int(parts[name]) for name in ("major", "minor", "patch", "number", "revision"))
+
+
+def prune(repo, suite, keep):
+    """Both architectures of a version stay or go together, and every package left must still
+    belong to the suite, as `index` requires."""
+    refuse_unknown_suite(suite)
+    if keep < 1:
+        raise Refusal(f"--keep {keep}: keep at least the newest version")
+    packages_by_version = {}
+    for deb in sorted((repo / POOL).glob("*.deb")):
+        fields, _ = package_stanza(repo, deb)
+        refuse_misplaced(repo, deb, fields, suite)
+        packages_by_version.setdefault(fields["Version"], []).append(deb)
+    newest_first = sorted(packages_by_version, key=version_order, reverse=True)
+    removed = [deb for version in newest_first[keep:] for deb in packages_by_version[version]]
+    for deb in removed:
+        deb.unlink()
+    return newest_first[keep:]
 
 
 def release_file(suite, architectures, indexes, now):
@@ -273,10 +303,12 @@ def verify(repo, suite, keyring):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("index", "sign", "verify"):
+    for name in ("index", "prune", "sign", "verify"):
         command = commands.add_parser(name)
         command.add_argument("--repo", type=Path, required=True)
         command.add_argument("--suite", required=True)
+        if name == "prune":
+            command.add_argument("--keep", type=int, required=True)
         if name == "sign":
             command.add_argument("--key", action="append", required=True)
         if name == "verify":
@@ -285,6 +317,9 @@ def main():
     try:
         if arguments.command == "index":
             print(f"Wrote {index(arguments.repo, arguments.suite)}; sign it before publishing")
+        elif arguments.command == "prune":
+            removed = prune(arguments.repo, arguments.suite, arguments.keep)
+            print(f"Removed {', '.join(removed) or 'no version'}; index again")
         elif arguments.command == "sign":
             sign(arguments.repo, arguments.suite, arguments.key)
             print(f"Signed dists/{arguments.suite}/InRelease and Release.gpg")

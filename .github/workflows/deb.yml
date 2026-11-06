@@ -3,7 +3,8 @@ name: Debian packages
 # The torlek .deb packages built from a published release's archives, checked against its
 # SHA256SUMS and build provenance, in a local APT repository signed with a throwaway key; then
 # apt installs, upgrades and removes them on clean Ubuntu 26.04 and Debian 13 containers
-# (#563, docs/packaging/deb.md). Nothing is published and no real signing key is used.
+# (#563, docs/packaging/deb.md). Nothing is published and no real signing key is used. The
+# release workflow calls it for each new tag before publish-apt may publish that release.
 
 on:
   pull_request:
@@ -18,6 +19,12 @@ on:
         description: Release to package, without its v; empty for the newest published prerelease
         required: false
         default: ""
+  workflow_call:
+    inputs:
+      tag:
+        description: Release to package, without its v
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -87,13 +94,7 @@ jobs:
         run: |
           set -euo pipefail
           for tag in "$TAG" ${PREVIOUS:+"$PREVIOUS"}; do
-            gh release download "v$tag" --repo "$GITHUB_REPOSITORY" -D "inputs/$tag" \
-              -p SHA256SUMS -p "torlek-v$tag-linux-x86_64.tar.gz" -p "torlek-v$tag-linux-aarch64.tar.gz"
-            (cd "inputs/$tag" && sha256sum --check --strict --ignore-missing SHA256SUMS) | tee checked
-            test "$(grep -c ': OK$' checked)" -eq 2
-            for platform in linux-x86_64 linux-aarch64; do
-              gh attestation verify "inputs/$tag/torlek-v$tag-$platform.tar.gz" --repo "$GITHUB_REPOSITORY"
-            done
+            bash packaging/deb/fetch-release.sh "$GITHUB_REPOSITORY" "$tag" inputs
           done
       - name: Install dpkg-dev and lintian
         run: |

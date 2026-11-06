@@ -178,7 +178,7 @@ def changelog(version, channel, tag, maintainer, release_date):
     return gzip.compress(text.encode(), compresslevel=9, mtime=0)
 
 
-def tar_member(name, kind, mode, size=0, target=""):
+def tar_member(name, kind, mode, timestamp, size=0, target=""):
     member = tarfile.TarInfo(name)
     member.type = kind
     member.mode = mode
@@ -186,7 +186,7 @@ def tar_member(name, kind, mode, size=0, target=""):
     member.linkname = target
     member.uid = member.gid = 0
     member.uname = member.gname = "root"
-    member.mtime = 0
+    member.mtime = timestamp
     return member
 
 
@@ -197,9 +197,10 @@ def parent_directories(paths):
     return directories
 
 
-def compressed_tar(files, links=None):
+def compressed_tar(files, timestamp, links=None):
     """A tar.xz of `./`-relative paths, every parent directory listed first, in sorted order.
-    GNU format, as dpkg-deb writes it."""
+    GNU format, as dpkg-deb writes it. Every entry has the same time, as with dpkg-deb's
+    SOURCE_DATE_EPOCH."""
     links = links or {}
     entries = {PurePosixPath(path): ("file", path) for path in files}
     entries.update({PurePosixPath(path): ("link", path) for path in links})
@@ -210,12 +211,14 @@ def compressed_tar(files, links=None):
             kind, key = entries[path]
             name = "./" if path.parts == () else f"./{path}"
             if kind == "directory":
-                archive.addfile(tar_member(name, tarfile.DIRTYPE, 0o755))
+                archive.addfile(tar_member(name, tarfile.DIRTYPE, 0o755, timestamp))
             elif kind == "link":
-                archive.addfile(tar_member(name, tarfile.SYMTYPE, 0o777, target=links[key]))
+                archive.addfile(
+                    tar_member(name, tarfile.SYMTYPE, 0o777, timestamp, target=links[key])
+                )
             else:
                 contents, mode = files[key]
-                member = tar_member(name, tarfile.REGTYPE, mode, size=len(contents))
+                member = tar_member(name, tarfile.REGTYPE, mode, timestamp, size=len(contents))
                 archive.addfile(member, io.BytesIO(contents))
     return lzma.compress(buffer.getvalue(), format=lzma.FORMAT_XZ)
 
@@ -267,11 +270,11 @@ def md5sums(files):
     return "".join(lines)
 
 
-def ar_archive(members):
+def ar_archive(members, timestamp):
     """The deb(5) container: ar(5) with fixed owners, mode and time, two-byte aligned."""
     archive = bytearray(AR_MAGIC)
     for name, payload in members:
-        header = f"{name:<16}{0:<12}{0:<6}{0:<6}{100644:<8}{len(payload):<10}`\n"
+        header = f"{name:<16}{timestamp:<12}{0:<6}{0:<6}{100644:<8}{len(payload):<10}`\n"
         archive += header.encode("ascii") + payload
         if len(payload) % 2:
             archive += b"\n"
@@ -323,6 +326,8 @@ def build(tag, sums, archive, maintainer, release_date, out, debian_revision=1):
         refuse_foreign_bundle(bundle, tag, channel, platform)
         files = installed_files(bundle, maintainer, version, channel, tag, release_date)
     links = {PUBLIC_COMMAND: PUBLIC_COMMAND_TARGET}
+    # The release day, not the epoch: lintian refuses files dated 1970 (package-contains-ancient-file).
+    timestamp = int(datetime.combine(release_date, datetime.min.time(), UTC).timestamp())
     control = control_file(version, architecture, maintainer, installed_size(files, links))
     control_files = {
         "control": (control.encode(), 0o644),
@@ -331,9 +336,10 @@ def build(tag, sums, archive, maintainer, release_date, out, debian_revision=1):
     package = ar_archive(
         [
             ("debian-binary", DEB_FORMAT),
-            ("control.tar.xz", compressed_tar(control_files)),
-            ("data.tar.xz", compressed_tar(files, links)),
-        ]
+            ("control.tar.xz", compressed_tar(control_files, timestamp)),
+            ("data.tar.xz", compressed_tar(files, timestamp, links)),
+        ],
+        timestamp,
     )
     out.mkdir(parents=True, exist_ok=True)
     partial = target.with_name(f".{target.name}.partial")

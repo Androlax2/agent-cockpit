@@ -49,7 +49,7 @@ done
 for package in "$pool"/*.deb; do
     dpkg-deb --info "$package"
     # Errors fail the job; every other finding is printed for the publication checklist.
-    lintian --fail-on error --display-info --no-tag-display-limit "$package"
+    lintian --fail-on error --display-info --tag-display-limit 0 "$package"
 done
 
 # The programs' own shared-library needs, on the runner's architecture: every term must be
