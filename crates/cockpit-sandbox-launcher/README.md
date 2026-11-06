@@ -52,7 +52,8 @@ host's network, one thread per connection (`proxy.rs`). Clients find it through
   separates a refusal (`http_request_denied`, `destination_ip_prohibited`) from an
   unreachable upstream (`dns_error`, `destination_unavailable`, `connection_timeout`).
 - A name refused for want of an entry is listed in `egress-requests.json` beside the spec,
-  and the refusal says the owner is asked. The daemon files it as a network request; the
+  and the refusal says the owner is asked, naming the request once the daemon filed it; the
+  status line carries the same sentence (#966). The daemon files it as a network request; the
   owner allows it for the rest of the session, allows it always for the project (a grant),
   or denies it. The decisions arrive in `egress-decisions.json`, read before the first
   connection and every 200 ms; a missing or unreadable file means none. A revoked decision

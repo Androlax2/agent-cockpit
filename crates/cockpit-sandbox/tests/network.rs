@@ -1,9 +1,9 @@
 //! Network requests and the owner's decisions on them (#674), through the crate's storage API.
 
 use cockpit_sandbox::{
-    AllowEntry, AllowSource, AskedDestination, DeniedDestination, EgressDecisions, MIGRATIONS,
-    NETWORK_ALLOW_GRACE_SECONDS, NetworkError, NetworkRefusal, NetworkRequestState, OwnerClient,
-    OwnerDecision, Subject, Target,
+    AllowEntry, AllowSource, AskedDestination, AskingDestination, DeniedDestination,
+    EgressDecisions, MIGRATIONS, NETWORK_ALLOW_GRACE_SECONDS, NetworkError, NetworkRefusal,
+    NetworkRequestState, OwnerClient, OwnerDecision, Subject, Target,
 };
 use cockpit_turso::Database;
 
@@ -79,6 +79,14 @@ impl Store {
     }
 }
 
+fn asked_example(request: i64) -> AskingDestination {
+    AskingDestination {
+        host: "unknown.example.com".to_owned(),
+        port: 443,
+        request,
+    }
+}
+
 fn entry(source: AllowSource) -> AllowEntry {
     AllowEntry {
         target: Target::Name("unknown.example.com".to_owned()),
@@ -106,7 +114,10 @@ async fn a_refused_destination_is_filed_once_and_allows_nothing_until_decided() 
     drop(read);
     assert_eq!(
         store.decisions("s1", "app").await,
-        EgressDecisions::default()
+        EgressDecisions {
+            asking: vec![asked_example(first.unwrap())],
+            ..EgressDecisions::default()
+        }
     );
 }
 
@@ -200,6 +211,19 @@ async fn a_revoked_grant_allows_nothing_and_the_destination_is_asked_about_again
     ));
 }
 
+/// #966: the launcher names the request in its refusal, so the agent can tell the owner.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_waiting_on_the_owner_reaches_the_launcher_by_its_number() {
+    let store = store().await;
+
+    let request = store.file("s1", "app").await.unwrap();
+
+    assert_eq!(
+        store.decisions("s1", "app").await.asking,
+        vec![asked_example(request)]
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_denied_destination_stays_refused_and_is_not_asked_about_again() {
     let store = store().await;
@@ -216,6 +240,7 @@ async fn a_denied_destination_stays_refused_and_is_not_asked_about_again() {
                 port: 443,
                 request,
             }],
+            asking: Vec::new(),
         }
     );
     assert_eq!(store.file("s1", "app").await, None);
@@ -253,7 +278,10 @@ async fn an_allow_within_the_grace_after_the_request_appeared_is_refused() {
     ));
     assert_eq!(
         store.decisions("s1", "app").await,
-        EgressDecisions::default()
+        EgressDecisions {
+            asking: vec![asked_example(request)],
+            ..EgressDecisions::default()
+        }
     );
 }
 

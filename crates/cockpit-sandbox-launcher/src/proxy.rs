@@ -16,7 +16,10 @@
 //! Answers tell policy from the network (#718): `403` with `Proxy-Status` error
 //! `http_request_denied` or `destination_ip_prohibited` is a refusal; `502` (`dns_error`,
 //! `destination_unavailable`) and `504` (`connection_timeout`) are an upstream the launcher
-//! could not reach. The counters keep them apart the same way.
+//! could not reach. The counters keep them apart the same way. The status line carries the
+//! reason after its reason phrase (#966): Python, pip and Go print a failed `CONNECT`'s status
+//! line and `curl -v` shows it, while no client prints the body. Once the daemon filed the
+//! request, the reason names its number and the owner's command.
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Write};
@@ -50,6 +53,9 @@ const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 /// How long the proxy waits before accepting again after a failed accept, such as when
 /// the launcher is out of file descriptors.
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
+/// The longest reason the status line and `Proxy-Status` carry: a refusal of the longest DNS
+/// name (253 bytes) still ends with the owner's command.
+const MAX_HEADER_TEXT: usize = 512;
 /// How often the decisions file is read for a change: an owner's decision applies to the
 /// agent's next try within this.
 const DECISIONS_INTERVAL: Duration = Duration::from_millis(200);
@@ -543,9 +549,17 @@ impl<U: Upstream> Proxy<U> {
             return Answer::policy(refusal);
         }
         let asked = match self.ask(host, port) {
-            Ok(true) => "; the owner is asked: `torlek network list` shows the request, \
+            // Read now: the daemon may have filed it since `decided` was taken.
+            Ok(true) => match self.decided().decisions.asking(host, port) {
+                Some(request) => format!(
+                    "; the owner is asked in network request {request}: \
+                     `torlek network allow {request}` lets it through"
+                ),
+                // The daemon files it within a second; the agent's next try names it.
+                None => "; the owner is asked: `torlek network list` shows the request, \
                          `torlek network allow` lets it through"
-                .to_owned(),
+                    .to_owned(),
+            },
             Ok(false) => format!(
                 "; the owner was not asked: {MAX_ASKED_DESTINATIONS} destinations were asked \
                  about already"
@@ -914,18 +928,12 @@ impl<U: Upstream> Proxy<U> {
             "torlek-sandbox {verdict}{target} for {subject}: {}\n",
             answer.reason
         );
-        // The reason can quote what the client sent: only printable ASCII goes in a header.
-        let details: String = answer
-            .reason
-            .chars()
-            .map(|character| match character {
-                '"' | '\\' => '\'',
-                ' '..='~' => character,
-                _ => '?',
-            })
-            .collect();
+        let details = header_text(&answer.reason);
+        // Python, pip and Go print a failed `CONNECT`'s status line and `curl -v` shows it;
+        // no client prints the body (#966).
         let response = format!(
-            "HTTP/1.1 {}\r\nProxy-Status: torlek-sandbox; error={}; details=\"{details}\"\r\n\
+            "HTTP/1.1 {}: torlek-sandbox: {details}\r\n\
+             Proxy-Status: torlek-sandbox; error={}; details=\"{details}\"\r\n\
              Content-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\
              Connection: close\r\n\r\n{body}",
             answer.status,
@@ -1019,6 +1027,24 @@ where
     let _ = stream.flush();
 }
 
+/// `text` as printable ASCII for a header or the status line, cut at [`MAX_HEADER_TEXT`]
+/// bytes: the reason can quote what the client sent.
+fn header_text(text: &str) -> String {
+    let mut printable: String = text
+        .chars()
+        .map(|character| match character {
+            '"' | '\\' => '\'',
+            ' '..='~' => character,
+            _ => '?',
+        })
+        .collect();
+    if printable.len() > MAX_HEADER_TEXT {
+        printable.truncate(MAX_HEADER_TEXT - 3);
+        printable.push_str("...");
+    }
+    printable
+}
+
 /// The request head, and the bytes the client sent after it.
 fn read_head(client: &mut TcpStream) -> Result<(String, Vec<u8>), Answer> {
     let _ = client.set_read_timeout(Some(HEAD_TIMEOUT));
@@ -1096,7 +1122,7 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Instant;
 
-    use cockpit_sandbox::{AllowEntry, AllowSource, Target};
+    use cockpit_sandbox::{AllowEntry, AllowSource, AskingDestination, Target};
 
     use super::*;
     use crate::client_hello::tests::client_hello;
@@ -1225,7 +1251,7 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
-        assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{answer}");
+        assert!(answer.starts_with("HTTP/1.1 403 Forbidden: "), "{answer}");
         assert!(answer.contains("error=http_request_denied"), "{answer}");
         assert!(
             answer.contains(
@@ -1508,7 +1534,7 @@ mod tests {
         let second = connect(running.address, "unknown.example.com:443", b"");
 
         for answer in [&first, &second] {
-            assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{answer}");
+            assert!(answer.starts_with("HTTP/1.1 403 Forbidden: "), "{answer}");
             assert!(
                 answer.contains("the owner is asked: `torlek network list` shows the request"),
                 "{answer}"
@@ -1521,6 +1547,93 @@ mod tests {
                 port: 443,
             }]
         );
+    }
+
+    /// The answer to `CONNECT host:port` once the daemon filed it as network request 3.
+    fn refused_while_asked(host: &str, port: u16) -> String {
+        let folder = tempfile::tempdir().unwrap();
+        let running = start(Vec::new(), fake(&[], None));
+        running
+            .proxy
+            .ask_through(folder.path().join(cockpit_sandbox::REQUESTS_FILE));
+        running.proxy.apply_decisions(EgressDecisions {
+            asking: vec![AskingDestination {
+                host: host.to_owned(),
+                port,
+                request: 3,
+            }],
+            ..EgressDecisions::default()
+        });
+        connect(running.address, &format!("{host}:{port}"), b"")
+    }
+
+    /// #966: once the daemon filed the request, the refusal names it and the owner's command.
+    #[test]
+    fn a_refusal_names_the_request_the_daemon_filed() {
+        let answer = refused_while_asked("git.example.com", 22);
+
+        assert!(
+            answer.contains(
+                "git.example.com:22 is not allowed: `claude` declares no hosts; the owner is \
+                 asked in network request 3: `torlek network allow 3` lets it through"
+            ),
+            "{answer}"
+        );
+    }
+
+    /// #966: Python, pip and Go print a failed `CONNECT`'s status line, `curl -v` shows it;
+    /// no client prints the body.
+    #[test]
+    fn a_refusal_status_line_names_the_host_and_the_owners_command() {
+        let answer = refused_while_asked("git.example.com", 22);
+
+        let status_line = answer.lines().next().unwrap_or_default();
+        assert_eq!(
+            status_line,
+            "HTTP/1.1 403 Forbidden: torlek-sandbox: git.example.com:22 is not allowed: \
+             `claude` declares no hosts; the owner is asked in network request 3: \
+             `torlek network allow 3` lets it through"
+        );
+    }
+
+    /// #966: the owner's command ends the line, so a cut must never reach it.
+    #[test]
+    fn the_longest_dns_name_keeps_the_owners_command_on_the_status_line() {
+        let host = format!(
+            "{}.{}.{}.{}",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61)
+        );
+
+        let answer = refused_while_asked(&host, 65_535);
+
+        let status_line = answer.lines().next().unwrap_or_default();
+        assert!(
+            status_line.ends_with("`torlek network allow 3` lets it through"),
+            "{status_line}"
+        );
+    }
+
+    /// #966: a reason quoting what the client sent stays bounded printable text in the
+    /// status line and the `Proxy-Status` header.
+    #[test]
+    fn a_reason_quoting_the_client_stays_short_and_printable_in_the_head() {
+        let running = start(Vec::new(), fake(&[], None));
+        let host = format!("\u{e9}{}", "x".repeat(4096));
+
+        let answer = connect(running.address, &format!("{host}:443"), b"");
+
+        let head = answer.split("\r\n\r\n").next().unwrap_or_default();
+        for line in head.split("\r\n") {
+            assert!(line.len() <= 640, "{} bytes: {line}", line.len());
+            assert!(
+                line.chars()
+                    .all(|character| (' '..='~').contains(&character)),
+                "{line}"
+            );
+        }
     }
 
     /// #674: a grant revoked after it covered a destination makes the next refusal ask again,
@@ -1536,6 +1649,7 @@ mod tests {
         running.proxy.apply_decisions(EgressDecisions {
             allowed: vec![decided_entry("git.example.com", 22, 7)],
             denied: Vec::new(),
+            asking: Vec::new(),
         });
         running.proxy.apply_decisions(EgressDecisions::default());
 
@@ -1598,6 +1712,7 @@ mod tests {
         running.proxy.apply_decisions(EgressDecisions {
             allowed: vec![decided_entry("git.example.com", 22, 7)],
             denied: Vec::new(),
+            asking: Vec::new(),
         });
         let answer = connect(running.address, "git.example.com:22", b"");
 
@@ -1624,13 +1739,14 @@ mod tests {
                 port: 443,
                 request: 3,
             }],
+            asking: Vec::new(),
         });
         let started = Instant::now();
 
         let answer = connect(running.address, "unknown.example.com:443", b"");
 
         assert!(started.elapsed() < Duration::from_secs(1));
-        assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{answer}");
+        assert!(answer.starts_with("HTTP/1.1 403 Forbidden: "), "{answer}");
         assert!(
             answer.contains(
                 "unknown.example.com:443 is not allowed: the owner denied network request 3"
@@ -1650,6 +1766,7 @@ mod tests {
         running.proxy.apply_decisions(EgressDecisions {
             allowed: vec![decided_entry("git.example.com", 22, 7)],
             denied: Vec::new(),
+            asking: Vec::new(),
         });
         let mut client = TcpStream::connect(running.address).unwrap();
         client
@@ -1686,6 +1803,7 @@ mod tests {
         let allowed = EgressDecisions {
             allowed: vec![decided_entry("git.example.com", 22, 7)],
             denied: Vec::new(),
+            asking: Vec::new(),
         };
         std::fs::write(&decisions, serde_json::to_vec(&allowed).unwrap()).unwrap();
         running.proxy.apply_decisions(decisions_at(&decisions));
@@ -1710,6 +1828,7 @@ mod tests {
         let allowed = EgressDecisions {
             allowed: vec![decided_entry("git.example.com", 22, 7)],
             denied: Vec::new(),
+            asking: Vec::new(),
         };
 
         std::fs::write(&decisions, serde_json::to_vec(&allowed).unwrap()).unwrap();

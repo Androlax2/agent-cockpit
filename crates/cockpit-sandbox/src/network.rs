@@ -12,7 +12,8 @@ use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row, Value};
 
 use crate::egress::{
-    AllowEntry, AllowSource, AskedDestination, DeniedDestination, EgressDecisions, Target,
+    AllowEntry, AllowSource, AskedDestination, AskingDestination, DeniedDestination,
+    EgressDecisions, Target,
 };
 use crate::spec::Subject;
 
@@ -488,7 +489,8 @@ pub async fn revoke_network_grant(
 }
 
 /// What `subject`'s launcher enforces beside its spec: `project`'s active grants, the
-/// destinations the owner allowed the subject for the session, and those it denied.
+/// destinations the owner allowed the subject for the session, those it denied, and the
+/// requests still waiting on the owner.
 pub async fn egress_decisions(
     connection: &Connection,
     project: &str,
@@ -510,7 +512,7 @@ pub async fn egress_decisions(
             &format!(
                 "SELECT {REQUEST_COLUMNS} FROM sandbox_network_requests
                  WHERE subject_kind = ?1 AND subject = ?2
-                    AND state IN ('allowed-once', 'denied')
+                    AND state IN ('allowed-once', 'denied', 'asking')
                  ORDER BY id"
             ),
             (subject_kind, subject_id),
@@ -518,20 +520,26 @@ pub async fn egress_decisions(
         .await?;
     while let Some(row) = rows.next().await? {
         let request = request_from(&row)?;
-        if request.state == NetworkRequestState::AllowedOnce {
-            decisions.allowed.push(AllowEntry {
+        match request.state {
+            NetworkRequestState::AllowedOnce => decisions.allowed.push(AllowEntry {
                 target: Target::Name(request.host),
                 port: request.port,
                 source: AllowSource::Request {
                     request: request.id,
                 },
-            });
-        } else {
-            decisions.denied.push(DeniedDestination {
+            }),
+            NetworkRequestState::Asking => decisions.asking.push(AskingDestination {
                 host: request.host,
                 port: request.port,
                 request: request.id,
-            });
+            }),
+            NetworkRequestState::Denied => decisions.denied.push(DeniedDestination {
+                host: request.host,
+                port: request.port,
+                request: request.id,
+            }),
+            // Not selected: its grant is listed above.
+            NetworkRequestState::AllowedAlways => {}
         }
     }
     Ok(decisions)

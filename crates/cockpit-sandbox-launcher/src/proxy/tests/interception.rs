@@ -249,10 +249,7 @@ fn an_upstream_the_host_roots_do_not_trust_is_a_502() {
 
     let answer = request_through(running.address, &session_ca, REQUEST).unwrap();
 
-    assert!(
-        answer.starts_with("HTTP/1.1 502 Bad Gateway\r\n"),
-        "{answer}"
-    );
+    assert!(answer.starts_with("HTTP/1.1 502 Bad Gateway: "), "{answer}");
     assert!(answer.contains("error=tls_certificate_error"), "{answer}");
     assert!(!answer.contains(SECRET), "{answer}");
     let counters = counters_when(&running, |counters| counters.unreachable == 1);
@@ -275,7 +272,7 @@ fn a_request_for_another_host_is_answered_403_inside_the_tunnel() {
     )
     .unwrap();
 
-    assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{answer}");
+    assert!(answer.starts_with("HTTP/1.1 403 Forbidden: "), "{answer}");
     assert!(answer.contains("error=http_request_denied"), "{answer}");
     let counters = counters_when(&running, |counters| counters.refused == 1);
     assert_eq!((counters.refused, counters.credential_added), (1, 0));

@@ -75,6 +75,22 @@ fn the_brief_points_to_discovery_and_recovery() {
     }
 }
 
+/// #966: curl prints only `response 403`; an agent that took it for a command to ask for
+/// never told the owner which request to allow.
+#[test]
+fn the_brief_says_how_to_read_a_session_proxy_refusal() {
+    let text = brief(&facts());
+
+    assert!(
+        text.contains(
+            "A `403` from the session proxy is no command to ask for: `curl -v` shows the host \
+             and, from your next try, the network request the owner decides \
+             (`torlek docs sandbox`)."
+        ),
+        "{text}"
+    );
+}
+
 #[test]
 fn a_session_without_a_step_is_told_how_to_find_one() {
     let text = brief(&LaunchFacts {

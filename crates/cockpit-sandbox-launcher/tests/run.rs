@@ -396,6 +396,7 @@ impl Fixture {
         let decisions = EgressDecisions {
             allowed: vec![api_github_grant()],
             denied: Vec::new(),
+            asking: Vec::new(),
         };
         write(
             &self.path("mounts").join(DECISIONS_FILE),

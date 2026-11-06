@@ -4,10 +4,13 @@ Torlek may run you inside a sandbox the owner configured. Its limits are deliber
 
 - **Denied path or command.** Do not probe for a way around it. If the task needs it, report
   it with `torlek todo blocked TITLE --why TEXT` and tell the owner.
-- **Blocked network host.** The session proxy refuses it at once with `403`. When the
-  refusal says the owner is asked, the request is already in their list: say which host
-  and why you need it, then retry after they allow it. A denial stays a denial. Never
-  tunnel, proxy or mirror around the block.
+- **Blocked network host.** The session proxy refuses it at once with `403`. curl and git
+  print only `CONNECT tunnel failed, response 403`; the status line says why:
+  `curl -sv https://HOST -o /dev/null 2>&1 | grep '^< HTTP'`. When it says the owner is
+  asked, the host is already in their list as a network request, numbered from your next
+  try a second later: tell the owner the host, why you need it and the request number
+  (`torlek network allow N` is theirs to run), then retry after they allow it. A denial
+  stays a denial. Never tunnel, proxy or mirror around the block.
 - **Host commands.** Anything that must run outside the sandbox (installs, system services,
   the owner's own programs) goes through `torlek ask run`.
 - **Docker.** Use only the engine your environment provides (`DOCKER_HOST` when set), never

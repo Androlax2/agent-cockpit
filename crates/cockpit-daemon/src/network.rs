@@ -151,7 +151,8 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
 }
 
 /// Files what the launchers refused and rewrites every live session's decisions file: at
-/// the start, after each decision, and each [`RESYNC_PASSES`] passes so that a launch that
+/// the start, after each decision, after filing a request, so its launcher names it, and
+/// each [`RESYNC_PASSES`] passes so that a launch that
 /// staged decisions read before one was taken gets it too. Until the daemon stops; one
 /// pass's failure is logged and the next pass tries again.
 pub(crate) async fn keep_forever(database: Arc<Database>, sandbox: Sandbox, decided: Arc<Notify>) {
@@ -163,10 +164,19 @@ pub(crate) async fn keep_forever(database: Arc<Database>, sandbox: Sandbox, deci
         if is_decided || passes.is_multiple_of(RESYNC_PASSES) {
             write_decisions(&database, &sandbox).await;
         }
-        if let Err(error) = collect(&database, &sandbox, &mut seen).await {
-            tracing::warn!(%error, "the sandbox's network requests were not collected");
-        }
+        let is_filed = match collect(&database, &sandbox, &mut seen).await {
+            Ok(is_filed) => is_filed,
+            Err(error) => {
+                tracing::warn!(%error, "the sandbox's network requests were not collected");
+                false
+            }
+        };
         passes = passes.wrapping_add(1);
+        // A new request reaches its launcher at once, so the agent's retry names it (#966).
+        if is_filed {
+            is_decided = true;
+            continue;
+        }
         is_decided = tokio::select! {
             () = decided.notified() => true,
             () = tokio::time::sleep(COLLECT_INTERVAL) => false,
@@ -174,13 +184,14 @@ pub(crate) async fn keep_forever(database: Arc<Database>, sandbox: Sandbox, deci
     }
 }
 
-/// Files the destinations each live session's launcher listed since the last pass. The
-/// requests files of ended sessions are not read, and what was seen of them is forgotten.
+/// Files the destinations each live session's launcher listed since the last pass; true when
+/// it filed a new request. The requests files of ended sessions are not read, and what was
+/// seen of them is forgotten.
 async fn collect(
     database: &Database,
     sandbox: &Sandbox,
     seen: &mut HashMap<String, EgressRequests>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let read = database.read().await.map_err(|error| error.to_string())?;
     let live = live_sessions(&read).await?;
     drop(read);
@@ -218,8 +229,9 @@ async fn collect(
         .filter(|(session, requests)| seen.get(session) != Some(requests))
         .collect();
     if changed.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
+    let mut is_filed = false;
     let write = database.write().await.map_err(|error| error.to_string())?;
     // Again inside the write: a session that ended since asks nothing.
     let live = live_sessions(&write).await?;
@@ -253,6 +265,7 @@ async fn collect(
                     .await
                     .map_err(|error| error.to_string())?
             {
+                is_filed = true;
                 tracing::info!(
                     request = filed.id,
                     session,
@@ -264,7 +277,7 @@ async fn collect(
     }
     write.commit().await.map_err(|error| error.to_string())?;
     seen.extend(changed);
-    Ok(())
+    Ok(is_filed)
 }
 
 /// Rewrites the decisions file of every live session that has a sandbox folder. A session
