@@ -1,6 +1,6 @@
 //! The requirements every host has, project or not.
 
-use cockpit_config::{AgentSandbox, ConfigFile, EffectiveConfig, KNOWN_PROVIDERS};
+use cockpit_config::{AgentSandbox, ConfigFile, EffectiveConfig, KNOWN_PROVIDERS, Sourced};
 
 use crate::{ControlFacts, Platform, ProviderFacts, ProviderUnusable, Requirement, Status};
 
@@ -110,6 +110,49 @@ pub(crate) fn sandbox(setting: AgentSandbox, backend: &Result<String, String>) -
             ),
         }),
     }
+}
+
+/// The owner's configuration now says `written`, and the daemon still applies `applied`, which
+/// it read before (#963): what the owner chose is not in force, so this blocks, and the next
+/// action is the command that applies the file rather than advice to write what it already
+/// says.
+pub(crate) fn unapplied_sandbox(
+    written: &Sourced<AgentSandbox>,
+    applied: AgentSandbox,
+    backend: &Result<String, String>,
+) -> Requirement {
+    let still = match (applied, backend) {
+        (AgentSandbox::Off, _) => format!(
+            "agents still run UNSANDBOXED; {}",
+            cockpit_config::UNSANDBOXED_RISK
+        ),
+        (AgentSandbox::Required, Ok(backend)) => format!("every agent still runs in {backend}"),
+        (AgentSandbox::Required, Err(reason)) => {
+            format!("every agent launch is still refused: {reason}")
+        }
+    };
+    let refused_once_applied = match (written.value, backend) {
+        (AgentSandbox::Required, Err(reason)) => format!(
+            "; this host has no sandbox ({reason}), so \"required\" then refuses every launch \
+             until that is fixed"
+        ),
+        _ => String::new(),
+    };
+    Requirement::needs(
+        "sandbox",
+        Status::MissingPrerequisite,
+        format!(
+            "agents.sandbox = \"{}\" ({}) is not in force: the running daemon still applies \
+             \"{}\", which it read before the setting changed, so {still}",
+            written.value.as_str(),
+            written.source,
+            applied.as_str()
+        ),
+        format!(
+            "run `torlek config reload`, which applies the owner config to the agents launched \
+             after it; restarting the daemon applies it too{refused_once_applied}"
+        ),
+    )
 }
 
 /// One requirement per provider the daemon wires and one for each usable provider's sign-in.

@@ -423,8 +423,9 @@ fn config_show(flags: &[OsString]) -> ExitCode {
             out!("{}", cockpit_config::render(&config));
             // The daemon read the file at its start (#354); stdout stays the values alone.
             eprintln!(
-                "torlek: a running daemon applies a changed agents.desktop_session, \
-                 sessions.idle_sleep_after_minutes or sessions.asleep_expiry_days after \
+                "torlek: a running daemon applies a changed agents.sandbox, \
+                 agents.desktop_session, sessions.idle_sleep_after_minutes or \
+                 sessions.asleep_expiry_days after \
                  `torlek config reload`, and start files from its next start"
             );
             ExitCode::SUCCESS

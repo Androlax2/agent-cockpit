@@ -157,6 +157,9 @@ async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, St
     })
     .await
     .map_err(|error| error.to_string())?;
+    // Read beside the file it is compared with (#963): a `config reload` during the sign-in
+    // probes above would otherwise leave the older setting against the newer file.
+    host.sandbox_setting = context.sessions.owner_settings().sandbox;
     let Some(dir) = dir else {
         return Ok(with_daemon_lines(
             cockpit_readiness::assess(&host, &config, None),

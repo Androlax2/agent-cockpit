@@ -150,6 +150,22 @@ fn execution_environment(config: &EffectiveConfig, host: &HostFacts) -> Option<R
     let source = &config.execution_environment.source;
     let name = "execution environment";
     let owner_file = config.user_file.path.display();
+    if expected != ExecutionEnvironment::Docker
+        && config.agents_sandbox.value != host.sandbox_setting
+    {
+        // The arms below would advise writing what the owner's file already says (#963).
+        return Some(Requirement::needs(
+            name,
+            Status::Unknown,
+            format!(
+                "the project expects {} ({source}); what it meets depends on agents.sandbox = \
+                 \"{}\", which the running daemon has not read",
+                expected.as_str(),
+                config.agents_sandbox.value.as_str()
+            ),
+            "apply the owner config as the `sandbox` line says, then run `torlek doctor` again",
+        ));
+    }
     let requirement = match (expected, host.sandbox_setting) {
         (ExecutionEnvironment::Docker, _) => return None,
         (ExecutionEnvironment::Native, AgentSandbox::Off) => {

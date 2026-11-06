@@ -183,7 +183,8 @@ pub struct HostFacts {
     pub platform: Platform,
     /// The tmux version the daemon's start found, or why it refused it.
     pub tmux: Result<String, String>,
-    /// The owner's `agents.sandbox` as the daemon applies it now.
+    /// The owner's `agents.sandbox` as the daemon applies it now: what it last read, at its
+    /// start or at a `config reload`, which the owner's file may no longer say (#963).
     pub sandbox_setting: AgentSandbox,
     /// The native sandbox the daemon's start probed (#829): what launches under `required`
     /// run in, or why none can.
@@ -244,7 +245,17 @@ pub fn assess(
 ) -> Report {
     let mut requirements = vec![host::config(config), host::platform(&host.platform)];
     requirements.push(host::tmux(&host.tmux));
-    requirements.push(host::sandbox(host.sandbox_setting, &host.sandbox_backend));
+    let unapplied_sandbox = config
+        .as_ref()
+        .ok()
+        .map(|config| &config.agents_sandbox)
+        .filter(|written| written.value != host.sandbox_setting);
+    requirements.push(match unapplied_sandbox {
+        Some(written) => {
+            host::unapplied_sandbox(written, host.sandbox_setting, &host.sandbox_backend)
+        }
+        None => host::sandbox(host.sandbox_setting, &host.sandbox_backend),
+    });
     requirements.extend(host::providers(&host.providers));
     requirements.push(host::resource_controls(&host.controls));
     if let (Some(project), Ok(config)) = (project, config) {

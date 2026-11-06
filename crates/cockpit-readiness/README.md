@@ -35,6 +35,12 @@ steps' provider capabilities against the providers available), `execution enviro
 `needs` (against the host's budget), one `check <name>` each (its working directory), and
 `docker` when the project or one of its checks runs in Docker.
 
+`sandbox` reports the `agents.sandbox` the running daemon applies, which is what it last read
+at its start or at a `torlek config reload`. When the owner's configuration now says another
+value, the line is `missing-prerequisite`: it names both values, what still happens to agents,
+and `torlek config reload` (or a daemon restart) as the next action (#963). A configuration that
+does not read has nothing to compare; `config` blocks on it.
+
 Docker is probed only then, with `docker info` (10 s at most): a `docker` program is not an
 engine. The engine's ID, name and version identify it, and a rootful engine on Linux is
 `missing-prerequisite`: whoever reaches its socket is root on the host (report 11). The probe
