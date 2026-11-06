@@ -50,7 +50,7 @@ fixtures are redacted and replayed through the adapter separately from schema-de
 ## Task 2: Replay, provenance and reviewed PR
 
 **Files:** `tests/fixtures/opencode-1.19.5/`, replay tests, adapter README, report 16's
-provider row, and `docs/decisions/2026-11-02-417-opencode-event-capture.md`.
+provider row, and a decision record (removed in #1029; the fixture README carries the evidence).
 
 - [x] Redact only volatile IDs, paths, times and model-fixture metadata; retain field shapes
   and relationships. Replay captured events through `events::normalize` and the built bridge.

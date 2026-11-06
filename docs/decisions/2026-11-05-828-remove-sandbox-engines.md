@@ -38,6 +38,6 @@ Theo (Option A on #828); the rest by the implementing session.
   `doctor`, because doctor runs in scripts and agent sessions, so the confirmation is a named
   flag.
 
-Supersedes the engine parts of `2026-11-01-61-sandbox-backend.md`,
-`2026-11-01-476-release-engine-pins.md`, `2026-11-02-470-managed-engine-install.md` and
-`2026-11-02-495-managed-greyproxy.md`.
+Supersedes the engine parts of `2026-11-01-61-sandbox-backend.md`. The records for engine
+pins (#476), the managed engine install (#470) and managed Greyproxy (#495) were wholly void
+and are removed; git history keeps them.

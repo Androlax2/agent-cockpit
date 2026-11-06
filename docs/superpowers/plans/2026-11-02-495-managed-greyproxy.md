@@ -11,7 +11,7 @@ and launchd conventions with separate units and private per-profile state.
 
 **Tech Stack:** Rust standard library, existing serde_json/tempfile, curl, systemd/launchd.
 
-**Spec:** [Issue decision](../../decisions/2026-11-02-495-managed-greyproxy.md), implementing
+**Spec:** Issue decision (record removed; engines removed by [#828](../../decisions/2026-11-05-828-remove-sandbox-engines.md)), implementing
 [GitHub #495](https://github.com/Androlax2/agent-cockpit/issues/495).
 
 ## Global Constraints

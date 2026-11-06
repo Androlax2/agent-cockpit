@@ -55,7 +55,7 @@
 - Modify `crates/cockpit-codex/{src/lib.rs,tests/capabilities.rs,tests/common/mod.rs,tests/hooks.rs,README.md}`.
 - Add `crates/cockpit-codex/tests/fixtures/codex-0.166.0/README.md` and exact upstream hook schemas as needed for schema validation.
 - Modify `docs/PROVIDER_CONFORMANCE.md` and the existing #436 coverage-map row.
-- Add `docs/decisions/2026-11-02-436-codex-0166-pin.md`.
+- Add a decision record (removed in #1029; the policy lives in the crate and fixture READMEs).
 
 **Interfaces:** `CONFORMANCE_VERSION` becomes `"0.166.0"` only after evidence. Existing 0.161.0 fixture access remains explicitly historical; the pin must not silently redirect reads to copied-and-relabelled payloads.
 

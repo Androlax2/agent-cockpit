@@ -519,7 +519,7 @@ and proposed issue 5 takes over the proxy placeholders of [#59](https://github.c
 - Engines: the pinned trees above, read at those commits; weaknesses 1 to 4 and 6 spot-checked
   at the cited lines. Licenses and provenance: the [earlier report](2026-11-02-546-engine-repositories.md#licenses-and-distribution-inputs).
 - Torlek: `crates/` at this branch's base, the decision records for
-  [#61](../decisions/2026-11-01-61-sandbox-backend.md), [#495](../decisions/2026-11-02-495-managed-greyproxy.md)
+  [#61](../decisions/2026-11-01-61-sandbox-backend.md), [#828](../decisions/2026-11-05-828-remove-sandbox-engines.md)
   and [#433](../decisions/2026-11-02-433-sandbox-observations.md), design reports
   [11](../design/greenfield/11-security-isolation-platforms.md) and [17](../design/greenfield/17-agent-channel-and-approvals.md),
   and the issues listed above with their comments.
