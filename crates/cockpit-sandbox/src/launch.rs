@@ -6,6 +6,7 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use cockpit_config::{AgentSandbox, DesktopSession};
 
@@ -46,6 +47,9 @@ pub struct Sandbox {
     /// None only for [`Sandbox::unavailable`], whose caller never read the host.
     host: Option<HostPaths>,
     backend: Backend,
+    /// Shared by every clone: orders the daemon's writes into a session's folder of mount
+    /// sources with the removal of that folder (#1003).
+    mount_writes: Arc<Mutex<()>>,
 }
 
 /// One launch's facts.
@@ -130,6 +134,7 @@ impl Sandbox {
             platform,
             host: Some(host),
             backend,
+            mount_writes: Arc::default(),
         }
     }
 
@@ -141,6 +146,7 @@ impl Sandbox {
             backend: Backend::Missing {
                 reason: "the daemon read none of this host's paths".to_owned(),
             },
+            mount_writes: Arc::default(),
         }
     }
 
@@ -162,6 +168,17 @@ impl Sandbox {
     pub fn session_mount_sources(&self, session: &str) -> Option<Result<PathBuf, Refusal>> {
         let host = self.host.as_ref()?;
         Some(session_folder(&host.mount_sources, session))
+    }
+
+    /// Holds off the daemon's writes into every session's folder of mount sources until the
+    /// guard drops: a caller removing one holds it, so [`Sandbox::write_egress_decisions`],
+    /// which checks the folder and writes into it under the same lock, never stages a file
+    /// into a folder being removed (#1003).
+    pub fn hold_mount_writes(&self) -> MutexGuard<'_, ()> {
+        // The lock guards no data, so a holder's panic leaves nothing half-written to refuse.
+        self.mount_writes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// What `session`'s launcher last reported letting out of the sandbox and refusing
@@ -203,7 +220,8 @@ impl Sandbox {
     }
 
     /// Replaces the decisions `session`'s launcher enforces (#674); false, writing nothing,
-    /// when the session has no sandbox folder, so no launcher reads them.
+    /// when the session has no sandbox folder, so no launcher reads them. Holds
+    /// [`Sandbox::hold_mount_writes`] from the folder's check to the write's end.
     pub fn write_egress_decisions(
         &self,
         session: &str,
@@ -214,6 +232,7 @@ impl Sandbox {
         };
         let folder =
             session_folder(&host.mount_sources, session).map_err(|refusal| refusal.reason)?;
+        let _writing = self.hold_mount_writes();
         if !folder.is_dir() {
             return Ok(false);
         }
