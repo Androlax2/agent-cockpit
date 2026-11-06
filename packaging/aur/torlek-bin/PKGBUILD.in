@@ -1,7 +1,7 @@
-# Maintainer: Androlax2 (AUR account to be confirmed before submission)
+# Maintainer: Theo Benoit <contact@theobenoit.fr>
 #
-# Rendered by packaging/aur/render.py from a published release's SHA256SUMS
-# (docs/packaging/aur.md); edit this template, never the rendered PKGBUILD.
+# Rendered by packaging/aur/render.py from PKGBUILD.in and a published release's SHA256SUMS
+# (docs/packaging/aur.md): change PKGBUILD.in, never a rendered PKGBUILD.
 # makepkg consumes these globals after sourcing the recipe.
 # shellcheck disable=SC2034
 
@@ -13,9 +13,10 @@ pkgdesc='Agent session cockpit: CLI, terminal UI and per-user daemon (prebuilt r
 arch=('x86_64' 'aarch64')
 url='https://github.com/Androlax2/agent-cockpit'
 license=('Apache-2.0')
-depends=('glibc' 'gcc-libs' 'git' 'curl' 'tmux>=3.6')
-optdepends=('systemd: per-user daemon and proxy services'
-            'bubblewrap: the native agent sandbox, agents.sandbox = "required"')
+depends=('glibc' 'libgcc' 'git' 'curl' 'tmux>=3.6')
+optdepends=('systemd: the per-user daemon service, torlek daemon install'
+            'bubblewrap: the native agent sandbox, agents.sandbox = "required"'
+            'github-cli: file a bug report as a GitHub issue')
 provides=('torlek')
 conflicts=('torlek')
 options=('!strip' '!debug')

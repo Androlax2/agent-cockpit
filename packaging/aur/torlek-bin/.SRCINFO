@@ -1,0 +1,26 @@
+pkgbase = torlek-bin
+	pkgdesc = Agent session cockpit: CLI, terminal UI and per-user daemon (prebuilt release)
+	pkgver = 0.1.0alpha.4
+	pkgrel = 1
+	url = https://github.com/Androlax2/agent-cockpit
+	arch = x86_64
+	arch = aarch64
+	license = Apache-2.0
+	depends = glibc
+	depends = libgcc
+	depends = git
+	depends = curl
+	depends = tmux>=3.6
+	optdepends = systemd: the per-user daemon service, torlek daemon install
+	optdepends = bubblewrap: the native agent sandbox, agents.sandbox = "required"
+	optdepends = github-cli: file a bug report as a GitHub issue
+	provides = torlek
+	conflicts = torlek
+	options = !strip
+	options = !debug
+	source_x86_64 = https://github.com/Androlax2/agent-cockpit/releases/download/v0.1.0-alpha.4/torlek-v0.1.0-alpha.4-linux-x86_64.tar.gz
+	sha256sums_x86_64 = 7aabe12ff02948a6b77e58a73f8032cbfd42cd55b908b33776222326d24dc270
+	source_aarch64 = https://github.com/Androlax2/agent-cockpit/releases/download/v0.1.0-alpha.4/torlek-v0.1.0-alpha.4-linux-aarch64.tar.gz
+	sha256sums_aarch64 = ce55c83dc7a651973f907d486f8ae5d4df1c62209e97cb1ad1c036cc6fe12523
+
+pkgname = torlek-bin
