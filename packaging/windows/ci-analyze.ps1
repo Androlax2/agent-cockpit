@@ -42,7 +42,7 @@ if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer | Where-Object { $_.V
             break
         } catch {
             if ($attempt -ge $maximumAttempts) { throw }
-            Write-Host "PSScriptAnalyzer download failed (attempt $attempt of $maximumAttempts): $($_.Exception.Message)"
+            Write-Host "PSScriptAnalyzer download failed (attempt $attempt of $maximumAttempts): $_"
             Start-Sleep -Seconds (15 * $attempt)
         }
     }
