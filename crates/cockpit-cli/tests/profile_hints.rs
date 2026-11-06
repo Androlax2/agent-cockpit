@@ -9,8 +9,12 @@ use std::process::Output;
 
 mod scripted;
 
-use cockpit_protocol::{Outcome, ProjectView, ReadinessStatusView, Reply, RequirementView};
+use cockpit_protocol::{
+    HandshakeReply, Outcome, ProjectView, ProtocolVersion, ReadinessStatusView, Reply, Request,
+    RequirementView, Response, ServerFrame, Welcome,
+};
 use scripted::{scripted_conversation, text};
+use tokio::io::AsyncBufReadExt;
 
 /// How the owner reached profile `next`, and the command prefix every hint then needs.
 struct Invocation {
@@ -107,6 +111,14 @@ fn project() -> ProjectView {
     }
 }
 
+/// Whether `command` begins with the whole words of `prefix`: `torlek-nextfoo` does not.
+fn starts_with_words(command: &str, prefix: &str) -> bool {
+    command == prefix
+        || command
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with(' '))
+}
+
 /// Every command a hint puts between backticks and starts with `torlek` must be one of the
 /// profile's own spellings.
 fn assert_commands_reach_the_profile(output: &Output, invocation: &Invocation) {
@@ -118,7 +130,8 @@ fn assert_commands_reach_the_profile(output: &Output, invocation: &Invocation) {
         }
         commands_seen += 1;
         assert!(
-            command.starts_with(invocation.expected_prefix) || command.starts_with(DAEMON_PREFIX),
+            starts_with_words(command, invocation.expected_prefix)
+                || starts_with_words(command, DAEMON_PREFIX),
             "`{command}` does not reach profile next; expected `{}`:\n{report}",
             invocation.expected_prefix
         );
@@ -203,6 +216,67 @@ async fn doctor_without_a_daemon_names_the_profiles_commands() {
 
         let output = home.run(invocation, &["doctor"]).await;
 
+        assert_commands_reach_the_profile(&output, invocation);
+    }
+}
+
+/// A daemon that answers the readiness report on every connection that speaks: doctor first
+/// connects only to see whether the daemon answers.
+fn answer_readiness_to_every_client(
+    socket: &std::path::Path,
+    requirements: Vec<RequirementView>,
+) -> tokio::task::JoinHandle<()> {
+    let listener = tokio::net::UnixListener::bind(socket).unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let requirements = requirements.clone();
+            tokio::spawn(async move {
+                let (read_half, mut write_half) = stream.into_split();
+                let mut lines = tokio::io::BufReader::new(read_half).lines();
+                if lines.next_line().await.unwrap().is_none() {
+                    return;
+                }
+                let welcome = HandshakeReply::Accepted(Welcome {
+                    protocol_version: ProtocolVersion(1),
+                    capabilities: Vec::new(),
+                });
+                scripted::send(&mut write_half, serde_json::to_value(welcome).unwrap()).await;
+                let Some(line) = lines.next_line().await.unwrap() else {
+                    return;
+                };
+                let request: Request = serde_json::from_str(&line).unwrap();
+                let response = ServerFrame::Response(Response {
+                    id: request.id,
+                    outcome: Outcome::Ok(Reply::Readiness { requirements }),
+                });
+                scripted::send(&mut write_half, serde_json::to_value(response).unwrap()).await;
+            });
+        }
+    })
+}
+
+#[tokio::test]
+async fn doctor_renames_the_commands_in_the_hints_the_daemon_wrote() {
+    for (invocation, renamed) in [
+        (
+            &BY_FLAG,
+            "register it with `torlek --profile next project add DIR`",
+        ),
+        (
+            &BY_COMMAND_NAME,
+            "register it with `torlek-next project add DIR`",
+        ),
+    ] {
+        let home = Home::new();
+        let daemon =
+            answer_readiness_to_every_client(&home.daemon_socket(), readiness_with_hints());
+
+        let output = home.run(invocation, &["doctor"]).await;
+
+        daemon.abort();
+        let report = text(&output.stdout);
+        assert!(report.contains(renamed), "{report}");
         assert_commands_reach_the_profile(&output, invocation);
     }
 }

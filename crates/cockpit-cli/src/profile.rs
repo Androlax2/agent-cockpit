@@ -86,7 +86,7 @@ fn daemon_command_for(profile: &Sourced<Profile>) -> String {
     }
 }
 
-/// `text` with the commands the daemon wrote between backticks (`torlek doctor`,
+/// `text` with the commands the daemon wrote after a backtick (`torlek doctor`,
 /// `torlek-daemon`) renamed for the active profile. The daemon cannot name them itself: how
 /// the owner reached the profile is the client's to know.
 pub(crate) fn localize(text: &str) -> String {
@@ -96,8 +96,8 @@ pub(crate) fn localize(text: &str) -> String {
 fn localize_for(profile: &Sourced<Profile>, text: &str) -> String {
     let command = command_for(profile);
     text.replace(
-        "`torlek-daemon`",
-        &format!("`{}`", daemon_command_for(profile)),
+        "`torlek-daemon",
+        &format!("`{}", daemon_command_for(profile)),
     )
     .replace("`torlek ", &format!("`{command} "))
     .replace("`torlek`", &format!("`{command}`"))
