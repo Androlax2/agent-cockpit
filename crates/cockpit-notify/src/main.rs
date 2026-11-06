@@ -1,24 +1,26 @@
-//! `torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS]`: tells
-//! the owner, with a desktop notification and a sound, when a session of the daemon at `PATH`
-//! needs them. `EVENTS` is `none` or a comma-separated list of `failure`, `hold`, `question`,
-//! `quota` and `finished`; left out, every event is on. It logs under `DIR`.
+//! `torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS]
+//! [--status-file FILE]`: tells the owner, with a desktop notification and a sound, when a
+//! session of the daemon at `PATH` needs them. `EVENTS` is `none` or a comma-separated list
+//! of `failure`, `hold`, `question`, `quota` and `finished`; left out, every event is on. It
+//! logs under `DIR`, and keeps `FILE` up to date for bars (the README's schema).
 //!
 //! A host without a session bus, `notify-send` or a sound player runs it all the same: that
 //! outlet is off and the log says why.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::time::{Instant, MissedTickBehavior};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_notify::{
-    Desktop, Event, FeedEvent, Host, Notifier, Outlets, Sound, follow_feed, names,
+    Desktop, Event, FeedEvent, Host, Notifier, Outlets, Sound, Status, follow_feed, names,
+    write_status,
 };
 use cockpit_protocol::{Command, Reply};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// How often the notifier asks again for the agents' reports, the approval queue and the
 /// network requests, whatever the feed said. The feed's view stamps (#706) bring a change at
@@ -30,7 +32,7 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 /// stays out of reach, as the feed's own retry does.
 const LONGEST_PAUSE: Duration = Duration::from_secs(30);
 
-const USAGE: &str = "usage: torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS] | --version
+const USAGE: &str = "usage: torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS] [--status-file FILE] | --version
 EVENTS: none, or a comma-separated list of failure, hold, question, quota, finished (default: all)";
 
 struct Options {
@@ -38,6 +40,7 @@ struct Options {
     state_dir: PathBuf,
     desktop_events: BTreeSet<Event>,
     sound_events: BTreeSet<Event>,
+    status_file: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -67,6 +70,7 @@ fn parse(arguments: &[String]) -> Result<Options, String> {
     let mut state_dir = None;
     let mut desktop_events = BTreeSet::from(Event::ALL);
     let mut sound_events = BTreeSet::from(Event::ALL);
+    let mut status_file = None;
     let mut words = arguments.iter();
     while let Some(flag) = words.next() {
         let value = words
@@ -77,6 +81,7 @@ fn parse(arguments: &[String]) -> Result<Options, String> {
             "--state-dir" => state_dir = Some(PathBuf::from(value)),
             "--desktop" => desktop_events = Event::parse_list(value)?,
             "--sound" => sound_events = Event::parse_list(value)?,
+            "--status-file" => status_file = Some(PathBuf::from(value)),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -85,6 +90,7 @@ fn parse(arguments: &[String]) -> Result<Options, String> {
         state_dir: state_dir.ok_or("--state-dir is required")?,
         desktop_events,
         sound_events,
+        status_file,
     })
 }
 
@@ -111,9 +117,14 @@ fn notify(options: Options) -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|error| format!("cannot start the runtime: {error}"))?;
-    let outcome = runtime.block_on(run(options.socket, outlets));
+    let outcome = runtime.block_on(run(options.socket, outlets, options.status_file.clone()));
     if let Err(problem) = &outcome {
         tracing::error!(problem, "the notifier stopped");
+    }
+    // A notifier killed by a signal leaves its file behind: its `written_at` ages, which is
+    // how a bar tells (the README).
+    if let Some(path) = &options.status_file {
+        remove_status_file(path);
     }
     outcome
 }
@@ -134,9 +145,20 @@ fn find_outlets(host: &Host, options: &Options) -> Outlets {
     }
 }
 
-async fn run(socket: PathBuf, outlets: Outlets) -> Result<(), String> {
+async fn run(
+    socket: PathBuf,
+    outlets: Outlets,
+    status_file: Option<PathBuf>,
+) -> Result<(), String> {
     let (feed_events, mut feed) = mpsc::channel::<FeedEvent>(1);
     tokio::spawn(follow_feed(socket.clone(), feed_events));
+    let (status_updates, status_view) = watch::channel(None);
+    if let Some(path) = status_file {
+        tokio::spawn(keep_status_file(path, status_view));
+    }
+    // Sessions come only from the feed: until a batch applies, and after it is lost or a
+    // batch is refused, the status cannot claim them current.
+    let mut is_feed_current = false;
     let mut daemon = Daemon {
         socket,
         connection: None,
@@ -153,6 +175,7 @@ async fn run(socket: PathBuf, outlets: Outlets) -> Result<(), String> {
                 None => return Err("the change feed task stopped".to_owned()),
                 Some(FeedEvent::Batch { batch, applied }) => {
                     let outcome = notifier.apply_changes(&batch);
+                    is_feed_current = outcome.is_ok();
                     let notices = outcome.as_ref().map(Vec::as_slice).unwrap_or_default();
                     outlets.tell(notices);
                     // The feed task waits on this answer; it is gone only when we stop.
@@ -161,6 +184,7 @@ async fn run(socket: PathBuf, outlets: Outlets) -> Result<(), String> {
                 }
                 Some(FeedEvent::Lost(problem)) => {
                     tracing::warn!(problem, "the change feed was lost");
+                    is_feed_current = false;
                     Vec::new()
                 }
             },
@@ -176,7 +200,67 @@ async fn run(socket: PathBuf, outlets: Outlets) -> Result<(), String> {
                 Err(Failure::Unreachable) => break,
             }
         }
+        let status = notifier.status(daemon.pause.is_none() && is_feed_current);
+        status_updates.send_if_modified(|shown| {
+            let is_new = shown.as_ref() != Some(&status);
+            if is_new {
+                *shown = Some(status);
+            }
+            is_new
+        });
     }
+}
+
+/// Keeps the status file up to date apart from the requests, which may wait on a slow
+/// daemon: at once when what it shows changes, and at every refresh, so its `written_at`
+/// says the notifier still runs.
+async fn keep_status_file(path: PathBuf, mut updates: watch::Receiver<Option<Status>>) {
+    let mut refresh = tokio::time::interval(REFRESH);
+    refresh.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // The last write failed: logged once until one succeeds again.
+    let mut is_failing = false;
+    loop {
+        tokio::select! {
+            _ = refresh.tick() => {}
+            changed = updates.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+        }
+        let Some(status) = updates.borrow_and_update().clone() else {
+            continue;
+        };
+        let written = seconds_since_1970()
+            .and_then(|now| write_status(&path, &status, now).map_err(|error| error.to_string()));
+        match written {
+            Ok(()) if is_failing => {
+                tracing::info!(path = %path.display(), "the status file is written again");
+                is_failing = false;
+            }
+            Ok(()) => {}
+            Err(problem) if !is_failing => {
+                tracing::warn!(path = %path.display(), problem, "cannot write the status file");
+                is_failing = true;
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+fn remove_status_file(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %path.display(), %error, "cannot remove the status file");
+    }
+}
+
+fn seconds_since_1970() -> Result<i64, String> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("the clock is before 1970: {error}"))?;
+    i64::try_from(elapsed.as_secs()).map_err(|error| format!("the clock is out of range: {error}"))
 }
 
 /// Why a request has no reply.

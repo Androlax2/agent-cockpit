@@ -38,16 +38,63 @@ bus, `notify-send` or a player runs the notifier all the same (#62's headless ac
 that outlet is off and its log says why. A program that fails or hangs is logged and stopped
 after ten seconds; nothing waits on it. macOS stays with #568.
 
+## Status file
+
+With `--status-file FILE` the notifier keeps `FILE` up to date for a bar (report 19): at once
+when what it shows changes and at least every five seconds while it runs, whatever the daemon
+does; whole (written beside and renamed); its directory made with mode 700 when missing. It is
+removed when the notifier stops on an error; a notifier stopped by a signal leaves it behind,
+and its `written_at` ages. `torlek notify` puts it beside the daemon's socket, in the
+profile's runtime directory (`paths.runtime_dir` in `torlek config show`): usually
+`$XDG_RUNTIME_DIR/torlek/status.json`, or `<state dir>/run/status.json` where
+`XDG_RUNTIME_DIR` is unset. Schema 1:
+
+```json
+{
+  "schema": 1,
+  "written_at": 1762470000,
+  "reachable": true,
+  "needs_you": 1,
+  "sessions": [
+    {
+      "id": "s00000000000a",
+      "name": "api",
+      "project": "agent-cockpit",
+      "state": "needs-you",
+      "needs": ["question"],
+      "doing": "writing tests",
+      "changed_at": 1762469990
+    }
+  ]
+}
+```
+
+- `written_at`, `changed_at`: seconds since 1970. A file whose `written_at` is more than about
+  fifteen seconds old was left by a notifier that is gone: show nothing from it.
+- `reachable`: the daemon answered the last request, the change feed is current and the
+  notifier has loaded its state; while false, `sessions` is what was last known, or empty.
+- `sessions`: every session that has not ended, by id. `name` is the label the agent
+  reported, else the id; `project` is `null` until the feed names its checkout.
+- `state`: `needs-you` when the session needs the owner for anything but having finished (a
+  failed session among them), else `launching`, `working`, `waiting`, `running` (no report
+  yet), `stopping`, `asleep` or `unknown`. `needs_you` counts the `needs-you` sessions.
+- `needs`: the events above that stand for it now, most urgent first.
+
+A new field keeps the schema number; a field that changes meaning or goes bumps it. Readers
+ignore fields they do not know. Plan usage is not in schema 1: the protocol does not carry it
+yet.
+
 ## How it runs
 
-`torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS]`, where
+`torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS]
+[--status-file FILE]`, where
 `EVENTS` is `none` or a comma-separated list of event names; left out, every event is on. It
 follows the change feed for sessions and view stamps, asks the daemon for the agents' reports,
 the approval queue and the network requests when their stamp moves and every five seconds,
 and logs under `DIR/logs/notify` (report 12). A daemon out of reach is asked again after a
 pause that doubles up to thirty seconds; nothing is news until it has answered all three.
-`torlek notify` starts it with the daemon's socket, the profile's state directory and the
-owner's `[notify.desktop]` and `[notify.sound]` settings.
+`torlek notify` starts it with the daemon's socket, the profile's state directory, the
+owner's `[notify.desktop]` and `[notify.sound]` settings and the status file.
 
 ## Dependency edges
 

@@ -6,11 +6,25 @@
 
 use cockpit_notify::{Notice, Notifier};
 use cockpit_protocol::{
-    AgentState, Change, ChangeBatch, ChangeEvent, Command, CommitRevision, Cursor, DatabaseEpoch,
-    EntityKind, EntityRef, EntityRevision, FeedPosition, GuideStateView, GuideStepView, GuideView,
-    NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, NetworkTargetKindView, Reply,
-    RunRequestView, RunStateView, SessionReport, SessionStateView, SessionView, ShownText,
+    AgentState, Change, ChangeBatch, ChangeEvent, CheckoutKindView, CheckoutView, Command,
+    CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef, EntityRevision, FeedPosition,
+    GuideStateView, GuideStepView, GuideView, NetworkRequestStateView, NetworkRequestView,
+    NetworkSubjectView, NetworkTargetKindView, Reply, RunRequestView, RunStateView, SessionReport,
+    SessionStateView, SessionView, ShownText, TrustView,
 };
+
+pub fn checkout(id: i64, project: &str) -> CheckoutView {
+    CheckoutView {
+        id,
+        project: project.to_owned(),
+        kind: CheckoutKindView::Main,
+        path: format!("/p/{project}"),
+        incarnation: 1,
+        removing: false,
+        occupant: None,
+        trust: TrustView::Trusted,
+    }
+}
 
 pub fn session(id: &str, checkout: i64, created_at: i64) -> SessionView {
     SessionView {
