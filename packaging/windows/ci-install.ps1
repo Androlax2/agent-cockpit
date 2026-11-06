@@ -209,7 +209,7 @@ try {
     Assert-Result 'scoop install of the rendered manifest' $install succeeds
     Write-Host '::endgroup::'
 
-    $installedFiles = @(Get-ChildItem -LiteralPath $appDirectory -File | ForEach-Object Name | Where-Object { $_ -notin @('manifest.json', 'install.json') } | Sort-Object)
+    $installedFiles = @(Get-ChildItem -LiteralPath $appDirectory -File | ForEach-Object Name | Where-Object { $_ -notin @('scoop-manifest.json', 'scoop-install.json') } | Sort-Object)
     $expectedFiles = @('SHA256SUMS', 'install-in-wsl.sh', "$bundleName.archive", 'torlek-wsl.ps1', 'torlek.ps1') | Sort-Object
     Write-Host "installed files: $($installedFiles -join ', ')"
     Write-Host "expected files:  $($expectedFiles -join ', ')"
