@@ -247,7 +247,7 @@ fn a_required_sandbox_with_the_native_backend_is_available_naming_it() {
 #[test]
 fn a_required_sandbox_that_refuses_the_shared_desktop_blocks_naming_the_fix() {
     let fixture = Fixture::new();
-    fixture.configure("", None);
+    fixture.configure("", Some(OWNER_REQUIRES_THE_SANDBOX));
     let host = HostFacts {
         sandbox_setting: AgentSandbox::Required,
         shared_desktop_refusal: Some(SHARED_DESKTOP_REFUSAL.to_owned()),
@@ -276,7 +276,7 @@ fn a_required_sandbox_that_refuses_the_shared_desktop_blocks_naming_the_fix() {
 #[test]
 fn a_desktop_refusal_does_not_block_an_unsandboxed_owner() {
     let fixture = Fixture::new();
-    fixture.configure("", None);
+    fixture.configure("", Some("[agents]\nsandbox = \"off\"\n"));
     let host = HostFacts {
         sandbox_setting: AgentSandbox::Off,
         shared_desktop_refusal: Some(SHARED_DESKTOP_REFUSAL.to_owned()),
