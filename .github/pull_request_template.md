@@ -34,5 +34,5 @@ CARGO_BUILD_JOBS=2 cargo nextest run --locked -p <crate>  # exit 0
 
 - [ ] Nothing under `apps/` changed, unless this pull request is a stabilization fix
 - [ ] Coverage map rows this proves are updated with the test name
-- [ ] Non-obvious decisions are recorded as files under `docs/decisions/` (one per decision)
+- [ ] Decisions that pass the four-question admission test in `docs/decisions/README.md` are in the decision log, one file each
 - [ ] `validate` claims stay open unless measured here

@@ -99,5 +99,6 @@ authorization, review-scope and task-specific restrictions still apply.
 - New dependencies, tool installs, host actions and Git operations require the
   authorization specified by the user and [CLAUDE.md](CLAUDE.md).
 
-Record non-obvious architectural decisions as one file each under [docs/decisions/](docs/decisions/README.md). Document
-the code that exists; mark proposals explicitly until their implementation is verified.
+Add a decision to the decision log, one file each under [docs/decisions/](docs/decisions/README.md),
+only if it passes the [four-question admission test](docs/decisions/README.md#admission-test).
+Document the code that exists; mark proposals explicitly until their implementation is verified.
