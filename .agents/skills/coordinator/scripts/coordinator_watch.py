@@ -1,8 +1,8 @@
 """Coordinator event filter: wakes the coordinator only for events that need action.
 
-Immediate: a worker question appears or changes, a worker goes idle without a merged PR (once
-per idle spell; a short working blip does not end it), a CI failure on a PR's current head commit (once per commit and check), a PR
-merged or closed. Everything else that changed is batched into one summary every 10 minutes.
+Immediate: a worker question appears or changes, a worker still idle without a merged PR after
+a grace period (once per idle spell; a short working blip does not end it), a CI failure on a
+PR's current head commit (once per commit and check), a PR merged or closed. Everything else that changed is batched into one summary every 10 minutes.
 State persists in the state file so a re-armed monitor does not repeat what it already reported.
 
 When `torlek agent sessions --watch` ends, or a helper thread dies, it prints `WATCH ENDED`, kills
@@ -33,6 +33,9 @@ FIELD = re.compile(r'(\w[\w-]*)="((?:[^"\\]|\\.)*)"')
 POLL_FAILURE_REPORT_SECONDS = 1800
 # A worker waiting on CI wakes on every poll; a working spell shorter than this is a blip.
 DEFAULT_WORKING_SECONDS = 120
+# A worker that started a background review or command is woken by it; an idle that ends
+# within this period is harmless, so only a longer one is reported.
+DEFAULT_IDLE_GRACE_SECONDS = 180
 
 lock = threading.Lock()
 batched = []
@@ -65,6 +68,7 @@ class Watcher:
         self.seed_seconds = arguments.seed_seconds
         self.poll_seconds = arguments.poll_seconds
         self.working_seconds = arguments.working_seconds
+        self.idle_grace_seconds = arguments.idle_grace_seconds
         self.summary_seconds = arguments.summary_seconds
         self.state_path = arguments.state_file
         self.is_first_run = not self.state_path.exists()
@@ -82,6 +86,9 @@ class Watcher:
         # started. Not persisted: a spell of unknown start counts as long, so an idle is
         # reported again rather than silently dropped.
         self.working_since = {}
+        # session id -> the timer that reports its idle spell once the grace period ends. A timer
+        # that is no longer the session's entry, or whose session works again, reports nothing.
+        self.idle_timers = {}
         self.saved_text = None
         self.process = None
         self.last_poll_failure_report = None
@@ -175,6 +182,35 @@ class Watcher:
                     self.batch(previous, current, tag)
                 self.save()
                 return
+            if self.idle_grace_seconds > 0:
+                self.start_idle_timer(session_id, previous, tag, seeding)
+                self.save()
+                return
+        self.report_idle(session_id, previous, current, tag, seeding)
+
+    def start_idle_timer(self, session_id, previous, tag, seeding):
+        """Reports the idle spell after the grace period unless the session works again first."""
+
+        def report_idle_after_grace():
+            with lock:
+                if self.idle_timers.get(session_id) is not timer:
+                    return
+                del self.idle_timers[session_id]
+                current = self.sessions.get(session_id)
+            if current is None or current["state"] != "waiting" or current["question"]:
+                return
+            self.report_idle(session_id, previous, current, tag, seeding)
+
+        timer = threading.Timer(
+            self.idle_grace_seconds,
+            run_or_exit,
+            args=(self, report_idle_after_grace),
+        )
+        timer.daemon = True
+        self.idle_timers[session_id] = timer
+        timer.start()
+
+    def report_idle(self, session_id, previous, current, tag, seeding):
         merged = self.is_merged(current["branch"])
         with lock:
             if merged is None:
@@ -190,6 +226,7 @@ class Watcher:
     def on_session_ended(self, session_id):
         with lock:
             self.sessions.pop(session_id, None)
+            self.idle_timers.pop(session_id, None)
             self.reported_idle.pop(session_id, None)
             self.working_since.pop(session_id, None)
             self.save()
@@ -327,6 +364,12 @@ def parse_arguments(argv):
         type=float,
         default=DEFAULT_WORKING_SECONDS,
         help="a working spell shorter than this does not start a new idle spell",
+    )
+    parser.add_argument(
+        "--idle-grace-seconds",
+        type=float,
+        default=DEFAULT_IDLE_GRACE_SECONDS,
+        help="report an idle worker only if it is still idle after this long; 0 reports at once",
     )
     parser.add_argument("--summary-seconds", type=float, default=600)
     parser.add_argument("--gh-timeout-seconds", type=float, default=60)
