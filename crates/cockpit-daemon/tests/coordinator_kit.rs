@@ -129,7 +129,7 @@ async fn without_its_grant_each_coordinator_verb_is_refused_naming_the_grant() {
             "message-sessions",
         ),
         (
-            vec!["agent", "start", worker_dir.as_str()],
+            vec!["agent", "start", worker_dir.as_str(), "--agent", "claude"],
             "start-sessions",
         ),
     ] {
@@ -568,6 +568,66 @@ async fn a_start_with_an_effort_claude_does_not_have_is_refused_before_the_owner
     );
     let (runs, _) = queue(&owner).await;
     assert!(runs.is_empty(), "nothing reaches the owner: {runs:?}");
+}
+
+/// #480: an agent name no wired provider has, or none when three are wired, is refused naming
+/// the wired ones, before any request is filed or a start is counted: the one start an hour
+/// the grant allows is still there for the corrected command.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_naming_no_wired_agent_is_refused_before_it_is_filed_or_counted() {
+    assert_the_cli_is_built();
+    let refusals: [(&[&str], &str); 2] = [
+        (&["--agent", "claud"], "no agent is named \"claud\""),
+        (&[], "name the agent with --agent"),
+    ];
+    for (agent_arguments, refusal) in refusals {
+        let home = Home::new();
+        let _daemon = home.start();
+        let owner = home.connect().await;
+        let (coordinator_root, _) = home.project(&owner, COMMANDED_PROJECT).await;
+        let (new_root, _) = home.project(&owner, "plain").await;
+        let coordinator = new_session(&owner, &coordinator_root).await;
+        let granted = owner
+            .request(
+                Command::SessionGrant {
+                    session: coordinator.id.clone(),
+                    permission: "start-sessions".to_owned(),
+                    without_confirmation: true,
+                    per_hour: Some(1),
+                    max_active: None,
+                },
+                GENEROUS,
+            )
+            .await;
+        assert!(
+            matches!(granted, Ok(Reply::CoordinatorGrants { .. })),
+            "{granted:?}"
+        );
+        let new_dir = new_root.display().to_string();
+        let mut typo = vec!["agent", "start", new_dir.as_str()];
+        typo.extend_from_slice(agent_arguments);
+
+        let refused = as_coordinator(&home, &coordinator_root, &typo).await;
+
+        assert!(refused.ends_with("exit=1\n"), "{refused}");
+        assert!(refused.contains(refusal), "{refused}");
+        assert!(
+            refused.contains("available: claude, codex, opencode"),
+            "{refused}"
+        );
+        let audit = audit_of(&owner, &coordinator.id).await;
+        assert!(audit.is_empty(), "nothing is audited: {audit:?}");
+        let corrected = as_coordinator(
+            &home,
+            &coordinator_root,
+            &["agent", "start", &new_dir, "--agent", "claude"],
+        )
+        .await;
+        assert!(
+            corrected.starts_with("started session ") && corrected.ends_with("exit=0\n"),
+            "the refusal spent no capped start: {corrected}"
+        );
+    }
 }
 
 /// #739: gives `coordinator` `start-sessions` with `max_active`, its other terms as given.

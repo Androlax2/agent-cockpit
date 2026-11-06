@@ -424,7 +424,8 @@ impl Sessions {
         self.after_early_exit(launched).await
     }
 
-    /// Refuses a model or effort `provider` would not launch, before a session is recorded or
+    /// Refuses an agent name no wired provider has, and a missing one when several are wired
+    /// (naming the wired ones, #480), then a model or effort `provider` would not launch, before a session is recorded or
     /// the owner is asked to start one (#701): the provider reports the capability and knows
     /// the value. [`Provider::launch`] only builds words, so a trial build checks the
     /// capability and the value's shape (the paths it is given are never used), then
@@ -435,6 +436,9 @@ impl Sessions {
         model: Option<&str>,
         effort: Option<&str>,
     ) -> Result<(), Error> {
+        // Resolved first, even with no model or effort to check: an unknown or missing agent
+        // name must be refused before the owner is asked or a start is counted (#480).
+        let provider = Arc::clone(self.provider(provider)?);
         if model.is_none() && effort.is_none() {
             return Ok(());
         }
@@ -447,7 +451,6 @@ impl Sessions {
                 }));
             }
         }
-        let provider = Arc::clone(self.provider(provider)?);
         let (model, effort) = (model.map(str::to_owned), effort.map(str::to_owned));
         self.blocking("check the model and effort", move || {
             provider.launch(&LaunchRequest {
