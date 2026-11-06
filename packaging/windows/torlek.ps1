@@ -21,11 +21,11 @@ if (-not (Get-Command wsl.exe -CommandType Application -ErrorAction SilentlyCont
 
 # One probe both finds the Linux home and confirms the install, so a missing distribution or a
 # missing install stops here with a next step instead of a bare exec error from wsl.exe.
-$probe = 'test -x $HOME/.local/lib/torlek/current/bin/torlek && printf %s $HOME'
+$probe = 'test -x $HOME/.local/bin/torlek && printf %s $HOME'
 $linuxHome = & wsl.exe --distribution $distribution --exec /bin/sh -c $probe
 if ($LASTEXITCODE -ne 0 -or -not $linuxHome) {
     Exit-Launcher ("Torlek is not installed in WSL distribution '$distribution', or the distribution did not start " +
         '(wsl.exe prints the reason above when it is the distribution). Run: torlek-wsl check')
 }
-& wsl.exe --distribution $distribution --exec "$linuxHome/.local/lib/torlek/current/bin/torlek" @args
+& wsl.exe --distribution $distribution --exec "$linuxHome/.local/bin/torlek" @args
 exit $LASTEXITCODE

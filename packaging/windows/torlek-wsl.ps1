@@ -64,8 +64,8 @@ Invoke-InDistribution 'check'
 if ($Action -eq 'check') { exit 0 }
 
 if (-not $Yes) {
-    $answer = Read-Host ("Install Torlek $tag into WSL distribution '$Distribution' at ~/.local/lib/torlek/v$tag " +
-        'and point ~/.local/lib/torlek/current at it? Nothing else in the distribution changes. [y/N]')
+    $answer = Read-Host ("Install Torlek $tag into WSL distribution '$Distribution' at ~/.local/lib/torlek/torlek-v$tag-linux-x86_64 " +
+        'and link ~/.local/bin/torlek to it? Nothing else in the distribution changes. [y/N]')
     # Read-Host returns $null at end of input, and `$null -notmatch ...` yields nothing rather than $true.
     if ([string] $answer -notmatch '^(y|yes)$') { Exit-Check 'Nothing was installed.' }
 }

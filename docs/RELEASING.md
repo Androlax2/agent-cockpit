@@ -199,6 +199,11 @@ source commit (#669). Do not merge the draft.
 3. The tag starts the Release workflow: approve its `release` jobs as its gates pass
    ([runs](https://github.com/Androlax2/agent-cockpit/actions/workflows/release.yml)). It
    drafts, then publishes the release.
+4. Once it is published, open a pull request that changes the README's three `install.sh` URLs
+   (`releases/download/v<tag>/…`) and its `--version` example to the new tag, and drops the
+   "ships from" sentence once a published release carries the script. The prerelease draft does
+   not list this step: GitHub never serves a prerelease as `releases/latest`, so the URL names a
+   release ([install script](packaging/install-script.md#why-a-versioned-url)).
 
 Among its checks, the dispatch refuses before tagging unless the Alpha 1 checklist (#52) is
 closed (once the Beta 1 checklist, #57, closes, only a beta is cut), an alpha's source has
@@ -347,7 +352,8 @@ A pre-release's notes compare with the release tag highest in version order belo
 ancestor of its commit, or with the base when there is none. Alpha notes carry a `Known gaps`
 list; beta notes name any upgrade step.
 
-Two release texts take their version from the release, so nobody edits them per tag:
+Two release texts take their version from the release, so nobody edits them per tag (the
+README's `install.sh` URL is the exception: step 4 of [Cut a release](#cut-a-release)):
 
 - `tools/release.py package` writes the bundle's own version into its README's install step, and
   `verify-install` refuses a bundle whose README installs another one. The README on `main` asks

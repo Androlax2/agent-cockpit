@@ -8,7 +8,7 @@
         "Torlek runs only inside a WSL 2 distribution on x86_64. Nothing was installed into WSL yet.",
         "Next: torlek-wsl check -Distribution <name>, then torlek-wsl install -Distribution <name>.",
         "Torlek inside WSL needs tmux 3.6 or newer, git and curl; torlek doctor names what is missing.",
-        "Uninstalling this package never touches WSL distributions or ~/.local/lib/torlek inside them."
+        "Uninstalling this package never touches WSL distributions or ~/.local/lib/torlek and ~/.local/bin/torlek inside them."
     ],
     "architecture": {
         "64bit": {
@@ -17,14 +17,16 @@
                 "https://github.com/Androlax2/agent-cockpit/releases/download/v@TAG@/SHA256SUMS",
                 "https://raw.githubusercontent.com/Androlax2/agent-cockpit/v@TAG@/packaging/windows/torlek.ps1",
                 "https://raw.githubusercontent.com/Androlax2/agent-cockpit/v@TAG@/packaging/windows/torlek-wsl.ps1",
-                "https://raw.githubusercontent.com/Androlax2/agent-cockpit/v@TAG@/packaging/windows/install-in-wsl.sh"
+                "https://raw.githubusercontent.com/Androlax2/agent-cockpit/v@TAG@/packaging/windows/install-in-wsl.sh",
+                "https://raw.githubusercontent.com/Androlax2/agent-cockpit/v@TAG@/install.sh"
             ],
             "hash": [
                 "@SHA256_ARCHIVE@",
                 "@SHA256_SUMS@",
                 "@SHA256_TORLEK_PS1@",
                 "@SHA256_TORLEK_WSL_PS1@",
-                "@SHA256_INSTALL_IN_WSL_SH@"
+                "@SHA256_INSTALL_IN_WSL_SH@",
+                "@SHA256_INSTALL_SH@"
             ]
         }
     },
