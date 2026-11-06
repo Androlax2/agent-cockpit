@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cockpit_protocol::{
-    Change, ChangeBatch, CheckoutView, EntityKind, FeedPosition, GuideStateView, GuideView,
+    Change, ChangeBatch, EntityKind, FeedPosition, GuideStateView, GuideView,
     NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, QuestionSource,
     RunRequestView, RunStateView, SessionReport, SessionStateView, SessionView, TurnOutcome,
     ViewArea, ViewStamp,
@@ -97,7 +97,7 @@ impl Board {
                     Edit::RemoveSession(event.entity.id.clone())
                 }
                 (EntityKind::Checkout, Change::Upsert { state }) => {
-                    let checkout: CheckoutView = decode(state).map_err(refused)?;
+                    let checkout: CheckoutProject = decode(state).map_err(refused)?;
                     Edit::PutCheckout(checkout.id, checkout.project)
                 }
                 (EntityKind::Checkout, Change::Tombstone) => Edit::RemoveCheckout(
@@ -284,6 +284,14 @@ impl Board {
             Cause::State => report.and_then(|report| report.doing.clone()),
         }
     }
+}
+
+/// What the notifier reads of a checkout: only its project, so a kind or trust this version
+/// does not know never refuses a batch that carries the sessions too.
+#[derive(serde::Deserialize)]
+struct CheckoutProject {
+    id: i64,
+    project: String,
 }
 
 fn decode<View: serde::de::DeserializeOwned>(

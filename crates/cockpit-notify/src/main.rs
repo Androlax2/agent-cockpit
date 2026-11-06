@@ -8,7 +8,7 @@
 //! outlet is off and the log says why.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -20,7 +20,7 @@ use cockpit_notify::{
     write_status,
 };
 use cockpit_protocol::{Command, Reply};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// How often the notifier asks again for the agents' reports, the approval queue and the
 /// network requests, whatever the feed said. The feed's view stamps (#706) bring a change at
@@ -117,16 +117,15 @@ fn notify(options: Options) -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|error| format!("cannot start the runtime: {error}"))?;
-    let mut status = StatusWriter {
-        path: options.status_file,
-        last: None,
-        is_failing: false,
-    };
-    let outcome = runtime.block_on(run(options.socket, outlets, &mut status));
+    let outcome = runtime.block_on(run(options.socket, outlets, options.status_file.clone()));
     if let Err(problem) = &outcome {
         tracing::error!(problem, "the notifier stopped");
     }
-    status.remove();
+    // A notifier killed by a signal leaves its file behind: its `written_at` ages, which is
+    // how a bar tells (the README).
+    if let Some(path) = &options.status_file {
+        remove_status_file(path);
+    }
     outcome
 }
 
@@ -146,9 +145,20 @@ fn find_outlets(host: &Host, options: &Options) -> Outlets {
     }
 }
 
-async fn run(socket: PathBuf, outlets: Outlets, status: &mut StatusWriter) -> Result<(), String> {
+async fn run(
+    socket: PathBuf,
+    outlets: Outlets,
+    status_file: Option<PathBuf>,
+) -> Result<(), String> {
     let (feed_events, mut feed) = mpsc::channel::<FeedEvent>(1);
     tokio::spawn(follow_feed(socket.clone(), feed_events));
+    let (status_updates, status_view) = watch::channel(None);
+    if let Some(path) = status_file {
+        tokio::spawn(keep_status_file(path, status_view));
+    }
+    // Sessions come only from the feed: until a batch applies, and after it is lost or a
+    // batch is refused, the status cannot claim them current.
+    let mut is_feed_current = false;
     let mut daemon = Daemon {
         socket,
         connection: None,
@@ -159,16 +169,13 @@ async fn run(socket: PathBuf, outlets: Outlets, status: &mut StatusWriter) -> Re
     // A slow daemon delays the next refresh rather than earning a burst of them.
     refresh.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
-        let mut is_refresh = false;
         let commands = tokio::select! {
-            _ = refresh.tick() => {
-                is_refresh = true;
-                Notifier::refresh_commands()
-            }
+            _ = refresh.tick() => Notifier::refresh_commands(),
             event = feed.recv() => match event {
                 None => return Err("the change feed task stopped".to_owned()),
                 Some(FeedEvent::Batch { batch, applied }) => {
                     let outcome = notifier.apply_changes(&batch);
+                    is_feed_current = outcome.is_ok();
                     let notices = outcome.as_ref().map(Vec::as_slice).unwrap_or_default();
                     outlets.tell(notices);
                     // The feed task waits on this answer; it is gone only when we stop.
@@ -177,6 +184,7 @@ async fn run(socket: PathBuf, outlets: Outlets, status: &mut StatusWriter) -> Re
                 }
                 Some(FeedEvent::Lost(problem)) => {
                     tracing::warn!(problem, "the change feed was lost");
+                    is_feed_current = false;
                     Vec::new()
                 }
             },
@@ -192,61 +200,67 @@ async fn run(socket: PathBuf, outlets: Outlets, status: &mut StatusWriter) -> Re
                 Err(Failure::Unreachable) => break,
             }
         }
-        status.write(&notifier.status(daemon.pause.is_none()), is_refresh);
+        let status = notifier.status(daemon.pause.is_none() && is_feed_current);
+        status_updates.send_if_modified(|shown| {
+            let is_new = shown.as_ref() != Some(&status);
+            if is_new {
+                *shown = Some(status);
+            }
+            is_new
+        });
     }
 }
 
-/// Keeps the status file, when the owner asked for one, up to date: at once when what it
-/// shows changes, and at every refresh so its `written_at` says the notifier still runs.
-struct StatusWriter {
-    path: Option<PathBuf>,
-    last: Option<Status>,
-    /// The last write failed: logged once until one succeeds again.
-    is_failing: bool,
-}
-
-impl StatusWriter {
-    fn write(&mut self, status: &Status, is_refresh: bool) {
-        let Some(path) = &self.path else {
-            return;
-        };
-        if !is_refresh && self.last.as_ref() == Some(status) {
-            return;
-        }
-        match write_status(path, status, seconds_since_1970()) {
-            Ok(()) => {
-                if self.is_failing {
-                    tracing::info!(path = %path.display(), "the status file is written again");
+/// Keeps the status file up to date apart from the requests, which may wait on a slow
+/// daemon: at once when what it shows changes, and at every refresh, so its `written_at`
+/// says the notifier still runs.
+async fn keep_status_file(path: PathBuf, mut updates: watch::Receiver<Option<Status>>) {
+    let mut refresh = tokio::time::interval(REFRESH);
+    refresh.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // The last write failed: logged once until one succeeds again.
+    let mut is_failing = false;
+    loop {
+        tokio::select! {
+            _ = refresh.tick() => {}
+            changed = updates.changed() => {
+                if changed.is_err() {
+                    return;
                 }
-                self.is_failing = false;
-                self.last = Some(status.clone());
-            }
-            Err(error) => {
-                if !self.is_failing {
-                    tracing::warn!(path = %path.display(), %error, "cannot write the status file");
-                }
-                self.is_failing = true;
             }
         }
-    }
-
-    /// A stopped notifier leaves no status behind that a bar would show as current.
-    fn remove(&self) {
-        let Some(path) = &self.path else {
-            return;
+        let Some(status) = updates.borrow_and_update().clone() else {
+            continue;
         };
-        if let Err(error) = std::fs::remove_file(path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(path = %path.display(), %error, "cannot remove the status file");
+        let written = seconds_since_1970()
+            .and_then(|now| write_status(&path, &status, now).map_err(|error| error.to_string()));
+        match written {
+            Ok(()) if is_failing => {
+                tracing::info!(path = %path.display(), "the status file is written again");
+                is_failing = false;
+            }
+            Ok(()) => {}
+            Err(problem) if !is_failing => {
+                tracing::warn!(path = %path.display(), problem, "cannot write the status file");
+                is_failing = true;
+            }
+            Err(_) => {}
         }
     }
 }
 
-fn seconds_since_1970() -> i64 {
-    SystemTime::now()
+fn remove_status_file(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %path.display(), %error, "cannot remove the status file");
+    }
+}
+
+fn seconds_since_1970() -> Result<i64, String> {
+    let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs() as i64)
+        .map_err(|error| format!("the clock is before 1970: {error}"))?;
+    i64::try_from(elapsed.as_secs()).map_err(|error| format!("the clock is out of range: {error}"))
 }
 
 /// Why a request has no reply.

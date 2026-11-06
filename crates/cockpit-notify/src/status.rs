@@ -4,6 +4,7 @@
 //! versioned schema (the crate's README).
 
 use std::io;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
 use serde::Serialize;
@@ -19,8 +20,25 @@ pub struct Status {
     pub reachable: bool,
     /// How many sessions are in the `needs-you` state.
     pub needs_you: usize,
-    /// Every session but the ones that ended and need nothing, by id.
+    /// Every session that has not ended, by id.
     pub sessions: Vec<SessionStatus>,
+}
+
+/// A session's state as a bar shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionState {
+    /// It needs the owner for anything but having finished: a failed session among them.
+    NeedsYou,
+    Launching,
+    Working,
+    Waiting,
+    /// Running, and its agent has not reported yet.
+    Running,
+    Stopping,
+    Asleep,
+    /// A state this version does not know.
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -30,10 +48,7 @@ pub struct SessionStatus {
     pub name: String,
     /// Its checkout's project, once the change feed named it.
     pub project: Option<String>,
-    /// `needs-you` when it needs the owner for anything but having finished; else
-    /// `launching`, `working`, `waiting`, `running` (no report yet), `stopping`, `asleep`,
-    /// `ended` or `unknown`.
-    pub state: &'static str,
+    pub state: SessionState,
     /// What it needs the owner for, most urgent first: `failure`, `hold`, `question`,
     /// `quota`, `finished`.
     pub needs: Vec<&'static str>,
@@ -72,6 +87,14 @@ pub fn write_status(path: &Path, status: &Status, written_at: i64) -> io::Result
     let mut partial_name = name.to_owned();
     partial_name.push(".partial");
     let partial = path.with_file_name(partial_name);
+    if let Some(parent) = path.parent() {
+        // The daemon makes the runtime directory too, with the same mode; the notifier may
+        // start first.
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+    }
     std::fs::write(&partial, text)?;
     std::fs::rename(&partial, path)
 }

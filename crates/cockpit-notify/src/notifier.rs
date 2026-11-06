@@ -1,13 +1,13 @@
 //! Turns what the daemon says into notices: each event a session newly raises, once the state
 //! the notifier started on is loaded.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cockpit_protocol::{AgentState, ChangeBatch, Command, Reply, SessionStateView, ViewArea};
 
 use crate::board::{Board, FeedError, Raised};
 use crate::event::Event;
-use crate::status::{SessionStatus, Status};
+use crate::status::{SessionState, SessionStatus, Status};
 
 /// One event to tell the owner about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,36 +121,44 @@ impl Notifier {
     }
 
     /// What the status file shows now; `is_reachable` says whether the daemon answered the
-    /// last request.
+    /// last request and the change feed is current.
     pub fn status(&self, is_reachable: bool) -> Status {
+        let mut needs_by_session: BTreeMap<&str, BTreeSet<Event>> = BTreeMap::new();
+        for raised in &self.raised {
+            needs_by_session
+                .entry(raised.session.as_str())
+                .or_default()
+                .insert(raised.event);
+        }
+        let no_needs = BTreeSet::new();
         let mut sessions = Vec::new();
-        for session in self.board.sessions() {
-            let needs: BTreeSet<Event> = self
-                .raised
-                .iter()
-                .filter(|raised| raised.session == session.id)
-                .map(|raised| raised.event)
-                .collect();
-            if session.state == SessionStateView::Ended && needs.is_empty() {
-                continue;
-            }
+        // An ended session left the owner's list (#630); what it raised was told once.
+        let open = self
+            .board
+            .sessions()
+            .filter(|session| session.state != SessionStateView::Ended);
+        for session in open {
+            let needs = needs_by_session
+                .get(session.id.as_str())
+                .unwrap_or(&no_needs);
             let report = self.board.report(&session.id);
             let state = if needs.iter().any(|event| *event != Event::Finished) {
-                "needs-you"
+                SessionState::NeedsYou
             } else {
                 match &session.state {
-                    SessionStateView::Launching => "launching",
+                    SessionStateView::Launching => SessionState::Launching,
                     SessionStateView::Running => match report.and_then(|report| report.state) {
-                        Some(AgentState::Working) => "working",
-                        Some(AgentState::Waiting) => "waiting",
-                        None => "running",
+                        Some(AgentState::Working) => SessionState::Working,
+                        Some(AgentState::Waiting) => SessionState::Waiting,
+                        None => SessionState::Running,
                     },
-                    SessionStateView::Stopping { .. } => "stopping",
-                    SessionStateView::Asleep => "asleep",
-                    SessionStateView::Ended => "ended",
-                    // Failed always raises a failure; a state this version does not know
-                    // is shown as such.
-                    SessionStateView::Failed | SessionStateView::Unknown => "unknown",
+                    SessionStateView::Stopping { .. } => SessionState::Stopping,
+                    SessionStateView::Asleep => SessionState::Asleep,
+                    // Failed always raises a failure, so it needs the owner above; Ended is
+                    // left out.
+                    SessionStateView::Failed
+                    | SessionStateView::Ended
+                    | SessionStateView::Unknown => SessionState::Unknown,
                 }
             };
             sessions.push(SessionStatus {
@@ -169,7 +177,7 @@ impl Notifier {
             reachable: is_reachable && self.is_loaded(),
             needs_you: sessions
                 .iter()
-                .filter(|session| session.state == "needs-you")
+                .filter(|session| session.state == SessionState::NeedsYou)
                 .count(),
             sessions,
         }

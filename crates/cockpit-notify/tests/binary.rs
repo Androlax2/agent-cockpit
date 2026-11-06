@@ -432,7 +432,8 @@ fn a_second_notifier_for_the_same_state_directory_exits_without_telling_twice() 
 #[test]
 fn the_status_file_shows_the_finished_session_for_a_bar() {
     let setup = Setup::new();
-    let status_file = setup.dir.path().join("status.json");
+    // In a runtime directory nobody made yet: the notifier may start before the daemon.
+    let status_file = setup.dir.path().join("run/torlek/status.json");
     let _notifier = setup.start(&["--status-file", status_file.to_str().unwrap()], false);
 
     let deadline = Instant::now() + GENEROUS;

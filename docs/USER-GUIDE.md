@@ -227,14 +227,18 @@ question = false    # no sound for a question
 
 The events are `failure`, `hold`, `question`, `quota` and `finished`.
 
-While it runs, `torlek notify` also keeps a status file for your bar at
-`$XDG_RUNTIME_DIR/torlek/status.json` (`torlek-NAME` for a named profile): the sessions, what
-each needs you for and how many need you now. Its schema is in the
-[cockpit-notify README](../crates/cockpit-notify/README.md#status-file). For example, a
-waybar `custom` module can show the count with:
+While it runs, `torlek notify` also keeps a status file for your bar: the sessions, what each
+needs you for and how many need you now. It sits in the profile's runtime directory
+(`paths.runtime_dir` in `torlek config show`), usually `$XDG_RUNTIME_DIR/torlek/status.json`
+(`torlek-NAME` for a named profile). Its schema is in the
+[cockpit-notify README](../crates/cockpit-notify/README.md#status-file). The notifier rewrites
+it every five seconds, so an older `written_at` means it stopped. For example, a waybar
+`custom` module can show the count, and nothing once the notifier is gone, with:
 
 ```sh
-jq -c '{text: "\(.needs_you)", class: (if .needs_you > 0 then "needs-you" else "idle" end)}' \
+jq -c --argjson now "$(date +%s)" '
+  if $now - .written_at > 15 then {text: "", class: "gone"}
+  else {text: "\(.needs_you)", class: (if .needs_you > 0 then "needs-you" else "idle" end)} end' \
   "$XDG_RUNTIME_DIR/torlek/status.json"
 ```
 

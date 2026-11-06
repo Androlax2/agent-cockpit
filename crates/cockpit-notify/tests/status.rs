@@ -3,7 +3,7 @@
 
 mod common;
 
-use cockpit_notify::{Notifier, Status, write_status};
+use cockpit_notify::{Notifier, SessionState, Status, write_status};
 use cockpit_protocol::{
     AgentExitView, AgentState, EntityKind, ExitStatusView, QuestionSource, SessionReport,
     SessionStateView, SessionView,
@@ -48,7 +48,7 @@ fn a_working_session_shows_its_label_project_and_doing() {
     let shown = &status.sessions[0];
     assert_eq!(shown.name, "api");
     assert_eq!(shown.project.as_deref(), Some("agent-cockpit"));
-    assert_eq!(shown.state, "working");
+    assert_eq!(shown.state, SessionState::Working);
     assert_eq!(shown.doing.as_deref(), Some("writing tests"));
     assert_eq!(shown.changed_at, 50);
 }
@@ -69,7 +69,7 @@ fn a_question_puts_the_session_in_needs_you_and_counts_it() {
     let status = status_of(&notifier);
 
     assert_eq!(status.needs_you, 1);
-    assert_eq!(status.sessions[0].state, "needs-you");
+    assert_eq!(status.sessions[0].state, SessionState::NeedsYou);
     assert_eq!(status.sessions[0].needs, ["question"]);
 }
 
@@ -94,33 +94,19 @@ fn a_finished_session_keeps_its_state_and_lists_finished() {
     let status = status_of(&notifier);
 
     assert_eq!(status.needs_you, 0);
-    assert_eq!(status.sessions[0].state, "waiting");
+    assert_eq!(status.sessions[0].state, SessionState::Waiting);
     assert_eq!(status.sessions[0].needs, ["finished"]);
 }
 
 #[test]
-fn an_ended_session_that_needs_nothing_is_left_out() {
-    let mut notifier = loaded(&[worker()], vec![report(WORKER)]);
-    change_session(
-        &mut notifier,
-        &SessionView {
-            state: SessionStateView::Ended,
-            ..worker()
-        },
-    );
-
-    assert_eq!(status_of(&notifier).sessions, []);
-}
-
-#[test]
-fn a_session_whose_agent_exited_by_itself_needs_the_owner_for_its_failure() {
+fn an_ended_session_is_left_out_even_when_its_agent_exited_by_itself() {
     let mut notifier = loaded(&[worker()], vec![report(WORKER)]);
     change_session(
         &mut notifier,
         &SessionView {
             state: SessionStateView::Ended,
             exit: Some(AgentExitView {
-                status: ExitStatusView::Code { code: 1 },
+                status: ExitStatusView::Code { code: 0 },
                 output: Vec::new(),
             }),
             ..worker()
@@ -129,9 +115,46 @@ fn a_session_whose_agent_exited_by_itself_needs_the_owner_for_its_failure() {
 
     let status = status_of(&notifier);
 
+    assert_eq!(status.sessions, []);
+    assert_eq!(status.needs_you, 0);
+}
+
+#[test]
+fn a_failed_session_needs_the_owner_for_its_failure() {
+    let mut notifier = loaded(&[worker()], vec![report(WORKER)]);
+    change_session(
+        &mut notifier,
+        &SessionView {
+            state: SessionStateView::Failed,
+            ..worker()
+        },
+    );
+
+    let status = status_of(&notifier);
+
     assert_eq!(status.needs_you, 1);
-    assert_eq!(status.sessions[0].state, "needs-you");
+    assert_eq!(status.sessions[0].state, SessionState::NeedsYou);
     assert_eq!(status.sessions[0].needs, ["failure"]);
+}
+
+#[test]
+fn a_checkout_of_a_kind_this_version_does_not_know_still_names_its_project() {
+    let mut notifier = loaded(&[worker()], vec![report(WORKER)]);
+    let mut future_checkout = serde_json::to_value(checkout(1, "agent-cockpit")).unwrap();
+    future_checkout["kind"] = serde_json::json!({"kind": "sandboxed-copy"});
+
+    notifier
+        .apply_changes(&after_snapshot(vec![upsert(
+            EntityKind::Checkout,
+            "1",
+            &future_checkout,
+        )]))
+        .unwrap();
+
+    assert_eq!(
+        status_of(&notifier).sessions[0].project.as_deref(),
+        Some("agent-cockpit")
+    );
 }
 
 #[test]

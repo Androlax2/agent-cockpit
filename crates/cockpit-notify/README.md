@@ -41,10 +41,13 @@ after ten seconds; nothing waits on it. macOS stays with #568.
 ## Status file
 
 With `--status-file FILE` the notifier keeps `FILE` up to date for a bar (report 19): at once
-when what it shows changes, at least every five seconds while it runs, whole (written beside
-and renamed), and removed when it stops on an error. `torlek notify` puts it in the profile's
-runtime directory, beside the daemon's socket: `$XDG_RUNTIME_DIR/torlek/status.json` for the
-default profile. Schema 1:
+when what it shows changes and at least every five seconds while it runs, whatever the daemon
+does; whole (written beside and renamed); its directory made with mode 700 when missing. It is
+removed when the notifier stops on an error; a notifier stopped by a signal leaves it behind,
+and its `written_at` ages. `torlek notify` puts it beside the daemon's socket, in the
+profile's runtime directory (`paths.runtime_dir` in `torlek config show`): usually
+`$XDG_RUNTIME_DIR/torlek/status.json`, or `<state dir>/run/status.json` where
+`XDG_RUNTIME_DIR` is unset. Schema 1:
 
 ```json
 {
@@ -66,16 +69,15 @@ default profile. Schema 1:
 }
 ```
 
-- `written_at`, `changed_at`: seconds since 1970. A file older than about thirty seconds was
-  left by a notifier that is gone.
-- `reachable`: the daemon answered the last request and the notifier has loaded its state;
-  while false, `sessions` is what was last known, or empty.
-- `sessions`: every session but those that ended and need nothing, by id. `name` is the
-  label the agent reported, else the id; `project` is `null` until the feed names its
-  checkout.
-- `state`: `needs-you` when the session needs the owner for anything but having finished,
-  else `launching`, `working`, `waiting`, `running` (no report yet), `stopping`, `asleep`,
-  `ended` or `unknown`. `needs_you` counts the `needs-you` sessions.
+- `written_at`, `changed_at`: seconds since 1970. A file whose `written_at` is more than about
+  fifteen seconds old was left by a notifier that is gone: show nothing from it.
+- `reachable`: the daemon answered the last request, the change feed is current and the
+  notifier has loaded its state; while false, `sessions` is what was last known, or empty.
+- `sessions`: every session that has not ended, by id. `name` is the label the agent
+  reported, else the id; `project` is `null` until the feed names its checkout.
+- `state`: `needs-you` when the session needs the owner for anything but having finished (a
+  failed session among them), else `launching`, `working`, `waiting`, `running` (no report
+  yet), `stopping`, `asleep` or `unknown`. `needs_you` counts the `needs-you` sessions.
 - `needs`: the events above that stand for it now, most urgent first.
 
 A new field keeps the schema number; a field that changes meaning or goes bumps it. Readers
