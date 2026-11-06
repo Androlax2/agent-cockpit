@@ -41,7 +41,8 @@ instead of guessing.
   host commands; never run tests against live user state.
 - When the pull request proves a row of the
   [feature coverage map](docs/design/greenfield/16-feature-coverage-map.md), update the row
-  with the test name. Record non-obvious decisions as one file each under [docs/decisions/](docs/decisions/README.md).
+  with the test name. Add a decision to the [decision log](docs/decisions/README.md) as one file only if it passes the
+  [four-question admission test](docs/decisions/README.md#admission-test).
 - Open the pull request from the template. Reference the issue (`Closes #<n>`), list the
   exact commands you ran with their outcomes, and keep `validate` claims open until
   measured. A skipped check is not a pass; never disable a test to make a check pass.
