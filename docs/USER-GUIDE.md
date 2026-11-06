@@ -49,23 +49,13 @@ The platform checks are described in [Development](DEVELOPMENT.md#verification-p
 
 ## First project and session
 
-Run these commands in your own terminal. For a source build, the default profile is `dev`; release bundles default to `torlek`.
-`torlek config show` and `torlek doctor` show which profile and paths you are using.
-Use the same profile throughout. To isolate a preview's state from an existing installation, use `torlek --profile next VERB` for every command, including `daemon install`.
+The [quickstart](QUICKSTART.md) walks through your first project and session. This section holds the settings behind it.
+Run `torlek daemon install` and `torlek init` first, as the [README](../README.md#install-from-the-command-line) shows.
 
-1. Start the daemon and read the checklist:
+A source build uses the profile `dev` and release bundles use `torlek`; `torlek config show` and `torlek doctor` show which profile and paths you are using.
+Use the same profile for every command. To keep a preview's state apart from an existing installation, put `--profile next` before every command, including `daemon install`.
 
-   ```sh
-   torlek daemon install
-   torlek doctor
-   torlek init
-   ```
-
-   `daemon install` writes and starts the daemon's user service.
-   `init` writes nothing: it shows `done`, `todo`, `waits` or `unknown` and ends with the next action.
-   Repeat it after completing that action. An `unknown` sign-in needs the manual check it names.
-
-2. Open the owner configuration path printed by `torlek config show` and add the following settings, preserving any existing settings:
+1. Accept running agents without a sandbox. Add this to the owner configuration file (`torlek config show` prints its path), keeping any existing settings:
 
    ```toml
    [agents]
@@ -73,61 +63,16 @@ Use the same profile throughout. To isolate a preview's state from an existing i
    desktop_session = "withheld"
    ```
 
-   This records that you accept running agents unsandboxed, the only choice this release can run, and keeps agents off your desktop session.
-   An unsandboxed agent runs with your rights: it can reach the owner socket and act as the owner, so Torlek's grants do not bind it. The daemon logs that risk at its start and at every launch.
-   `sandbox = "required"` refuses every agent launch, naming the missing backend, until Torlek's own sandbox exists; it never runs an agent unsandboxed.
-   A profile used with Torlek's removed Greywall and Greyproxy engines may still hold their `torlek-greyproxy-<profile>` service and state: `torlek doctor` lists them, and once no session an earlier release launched in Greywall still runs, `torlek doctor --remove-old-sandbox` stops the service and deletes them.
-   The default desktop setting is `shared`, which exposes your display and filtered session bus to agents; choose it only if you want desktop access.
-   Run `torlek config reload` after changing session settings on a running daemon.
-   Until then the daemon keeps the `agents.sandbox` it last read, and `torlek doctor` blocks on its `sandbox` line, naming both values and that command.
-   The TUI rings the terminal bell when a session finishes, asks a question or fails; add `[tui]` with `attention_bell = false` to turn that off, then close the manager session and run `torlek tui` again.
+   `sandbox = "off"` records that you accept this: an unsandboxed agent runs with your rights, can reach the owner socket and act as you, so Torlek's grants do not bind it. The daemon logs that risk at its start and at every launch.
+   `desktop_session = "withheld"` keeps agents off your screen and desktop session; the default, `shared`, exposes your display and filtered session bus.
+   If the daemon is already running, run `torlek config reload`. Until then it keeps the `agents.sandbox` it last read, and `torlek doctor` blocks on its `sandbox` line, naming both values.
 
-3. Choose a provider and follow `torlek init`'s sign-in instruction in your terminal:
-
-   ```sh
-   torlek provider list
-   torlek init
-   ```
-
+2. Sign in to a provider. Run `torlek provider list` to see the installed names, then `torlek init` and follow its sign-in instruction in your terminal.
    A local sign-in check does not prove your account has model access or remaining quota.
    Provider accounts and usage are managed by the provider.
 
-4. Register a Git repository. This small example creates a new, empty project:
-
-   ```sh
-   mkdir -p "$HOME/torlek-example"
-   git -C "$HOME/torlek-example" init
-   torlek project add "$HOME/torlek-example" --name example
-   torlek project list
-   ```
-
-   For existing work, pass the repository's top-level directory instead.
-
-5. Start a session, choosing an installed provider name from the list:
-
-   ```sh
-   torlek session new "$HOME/torlek-example" --agent claude --prompt 'Describe this repository without changing files.'
-   torlek session list
-   torlek tui
-   ```
-
-   Replace `claude` with `codex` or `opencode` if that is your provider.
-   For a Claude session, `--model MODEL` (an alias such as `opus` or a model id) and
-   `--effort LEVEL` (`low`, `medium`, `high`, `xhigh` or `max`) choose its model and effort;
-   every restart, wake and resume of the session keeps them. Without them, Claude Code's own
-   settings apply. A provider that cannot set them refuses the start.
-   In the TUI, use its help for available keys. From the CLI, `torlek session show ID` opens a session; replace `ID` with the identifier from `session list`.
-   `torlek session end ID` stops it. `torlek init` shows when the first-session step is complete.
-
-![Alpha TUI demo with api and web sessions and an approval pane](../assets/readme/greenfield-tui.png)
-
-Alpha TUI, rendered from the checked-in demo fixture with fictional projects and agents.
-
-On a terminal narrower than 60 columns, such as a phone over SSH, the TUI switches to a
-one-column layout: requests and questions first, each with its whole command, then one line
-per session. Enter opens a session full screen and read-only; `i` types a line into it, Esc
-goes back. `[tui] phone_below_columns` in the owner configuration changes the width, and `0`
-turns it off.
+3. Choose a model and effort for a Claude session. Pass `--model MODEL` (an alias such as `opus` or a model id) and `--effort LEVEL` (`low`, `medium`, `high`, `xhigh` or `max`) to `torlek session new`.
+   Every restart, wake and resume of the session keeps them. Without them, Claude Code's own settings apply. A provider that cannot set them refuses the start.
 
 ## Approvals
 
@@ -250,6 +195,20 @@ session's next launch.
 Named profiles replace the `torlek` directory component with `torlek-NAME` (for example `torlek-dev`).
 Use the paths printed by your binary; keep private state and provider credentials out of Git and support messages.
 
+### Sandbox mode
+
+Where no sandbox backend exists, `sandbox = "required"` under `[agents]` refuses every agent launch and names the missing backend. It never runs an agent unsandboxed.
+
+### Terminal screen
+
+The TUI rings the terminal bell when a session finishes, asks a question or fails. Add `[tui]` with `attention_bell = false` to turn that off, then close the manager session and run `torlek tui` again.
+
+On a terminal narrower than 60 columns, such as a phone over SSH, the TUI switches to a
+one-column layout: requests and questions first, each with its whole command, then one line
+per session. Enter opens a session full screen and read-only; `i` types a line into it, Esc
+goes back. `[tui] phone_below_columns` in the owner configuration changes the width, and `0`
+turns it off.
+
 ## Updates
 
 Torlek tells you when a newer release is available. It never downloads, installs, restarts the daemon or stops a session for you: it prints the commands, and you run them.
@@ -268,6 +227,7 @@ Torlek tells you when a newer release is available. It never downloads, installs
 
 - **The update route.** For an installation unpacked as the README shows, `torlek update` prints the README's download, checksum and unpack commands for the new version, then `torlek daemon install`, which replaces the running daemon (stop, then start) while agent sessions keep running. Alpha releases may reset your data: read the release notes first.
 - **After an update.** `torlek version --all` names the release the running daemon runs and each live session's bundle, so "installed, but this daemon and these sessions still run the previous release" reads as a normal, explained state. A daemon of another release than the installed one is told to stop and start; a session keeps its bundle until it is restarted.
+- **Old sandbox services.** A profile used with Torlek's earlier Greywall and Greyproxy sandbox may still hold its `torlek-greyproxy-<profile>` service and state. `torlek doctor` lists them. Once no session that an earlier release launched in Greywall still runs, `torlek doctor --remove-old-sandbox` stops the service and deletes them.
 - **Not supported yet.** An installation that is not a release archive unpacked in `~/.local/lib/torlek` as the README shows (a distribution package once #562, #563 and #565 publish them, an archive unpacked elsewhere, or a build from source) is told so, with no commands: update it the way you installed it. There is no macOS build (#568). The check needs `curl`, which the install route needs as well.
 
 ## Help and support

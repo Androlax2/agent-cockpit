@@ -1,17 +1,18 @@
 # Quickstart
 
-This page takes about five minutes to read.
-It assumes Torlek is installed and `torlek init` has nothing left but your first project and first session.
+This page takes you from an installed Torlek to your first agent session in about five minutes.
+It assumes `torlek init` has nothing left but your first project and first session.
 If not, follow the [README](../README.md) first.
 
 ## What Torlek does for you
 
 - **Runs your coding agents side by side.** Claude Code, Codex or OpenCode, each in its own terminal session.
   You see them all in one list and open the one you want.
-- **Keeps each agent in a sandbox.** An agent writes only in its own copy of the project, cannot read Torlek's own files, and reaches the internet through a filter.
-  With `desktop_session = "withheld"` in your config, it also stays away from your screen and desktop session.
-- **Asks you before anything risky.** When an agent needs to run a command outside its sandbox, it sends you a request.
-  Nothing runs until you say yes.
+- **Runs agents with your rights by default.** The sandbox is off unless you turn it on, so an agent can do what you can and Torlek's grants do not bind it.
+  Keep your work in Git. With `desktop_session = "withheld"` in your config, an agent stays away from your screen and desktop session.
+  The [known gaps](KNOWN-GAPS.md) list what is still open.
+- **Lets an agent ask you to run a command.** The agent sends you a request.
+  The command runs only if you say yes.
 - **Keeps a todo list per project.** You and your agents add items; agents can also suggest ideas, which you accept or decline.
 
 ## Your first project
@@ -48,13 +49,16 @@ In the Torlek screen:
 - `?` shows every key. `Esc` closes it.
 - To leave the screen and keep everything running, press `Ctrl+b`, then `d`.
 
+From a terminal, `torlek session list` shows your sessions, `torlek session show ID` opens one and `torlek session end ID` stops it.
+Replace `ID` with the identifier from `session list`.
+
 ![The Torlek screen with two sessions and a request waiting for approval](../assets/readme/greenfield-tui.png)
 
 This picture uses made-up projects and agents.
 
 ## Approving a request
 
-When an agent wants to run a command outside its sandbox, the request appears in the approval pane at the bottom of the Torlek screen.
+When an agent asks you to run a command, the request appears in the approval pane at the bottom of the Torlek screen.
 
 1. Press `Tab` to move to the pane. Keys are ignored for a moment after a request appears or the pane gets focus, so read first.
 2. Read the command, the folder it runs in and the agent's reason. Press `m` to see a long command in full.
@@ -71,6 +75,7 @@ torlek approval decline ID
 ```
 
 `torlek approval show ID` prints the exact approve command to use, with the version of the request you read.
+The [user guide](USER-GUIDE.md#approvals) covers network requests and the rest of approvals.
 
 ## Getting help
 
@@ -92,13 +97,13 @@ I am new to Torlek, the program that runs you in this session. Explain it to me.
 - After each idea, ask me one question to check that I understood.
   Wait for my answer. If I got it wrong or I am unsure, explain it another way.
   If I already know it, move on faster.
-- Cover, in this order: what Torlek is; projects and sessions; the sandbox;
-  how you ask me before running a command outside it, and how I approve or
-  decline; the todo list; how I get help when something breaks.
+- Cover, in this order: what Torlek is; projects and sessions; that you run
+  with my rights unless I turn the sandbox on; how you ask me to run a command,
+  and how I approve or decline; the todo list; how I get help when something breaks.
 - Use the real Torlek commands on this machine instead of guessing:
   "torlek --help", "torlek docs", "torlek --skill" and "torlek doctor".
-  Show me what a command printed when it helps. If a command is refused inside
-  your sandbox, say so and ask me to run it in my own terminal.
+  Show me what a command printed when it helps. If a command is refused
+  inside your session, say so and ask me to run it in my own terminal.
 - Do not change anything: no files, no settings, no requests to run commands,
   unless I say yes first.
 - Stop when I say I understand, and give me a three-line summary.
