@@ -9,8 +9,10 @@ use std::io::ErrorKind;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use cockpit_client::{ClientError, Connection};
+use cockpit_client::ClientError;
 use cockpit_protocol::{Command, ErrorCode, Reply, VersionReportView};
+
+use crate::agent::exchange_within;
 
 /// Long enough for a busy daemon, short enough that `version --all` does not hang on one
 /// that is stuck.
@@ -75,7 +77,11 @@ fn print_running_daemon() -> ExitCode {
     match ask_daemon(&socket) {
         Ok(Answer::Report(report)) => {
             print_report(&report);
-            ExitCode::SUCCESS
+            if is_schema_compatible(&report) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
         Ok(Answer::BeforeVersionReports { release, manifest }) => {
             outln!(
@@ -85,7 +91,7 @@ fn print_running_daemon() -> ExitCode {
             print_restart_hint(&release);
             ExitCode::SUCCESS
         }
-        Err(ClientError::Connect { source, .. }) => {
+        Err(ClientError::Connect { source, .. }) if is_absent_daemon(&source) => {
             outln!(
                 "daemon: not running (cannot reach {}: {source})",
                 socket.display()
@@ -95,6 +101,15 @@ fn print_running_daemon() -> ExitCode {
         }
         Err(error) => crate::daemon::failed(&error),
     }
+}
+
+/// Only a socket that is missing or refuses connections means no daemon runs; a socket the
+/// owner may not open, say, is a fault to report, not an absence.
+fn is_absent_daemon(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::NotFound | ErrorKind::ConnectionRefused
+    )
 }
 
 enum Answer {
@@ -108,38 +123,22 @@ enum Answer {
 }
 
 fn ask_daemon(socket: &std::path::Path) -> Result<Answer, ClientError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|source| ClientError::Connect {
-            socket_path: socket.to_owned(),
-            source,
-        })?;
-    runtime.block_on(async {
-        let connection = Connection::open(socket, DAEMON_DEADLINE).await?;
-        match connection
-            .request(Command::VersionReport, DAEMON_DEADLINE)
-            .await
-        {
-            Ok(Reply::VersionReport { report }) => Ok(Answer::Report(report)),
-            Err(ClientError::Daemon(error)) if error.code == ErrorCode::UnknownCommand => {
-                match connection
-                    .request(Command::InstructionCatalog, DAEMON_DEADLINE)
-                    .await?
-                {
-                    Reply::InstructionCatalog {
-                        version, manifest, ..
-                    } => Ok(Answer::BeforeVersionReports {
-                        release: version,
-                        manifest,
-                    }),
-                    other => Err(ClientError::UnexpectedReply(other)),
-                }
+    match exchange_within(socket, Command::VersionReport, DAEMON_DEADLINE) {
+        Ok(Reply::VersionReport { report }) => Ok(Answer::Report(report)),
+        Ok(other) => Err(ClientError::UnexpectedReply(other)),
+        Err(ClientError::Daemon(error)) if error.code == ErrorCode::UnknownCommand => {
+            match exchange_within(socket, Command::InstructionCatalog, DAEMON_DEADLINE)? {
+                Reply::InstructionCatalog {
+                    version, manifest, ..
+                } => Ok(Answer::BeforeVersionReports {
+                    release: version,
+                    manifest,
+                }),
+                other => Err(ClientError::UnexpectedReply(other)),
             }
-            Ok(other) => Err(ClientError::UnexpectedReply(other)),
-            Err(error) => Err(error),
         }
-    })
+        Err(error) => Err(error),
+    }
 }
 
 fn print_report(report: &VersionReportView) {
@@ -176,6 +175,14 @@ fn print_restart_hint(running_release: &str) {
              to use the installed release"
         );
     }
+}
+
+/// A capability whose migrations the database holds beyond what the daemon's binary knows.
+fn is_schema_compatible(report: &VersionReportView) -> bool {
+    report
+        .schema
+        .iter()
+        .all(|owner| owner.applied <= owner.known)
 }
 
 fn print_schema(report: &VersionReportView) {

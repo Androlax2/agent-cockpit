@@ -237,7 +237,7 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
         },
         // #64 (report 13): the release whose helpers and instruction bundle a launch ran with,
         // which `version --all` shows. A launch with no row here started before launches
-        // recorded it.
+        // recorded it. Launch rows are never deleted, so no row here outlives its launch.
         Migration {
             version: 13,
             sql: "CREATE TABLE session_launch_bundles (
@@ -581,13 +581,14 @@ pub(crate) async fn insert_launch(
 
 /// The bundle the latest launch of each session whose agent is starting, running or stopping
 /// ran with, by creation. A session asleep, failed or ended launches again with whatever
-/// bundle the daemon then holds, so it is not listed.
+/// bundle the daemon then holds, so it is not listed; nor is one whose first launch is not
+/// recorded yet, which has run nothing.
 pub async fn live_bundles(connection: &Connection) -> Result<Vec<SessionBundle>, Error> {
     let mut rows = connection
         .query(
             "SELECT s.id, s.state, s.stopping_to, b.release, b.instruction_manifest
              FROM sessions s
-             LEFT JOIN session_launches l ON l.id =
+             JOIN session_launches l ON l.id =
                  (SELECT max(id) FROM session_launches WHERE session_id = s.id)
              LEFT JOIN session_launch_bundles b ON b.launch_id = l.id
              WHERE s.state IN ('launching', 'running', 'stopping')

@@ -129,3 +129,29 @@ async fn an_agent_may_not_read_which_sessions_run_which_bundle() {
 
     assert_eq!(refusal_code(refused), ErrorCode::NotAuthorized);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_capability_the_database_holds_and_the_daemon_does_not_know_shows_as_newer() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let database = home.database.lock().unwrap().clone().unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO cockpit_migrations (owner, version, sql) VALUES ('from-the-future', 3, '')",
+            (),
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let report = version_report(&client).await;
+
+    let unknown = report
+        .schema
+        .iter()
+        .find(|owner| owner.owner == "from-the-future")
+        .unwrap_or_else(|| panic!("{report:?}"));
+    assert_eq!((unknown.applied, unknown.known), (3, 0));
+}

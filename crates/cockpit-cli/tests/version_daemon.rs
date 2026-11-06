@@ -11,7 +11,7 @@ use cockpit_protocol::{
     Command, ErrorCode, InstructionTopicView, LaunchBundleView, Outcome, ProtocolError, Reply,
     SchemaOwnerView, SessionBundleView, SessionStateView, VersionReportView,
 };
-use scripted::{scripted_conversation, text};
+use scripted::{scripted_connections, scripted_conversation, text};
 
 const INSTALLED: &str = env!("CARGO_PKG_VERSION");
 
@@ -162,18 +162,21 @@ async fn a_schema_every_capability_holds_at_a_known_version_is_compatible() {
 }
 
 #[tokio::test]
-async fn a_capability_newer_than_the_daemon_knows_is_incompatible() {
+async fn a_capability_newer_than_the_daemon_knows_is_incompatible_and_fails() {
     let home = Home::new();
     let mut newer = report(INSTALLED);
     newer.schema[1].applied = 5;
     scripted_conversation(&home.daemon_socket(), vec![reply(newer)]);
 
-    let printed = lines(&home.version_all().await);
+    let output = home.version_all().await;
 
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
     assert!(
-        printed
-            .contains(&"schema: INCOMPATIBLE, tasks is at 5 where the daemon knows 4".to_owned()),
-        "{printed:?}"
+        text(&output.stdout)
+            .lines()
+            .any(|line| line == "schema: INCOMPATIBLE, tasks is at 5 where the daemon knows 4"),
+        "{}",
+        text(&output.stdout)
     );
 }
 
@@ -261,7 +264,7 @@ async fn a_daemon_that_predates_version_reports_still_names_its_release() {
         manifest: "m-00000000000000bb".to_owned(),
         topics: Vec::<InstructionTopicView>::new(),
     });
-    let daemon = scripted_conversation(&home.daemon_socket(), vec![unknown, catalog]);
+    let daemon = scripted_connections(&home.daemon_socket(), vec![unknown, catalog]);
 
     let printed = lines(&home.version_all().await);
 
@@ -328,5 +331,28 @@ async fn inside_a_session_it_says_the_report_is_the_owners() {
     assert!(
         printed.contains(&"daemon: not asked from inside a session; run `torlek version --all` in your own terminal".to_owned()),
         "{printed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_socket_the_owner_may_not_open_is_a_fault_not_a_missing_daemon() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new();
+    let socket = home.daemon_socket();
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let output = home.version_all().await;
+
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output.stdout));
+    assert!(
+        !text(&output.stdout).contains("not running"),
+        "{}",
+        text(&output.stdout)
+    );
+    assert!(
+        text(&output.stderr).contains("torlek:"),
+        "{}",
+        text(&output.stderr)
     );
 }

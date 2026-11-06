@@ -90,13 +90,21 @@ async fn schema(
         let version: i64 = row.get(1)?;
         applied.insert(owner, u32::try_from(version)?);
     }
-    Ok(known
+    let mut owners: Vec<SchemaOwnerView> = known
         .iter()
         .map(|set| SchemaOwnerView {
             owner: set.owner.to_owned(),
-            applied: applied.get(set.owner).copied().unwrap_or(0),
+            applied: applied.remove(set.owner).unwrap_or(0),
             known: u32::try_from(set.migrations.len())
                 .expect("a capability has under 2^32 migrations"),
         })
-        .collect())
+        .collect();
+    // A capability the database holds that this binary does not know is newer than it, so it
+    // shows as one rather than being left out.
+    owners.extend(applied.into_iter().map(|(owner, applied)| SchemaOwnerView {
+        owner,
+        applied,
+        known: 0,
+    }));
+    Ok(owners)
 }
