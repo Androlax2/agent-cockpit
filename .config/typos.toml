@@ -1,6 +1,6 @@
 [files]
-# Binary previews and FigCraft archives are not prose or source code.
-extend-exclude = ["*.png", "*.figcraft"]
+# Binary previews, FigCraft archives and the base64 OpenPGP public key are not prose or source code.
+extend-exclude = ["*.png", "*.figcraft", "packaging/deb/torlek.asc"]
 
 [default]
 locale = "en"

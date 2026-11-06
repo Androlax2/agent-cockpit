@@ -3,8 +3,10 @@
 **Status:** packages built from the published v0.1.0-alpha.4 and alpha.3 archives install,
 upgrade and remove through apt on clean Ubuntu 26.04 and Debian 13 containers, amd64 and arm64,
 from a repository signed with a throwaway key ([CI evidence](#ci-evidence)). The publication
-job exists but is off: `Androlax2/torlek-apt`, the `apt` environment and the signing key do not
-exist yet ([owner setup](#owner-setup)). Do not document `apt install torlek` as an install
+job exists but is off. [Owner setup](#owner-setup) steps 1 to 5 are done: the key, its public
+half in `packaging/deb/torlek.asc`, the `apt` environment (required reviewer, `v*` tags), the
+deploy key, `TORLEK_APT_SIGNING_KEY` and `TORLEK_APT_MAINTAINER`. Only step 6 remains: the
+coordinator sets `TORLEK_APT_PUBLISH` after this merges. Do not document `apt install torlek` as an install
 route until the first publication has passed its [site check](#publication).
 
 This repackages the published release archives, like the [AUR recipe](aur.md). It is not an
@@ -161,10 +163,20 @@ subkey. No agent creates, imports or stores the real key; the tests and CI use t
 in temporary `GNUPGHOME`s.
 
 `publish.sh` signs with every signing subkey the secret holds, and refuses one that is not in
-the committed public key `packaging/deb/torlek.asc` (added in [owner setup](#owner-setup) step 2), which is also what
+the committed public key `packaging/deb/torlek.asc` (committed by [owner setup](#owner-setup) step 2), which is also what
 `verify` and the site check trust. Users check `gpg --show-keys torlek.asc` against the
-primary key's fingerprint, published in this file, the README install section and each
-release's notes, before copying it to `/etc/apt/keyrings/torlek.asc`.
+primary key's fingerprint, published in this file (the README install section and each
+release's notes follow once the first publication is verified), before copying it to `/etc/apt/keyrings/torlek.asc`.
+
+The primary key, certification only, user ID `Torlek APT <contact@theobenoit.fr>`:
+
+```text
+CC46 0FBB B9A6 9E1A 5239  A8D4 CABB C6ED 28E3 4720
+```
+
+Its signing subkey, which signs the repository, is
+`398A9A8B389603FD7D2A5FF7109BE7EFA0AE2BB7`. The subkey expires on 2028-11-05; extend it before then (see [Rotation](#rotation-and-compromise)).
+Only the primary fingerprint is the one to check.
 
 ### Owner setup
 
@@ -293,10 +305,11 @@ lintian fails the job on any error. The warnings and notes left, with the reason
 - `publish-apt` builds the packages again with the real maintainer; they differ from the
   installed fixtures only in the `Maintainer` field and the changelog's signature line, and
   are not themselves installed before the push.
-- No publication: `torlek-apt`, the `apt` environment and the real key do not exist, so
-  `publish-apt`, the deploy key, the force-push and `check-site.sh` against GitHub Pages
-  (including `~` in file names) have not run. Their logic is tested against a local Git remote
-  and `file://` URLs.
+- No publication: owner setup steps 1 to 5 are done (the `apt` environment with its required
+  reviewer and `v*` tags, the deploy key, `TORLEK_APT_SIGNING_KEY`, `TORLEK_APT_MAINTAINER`)
+  and only step 6, `TORLEK_APT_PUBLISH`, remains. `publish-apt`, the deploy key, the
+  force-push and `check-site.sh` against GitHub Pages (including `~` in file names) have not
+  run. Their logic is tested against a local Git remote and `file://` URLs.
 - apt verified the fixtures with whichever verifier each distribution's apt uses (`sqv` or
   `gpgv`); a dual-signed index has been checked only by `verify` and the tests.
 - No #97 onboarding beyond `torlek doctor`, `torlek version --all` and `verify-install`'s
