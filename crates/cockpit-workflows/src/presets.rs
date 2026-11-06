@@ -1,6 +1,8 @@
 //! The product's workflow presets (report 06). A preset is identified by its name and
 //! version: a run keeps the version it started with, so changing a preset's steps means a new
-//! version beside the old one, never an edit of a version runs already follow.
+//! version beside the old one, never an edit of a version runs already follow. A step's
+//! purpose is read when the packet is built, not stored with the run: rewording it reaches
+//! running runs and needs no new version.
 
 use cockpit_provider_api::Capability;
 use cockpit_tasks::Kind;
@@ -74,21 +76,23 @@ pub const RESEARCH: Preset = Preset {
     steps: &[
         StepDefinition {
             name: "investigate",
-            purpose: "gather the sources and facts the question needs",
+            purpose: "gather the facts the question needs from primary sources: the code, the \
+                      specification or the vendor's own documentation, not a summary of them",
             doer: Doer::Agent,
             required_capabilities: OBSERVED,
             requirements: &[],
         },
         StepDefinition {
             name: "synthesize",
-            purpose: "turn the findings into an answer with its sources",
+            purpose: "turn the findings into one Markdown file that cites the source of each claim",
             doer: Doer::Agent,
             required_capabilities: OBSERVED,
             requirements: &[],
         },
         StepDefinition {
             name: "deliver",
-            purpose: "hand the answer over where the task asks for it",
+            purpose: "hand the file over where the task asks for it, placed and named by the \
+                      repository's convention for such documents",
             doer: Doer::Agent,
             required_capabilities: OBSERVED,
             requirements: &[],
