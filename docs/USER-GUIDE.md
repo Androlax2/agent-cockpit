@@ -179,11 +179,13 @@ It listens on `127.0.0.1` only (port 8850 unless you pass `--port N`). Reach it 
 
 1. Run `tailscale serve status` to read your machine's tailnet name, such as `box.tailnet.ts.net`.
 2. Start the page with that name: `torlek status serve --host box.tailnet.ts.net`.
-3. In another terminal, run `tailscale serve --bg --https=443 http://127.0.0.1:8850`.
+3. In another terminal, run `sudo tailscale serve --bg --https=443 http://127.0.0.1:8850`.
 4. On your phone, with Tailscale connected, open `https://box.tailnet.ts.net/`.
 
+A default Tailscale install on Linux refuses `serve` for a regular user, hence `sudo`; skip it only if you are already Tailscale's operator. This guide does not recommend `sudo tailscale set --operator=$USER`: it lets any process running as you change Tailscale's config, including `tailscale funnel`, which publishes to the internet, and that matters most while agents run unsandboxed (`agents.sandbox = "off"`).
+
 The page refuses any request whose `Host` is not `127.0.0.1:PORT`, `localhost:PORT` or the `--host` name (bare or with `:443`), which blocks DNS rebinding. Tailscale Serve forwards your phone's `Host` unchanged, hence `--host`; it takes one exact name, no wildcard.
-Never expose the page with `tailscale funnel`, which publishes it to the internet. Stop sharing it with `tailscale serve --https=443 http://127.0.0.1:8850 off`.
+Never expose the page with `tailscale funnel`, which publishes it to the internet. Stop sharing it with `sudo tailscale serve --https=443 http://127.0.0.1:8850 off`.
 
 ## Providers and capability evidence
 
