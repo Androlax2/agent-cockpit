@@ -11,7 +11,12 @@ agent reads.
   leaves the session `failed` with `restore refused: ...`; an owner operation leaves it as it
   was. Either way the reason says which setting reopens it, or to start a new session.
 - **The first launch, not the latest.** Sessions that hit #969 recorded a failed sandboxed
-  launch after their unsandboxed one; their conversation is still in the owner's home.
+  launch after their unsandboxed one; their conversation is still in the owner's home. Known
+  limit: a session whose first agent never named a conversation, restarted under the other
+  setting, is refused although its new conversation is where that setting looks. A refusal,
+  never a wider sandbox. A named conversation without recorded evidence predates #61: unsandboxed.
+- **A restart is refused before its stop**, the deferred one included, so its agent keeps
+  running. Sleep is not refused: the conversation is kept, and the wake names the setting.
 - **Rejected:** copying the conversation into the sandbox. A transcript written unsandboxed can
   hold anything that agent read with the owner's rights; copying it in would show it to a
   sandboxed agent. Not to be reopened without Theo's decision.

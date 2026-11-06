@@ -479,6 +479,9 @@ impl Sessions {
     /// Restarts a running session's agent on the current start files (`restart --all` and
     /// its deferred restart), keeping its finished label; the caller holds its lock.
     async fn restart_locked(&self, lock: &Operation, id: &SessionId) -> Result<Session, Error> {
+        // Checked before the stop: the setting may have changed since the restart was
+        // deferred, and a refused restart keeps its agent running (#969).
+        self.restart_conversation(&self.get(id).await?).await?;
         self.restart_from(lock, id, &[SessionState::Running], LaunchPurpose::Upkeep)
             .await
     }
@@ -1713,10 +1716,9 @@ impl Sessions {
             let read = self.database.read().await?;
             cockpit_sandbox::first_launch_was_sandboxed(&read, session.id.as_str()).await?
         };
-        // Never launched: no home holds its conversation yet.
-        let Some(first_was_sandboxed) = first_was_sandboxed else {
-            return Ok(());
-        };
+        // A named conversation without evidence was launched before #61 recorded any, all
+        // unsandboxed, so it is in the owner's home.
+        let first_was_sandboxed = first_was_sandboxed.unwrap_or(false);
         let is_sandboxed = self.owner_settings().sandbox == cockpit_config::AgentSandbox::Required;
         if first_was_sandboxed == is_sandboxed {
             return Ok(());

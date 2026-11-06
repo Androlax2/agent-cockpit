@@ -1571,7 +1571,10 @@ async fn restored_after_turning_the_sandbox_on(home: &Home) -> (Daemon, SessionV
     reboot(home, daemon);
     let deadline = std::time::Instant::now() + GENEROUS;
     while is_alive(agent.pid) {
-        assert!(std::time::Instant::now() < deadline, "the agent outlived its tmux server");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent outlived its tmux server"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     home.write_owner_config(REQUIRED);
@@ -1599,7 +1602,11 @@ async fn a_session_first_launched_unsandboxed_is_refused_a_sandboxed_restore() {
             && reason.contains("agents.sandbox = \"off\""),
         "{reason}"
     );
-    assert_eq!(home.launches_of(&restored.id).len(), 1, "never launched again");
+    assert_eq!(
+        home.launches_of(&restored.id).len(),
+        1,
+        "never launched again"
+    );
 }
 
 /// #969: the owner's own resume is refused the same way while the setting differs.
@@ -1624,8 +1631,15 @@ async fn a_session_first_launched_unsandboxed_is_refused_a_sandboxed_resume() {
                 && error.message.contains("first launched with the sandbox off")),
         "{resumed:?}"
     );
-    assert_eq!(listed(&client, &restored.id).await.state, SessionStateView::Failed);
-    assert_eq!(home.launches_of(&restored.id).len(), 1, "never launched again");
+    assert_eq!(
+        listed(&client, &restored.id).await.state,
+        SessionStateView::Failed
+    );
+    assert_eq!(
+        home.launches_of(&restored.id).len(),
+        1,
+        "never launched again"
+    );
 }
 
 /// #969: the refusal keeps the conversation: with the sandbox off again, a resume reopens it.
@@ -1649,7 +1663,9 @@ async fn a_refused_session_resumes_its_conversation_once_the_sandbox_is_off_agai
 
     assert!(resumed.is_ok(), "{resumed:?}");
     home.wait_for_launches(&restored.id, 2).await;
-    let conversation = restored.conversation.expect("Claude Code names it at launch");
+    let conversation = restored
+        .conversation
+        .expect("Claude Code names it at launch");
     let arguments = home.arguments_of(&restored.id);
     assert!(
         arguments
@@ -1688,4 +1704,40 @@ async fn a_session_first_launched_sandboxed_is_refused_an_unsandboxed_restore() 
         "{reason}"
     );
     assert_eq!(restored.launch, launched, "never launched again");
+}
+
+/// #969: a restart after the owner turned the sandbox on is refused before its stop, so the
+/// agent keeps running its conversation.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_after_turning_the_sandbox_on_is_refused_and_keeps_the_agent() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+    let started = new_session(&client, &root).await;
+    let agent = home.wait_for_launches(&started.id, 1).await[0].clone();
+    home.write_owner_config(REQUIRED);
+    let reloaded = home.cockpit(&["config", "reload"], &[]).await;
+    assert!(reloaded.status.success(), "{}", text(&reloaded.stderr));
+
+    let restarted = client
+        .request(
+            Command::SessionRestart {
+                session: started.id.clone(),
+            },
+            GENEROUS,
+        )
+        .await;
+
+    assert!(
+        matches!(&restarted, Err(ClientError::Daemon(error))
+            if error.code == ErrorCode::Conflict
+                && error.message.contains("first launched with the sandbox off")),
+        "{restarted:?}"
+    );
+    assert_eq!(
+        listed(&client, &started.id).await.state,
+        SessionStateView::Running
+    );
+    assert!(is_alive(agent.pid), "the agent kept running");
 }
