@@ -243,6 +243,16 @@ impl Sessions {
         self.owner_settings().desktop_session
     }
 
+    /// Why the native sandbox refuses every launch under the desktop session this launch
+    /// would share, when it does (#965).
+    pub fn shared_desktop_refusal(&self) -> Option<String> {
+        if self.desktop_session() != crate::DesktopSession::Shared {
+            return None;
+        }
+        cockpit_sandbox::shared_desktop_refusal(&self.launch_environment())
+            .map(|refusal| refusal.to_string())
+    }
+
     /// The sandbox every launch goes through, with the backend the daemon probed.
     pub fn sandbox(&self) -> &cockpit_sandbox::Sandbox {
         &self.settings.sandbox

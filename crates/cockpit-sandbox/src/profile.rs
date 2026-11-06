@@ -224,6 +224,19 @@ impl Refusal {
             reason: reason.into(),
         }
     }
+
+    /// The native sandbox does not show `endpoint` of the owner's desktop session yet.
+    pub(crate) fn shared_desktop(endpoint: &DesktopEndpoint) -> Refusal {
+        Refusal::new(
+            "desktop session shared",
+            format!(
+                "the native sandbox does not show the owner's desktop yet ({} names {}); \
+                 set agents.desktop_session = \"withheld\" to launch under the sandbox",
+                endpoint.variable,
+                endpoint.path.display()
+            ),
+        )
+    }
 }
 
 impl fmt::Display for Refusal {
@@ -488,6 +501,16 @@ fn variable<'environment>(
         .rev()
         .find(|(variable, _)| variable == name)
         .map(|(_, value)| value)
+}
+
+/// Why the native sandbox refuses a launch that shares the desktop session `environment`
+/// names, if it does: the first endpoint it cannot reach as named, or the first one it does
+/// not show yet (#965). The launch and the readiness report both say this.
+pub fn shared_desktop_refusal(environment: &[(OsString, OsString)]) -> Option<Refusal> {
+    match desktop_endpoints(environment) {
+        Err(refusal) => Some(refusal),
+        Ok(endpoints) => endpoints.first().map(Refusal::shared_desktop),
+    }
 }
 
 /// The sockets and files the shared desktop variables in `environment` name, or the first

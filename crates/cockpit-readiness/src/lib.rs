@@ -189,6 +189,10 @@ pub struct HostFacts {
     /// The native sandbox the daemon's start probed (#829): what launches under `required`
     /// run in, or why none can.
     pub sandbox_backend: Result<String, String>,
+    /// Why the native sandbox refuses every launch under the desktop session the daemon
+    /// would share, when it does (#965): `None` when the owner withholds it or it names
+    /// nothing the sandbox refuses.
+    pub shared_desktop_refusal: Option<String>,
     pub providers: Vec<ProviderFacts>,
     pub controls: Vec<ControlFacts>,
 }
@@ -254,7 +258,11 @@ pub fn assess(
         Some(written) => {
             host::unapplied_sandbox(written, host.sandbox_setting, &host.sandbox_backend)
         }
-        None => host::sandbox(host.sandbox_setting, &host.sandbox_backend),
+        None => host::sandbox(
+            host.sandbox_setting,
+            &host.sandbox_backend,
+            host.shared_desktop_refusal.as_deref(),
+        ),
     });
     requirements.extend(host::providers(&host.providers));
     requirements.push(host::resource_controls(&host.controls));

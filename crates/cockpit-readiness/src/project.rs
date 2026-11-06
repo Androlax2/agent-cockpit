@@ -166,6 +166,27 @@ fn execution_environment(config: &EffectiveConfig, host: &HostFacts) -> Option<R
             "apply the owner config as the `sandbox` line says, then run `torlek doctor` again",
         ));
     }
+    if let (
+        ExecutionEnvironment::Native | ExecutionEnvironment::Sandbox,
+        AgentSandbox::Required,
+        Ok(_),
+        Some(refusal),
+    ) = (
+        expected,
+        host.sandbox_setting,
+        &host.sandbox_backend,
+        &host.shared_desktop_refusal,
+    ) {
+        return Some(Requirement::needs(
+            name,
+            Status::MissingPrerequisite,
+            format!(
+                "the project expects {} ({source}); {refusal}; agents.sandbox = \"required\" refuses every launch",
+                expected.as_str()
+            ),
+            "set agents.desktop_session = \"withheld\" in the owner config and run `torlek config reload`",
+        ));
+    }
     let requirement = match (expected, host.sandbox_setting) {
         (ExecutionEnvironment::Docker, _) => return None,
         (ExecutionEnvironment::Native, AgentSandbox::Off) => {

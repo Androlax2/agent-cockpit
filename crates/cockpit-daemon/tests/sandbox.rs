@@ -1463,3 +1463,84 @@ async fn no_network_verb_on_the_agent_socket_allows_a_host() {
     let still = run_in_agent(&home, &agent.root, &connect_line(ASKED_HOST)).await;
     assert!(is_refused(&still), "{still}");
 }
+
+/// What `doctor` printed for the `sandbox` requirement and the `next:` line under it.
+fn doctor_sandbox_row(report: &str) -> (&str, &str) {
+    let mut lines = report.lines();
+    let row = lines
+        .by_ref()
+        .find(|line| line.contains("  sandbox: "))
+        .unwrap_or_else(|| panic!("no sandbox requirement in:\n{report}"));
+    let next = lines
+        .next()
+        .and_then(|line| line.trim_start().strip_prefix("next: "))
+        .unwrap_or_else(|| panic!("no next action under {row}"));
+    (row, next)
+}
+
+/// #965: with only `sandbox = "required"` set, a shared desktop session makes the sandbox
+/// refuse every launch; `doctor` and `init` say so with the refusal's own fix instead of
+/// reporting the setup as ready.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_required_sandbox_with_a_shared_desktop_blocks_doctor_and_init_as_the_launch_refuses() {
+    let home = Home::new();
+    home.write_owner_config(REQUIRED);
+    let _daemon = home.start_with(&[("DISPLAY", ":1")]);
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+
+    let refused = client
+        .request(session_new_command(&root), Duration::from_secs(60))
+        .await;
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+    let init = home.cockpit(&["init"], &[]).await;
+
+    let Err(ClientError::Daemon(refusal)) = &refused else {
+        panic!("{refused:?}");
+    };
+    assert!(
+        refusal.message.contains("desktop session shared"),
+        "{refusal:?}"
+    );
+    let report = text(&doctor.stdout);
+    assert_eq!(doctor.status.code(), Some(1), "{report}");
+    let (row, next) = doctor_sandbox_row(&report);
+    assert!(
+        row.trim_start().starts_with("missing-prerequisite"),
+        "{row}"
+    );
+    assert!(row.contains("DISPLAY names /tmp/.X11-unix/X1"), "{row}");
+    assert!(
+        next.contains("agents.desktop_session = \"withheld\""),
+        "{next}"
+    );
+    let checklist = text(&init.stdout);
+    assert!(
+        checklist.contains("DISPLAY names /tmp/.X11-unix/X1"),
+        "{checklist}"
+    );
+    assert!(
+        checklist.contains("agents.desktop_session = \"withheld\""),
+        "{checklist}"
+    );
+}
+
+/// #965: the fix the report names makes the sandbox ready, with no restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn withholding_the_desktop_session_makes_a_required_sandbox_ready_after_a_reload() {
+    let home = Home::new();
+    home.write_owner_config(REQUIRED);
+    let _daemon = home.start_with(&[("DISPLAY", ":1")]);
+    home.write_owner_config("[agents]\nsandbox = \"required\"\ndesktop_session = \"withheld\"\n");
+
+    let reload = home.cockpit(&["config", "reload"], &[]).await;
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    assert!(reload.status.success(), "{}", text(&reload.stderr));
+    let report = text(&doctor.stdout);
+    let sandbox = report
+        .lines()
+        .find(|line| line.contains("  sandbox: "))
+        .unwrap_or_else(|| panic!("no sandbox requirement in:\n{report}"));
+    assert!(sandbox.trim_start().starts_with("available"), "{report}");
+}

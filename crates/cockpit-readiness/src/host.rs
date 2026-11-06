@@ -74,9 +74,22 @@ pub(crate) fn tmux(tmux: &Result<String, String>) -> Requirement {
 
 /// How the owner's setting treats launches with the `backend` the daemon probed: `off` runs
 /// agents unsandboxed; `required` runs them in the native sandbox, or refuses every launch
-/// when the host has none, which blocks.
-pub(crate) fn sandbox(setting: AgentSandbox, backend: &Result<String, String>) -> Requirement {
+/// when the host has none, which blocks. It blocks too while the owner's shared desktop
+/// session is one the sandbox refuses (`shared_desktop_refusal`), as every launch is (#965).
+pub(crate) fn sandbox(
+    setting: AgentSandbox,
+    backend: &Result<String, String>,
+    shared_desktop_refusal: Option<&str>,
+) -> Requirement {
     match (setting, backend) {
+        (AgentSandbox::Required, Ok(_)) if let Some(refusal) = shared_desktop_refusal => {
+            Requirement::needs(
+                "sandbox",
+                Status::MissingPrerequisite,
+                format!("{refusal}; agents.sandbox = \"required\" refuses every agent launch"),
+                "set agents.desktop_session = \"withheld\" in the owner config and run `torlek config reload`; to run agents unsandboxed, with your rights, set agents.sandbox = \"off\" instead",
+            )
+        }
         (AgentSandbox::Required, Ok(backend)) => Requirement::available(
             "sandbox",
             format!(
