@@ -34,9 +34,9 @@ writable sandbox-local cache. Lifecycle scripts remain disabled.
 
 `site/scripts/content.mjs` stages canonical Markdown into ignored `content/docs/`:
 the README's two install sections, user guide sections, development/contribution
-guidance, the shipped agent instruction bundle, greenfield reports and dated decisions. It preserves code
-fences, rewrites mapped links to the selected version and leaves other source
-links on GitHub. `site/content/` contains the comparison and explicitly planned
+guidance, the shipped agent instruction bundle and greenfield reports. Decision records
+stay in the repository and are not staged. It preserves code fences, rewrites mapped
+links to the selected version and leaves other source links on GitHub. `site/content/` contains the comparison and explicitly planned
 protocol reference. No generated protocol schema is claimed before #295.
 
 CLI help and effective configuration defaults come from the actual built binary.
