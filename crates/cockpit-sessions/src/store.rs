@@ -13,7 +13,10 @@ use cockpit_turso::sql::{Connection, Row, Value};
 use cockpit_turso::{Migration, MigrationSet, WriteTransaction};
 
 use crate::model::LaunchPurpose;
-use crate::{AgentExit, Error, ExitStatus, Launch, LaunchKind, Session, SessionId, SessionState};
+use crate::{
+    AgentExit, Error, ExitStatus, Launch, LaunchBundle, LaunchKind, Session, SessionBundle,
+    SessionId, SessionState,
+};
 
 /// A session row is never deleted, so an id is never reused and an old reference reads as
 /// ended. `stopping_to` is where a stop under way leads.
@@ -231,6 +234,17 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
         Migration {
             version: 12,
             sql: "CREATE INDEX sessions_by_checkout ON sessions (checkout_id);",
+        },
+        // #64 (report 13): the release whose helpers and instruction bundle a launch ran with,
+        // which `version --all` shows. A launch with no row here started before launches
+        // recorded it.
+        Migration {
+            version: 13,
+            sql: "CREATE TABLE session_launch_bundles (
+                launch_id INTEGER PRIMARY KEY,
+                release TEXT NOT NULL CHECK (release <> ''),
+                instruction_manifest TEXT NOT NULL CHECK (instruction_manifest <> '')
+            );",
         },
     ],
 };
@@ -525,6 +539,7 @@ pub(crate) async fn insert_launch(
     purpose: LaunchPurpose,
     execution: ExecutionId,
     start_files: &StartFileSnapshot,
+    bundle: Option<&LaunchBundle>,
 ) -> Result<(), Error> {
     let working_order = match purpose {
         LaunchPurpose::Work => Value::Integer(write.commit_order().await?),
@@ -548,7 +563,60 @@ pub(crate) async fn insert_launch(
     for file in &start_files.files {
         insert_start_file(write, launch, file).await?;
     }
+    if let Some(bundle) = bundle {
+        write
+            .execute(
+                "INSERT INTO session_launch_bundles (launch_id, release, instruction_manifest)
+                 VALUES (?1, ?2, ?3)",
+                (
+                    launch,
+                    bundle.release.as_str(),
+                    bundle.instruction_manifest.as_str(),
+                ),
+            )
+            .await?;
+    }
     Ok(())
+}
+
+/// The bundle the latest launch of each session whose agent is starting, running or stopping
+/// ran with, by creation. A session asleep, failed or ended launches again with whatever
+/// bundle the daemon then holds, so it is not listed.
+pub async fn live_bundles(connection: &Connection) -> Result<Vec<SessionBundle>, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT s.id, s.state, s.stopping_to, b.release, b.instruction_manifest
+             FROM sessions s
+             LEFT JOIN session_launches l ON l.id =
+                 (SELECT max(id) FROM session_launches WHERE session_id = s.id)
+             LEFT JOIN session_launch_bundles b ON b.launch_id = l.id
+             WHERE s.state IN ('launching', 'running', 'stopping')
+             ORDER BY s.created_at, s.id",
+            (),
+        )
+        .await?;
+    let mut bundles = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let id_text: String = row.get(0)?;
+        let invalid = |reason: String| Error::InvalidStoredRow {
+            reason: format!("session {id_text}: {reason}"),
+        };
+        let state_text: String = row.get(1)?;
+        let stopping_to: Option<String> = row.get(2)?;
+        bundles.push(SessionBundle {
+            id: SessionId::parse(&id_text).map_err(|error| invalid(error.to_string()))?,
+            state: SessionState::from_columns(&state_text, stopping_to.as_deref())
+                .ok_or_else(|| invalid(format!("state {state_text:?} to {stopping_to:?}")))?,
+            bundle: match (row.get::<Option<String>>(3)?, row.get::<Option<String>>(4)?) {
+                (Some(release), Some(instruction_manifest)) => Some(LaunchBundle {
+                    release,
+                    instruction_manifest,
+                }),
+                _ => None,
+            },
+        });
+    }
+    Ok(bundles)
 }
 
 async fn insert_start_file(

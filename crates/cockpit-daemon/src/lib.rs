@@ -33,6 +33,7 @@ mod storage;
 mod supervisor;
 mod tasks;
 mod verification;
+mod versions;
 mod view_stamp_feed;
 mod workflows;
 
@@ -123,6 +124,7 @@ pub fn session_settings(config: &cockpit_config::EffectiveConfig) -> cockpit_ses
         agentless_after: Duration::from_secs(
             u64::from(config.memory.agentless_session_minutes.value) * 60,
         ),
+        bundle: Some(versions::launch_bundle()),
         ..cockpit_sessions::Settings::default()
     }
 }

@@ -846,6 +846,9 @@ pub enum Command {
     },
     /// Owner only: return to the daemon's startup directives.
     LogsLevelRevert,
+    /// Owner only: the running daemon's release, schema and each live session's bundle, for
+    /// `torlek version --all` (report 13, #64).
+    VersionReport,
     /// Both sockets: the instruction bundle's topics, each with when to read it (#49).
     InstructionCatalog,
     /// Both sockets: one topic of the instruction bundle, or every topic at once (the one-read
@@ -1232,6 +1235,9 @@ pub enum Reply {
     /// The owner settings the daemon applies now, each with the value it applied before.
     ConfigReloaded {
         settings: Vec<AppliedSettingView>,
+    },
+    VersionReport {
+        report: Box<crate::VersionReportView>,
     },
     /// The running release's instruction topics; `manifest` is its instruction-manifest id.
     InstructionCatalog {
