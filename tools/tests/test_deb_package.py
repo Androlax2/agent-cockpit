@@ -441,7 +441,7 @@ class BuiltPackageTest(ReleaseFixture):
     def test_depends_on_the_readme_prerequisites_with_tmux_3_6(self):
         self.assertEqual(
             self.control("amd64")["Depends"],
-            "libc6 (>= 2.39), libgcc-s1, git, curl, tmux (>= 3.6)",
+            "libc6 (>= 2.39), libgcc-s1 (>= 4.2), git, curl, tmux (>= 3.6)",
         )
 
     def test_description_has_a_synopsis_and_an_extended_text(self):

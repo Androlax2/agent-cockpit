@@ -47,8 +47,9 @@ skipping.
   `/usr/share/doc/torlek/`. The package installs nothing outside `/usr` and has no conffiles.
 - **No maintainer scripts:** no `preinst`, `postinst`, `prerm` or `postrm`. The package never
   starts, stops or adopts a daemon. Per-user services are written by `torlek daemon install`.
-- **Dependencies:** `libc6 (>= 2.39), libgcc-s1, git, curl, tmux (>= 3.6)`; `Suggests: systemd`.
-  The programs need `GLIBC_2.39` symbols (built on `ubuntu-24.04` runners), and the workflow
+- **Dependencies:** `libc6 (>= 2.39), libgcc-s1 (>= 4.2), git, curl, tmux (>= 3.6)`;
+  `Suggests: systemd`. The programs need `GLIBC_2.39` and `GCC_4.2.0` symbols (built on
+  `ubuntu-24.04` runners), and the workflow
   fails when a term `dpkg-shlibdeps` computes for the newest release is missing from `Depends`.
   `git`, `curl` and `tmux >= 3.6` are the [user guide](../USER-GUIDE.md#platforms-and-prerequisites)
   prerequisites. `systemd` is needed only for the user services. Provider CLIs are left out.
