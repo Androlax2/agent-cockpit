@@ -1,9 +1,11 @@
 # Debian and Ubuntu: the `torlek` package and its APT source
 
-**Status:** package builder, repository indexer, signing and checks are tested (#563) on
-fixture archives. No `.deb` has been installed with dpkg or apt, no repository is hosted, and
-no signing key exists. Do not document `apt install torlek` as an install route until the
-[publication checklist](#publication-checklist) has passed.
+**Status:** packages built from the published v0.1.0-alpha.4 and alpha.3 archives install,
+upgrade and remove through apt on clean Ubuntu 26.04 and Debian 13 containers, amd64 and arm64,
+from a repository signed with a throwaway key ([CI evidence](#ci-evidence)). The publication
+job exists but is off: `Androlax2/torlek-apt`, the `apt` environment and the signing key do not
+exist yet ([owner setup](#owner-setup)). Do not document `apt install torlek` as an install
+route until the first publication has passed its [site check](#publication).
 
 This repackages the published release archives, like the [AUR recipe](aur.md). It is not an
 official Debian or Ubuntu package.
@@ -15,15 +17,19 @@ official Debian or Ubuntu package.
 | [packaging/deb/build.py](../../packaging/deb/build.py) | Builds `torlek_<version>_<arch>.deb` from one release archive and that release's `SHA256SUMS` |
 | [packaging/deb/torlek/control.in](../../packaging/deb/torlek/control.in) | The reviewed control file, with version, architecture, maintainer and size as `@TOKEN@`s |
 | [packaging/deb/torlek/copyright](../../packaging/deb/torlek/copyright) | The machine-readable copyright file installed to `/usr/share/doc/torlek/` |
-| [packaging/deb/repository.py](../../packaging/deb/repository.py) | `index` writes the suite's `Packages` and `Release`; `sign` writes `InRelease` and `Release.gpg`; `verify` checks a tree as apt would |
-| [tools/tests/test_deb_package.py](../../tools/tests/test_deb_package.py) | Version order, refusals of tampered or mismatched inputs, package layout, and a repository signed with a throwaway key |
+| [packaging/deb/repository.py](../../packaging/deb/repository.py) | `index` writes the suite's `Packages` and `Release`; `prune` keeps the newest versions; `sign` writes `InRelease` and `Release.gpg`; `verify` checks a tree as apt would |
+| [packaging/deb/fetch-release.sh](../../packaging/deb/fetch-release.sh) | Downloads a published release's checksums and Linux archives, and checks both checksums and build provenance |
+| [packaging/deb/publish.sh](../../packaging/deb/publish.sh) | The release workflow's publication: verify the published site, add the release, sign, push |
+| [packaging/deb/check-site.sh](../../packaging/deb/check-site.sh) | Downloads the suite GitHub Pages serves and verifies it |
+| [packaging/deb/ci-stage.sh](../../packaging/deb/ci-stage.sh), [ci-install.sh](../../packaging/deb/ci-install.sh) | The [Debian packages workflow](../../.github/workflows/deb.yml)'s build, lintian and fixture repositories, and its clean-container install |
+| [tools/tests/test_deb_package.py](../../tools/tests/test_deb_package.py) | Version order, refusals of tampered or mismatched inputs, package layout, pruning, signing, publication to a local Git remote and the site check, with throwaway keys |
 
 The builder writes the `.deb` itself with the Python standard library: an `ar` container
 holding `debian-binary`, `control.tar.xz` and `data.tar.xz`, with fixed owners and timestamps,
-so the same archive gives the same bytes. GNU `ar` and `tar` read it. **dpkg has not read it:**
-this sandbox has no dpkg, apt or lintian. The test that runs `dpkg-deb --field` and the
-`dpkg --compare-versions` cross-check skip here and run on hosts with dpkg, such as the Ubuntu
-CI runners.
+so the same archive gives the same bytes. Every entry is dated to the release's publication
+day: lintian refuses files dated 1970. dpkg, apt and lintian read it in the
+[Debian packages workflow](#ci-evidence), where the tests that need dpkg run instead of
+skipping.
 
 ## Package
 
@@ -33,18 +39,22 @@ CI runners.
   archives of the Alpha 1 plan (`ALPHA1_PLATFORMS` in [tools/release.py](../../tools/release.py)).
 - **Layout:** the whole bundle goes to `/usr/lib/torlek` unchanged, with `/usr/bin/torlek` as a
   symlink into it, for the same reason as the AUR recipe: `torlek` finds `torlek-tui`, the
-  helpers and the manifest through its own resolved path. The installed tree passes
-  `release.refuse_changed_contents`. `copyright` and `changelog.Debian.gz` go to
+  helpers and the manifest through its own resolved path. The builder checks that the archive's
+  files are exactly the ones its manifest lists, with their checksums. Which programs a bundle
+  must hold is the rule of the release that made it: the install job runs that release's own
+  `release.py verify-install` on `/usr/lib/torlek`, so alpha.3, which predates `torlek-sandbox`,
+  still packages. `copyright` and `changelog.Debian.gz` go to
   `/usr/share/doc/torlek/`. The package installs nothing outside `/usr` and has no conffiles.
 - **No maintainer scripts:** no `preinst`, `postinst`, `prerm` or `postrm`. The package never
   starts, stops or adopts a daemon. Per-user services are written by `torlek daemon install`.
 - **Dependencies:** `libc6 (>= 2.39), libgcc-s1, git, curl, tmux (>= 3.6)`; `Suggests: systemd`.
-  The programs are built on `ubuntu-24.04` runners (glibc 2.39), so 2.39 is the version they
-  were linked against. `dpkg-shlibdeps` might find a lower bound, but it has not run.
+  The programs need `GLIBC_2.39` symbols (built on `ubuntu-24.04` runners), and the workflow
+  fails when a term `dpkg-shlibdeps` computes for the newest release is missing from `Depends`.
   `git`, `curl` and `tmux >= 3.6` are the [user guide](../USER-GUIDE.md#platforms-and-prerequisites)
   prerequisites. `systemd` is needed only for the user services. Provider CLIs are left out.
 - **Maintainer:** `build.py --maintainer 'Name <address>'` is required and has no default.
-  Debian policy requires an address, and none has been chosen yet.
+  Debian policy requires an address. Publication reads it from the `apt` environment's
+  `TORLEK_APT_MAINTAINER` variable; the CI fixtures use `ci-fixture@example.invalid`.
 
 ### Supported distributions
 
@@ -105,16 +115,19 @@ pool/main/t/torlek/torlek_<version>_<arch>.deb
 - **Suites are the release channels:** `alpha` now, `beta` when #57 opens it. `index` refuses a
   package of another channel, and a suite without both architectures. A stable suite does not
   exist, because no stable release does.
-- **The pool keeps every published version** of its channel, so `apt install torlek=<version>`
-  can downgrade. At about two packages per release, the 1 GB GitHub Pages limit is far off.
+- **The pool keeps the channel's ten newest versions** (`prune --keep`, `TORLEK_APT_KEEP`), so
+  `apt install torlek=<version>` can downgrade to any of them. A package is about 12 MB, and
+  alphas came out daily: keeping every version would reach GitHub Pages' 1 GB limit in about
+  forty releases.
+- **One channel per site for now.** `index` refuses a package of another channel in the shared
+  pool, so a `beta` suite beside `alpha` needs a per-suite pool first (#57).
 - **No `Valid-Until`.** It protects against a mirror replaying an old index, but it needs the key
   online to re-sign on a schedule. HTTPS to a single host covers most of that risk for now.
 - **`verify`** follows apt's signature rule: at least one good signature from the given key,
   and no bad, expired or revoked one. Then it checks every index against the signed hashes, and
   every package against its index. It is a publication check written here, not apt.
 
-A client would add the source like this, once the hosting and key exist (the URL depends on
-[the hosting choice](#hosting-options)):
+A client adds the source like this, once the first publication has passed:
 
 ```text
 # /etc/apt/sources.list.d/torlek.sources
@@ -125,93 +138,142 @@ Components: main
 Signed-By: /etc/apt/keyrings/torlek.asc
 ```
 
-### Hosting options
+### Hosting
 
-`androlax2.github.io/agent-cockpit` already serves the documentation site. `docs.yml` deploys a
-new Pages artifact on every run, which replaces the whole site.
+GitHub Pages of a separate public repository, **`Androlax2/torlek-apt`**, served at
+`https://androlax2.github.io/torlek-apt/` (Theo, 2026-11-06). Only the release workflow signs
+and publishes to it. Rejected: this repository's Pages under `/apt/`, because every
+documentation deploy replaces the whole site and would have to reassemble the signed tree; and
+GitHub Release assets, which form a new source per tag that never updates.
 
-- **Option A, chosen: GitHub Pages of a separate public repository** (for example
-  `Androlax2/torlek-apt`, which does not exist yet), deployed from an Actions artifact by a
-  manually started workflow in a protected environment. No purchased domain, no binaries in Git
-  history, and the signing secret stays out of this repository's documentation workflow. Cost:
-  Theo creates one repository.
-- **Option B: this repository's Pages under `/apt/`.** No new repository, but every
-  documentation deploy would have to reassemble the exact signed tree, or apt clients would see
-  it disappear. That couples two workflows and puts the APT tree in the documentation job.
-- **Option C: GitHub Release assets as a flat repository.** Each tag's assets would form a
-  separate source that never updates, and `releases/latest` skips prereleases, so every alpha
-  would need a new source line. It cannot be an APT source that updates.
-
-Limits for A and B (GitHub's Pages documentation, 2026-11-03): a 1 GB site, a soft 100 GB
-monthly bandwidth limit, and a deployment timeout of 10 minutes.
+The site is the single commit of its `gh-pages` branch. Each publication replaces that commit
+with `--force-with-lease`, so old packages leave the repository's history instead of filling
+it, and two publications cannot overwrite each other. Limits (GitHub's Pages documentation,
+2026-11-03): a 1 GB site and a soft 100 GB monthly bandwidth.
 
 ### Signing key
 
-Nothing in this repository creates or holds a real key. The tests use throwaway keys in a
-temporary `GNUPGHOME`.
+Theo holds an offline OpenPGP primary key used only for certification. Its signing subkey is
+the `TORLEK_APT_SIGNING_KEY` secret of this repository's protected `apt` environment, and each
+run that uses it waits for Theo's approval (Theo, 2026-11-06). A leaked secret costs only the
+subkey. No agent creates, imports or stores the real key; the tests and CI use throwaway keys
+in temporary `GNUPGHOME`s.
 
-- **Creation, by Theo, outside any agent session:** an OpenPGP primary key used only for
-  certification, kept offline, with a signing subkey for the repository. The subkey expires
-  (for example after two years) and is extended before then. `sign` takes the key by its full
-  40-character fingerprint, never a short ID or a name.
-- **Where the signing subkey lives:** the open question is between Theo's machine (each
-  publication signed by hand) and an environment secret of the publishing workflow, which needs
-  Theo's approval for each run. A leaked secret then costs only the subkey.
-- **Distribution:** the public key is committed under `packaging/deb/` once it exists, and is
-  served beside the repository. Its fingerprint goes in this file, the README install section
-  and each release's notes. Users check `gpg --show-keys torlek.asc` against that fingerprint
-  before copying the key to `/etc/apt/keyrings/torlek.asc`.
-- **Rotation:** publish the new public key, then sign every index with both keys
-  (`sign --key OLD --key NEW`) for at least one release. A client that trusts either key keeps
-  verifying, which the tests check. Announce the change, then drop the old key. Users replace
-  their copy of `torlek.asc`, because apt never updates a file under `/etc/apt/keyrings`.
-  An expiry extension also needs users to refresh their copy.
-- **Compromise:** revoke the subkey (or the primary key), re-sign with a new one, publish the
-  revocation, and announce it in a GitHub security advisory and the README. Every user must
-  replace their key; until they do, apt refuses the new index.
+`publish.sh` signs with every signing subkey the secret holds, and refuses one that is not in
+the committed public key `packaging/deb/torlek.asc` (added in [owner setup](#owner-setup) step 2), which is also what
+`verify` and the site check trust. Users check `gpg --show-keys torlek.asc` against the
+primary key's fingerprint, published in this file, the README install section and each
+release's notes, before copying it to `/etc/apt/keyrings/torlek.asc`.
 
-## Publication checklist
+### Owner setup
 
-Each step that downloads, installs or publishes needs its own approval; this list grants none.
+Once, before the first publication. Each step is Theo's; none is done by an agent.
 
-1. Download the release's checksums and both Linux archives:
-   `gh release download "v$TAG" -R Androlax2/agent-cockpit -p SHA256SUMS -p "torlek-v$TAG-linux-*.tar.gz" -D "$WORK"`
-2. In `$WORK`, check the archives against the checksums:
-   `sha256sum -c --ignore-missing SHA256SUMS`, which must list both archives as `OK`.
-3. Check each archive's build provenance:
-   `gh attestation verify "torlek-v$TAG-linux-x86_64.tar.gz" --repo Androlax2/agent-cockpit`,
-   then the same for `linux-aarch64`.
-4. Build both packages, one per archive:
-   `python3 packaging/deb/build.py --tag "$TAG" --sums "$WORK/SHA256SUMS" --archive "$WORK/torlek-v$TAG-linux-x86_64.tar.gz" --maintainer "$MAINTAINER" --date "$RELEASE_DATE" --out "$REPO/pool/main/t/torlek"`,
-   where `$RELEASE_DATE` is the release's publication day, then the same for `linux-aarch64`.
-5. Check them with `lintian` and `dpkg-deb --info` on Debian or Ubuntu. Explain or fix every
-   finding.
-6. Get the published pool, if one exists, and check it with `verify` against the current key
-   before adding to it. Then run `index`, `sign` and `verify` on `$REPO` for the channel's suite.
-7. On clean Ubuntu 26.04 and Debian 13 (with `trixie-backports` tmux) fixtures, serve `$REPO`
-   locally, add it as a source, then run `apt install torlek`, `torlek doctor` and the #97
-   onboarding. Remove the package and confirm the profile's state directories are still there.
-   When an earlier package was published, also upgrade from it. Record the commands and output
-   on #563.
-8. Publish, only with Theo's approval, through the chosen hosting route.
-9. On a new fixture, follow the published instructions from the start, then link the evidence
-   from #97.
+1. **Create the key**, on a machine you trust, in a fresh directory you keep offline:
 
-**Updates:** a new tag goes through the whole checklist with `--debian-revision 1`. A packaging
-fix alone rebuilds the same archives with the next revision, and both versions stay in the pool.
+   ```sh
+   export GNUPGHOME="$PWD/torlek-apt-gnupg"; mkdir -m 0700 "$GNUPGHOME"
+   gpg --quick-gen-key 'Torlek APT <ADDRESS>' ed25519 cert 5y
+   PRIMARY=$(gpg --with-colons --list-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+   gpg --quick-add-key "$PRIMARY" ed25519 sign 2y
+   SUBKEY=$(gpg --with-colons --list-keys "$PRIMARY" | awk -F: '$1 == "fpr" { print $10 }' | tail -n 1)
+   ```
+
+   Keep `$GNUPGHOME`, including `openpgp-revocs.d/$PRIMARY.rev`, offline: it is the primary key
+   and its revocation certificate.
+2. **Export the public key** and commit it in a pull request as `packaging/deb/torlek.asc`,
+   with `$PRIMARY` in this file: `gpg --armor --export "$PRIMARY" > torlek.asc`.
+3. **Export the subkey alone without a passphrase**, in a throwaway copy, straight into the
+   secret:
+
+   ```sh
+   export GNUPGHOME=$(mktemp -d)
+   gpg --homedir "$PWD/torlek-apt-gnupg" --armor --export-secret-subkeys "$SUBKEY!" | gpg --import
+   gpg --passwd "$SUBKEY"        # set an empty passphrase
+   gpg --armor --export-secret-subkeys "$SUBKEY!" | gh secret set TORLEK_APT_SIGNING_KEY --env apt
+   gpgconf --kill gpg-agent; rm -rf "$GNUPGHOME"
+   ```
+
+4. **Create `Androlax2/torlek-apt`**, public, with one commit on a `gh-pages` branch (a
+   `README.md` saying what the site is will do), and set its Pages source to that branch.
+   Publication keeps the files it finds and replaces the commit.
+5. **Create the `apt` environment** in this repository's settings, with yourself as required
+   reviewer and deployments limited to `v*` tags, before adding anything to it. Then add:
+   - `TORLEK_APT_DEPLOY_KEY`: the private half of an SSH key (`ssh-keygen -t ed25519 -N ''`)
+     whose public half is a deploy key with write access on `torlek-apt` only;
+   - the `TORLEK_APT_SIGNING_KEY` secret from step 3;
+   - the `TORLEK_APT_MAINTAINER` variable, `Name <address>` as the packages should show it.
+6. **Turn publication on:** set this repository's variable `TORLEK_APT_PUBLISH` to `true`.
+   Until then `publish-apt` does not run, so no unprotected `apt` environment is created.
+
+### Rotation and compromise
+
+- **Extend the subkey** before it expires: `gpg --quick-set-expire "$PRIMARY" 2y "$SUBKEY"` in
+  the offline directory, then commit the new `torlek.asc` and replace the secret as in step 3.
+  Users refresh their copy, because apt never updates a file under `/etc/apt/keyrings`.
+- **Replace the key:** create the new one as in steps 1 to 3, commit a `torlek.asc` holding
+  both public keys, and put both subkeys in the secret (concatenate the two exports). Every
+  index is then signed by both, and a client that trusts either key keeps verifying, which the
+  tests check. After at least one release and an announcement, drop the old key from both.
+- **Compromise:** revoke the subkey (or import the primary's revocation certificate), replace
+  the secret and `torlek.asc`, publish, and announce it in a GitHub security advisory and the
+  README. Until users replace their key, apt refuses the new index.
+
+## Publication
+
+After `publish` releases a tag, [release.yml](../../.github/workflows/release.yml) runs:
+
+1. **`deb`**, the [Debian packages workflow](../../.github/workflows/deb.yml) on that release:
+   download, checksum and provenance checks, lintian, the throwaway-key fixtures, and the
+   clean-container installs and upgrade.
+2. **`publish-apt`**, in the `apt` environment, after Theo approves it:
+   [fetch-release.sh](../../packaging/deb/fetch-release.sh) checks the published archives again;
+   [publish.sh](../../packaging/deb/publish.sh) clones the site, verifies it against the
+   committed key, builds the two packages, prunes, indexes, signs, verifies and pushes; then
+   [check-site.sh](../../packaging/deb/check-site.sh) downloads the suite from
+   `androlax2.github.io` until one whole copy verifies, for up to ten minutes.
+
+`publish.sh` refuses, and pushes nothing, when the public key is not committed, the secret
+holds no usable signing key or one outside `torlek.asc`, the published site does not verify,
+or the release is already in the pool. Neither job gates the release itself.
+
+**After the first publication,** follow the README instructions from the start on a new
+fixture, and link that evidence from #97 before documenting the route.
+
+**A packaging fix alone** (the same archives, `--debian-revision 2`) is not automated: the
+release workflow only publishes new tags. Until it is, rebuild by hand only with Theo's
+approval.
+
+## CI evidence
+
+The [Debian packages workflow](../../.github/workflows/deb.yml) runs on pull requests that
+change the packaging, by hand for any published prerelease, and from the release workflow.
+It packages the newest published prerelease and the one before it in its channel.
+
+CI_EVIDENCE_PLACEHOLDER
+
+### lintian findings
+
+lintian fails the job on any error. The warnings and notes left, with the reason each stays:
+
+- `initial-upload-closes-no-bugs`: the changelog closes no Debian bug, because this is not an
+  upload to the Debian archive.
+- `no-manual-page`: Torlek has no manual page; `torlek --help` and the user guide document it.
+- `extra-license-file`, `package-contains-documentation-outside-usr-share-doc`: `LICENSE` and
+  `README.md` are part of the release bundle and its manifest, which stays whole under
+  `/usr/lib/torlek`.
+- `binary-has-unneeded-section`: the programs are the release's bytes; stripping them would
+  break the manifest's checksums.
 
 ## Not yet verified
 
-- dpkg has not read the `.deb`, and neither apt nor lintian has run. This sandbox has neither
-  them nor Docker. GNU `ar` and `tar` read the container. Expect lintian findings at least for
-  the bundle's own `LICENSE` and `README.md` under `/usr/lib/torlek`.
-- No clean APT install on Debian or Ubuntu, no `torlek doctor`, no #97 onboarding, no upgrade,
-  and no removal keeping user data.
-- No published release exists, so the real programs, their dynamic dependencies
-  (`dpkg-shlibdeps`) and the `libc6` bound are unchecked. The tests package stand-in programs.
-- apt has not read the repository. `verify` follows apt's rules, but recent apt can verify with
-  Sequoia's `sqv` instead of `gpgv`, and neither has run against this tree. Dual-signed indexes
-  are checked only by `verify`.
-- `~` in file names on GitHub Pages, and apt over GitHub Pages, are untested.
+- No publication: `torlek-apt`, the `apt` environment and the real key do not exist, so
+  `publish-apt`, the deploy key, the force-push and `check-site.sh` against GitHub Pages
+  (including `~` in file names) have not run. Their logic is tested against a local Git remote
+  and `file://` URLs.
+- apt verified the fixtures with whichever verifier each distribution's apt uses (`sqv` or
+  `gpgv`); a dual-signed index has been checked only by `verify` and the tests.
+- No #97 onboarding beyond `torlek doctor`, `torlek version --all` and `verify-install`'s
+  daemon start: the containers have no systemd user manager and no provider CLI.
 - The copyright file names the project's Apache-2.0 license only. The Rust crates compiled into
   the programs carry their own licenses, which neither the archive nor the package lists yet.

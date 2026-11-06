@@ -6,7 +6,7 @@ open questions are Theo's.
 
 - **The package is built from one release's archive, never from source.** `build.py` checks the
   archive against that release's `SHA256SUMS` and its own manifest, and the installed bundle
-  still passes `release.refuse_changed_contents`. The release pipeline stays the only owner of
+  passes the release's own `verify-install`. The release pipeline stays the only owner of
   versions and bytes. Rejected: a `debian/` source package built by `dpkg-buildpackage`, which
   would compile a second set of programs whose bytes no release attests.
 - **The bundle stays whole under `/usr/lib/torlek`, as in the [AUR recipe](2026-11-03-562-arch-packaging-alpha1.md).**
@@ -28,8 +28,10 @@ open questions are Theo's.
 - **Versions are `X.Y.Z~channel.N-R`.** `~` keeps every prerelease below `X.Y.Z`; the revision
   `R` counts packaging-only rebuilds of the same archive.
 - **The maintainer is a required argument with no default.** Debian policy requires an address,
-  and inventing one would publish it. **Open question:** which name and address.
-- **One suite per channel (`alpha`, `beta`), keeping every version of the channel.** Rejected:
+  and inventing one would publish it. Publication reads it from the `apt` environment's
+  `TORLEK_APT_MAINTAINER` variable, which Theo sets.
+- **One suite per channel (`alpha`, `beta`)**, keeping the ten newest versions since
+  [2026-11-06](2026-11-06-563-apt-publication.md). Rejected:
   one suite for all channels, which would move alpha users to betas without asking.
 - **No `Valid-Until` in `Release`.** It needs the signing key online to re-sign on a schedule.
 - **`verify` follows apt's signature rule, not gpgv's exit code,** so an index signed by an old
@@ -37,9 +39,9 @@ open questions are Theo's.
   [deb.md](../packaging/deb.md#signing-key).
 - **Hosting: GitHub Pages of a separate public repository** (Theo, 2026-11-03). This
   repository's Pages site is replaced by every documentation deploy, and GitHub Release assets
-  cannot form an APT source that updates. **Open question:** that repository's name and owner;
-  `Androlax2/torlek-apt` is the working name. Nothing is created here.
-- **Open question: where the signing subkey lives,** on Theo's machine or as a secret of the
-  publishing workflow's protected environment. No key exists; none is created here.
+  cannot form an APT source that updates. Its name, `Androlax2/torlek-apt`, was decided on
+  [2026-11-06](2026-11-06-563-apt-publication.md).
+- **Where the signing subkey lives** was decided on [2026-11-06](2026-11-06-563-apt-publication.md):
+  a secret of the protected `apt` environment.
 - **Publication still needs its own approvals.** This decision grants no tag, repository,
   key, upload or install.
