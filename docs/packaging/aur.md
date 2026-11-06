@@ -58,7 +58,8 @@ error-level one. `0.1.0alpha.4-1` has warnings only:
 - **Name:** `torlek-bin`, the AUR convention for a prebuilt package. It `provides` and
   `conflicts` with `torlek`, the name a later source-built recipe would take. Neither name was
   taken on 2026-11-06: the AUR RPC `info` and `search` returned nothing, and neither did the
-  official repositories' package search.
+  official repositories' package search. Theo confirmed the name and the template's
+  `Maintainer` line that day.
 - **Architectures:** `x86_64` and `aarch64`, the two Linux archives of the Alpha 1 release plan
   (`ALPHA1_PLATFORMS` in [tools/release.py](../../tools/release.py)), each with its own
   `source_<arch>` and `sha256sums_<arch>`.
@@ -112,8 +113,8 @@ approval; this list grants none. `$TAG` is the committed recipe's `_tag`, withou
 4. Check the names again: `torlek-bin` and `torlek` must still be free on the AUR
    (`https://aur.archlinux.org/rpc/v5/info?arg[]=torlek-bin&arg[]=torlek`) and in the official
    repositories.
-5. Check that the template's `Maintainer` line names the AUR account that will push, and that
-   the committed pair was rendered after it changed.
+5. Check that the template's `Maintainer` line still names the person whose AUR account will
+   push.
 6. Check the two release-workflow jobs: `install-arch` on the tag's own run, and
    `install-arch-published` on the pull request that committed this recipe. Read its `namcap`
    output and explain or fix every finding.
