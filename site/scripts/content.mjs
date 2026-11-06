@@ -174,10 +174,12 @@ export function stage({
       .replace(/^# .+\n/, ""),
   );
   const quickstart = read("docs/QUICKSTART.md");
+  const quickstartTitle = quickstart.match(/^# (.+)/m)?.[1];
+  if (!quickstartTitle) throw new Error("docs/QUICKSTART.md has no title heading");
   add(
     "docs/QUICKSTART.md",
     "get-started/quickstart",
-    quickstart.match(/^# (.+)/m)[1],
+    quickstartTitle,
     quickstart.replace(/^# .+\n/, ""),
   );
   for (const [name, route] of [
