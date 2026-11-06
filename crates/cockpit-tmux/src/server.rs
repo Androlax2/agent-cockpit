@@ -257,7 +257,7 @@ impl Server {
     /// and returns the id of its one pane. Fails if the name is taken. When it reaches a
     /// server another caller's close just emptied, it waits until that server has exited
     /// and tries again, for up to `SERVER_EXIT_WAIT`: the exiting server created nothing.
-    /// Why: `docs/decisions/2026-11-01-202-tmux-new-session-on-an-exiting-server.md`.
+    /// Why: `docs/decisions/2026-10-31-197-tmux-last-session-close.md` (the #202 section).
     pub fn new_session(&self, launch: &SessionLaunch) -> Result<PaneId, Error> {
         // tmux starts the pane in $HOME, and still succeeds, when the directory is missing.
         if !launch.working_dir.is_dir() {

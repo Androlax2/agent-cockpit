@@ -98,8 +98,7 @@ stopped in the middle of one finishes or repairs it at its next start.
   agent's reports and asks are accepted; every move to `ended` or `failed` revokes both in
   the same transaction. A restore that finds the agent still running grants any it lacks,
   so a session launched by an older daemon gains a permission added since (#284)
-  (`docs/decisions/2026-10-31-31-self-state-grant.md`,
-  `docs/decisions/2026-10-31-270-self-run-commands-grant.md`).
+  (`docs/decisions/2026-10-31-31-self-state-grant.md`).
   The same move revokes the session's coordinator grants (#410).
 - **Send and cancel** (#431). `submit` and `cancel` require a running session, a known
   conversation and the action's capability. They call `Provider::deliver` off the async

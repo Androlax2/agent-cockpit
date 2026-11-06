@@ -15,9 +15,11 @@ Issue #406. Decided by Theo on 2026-11-04 (option A of the
 - **Known limit.** A squash-merged branch whose remote branch was deleted and fetched with
   `--prune` counts as unpushed again, and stays kept until its commits are deleted or pushed.
   So does a clone whose branch was merged into the main checkout's LOCAL base but whose
-  remote-tracking refs were never fetched; the reason says a fetch clears it. The sweep has the
-  same limit. Rejected: asking GitHub whether a pull request merged, which
-  the pruning decision ruled out as proof.
+  remote-tracking refs were never fetched; the reason says a fetch clears it. The sweep had the
+  same limit until `2026-11-04-767-sweep-on-session-end.md` and
+  `2026-11-05-882-sweep-asks-origin.md` changed its rule; read them for what the shared
+  `has_unpushed_commits` now accepts. Rejected: asking GitHub whether a pull request merged,
+  which the pruning decision ruled out as proof.
 - **`torlek storage` shows the verdict prune would reach now.** Each row gains a `prune` column
   (`eligible`, `eligible-auto` when automatic policy would take it, `kept` with the reason in
   the `reason` column) and the report ends with `eligible for prune: N of M clones, B apparent
@@ -29,7 +31,7 @@ Issue #406. Decided by Theo on 2026-11-04 (option A of the
   kept with `could not decide: <error>` instead of failing the whole report. The wire field is
   optional, as additive fields are, so a client and daemon of different builds still read the
   report; the eligibility proof stays in `storage prune --dry-run`.
-  While a session runs in a clone, or work no clone can be named for runs (#883), the
+  While a session runs in a clone, or work no clone can be named for runs (the #883 section below), the
   managed-idle evidence keeps that clone, and the report says so.
 - **Rejected:** running a full prune preview per clone in the report (a second walk of every
   `target/`), and a separate eligibility command (one more step before the owner sees what
@@ -38,3 +40,27 @@ Issue #406. Decided by Theo on 2026-11-04 (option A of the
 Evidence: `crates/cockpit-projects/tests/target_prune.rs` (unpushed guard at preview and at the
 worker step, verdict without a plan), `crates/cockpit-cli/tests/storage.rs` (verdict column,
 total, and an unpushed clone kept through the real daemon).
+
+## Revisited 2026-11-05 (#883)
+
+Decided by the worker under the issue's acceptance. A clone's target prune waits only for
+work in that clone, or work no clone can be named for.
+
+- **Per clone, not global.** The managed-idle evidence (`storage::evidence`) used to defer
+  every clone's `target/` prune while any session anywhere was launching, running, stopping or
+  restart-pending, and named that session as each clone's reason. With an always-on
+  coordinator, no ended worker's `target/` was ever pruned. A session's agent works in its own
+  checkout, so now only this clone's sessions, their agents' executions and their scheduling
+  placements hold it back, named as such.
+- **Work no clone can be named for still holds every clone, and says so.** An execution that
+  is no session's agent (a check, an older launch), an approved or running host command, an
+  execution whose end was not observed, and a placement whose session is unknown keep every
+  clone, with a reason that says it may work in any clone.
+- **Unchanged:** the queue pause and foreground profile defer all pruning; the reservation's
+  global launch guard still refuses new sessions, checks and approvals while a prune runs; the
+  clone sweep itself never consulted this evidence, so a clean ended clone was already swept.
+- **An occupied clone's verdict names its holder** (`checkout is occupied by <holder>`).
+
+Evidence: `crates/cockpit-daemon/tests/sessions/end_sweep.rs` (with a session running in
+another clone: an ended session's clean clone is swept; an uncommitted one's `target/` outcome
+does not name the running session; the storage report names it only on its own clone).
