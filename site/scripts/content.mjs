@@ -162,7 +162,7 @@ export function stage({
   add(
     "README.md",
     "get-started/install-release",
-    "Install a release",
+    "Install Torlek",
     installSections.map((name) => `## ${name}\n\n${readmeSection(name)}`).join("\n\n"),
   );
   add(
@@ -249,6 +249,8 @@ export function stage({
   );
   const pages = new Map(entries.map((entry) => [entry.source, entry.route]));
   pages.set("docs/USER-GUIDE.md", "get-started/install");
+  // Only the two install sections are staged, so a bare README link stays on GitHub.
+  pages.delete("README.md");
   const anchors = new Map(
     installSections.map((name) => [
       `README.md#${name.toLowerCase().replaceAll(" ", "-")}`,

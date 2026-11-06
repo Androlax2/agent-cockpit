@@ -83,6 +83,10 @@ HTTP only; no credentials, provider or user state.
 | v0.1.0-alpha.2 | 200 | `fb683e93a779` (its tag) | 173 | 5.9 MB |
 | v0.1.0-alpha.1 | 200 | `2f620da3f8a7` (its tag) | 170 | 5.7 MB |
 
+Reproduce with `curl https://androlax2.github.io/agent-cockpit/<copy>/build.json`
+and `gh api repos/Androlax2/agent-cockpit/actions/runs/42251269940/artifacts`.
+The figures are a dated snapshot and move with each release.
+
 Every copy lists all five versions in its switcher. The assembled Pages artifact
 was 33.2 MB. Each build job took about one minute (serial, `max-parallel: 1`),
 assembly 21 seconds and deployment 1 min 45 s. Rebuilding every copy per publish
@@ -94,7 +98,7 @@ the preservation strategy needs no change at this size.
 The live install page linked to the README on GitHub and carried none of its
 commands (no `sha256sum` or `torlek init` on `get-started/install`). The site now
 stages the README's "Install with your AI agent" and "Install from the command
-line" sections as `get-started/install-release`, and the install status page links
+line" sections as `get-started/install-release` ("Install Torlek"), and the install status page links
 there. `site/tests/site.test.mjs` asserts the built page carries the checksum,
 daemon-install and init steps and that the status page links to it.
 

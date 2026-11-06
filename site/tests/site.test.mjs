@@ -33,8 +33,9 @@ test("real site exports the approved guide and generated references under its ve
   assert.match(html, /rel="canonical"/);
   const install = readFileSync(`${site}dist/get-started/install-release/index.html`, "utf8");
   assert.match(install, /sha256sum/);
-  assert.match(install, /torlek.*daemon.*install/s);
-  assert.match(install, /torlek.*init/s);
+  const installSource = readFileSync(`${site}content/docs/get-started/install-release.mdx`, "utf8");
+  for (const command of ["sha256sum --check", "torlek daemon install", "torlek init"])
+    assert.ok(installSource.includes(command), `staged install steps must include: ${command}`);
   const installStatus = readFileSync(`${site}dist/get-started/install/index.html`, "utf8");
   assert.ok(
     installStatus.includes(`${env.TORLEK_DOCS_BASE}get-started/install-release`),
