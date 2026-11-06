@@ -47,7 +47,6 @@ Ubuntu 24.04 ships tmux 3.4: install a newer tmux first.
    curl -fsSL https://github.com/Androlax2/agent-cockpit/releases/download/v0.1.0-alpha.5/install.sh | sh
    ```
 
-   The script ships from v0.1.0-alpha.5 on: until that release is published, the URL does not exist yet, so use the commands by hand below.
    It downloads your machine's release archive and its `SHA256SUMS`, checks the archive before unpacking it into `~/.local/lib/torlek`, and links `~/.local/bin/torlek` to it.
    It never uses sudo and leaves your Torlek settings, data and daemon alone. Run it again to upgrade; `| sh -s -- --version v0.1.0-alpha.5` installs one release.
    [Install script](docs/packaging/install-script.md) says what it checks and what it does not.
