@@ -29,8 +29,8 @@ only file to edit. The pair names one published release's checksums: there is no
 
 ### What `install-arch-published` proves
 
-For the committed pair, on every pull request that changes the recipe, on the nightly run and
-on tags:
+For the committed pair, on every pull request that changes the recipe and on the nightly and
+dispatched runs. A tag's run leaves it out, because the pair names an earlier release:
 
 - It is byte for byte the rendering of the `SHA256SUMS` that its release published.
 - `makepkg` downloads the x86_64 and aarch64 archives from the release and each passes its
@@ -40,6 +40,18 @@ on tags:
 - `torlek doctor` runs as a user and reports the release build.
 - `pacman -R` removes every packaged path and leaves the user's home, with a file placed in
   the profile's configuration and state folders, unchanged.
+
+### Expected `namcap` findings
+
+Both Arch jobs print `namcap`'s findings for the recipe and the built package, and fail on an
+error-level one. `0.1.0alpha.4-1` has warnings only:
+
+- `Reference to x86_64 should be changed to $CARCH`: each `source_<arch>` names its own
+  archive. `$CARCH` there would make the `.SRCINFO` depend on the machine that printed it.
+- `Unused shared library '/usr/lib64/ld-linux-x86-64.so.2'`, once per program: the release
+  build lists the loader as a needed library, and the package ships the programs unchanged.
+- `Dependency included, but may not be needed` for `git`, `curl` and `tmux`: Torlek runs
+  them as programs, which `namcap` cannot see; it only reads linked libraries.
 
 ## Package
 
@@ -135,9 +147,9 @@ later one. Nothing reaches the AUR that was not merged here first.
    published before, with a daemon running. In step 8, the clone already holds the package:
    replace its two files.
 
-**A fix to the recipe alone.** Change the template, then render the same tag again with
-`--pkgrel` one above the published one, so that AUR helpers see an update. Then steps 3 and 4
-above.
+**A fix to the recipe alone.** Change the template, then follow the four steps above for the
+same tag, adding `--pkgrel` with one above the published number to the `render` command, so
+that AUR helpers see an update. This holds for any template change once a recipe is on the AUR.
 
 **Never push** a `--development` rendering (`check-srcinfo` refuses it), a recipe whose release
 is still a draft, or a pair that differs from the committed one.

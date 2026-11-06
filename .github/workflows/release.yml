@@ -279,10 +279,10 @@ jobs:
 
   # The committed torlek-bin recipe, the pair an AUR push carries: it must be the rendering of
   # its release's published SHA256SUMS, and makepkg downloads the archives it names (#562,
-  # docs/packaging/aur.md). It needs no job of this run: the recipe names an earlier release,
-  # so a tag's own run checks the previous one.
+  # docs/packaging/aur.md). It needs no job of this run, and a tag's run leaves it out: the
+  # recipe names an earlier release, whose failure would only hide the candidate's results.
   install-arch-published:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'push' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     container:

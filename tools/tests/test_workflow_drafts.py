@@ -142,7 +142,6 @@ class DraftWorkflowTests(unittest.TestCase):
                     "build",
                     "install",
                     "install-arch",
-                    "install-arch-published",
                     "install-wsl2",
                     "assemble",
                     "draft",
