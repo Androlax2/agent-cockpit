@@ -42,9 +42,13 @@ async fn ending_a_session_waits_for_its_decisions_being_written_and_removes_the_
     let session = new_session(&client, &root).await;
     wait_for_running(&client, &session.id).await;
     let folder = mount_sources(&home, &session.id);
-    std::fs::create_dir_all(&folder).unwrap();
+    // Built under a name no session has, then moved in whole: the loop finds the folder
+    // with the pipe already in it, never empty enough to write a decisions file first.
+    let building = folder.with_file_name("building");
+    std::fs::create_dir_all(&building).unwrap();
+    make_pipe(&building.join(cockpit_sandbox::DECISIONS_FILE));
+    std::fs::rename(&building, &folder).unwrap();
     let decisions = folder.join(cockpit_sandbox::DECISIONS_FILE);
-    make_pipe(&decisions);
 
     // Opening the pipe returns once the loop opened it to compare: its write is under way.
     let opening = tokio::task::spawn_blocking(move || {
