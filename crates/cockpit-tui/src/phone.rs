@@ -20,10 +20,10 @@ use ratatui::widgets::Paragraph;
 use crate::Key;
 use crate::app::{App, Focus};
 use crate::board::Board;
-use crate::pane::Shown;
+use crate::pane::{Shown, Typing};
 use crate::render::{
-    bug_reports_card, columns, guide_lines, network_lines, pane_keys, run_lines, scroll_to_show,
-    status_line, truncated, typing_line, wrapped,
+    bug_reports_card, columns, guide_lines, network_lines, pane_keys, reveal_hint, run_lines,
+    scroll_to_show, status_line, truncated, typing_line, wrapped,
 };
 
 /// Typing stops after this long without a key: a phone left in a pocket reads only again.
@@ -236,8 +236,13 @@ pub(crate) fn head_card_rows(app: &App, width: usize) -> usize {
 /// The key hints, longest first: the first that fits the width is shown.
 fn hints(app: &App, width: usize, height: usize, now: Instant) -> Vec<String> {
     if is_reading_card(app) {
-        if app.pane.typing().is_some() {
-            return vec!["Enter sends   Esc cancels".to_owned()];
+        if let Some((typing, _)) = app.pane.typing() {
+            let short = "Enter sends   Esc cancels".to_owned();
+            if typing != Typing::Input {
+                return vec![short];
+            }
+            let reveal = reveal_hint(app.pane.is_input_revealed());
+            return vec![format!("Enter sends   {reveal}   Esc cancels"), short];
         }
         if app.pane.in_grace(now) {
             return vec![
@@ -284,7 +289,7 @@ fn document(app: &App, width: usize) -> Document {
     if let Some(shown) = head {
         let mut card = card_lines(board, shown);
         if let Some((typing, typed)) = app.pane.typing() {
-            card.push(typing_line(typing, typed));
+            card.push(typing_line(typing, typed, app.pane.is_input_revealed()));
         }
         push_card(&mut lines, &card, width, bold);
     }

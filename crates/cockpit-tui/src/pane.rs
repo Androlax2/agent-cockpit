@@ -10,6 +10,8 @@
 //!   answer starts the grace again, so a hint shown before it would offer keys it takes back
 //!   (#439).
 //! - While the owner types into the pane, the request shown stays, whatever arrives.
+//! - A line typed for a running command is drawn masked: it may be a password (#1010). Tab
+//!   reveals it, and hides it again; each new line starts masked.
 
 use std::time::{Duration, Instant};
 
@@ -83,6 +85,8 @@ pub struct Pane {
     keys_on_their_way: usize,
     typing: Option<Typing>,
     typed: String,
+    /// The line typed for a command drawn in clear: only after the owner's Tab.
+    is_input_revealed: bool,
     /// The whole command instead of its folded start.
     expanded: bool,
 }
@@ -98,6 +102,11 @@ impl Pane {
 
     pub fn is_expanded(&self) -> bool {
         self.expanded
+    }
+
+    /// Whether the line typed for a command is drawn in clear rather than masked.
+    pub fn is_input_revealed(&self) -> bool {
+        self.is_input_revealed
     }
 
     /// Whether a key now would be ignored.
@@ -178,6 +187,7 @@ impl Pane {
                 Key::Char('i'),
             ) => {
                 self.typing = Some(Typing::Input);
+                self.is_input_revealed = false;
                 handled("approval-type-input", None)
             }
             (
@@ -262,6 +272,10 @@ impl Pane {
             Key::Backspace => {
                 self.typed.pop();
                 handled("approval-typing", None)
+            }
+            Key::Tab if typing == Typing::Input => {
+                self.is_input_revealed = !self.is_input_revealed;
+                handled("approval-input-reveal", None)
             }
             Key::Esc => {
                 self.typing = None;

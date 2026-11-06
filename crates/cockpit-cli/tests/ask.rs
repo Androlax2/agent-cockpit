@@ -132,6 +132,7 @@ fn request(state: RunStateView) -> RunRequestView {
         asked_at: 1,
         expires_at: 901,
         waiting_for_input: false,
+        waiting_prompt: None,
         decision: None,
         result: None,
         note: None,

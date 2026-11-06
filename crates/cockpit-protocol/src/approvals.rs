@@ -105,6 +105,11 @@ pub struct RunRequestView {
     pub expires_at: i64,
     /// A running command whose output stopped mid-line: it probably waits for input.
     pub waiting_for_input: bool,
+    /// While `waiting_for_input`: what the command asks (#1010), the output's last line as a
+    /// terminal shows it, terminal controls stripped, secrets redacted, its end when long, and
+    /// under the display rules. `None` otherwise, or when the daemon cannot show that line.
+    #[serde(default)]
+    pub waiting_prompt: Option<ShownText>,
     pub result: Option<RunResultView>,
     /// Why the request ended without a result, or what is known about it.
     pub note: Option<String>,

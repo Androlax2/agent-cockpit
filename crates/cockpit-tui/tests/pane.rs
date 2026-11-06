@@ -11,8 +11,8 @@ use cockpit_protocol::{
 };
 use cockpit_tui::{App, Focus, INPUT_GRACE, Key, Shown};
 use common::{
-    answer, app_with, folded, guide, hidden, press, queue, run, screen_text, sent, session, typing,
-    waiting_run,
+    answer, app_with, folded, guide, hidden, press, queue, run, screen_text, sent, session, shown,
+    typing, waiting_run,
 };
 
 const SESSION: &str = "s00000000000a";
@@ -678,4 +678,100 @@ fn keys_arriving_after_the_queue_emptied_stay_while_the_workflow_view_is_open() 
     let sent_on_reply = answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
 
     assert_eq!(sent_on_reply, None);
+}
+
+const SUDO_PROMPT: &str = "[sudo] password for theo: ";
+const PASSWORD: &str = "hunter2";
+
+/// `sudo` waiting at its password prompt, shown in the pane with the column's keys, the
+/// grace over: the moment the owner can type.
+fn app_at_sudo_prompt(now: Instant) -> (App, Instant) {
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+    let sudo = RunRequestView {
+        waiting_prompt: Some(shown(SUDO_PROMPT)),
+        ..waiting_run(5, SESSION)
+    };
+    shown_with_keys(&mut app, vec![sudo], Vec::new(), now);
+    (app, after_grace(now))
+}
+
+/// The owner presses `i` and types the password.
+fn typed_password(now: Instant) -> (App, Instant) {
+    let (mut app, ready) = app_at_sudo_prompt(now);
+    app.key(Key::Char('i'), ready);
+    typing(&mut app, PASSWORD, ready);
+    (app, ready)
+}
+
+#[test]
+fn a_command_waiting_for_input_shows_what_it_asks() {
+    let now = Instant::now();
+    let (app, ready) = app_at_sudo_prompt(now);
+
+    let screen = screen_text(&app, ready);
+
+    assert!(
+        screen.contains("Prompt: [sudo] password for theo:"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_line_typed_for_a_command_is_masked_on_screen() {
+    let now = Instant::now();
+    let (app, ready) = typed_password(now);
+
+    let screen = screen_text(&app, ready);
+
+    assert!(!screen.contains(PASSWORD), "{screen}");
+    assert!(
+        screen.contains("Line for the command: *******_"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn tab_reveals_the_typed_line_and_tab_again_masks_it() {
+    let now = Instant::now();
+    let (mut app, ready) = typed_password(now);
+
+    let revealed = app.key(Key::Tab, ready);
+    let revealed_screen = screen_text(&app, ready);
+    app.key(Key::Tab, ready);
+    let masked_screen = screen_text(&app, ready);
+
+    assert_eq!(revealed.used, Some("approval-input-reveal"));
+    assert!(
+        revealed_screen.contains("Line for the command: hunter2_"),
+        "{revealed_screen}"
+    );
+    assert!(!masked_screen.contains(PASSWORD), "{masked_screen}");
+}
+
+#[test]
+fn a_masked_line_is_sent_as_typed() {
+    let now = Instant::now();
+    let (mut app, ready) = typed_password(now);
+
+    let sent_line = app.key(Key::Enter, ready);
+
+    assert_eq!(
+        sent_line.send,
+        [Command::ApprovalInput {
+            request: 5,
+            text: PASSWORD.to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn each_new_line_for_a_command_starts_masked() {
+    let now = Instant::now();
+    let (mut app, ready) = typed_password(now);
+    press(&mut app, &[Key::Tab, Key::Esc, Key::Char('i')], ready);
+    typing(&mut app, PASSWORD, ready);
+
+    let screen = screen_text(&app, ready);
+
+    assert!(!screen.contains(PASSWORD), "{screen}");
 }

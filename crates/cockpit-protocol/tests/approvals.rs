@@ -158,6 +158,7 @@ fn a_finished_run_request_reply_round_trips() {
             asked_at: 1,
             expires_at: 901,
             waiting_for_input: false,
+            waiting_prompt: None,
             decision: None,
             result: Some(RunResultView {
                 exit_code: 2,

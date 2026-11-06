@@ -883,6 +883,8 @@ fn run_view(
 ) -> RunRequestView {
     let cwd = crate::projects::text(&run.cwd);
     let shown_command = shown(&run.command);
+    let is_waiting_for_input =
+        run.state == RunState::Running && waiting_for_input.contains(&run.id);
     RunRequestView {
         id: run.id.0,
         session: run.session.as_str().to_owned(),
@@ -917,7 +919,11 @@ fn run_view(
         digest: run.digest(),
         asked_at: run.asked_at,
         expires_at: run.expires_at,
-        waiting_for_input: run.state == RunState::Running && waiting_for_input.contains(&run.id),
+        waiting_for_input: is_waiting_for_input,
+        waiting_prompt: is_waiting_for_input
+            .then(|| runner.prompt(run.id))
+            .flatten()
+            .map(|prompt| shown(&prompt)),
         decision: run.decision.map(|decision| RunDecisionView {
             approved: decision.approved,
             at: decision.at,

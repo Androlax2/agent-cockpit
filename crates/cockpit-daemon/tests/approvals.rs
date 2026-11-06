@@ -837,6 +837,93 @@ async fn a_new_request_queues_behind_a_command_waiting_for_input() {
 }
 
 #[tokio::test]
+async fn the_owners_queue_shows_what_a_waiting_command_asks() {
+    let asking = started(true).await;
+    let waiting = asking
+        .waiting_at_a_prompt("printf 'Building.\\nReplace the lock file? [y/N] '; read -r answer")
+        .await;
+
+    let queue = asking.queue().await;
+
+    let prompt = queue[0]
+        .waiting_prompt
+        .as_ref()
+        .map(|shown| shown.text.as_str());
+    assert_eq!(prompt, Some("Replace the lock file? [y/N] "));
+    asking.type_line(waiting.id, "done").await;
+}
+
+#[tokio::test]
+async fn a_secret_in_a_waiting_commands_prompt_is_redacted() {
+    let asking = started(true).await;
+    let waiting = asking
+        .waiting_at_a_prompt(
+            "printf 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789 ok? '; read -r answer",
+        )
+        .await;
+
+    let queue = asking.queue().await;
+
+    let prompt = &queue[0].waiting_prompt.as_ref().expect("a prompt").text;
+    assert!(!prompt.contains("ghp_abcdef"), "{prompt}");
+    assert!(prompt.ends_with("ok? "), "{prompt}");
+    asking.type_line(waiting.id, "done").await;
+}
+
+#[tokio::test]
+async fn a_prompt_drawn_after_a_carriage_return_shows_alone() {
+    let asking = started(true).await;
+    let waiting = asking
+        .waiting_at_a_prompt(
+            "printf 'Downloading 100%%\\rOverwrite config? [y/N] '; read -r answer",
+        )
+        .await;
+
+    let queue = asking.queue().await;
+
+    let prompt = queue[0]
+        .waiting_prompt
+        .as_ref()
+        .map(|shown| shown.text.as_str());
+    assert_eq!(prompt, Some("Overwrite config? [y/N] "));
+    asking.type_line(waiting.id, "n").await;
+}
+
+#[tokio::test]
+async fn a_long_prompt_line_shows_its_end() {
+    let asking = started(true).await;
+    let waiting = asking
+        .waiting_at_a_prompt("printf '%0500d ok? ' 0; read -r answer")
+        .await;
+
+    let queue = asking.queue().await;
+
+    let prompt = &queue[0].waiting_prompt.as_ref().expect("a prompt").text;
+    assert!(
+        prompt.starts_with('…') && prompt.ends_with("0 ok? "),
+        "{prompt}"
+    );
+    assert_eq!(
+        prompt.chars().count(),
+        cockpit_approvals::PROMPT_MAX_CHARS + 1
+    );
+    asking.type_line(waiting.id, "done").await;
+}
+
+#[tokio::test]
+async fn a_prompt_line_whose_start_was_dropped_is_not_shown() {
+    let asking = started(true).await;
+    let waiting = asking
+        .waiting_at_a_prompt("printf '%020000d ok? ' 0; read -r answer")
+        .await;
+
+    let queue = asking.queue().await;
+
+    assert_eq!(queue[0].waiting_prompt, None);
+    asking.type_line(waiting.id, "done").await;
+}
+
+#[tokio::test]
 async fn an_agent_waiting_on_an_approval_keeps_working_on_the_channel() {
     let home = TestHome::new();
     let token = home
