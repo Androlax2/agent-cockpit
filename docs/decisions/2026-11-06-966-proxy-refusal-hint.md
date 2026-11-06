@@ -3,7 +3,7 @@
 Issue #966. Decided by the worker: the issue lists three ways and asks the pull request to
 pick; this combines the two that need no new channel into the session.
 
-- **The status line carries the reason after `403 Forbidden: torlek-sandbox: `.** Python's
+- **The status line carries the reason after its reason phrase.** Python's
   `http.client` (and pip, Go) print a failed `CONNECT`'s status line, as `Tunnel connection
   failed: 403 Forbidden: torlek-sandbox: HOST is not allowed: ...`, and `curl -v` shows it on
   its `< HTTP/1.1` line; no client prints the body. curl and git without `-v` print only the
