@@ -25,9 +25,13 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
 }
 
 fn notifier_arguments() -> Result<Vec<OsString>, ExitCode> {
-    let socket = crate::agent::socket_dir()?.join(cockpit_config::DAEMON_SOCKET);
     let config = cockpit_config::load(&crate::profile::environment(), None, &[])
         .map_err(|error| fail(&error.to_string()))?;
+    let socket = config
+        .layout
+        .socket_dir()
+        .map_err(|error| fail(&error.to_string()))?
+        .join(cockpit_config::DAEMON_SOCKET);
     Ok(vec![
         "--socket".into(),
         socket.into(),
@@ -47,5 +51,5 @@ fn execute(arguments: &[OsString]) -> ExitCode {
         Err(problem) => return fail(&problem),
     };
     let error = std::process::Command::new(&notify).args(arguments).exec();
-    fail(&format!("cannot run {notify}: {error}"))
+    fail(&format!("cannot run {}: {error}", notify.display()))
 }

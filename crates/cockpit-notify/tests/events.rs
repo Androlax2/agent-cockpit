@@ -311,3 +311,21 @@ fn a_notice_names_the_session_by_its_reported_label() {
 
     assert_eq!(told[0].name, "fix login");
 }
+
+/// `torlek notify` passes the owner's settings by the names cockpit-config declares; the
+/// client may not depend on the config crate, so its source is the contract.
+#[test]
+fn the_owner_settings_name_the_same_events_in_the_same_order() {
+    let settings = include_str!("../../cockpit-config/src/notify.rs");
+    let names: Vec<String> = Event::ALL
+        .iter()
+        .map(|event| format!("{:?}", event.name()))
+        .collect();
+    let declaration = format!(
+        "pub const NOTIFY_EVENTS: [&str; {}] = [{}];",
+        names.len(),
+        names.join(", ")
+    );
+
+    assert!(settings.contains(&declaration), "expected {declaration}");
+}

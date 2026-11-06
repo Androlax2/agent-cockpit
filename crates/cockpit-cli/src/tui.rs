@@ -17,12 +17,12 @@ const TUI_BINARY: &str = "torlek-tui";
 
 pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     if arguments == ["--version"] {
-        let tui = match tui_binary() {
+        let tui = match crate::profile::sibling_program(TUI_BINARY) {
             Ok(tui) => tui,
             Err(problem) => return Ok(fail(&problem)),
         };
         let error = std::process::Command::new(&tui).arg("--version").exec();
-        return Ok(fail(&format!("cannot run {tui}: {error}")));
+        return Ok(fail(&format!("cannot run {}: {error}", tui.display())));
     }
     if let Some(extra) = arguments.first() {
         return Err(format!("unknown argument {}", extra.to_string_lossy()));
@@ -46,7 +46,8 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
 }
 
 fn manager_open() -> Result<Command, ExitCode> {
-    let tui = tui_binary().map_err(|problem| fail(&problem))?;
+    let tui =
+        utf8(&crate::profile::sibling_program(TUI_BINARY).map_err(|problem| fail(&problem))?)?;
     let socket = crate::agent::socket_dir()?.join(cockpit_config::DAEMON_SOCKET);
     let environment = crate::profile::environment();
     let home = environment
@@ -78,10 +79,6 @@ fn manager_open() -> Result<Command, ExitCode> {
             "paste-image".to_owned(),
         ],
     })
-}
-
-fn tui_binary() -> Result<String, String> {
-    crate::profile::sibling_program(TUI_BINARY)
 }
 
 fn utf8(path: &Path) -> Result<String, ExitCode> {

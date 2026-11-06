@@ -27,6 +27,7 @@ pub const MANIFEST_IN_PREFIX: &str = "share/torlek/manifest.json";
 const PROGRAM_SUFFIXES: &[&str] = &[
     "daemon",
     "tui",
+    "notify",
     "claude-hook",
     "codex-hook",
     "codex-session",
