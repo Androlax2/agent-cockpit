@@ -25,7 +25,9 @@ Issue #782. Decided by the worker, from `docs/research/2026-11-04-686-compaction
   last assistant message's input and cache tokens before; the `compact_boundary` after) and
   Codex's from its rollout (`token_count` before the compaction and the first after the latest
   `compacted` record). Both are written after the hook runs, so a size not there yet is left
-  out, never guessed. OpenCode's `ended` event carries tokens: before is input plus cache,
+  out, never guessed. A size read before the harness flushed this compaction's own record can be
+  the previous compaction's; a freshness check needs each adapter to parse record timestamps,
+  and is left to the first live capture. OpenCode's `ended` event carries tokens: before is input plus cache,
   after is output. The adapters read their own files; they share only
   `cockpit-provider-api::CompactionMoment`, as an adapter depends on nothing else.
 - **Fixtures are written from the harnesses' documented payloads and schemas**, not captured:

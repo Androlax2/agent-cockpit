@@ -136,9 +136,10 @@ export const CockpitBridge = async ({ serverUrl }) => {
     },
     event: async ({ event }) => {
       if (!isForwarded(event)) return
-      const sessionID = (event.properties ?? event.data)?.sessionID
+      const body = event.properties ?? event.data
+      const sessionID = body?.sessionID
       const forwarded = roots.has(sessionID)
-        ? { ...event, properties: { ...event.properties, sessionID: rootOf(sessionID) } }
+        ? { ...event, properties: { ...body, sessionID: rootOf(sessionID) } }
         : event
       const payload = JSON.stringify(forwarded)
       queue = queue.then(() => run(payload))

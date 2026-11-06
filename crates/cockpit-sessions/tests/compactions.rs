@@ -267,3 +267,65 @@ async fn a_compaction_reported_with_other_fields_is_refused_naming_its_field() {
     assert!(refused.to_string().contains("compaction"), "{refused}");
     assert_eq!(latest(&database).await, None);
 }
+
+#[tokio::test]
+async fn an_abandoned_compaction_shows_no_seconds() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = reporting_session(dir.path()).await;
+    compact(&database, moment(CompactionPhase::Started))
+        .await
+        .unwrap();
+    compact(&database, moment(CompactionPhase::Started))
+        .await
+        .unwrap();
+    compact(&database, moment(CompactionPhase::Failed))
+        .await
+        .unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "DELETE FROM session_compactions WHERE id = (SELECT max(id) FROM session_compactions)",
+            (),
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let recorded = latest(&database).await.unwrap();
+
+    assert_eq!(recorded.status, CompactionStatus::Failed);
+    assert_eq!(recorded.seconds, None);
+}
+
+#[tokio::test]
+async fn an_end_keeps_the_size_and_trigger_the_start_measured() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = reporting_session(dir.path()).await;
+    compact(
+        &database,
+        CompactionMoment {
+            trigger: Some(CompactionTrigger::Auto),
+            tokens_before: Some(268_364),
+            ..moment(CompactionPhase::Started)
+        },
+    )
+    .await
+    .unwrap();
+
+    compact(
+        &database,
+        CompactionMoment {
+            trigger: Some(CompactionTrigger::Manual),
+            tokens_before: Some(1_000),
+            tokens_after: Some(30_470),
+            ..moment(CompactionPhase::Ended)
+        },
+    )
+    .await
+    .unwrap();
+
+    let recorded = latest(&database).await.unwrap();
+    assert_eq!(recorded.trigger, Some(CompactionTrigger::Auto));
+    assert_eq!(recorded.tokens_before, Some(268_364));
+    assert_eq!(recorded.tokens_after, Some(30_470));
+}

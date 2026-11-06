@@ -73,8 +73,8 @@ pub(crate) async fn record(
             if let Some(abandoned) = abandoned {
                 write
                     .execute(
-                        "UPDATE session_compactions SET status = 'failed', ended_at = ?2,
-                         reported_at = ?2 WHERE id = ?1",
+                        "UPDATE session_compactions SET status = 'failed', reported_at = ?2
+                         WHERE id = ?1",
                         (abandoned, at),
                     )
                     .await?;
@@ -100,8 +100,8 @@ pub(crate) async fn record(
             write
                 .execute(
                     "UPDATE session_compactions SET status = ?2, ended_at = ?3, reported_at = ?3,
-                     trigger = coalesce(?4, trigger),
-                     tokens_before = coalesce(?5, tokens_before),
+                     trigger = coalesce(trigger, ?4),
+                     tokens_before = coalesce(tokens_before, ?5),
                      tokens_after = coalesce(?6, tokens_after)
                      WHERE id = ?1",
                     (
