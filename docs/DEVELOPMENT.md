@@ -167,7 +167,7 @@ retain their normal checks and path filters. GitHub may record skipped runs with
 allocating runners. Skipped draft checks are not verification: wait for the ready event's
 actual required checks on the exact head before merging. Main pushes, tag releases and
 explicit non-PR workflows keep their existing behavior. See the
-[draft CI decision](decisions/2026-11-02-397-draft-ci.md).
+[draft CI decision](decisions/2026-11-01-397-ci-cost.md#revisited-2026-11-02-397-draft-pull-requests).
 
 Formatting checks should be read-only; formatting writes remain deliberate commands.
 Tool versions and source selection must match locally and in CI, including extensionless

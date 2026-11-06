@@ -226,7 +226,7 @@ jobs:
   # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
   # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash
   # match tools/tests/fixtures/ci-install-action-linux.json (test_ci_bootstrap.py). No build
-  # cache, on purpose: docs/decisions/2026-10-31-127-platform-build-cache.md. Pull requests run
+  # cache, on purpose: docs/decisions/2026-11-01-397-ci-cost.md. Pull requests run
   # it only when a crate it builds changes (tools/ci-jobs.py); main always does (#397).
   greenfield-wsl2:
     needs: changes
