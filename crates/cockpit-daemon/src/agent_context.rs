@@ -108,7 +108,7 @@ pub(crate) async fn brief(
                 session,
                 project: facts.project.clone(),
             };
-            Some(task_packet(&read, &actor, workflow.run).await?)
+            Some(task_packet(&read, &actor, workflow.run).await)
         }
         None => None,
     };
@@ -133,13 +133,19 @@ pub(crate) async fn brief(
 
 /// The packet of the step the session does, as `cockpit workflow packet` prints it but with
 /// only the last handoff and no decisions, capped (#781): what a context start must not lose.
-async fn task_packet(read: &Connection, actor: &Actor, run: i64) -> Result<String, Failed> {
-    let mut packet =
-        crate::workflows::packet_view(cockpit_workflows::packet(read, actor, RunId(run)).await?);
+/// A packet that cannot be read is said to be missing rather than costing the agent its brief.
+async fn task_packet(read: &Connection, actor: &Actor, run: i64) -> String {
+    let mut packet = match cockpit_workflows::packet(read, actor, RunId(run)).await {
+        Ok(packet) => crate::workflows::packet_view(packet),
+        Err(error) => {
+            tracing::error!(%error, run, "the task packet for an agent brief failed");
+            return cockpit_agent_context::unreadable_task_packet(run);
+        }
+    };
     let earlier = packet.handoffs.len().saturating_sub(1);
     packet.handoffs.drain(..earlier);
     packet.decisions.clear();
-    Ok(cockpit_agent_context::task_packet(run, &packet.text()))
+    cockpit_agent_context::task_packet(run, &packet.text())
 }
 
 /// The sender's session; a launch not bound yet is bound under the writer.

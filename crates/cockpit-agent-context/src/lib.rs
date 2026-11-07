@@ -12,5 +12,5 @@ pub use brief::{
 };
 pub use bundle::{CatalogEntry, Document, VERSION, catalog, document, documents, manual};
 pub use manifest::{Manifest, ManifestEntry, Precedence, Scope, Trust, manifest, manifest_id};
-pub use packet::{TASK_PACKET_CAP_BYTES, task_packet};
+pub use packet::{TASK_PACKET_CAP_BYTES, task_packet, unreadable_task_packet};
 pub use write::{MANIFEST_FILE, WriteError, write_bundle};

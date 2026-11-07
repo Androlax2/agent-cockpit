@@ -126,9 +126,10 @@ fn read(topic: Option<String>) -> ExitCode {
 
 /// The brief, then the task packet when the session does a step (#781): what every context
 /// start shows the agent, since the hooks and the plugin print what `cockpit brief` prints.
+/// Nothing is added between them, so `--measure` counts exactly what is shown.
 pub(crate) fn with_packet(brief: &str, packet: Option<&str>) -> String {
     match packet {
-        Some(packet) => format!("{brief}\n{packet}"),
+        Some(packet) => format!("{brief}{packet}"),
         None => brief.to_owned(),
     }
 }

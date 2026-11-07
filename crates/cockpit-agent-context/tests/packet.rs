@@ -1,7 +1,7 @@
 //! #781: the task packet shown with the brief at every context start, framed with the command
 //! that prints all of it and held to a fixed size.
 
-use cockpit_agent_context::{TASK_PACKET_CAP_BYTES, task_packet};
+use cockpit_agent_context::{TASK_PACKET_CAP_BYTES, task_packet, unreadable_task_packet};
 
 const PACKET: &str = "workflow 7 (code-change v1, running)\nproject: app\n\
 goal: item 42 Fix the login form (feature, doing)\n\
@@ -47,4 +47,12 @@ fn the_cut_lands_on_a_character_boundary_at_any_length() {
         assert!(text.len() <= TASK_PACKET_CAP_BYTES, "{} bytes", text.len());
         assert!(text.contains("prints the rest]"), "{text}");
     }
+}
+
+#[test]
+fn an_unreadable_packet_names_the_command_that_says_why() {
+    let text = unreadable_task_packet(7);
+
+    assert!(text.starts_with("# Task packet\n"), "{text}");
+    assert!(text.contains("`torlek workflow packet 7`"), "{text}");
 }

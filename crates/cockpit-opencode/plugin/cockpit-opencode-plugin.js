@@ -127,10 +127,14 @@ export const CockpitBridge = async ({ serverUrl }) => {
         if (Date.now() - failedAt < BRIEF_RETRY_MS) return
         brief = readBrief()
       }
-      const text = await brief
+      const reading = brief
+      const text = await reading
       if (text === null) {
-        brief = undefined
-        failedAt = Date.now()
+        // A compaction may have started a newer read meanwhile: only this read's failure waits.
+        if (brief === reading) {
+          brief = undefined
+          failedAt = Date.now()
+        }
         return
       }
       if (text) output.system.push(text)

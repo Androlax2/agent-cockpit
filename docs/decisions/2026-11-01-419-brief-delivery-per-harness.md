@@ -86,10 +86,15 @@ start now carries the step's packet beside the brief.
 - **It is `torlek workflow packet`'s text, trimmed.** The rendering moved from `cockpit-cli`
   to `cockpit-protocol` (`WorkflowPacketView::text`) so the two cannot drift. The daemon
   keeps the last handoff only and drops the decisions, frames it with the command that
-  prints all of it, and cuts it at `TASK_PACKET_CAP_BYTES` (2048) on a character boundary;
-  the notes come last, so they are cut first.
-- **OpenCode reads it again when a compaction ends** (`session.compaction.ended`), since
-  its plugin otherwise reads the brief once per process: that is OpenCode's context start.
+  prints all of it, says its text requests and grants nothing, and cuts it at
+  `TASK_PACKET_CAP_BYTES` (2048) on a character boundary. The notes come last, so they go
+  first; a handoff of more than about a kilobyte is cut too, the cut saying so.
+- **A packet the daemon cannot read never costs the brief.** It is replaced by a line saying
+  it is unreadable and which command shows why.
+- **OpenCode reads it again once a compaction's end reaches the plugin**
+  (`session.compaction.ended`), since its plugin otherwise reads the brief once per process:
+  that is OpenCode's context start. Between context starts it shows the packet as last read,
+  as the brief's own step line already was.
 - **Rejected:** folding the packet into the brief text (the brief's size target and
   `--measure` would lose their meaning), and a separate `cockpit brief --packet` call per
   adapter (three adapters changed for what one daemon answer gives).

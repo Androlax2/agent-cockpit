@@ -356,6 +356,7 @@ impl WorkflowStepView {
 }
 
 impl WorkflowBlockedView {
+    /// `blocked: action: detail` on one line.
     pub fn line(&self) -> String {
         format!(
             "blocked: {}: {}\n",
