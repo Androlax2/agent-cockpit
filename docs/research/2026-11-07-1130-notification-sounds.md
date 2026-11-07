@@ -1,7 +1,7 @@
 # Notification sounds: what comparable tools use, and what Torlek could ship
 
 Research for issue [#1130](https://github.com/Androlax2/agent-cockpit/issues/1130)
-(Alpha 7, owner request from Theo, 2026-11-07: "I'd like to create custom sounds for each
+(milestone v0.1.0-alpha.7, owner request from Theo, 2026-11-07: "I'd like to create custom sounds for each
 notification, I don't really like the default one."). It follows the layout of the other
 reports in this folder. **Research and proposal.** Merging this document accepts research
 delivery only: it adds no audio file, no product code and no dependency, it does not implement
@@ -20,7 +20,7 @@ Theo dislikes the default theme sounds and wants his own per event. Three things
 2. Could Torlek ship or recommend them?
 3. What makes a notification sound good, so Theo's own set (and any default set) works?
 
-Not checked: `crates/cockpit-notify` is not in this checkout (HEAD `728c3fff`), so the event
+Not checked: `crates/cockpit-notify` is not in this checkout (base commit `728c3fff`; the report's own commit adds only this file), so the event
 names and default sound names are taken from the text of #1130, not from code.
 
 ## What the surveyed tools do
@@ -59,8 +59,8 @@ Findings that matter for #1130:
   notifier should not also trigger a bell in the session's terminal; this is a note for the
   #1127 and #1130 authors, not a finding about the current code.
 - **Level matching is real work.** One user's dotfiles moved Claude Code, Devin and Codex hook
-  sounds into Herdr's settings, then changed the amplitude of both files five times (30%, 10%,
-  20%, 26.7% of the original). Any set Torlek ships or recommends should come already
+  sounds into Herdr's settings, then changed the level of both files five times (first to the
+  hooks' old mpv volume, then to 30%, 10%, 20% and finally 26.7% amplitude). Any set Torlek ships or recommends should come already
   level-matched.
 
 ### Community setups around Claude Code and OpenCode
@@ -85,11 +85,12 @@ not used as evidence. CI tools were not surveyed: their notifications go through
 
 The repository is Apache-2.0. Three licence questions decide everything: may the file be
 redistributed in a repository or release, is attribution needed, and does the licence force
-terms on the project.
+terms on the project. "Link only" below means the user guide may point an owner at the site;
+it does not mean copying files into a Torlek folder or release.
 
 | Source | Licence (as found) | Could Torlek ship the files? | Could Torlek recommend them? |
 | --- | --- | --- | --- |
-| freedesktop sound theme (`sound-theme-freedesktop` 0.8-6) | A mix: CC-BY-3.0, CC-BY-4.0, CC-BY-SA-3.0, GPL-2.0-only, GPL-2.0-or-later, LGPL-2.0-or-later (Arch Linux package metadata, built 2024-07-05) | No. The share-alike and GPL parts do not fit an Apache-2.0 tree. Referring to the sounds by name, as today, ships nothing | Yes, as the fallback |
+| freedesktop sound theme (`sound-theme-freedesktop` 0.8-6) | A mix: CC-BY-3.0, CC-BY-4.0, CC-BY-SA-3.0, GPL-2.0-only, GPL-2.0-or-later, LGPL-2.0-or-later (Arch Linux package metadata, built 2024-07-05) | No. The share-alike and GPL parts do not fit an Apache-2.0 tree, and which file carries which licence was not found (the package's per-file copyright file was not read), so a CC-BY-only subset could not be shown to be safe. Referring to the sounds by name, as today, ships nothing | Yes, as the fallback |
 | Kenney "Interface Sounds" | CC0 (kenney.nl page): 100 Ogg files, no attribution needed | Yes, legally; attribution is courtesy | Yes |
 | notificationsounds.com | CC BY 4.0: credit with a link back, note modifications; do not rehost the whole library (terms and licence pages) | Yes, with a `NOTICE` credit; one file at a time | Yes |
 | Pixabay | Attribution not required; "you cannot sell or distribute Content ... on a Standalone basis" (licence summary) | Doubtful: a sound file in a repository is standalone distribution. Not advised | Link only |
@@ -114,7 +115,7 @@ conversions; the originals are Ogg and the names may differ): `error_001` to `er
 | Keep it short; no note under 0.0825 s or it may go unnoticed | Brewster, Wright and Edwards, "Guidelines for the Creation of Earcons" (University of Glasgow; the page gives no year) | About 0.3 to 0.8 s per sound is the working range proposed here; the cited rule only fixes the shortest note. The range is a judgement, not a measurement |
 | Loudness is "the main cause of annoyance due to sound" | Same | Level-match all five files; the sound is a nudge, not an alarm |
 | Make sounds "subjectively easy to tell apart"; build a family from timbre, register and rhythm first, then pitch and intensity | Same | Give each event its own timbre or rhythm, not just a different pitch |
-| Different numbers of notes tell rhythms apart; similar rhythms get confused | Same, citing Patterson (1982) | Use a different note count per event (1, 2, 3 notes) |
+| Different numbers of notes tell rhythms apart; similar rhythms get confused | Same, citing Patterson (1982) | Differ in note count or rhythm as well as timbre; with five events the counts cannot all differ, so rhythm and timbre must carry the rest |
 | Register works only for relative judgements, and only if registers differ widely; absolute pitch should not carry meaning | Same | Do not rely on "this one is a bit higher" to tell failure from question |
 | The more often something happens, the less intrusive its sound should be; use silence on purpose; sounds should feel like one palette | Zafrin and O'Sullivan, Google Material Design feature "Good Vibrations" (no date on the page) | Frequent events get the quietest sound; a rare failure may stand out; all five share a character |
 | A simple, light high note rarely startles; bass distorts on small speakers; a sharp-attack accent survives a missed melody; loudness should match importance; related events can share a motif; sound should be optional | Ahva, Futurice, "Please design notifications responsibly (+ free sounds)", 2017-09-05 | Avoid deep bass; per-event on/off already exists |
@@ -148,7 +149,8 @@ owns 5 binaries it did not design.
 ### For Theo's own set (kept outside the repository)
 
 **Option 1: pick five from the Kenney CC0 pack.** Audition the candidate names above, copy the
-five chosen files to a folder under his home, set the `[notify.sound.files]` paths from #1130.
+five chosen files to a folder under his home, set the `[notify.sound.files]` paths from #1130. The originals are `.ogg`, which #1130 does
+not name; use the mirror's WAVs, or convert the chosen five to `.wav` or `.oga`.
 About 20 minutes once #1130 lands. No licence concern at all.
 
 **Option 2: make five with the Option B recipe.** Same script, Theo tunes the numbers. About
@@ -160,13 +162,20 @@ publisher; fine as a private choice, never in the repository or a Torlek release
 
 ### Proposed character per event (for Options 2 and B; not auditioned)
 
-| Event | Proposed sound | Reasoning |
-| --- | --- | --- |
-| finished | One soft two-note rising figure, about 0.3 s, mid register | Quietest and shortest: the sound a user hears most |
-| question | Two notes with a rising end, about 0.5 s, a different timbre from finished | A rising contour reads as "asks something"; timbre keeps it apart from finished |
-| hold | Three equal short pulses, about 0.6 s | A note count nothing else uses; urgency through pulse count |
-| failure | Two falling notes, lower register, about 0.6 s | Falling contour reads as bad news; the only low sound |
-| quota | One long soft note with a slow decay, about 0.8 s | One note stands apart from the multi-note events and suits an informational limit |
+The Glasgow guidance says to separate a family by timbre and rhythm first, and that register
+and contour are weak cues. With five events the note counts cannot all differ, so each event
+gets its own rhythm and timbre, and contour only supports them.
+
+| Event | Notes and rhythm | Timbre | Register and length |
+| --- | --- | --- | --- |
+| finished | One short note | Soft, bell-like | Mid, about 0.25 s |
+| question | Two notes, short then long, rising | Plucked, marimba-like | Mid to high, about 0.5 s |
+| hold | Three equal pulses | Dry, woodblock-like | Mid, about 0.6 s |
+| failure | Two equal notes, falling | Dull, muted | Low, about 0.6 s |
+| quota | One long note with a slow decay | Soft, pad-like | Mid to low, about 0.8 s |
+
+Finished and quota are both single notes; they differ in length and timbre, which is the
+weakest pair in this table and the first one to audition.
 
 How often each event fires is unknown here; if finished turns out rare after #1127, its
 "quietest" rule should be revisited with the owner's event log.
@@ -184,7 +193,8 @@ How often each event fires is unknown here; if finished turns out rare after #11
 Additions to #1130's text (proposed, Theo applies them):
 
 > - The user guide names `.oga` and `.wav` as safe formats and says an mp3 depends on the
->   player. (Herdr accepts mp3 only; kitty accepts WAV and OGA on Linux.)
+>   player. (Herdr accepts mp3 only; kitty accepts WAV and OGA on Linux.) Kenney's original
+>   files are `.ogg`: say whether `.ogg` is accepted, or point owners at converted WAVs.
 > - A custom sound replaces only the sound: the notifier must not also trigger a terminal bell
 >   for the same event.
 > - The user guide says no sound ships with Torlek, and links Kenney's CC0 pack as a starting
