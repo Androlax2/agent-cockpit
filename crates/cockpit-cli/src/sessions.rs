@@ -382,10 +382,9 @@ fn over_lines(session: &SessionView) -> String {
     }
 }
 
-/// `grant  permission  id  scope  terms`, tab-separated; `scope` is `project NAME` or
-/// `everything` (#1131), `terms` is
+/// `grant  permission  id  terms  scope`, tab-separated; `terms` is
 /// `per-hour=N max-active=M confirmed` or `... unconfirmed` for `start-sessions`, `-`
-/// otherwise.
+/// otherwise; `scope`, last since #1131, is `project NAME` or `everything`.
 fn grant_line(grant: &CoordinatorGrantView) -> String {
     let terms = match (grant.per_hour, grant.max_active, grant.needs_confirmation) {
         (Some(per_hour), Some(max_active), Some(needs_confirmation)) => {
@@ -399,7 +398,7 @@ fn grant_line(grant: &CoordinatorGrantView) -> String {
         _ => "-".to_owned(),
     };
     format!(
-        "grant\t{}\t{}\t{}\t{terms}",
+        "grant\t{}\t{}\t{terms}\t{}",
         grant.permission, grant.grant, grant.scope
     )
 }

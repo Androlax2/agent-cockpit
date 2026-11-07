@@ -594,6 +594,7 @@ async fn a_start_naming_no_wired_agent_is_refused_before_it_is_filed_or_counted(
                 Command::SessionGrant {
                     session: coordinator.id.clone(),
                     permission: "start-sessions".to_owned(),
+                    all_projects: true,
                     without_confirmation: true,
                     per_hour: Some(1),
                     max_active: None,
@@ -827,7 +828,7 @@ async fn max_active_round_trips_through_session_grant_and_session_grants() {
     let shown = String::from_utf8_lossy(&shown.stdout);
     assert!(
         shown.contains("\tstart-sessions\t")
-            && shown.contains("\tper-hour=20 max-active=3 confirmed\n"),
+            && shown.contains("\tper-hour=20 max-active=3 confirmed\tproject plain\n"),
         "{shown}"
     );
 }

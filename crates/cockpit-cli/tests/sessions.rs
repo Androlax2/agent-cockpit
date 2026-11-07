@@ -921,8 +921,8 @@ async fn session_grants_prints_each_grant_then_the_audit_newest_first() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
         text(&output.stdout),
-        "grant\tobserve-sessions\t4\tproject app\t-\n\
-         grant\tstart-sessions\t5\teverything\tper-hour=10 max-active=8 confirmed\n\
+        "grant\tobserve-sessions\t4\t-\tproject app\n\
+         grant\tstart-sessions\t5\tper-hour=10 max-active=8 confirmed\teverything\n\
          audit\t9\t1700000100\ts0123456789ab\tstart\t-\t\"approval request 2\"\n\
          audit\t8\t1700000000\ts0123456789ab\tmessage\ts000000000002\t\"rebase on main\"\n"
     );

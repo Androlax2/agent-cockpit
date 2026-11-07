@@ -2,7 +2,7 @@
 //! names every project. Driven through the real daemon, the real `torlek` run by a launched
 //! coordinator agent on the agent socket, and the owner's socket: a coordinator granted for
 //! project alpha lists and messages alpha's sessions only, and each verb aimed at project
-//! beta is refused naming both scopes; `--all-projects` gives the behaviour before #1131.
+//! beta is refused naming its grant's scope, never beta; `--all-projects` gives the behaviour before #1131.
 
 mod candidate;
 mod real_daemon;
@@ -17,6 +17,9 @@ use cockpit_protocol::{
 use real_daemon::{
     COMMANDED_PROJECT, Daemon, GENEROUS, Home, QUESTION_PROJECT, cockpit_program, new_session,
 };
+
+/// A well-formed session id no session has.
+const UNKNOWN_SESSION: &str = "s0000000000ff";
 
 const COORDINATOR_GRANTS: [&str; 4] = [
     "observe-sessions",
@@ -138,7 +141,7 @@ async fn a_project_coordinator_lists_and_messages_only_its_projects_sessions() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn each_verb_aimed_at_another_project_is_refused_naming_both_scopes() {
+async fn each_verb_aimed_at_another_project_is_refused_naming_the_grants_scope() {
     let scoped = Scoped::new(false).await;
     let beta_dir = scoped.beta_root.display().to_string();
 
@@ -151,18 +154,17 @@ async fn each_verb_aimed_at_another_project_is_refused_naming_both_scopes() {
             vec!["agent", "start", beta_dir.as_str(), "--agent", "claude"],
             "start-sessions",
         ),
+        // An unknown session reads as one of another project: probing ids tells nothing.
         (
-            vec!["agent", "end", scoped.beta_worker.as_str()],
-            "end-sessions",
+            vec!["agent", "message", UNKNOWN_SESSION, "hello"],
+            "message-sessions",
         ),
     ] {
         let printed = scoped.run(&arguments).await;
 
         assert!(printed.ends_with("exit=1\n"), "{arguments:?}: {printed}");
         assert!(
-            printed.contains(&format!(
-                "{permission} grant covers project alpha, not project beta"
-            )),
+            printed.contains(&format!("{permission} grant covers project alpha only")),
             "{arguments:?}: {printed}"
         );
         assert!(
@@ -170,6 +172,48 @@ async fn each_verb_aimed_at_another_project_is_refused_naming_both_scopes() {
             "{arguments:?}: {printed}"
         );
     }
+}
+
+/// The end is checked against the project of a session the coordinator started: one it
+/// started in beta while its start grant covered every project.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_end_in_another_project_is_refused_naming_the_grants_scope() {
+    let scoped = Scoped::new(false).await;
+    let regranted = scoped
+        .owner
+        .request(
+            Command::SessionGrant {
+                session: scoped.coordinator.clone(),
+                permission: "start-sessions".to_owned(),
+                all_projects: true,
+                without_confirmation: true,
+                per_hour: Some(5),
+                max_active: None,
+            },
+            GENEROUS,
+        )
+        .await;
+    assert!(
+        matches!(regranted, Ok(Reply::CoordinatorGrants { .. })),
+        "{regranted:?}"
+    );
+    let beta_dir = scoped.beta_root.display().to_string();
+    let started = scoped
+        .run(&["agent", "start", &beta_dir, "--agent", "claude"])
+        .await;
+    let worker = started
+        .lines()
+        .find_map(|line| line.strip_prefix("started session "))
+        .unwrap_or_else(|| panic!("the start names its session: {started}"))
+        .to_owned();
+
+    let printed = scoped.run(&["agent", "end", &worker]).await;
+
+    assert!(printed.ends_with("exit=1\n"), "{printed}");
+    assert!(
+        printed.contains("end-sessions grant covers project alpha only"),
+        "{printed}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -24,8 +24,10 @@ Issue #1131. Decided by the worker, within the issue's terms.
 - **An approval re-checks the very `start-sessions` grant the start was asked under**, active,
   instead of evaluating it over everything: the start's project was checked when it was asked.
 - **`agent sessions` lists only covered sessions; a message, start or end outside the scope is
-  refused naming the grant's scope and the one asked** (`... grant covers project alpha, not
-  project beta`). A message to an unknown session is checked against the sender's own project
-  first, so only a sender holding the grant learns the session does not exist.
+  refused naming the grant's own scope only** (`... grant covers project alpha only`). Naming
+  the scope asked would tell the coordinator another project's sessions and their projects; a
+  message to an unknown session is asked over everything, so it reads the same as one in
+  another project. `agent end` checks that the coordinator started the session before the
+  scope, since no wider grant would let it end another's.
 - **Rejected:** a `--project NAME` flag naming any project. The issue asks for the session's
   own project or every project; another project is a later, separate grant if needed.
