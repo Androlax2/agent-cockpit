@@ -95,11 +95,11 @@ pub(crate) async fn brief(
     let sender = Sender::read(connector).await;
     let session = identify(&sender, &database, launch_token).await?;
     let read = database.read().await?;
-    let provider = sessions
+    let row = sessions
         .get(&cockpit_sessions::SessionId::parse(session.as_str())?)
-        .await?
-        .provider;
-    let mut facts = facts(&read, &sessions, session.clone(), &environment).await?;
+        .await?;
+    let provider = row.provider.clone();
+    let mut facts = facts(&read, row.working_dir, session.clone(), &environment).await?;
     let packet = match &facts.workflow {
         Some(workflow) => {
             let actor = Actor::Session {
@@ -184,12 +184,10 @@ async fn identify(
 
 async fn facts(
     read: &Connection,
-    sessions: &cockpit_sessions::Sessions,
+    working_dir: PathBuf,
     session: cockpit_authorization::SessionId,
     environment: &cockpit_config::Environment,
 ) -> Result<LaunchFacts, Failed> {
-    let id = cockpit_sessions::SessionId::parse(session.as_str())?;
-    let working_dir = sessions.get(&id).await?.working_dir;
     // The session's own directory, not the caller's: `cockpit brief` may run from anywhere.
     let checkout = crate::approvals::checkout_at(read, &working_dir).await?;
     let project = checkout
