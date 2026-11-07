@@ -235,3 +235,32 @@ fn a_report_counts_destinations_past_its_bound_together() {
     assert_eq!(report.destinations.len(), MAX_REPORTED_DESTINATIONS);
     assert_eq!(report.other.refused, 1);
 }
+
+/// #832: a client that refused the session CA reaches the owner in the evidence, on its
+/// host's line, with the proxy's reason.
+#[test]
+fn the_evidence_names_the_host_whose_client_refused_the_session_ca() {
+    let mut report = EgressReport::new(Subject::Session {
+        session: "s1".to_owned(),
+    });
+    let counters = report.counters("api.github.com:443");
+    counters.ca_refused = 2;
+    counters.last_reason = Some("the client refused the session CA's certificate".to_owned());
+
+    let lines = report.describe();
+
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].starts_with("egress api.github.com:443: "),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains(
+            ", session CA refused by the client 2 times; last: the client refused the session \
+             CA's certificate"
+        ),
+        "{}",
+        lines[0]
+    );
+}

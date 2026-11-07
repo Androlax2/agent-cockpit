@@ -384,6 +384,30 @@ async fn a_sandboxed_agent_gets_no_github_token_or_gh_sign_in() {
     assert!(printed.ends_with("refused\nexit=0\n"), "{printed}");
 }
 
+/// #857 decision 1: with both of the project's GitHub tokens kept, the push token still
+/// stays with the daemon: neither the agent's environment nor its home holds its value.
+#[tokio::test(flavor = "multi_thread")]
+async fn with_both_github_tokens_kept_the_push_token_never_reaches_the_agent() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        home.write_github_token(COMMANDED_PROJECT, "ghp_push_token\n", 0o600);
+        home.write_github_api_token(COMMANDED_PROJECT, "github_pat_api_token\n", 0o600);
+    })
+    .await;
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        // The value is spelled in two halves: the command's own script is in the home too.
+        "value=ghp_push; value=${value}_token; \
+         cat /proc/self/environ | tr '\\0' '\\n' | grep -c \"$value\"; \
+         grep -rl \"$value\" ~ 2>/dev/null | wc -l",
+    )
+    .await;
+
+    assert_eq!(printed, "0\n0\nexit=0\n");
+}
+
 /// Every provider adapter's credential paths, `~/` stripped.
 fn providers_credential_files() -> Vec<&'static str> {
     cockpit_claude::needs::CREDENTIAL_FILES

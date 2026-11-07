@@ -4,13 +4,17 @@
 
 use std::path::Path;
 
-use cockpit_sandbox::{CredentialHost, CredentialScheme, Interception, SpecCredential};
+use cockpit_sandbox::{
+    CredentialHost, CredentialScheme, Interception, PLACEHOLDER, SpecCredential,
+};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 use super::*;
 
 const HOST: &str = "api.github.com";
+const GIT_HOST: &str = "github.com";
+const PROVIDER_HOST: &str = "api.anthropic.com";
 const SECRET: &str = "github_pat_secret";
 const TOKEN_NAME: &str = "the project's GitHub API token";
 
@@ -81,14 +85,24 @@ fn upstream_server(ca: &rcgen::CertifiedIssuer<'static, rcgen::KeyPair>, host: &
 /// The launcher's authority for `HOST`, whose upstream roots are `roots_pem`, with its trust
 /// files in `folder`.
 fn authority(folder: &Path, roots_pem: &str) -> (Authority, Interception) {
+    authority_binding(folder, roots_pem, HOST, CredentialScheme::Bearer)
+}
+
+/// The launcher's authority adding the credential on `host` by `scheme`.
+fn authority_binding(
+    folder: &Path,
+    roots_pem: &str,
+    host: &str,
+    scheme: CredentialScheme,
+) -> (Authority, Interception) {
     let system_bundle = folder.join("system-bundle.pem");
     std::fs::write(&system_bundle, roots_pem).unwrap();
     let interception = Interception {
         credentials: vec![SpecCredential {
             name: TOKEN_NAME.to_owned(),
             hosts: vec![CredentialHost {
-                host: HOST.to_owned(),
-                scheme: CredentialScheme::Bearer,
+                host: host.to_owned(),
+                scheme,
             }],
         }],
         system_bundle,
@@ -101,9 +115,13 @@ fn authority(folder: &Path, roots_pem: &str) -> (Authority, Interception) {
 
 fn running(authority: Authority, server: SocketAddr) -> Running {
     start_with(
-        vec![name(HOST, 443), name("api.anthropic.com", 443)],
+        vec![
+            name(HOST, 443),
+            name(GIT_HOST, 443),
+            name(PROVIDER_HOST, 443),
+        ],
         fake(
-            &[(HOST, PUBLIC), ("api.anthropic.com", PUBLIC)],
+            &[(HOST, PUBLIC), (GIT_HOST, PUBLIC), (PROVIDER_HOST, PUBLIC)],
             Some(server),
         ),
         Some(authority),
@@ -113,12 +131,22 @@ fn running(authority: Authority, server: SocketAddr) -> Running {
 /// `CONNECT HOST:443`, then TLS trusting `roots_pem` alone and one request; what the client
 /// read back, or why its TLS failed.
 fn request_through(proxy: SocketAddr, roots_pem: &str, request: &str) -> Result<String, String> {
+    request_to(proxy, HOST, roots_pem, request)
+}
+
+/// [`request_through`] for `host`.
+fn request_to(
+    proxy: SocketAddr,
+    host: &str,
+    roots_pem: &str,
+    request: &str,
+) -> Result<String, String> {
     let mut stream = TcpStream::connect(proxy).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     stream
-        .write_all(format!("CONNECT {HOST}:443 HTTP/1.1\r\nHost: {HOST}:443\r\n\r\n").as_bytes())
+        .write_all(format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").as_bytes())
         .unwrap();
     let mut established = Vec::new();
     let mut byte = [0_u8; 1];
@@ -138,7 +166,7 @@ fn request_through(proxy: SocketAddr, roots_pem: &str, request: &str) -> Result<
         .with_no_client_auth();
     let connection = rustls::ClientConnection::new(
         Arc::new(config),
-        rustls::pki_types::ServerName::try_from(HOST).unwrap(),
+        rustls::pki_types::ServerName::try_from(host.to_owned()).unwrap(),
     )
     .unwrap();
     let mut tls = rustls::StreamOwned::new(connection, stream);
@@ -161,13 +189,22 @@ fn counters_when(
     running: &Running,
     ready: impl Fn(&cockpit_sandbox::EgressCounters) -> bool,
 ) -> cockpit_sandbox::EgressCounters {
+    counters_of(running, HOST, ready)
+}
+
+/// [`counters_when`] for `host:443`.
+fn counters_of(
+    running: &Running,
+    host: &str,
+    ready: impl Fn(&cockpit_sandbox::EgressCounters) -> bool,
+) -> cockpit_sandbox::EgressCounters {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let counters = running
             .proxy
             .report()
             .destinations
-            .get(&format!("{HOST}:443"))
+            .get(&format!("{host}:443"))
             .cloned()
             .unwrap_or_default();
         if ready(&counters) || Instant::now() > deadline {
@@ -295,4 +332,131 @@ fn a_host_without_a_credential_stays_a_plain_tunnel() {
         answer.as_bytes()[established.len()..],
         String::from_utf8_lossy(&hello).as_bytes()[..]
     );
+}
+
+fn git_reads() -> CredentialScheme {
+    CredentialScheme::GitReads {
+        username: "x-access-token".to_owned(),
+    }
+}
+
+/// #857: both halves of a push are answered by the proxy, naming `torlek push`; nothing
+/// reaches GitHub and the token is added to neither.
+#[test]
+fn a_git_push_over_https_is_answered_403_naming_torlek_push() {
+    for request in [
+        "GET /owner/repo.git/info/refs?service=git-receive-pack HTTP/1.1\r\nHost: github.com\r\n\r\n",
+        "POST /owner/repo.git/git-receive-pack HTTP/1.1\r\nHost: github.com\r\n\
+         Content-Length: 4\r\n\r\npack",
+    ] {
+        let folder = tempfile::tempdir().unwrap();
+        let (ca, ca_pem) = upstream_ca();
+        let (authority, interception) =
+            authority_binding(folder.path(), &ca_pem, GIT_HOST, git_reads());
+        let running = running(authority, upstream_server(&ca, GIT_HOST));
+        let session_ca = std::fs::read_to_string(&interception.ca_file).unwrap();
+
+        let answer = request_to(running.address, GIT_HOST, &session_ca, request).unwrap();
+
+        assert!(answer.starts_with("HTTP/1.1 403 Forbidden: "), "{answer}");
+        assert!(answer.contains("`torlek push`"), "{answer}");
+        assert!(!answer.contains(SECRET), "{answer}");
+        let counters = counters_of(&running, GIT_HOST, |counters| counters.refused == 1);
+        assert_eq!(
+            (counters.refused, counters.credential_added),
+            (1, 0),
+            "{request}"
+        );
+    }
+}
+
+/// #857: a fetch's discovery on the same `info/refs` path gets the token as Basic.
+#[test]
+fn a_git_fetch_discovery_gets_the_token_as_basic_through_the_proxy() {
+    let folder = tempfile::tempdir().unwrap();
+    let (ca, ca_pem) = upstream_ca();
+    let (authority, interception) =
+        authority_binding(folder.path(), &ca_pem, GIT_HOST, git_reads());
+    let running = running(authority, upstream_server(&ca, GIT_HOST));
+    let session_ca = std::fs::read_to_string(&interception.ca_file).unwrap();
+
+    let answer = request_to(
+        running.address,
+        GIT_HOST,
+        &session_ca,
+        "GET /owner/repo.git/info/refs?service=git-upload-pack HTTP/1.1\r\nHost: github.com\r\n\r\n",
+    )
+    .unwrap();
+
+    assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
+    // base64 of `x-access-token:github_pat_secret`.
+    assert!(
+        answer.contains("Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2l0aHViX3BhdF9zZWNyZXQ=\r\n"),
+        "{answer}"
+    );
+    let counters = counters_of(&running, GIT_HOST, |counters| {
+        counters.credential_added == 1
+    });
+    assert_eq!(counters.credential_added, 1);
+}
+
+/// #858: a provider's request to its API host carries the real key in the header its
+/// binding names, in place of the placeholder the agent holds.
+#[test]
+fn a_providers_request_to_its_host_carries_the_key_in_place_of_the_placeholder() {
+    let folder = tempfile::tempdir().unwrap();
+    let (ca, ca_pem) = upstream_ca();
+    let scheme = CredentialScheme::Header {
+        name: "x-api-key".to_owned(),
+    };
+    let (authority, interception) =
+        authority_binding(folder.path(), &ca_pem, PROVIDER_HOST, scheme);
+    let running = running(authority, upstream_server(&ca, PROVIDER_HOST));
+    let session_ca = std::fs::read_to_string(&interception.ca_file).unwrap();
+
+    let answer = request_to(
+        running.address,
+        PROVIDER_HOST,
+        &session_ca,
+        &format!(
+            "POST /v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\n\
+             x-api-key: {PLACEHOLDER}\r\nContent-Length: 0\r\n\r\n"
+        ),
+    )
+    .unwrap();
+
+    assert!(
+        answer.contains(&format!("x-api-key: {SECRET}\r\n")),
+        "{answer}"
+    );
+    assert!(!answer.contains(PLACEHOLDER), "{answer}");
+}
+
+/// #858: the same placeholder sent to a host with no bound credential passes as the agent
+/// wrote it, through a plain tunnel, and carries no credential.
+#[test]
+fn the_placeholder_sent_to_another_host_carries_no_credential() {
+    let folder = tempfile::tempdir().unwrap();
+    let (ca, ca_pem) = upstream_ca();
+    let scheme = CredentialScheme::Header {
+        name: "x-api-key".to_owned(),
+    };
+    let (authority, _) = authority_binding(folder.path(), &ca_pem, PROVIDER_HOST, scheme);
+    let running = running(authority, upstream_server(&ca, GIT_HOST));
+
+    let answer = request_to(
+        running.address,
+        GIT_HOST,
+        &ca_pem,
+        &format!("GET / HTTP/1.1\r\nHost: github.com\r\nx-api-key: {PLACEHOLDER}\r\n\r\n"),
+    )
+    .unwrap();
+
+    assert!(
+        answer.contains(&format!("x-api-key: {PLACEHOLDER}\r\n")),
+        "{answer}"
+    );
+    assert!(!answer.contains(SECRET), "{answer}");
+    let counters = counters_of(&running, GIT_HOST, |counters| counters.allowed == 1);
+    assert_eq!((counters.allowed, counters.credential_added), (1, 0));
 }

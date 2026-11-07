@@ -261,7 +261,62 @@ fn replace_file(path: &Path, contents: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use rustls::client::WebPkiServerVerifier;
+    use rustls::client::danger::ServerCertVerifier;
+    use rustls::pki_types::{ServerName, UnixTime};
+
     use super::*;
+
+    /// A certificate the session CA signed for `host`, checked as a client trusting that CA
+    /// and connecting to `host` checks it.
+    fn verify_as_a_client(bound: &str, host: &str) -> Result<(), rustls::Error> {
+        let (ca_params, ca_key, ca_pem) = generate_ca("s1", &[bound]).unwrap();
+        let issuer = Issuer::from_params(&ca_params, &ca_key);
+        let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut params = CertificateParams::new(vec![host.to_owned()]).unwrap();
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        set_validity(&mut params);
+        let certificate = params.signed_by(&key, &issuer).unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(CertificateDer::from_pem_slice(ca_pem.as_bytes()).unwrap())
+            .unwrap();
+        let verifier = WebPkiServerVerifier::builder_with_provider(
+            Arc::new(roots),
+            Arc::new(rustls::crypto::ring::default_provider()),
+        )
+        .build()
+        .unwrap();
+        verifier
+            .verify_server_cert(
+                certificate.der(),
+                &[],
+                &ServerName::try_from(host.to_owned()).unwrap(),
+                &[],
+                UnixTime::now(),
+            )
+            .map(|_| ())
+    }
+
+    #[test]
+    fn the_session_ca_vouches_for_its_bound_host() {
+        assert_eq!(
+            verify_as_a_client("api.github.com", "api.github.com"),
+            Ok(())
+        );
+    }
+
+    /// Its name constraints: even a client trusting it everywhere refuses a certificate it
+    /// signed for another host.
+    #[test]
+    fn the_session_ca_vouches_for_no_other_host() {
+        let refused = verify_as_a_client("api.github.com", "evil.example.com");
+
+        assert!(
+            format!("{refused:?}").contains("NameConstraintViolation"),
+            "{refused:?}"
+        );
+    }
 
     #[test]
     fn civil_dates_match_known_days() {

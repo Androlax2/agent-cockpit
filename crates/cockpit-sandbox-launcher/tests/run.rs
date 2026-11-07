@@ -434,6 +434,23 @@ fn a_bound_credential_leaves_only_the_session_cas_certificate_inside() {
     assert!(!fixture.path("mounts").join(CREDENTIALS_FILE).exists());
 }
 
+/// The CA's key stays in the launcher's memory: no private key of any kind is in a file the
+/// session sees.
+#[test]
+fn no_private_key_reaches_the_session() {
+    let mut fixture = Fixture::new();
+    fixture.bind_credential();
+    fixture.write_credentials(&[SECRET]);
+
+    let printed = fixture.run(&format!(
+        "grep -rl 'PRIVATE KEY' {mounts} {config} 2>/dev/null; true",
+        mounts = fixture.path("mounts").display(),
+        config = fixture.path("config").display(),
+    ));
+
+    assert_eq!(printed, "exit=0\n");
+}
+
 fn api_github_grant() -> AllowEntry {
     AllowEntry {
         target: Target::Name("api.github.com".to_owned()),

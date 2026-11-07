@@ -251,11 +251,10 @@ fn a_push_upload_is_refused_however_its_path_is_spelled() {
             OK_EMPTY,
         );
 
-        assert!(
-            matches!(relayed.ended, Ended::Refused { .. }),
-            "{target}: {:?}",
-            relayed.ended
-        );
+        let Ended::Refused { reason, .. } = relayed.ended else {
+            panic!("{target}: {:?}", relayed.ended);
+        };
+        assert!(reason.contains("`torlek push`"), "{target}: {reason}");
         assert_eq!(relayed.sent, "", "{target}");
     }
 }
