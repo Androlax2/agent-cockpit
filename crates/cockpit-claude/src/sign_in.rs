@@ -1,5 +1,5 @@
 use rustix::process::{Pid, Signal, WaitId, WaitIdOptions};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -17,7 +17,13 @@ impl crate::ClaudeCode {
                 "run `claude auth status` in a terminal and check its result",
             )
         };
-        let output = match status_output(&self.program, &["auth", "status"], deadline) {
+        let output = match bounded_output(
+            &self.program,
+            &["auth", "status"],
+            None,
+            deadline,
+            "status command",
+        ) {
             Ok(output) => output,
             Err(reason) => return unknown(reason),
         };
@@ -51,12 +57,15 @@ impl crate::ClaudeCode {
     }
 }
 
-/// Capture a status command without retaining more than 64 KiB per stream. Socket pairs
-/// make reads nonblocking, so an inherited pipe cannot strand a reader thread after timeout.
-fn status_output(
+/// Capture a short command without retaining more than 64 KiB per stream, giving it `input`
+/// on its standard input, or none. Socket pairs make reads nonblocking, so an inherited pipe
+/// cannot strand a reader thread after timeout. `label` names the command in its errors.
+pub(crate) fn bounded_output(
     program: &Path,
     arguments: &[&str],
+    input: Option<&[u8]>,
     deadline: Duration,
+    label: &str,
 ) -> Result<std::process::Output, String> {
     use std::os::fd::OwnedFd;
     use std::os::unix::net::UnixStream;
@@ -72,33 +81,43 @@ fn status_output(
     let mut child = Command::new(program)
         .args(arguments)
         .process_group(0)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(out)
         .stderr(err)
         .spawn()
-        .map_err(|_| "cannot run the status command".to_owned())?;
+        .map_err(|error| format!("cannot run the {label}: {error}"))?;
     let pid = Pid::from_child(&child);
     let ends_at = Instant::now() + deadline;
+    let mut stdin = child.stdin.take();
     let result = (|| {
+        // A few hundred bytes fit the pipe's buffer, so this write never waits on the reader.
+        if let (Some(mut pipe), Some(bytes)) = (stdin.take(), input) {
+            pipe.write_all(bytes)
+                .map_err(|_| format!("cannot write to the {label}"))?;
+        }
         let mut output = Vec::new();
         let mut error = Vec::new();
         loop {
-            let out_done = read_status_pipe(&mut stdout, &mut output)?;
-            let err_done = read_status_pipe(&mut stderr, &mut error)?;
+            let out_done = read_bounded_pipe(&mut stdout, &mut output, label)?;
+            let err_done = read_bounded_pipe(&mut stderr, &mut error, label)?;
             // Keep the leader waitable until group cleanup, so its pid cannot be reused
             // when a wrapper exits before its descendants close the output streams.
             let exited = rustix::process::waitid(
                 WaitId::Pid(pid),
                 WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
             )
-            .map_err(|_| "cannot wait for the status command")?
+            .map_err(|_| format!("cannot wait for the {label}"))?
             .is_some();
             if exited && out_done && err_done {
                 return Ok((output, error));
             }
             if Instant::now() >= ends_at {
                 return Err(format!(
-                    "status command did not answer within {} ms",
+                    "{label} did not answer within {} ms",
                     deadline.as_millis()
                 ));
             }
@@ -110,10 +129,12 @@ fn status_output(
     if cleanup.is_err() {
         let _ = child.kill();
     }
-    let status = child.wait().map_err(|_| "cannot reap the status command")?;
+    let status = child
+        .wait()
+        .map_err(|_| format!("cannot reap the {label}"))?;
     match cleanup {
         Ok(()) | Err(rustix::io::Errno::SRCH) => {}
-        Err(_) => return Err("cannot stop the status command's process group".to_owned()),
+        Err(_) => return Err(format!("cannot stop the {label}'s process group")),
     }
     let (stdout, stderr) = result?;
     Ok(std::process::Output {
@@ -123,20 +144,24 @@ fn status_output(
     })
 }
 
-fn read_status_pipe(pipe: &mut impl Read, bytes: &mut Vec<u8>) -> Result<bool, String> {
+fn read_bounded_pipe(
+    pipe: &mut impl Read,
+    bytes: &mut Vec<u8>,
+    label: &str,
+) -> Result<bool, String> {
     let mut buffer = [0; 4096];
     loop {
         match pipe.read(&mut buffer) {
             Ok(0) => return Ok(true),
             Ok(count) => {
                 if bytes.len() + count > 64 * 1024 {
-                    return Err("status command output exceeded 64 KiB".to_owned());
+                    return Err(format!("{label} output exceeded 64 KiB"));
                 }
                 bytes.extend_from_slice(&buffer[..count]);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => return Err("cannot read the status command output".to_owned()),
+            Err(_) => return Err(format!("cannot read the {label} output")),
         }
     }
 }

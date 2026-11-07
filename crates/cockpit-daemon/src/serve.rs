@@ -11,7 +11,7 @@ use std::time::Duration;
 use cockpit_provider_api::{Provenance, Provider};
 use cockpit_readiness::ProviderUnusable;
 
-use crate::{Instance, Options, Routes, StartError, Wiring, session_settings};
+use crate::{Instance, Options, QuotaPolling, Routes, StartError, Wiring, session_settings};
 
 /// The folder under the state directory the OpenCode plugin is written to at every start;
 /// agents read it, so it holds nothing else.
@@ -178,6 +178,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         tracing::warn!(?window, "the idle window is overridden for a test");
         sessions.owner.idle_sleep_after = window;
     }
+    let owner_home = environment.home_dir().map_err(StartError::Config)?;
     let runtime = tokio::runtime::Runtime::new().map_err(StartError::Runtime)?;
     let served = runtime.block_on(async {
         let wiring = Wiring {
@@ -203,6 +204,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             environment: environment.clone(),
             scheduling: cockpit_scheduling::Settings::default(),
             feed_buffer_bytes: config.memory.feed_buffer_kib.value.saturating_mul(1024),
+            quota: Some(QuotaPolling::from_settings(&config.usage, owner_home)),
         };
         let daemon = instance
             .start(wiring, |capabilities| {

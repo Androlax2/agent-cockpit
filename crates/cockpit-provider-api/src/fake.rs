@@ -6,16 +6,20 @@
 //! seconds, 600 by default). A test may give it more capabilities ([`FakeProvider::reporting`]) and a
 //! program its agent runs, in its own process tree, before it sleeps
 //! ([`FakeProvider::running`]), or have it read the messages typed to it
-//! ([`FakeProvider::reading_messages`]), or exit at once ([`FakeProvider::exiting`]).
+//! ([`FakeProvider::reading_messages`]), or exit at once ([`FakeProvider::exiting`]), or
+//! answer quota readings ([`FakeProvider::reading_quota`]).
 
+use std::collections::VecDeque;
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     Action, Activity, Capabilities, Capability, Conversation, ConversationId, Key, LaunchCommand,
-    LaunchRequest, Provenance, Provider, ProviderError, ProviderName, TerminalInput, TrustRequest,
-    WorkspaceTrust,
+    LaunchRequest, Provenance, Provider, ProviderError, ProviderName, QuotaReading, TerminalInput,
+    TrustRequest, WorkspaceTrust,
 };
 
 /// The efforts the fake takes once it reports [`Capability::Effort`]; any other is refused.
@@ -30,6 +34,8 @@ if [ -n "${FAKE_AGENT_MESSAGES:-}" ]; then
 fi
 exec sleep "${FAKE_AGENT_SLEEP:-600}""#;
 
+type QuotaAnswers = VecDeque<Result<QuotaReading, ProviderError>>;
+
 pub struct FakeProvider {
     name: ProviderName,
     log: PathBuf,
@@ -42,6 +48,9 @@ pub struct FakeProvider {
     exits_with: Option<(u8, String)>,
     reports_at_launch: bool,
     trusted: Option<PathBuf>,
+    /// The answers [`Provider::quota`] gives in turn, the last one again once they run out,
+    /// and the log each ask is appended to.
+    quota: Option<(Mutex<QuotaAnswers>, PathBuf)>,
     conversations: AtomicUsize,
 }
 
@@ -61,6 +70,7 @@ impl FakeProvider {
             exits_with: None,
             reports_at_launch: false,
             trusted: None,
+            quota: None,
             conversations: AtomicUsize::new(logged),
         }
     }
@@ -121,6 +131,30 @@ impl FakeProvider {
         self
     }
 
+    /// Reports `quota`, as discovered: each [`Provider::quota`] gives the next of `answers`,
+    /// the last one again once they run out, and appends `<unix milliseconds>\t<home>` to
+    /// `log` ([`FakeProvider::quota_asks`]).
+    pub fn reading_quota(
+        mut self,
+        answers: Vec<Result<QuotaReading, ProviderError>>,
+        log: PathBuf,
+    ) -> FakeProvider {
+        assert!(!answers.is_empty(), "a fake reading quota needs an answer");
+        self.quota = Some((Mutex::new(answers.into()), log));
+        self.reporting(Capability::Quota)
+    }
+
+    /// Every quota ask the fake recorded into `log`, as (unix milliseconds, home), oldest
+    /// first.
+    pub fn quota_asks(log: &Path) -> Vec<(u128, PathBuf)> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.split_once('\t'))
+            .map(|(at, home)| (at.parse().expect("milliseconds"), home.into()))
+            .collect()
+    }
+
     /// Every trust the fake recorded into `log`, as (workspace, trusted checkout), oldest
     /// first.
     pub fn trusted(log: &Path) -> Vec<(PathBuf, PathBuf)> {
@@ -168,6 +202,27 @@ impl Provider for FakeProvider {
         } else {
             self.reported.clone()
         }
+    }
+
+    fn quota(&self, home: &Path) -> Result<QuotaReading, ProviderError> {
+        let Some((answers, log)) = &self.quota else {
+            return Err(ProviderError::unsupported(Capability::Quota));
+        };
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the clock is after 1970")
+            .as_millis();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+            .expect("the quota log opens");
+        writeln!(file, "{at}\t{}", home.display()).expect("the quota log takes a line");
+        let mut answers = answers.lock().expect("the quota answers are not poisoned");
+        if answers.len() > 1 {
+            return answers.pop_front().expect("more than one answer");
+        }
+        answers.front().cloned().expect("one answer left")
     }
 
     fn reports_at_launch(&self) -> bool {

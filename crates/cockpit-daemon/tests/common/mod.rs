@@ -391,6 +391,7 @@ pub fn wiring_in(
             ..cockpit_scheduling::Settings::default()
         },
         feed_buffer_bytes: 1024 * 1024,
+        quota: None,
     }
 }
 

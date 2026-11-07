@@ -343,6 +343,16 @@ pub trait Provider: Send + Sync + 'static {
         Ok(WorkspaceTrust::NotKept)
     }
 
+    /// The plan windows of the account the harness is signed in to under `home`, the
+    /// owner's home folder, never a session's ([`Capability::Quota`], #58). Run by the host
+    /// daemon only: the credential it reads to ask stays in the adapter, never in an error,
+    /// a log or a session (#858). May block for at most fifteen seconds; run off async
+    /// workers. The default refuses.
+    fn quota(&self, home: &Path) -> Result<QuotaReading, ProviderError> {
+        let _ = home;
+        Err(ProviderError::unsupported(Capability::Quota))
+    }
+
     /// The agent's activity read from the end of its terminal, for when no event says it
     /// ([`Capability::ScreenReading`]). Never proof that a task completed.
     fn read_screen(&self, screen: &str) -> Option<Observation> {

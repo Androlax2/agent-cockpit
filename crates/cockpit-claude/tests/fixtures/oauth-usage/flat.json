@@ -1,0 +1,7 @@
+{
+  "five_hour": {"utilization": 7.0, "resets_at": "2027-01-15T10:00:00Z"},
+  "seven_day": {"utilization": 33.0, "resets_at": "2027-01-20T10:00:00Z"},
+  "seven_day_opus": null,
+  "seven_day_sonnet": {"utilization": 4.0, "resets_at": "2027-01-20T10:00:00Z"},
+  "model_scoped": [{"display_name": "Fable", "utilization": 50.0, "resets_at": null}]
+}

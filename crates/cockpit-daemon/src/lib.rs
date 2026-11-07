@@ -32,6 +32,7 @@ mod sessions;
 mod storage;
 mod supervisor;
 mod tasks;
+mod usage;
 mod verification;
 mod versions;
 mod view_stamp_feed;
@@ -53,9 +54,10 @@ pub use routes::{BufferedBatch, Handler, Job, Peer, Route, Routes, StreamJob, Wo
 pub use serve::{EXIT_SWEEP, SESSION_TICK, Serve, own_profile, own_program, serve};
 pub use server::Limits;
 pub use session_sockets::SessionTreeSockets;
+pub use usage::QuotaPolling;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 14] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 15] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
@@ -70,6 +72,7 @@ pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 14] = [
     cockpit_verification::MIGRATIONS,
     cockpit_scheduling::MIGRATIONS,
     cockpit_bug_reports::MIGRATIONS,
+    cockpit_usage::MIGRATIONS,
 ];
 
 /// Names the directory holding the instruction bundle in every agent's environment.
@@ -114,6 +117,9 @@ pub struct Wiring {
     /// The bytes of change batches one subscriber may have waiting to be written (#406):
     /// the owner's `memory.feed_buffer_kib`.
     pub feed_buffer_bytes: u32,
+    /// How each provider reporting `quota` is read (#58); `None` reads none, as in tests that
+    /// are not about quota.
+    pub quota: Option<QuotaPolling>,
 }
 
 /// The sessions' settings the owner configured: the idle window and the asleep expiry
@@ -211,6 +217,7 @@ pub struct Daemon {
     maintaining_database: tokio::task::JoinHandle<()>,
     sweeping_ended: tokio::task::JoinHandle<()>,
     guarding_disk: tokio::task::JoinHandle<()>,
+    polling_quota: Option<tokio::task::JoinHandle<()>>,
     prune_stop: Arc<std::sync::atomic::AtomicBool>,
     _database: Arc<cockpit_turso::Database>,
     _instance: Instance,
@@ -410,6 +417,7 @@ impl Instance {
             wiring.clipboard_reader,
         ));
         let sign_in_providers = wiring.providers.clone();
+        let quota_providers = wiring.providers.clone();
         let sessions = Arc::new(cockpit_sessions::Sessions::new(
             Arc::clone(&database),
             processes,
@@ -673,6 +681,20 @@ impl Instance {
             faults.clone(),
             move || disk_guard::guard_forever(guard.clone()),
         ));
+        let polling_quota = wiring.quota.map(|polling| {
+            let polled_database = Arc::clone(&database);
+            tokio::spawn(supervisor::supervise(
+                "quota-polling",
+                faults.clone(),
+                move || {
+                    usage::poll_forever(
+                        Arc::clone(&polled_database),
+                        quota_providers.clone(),
+                        polling.clone(),
+                    )
+                },
+            ))
+        });
         let accepting_agents = accept(&agent_listener, &shared, server::Socket::Agent, &faults);
         tracing::info!(
             socket = %socket_path.display(),
@@ -699,6 +721,7 @@ impl Instance {
             maintaining_database,
             sweeping_ended,
             guarding_disk,
+            polling_quota,
             prune_stop,
             _database: database,
             _instance: self,
@@ -829,6 +852,9 @@ impl Drop for Daemon {
         self.maintaining_database.abort();
         self.sweeping_ended.abort();
         self.guarding_disk.abort();
+        if let Some(polling) = &self.polling_quota {
+            polling.abort();
+        }
         bug_reports::mark_stopped(&self._instance.options.state_dir);
     }
 }

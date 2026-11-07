@@ -548,6 +548,7 @@ dependencies = [
  "cockpit-tasks",
  "cockpit-tmux",
  "cockpit-turso",
+ "cockpit-usage",
  "cockpit-verification",
  "cockpit-workflows",
  "serde",

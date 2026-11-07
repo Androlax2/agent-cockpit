@@ -150,6 +150,18 @@ pub fn render(config: &EffectiveConfig) -> String {
     ] {
         lines.push(line(key, &bound.value.to_string(), &bound.source));
     }
+    let usage = &config.usage;
+    for (key, minutes) in [
+        ("usage.quota_refresh_minutes", &usage.quota_refresh_minutes),
+        ("usage.quota_fresh_minutes", &usage.quota_fresh_minutes),
+    ] {
+        lines.push(line(key, &minutes.value.to_string(), &minutes.source));
+    }
+    lines.push(line(
+        "usage.quota_alert_percents",
+        &format!("{:?}", usage.quota_alert_percents.value),
+        &usage.quota_alert_percents.source,
+    ));
     lines.push(line(
         "storage.low_disk_floor_mib",
         &storage.low_disk_floor_mib.value.to_string(),

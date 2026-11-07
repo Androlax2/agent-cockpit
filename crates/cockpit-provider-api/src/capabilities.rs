@@ -45,10 +45,13 @@ pub enum Capability {
     /// Launch with the harness's own compaction threshold set
     /// ([`crate::LaunchRequest::compaction_threshold`], #783).
     CompactionThreshold,
+    /// Read the signed-in account's plan windows from the harness's own source
+    /// ([`crate::Provider::quota`], #58).
+    Quota,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 15] = [
+    pub const ALL: [Capability; 16] = [
         Capability::Resume,
         Capability::Submit,
         Capability::Events,
@@ -64,6 +67,7 @@ impl Capability {
         Capability::ScreenReading,
         Capability::Inbox,
         Capability::CompactionThreshold,
+        Capability::Quota,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -83,6 +87,7 @@ impl Capability {
             Capability::ScreenReading => "screen-reading",
             Capability::Inbox => "inbox",
             Capability::CompactionThreshold => "compaction-threshold",
+            Capability::Quota => "quota",
         }
     }
 }
