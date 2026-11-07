@@ -116,7 +116,8 @@ phone_below_columns = 60  # 0 never switches
 ## Notify
 
 Which events `torlek notify` (#62) tells with a desktop notification and which with a sound,
-read when it starts. Every event is on by default; an unknown event name fails the parse.
+read when it starts. `[notify] autostart = false` (default `true`) is read by `torlek daemon
+install`: it writes no `torlek-notify.service` and removes the one it wrote (#1126). Every event is on by default; an unknown event name fails the parse.
 
 ```toml
 [notify.desktop]

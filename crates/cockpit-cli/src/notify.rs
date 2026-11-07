@@ -18,7 +18,7 @@ use std::process::ExitCode;
 use crate::daemon::fail;
 
 const NOTIFY_BINARY: &str = "torlek-notify";
-const STATUS_FILE: &str = "status.json";
+pub(crate) const STATUS_FILE: &str = "status.json";
 const AWAY_FILE: &str = "away";
 
 pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {

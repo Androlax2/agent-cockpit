@@ -240,6 +240,11 @@ pub fn render(config: &EffectiveConfig) -> String {
         &config.tui_phone_below_columns.value.to_string(),
         &config.tui_phone_below_columns.source,
     ));
+    lines.push(line(
+        "notify.autostart",
+        &config.notify.autostart.value.to_string(),
+        &config.notify.autostart.source,
+    ));
     for (outlet, events) in [
         ("desktop", &config.notify.desktop),
         ("sound", &config.notify.sound),

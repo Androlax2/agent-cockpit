@@ -96,8 +96,9 @@ It fails, and writes nothing, when:
 ### User state
 
 The package owns files under `/usr` only. Configuration, state and user services live in the
-user's home, so `apt remove` and `apt purge` keep them. The units point at `/usr/lib/torlek/bin`:
-stop them with `systemctl --user disable --now` before removing the package. An upgrade
+user's home, so `apt remove` and `apt purge` keep them. The units (`torlek.service` and
+`torlek-notify.service`) point at `/usr/lib/torlek/bin`: stop them with
+`systemctl --user disable --now` before removing the package. An upgrade
 replaces the programs in place, and a running daemon keeps the old one until it restarts.
 `/usr/lib/torlek/bin` is root's, so a profile's `torlek-<profile>` link is skipped, as with
 [the AUR package](aur.md#user-state).

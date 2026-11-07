@@ -94,6 +94,13 @@ impl Profile {
         format!("{}.service", self.qualified_name())
     }
 
+    /// The systemd user unit that starts this profile's notifier with the desktop session
+    /// (#1126): `torlek-notify.service` for the default profile, which `notify` reserves as a
+    /// profile name.
+    pub fn notify_systemd_unit(&self) -> String {
+        format!("{}-notify.service", self.qualified_name())
+    }
+
     /// The launchd agent's label on macOS, with the `-<name>` suffix OpenLogi's dev bundle
     /// uses for its identifiers.
     pub fn launchd_label(&self) -> String {

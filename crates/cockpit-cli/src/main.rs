@@ -36,6 +36,7 @@ mod instructions;
 mod logs;
 mod mcp;
 mod network;
+mod notifier_unit;
 mod notify;
 mod old_sandbox;
 mod onboarding;

@@ -87,7 +87,7 @@ renderer accepts only `X.Y.Z-alpha.N` and `X.Y.Z-beta.N` tags, the release tags 
 ### User state
 
 The package owns files under `/usr` only. A profile's configuration, state and user services
-(`torlek.service`, and `torlek-greyproxy-*.service` from a release before #828) live in the
+(`torlek.service`, `torlek-notify.service`, and `torlek-greyproxy-*.service` from a release before #828) live in the
 user's home and are written by `torlek daemon install`, not by pacman, so `pacman -R` keeps them.
 Their units still point at `/usr/lib/torlek/bin`: stop them with `systemctl --user disable --now`
 before removing the package. An upgrade replaces the programs in place, and a running daemon

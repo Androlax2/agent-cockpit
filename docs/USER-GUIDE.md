@@ -249,9 +249,24 @@ turns it off.
 
 ### Desktop notifications and sounds
 
-`torlek notify`, run from your desktop session, shows a desktop notification and plays a sound
-when a session fails, is held on your permission, asks a question, stops at its usage limit or
-finishes. It runs until you stop it and needs `notify-send` for notifications and
+`torlek notify` shows a desktop notification and plays a sound when a session fails, is held
+on your permission, asks a question, stops at its usage limit or finishes.
+
+`torlek daemon install` also installs it as the user service `torlek-notify.service`
+(`torlek-NAME-notify.service` for a named profile), tied to `graphical-session.target`: it
+starts with your desktop session and stops with it. A host with no graphical session (WSL2, a
+server, SSH only) never starts it and shows no error. `torlek doctor` says whether it is running,
+installed but not running, or not installed, and the command that fixes it. A hand-made unit of
+that name that runs `torlek notify` is replaced by the install, which says so. To not have the
+service, set `autostart = false` in the owner configuration and run `torlek daemon install`
+again, which removes it; `torlek notify` still runs by hand:
+
+```toml
+[notify]
+autostart = false
+```
+
+Run by hand, it runs until you stop it. It needs `notify-send` for notifications and
 `canberra-gtk-play`, `pw-play` or `paplay` for sounds; without them it keeps running and logs
 which outlet is off. Turn single events off in the owner configuration, then start it again:
 

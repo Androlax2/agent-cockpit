@@ -16,6 +16,7 @@ use cockpit_protocol::{Command, ReadinessStatusView, Reply, RequirementView};
 
 use crate::daemon;
 use crate::installations::{Legacy, ServiceManager, installed_units, is_answering, other_daemons};
+use crate::notifier_unit::{self, State};
 use crate::old_sandbox::{Leftovers, REMOVE_FLAG};
 
 /// The daemon probes Docker within 10 seconds; the rest is reads.
@@ -219,6 +220,8 @@ fn print_installations() -> Result<(), String> {
         ),
     }
 
+    print_notifier(&manager, &unit_dir, &profile.value, &socket)?;
+
     let mut others = Vec::new();
     for unit in units.iter().filter(|unit| unit.profile != profile.value) {
         others.push(format!(
@@ -252,4 +255,45 @@ fn print_installations() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The notifier's three states and the command that moves it on (#1126). macOS has no unit
+/// to report (#568).
+fn print_notifier(
+    manager: &ServiceManager,
+    unit_dir: &std::path::Path,
+    profile: &cockpit_config::Profile,
+    socket: &std::path::Path,
+) -> Result<(), String> {
+    if *manager != ServiceManager::Systemd {
+        return Ok(());
+    }
+    let unit_name = profile.notify_systemd_unit();
+    let status_file = socket.with_file_name(crate::notify::STATUS_FILE);
+    match notifier_unit::state(&unit_dir.join(&unit_name), &status_file) {
+        State::Running => outln!("notifier {unit_name}: running"),
+        State::InstalledNotRunning => outln!(
+            "notifier {unit_name}: installed, not running (starts with your desktop session; \
+             now: `systemctl --user start {unit_name}`)"
+        ),
+        State::NotInstalled => {
+            let command = format!("{} daemon install", crate::profile::command());
+            if autostart_is_off() {
+                outln!(
+                    "notifier {unit_name}: not installed ([notify] autostart = false; \
+                     `torlek notify` runs it by hand, or remove the setting and run `{command}`)"
+                );
+            } else {
+                outln!("notifier {unit_name}: not installed (`{command}`)");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Only words the "not installed" line; a configuration that does not load is the `config`
+/// requirement's to report.
+fn autostart_is_off() -> bool {
+    cockpit_config::load(&crate::profile::environment(), None, &[])
+        .is_ok_and(|config| !config.notify.autostart.value)
 }
