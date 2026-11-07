@@ -61,5 +61,13 @@ Decided by the implementing session: each harness's documented skill paths, read
 
 Evidence: `cockpit-claude` `launch::a_launch_adds_the_instruction_skills_root_so_claude_lists_the_cockpit_skill`,
 `cockpit-opencode` `launch::a_launch_adds_the_instruction_bundle_to_the_owners_skill_paths`,
-`cockpit-daemon` `sandbox::a_claude_launch_adds_the_instruction_skills_it_may_read`. A live
+`cockpit-daemon` `sandbox::a_claude_launch_adds_the_instruction_skills`. A live
 model listing the skill stays `validate` (needs signed-in harnesses).
+
+Through the real daemon, the delivered hook, MCP server and skill path work from the agent's
+environment, unsandboxed and in Torlek's sandbox: `cockpit-daemon`
+`agent_onboarding::a_claude_launch_adds_the_sessions_brief_as_its_context_starts`,
+`agent_onboarding::the_mcp_server_a_claude_launch_registers_answers_the_sessions_brief`,
+`sandbox::a_sandboxed_claude_gets_the_sessions_brief_as_its_context_starts`,
+`sandbox::a_sandboxed_claudes_mcp_server_answers_the_sessions_brief`,
+`sandbox::a_sandboxed_claude_reads_the_skill_its_launch_adds`.

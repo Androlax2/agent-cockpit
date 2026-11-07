@@ -87,9 +87,15 @@ shutdown fails the probe instead of publishing a receipt.
 
 The daemon fixture runs its agents unsandboxed, the default `agents.sandbox = "off"`. Application configuration controls are not proof of an OS network boundary or real sandbox
 mount behavior. These tests prove delivery into native model input, not model
-understanding, approval routing or persistent completion (#516).
+understanding, approval routing or persistent completion (#516). That the delivered
+parts work from inside Torlek's sandbox is shown with the stand-in Claude Code instead,
+without Claude Code's own hook timeout or environment: `sandbox.rs`
+`a_sandboxed_claude_gets_the_sessions_brief_as_its_context_starts`,
+`a_sandboxed_claudes_mcp_server_answers_the_sessions_brief` and
+`a_sandboxed_claude_reads_the_skill_its_launch_adds` run the launch's own hook, MCP
+server and skill path in the sandbox.
 
-**#419 stays open:** no signed-in model has listed the skill or identified its
+**Unmeasured:** no signed-in model has listed the skill or identified its
 brief in this run; Claude TUI parity is also unmeasured. A real run needs a separate
 concrete `ask-to-run` approval naming the account, model usage and host effects.
 It must preserve the owner's authentication in place, audit effective config and

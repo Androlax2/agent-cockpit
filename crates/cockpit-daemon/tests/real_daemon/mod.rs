@@ -66,7 +66,8 @@ pub const ASK_GUIDE_PROJECT: &str = "ask-guide";
 pub const ONBOARD_PROJECT: &str = "onboard";
 /// A project of this name runs an agent that runs, in order, each `<n>.sh` the test drops
 /// in its `.agent` directory (from 0), writing what it printed and `exit=<code>` to `<n>.out`
-/// (#410): a coordinator the test drives through the real `cockpit`.
+/// (#410): a coordinator the test drives through the real `cockpit`. It first writes the
+/// words it was launched with to `.agent/launch.arguments` ([`Home::launch_arguments`]).
 pub const COMMANDED_PROJECT: &str = "commanded";
 /// A project of this name runs an agent that reports [`ASKED_QUESTION`] while it waits at its
 /// prompt, then, as the Claude hook bridge's inbox waiter does, collects each message other
@@ -119,7 +120,9 @@ case "${PWD##*/}" in
       "${DBUS_SESSION_BUS_ADDRESS-unset}" \
       > '@ENVIRONMENT_LOG@.partial' && mv '@ENVIRONMENT_LOG@.partial' '@ENVIRONMENT_LOG@'
     exec sleep 3600 ;;
-  @COMMANDED@) n=0
+  @COMMANDED@) mkdir -p .agent && printf '%s\0' "$@" > .agent/launch.partial \
+      && mv .agent/launch.partial .agent/launch.arguments
+    n=0
     while :; do
       if [ -f ".agent/$n.sh" ]; then
         sh ".agent/$n.sh" > ".agent/$n.partial" 2>&1
@@ -661,6 +664,105 @@ impl Home {
         number
     }
 
+    /// The words the [`COMMANDED_PROJECT`] agent working in `root` was launched with.
+    pub async fn launch_arguments(&self, root: &Path) -> Vec<String> {
+        let written = root.join(".agent").join("launch.arguments");
+        let deadline = Instant::now() + SETTLED_WITHIN;
+        loop {
+            if let Ok(words) = std::fs::read_to_string(&written) {
+                return words.split_terminator('\0').map(str::to_owned).collect();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the agent in {} wrote no launch arguments",
+                root.display()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Starts a context in the [`COMMANDED_PROJECT`] agent working in `root` as Claude Code
+    /// does (#419): runs the `SessionStart` hook its launch's `--settings` subscribes, with a
+    /// new conversation's payload on its input, in the agent. The `asyncRewake` inbox waiter
+    /// Claude Code leaves running is not run. Returns what the hook printed, ending
+    /// `exit=<code>`.
+    pub async fn start_claude_context(&self, root: &Path) -> String {
+        let arguments = self.launch_arguments(root).await;
+        let settings: serde_json::Value =
+            serde_json::from_str(launch_option(&arguments, "--settings")).unwrap();
+        let hooks: Vec<&str> = settings["hooks"]["SessionStart"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|matcher| matcher["hooks"].as_array().into_iter().flatten())
+            .filter(|hook| hook["asyncRewake"] != true)
+            .filter_map(|hook| hook["command"].as_str())
+            .collect();
+        let [hook] = hooks.as_slice() else {
+            panic!("one SessionStart hook to wait for, not {hooks:?}");
+        };
+        let payload = serde_json::json!({
+            "session_id": launch_option(&arguments, "--session-id"),
+            "transcript_path": root.join(".agent/transcript.jsonl"),
+            "cwd": root,
+            "hook_event_name": "SessionStart",
+            "source": "startup",
+        });
+        std::fs::write(root.join(".agent/session-start.json"), payload.to_string()).unwrap();
+        // Claude Code reads the hook's standard output alone.
+        let number = self.command_agent(
+            root,
+            &format!("{hook} < .agent/session-start.json 2> .agent/session-start.err"),
+        );
+        self.agent_output(root, number).await
+    }
+
+    /// Asks the MCP server the [`COMMANDED_PROJECT`] agent's launch registers with
+    /// `--mcp-config` for tool `tool`, from the agent, as Claude Code would (#419). Returns
+    /// what the server printed, one answer per line, ending `exit=<code>`.
+    pub async fn call_claude_mcp_tool(&self, root: &Path, tool: &str) -> String {
+        let arguments = self.launch_arguments(root).await;
+        let config: serde_json::Value =
+            serde_json::from_str(launch_option(&arguments, "--mcp-config")).unwrap();
+        let servers = config["mcpServers"].as_object().unwrap();
+        let [(_, server)] = servers.iter().collect::<Vec<_>>()[..] else {
+            panic!("one MCP server, not {servers:?}");
+        };
+        // As Claude Code starts it: its own `env` on top of the agent's, then the command.
+        let variables = server["env"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(name, value)| format!("{name}={}", value.as_str().unwrap()));
+        let words: Vec<String> = variables
+            .chain([server["command"].as_str().unwrap().to_owned()])
+            .chain(
+                server["args"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|argument| argument.as_str().unwrap().to_owned()),
+            )
+            .map(|word| shell_quoted(&word))
+            .collect();
+        let messages = [
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                           "clientInfo": {"name": "fake-claude", "version": "1"}}}),
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": tool, "arguments": {}}}),
+        ];
+        let input: String = messages
+            .iter()
+            .map(|message| format!("{message}\n"))
+            .collect();
+        std::fs::write(root.join(".agent/mcp.in"), input).unwrap();
+        let line = format!("env {} < .agent/mcp.in 2> .agent/mcp.err", words.join(" "));
+        let number = self.command_agent(root, &line);
+        self.agent_output(root, number).await
+    }
+
     /// What the [`COMMANDED_PROJECT`] agent's line `number` printed, ending `exit=<code>`.
     pub async fn agent_output(&self, root: &Path, number: usize) -> String {
         let output = root.join(".agent").join(format!("{number}.out"));
@@ -698,6 +800,65 @@ impl Drop for Home {
 
 pub struct Daemon {
     child: Child,
+}
+
+/// The `additionalContext` of the `SessionStart` answer [`Home::start_claude_context`]
+/// printed, after checking the hook succeeded.
+pub fn added_context(printed: &str) -> String {
+    let answer = printed
+        .strip_suffix("exit=0\n")
+        .unwrap_or_else(|| panic!("the hook failed: {printed}"));
+    let answer: serde_json::Value = serde_json::from_str(answer)
+        .unwrap_or_else(|error| panic!("{error}: the hook answered {answer}"));
+    assert_eq!(
+        answer["hookSpecificOutput"]["hookEventName"], "SessionStart",
+        "{answer}"
+    );
+    answer["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no context added in {answer}"))
+        .to_owned()
+}
+
+/// The text of the `tools/call` result [`Home::call_claude_mcp_tool`] printed, after checking
+/// the server initialized and the call succeeded.
+pub fn mcp_tool_text(printed: &str) -> String {
+    let answers = printed
+        .strip_suffix("exit=0\n")
+        .unwrap_or_else(|| panic!("the MCP server failed: {printed}"));
+    let answers: Vec<serde_json::Value> = answers
+        .lines()
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("{error}: the MCP server printed {line}"))
+        })
+        .collect();
+    let [initialized, called] = answers.as_slice() else {
+        panic!("two answers, not {answers:?}");
+    };
+    assert!(
+        initialized["result"]["serverInfo"].is_object(),
+        "{initialized}"
+    );
+    assert_eq!(called["result"]["isError"], false, "{called}");
+    called["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// `word` as one shell word.
+fn shell_quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
+/// The word after `flag` in a launch's `arguments`.
+pub fn launch_option<'a>(arguments: &'a [String], flag: &str) -> &'a str {
+    arguments
+        .iter()
+        .position(|argument| argument == flag)
+        .and_then(|at| arguments.get(at + 1))
+        .unwrap_or_else(|| panic!("no {flag} in {arguments:?}"))
 }
 
 /// The `cockpit` program beside the daemon's, where the daemon looks for it too. Cargo
