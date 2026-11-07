@@ -280,6 +280,22 @@ finished = false    # no notification when a session finishes
 question = false    # no sound for a question
 ```
 
+Each event has a sound of Torlek's own (a kalimba for `finished`, marimbas for `question` and
+`failure`, glass for `hold`, a soft falling sine for `quota`); a completed turn plays your sound
+theme's `message`. To use your own sound for an event, name the file by its absolute path.
+`.oga` and `.wav` are safe with every player; others depend on the one installed. A relative
+path, an unknown event or a file that is missing or unreadable is refused when the configuration
+loads, naming the key and the path:
+
+```toml
+[notify.sound.files]
+question = "/home/me/sounds/question.wav"
+```
+
+`torlek notify test EVENT` plays that event's sound once, with your files and settings, and
+exits with an error when it cannot. An agent's own terminal bell (Claude Code `terminal_bell`,
+Codex `bel`) is a second sound the notifier does not control.
+
 The events are `failure`, `hold`, `question`, `quota`, `finished` and `turn`. `finished` means the
 session's task item is marked done; a session that exits by itself is a `failure`. A completed turn
 alone is the `turn` event, which is off by default for the desktop and the sound; set `turn = true`
