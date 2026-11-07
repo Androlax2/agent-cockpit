@@ -580,3 +580,26 @@ fn an_event_kept_back_by_away_is_logged_as_skipped_with_the_hold() {
         "{stderr}"
     );
 }
+
+#[test]
+fn an_event_that_is_off_is_not_logged_as_kept_back_by_a_hold() {
+    let setup = Setup::new();
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    let away = setup.dir.path().join("away");
+    fs::write(&away, "").unwrap();
+    let _notifier = setup.start(
+        &[
+            "--away-file",
+            away.to_str().unwrap(),
+            "--desktop",
+            "none",
+            "--sound",
+            "none",
+        ],
+        true,
+    );
+
+    let stderr = setup.stderr_with("skipped finished");
+
+    assert!(stderr.contains("reason=setting off"), "{stderr}");
+}

@@ -274,6 +274,8 @@ enum Outlet {
     SettingOff,
     /// The host has no program for this outlet; the start-up log says why.
     NoProgram,
+    /// The sound theme has no file for this event; `tell` logs it too.
+    NoFile,
     /// A more urgent event that landed with it has the sound.
     Covered,
 }
@@ -284,6 +286,7 @@ impl Outlet {
             Outlet::Told => "told",
             Outlet::SettingOff => "off(setting)",
             Outlet::NoProgram => "off(no program)",
+            Outlet::NoFile => "off(no sound file)",
             Outlet::Covered => "off(covered by a more urgent event)",
         }
     }
@@ -300,10 +303,11 @@ pub struct Outlets {
 
 impl Outlets {
     /// Tells, without a sound, what a hold kept back and still needs the owner (#62): one
-    /// low-urgency notification, for the events turned on for either outlet.
-    pub fn tell_summary(&self, notices: &[Notice]) {
+    /// low-urgency notification, for the events turned on for either outlet. Returns the
+    /// sessions it listed, none when nothing was shown.
+    pub fn tell_summary(&self, notices: &[Notice]) -> Vec<String> {
         let Some(desktop) = &self.desktop else {
-            return;
+            return Vec::new();
         };
         // An event on only for sound was kept too: the summary is the one place it is told.
         let shown: Vec<&Notice> = notices
@@ -314,13 +318,19 @@ impl Outlets {
             })
             .collect();
         if shown.is_empty() {
-            return;
+            return Vec::new();
         }
         let arguments = Desktop::summary_arguments(&shown);
         start(
             desktop.program.clone(),
             arguments.into_iter().map(Into::into).collect(),
         );
+        shown.iter().map(|notice| notice.session.clone()).collect()
+    }
+
+    /// Whether the owner turned `event` on for the desktop or the sound.
+    pub fn is_wanted(&self, event: Event) -> bool {
+        self.desktop_events.contains(&event) || self.sound_events.contains(&event)
     }
 
     /// The event whose sound plays for `notices` that landed together: the most urgent one
@@ -353,7 +363,15 @@ impl Outlets {
                 } else if !self.sound_events.contains(&notice.event) {
                     Outlet::SettingOff
                 } else if loudest == Some(notice.event) {
-                    Outlet::Told
+                    if self
+                        .sound
+                        .as_ref()
+                        .is_some_and(|sound| sound.command(notice.event).is_none())
+                    {
+                        Outlet::NoFile
+                    } else {
+                        Outlet::Told
+                    }
                 } else {
                     Outlet::Covered
                 };

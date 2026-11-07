@@ -264,9 +264,13 @@ fn tell(
 ) {
     let holds: Vec<String> = standing.iter().cloned().collect();
     let summary = hold.set_standing(standing, notifier);
-    outlets.tell_summary(&summary);
-    if !summary.is_empty() {
-        eprintln!("torlek-notify: {}", summary_line(&summary));
+    let listed = outlets.tell_summary(&summary);
+    if !listed.is_empty() {
+        eprintln!(
+            "torlek-notify: told summary of {} held notices, sessions={}",
+            listed.len(),
+            listed.join(",")
+        );
     }
     // `pass` keeps everything back while a hold stands; each kept notice says which.
     if holds.is_empty() {
@@ -275,28 +279,20 @@ fn tell(
         }
     } else {
         for notice in notices {
+            // An event the owner turned off for both outlets is not held back for the
+            // summary: it is never told.
+            let reason = if outlets.is_wanted(notice.event) {
+                format!("hold({})", holds.join(","))
+            } else {
+                "setting off".to_owned()
+            };
             eprintln!(
-                "torlek-notify: skipped {} session={} name={:?} reason=hold({})",
-                notice.event,
-                notice.session,
-                notice.name,
-                holds.join(",")
+                "torlek-notify: skipped {} session={} name={:?} reason={reason}",
+                notice.event, notice.session, notice.name
             );
         }
     }
     outlets.tell(&hold.pass(notices));
-}
-
-fn summary_line(summary: &[Notice]) -> String {
-    let sessions: Vec<&str> = summary
-        .iter()
-        .map(|notice| notice.session.as_str())
-        .collect();
-    format!(
-        "told summary of {} held notices, sessions={}",
-        summary.len(),
-        sessions.join(",")
-    )
 }
 
 /// Runs the owner's hold detectors at every refresh, apart from the requests and the feed,
