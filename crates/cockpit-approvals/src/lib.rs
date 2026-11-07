@@ -30,8 +30,9 @@ pub use runs::{
     APPROVAL_GRACE_SECONDS, Approved, DecidedThrough, Interrupted, RunAsk, RunDecision, RunId,
     RunRequest, RunResult, RunState, StartAsk, StartSession, action_digest, approve_run, ask_run,
     ask_start, decline_run, edit_run, finish_run, finish_start, interrupted_runs, may_ask,
-    open_runs, queue_order, reconcile_run, record_not_run, record_outcome_unknown, resolve_cwd,
-    run_request, run_status, run_status_if_fresh, shown_run, start_run, validate_start,
+    open_runs, purge_run_output, queue_order, reconcile_run, record_not_run,
+    record_outcome_unknown, resolve_cwd, run_request, run_status, run_status_if_fresh, shown_run,
+    start_run, validate_start,
 };
 
 /// The approvals tables. A run request keeps its asked command beside the current one, so an

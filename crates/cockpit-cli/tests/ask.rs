@@ -483,6 +483,30 @@ async fn the_owner_types_input_from_standard_input_not_the_command_line() {
         [Command::ApprovalInput {
             request: 7,
             text: "hunter2".to_owned(),
+            shown: false,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn shown_input_answers_a_visible_prompt_on_purpose() {
+    let home = Home::new();
+    let daemon = scripted_conversation(
+        &home.owner_socket(),
+        vec![run_reply(request(RunStateView::Running))],
+    );
+
+    let output = home
+        .cockpit_as_owner(&["approval", "input", "7", "--shown"], "y\n")
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        daemon.await.unwrap(),
+        [Command::ApprovalInput {
+            request: 7,
+            text: "y".to_owned(),
+            shown: true,
         }]
     );
 }
@@ -823,7 +847,7 @@ async fn the_owner_reads_that_retention_removed_a_runs_output() {
 
     let shown = text(&output.stdout);
     assert!(
-        shown.contains("exit 0 (output removed by database retention)"),
+        shown.contains("exit 0 (output removed by database retention or purge-output)"),
         "{shown}"
     );
     assert!(!shown.contains("secrets redacted"), "{shown}");

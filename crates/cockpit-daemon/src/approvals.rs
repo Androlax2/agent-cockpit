@@ -67,7 +67,9 @@ impl From<Refusal> for Failed {
             Refusal::Expired
             | Refusal::AskerMayNotAsk
             | Refusal::AlreadyDecided { .. }
-            | Refusal::NotRunning => ErrorCode::Conflict,
+            | Refusal::NotRunning
+            | Refusal::TerminalEchoes
+            | Refusal::NoStoredOutput { .. } => ErrorCode::Conflict,
             Refusal::TooSoon { .. } => ErrorCode::Refused,
         };
         let (by, action) = refused.unblock();
@@ -492,10 +494,22 @@ pub(crate) fn route_decision(
                 tracing::info!(request, revision = run.revision, "the owner edited a run");
                 Ok(owner_run_reply(&run, &runner).await)
             }
-            Command::ApprovalInput { request, text } => {
-                runner.send_input(RunId(request), &text)?;
+            Command::ApprovalInput {
+                request,
+                text,
+                shown,
+            } => {
+                runner.send_input(RunId(request), &text, shown)?;
                 let read = database.read().await?;
                 Ok(run_reply(&existing_run(&read, request).await?, &runner))
+            }
+            Command::ApprovalPurgeOutput { request } => {
+                let write = database.write().await?;
+                let run =
+                    cockpit_approvals::purge_run_output(&write, RunId(request), now()).await?;
+                write.commit().await?;
+                tracing::info!(request, "the owner purged a run's stored output");
+                Ok(run_reply(&run, &runner))
             }
             Command::GuideShow { guide } => {
                 let read = database.read().await?;

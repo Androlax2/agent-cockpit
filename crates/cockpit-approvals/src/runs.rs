@@ -119,7 +119,8 @@ pub struct RunAsk {
 pub struct RunResult {
     pub exit_code: i32,
     pub output: Output,
-    /// Retention cleared the output long after the run (#406); `output.shown` is empty.
+    /// Retention cleared the output long after the run (#406), or the owner purged it
+    /// (#1160); `output.shown` is empty.
     pub output_retired: bool,
 }
 
@@ -880,6 +881,45 @@ pub async fn finish_run(
             count_column(result.output.redacted),
             now,
         ),
+    )
+    .await
+}
+
+/// The owner's purge of one finished command run's stored output (#1160): cleared now, as
+/// retention clears it once old (#406), and the rest of the request stays as the audit record.
+/// A run already cleared is answered as it is.
+pub async fn purge_run_output(
+    write: &WriteTransaction<'_>,
+    id: RunId,
+    now: i64,
+) -> Result<RunRequest, Error> {
+    let run = run_request(write, id, now)
+        .await?
+        .ok_or_else(|| not_found(KIND, id.0))?;
+    if run.start.is_some() {
+        return Err(Refusal::NoStoredOutput {
+            what: "a start request",
+        }
+        .into());
+    }
+    if run.state != RunState::Finished {
+        return Err(Refusal::NoStoredOutput {
+            what: run.state.as_str(),
+        }
+        .into());
+    }
+    if run
+        .result
+        .as_ref()
+        .is_some_and(|result| result.output_retired)
+    {
+        return Ok(run);
+    }
+    stored_run(
+        write,
+        "UPDATE approvals_runs SET output = '', output_retired_at = ?2 WHERE id = ?1",
+        (id.0, now),
+        now,
     )
     .await
 }

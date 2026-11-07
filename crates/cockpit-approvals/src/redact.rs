@@ -59,25 +59,40 @@ static KEY_BLOCK_END: LazyLock<Regex> = LazyLock::new(|| {
 
 /// The value after a name that says it is secret, after an Authorization scheme, or the
 /// password in `scheme://user:password@host`. Group 1 is kept, group 2 (when present) too;
-/// what lies between becomes `[redacted]`, so the agent still sees what was there.
-static SECRET_VALUES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [
-        r"(?im)(Or type this code in the Home Screen app within [0-9]+ minutes:[ \t]*)[0-9]{3}[ \t]*[0-9]{3}\b",
-        r#"(?i)((?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic|token)\s+)[^\s"']+"#,
-        r"(?i)((?:set-)?cookie\s*:\s*)[^\n]+",
+/// what lies between becomes `[redacted]`, so the agent still sees what was there. A value
+/// listed with its pattern is a word of a sentence, not a value, and stays.
+static SECRET_VALUES: LazyLock<Vec<(Regex, &[&str])>> = LazyLock::new(|| {
+    let values: [(&str, &[&str]); 7] = [
+        (
+            r"(?im)(Or type this code in the Home Screen app within [0-9]+ minutes:[ \t]*)[0-9]{3}[ \t]*[0-9]{3}\b",
+            &[],
+        ),
+        (
+            r#"(?i)((?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic|token)\s+)[^\s"']+"#,
+            &[],
+        ),
+        (r"(?i)((?:set-)?cookie\s*:\s*)[^\n]+", &[]),
         // JSON: a quoted secret value may hold spaces ("token": "…", Docker's "auth": "…").
-        r#"(?i)("[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?|auth)[a-z0-9_.-]*"\s*:\s*")[^"]+(")"#,
+        (
+            r#"(?i)("[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?|auth)[a-z0-9_.-]*"\s*:\s*")[^"]+(")"#,
+            &[],
+        ),
         // Before `=` any name holding the word is a key (`--secret-key=`, `jwt.secret.key=`).
         // Before `:` only letters, digits and `_` may follow the word: `secret-scan: 3` and
         // `src/token_store.rs:12:` are a slug and a file name in a `path: message` line (#872).
-        r#"(?i)(\b[a-z0-9_.-]*(?:password|passwd|passphrase|secret[_-]?key|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)(?:[a-z0-9_.-]*\b["']?\s*=|[a-z0-9_]*\b["']?\s*:)\s*["']?)[^\s"']+"#,
-        // .netrc and .pgpass style: the keyword, a space, the value.
-        r"(?im)(\b(?:password|passwd)\s+)[^\s=:]\S*",
-        r"(?i)([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+(@)",
-    ]
-    .iter()
-    .map(|pattern| Regex::new(pattern).expect("the pattern compiles"))
-    .collect()
+        (
+            r#"(?i)(\b[a-z0-9_.-]*(?:password|passwd|passphrase|secret[_-]?key|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)(?:[a-z0-9_.-]*\b["']?\s*=|[a-z0-9_]*\b["']?\s*:)\s*["']?)[^\s"']+"#,
+            &[],
+        ),
+        // .netrc and .pgpass style: the keyword, a space, the value; `for` starts sudo's
+        // prompt, `[sudo] password for theo:` (#1160).
+        (r"(?im)(\b(?:password|passwd)\s+)[^\s=:]\S*", &["for"]),
+        (r"(?i)([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+(@)", &[]),
+    ];
+    values
+        .into_iter()
+        .map(|(pattern, words)| (Regex::new(pattern).expect("the pattern compiles"), words))
+        .collect()
 });
 
 /// `text` without terminal control sequences.
@@ -111,14 +126,15 @@ pub fn redact_secrets(text: &str) -> (String, usize) {
             redacted = replaced;
         }
     }
-    for value in SECRET_VALUES.iter() {
+    for (value, words) in SECRET_VALUES.iter() {
         redacted = value
             .replace_all(&redacted, |captures: &Captures| {
-                // A value a shape above already replaced is not counted twice.
                 let value_end = captures.get(2).map_or(captures[0].len(), |end| {
                     end.start() - captures.get(0).expect("the whole match").start()
                 });
-                if captures[0][captures[1].len()..value_end] == *REDACTED {
+                let found = &captures[0][captures[1].len()..value_end];
+                // A value a shape above already replaced is not counted twice.
+                if found == REDACTED || words.iter().any(|word| found.eq_ignore_ascii_case(word)) {
                     return captures[0].to_owned();
                 }
                 count += 1;
