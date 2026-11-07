@@ -37,8 +37,8 @@ pub use storage::{
     folder_storage, free_space_mib,
 };
 pub use store::{
-    MIGRATIONS, checkouts, claim, project_checkouts, project_named, project_named_or_numbered,
-    projects, release,
+    MIGRATIONS, checkout_project, checkouts, claim, project_checkouts, project_named,
+    project_named_or_numbered, projects, release,
 };
 pub use sweep::{Kept, SweepReport, sweep, sweep_clone};
 

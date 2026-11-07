@@ -25,7 +25,9 @@ pub use model::{
     Restored, Session, SessionBundle, SessionId, SessionState, Settings, SleepRefusal,
     StartRequest, StopTarget, TickReport, WakeCause,
 };
-pub use questions::{QUESTION_HOLD_SECONDS, answer_question, escalate_question, question_holder};
+pub use questions::{
+    QUESTION_HOLD_SECONDS, answer_question, coordinator_scope, escalate_question, question_holder,
+};
 pub use reports::{
     AgentState, QuestionSource, Report, SessionReport, current_context, latest_report,
     latest_reports, report,

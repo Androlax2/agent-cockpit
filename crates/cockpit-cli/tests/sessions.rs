@@ -819,9 +819,49 @@ async fn session_grant_sends_the_permission_and_its_start_terms() {
         Command::SessionGrant {
             session: "s0123456789ab".to_owned(),
             permission: "start-sessions".to_owned(),
+            all_projects: false,
             without_confirmation: true,
             per_hour: Some(3),
             max_active: Some(4),
+        }
+    );
+}
+
+#[tokio::test]
+async fn session_grant_over_every_project_is_one_named_flag() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::CoordinatorGrants {
+            session: "s0123456789ab".to_owned(),
+            grants: Vec::new(),
+            audit: Vec::new(),
+        }),
+    );
+
+    let output = home
+        .cockpit(
+            home.dir.path(),
+            &[
+                "session",
+                "grant",
+                "s0123456789ab",
+                "observe-sessions",
+                "--all-projects",
+            ],
+        )
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::SessionGrant {
+            session: "s0123456789ab".to_owned(),
+            permission: "observe-sessions".to_owned(),
+            all_projects: true,
+            without_confirmation: false,
+            per_hour: None,
+            max_active: None,
         }
     );
 }
@@ -837,6 +877,7 @@ async fn session_grants_prints_each_grant_then_the_audit_newest_first() {
                 CoordinatorGrantView {
                     permission: "observe-sessions".to_owned(),
                     grant: 4,
+                    scope: "project app".to_owned(),
                     per_hour: None,
                     max_active: None,
                     needs_confirmation: None,
@@ -844,6 +885,7 @@ async fn session_grants_prints_each_grant_then_the_audit_newest_first() {
                 CoordinatorGrantView {
                     permission: "start-sessions".to_owned(),
                     grant: 5,
+                    scope: "everything".to_owned(),
                     per_hour: Some(10),
                     max_active: Some(8),
                     needs_confirmation: Some(true),
@@ -879,8 +921,8 @@ async fn session_grants_prints_each_grant_then_the_audit_newest_first() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
         text(&output.stdout),
-        "grant\tobserve-sessions\t4\t-\n\
-         grant\tstart-sessions\t5\tper-hour=10 max-active=8 confirmed\n\
+        "grant\tobserve-sessions\t4\tproject app\t-\n\
+         grant\tstart-sessions\t5\teverything\tper-hour=10 max-active=8 confirmed\n\
          audit\t9\t1700000100\ts0123456789ab\tstart\t-\t\"approval request 2\"\n\
          audit\t8\t1700000000\ts0123456789ab\tmessage\ts000000000002\t\"rebase on main\"\n"
     );

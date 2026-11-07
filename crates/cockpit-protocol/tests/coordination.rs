@@ -75,6 +75,7 @@ fn each_coordinator_command_round_trips_with_only_the_fields_it_was_given() {
             Command::SessionGrant {
                 session: "s1".to_owned(),
                 permission: "start-sessions".to_owned(),
+                all_projects: false,
                 without_confirmation: true,
                 per_hour: Some(3),
                 max_active: Some(4),
@@ -87,6 +88,21 @@ fn each_coordinator_command_round_trips_with_only_the_fields_it_was_given() {
             Command::SessionGrant {
                 session: "s1".to_owned(),
                 permission: "observe-sessions".to_owned(),
+                all_projects: false,
+                without_confirmation: false,
+                per_hour: None,
+                max_active: None,
+            },
+        ),
+        (
+            json!({"id": 1, "command": {
+                "kind": "session-grant", "session": "s1", "permission": "end-sessions",
+                "all_projects": true
+            }}),
+            Command::SessionGrant {
+                session: "s1".to_owned(),
+                permission: "end-sessions".to_owned(),
+                all_projects: true,
                 without_confirmation: false,
                 per_hour: None,
                 max_active: None,
@@ -124,6 +140,7 @@ fn coordinator_grants_name_start_terms_only_on_start_sessions() {
             CoordinatorGrantView {
                 permission: "observe-sessions".to_owned(),
                 grant: 4,
+                scope: "project app".to_owned(),
                 per_hour: None,
                 max_active: None,
                 needs_confirmation: None,
@@ -131,6 +148,7 @@ fn coordinator_grants_name_start_terms_only_on_start_sessions() {
             CoordinatorGrantView {
                 permission: "start-sessions".to_owned(),
                 grant: 5,
+                scope: "everything".to_owned(),
                 per_hour: Some(10),
                 max_active: Some(8),
                 needs_confirmation: Some(true),
@@ -155,8 +173,9 @@ fn coordinator_grants_name_start_terms_only_on_start_sessions() {
             "kind": "coordinator-grants",
             "session": "s1",
             "grants": [
-                {"permission": "observe-sessions", "grant": 4},
-                {"permission": "start-sessions", "grant": 5, "per_hour": 10,
+                {"permission": "observe-sessions", "grant": 4, "scope": "project app"},
+                {"permission": "start-sessions", "grant": 5, "scope": "everything",
+                 "per_hour": 10,
                  "max_active": 8, "needs_confirmation": true}
             ],
             "audit": [{

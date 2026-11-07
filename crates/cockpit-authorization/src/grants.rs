@@ -3,7 +3,8 @@ use cockpit_turso::{Migration, MigrationSet, WriteTransaction};
 
 use crate::{
     Actor, Audit, AuditEntry, AuditedAction, Basis, Decision, Error, Grant, GrantId, Outcome,
-    Permission, Refusal, Revision, Scope, SessionId, StartAllowance, StartTerms, TaskId,
+    Permission, ProjectName, Refusal, Revision, Scope, SessionId, StartAllowance, StartTerms,
+    TaskId,
 };
 
 /// The window a `start-sessions` grant's cap counts over.
@@ -158,6 +159,38 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             CREATE INDEX authorization_audit_by_target
                 ON authorization_audit (target, action, id);",
         },
+        // #1131: a coordinator grant may cover one project. The same rebuild as version 3,
+        // to widen `scope_kind`; rows are copied unchanged, so every grant stored before,
+        // over everything, keeps covering everything.
+        Migration {
+            version: 7,
+            sql: "CREATE TABLE authorization_grants_with_projects (
+                id INTEGER PRIMARY KEY,
+                holder TEXT NOT NULL CHECK (holder <> ''),
+                permission TEXT NOT NULL CHECK (permission <> 'host-actions'),
+                scope_kind TEXT NOT NULL
+                    CHECK (scope_kind IN ('owner', 'session', 'task', 'project')),
+                scope_id TEXT CHECK (scope_id <> '')
+                    CHECK ((scope_kind = 'owner') = (scope_id IS NULL)),
+                granted_at INTEGER NOT NULL,
+                revoked_at INTEGER,
+                starts_per_hour INTEGER CHECK (starts_per_hour >= 1),
+                starts_unconfirmed INTEGER NOT NULL DEFAULT 0
+                    CHECK (starts_unconfirmed IN (0, 1)),
+                starts_max_active INTEGER CHECK (starts_max_active >= 1)
+            );
+            INSERT INTO authorization_grants_with_projects (id, holder, permission,
+                    scope_kind, scope_id, granted_at, revoked_at, starts_per_hour,
+                    starts_unconfirmed, starts_max_active)
+                SELECT id, holder, permission, scope_kind, scope_id, granted_at, revoked_at,
+                    starts_per_hour, starts_unconfirmed, starts_max_active
+                FROM authorization_grants;
+            DROP TABLE authorization_grants;
+            ALTER TABLE authorization_grants_with_projects RENAME TO authorization_grants;
+            CREATE UNIQUE INDEX authorization_grants_one_active
+                ON authorization_grants (holder, permission, scope_kind, coalesce(scope_id, ''))
+                WHERE revoked_at IS NULL;",
+        },
     ],
 };
 
@@ -180,12 +213,30 @@ pub async fn grant(
     insert_grant(write, holder, permission, scope, start_terms).await
 }
 
-/// Gives `holder` `start-sessions` over the owner's scope with `terms`. The same active grant
-/// is returned unchanged; one with other terms is revoked and replaced, so the terms a start
+/// Gives `holder` the coordinator grant `permission` over `scope`: everything, or one project
+/// (#1131). A holder keeps one grant of each coordinator permission: the same active grant is
+/// returned unchanged, one over another scope is revoked and replaced, so revoking the
+/// permission takes it all back. `start-sessions` takes [`grant_start_sessions`], for its
+/// terms.
+pub async fn grant_coordinator(
+    write: &WriteTransaction<'_>,
+    holder: &SessionId,
+    permission: Permission,
+    scope: &Scope,
+) -> Result<Grant, Error> {
+    if !permission.is_coordinator() || permission == Permission::StartSessions {
+        return Err(Error::NotCoordinator { permission });
+    }
+    replace_coordinator_grant(write, holder, permission, scope, None).await
+}
+
+/// Gives `holder` `start-sessions` over `scope` with `terms`, as [`grant_coordinator`] gives
+/// the other coordinator grants. One with other terms is replaced too, so the terms a start
 /// was allowed under are always the grant's own.
 pub async fn grant_start_sessions(
     write: &WriteTransaction<'_>,
     holder: &SessionId,
+    scope: &Scope,
     terms: StartTerms,
 ) -> Result<Grant, Error> {
     if terms.per_hour == 0 {
@@ -198,14 +249,55 @@ pub async fn grant_start_sessions(
             reason: "the sessions at once must be at least 1",
         });
     }
-    let permission = Permission::StartSessions;
-    if let Some(existing) = active_grant(write, holder, permission, &Scope::Owner).await? {
-        if existing.start_terms == Some(terms) {
-            return Ok(existing);
-        }
-        revoke(write, existing.id).await?;
+    replace_coordinator_grant(write, holder, Permission::StartSessions, scope, Some(terms)).await
+}
+
+/// `holder`'s one active grant of `permission` when it has exactly `scope` and
+/// `start_terms`; otherwise every active one is revoked and a new grant given.
+async fn replace_coordinator_grant(
+    write: &WriteTransaction<'_>,
+    holder: &SessionId,
+    permission: Permission,
+    scope: &Scope,
+    start_terms: Option<StartTerms>,
+) -> Result<Grant, Error> {
+    let held = active_grants_of(write, holder, permission).await?;
+    if let [only] = held.as_slice()
+        && only.scope == *scope
+        && only.start_terms == start_terms
+    {
+        return Ok(only.clone());
     }
-    insert_grant(write, holder, permission, &Scope::Owner, Some(terms)).await
+    for grant in &held {
+        revoke(write, grant.id).await?;
+    }
+    insert_grant(write, holder, permission, scope, start_terms).await
+}
+
+/// Revokes every active grant of `permission` `holder` holds, over any scope, and returns the
+/// revoked grants (#1131): what the owner's `session revoke SESSION PERMISSION` takes back.
+pub async fn revoke_permission(
+    write: &WriteTransaction<'_>,
+    holder: &SessionId,
+    permission: Permission,
+) -> Result<Vec<Grant>, Error> {
+    let held = active_grants_of(write, holder, permission).await?;
+    for grant in &held {
+        revoke(write, grant.id).await?;
+    }
+    Ok(held)
+}
+
+async fn active_grants_of(
+    connection: &Connection,
+    holder: &SessionId,
+    permission: Permission,
+) -> Result<Vec<Grant>, Error> {
+    Ok(active_grants(connection, holder)
+        .await?
+        .into_iter()
+        .filter(|grant| grant.permission == permission)
+        .collect())
 }
 
 /// The active grant of exactly `permission` over exactly `scope` to `holder`, if any.
@@ -369,8 +461,9 @@ pub async fn active_coordinator_grants(connection: &Connection) -> Result<Vec<Gr
     Ok(grants)
 }
 
-/// Whether `holder` may start a session at `now` (seconds since 1970): its `start-sessions`
-/// grant over the owner's scope, fewer than the grant's `max_active` sessions `active`, and
+/// Whether `holder` may start a session over `scope` at `now` (seconds since 1970): the project
+/// the session would be in (#1131), or the owner's scope for a directory in none. It needs a
+/// `start-sessions` grant covering `scope`, fewer than the grant's `max_active` sessions `active`, and
 /// fewer [`AuditedAction::Start`] entries in the past hour than the grant's cap. `active` is
 /// the caller's count, read in the same transaction: the sessions [`started_sessions`] names
 /// that are not ended, and the holder's start requests the owner has not decided or carried
@@ -379,11 +472,12 @@ pub async fn active_coordinator_grants(connection: &Connection) -> Result<Vec<Gr
 pub async fn start_allowance(
     connection: &Connection,
     holder: &SessionId,
+    scope: &Scope,
     now: i64,
     active: u32,
 ) -> Result<StartAllowance, Error> {
     let actor = Actor::Session(holder.clone());
-    let decision = evaluate(connection, &actor, Permission::StartSessions, &Scope::Owner).await?;
+    let decision = evaluate(connection, &actor, Permission::StartSessions, scope).await?;
     let grant = match decision.outcome {
         Outcome::Allowed(Basis::Grant(grant)) => grant,
         Outcome::Allowed(Basis::Owner) => unreachable!("a session is never allowed as the owner"),
@@ -676,6 +770,7 @@ fn scope_columns(scope: &Scope) -> (&'static str, Value) {
         Scope::Owner => ("owner", Value::Null),
         Scope::Session(session) => ("session", Value::Text(session.as_str().to_string())),
         Scope::Task(task) => ("task", Value::Text(task.as_str().to_string())),
+        Scope::Project(project) => ("project", Value::Text(project.as_str().to_string())),
     }
 }
 
@@ -703,6 +798,9 @@ fn grant_from_row(row: &Row) -> Result<Grant, Error> {
             Scope::Session(SessionId::new(id).map_err(|error| invalid(&error))?)
         }
         ("task", Some(id)) => Scope::Task(TaskId::new(id).map_err(|error| invalid(&error))?),
+        ("project", Some(name)) => {
+            Scope::Project(ProjectName::new(name).map_err(|error| invalid(&error))?)
+        }
         (kind, id) => return Err(invalid(&format_args!("scope {kind:?} with id {id:?}"))),
     };
     let per_hour: Option<i64> = row.get(6)?;

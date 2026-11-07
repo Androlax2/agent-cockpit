@@ -472,14 +472,10 @@ async fn grants(
         .into_iter()
         .map(|grant| {
             let scope = match grant.scope {
-                cockpit_authorization::Scope::Owner => "everything".to_owned(),
                 cockpit_authorization::Scope::Session(held) if held == *session => {
                     "this session".to_owned()
                 }
-                cockpit_authorization::Scope::Session(other) => {
-                    format!("session {}", other.as_str())
-                }
-                cockpit_authorization::Scope::Task(task) => format!("task {}", task.as_str()),
+                other => other.to_string(),
             };
             format!("{} over {scope}", grant.permission.as_str())
         })

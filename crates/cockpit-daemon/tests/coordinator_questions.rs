@@ -77,6 +77,7 @@ async fn a_coordinator_starts_a_worker_that_asks() -> Started {
             Command::SessionGrant {
                 session: coordinator.clone(),
                 permission: permission.to_owned(),
+                all_projects: true,
                 without_confirmation: false,
                 per_hour: None,
                 max_active: None,
@@ -89,6 +90,7 @@ async fn a_coordinator_starts_a_worker_that_asks() -> Started {
         Command::SessionGrant {
             session: coordinator.clone(),
             permission: "start-sessions".to_owned(),
+            all_projects: true,
             without_confirmation: true,
             per_hour: Some(5),
             max_active: None,
@@ -344,6 +346,7 @@ async fn a_worker_the_owner_approved_starting_asks_its_coordinator_first() {
             Command::SessionGrant {
                 session: coordinator.clone(),
                 permission: permission.to_owned(),
+                all_projects: true,
                 without_confirmation: false,
                 per_hour: None,
                 max_active: None,

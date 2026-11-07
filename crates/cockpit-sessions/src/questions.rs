@@ -7,11 +7,20 @@ use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::Connection;
 
 use crate::reports::{QuestionSource, SessionReport, latest_launch, latest_report};
-use crate::{Error, SessionId, SessionState};
+use crate::{Error, Session, SessionId, SessionState};
 
 /// How long a coordinator holds a question it has not answered or escalated before it
 /// reaches the owner: fixed, decided in #710.
 pub const QUESTION_HOLD_SECONDS: i64 = 15 * 60;
+
+/// The scope a coordinator grant must cover to act on `session` (#1131): the project its
+/// checkout belongs to. A grant over that project or over everything covers it.
+pub async fn coordinator_scope(connection: &Connection, session: &Session) -> Result<Scope, Error> {
+    let project = cockpit_projects::checkout_project(connection, session.checkout).await?;
+    Ok(Scope::Project(cockpit_authorization::ProjectName::new(
+        project.as_str(),
+    )?))
+}
 
 /// The coordinator holding `report`'s open question at `now`, or `None` when the question
 /// waits on the owner. A coordinator holds it while all of these hold:
@@ -21,7 +30,7 @@ pub const QUESTION_HOLD_SECONDS: i64 = 15 * 60;
 /// - it was asked since #710, in the session's current launch, less than
 ///   [`QUESTION_HOLD_SECONDS`] ago, and not escalated;
 /// - a coordinator started the session, runs (or is launching), and still holds
-///   `message-sessions` over it, the grant its answer needs: an asleep, stopping, ended or
+///   `message-sessions` over its project ([`coordinator_scope`]), the grant its answer needs: an asleep, stopping, ended or
 ///   failed coordinator reads nothing, so its question goes to the owner.
 pub async fn question_holder(
     connection: &Connection,
@@ -44,7 +53,7 @@ pub async fn question_holder(
     }
     let asking =
         crate::store::session(connection, &SessionId::parse(report.session.as_str())?).await?;
-    let Some(coordinator) = asking.started_by else {
+    let Some(coordinator) = asking.started_by.clone() else {
         return Ok(None);
     };
     let coordinator_session = crate::store::session(connection, &coordinator).await?;
@@ -58,7 +67,7 @@ pub async fn question_holder(
         connection,
         &Actor::Session(cockpit_authorization::SessionId::new(coordinator.as_str())?),
         Permission::MessageSessions,
-        &Scope::Session(report.session.clone()),
+        &coordinator_scope(connection, &asking).await?,
     )
     .await?;
     Ok(match decision.outcome {

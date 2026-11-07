@@ -32,6 +32,22 @@ impl TaskId {
     }
 }
 
+/// A registered project's name as the projects capability keeps it (#1131). Opaque, like
+/// [`SessionId`]: a grant over one project covers exactly the sessions of the project of that
+/// name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProjectName(String);
+
+impl ProjectName {
+    pub fn new(name: impl Into<String>) -> Result<ProjectName, Error> {
+        non_empty(name.into(), "project").map(ProjectName)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 fn non_empty(id: String, kind: &'static str) -> Result<String, Error> {
     if id.is_empty() {
         return Err(Error::EmptyId { kind });
@@ -140,12 +156,27 @@ impl fmt::Display for Permission {
 }
 
 /// What a grant covers, and what a request touches. An owner-scope grant covers every scope;
-/// a session or task grant covers exactly that session or task, nothing nested or similar.
+/// a session, task or project grant covers exactly that session, task or project, nothing
+/// nested or similar. A project grant is a coordinator's (#1131): the caller asks over the
+/// project of the session acted on, so it never covers a session-scope request.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Scope {
     Owner,
     Session(SessionId),
     Task(TaskId),
+    Project(ProjectName),
+}
+
+/// What the owner reads: `everything`, `session ID`, `task ID` or `project NAME`.
+impl fmt::Display for Scope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Scope::Owner => formatter.write_str("everything"),
+            Scope::Session(session) => write!(formatter, "session {}", session.as_str()),
+            Scope::Task(task) => write!(formatter, "task {}", task.as_str()),
+            Scope::Project(project) => write!(formatter, "project {}", project.as_str()),
+        }
+    }
 }
 
 /// Who asks, as the daemon authenticated them (kernel peer identity, launch token). Never

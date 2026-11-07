@@ -87,11 +87,6 @@ impl Refusal {
 }
 
 fn grant_action(permission: Permission, scope: &Scope) -> String {
-    let scope = match scope {
-        Scope::Owner => "everything".to_owned(),
-        Scope::Session(session) => format!("session {}", session.as_str()),
-        Scope::Task(task) => format!("task {}", task.as_str()),
-    };
     format!("the owner grants {permission} over {scope}")
 }
 

@@ -30,6 +30,11 @@ pub enum Error {
     InvalidStartTerms {
         reason: &'static str,
     },
+    /// [`crate::grant_coordinator`] gives the coordinator grants but `start-sessions`, which
+    /// [`crate::grant_start_sessions`] gives with its terms.
+    NotCoordinator {
+        permission: Permission,
+    },
     /// Only the coordinator grants (#410) and `change-state` (#714) are audited.
     NotAudited {
         permission: Permission,
@@ -66,6 +71,10 @@ impl fmt::Display for Error {
             Error::InvalidStartTerms { reason } => {
                 write!(formatter, "invalid start-sessions terms: {reason}")
             }
+            Error::NotCoordinator { permission } => write!(
+                formatter,
+                "{permission} is not a coordinator grant given without start terms"
+            ),
             Error::NotAudited { permission } => {
                 write!(
                     formatter,
