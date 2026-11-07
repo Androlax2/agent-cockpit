@@ -88,7 +88,7 @@ Each recommendation is the first option.
 **Q5. Does the reviewer step ship on by default?**
 
 - **A. Ship it off; turn it on only for risky tasks after the trial below (recommended).**
-  Pros: an evidence-based default; about 20 risky issues at the recent pace is one to two weeks of normal work. Cons:
+  Pros: an evidence-based default; about 20 risky issues is about 70 issues of normal work, between one day and one week at the recent pace. Cons:
   slower to a decision.
 - **B. Ship it on for risky tasks now.** Pros: more independent review now. Cons: the cost is
   unmeasured, and one second review pass in 34 recorded PRs says the in-session review mostly
@@ -136,10 +136,13 @@ log's notes attribute none of the ten CI fix rounds to a logic defect (causes in
 | Release | A procedure with owner gates (`docs/RELEASING.md`) | Not a role |
 | Coordinator (Chief, orchestrator) | Authority, not a step: a session holding the four coordinator grants | A grant set, not a workflow role |
 
-**What changes in the code.** `Role` stops being a closed three-value list owned by
-`cockpit-teams`. A step names a placement rule instead: "begins in a session that did not
-begin an earlier step of this task" (reviewer) or nothing (worker). Which values the field
-holds is Q1.
+**What changes in the code, and who owns it.** The `Role` type stops being a closed
+three-value list that `cockpit-teams` assigns. A preset step (`cockpit-workflows`) declares a
+placement rule: "begins in a session that did not begin an earlier step of this task"
+(`reviewer`) or none (`worker`). `cockpit-scheduling` enforces the rule when it places the
+step. `cockpit-teams` owns no role field: it keeps the recruit, handoff, findings and
+clarification rules over messaging. `worker` and `reviewer` are the two names of that rule's
+values. Which values exist is Q1.
 
 ## Spawning
 
@@ -163,7 +166,7 @@ agent or directory: the host picks them, never the request (report 07, `Keep`).
 | Depth of spawning | 1 | Built by grants never inherited; stated here so a test pins it |
 | Active sessions per task step | 1 | Proposed; replaces "at most 1 session per role" |
 | Attempts per step | 3, then the task is blocked with the next action "owner decides" | Proposed; replaces "at most 3 QA spawns per task per 10 minutes", which counted time, not outcomes |
-| Reviewer sessions per handoff commit | 1; a newer handoff cancels the unsent review | Kept from report 07 |
+| Reviewer sessions per handoff commit | 1 | Proposed. Report 07 keeps only "a newer handoff cancels the unsent review of the older one", which stays |
 | A start names its task | Required; refused without one | Proposed; `agent start` carries a directory and launch choices, and I found no task reference in `start` (`crates/cockpit-daemon/src/coordination.rs`). The coordinator skill files the item by script today |
 | Per project concurrency | Resource admission | Built elsewhere ([report 10](../design/greenfield/10-resources-scheduling.md)); not a team cap |
 | Sessions per crate area | 2 | Coordinator practice ([#208](https://github.com/Androlax2/agent-cockpit/issues/208)); the product does not know areas, so a habit, not a cap |
@@ -264,8 +267,12 @@ trial.
 **What the data shows.** From the worker trials log (34 PRs) and the last 60 merged worker
 PRs (`#981` to `#1117`, 2026-11-06 16:05Z to 2026-11-07 15:13Z):
 
-- Median open-to-merge 0.2 h, 90th percentile 0.54 h, longest 2.4 h.
-- Commits per PR: median 2; 12 of 60 had one; 21 of 60 had three or more.
+The two samples are different populations and are not pooled: the log spans 2026-11-04 to
+2026-11-07 and PRs `#745` to `#887`; the 60 PRs are the newest day. Open-to-merge times from the
+newest day understate the log's own (rows of 5 to 6 hours include reboots and rebases).
+
+- Newest 60 PRs: median open-to-merge 0.2 h, 90th percentile 0.54 h, longest 2.4 h.
+- Newest 60 PRs: commits per PR median 2; 12 had one; 21 had three or more.
 - CI fix rounds: 10 of 30 logged PRs had at least one (risky 5 of 9, contained 4 of 12,
   research 1 of 8, docs 0 of 1). Attributed causes: five flaky tests, main drift or disk, three
   lint or clippy, one PR opened before its review, one unattributed.
@@ -296,14 +303,17 @@ rotation:
 2. **Reviewer.** The same, plus a reviewer session on a fresh clone at the handoff commit.
 
 About 29% of recorded PRs are risky (10 of 34), so 20 risky issues, ten per arm, take about 70
-issues of normal work: one to two weeks at the recent pace (34 logged PRs in the three days since
-2026-11-04). Ten per arm detects only a
-large effect; a small one stays unknown, which is an acceptable result for a step that ships
+issues of normal work. The two pace figures disagree: the 34 logged PRs took three days
+(since 2026-11-04), about 6 days for 70; the last 60 merged worker PRs took 23 hours, about 1
+day for 70. Expect one day to one week. Ten per arm detects only a large effect; a small one stays unknown, which is an acceptable result for a step that ships
 off. **The owner sets the threshold before the first run.** A suggestion to set against:
 the reviewer earns its cost if post-merge fixes fall by a third or more, or it yields an
 accepted high-severity finding in one review of five, at no more than 50% more tokens per
-verified result. The trial costs no extra issues; it needs #479's totals joined to tasks
-([#58](https://github.com/Androlax2/agent-cockpit/issues/58) for usage data).
+verified result. The trial costs no extra issues. **Prerequisite:** each session's token totals
+(#479) must be recorded against its task id. No issue I found owns that join:
+[#58](https://github.com/Androlax2/agent-cockpit/issues/58) (`cockpit-usage`) is the closest, so
+the changes below add it there. Without it the trial can count review yield and post-merge fixes
+but not tokens per verified result, and the 50% threshold cannot be evaluated.
 
 **Do not transfer the published multiples.** Anthropic reports multi-agent research at about
 15 times a chat's tokens; Claude Code's cost guide says agent teams use about 7 times a
@@ -312,8 +322,9 @@ A serial reviewer is a different shape; its cost is the trial's output.
 
 ## Other orchestrators
 
-Primary sources, read on 2026-11-07 through a fetch tool that summarizes pages; quotes are as
-returned. Four are the vendors' own documentation of their own products, two are papers, one
+Primary sources, read on 2026-11-07. The Claude Code pages (agent teams, costs) came back as
+page text and the sub-agents nesting and concurrency lines were re-checked against the raw page;
+the other pages came through a fetch tool that summarizes, and their quotes are as returned. Four are the vendors' own documentation of their own products, two are papers, one
 is a company's design essay. None measured Torlek's shape (one issue, one session, one PR).
 
 | Source | What it does | Transfers | Does not transfer |
@@ -337,7 +348,7 @@ inside one.
 
 - Tokens per role, and so tokens per verified result. The trial produces them.
 - Whether a fresh reviewer finds what the author's own review misses. The trial measures it.
-- The sources' claims beyond the page text the fetch tool returned; the Codex default caps in
+- The summarized sources' claims beyond the text the fetch tool returned; the Codex default caps in
   third-party posts differ from the official page and are left out.
 - The legacy roles' behavior under load: legacy sessions were not run or read.
 
@@ -362,13 +373,13 @@ Theo's answers before posting.
 
 ### #53 cockpit-teams on workflows and messaging
 
-> **Owns:** Placing and checking the `worker` and `reviewer` roles as workflow steps over tasks and messaging; no tables beyond role bindings.
+> **Owns:** The team rules over workflow steps and messaging: recruit, handoff, findings, clarifications. The `worker` and `reviewer` placement rule is declared by the preset step in `cockpit-workflows` and enforced by `cockpit-scheduling`; this crate has no role field and no tables of its own.
 >
 > **Scope (decided in #103, 2026-11-07)**
 >
-> - Roles are workflow steps: `worker` takes any step; `reviewer` takes an independent `check` on a fresh clone at the handoff commit. No Designer or QA role; the `Role` type in `cockpit-scheduling` becomes a placement rule ("a session that began no earlier step of this task").
+> - Roles are workflow steps: `worker` takes any step; `reviewer` takes an independent `check` on a fresh clone at the handoff commit. No Designer or QA role; the `Role` type in `cockpit-scheduling` is replaced by the placement rule "a session that began no earlier step of this task".
 > - Keep from report 07: role rules for messages, exact-hash approval, recruit with host-chosen agent and directory, structured handoff and findings, clarifications of at most 3 rounds, uncertain delivery never resent.
-> - Caps: 1 active session per task step; 3 attempts per step, then the task is blocked for the owner; 1 reviewer session per handoff commit, a newer handoff cancels the unsent review.
+> - Caps: 1 active session per task step; 3 attempts per step, then the task is blocked for the owner; 1 reviewer session per handoff commit (new in #103); a newer handoff cancels the unsent review (report 07).
 > - Session links become task messages with scheduling limits.
 >
 > **Acceptance**
@@ -383,6 +394,10 @@ Theo's answers before posting.
 
 > Add to Scope: the brief template of #103 (goal, acceptance, out of scope, binding decisions, pointers, authority by reference, expected handoff, stop conditions; at most 8 KiB, no transcripts) replaces the free-text start prompt; the caps table of #103 (8 at once, 20 an hour, 2 per crate area as a habit) is the orchestrator's launch limit. Metrics per milestone gain tokens per verified result once #479 totals are joined to tasks.
 
+### #58 cockpit-usage: quota windows and alerts
+
+> Add to Scope: record each session's token totals (the harness totals of #479) against the task it works, so tokens per verified result can be computed across every session of one task (#103 trial prerequisite).
+
 ### #160 Teams/Chief legacy lessons
 
 > Record from #103: "at most 3 QA spawns per task per 10 min" is dropped for "3 attempts per step"; "at most 1 session per role" is kept as "1 active session per task step"; the team unused in the refactor is dropped as a standing set of roles.
@@ -392,13 +407,16 @@ Theo's answers before posting.
 - #497 (model selection): this report sets no model or effort per role; its report decides them.
 - #619 (token efficiency): its budgets and wake rules are used as written.
 - #17, #410, #423, #56: unchanged. #423's brainstorm input is cited above.
+- `docs/decisions/2026-11-01-410-coordinator-kit.md` says "at most 10 per hour"; the code's
+  default is 20 (`StartTerms::DEFAULT`). This report does not edit it; correct it as its own
+  docs change.
 
 ## Sources
 
 - Issue #103 and its comment; reports [06](../design/greenfield/06-tasks-workflows-verification.md),
   [07](../design/greenfield/07-teams-and-chief.md) and
-  [08](../design/greenfield/08-agent-onboarding-context.md); issues #17, #53, #54, #208, #410,
-  #423, #497, #160.
+  [08](../design/greenfield/08-agent-onboarding-context.md); issues 17, 53, 54, 58, 208, 410,
+  423, 497 and 160.
 - Research: [#619](2026-11-04-619-agent-token-efficiency.md),
   [#687](2026-11-04-687-mattpocock-skills.md).
 - Records: `docs/decisions/2026-11-01-410-coordinator-kit.md`,

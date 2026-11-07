@@ -51,6 +51,9 @@ gh pr list --state merged --limit 100 --json number,headRefName,additions,deleti
 gh api repos/Androlax2/agent-cockpit/pulls/N --jq '[.number,.commits,.review_comments,.comments]|@tsv'
 ```
 
+The 60 PRs are a different population from the 34-row log above: the log spans 2026-11-04 to
+2026-11-07 (PRs `#745` to `#887`), these are the newest day. The findings keep the two apart.
+
 The first call returned 98 merged PRs on `greenfield/` branches. `commits` was fetched for the
 60 newest (`#981` to `#1117`, created from 2026-11-06 16:05Z, merged up to 2026-11-07 15:13Z);
 the one query asking for commits and PRs together exceeds GitHub's node limit.
@@ -68,8 +71,11 @@ rework. Reviews run in the worker's session, which is why no PR holds one.
 
 ## External sources
 
-Fetched 2026-11-07 with a tool that returns a model's summary of the page, not the page. Quotes in
-the findings are as that tool returned them and were not checked against the full text.
+Fetched 2026-11-07. The Claude Code agent-teams and costs pages came back as page text; for the
+sub-agents page the nesting (three layers by default) and concurrency (20) lines were re-checked
+with `curl https://code.claude.com/docs/en/sub-agents.md`. Every other page came through a tool
+that returns a model's summary, and quotes from them are as returned, not checked against the full
+text.
 
 | Source | Date on the page |
 | --- | --- |
