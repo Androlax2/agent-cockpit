@@ -15,3 +15,9 @@ Issue #732. The owner agreed the proposal on 2026-11-04; the worker chose the fi
   releases; the runtime probe covers the gap (#732).
 - **Rejected:** a Rust array per adapter. A job editing a data file is simpler to review and
   to automate than one editing source.
+- **A version not on the list is probed once per daemon start, and the result is not stored.**
+  The version is discovered only at the start, so a start is a version change; the probe takes
+  seconds and needs no account. A requirement it does not find (a flag in `--help`, an
+  environment name or hook event in the program) takes away the capabilities that need it, so
+  a launch asking for one is refused with the requirement named; a clean probe reports
+  `Probed`. Rejected: a stored result, which only saves seconds and adds a state path.

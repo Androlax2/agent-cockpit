@@ -5,6 +5,7 @@ mod sign_in;
 pub mod events;
 mod http;
 pub mod needs;
+mod probe;
 mod process;
 pub mod server;
 
@@ -19,8 +20,10 @@ use std::time::Duration;
 use cockpit_provider_api::{
     Action, Activity, Capabilities, Capability, CommandResult, Conversation, ConversationId,
     Credentials, Delivered, DeliveryTarget, InvalidValue, Key, LaunchCommand, LaunchRequest, Needs,
-    Provenance, Provider, ProviderError, ProviderName, TerminalInput,
+    Probe, Provenance, Provider, ProviderError, ProviderName, TerminalInput,
 };
+
+pub use probe::probe;
 
 pub use server::{Invocation, NativeCommand, Server, ServerError};
 
@@ -223,6 +226,8 @@ pub struct OpenCode {
     bridge: Option<Bridge>,
     /// The instruction bundle's folder, added to OpenCode's skill paths (#419).
     instruction_skills: Option<PathBuf>,
+    /// What the runtime probe found in this version, when it ran (#732).
+    probe: Option<Probe>,
 }
 
 impl OpenCode {
@@ -234,7 +239,15 @@ impl OpenCode {
             version,
             bridge,
             instruction_skills: None,
+            probe: None,
         }
+    }
+
+    /// What [`probe()`](fn@probe) found in the running version. On a tested version, or for another
+    /// version than the one running, the probe changes nothing.
+    pub fn with_probe(mut self, probe: Probe) -> OpenCode {
+        self.probe = Some(probe);
+        self
     }
 
     /// Every launch with the bridge adds `folder`, the instruction bundle, to OpenCode's
@@ -298,10 +311,14 @@ impl OpenCode {
             })
     }
 
-    /// `tested` on a version in [`TESTED_VERSIONS`], `discovered` on any other or unknown
-    /// version; every capability it reports has this provenance.
+    /// `tested` on a version in [`TESTED_VERSIONS`]; on any other, `probed` when the probe
+    /// found every requirement, `discovered` without a clean probe.
     pub fn provenance(&self) -> Provenance {
-        Provenance::for_version(self.version.as_deref(), TESTED_VERSIONS)
+        Provenance::for_adapter(
+            self.version.as_deref(),
+            TESTED_VERSIONS,
+            self.probe.as_ref(),
+        )
     }
 }
 
@@ -328,13 +345,25 @@ impl Provider for OpenCode {
             Capability::Outcome,
             Capability::Commands,
         ]);
-        let provenance = self.provenance();
         [Capability::Resume]
             .into_iter()
             .chain(bridged.into_iter().flatten())
-            .fold(Capabilities::none(), |capabilities, capability| {
-                capabilities.with(capability, provenance.clone())
-            })
+            .fold(
+                Capabilities::none(),
+                |capabilities, capability| match Provenance::for_probe(
+                    self.version.as_deref(),
+                    TESTED_VERSIONS,
+                    self.probe.as_ref(),
+                    capability,
+                ) {
+                    Some(provenance) => capabilities.with(capability, provenance),
+                    None => capabilities,
+                },
+            )
+    }
+
+    fn probe(&self) -> Option<&Probe> {
+        self.probe.as_ref()
     }
 
     fn needs(&self) -> Result<Needs, InvalidValue> {

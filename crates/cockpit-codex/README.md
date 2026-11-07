@@ -19,6 +19,11 @@ provider and nothing above the contract sees a Codex type (#48).
   (#732); on any other or unknown version they are `discovered` (unverified).
   `CONFORMANCE_VERSION` (0.166.0) is only the version the recorded fixtures come from. Effort, compact, billing, commands,
   evidence, remote control and screen reading are untested and not reported.
+- **Runtime probe** (#732). On a version not in `tested-versions.txt`, the daemon runs
+  `probe` once at its start: the launch flags in `codex --help` and `codex resume --help`, the
+  server flags in `codex app-server --help`, the hooks feature in `codex features list`. A
+  missing requirement is named and takes away the capabilities that need it (the hooks feature
+  takes away what the bridge adds to resume).
 - **Launch with the bridge** (#407). The session runs `torlek-codex-session`, which starts
   the session's private app-server, `codex app-server --listen unix://<session dir>/codex.sock
   --enable hooks --config <hook>…` (`server_arguments`), then the TUI against it, `codex

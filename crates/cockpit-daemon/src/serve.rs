@@ -365,6 +365,15 @@ fn claude_code(programs_dir: &Path) -> Result<cockpit_claude::ClaudeCode, Provid
     };
     let claude = cockpit_claude::ClaudeCode::discover(&program, bridge)
         .map_err(|error| unavailable(error.to_string()))?;
+    let claude = match probe_untested(
+        &claude,
+        &claude.provenance(),
+        &program,
+        cockpit_claude::probe,
+    ) {
+        Some(found) => claude.with_probe(found),
+        None => claude,
+    };
     log_ready(&claude, &claude.provenance());
     Ok(claude)
 }
@@ -398,6 +407,10 @@ fn codex(programs_dir: &Path) -> Result<cockpit_codex::Codex, ProviderUnusable> 
     };
     let codex = cockpit_codex::Codex::discover(&program, bridge)
         .map_err(|error| unavailable(error.to_string()))?;
+    let codex = match probe_untested(&codex, &codex.provenance(), &program, cockpit_codex::probe) {
+        Some(found) => codex.with_probe(found),
+        None => codex,
+    };
     log_ready(&codex, &codex.provenance());
     Ok(codex)
 }
@@ -439,6 +452,15 @@ fn opencode(
     };
     let opencode = cockpit_opencode::OpenCode::discover(&program, bridge)
         .map_err(|error| unavailable(error.to_string()))?;
+    let opencode = match probe_untested(
+        &opencode,
+        &opencode.provenance(),
+        &program,
+        cockpit_opencode::probe,
+    ) {
+        Some(found) => opencode.with_probe(found),
+        None => opencode,
+    };
     log_ready(&opencode, &opencode.provenance());
     Ok(opencode)
 }
@@ -455,10 +477,49 @@ fn write_opencode_plugin(dir: &Path) -> Result<PathBuf, String> {
     Ok(plugin)
 }
 
+/// The runtime probe of `provider`'s version when it is not on the adapter's tested list
+/// (#732): once per start, so once per version change, since the version is discovered only at
+/// the start. A harmless update is logged quietly; a missing requirement is a warning naming
+/// it and what it takes away. `None` for a tested or unknown version, or when the probe could
+/// not run (logged), which leaves the version unverified.
+fn probe_untested(
+    provider: &dyn Provider,
+    provenance: &Provenance,
+    program: &Path,
+    probe: fn(&Path, &str) -> Result<cockpit_provider_api::Probe, cockpit_provider_api::ProbeError>,
+) -> Option<cockpit_provider_api::Probe> {
+    if matches!(provenance, Provenance::Tested { .. }) {
+        return None;
+    }
+    let version = provider.version()?;
+    match probe(program, version) {
+        Ok(found) if found.is_clean() => {
+            tracing::debug!("provider {} {}", provider.name(), found.summary());
+            Some(found)
+        }
+        Ok(found) => {
+            tracing::warn!(
+                "provider {} is not tested on {version} and its probe failed: {}",
+                provider.name(),
+                found.summary()
+            );
+            Some(found)
+        }
+        Err(error) => {
+            tracing::warn!(
+                "provider {} is not tested on {version} and could not be probed: {error}",
+                provider.name()
+            );
+            None
+        }
+    }
+}
+
 /// The `provider <name> ready` line the release's install check and the tests read.
 fn log_ready(provider: &dyn Provider, provenance: &Provenance) {
     let provenance = match provenance {
         Provenance::Tested { .. } => "tested",
+        Provenance::Probed { .. } => "probed",
         Provenance::Discovered => "unverified",
     };
     tracing::info!(

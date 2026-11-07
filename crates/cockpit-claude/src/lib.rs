@@ -4,9 +4,12 @@ mod sign_in;
 
 pub mod hooks;
 pub mod needs;
+mod probe;
 mod screen;
 pub mod transcript;
 pub mod trust;
+
+pub use probe::probe;
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -19,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use cockpit_provider_api::{
     Action, Activity, Capabilities, Capability, Conversation, ConversationId, Credentials,
-    InvalidValue, Key, LaunchCommand, LaunchRequest, Needs, Observation, Provenance, Provider,
-    ProviderError, ProviderName, TerminalInput, TrustRequest, WorkspaceTrust,
+    InvalidValue, Key, LaunchCommand, LaunchRequest, Needs, Observation, Probe, Provenance,
+    Provider, ProviderError, ProviderName, TerminalInput, TrustRequest, WorkspaceTrust,
 };
 
 /// The Claude Code versions the adapter's conformance tests pass against (`tested-versions.txt`,
@@ -153,6 +156,8 @@ pub struct ClaudeCode {
     /// The directory each launch adds with `--add-dir`, whose [`instruction_skills_dir`]
     /// holds Cockpit's instruction bundle as a skill (#419).
     instruction_skills: Option<PathBuf>,
+    /// What the runtime probe found in this version, when it ran (#732).
+    probe: Option<Probe>,
     /// What `claude --help` said, read when a start first chooses an effort and read again
     /// when the program file changes, since a Claude Code update replaces it (#743).
     help: Mutex<Option<HelpRead>>,
@@ -186,6 +191,7 @@ impl ClaudeCode {
             version,
             bridge,
             instruction_skills: None,
+            probe: None,
             help: Mutex::new(None),
         }
     }
@@ -194,6 +200,13 @@ impl ClaudeCode {
     /// under [`instruction_skills_dir`]`(root)`. The caller writes them before any launch.
     pub fn with_instruction_skills(mut self, root: PathBuf) -> ClaudeCode {
         self.instruction_skills = Some(root);
+        self
+    }
+
+    /// What [`probe()`](fn@probe) found in the running version. Without a version it was taken for, or
+    /// on a tested version, the probe changes nothing.
+    pub fn with_probe(mut self, probe: Probe) -> ClaudeCode {
+        self.probe = Some(probe);
         self
     }
 
@@ -236,10 +249,14 @@ impl ClaudeCode {
             })
     }
 
-    /// `tested` on a version in [`TESTED_VERSIONS`], `discovered` on any other or unknown
-    /// version; every capability it reports has this provenance.
+    /// `tested` on a version in [`TESTED_VERSIONS`]; on any other, `probed` when the probe
+    /// found every requirement, `discovered` without a clean probe.
     pub fn provenance(&self) -> Provenance {
-        Provenance::for_version(self.version.as_deref(), TESTED_VERSIONS)
+        Provenance::for_adapter(
+            self.version.as_deref(),
+            TESTED_VERSIONS,
+            self.probe.as_ref(),
+        )
     }
 
     /// The effort levels the installed `claude --help` lists; none when it could not be read
@@ -349,7 +366,6 @@ impl Provider for ClaudeCode {
             Capability::Outcome,
             Capability::Inbox,
         ]);
-        let provenance = self.provenance();
         [
             Capability::Resume,
             Capability::Submit,
@@ -362,9 +378,22 @@ impl Provider for ClaudeCode {
         ]
         .into_iter()
         .chain(bridged.into_iter().flatten())
-        .fold(Capabilities::none(), |capabilities, capability| {
-            capabilities.with(capability, provenance.clone())
-        })
+        .fold(
+            Capabilities::none(),
+            |capabilities, capability| match Provenance::for_probe(
+                self.version.as_deref(),
+                TESTED_VERSIONS,
+                self.probe.as_ref(),
+                capability,
+            ) {
+                Some(provenance) => capabilities.with(capability, provenance),
+                None => capabilities,
+            },
+        )
+    }
+
+    fn probe(&self) -> Option<&Probe> {
+        self.probe.as_ref()
     }
 
     fn needs(&self) -> Result<Needs, InvalidValue> {

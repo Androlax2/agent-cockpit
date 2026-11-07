@@ -58,6 +58,63 @@ fn another_claude_code_version_is_wired_as_unverified() {
     );
 }
 
+/// A `claude` of version `9.0.0` whose `--help` documents `flags` and whose file holds every
+/// launch environment name and hook event (#732).
+fn probed_claude(dir: &Path, flags: &[&str]) {
+    let help: String = flags
+        .iter()
+        .map(|flag| format!("  {flag} <value>\n"))
+        .collect();
+    let names: Vec<&str> = cockpit_claude::LAUNCH_ENVIRONMENT
+        .iter()
+        .map(|(name, _)| *name)
+        .chain(cockpit_claude::hooks::HOOK_EVENTS)
+        .collect();
+    fake_claude(
+        dir,
+        &format!(
+            "case \"$1\" in\n--version) echo '9.0.0 (Claude Code)' ;;\n\
+             *) printf '{help}' ;;\nesac\n# {}",
+            names.join(" ")
+        ),
+    );
+}
+
+#[test]
+fn an_untested_claude_code_that_has_every_requirement_is_wired_as_probed() {
+    let bin = tempfile::tempdir().unwrap();
+    probed_claude(bin.path(), &cockpit_claude::LAUNCH_FLAGS);
+    let home = home_with_path(bin.path());
+    let _daemon = home.start();
+
+    let log = home.log_once_it_contains("provider claude");
+
+    assert!(
+        log.contains("provider claude ready version=9.0.0 provenance=probed"),
+        "{log}"
+    );
+}
+
+#[test]
+fn an_untested_claude_code_missing_a_flag_is_warned_about_with_the_flag_named() {
+    let bin = tempfile::tempdir().unwrap();
+    let flags: Vec<&str> = cockpit_claude::LAUNCH_FLAGS
+        .into_iter()
+        .filter(|flag| *flag != "--effort")
+        .collect();
+    probed_claude(bin.path(), &flags);
+    let home = home_with_path(bin.path());
+    let _daemon = home.start();
+
+    let log = home.log_once_it_contains("provider claude");
+
+    assert!(
+        log.contains("is not tested on 9.0.0 and its probe failed")
+            && log.contains("flag --effort in `claude --help`"),
+        "{log}"
+    );
+}
+
 #[test]
 fn without_claude_code_the_daemon_starts_and_says_so() {
     let empty = tempfile::tempdir().unwrap();

@@ -249,13 +249,27 @@ fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
         }
     };
     let version = found.version.as_deref().unwrap_or("of an unknown version");
-    let provenance = if found.tested { "tested" } else { "unverified" };
+    let provenance = match (&found.probe, found.tested) {
+        (_, true) => "tested".to_owned(),
+        (Some(probe), false) if probe.is_clean => "probed, not tested".to_owned(),
+        (Some(probe), false) => format!("probe failed: {}", probe.summary),
+        (None, false) => "unverified".to_owned(),
+    };
     let detail = format!(
         "{version} ({provenance}); reports {}",
         listed(&found.capabilities)
     );
+    let probe_failed = found.probe.as_ref().is_some_and(|probe| !probe.is_clean);
     let mut requirements = vec![
-        Requirement::available(name, detail),
+        if probe_failed {
+            Requirement::available(name, detail).with_advice(format!(
+                "this {0} release lacks something Torlek relies on: update Torlek, or use a {0} \
+                 version Torlek lists as tested (`torlek doctor` shows it)",
+                provider.name
+            ))
+        } else {
+            Requirement::available(name, detail)
+        },
         match found.sign_in.signed_in {
             Some(true) => Requirement::available(
                 format!("provider {} sign-in", provider.name),

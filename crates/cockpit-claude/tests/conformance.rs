@@ -86,3 +86,15 @@ fn the_installed_claude_code_keeps_folder_trust_where_the_adapter_records_it() {
         assert!(contains(text), "{text:?} is not in the binary");
     }
 }
+
+/// What the daemon checks at its start on a version not on the tested list (#732); the
+/// nightly job runs it on the latest release.
+#[test]
+#[ignore = "needs an installed Claude Code (COCKPIT_CLAUDE_PROGRAM)"]
+fn the_installed_claude_code_passes_the_runtime_probe() {
+    let claude = ClaudeCode::discover(&common::installed(), Some(common::bridge())).unwrap();
+
+    let found = cockpit_claude::probe(&common::installed(), claude.version().unwrap()).unwrap();
+
+    assert!(found.is_clean(), "{}", found.summary());
+}

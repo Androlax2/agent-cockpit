@@ -6,6 +6,7 @@ mod events;
 #[cfg(feature = "fake")]
 pub mod fake;
 mod needs;
+mod probe;
 mod sign_in;
 mod terminal;
 mod tested_versions;
@@ -24,6 +25,9 @@ pub use events::{
 };
 pub use needs::{
     CredentialBinding, CredentialHeader, Credentials, HomePath, Host, Needs, is_credential_header,
+};
+pub use probe::{
+    Missing, Probe, ProbeError, command_output, documents_flag, names_missing_from_file,
 };
 pub use sign_in::{SignIn, SignInStatus};
 pub use terminal::{Action, Delivered, Key, TerminalInput};
@@ -206,6 +210,12 @@ pub trait Provider: Send + Sync + 'static {
     }
 
     fn capabilities(&self) -> Capabilities;
+
+    /// What the runtime probe found in the version running, when it ran: only for a version
+    /// not on the adapter's tested list (#732).
+    fn probe(&self) -> Option<&Probe> {
+        None
+    }
 
     /// The hosts and home folders its harness needs from the sandbox (#830). The default is
     /// the floor: no host and no folder beyond the checkout and the session's own. Refuses a
