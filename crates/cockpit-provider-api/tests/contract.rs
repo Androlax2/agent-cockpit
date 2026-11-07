@@ -164,6 +164,16 @@ fn a_provider_without_commands_refuses_discovery_and_invocation() {
 }
 
 #[test]
+fn a_provider_without_quota_reading_refuses_naming_its_capability() {
+    let provider = LaunchOnly(ProviderName::new("plain").unwrap());
+
+    assert_eq!(
+        provider.quota(Path::new("/unused")).unwrap_err(),
+        ProviderError::unsupported(Capability::Quota)
+    );
+}
+
+#[test]
 fn a_provider_without_screen_reading_reads_nothing() {
     let provider = LaunchOnly(ProviderName::new("plain").unwrap());
 

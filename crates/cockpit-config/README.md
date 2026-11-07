@@ -18,7 +18,7 @@ grants: owner settings are inputs to `cockpit-authorization`, which decides.
 | Project config | `<project>/.torlek/config.toml` | describing settings only (`workflow.preset`, `[[checks]]`, `[execution]`, `[needs]`, `[results]`) |
 | Overrides | `--set key=value` (TOML value) | `projects.trusted`, `workflow.preset` |
 
-A project file that sets an owner setting (`projects`, `start_files`, `tasks`, `sessions`, `storage`, `memory`, `tui`, `skill_pack`) fails with its file and
+A project file that sets an owner setting (`projects`, `start_files`, `tasks`, `sessions`, `storage`, `memory`, `usage`, `tui`, `skill_pack`) fails with its file and
 line: repository configuration describes requirements, owner settings grant. An owner file
 that declares `[[checks]]` fails the same way: a check describes a project (#313); each needs
 a `name` and a `command`, and a name declared twice fails at its second line. The project's
@@ -59,6 +59,21 @@ sleep before it ends. The daemon reads both at start; a value below the minimum 
 idle_sleep_after_minutes = 60  # at least 30
 asleep_expiry_days = 7         # at least 1
 ```
+
+## Usage
+
+How often the daemon reads each provider's plan windows and when they alert (#58). Owner
+settings, read at the daemon's start; a value outside its rules stops it.
+
+```toml
+[usage]
+quota_refresh_minutes = 5          # 1 to 1440: between two readings while they succeed
+quota_fresh_minutes = 10           # at least quota_refresh_minutes: how long a reading counts
+quota_alert_percents = [80, 95]    # 1 to 5 percents from 1 to 100, ascending
+```
+
+A failed reading waits twice as long before the next, up to an hour, and the last good one
+goes stale.
 
 ## Memory
 

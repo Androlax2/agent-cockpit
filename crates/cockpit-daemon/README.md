@@ -25,7 +25,8 @@ not share code.
   check runs it executes, whose gate `Routes` serves to the owner and to agents, and whose
   migrations it runs), `cockpit-scheduling` (whose pass it runs every 30 seconds and on
   `queue-dispatch`, and whose explanations `Routes` serves to the owner), `cockpit-readiness`
-  (which assesses the facts `readiness` gathers from these owners, #50), `cockpit-tmux`
+  (which assesses the facts `readiness` gathers from these owners, #50), `cockpit-usage`
+  (whose migrations it runs and whose plan windows its quota worker records, #58), `cockpit-tmux`
   (the private server sessions run in) and
   `cockpit-provider-api` (the providers it is wired with; the adapters arrive with #33);
   `tokio`, `serde`, `serde_json`, `tracing`.
@@ -214,6 +215,15 @@ keeps `storage.database_backups_kept`, and, only with `storage.database_prune_au
 runs the retention pass on the Bulk lane. The owner-only `storage-database` request reports
 the pass, and with `apply` runs it (`docs/decisions/2026-11-04-406-database-retention.md`).
 
+## Quota polling (#58)
+
+A supervised task (`src/usage.rs`) reads the plan windows of each provider that reports
+`quota`, first at the start, then every `usage.quota_refresh_minutes`, in the owner's home
+(never a session's), off the async workers. Each reading, or why it failed, is recorded in
+`cockpit-usage` under the account `default` until accounts arrive (#59); the alerts it fires
+are logged. A provider that fails waits twice as long as before each time, up to an hour, and
+the refresh returns with its next reading. `Wiring::quota` is `None` in tests not about quota.
+
 ## Requests
 
 - Peers are served only when the kernel's peer credentials name the daemon's own user.
@@ -241,6 +251,8 @@ builds it only when asked and no release installs it.
 
 ## Tests
 
+- `tests/usage_quota.rs`: issue #58: a fake provider's readings recorded under the owner's
+  home, a failure recorded and retried twice as late each time, then the refresh again.
 - `tests/startup.rs`: the binary on a clean home, the second daemon, private modes, the
   macOS layout, a stale socket after `kill -9`, reconcile before accept.
 - `tests/coordinator_kit.rs`: issue #410's acceptance with the fake provider: every

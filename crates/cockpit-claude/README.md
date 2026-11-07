@@ -13,12 +13,22 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   signed-out and placeholder API-key states on 2.1.316 in an isolated Linux home.
 
 - **Capabilities with provenance.** Resume, submit, events, outcome, cancel, effort, model,
-  compact, remote control, screen reading and compaction threshold are `tested` only when the running Claude Code
+  compact, remote control, screen reading, compaction threshold and quota are `tested` only when the running Claude Code
   is a version in `tested-versions.txt` (#732); on any other or unknown version they are
   `discovered` (unverified). `CONFORMANCE_VERSION` is only the version the recorded
   fixtures come from. `events`, `outcome` and `inbox` need the hook bridge: an adapter wired
   without it subscribes no hooks. Commands, evidence and billing are not reported until their contract
   methods exist.
+- **Quota** (#58). `Provider::quota` reads the plan windows of the account Claude Code is
+  signed in to under the owner's home, from `https://api.anthropic.com/api/oauth/usage` with
+  `anthropic-beta: oauth-2025-04-20`, the endpoint and header the owner's
+  `config/waybar/.config/waybar/scripts/claude-usage.sh` uses. The token is read from
+  `~/.claude/.credentials.json` at each request and handed to `curl` on its standard input
+  (`--header @-`), never on its command line, in an error or to a session; an expired one is
+  refused, never refreshed, since Claude Code owns it. Both answer shapes are read, the
+  `limits` list and the older flat keys, into the same limit names: `five-hour`,
+  `seven-day` and `seven-day:<model>`. A failed or limited request is refused in the
+  adapter's words, without the answer. The host daemon alone calls it (#858).
 - **Runtime probe** (#732). On a version not in `tested-versions.txt`, the daemon runs
   `probe` once at its start: each launch flag in `claude --help`, each launch environment name
   and hook event in the program. A missing requirement is logged and shown by `torlek doctor`
@@ -96,7 +106,8 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 
 - Depends on: `cockpit-provider-api` only (crate-graph rule
   `provider adapters -> provider-api only`), `serde_json` for hook payloads.
-- Also uses the workspace-pinned `rustix` process API for sign-in probe cleanup.
+- Also uses the workspace-pinned `rustix` process API for sign-in probe and usage request
+  cleanup, and the host's `curl` for the usage request: no HTTP crate.
 - Used by: the daemon's wiring only (`capabilities -> provider adapters`).
 
 ## Tests
@@ -106,6 +117,8 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 - `tests/hooks.rs`: conformance with the hook payloads pinned in
   `tests/fixtures/claude-code-2.1.316/`, and the reports they become.
 - `tests/screen.rs`: the screen-reading fallback.
+- `tests/quota.rs`: plan windows from both answer shapes in `tests/fixtures/oauth-usage/`,
+  against a fake `curl` and a scratch home: the token's path, expiry and refusals.
 - `tests/bridge.rs`: the hook bridge as a process against a fake `torlek`.
 - `tests/bridge_check.rs`: `Bridge::check` passes the built bridge and refuses one that
   cannot run or is another program.

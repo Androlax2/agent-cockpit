@@ -67,7 +67,8 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   [`QuotaReading`]: the plan, each window's [`LimitKey`], scope, length, used share and reset
   time, and whether the provider refuses use now. They are validated where they are made;
   `cockpit-usage` stores and judges them and never reads a provider's format. No account
-  identifier belongs in a reading.
+  identifier belongs in a reading. [`Provider::quota`] gives one under the owner's home, for
+  the host daemon only; an adapter without [`Capability::Quota`] refuses.
 - **Screen reading** ([`Provider::read_screen`]) is a fallback for missing events and records
   its confidence (`observed-by: event|screen`, report 05); it never proves a task complete.
 - **Sandbox needs** (#830, #861). [`Provider::needs`] declares the [`Needs`] of its harness:

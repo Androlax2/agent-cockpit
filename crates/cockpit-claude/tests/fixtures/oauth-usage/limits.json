@@ -1,0 +1,8 @@
+{
+  "limits": [
+    {"kind": "session", "percent": 42.5, "resets_at": "2027-01-15T10:00:00.250000+00:00", "is_active": true},
+    {"kind": "weekly_all", "percent": 81, "resets_at": "2027-01-20T12:00:00+02:00", "is_active": true},
+    {"kind": "weekly_scoped", "percent": 12, "resets_at": "2027-01-20T10:00:00Z", "scope": {"model": {"display_name": "Opus 4.5"}}, "is_active": false},
+    {"kind": "weekly_scoped", "percent": null, "resets_at": null, "scope": {"model": {"display_name": "Sonnet"}}}
+  ]
+}

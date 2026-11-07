@@ -34,6 +34,7 @@ cockpit-sessions = { path = "../cockpit-sessions" }
 cockpit-tasks = { path = "../cockpit-tasks" }
 cockpit-tmux = { path = "../cockpit-tmux" }
 cockpit-turso = { path = "../cockpit-turso" }
+cockpit-usage = { path = "../cockpit-usage" }
 cockpit-verification = { path = "../cockpit-verification" }
 cockpit-workflows = { path = "../cockpit-workflows" }
 serde = "1.0.229"

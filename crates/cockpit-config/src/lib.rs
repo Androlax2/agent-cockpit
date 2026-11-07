@@ -17,10 +17,12 @@ mod skill_pack;
 mod start_files;
 mod storage;
 mod token_file;
+mod usage;
 pub use memory::MemorySettings;
 pub use notify::{AWAY_HOLD, NOTIFY_EVENTS, NotifyEvents, NotifySettings};
 pub use skill_pack::SkillPackSettings;
 pub use storage::StorageSettings;
+pub use usage::UsageSettings;
 
 use std::fmt;
 use std::io::ErrorKind;
@@ -145,6 +147,8 @@ pub struct EffectiveConfig {
     /// Which events `torlek notify` tells on the desktop and with a sound (#62, #682), and
     /// what holds them.
     pub notify: NotifySettings,
+    /// How often the daemon reads plan windows and when they alert (#58).
+    pub usage: UsageSettings,
     /// The optional skill pack and which of its skills agents get (#786).
     pub skill_pack: SkillPackSettings,
     pub layout: Layout,
@@ -365,6 +369,7 @@ struct SettingsFile {
     agents: Option<Spanned<AgentsTable>>,
     tui: Option<Spanned<TuiTable>>,
     notify: Option<Spanned<notify::NotifyTable>>,
+    usage: Option<Spanned<usage::UsageTable>>,
     skill_pack: Option<Spanned<skill_pack::SkillPackTable>>,
     checks: Option<Spanned<Vec<Spanned<CheckEntry>>>>,
     execution: Option<Spanned<ExecutionTable>>,
@@ -529,6 +534,7 @@ pub fn load(
         storage: storage::settings(&layers)?,
         memory: memory::settings(&layers)?,
         notify: notify::settings(&layers)?,
+        usage: usage::settings(&layers)?,
         skill_pack: skill_pack::settings(&layers),
         layout,
         user_file,
@@ -603,6 +609,7 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         agents,
         tui,
         notify,
+        usage,
         skill_pack,
         workflow: _,
         checks: _,
@@ -662,6 +669,12 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         return Err(ConfigError::OwnerOnly {
             key: "notify",
             source: layer.source_at(notify.span()),
+        });
+    }
+    if let Some(usage) = usage {
+        return Err(ConfigError::OwnerOnly {
+            key: "usage",
+            source: layer.source_at(usage.span()),
         });
     }
     if let Some(skill_pack) = skill_pack {

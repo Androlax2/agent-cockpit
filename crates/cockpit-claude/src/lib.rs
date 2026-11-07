@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod quota;
 mod sign_in;
 
 pub mod hooks;
@@ -23,7 +24,8 @@ use std::time::{Duration, Instant};
 use cockpit_provider_api::{
     Action, Activity, Capabilities, Capability, Conversation, ConversationId, Credentials,
     InvalidValue, Key, LaunchCommand, LaunchRequest, Needs, Observation, Probe, Provenance,
-    Provider, ProviderError, ProviderName, TerminalInput, TrustRequest, WorkspaceTrust,
+    Provider, ProviderError, ProviderName, QuotaReading, TerminalInput, TrustRequest,
+    WorkspaceTrust,
 };
 
 /// The Claude Code versions the adapter's conformance tests pass against (`tested-versions.txt`,
@@ -166,6 +168,9 @@ pub struct ClaudeCode {
     /// What `claude --help` said, read when a start first chooses an effort and read again
     /// when the program file changes, since a Claude Code update replaces it (#743).
     help: Mutex<Option<HelpRead>>,
+    /// The `curl` that asks for the plan windows ([`Provider::quota`]); found on `PATH`
+    /// unless a test gives its own.
+    usage_client: PathBuf,
 }
 
 /// The effort levels one build of `claude` lists in its `--help`.
@@ -198,7 +203,14 @@ impl ClaudeCode {
             instruction_skills: None,
             probe: None,
             help: Mutex::new(None),
+            usage_client: PathBuf::from("curl"),
         }
+    }
+
+    /// Asks for the plan windows with `program` instead of the `curl` on `PATH`.
+    pub fn with_usage_client(mut self, program: PathBuf) -> ClaudeCode {
+        self.usage_client = program;
+        self
     }
 
     /// Every launch adds `root` with `--add-dir`, so Claude Code lists the skills written
@@ -360,6 +372,10 @@ impl Provider for ClaudeCode {
         self.sign_in_within(Duration::from_secs(10))
     }
 
+    fn quota(&self, home: &Path) -> Result<QuotaReading, ProviderError> {
+        self.quota_within(home, quota::QUOTA_DEADLINE)
+    }
+
     fn version(&self) -> Option<&str> {
         self.version.as_deref()
     }
@@ -385,6 +401,7 @@ impl Provider for ClaudeCode {
                 Capability::RemoteControl,
                 Capability::ScreenReading,
                 Capability::CompactionThreshold,
+                Capability::Quota,
             ]
             .into_iter()
             .chain(bridged.into_iter().flatten()),

@@ -842,6 +842,7 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-usage", "cockpit-provider-api"),
         ("cockpit-usage", "cockpit-turso"),
         ("cockpit-daemon", "cockpit-bug-reports"),
+        ("cockpit-daemon", "cockpit-usage"),
         ("cockpit-workflows", "cockpit-tasks"),
         ("cockpit-workflows", "cockpit-provider-api"),
         ("cockpit-scheduling", "cockpit-workflows"),

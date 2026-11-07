@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use cockpit_claude::{CONFORMANCE_VERSION, ClaudeCode};
 use cockpit_provider_api::{Availability, Capability, Provenance, Provider};
 
-const REPORTED: [Capability; 12] = [
+const REPORTED: [Capability; 13] = [
     Capability::Resume,
     Capability::Submit,
     Capability::Events,
@@ -20,6 +20,7 @@ const REPORTED: [Capability; 12] = [
     Capability::RemoteControl,
     Capability::ScreenReading,
     Capability::CompactionThreshold,
+    Capability::Quota,
 ];
 
 fn on_version(version: Option<&str>) -> ClaudeCode {
