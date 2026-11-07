@@ -8,6 +8,7 @@ pub mod delivery;
 pub mod hooks;
 pub mod needs;
 mod probe;
+mod quota;
 pub mod reports;
 pub mod rollout;
 pub mod turns;
@@ -26,7 +27,7 @@ use std::time::{Duration, Instant};
 use cockpit_provider_api::{
     Action, Capabilities, Capability, Conversation, ConversationId, Credentials, Delivered,
     DeliveryTarget, InvalidValue, LaunchCommand, LaunchRequest, Needs, Probe, Provenance, Provider,
-    ProviderError, ProviderName,
+    ProviderError, ProviderName, QuotaReading,
 };
 
 /// The Codex versions the adapter's conformance tests pass against (`tested-versions.txt`,
@@ -253,6 +254,11 @@ impl Provider for Codex {
         &self.name
     }
 
+    /// From Codex's own quota sign-in under `~/.local/share/codex-quota`, never the sessions'.
+    fn quota(&self, home: &Path) -> Result<QuotaReading, ProviderError> {
+        self.quota_within(home, quota::QUOTA_DEADLINE)
+    }
+
     fn sign_in(&self) -> cockpit_provider_api::SignIn {
         self.sign_in_within(Duration::from_secs(10))
     }
@@ -261,8 +267,8 @@ impl Provider for Codex {
         self.version.as_deref()
     }
 
-    /// Resume and compaction threshold; with the bridge, also events, submit, cancel and
-    /// outcome, which its session launcher and app-server provide (#407). Not effort, model,
+    /// Resume, compaction threshold and quota; with the bridge, also events, submit, cancel
+    /// and outcome, which its session launcher and app-server provide (#407). Not effort, model,
     /// compact, billing, commands, evidence, remote control or screen reading: untested.
     fn capabilities(&self) -> Capabilities {
         let bridged = if self.bridge.is_some() {
@@ -274,9 +280,13 @@ impl Provider for Codex {
             self.version.as_deref(),
             TESTED_VERSIONS,
             self.probe.as_ref(),
-            [Capability::Resume, Capability::CompactionThreshold]
-                .into_iter()
-                .chain(bridged.iter().copied()),
+            [
+                Capability::Resume,
+                Capability::CompactionThreshold,
+                Capability::Quota,
+            ]
+            .into_iter()
+            .chain(bridged.iter().copied()),
         )
     }
 

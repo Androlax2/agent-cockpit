@@ -7,13 +7,14 @@ use std::path::PathBuf;
 use cockpit_codex::{CONFORMANCE_VERSION, Codex};
 use cockpit_provider_api::{Availability, Capability, Provenance, Provider};
 
-const REPORTED: [Capability; 6] = [
+const REPORTED: [Capability; 7] = [
     Capability::Resume,
     Capability::Events,
     Capability::Submit,
     Capability::Cancel,
     Capability::Outcome,
     Capability::CompactionThreshold,
+    Capability::Quota,
 ];
 
 fn on_version(version: Option<&str>) -> Codex {
@@ -114,7 +115,7 @@ fn it_reports_nothing_beyond_resume_events_submit_cancel_outcome_and_compaction_
 }
 
 #[test]
-fn without_the_bridge_only_resume_and_the_compaction_threshold_are_reported() {
+fn without_the_bridge_only_resume_the_compaction_threshold_and_quota_are_reported() {
     let codex = Codex::new(
         PathBuf::from("/usr/bin/codex"),
         Some(CONFORMANCE_VERSION.to_owned()),
@@ -127,7 +128,7 @@ fn without_the_bridge_only_resume_and_the_compaction_threshold_are_reported() {
             capabilities.supports(capability),
             matches!(
                 capability,
-                Capability::Resume | Capability::CompactionThreshold
+                Capability::Resume | Capability::CompactionThreshold | Capability::Quota
             ),
             "{capability:?}"
         );
