@@ -59,8 +59,13 @@ require_kvm() {
     [[ -r $KVM_DEVICE && -w $KVM_DEVICE ]] || die "$KVM_DEVICE is not readable and writable for $(id -un)"
 }
 
+# The name check keeps a stale pid file (host crash, reused pid) from pointing at, or making
+# this script kill, an unrelated process.
 is_running() {
-    [[ -f $PID_FILE ]] && kill -0 "$(<"$PID_FILE")" 2>/dev/null
+    [[ -f $PID_FILE ]] || return 1
+    local pid
+    pid=$(<"$PID_FILE")
+    [[ -r /proc/$pid/cmdline ]] && tr '\0' ' ' <"/proc/$pid/cmdline" | grep -q -- '-name torlek-redteam '
 }
 
 require_stopped() {
@@ -80,7 +85,8 @@ guest_ssh() {
 }
 
 # Sends a guest script as one quoted argument, so a command inside it that reads stdin cannot
-# swallow the rest of the script.
+# swallow the rest of the script. The quoting needs bash as the login shell of both guest users,
+# which the Arch image gives them.
 run_guest_script() {
     local user=$1 script_path=$2 command_prefix=${3:-}
     guest_ssh "$user" "$command_prefix bash -c $(printf '%q' "$(<"$script_path")")"
@@ -138,8 +144,10 @@ stop_guest() {
 
 fetch_image() {
     require_commands curl sha256sum
-    mkdir -p "$STATE_DIR"
-    chmod 700 "$STATE_DIR"
+    if [[ ! -d $STATE_DIR ]]; then
+        mkdir -p "$STATE_DIR"
+        chmod 700 "$STATE_DIR"
+    fi
     if [[ -f $BASE_IMAGE ]]; then
         echo "redteam-vm: image already downloaded: $BASE_IMAGE"
         return
@@ -203,8 +211,9 @@ command_create() {
     [[ -f $BASE_IMAGE ]] || die "no verified image; run: $0 fetch"
     [[ ! -e $DISK ]] || die "a guest already exists; run: $0 destroy"
     require_stopped
-    trap 'echo "redteam-vm: create failed; inspect $CONSOLE_LOG, then run: $0 destroy" >&2' ERR
+    trap 'status=$?; ((status == 0)) || echo "redteam-vm: create failed; inspect $CONSOLE_LOG, then run: $0 destroy" >&2' EXIT
 
+    rm -f "$SSH_KEY" "$SSH_KEY.pub" "$SEED_IMAGE"
     generate_throwaway_key
     write_seed_image
     rm -f "$KNOWN_HOSTS"
@@ -213,7 +222,11 @@ command_create() {
     echo "redteam-vm: first boot, to provision (a few minutes)"
     start_qemu
     wait_for_ssh "$ADMIN_USER"
-    guest_ssh "$ADMIN_USER" 'sudo cloud-init status --wait' >/dev/null
+    # Exit status 2 means cloud-init finished with recoverable errors; a real failure shows
+    # up in the provisioning that follows.
+    local cloud_init_status=0
+    guest_ssh "$ADMIN_USER" 'sudo cloud-init status --wait' || cloud_init_status=$?
+    ((cloud_init_status == 0 || cloud_init_status == 2)) || die "cloud-init failed in the guest (status $cloud_init_status)"
     run_guest_script "$ADMIN_USER" "$SCRIPT_DIR/redteam-vm/guest-provision.sh" sudo
     run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-install-torlek.sh"
     stop_guest
@@ -243,7 +256,8 @@ command_ssh() {
 
 command_check() {
     is_running || die "the guest is not running; run: $0 start"
-    run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-isolation-check.sh"
+    run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-isolation-check.sh" \
+        "env TORLEK_REDTEAM_SSH_PORT=$SSH_PORT"
 }
 
 command_stop() {

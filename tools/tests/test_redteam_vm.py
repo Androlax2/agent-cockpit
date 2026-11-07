@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     [[ $1 == -pidfile ]] && pid_file=$2
     shift
 done
-sleep 60 >/dev/null 2>&1 &
+(exec -a "qemu-system-x86_64 -name torlek-redteam " sleep 60 >/dev/null 2>&1) &
 echo $! >"$pid_file"
 """
 
@@ -213,6 +213,19 @@ class RedTeamVmTests(unittest.TestCase):
         result = self.run_script("check")
         self.assertEqual(result.returncode, 1)
         self.assertIn("the guest is not running", result.stderr)
+
+    def test_a_stale_pid_file_is_not_a_running_guest(self):
+        self.create_guest()
+        (self.state_dir / "qemu.pid").write_text(str(os.getpid()))
+        result = self.run_script("start")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_check_tells_the_guest_the_forward_port(self):
+        self.create_guest()
+        self.run_script("start", TORLEK_REDTEAM_SSH_PORT="2300")
+        self.run_script("check", TORLEK_REDTEAM_SSH_PORT="2300")
+        last_call = (self.log_dir / "ssh-calls").read_text().splitlines()[-1]
+        self.assertIn("TORLEK_REDTEAM_SSH_PORT=2300", last_call)
 
     def test_check_runs_the_isolation_script_as_the_throwaway_user(self):
         self.create_guest()

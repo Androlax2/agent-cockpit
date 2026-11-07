@@ -31,15 +31,16 @@ if sudo -n true 2>/dev/null; then fail "redteam has passwordless sudo"; fi
 [[ -z $(find /dev/virtio-ports -mindepth 1 2>/dev/null) ]] || fail "a virtio serial channel to the host exists"
 
 # What the host's network position gives the guest. Not a failure either way: it measures
-# the reach docs/redteam-vm.md describes. The host listens on its loopback port 2222 for the
-# guest's ssh while the guest runs, so an ssh banner from 10.0.2.2:2222 proves host loopback
+# the reach docs/redteam-vm.md describes. The host listens on its loopback forward port for the
+# guest's ssh while the guest runs, so an ssh banner from 10.0.2.2:<port> proves host loopback
 # services are reachable.
 if curl -sS -m 5 -o /dev/null https://example.com 2>/dev/null; then
     echo "internet: reachable"
 else
     echo "internet: unreachable"
 fi
-host_banner=$(timeout 5 bash -c 'exec 3<>/dev/tcp/10.0.2.2/2222 && head -c 8 <&3' 2>/dev/null)
+forward_port=${TORLEK_REDTEAM_SSH_PORT:?the host passes its forward port}
+host_banner=$(timeout 5 bash -c "exec 3<>/dev/tcp/10.0.2.2/$forward_port && head -c 8 <&3" 2>/dev/null)
 if [[ -n $host_banner ]]; then
     echo "host loopback via 10.0.2.2: reachable (read $host_banner)"
 else
