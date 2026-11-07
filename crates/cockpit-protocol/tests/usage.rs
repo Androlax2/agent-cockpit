@@ -23,6 +23,7 @@ fn the_reply_names_each_accounts_windows_and_its_last_failure() {
             provider: "claude".to_owned(),
             account: "default".to_owned(),
             plan: Some("max".to_owned()),
+            is_blocked: true,
             observed_at: Some(1_800_000_000),
             is_current: false,
             failure: Some(QuotaFailureView {
@@ -46,6 +47,7 @@ fn the_reply_names_each_accounts_windows_and_its_last_failure() {
             "provider": "claude",
             "account": "default",
             "plan": "max",
+            "is_blocked": true,
             "observed_at": 1_800_000_000,
             "is_current": false,
             "failure": {"at": 1_800_000_300, "reason": "the usage endpoint answered HTTP 429"},

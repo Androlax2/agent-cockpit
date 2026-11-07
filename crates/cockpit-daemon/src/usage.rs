@@ -225,6 +225,7 @@ fn account_view(quota: AccountQuota) -> QuotaAccountView {
         provider: quota.provider.as_str().to_owned(),
         account: quota.account.as_str().to_owned(),
         plan: quota.plan,
+        is_blocked: quota.is_blocked,
         observed_at: quota.observed_at,
         is_current: quota.is_current,
         failure: quota.failure.map(|failure| QuotaFailureView {

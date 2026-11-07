@@ -194,10 +194,11 @@ async fn the_owner_reads_each_accounts_windows_as_recorded_and_judged_now() {
             account.provider.as_str(),
             account.account.as_str(),
             account.plan.as_deref(),
+            account.is_blocked,
             account.is_current,
             &account.failure,
         ),
-        ("fake", "default", Some("max"), true, &None)
+        ("fake", "default", Some("max"), false, true, &None)
     );
     let QuotaWindowView {
         limit,
@@ -226,6 +227,21 @@ async fn the_owner_reads_each_accounts_windows_as_recorded_and_judged_now() {
     assert!(
         resets_at.is_some_and(|at| at > common::unix_now()),
         "{resets_at:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_account_the_provider_blocks_is_answered_blocked_even_without_windows() {
+    let blocked = QuotaReading::new(Some("plus".to_owned()), Vec::new(), true).unwrap();
+    let (polled, daemon) = Polled::start(vec![Ok(blocked)]).await;
+    polled.asks_once(2).await;
+
+    let accounts = polled.asked(&daemon).await.unwrap();
+
+    assert_eq!(
+        (accounts[0].is_blocked, accounts[0].windows.len()),
+        (true, 0),
+        "{accounts:#?}"
     );
 }
 

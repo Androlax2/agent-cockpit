@@ -101,7 +101,7 @@ fn find_installation() -> Result<Option<Installation>, String> {
     }))
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 

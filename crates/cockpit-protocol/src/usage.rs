@@ -9,6 +9,9 @@ pub struct QuotaAccountView {
     pub account: String,
     /// The plan as the last reading named it.
     pub plan: Option<String>,
+    /// Whether the last reading said the provider refuses ordinary use on the account,
+    /// whatever its windows say.
+    pub is_blocked: bool,
     /// Unix seconds; `None` when every refresh so far failed.
     pub observed_at: Option<i64>,
     /// Whether the last reading is younger than the owner's `quota_fresh_minutes` and no

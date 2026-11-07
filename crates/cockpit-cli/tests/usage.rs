@@ -78,14 +78,15 @@ async fn usage_quota_prints_each_account_then_its_windows_and_last_failure() {
         provider: "claude".to_owned(),
         account: "default".to_owned(),
         plan: Some("max".to_owned()),
+        is_blocked: false,
         observed_at: Some(now - 3 * 60 - 30),
         is_current: true,
         failure: None,
         windows: vec![
-            window("five-hour", 42, Some(now + 2 * 3600 + 1800)),
+            window("five-hour", 42, Some(now + 2 * 3600 + 30 * 60 + 30)),
             QuotaWindowView {
                 state: QuotaWindowStateView::Low,
-                ..window("seven-day", 81, Some(now + 4 * 86_400 + 3600))
+                ..window("seven-day", 81, Some(now + 4 * 86_400 + 23 * 3600 + 1800))
             },
         ],
     };
@@ -93,6 +94,7 @@ async fn usage_quota_prints_each_account_then_its_windows_and_last_failure() {
         provider: "codex".to_owned(),
         account: "default".to_owned(),
         plan: None,
+        is_blocked: false,
         observed_at: None,
         is_current: false,
         failure: Some(QuotaFailureView {
@@ -114,8 +116,8 @@ async fn usage_quota_prints_each_account_then_its_windows_and_last_failure() {
     assert_eq!(
         text(&output.stdout),
         "claude\tdefault\tplan max\tread 3 min ago\tcurrent\n\
-         \x20 five-hour\t42%\tavailable\tresets in 2 h\n\
-         \x20 seven-day\t81%\tlow\tresets in 4 days\n\
+         \x20 five-hour\t42%\tavailable\tresets in 2 h 30 min\n\
+         \x20 seven-day\t81%\tlow\tresets in 4 days 23 h\n\
          codex\tdefault\tplan unknown\tnever read\tstale\n\
          \x20 refresh failed 5 min ago: Codex's quota sign-in is missing\n"
     );
@@ -133,6 +135,7 @@ async fn a_window_whose_reset_passed_or_is_unknown_says_so() {
                 provider: "claude".to_owned(),
                 account: "default".to_owned(),
                 plan: Some("pro".to_owned()),
+                is_blocked: false,
                 observed_at: Some(now - 3 * 3600 - 600),
                 is_current: false,
                 failure: None,
@@ -155,6 +158,74 @@ async fn a_window_whose_reset_passed_or_is_unknown_says_so() {
         "claude\tdefault\tplan pro\tread 3 h ago\tstale\n\
          \x20 five-hour\t100%\tstale\treset 20 min ago\n\
          \x20 window-60-minutes\t3%\tavailable\treset unknown\n"
+    );
+    daemon.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_blocked_account_says_so_and_a_failure_before_the_reading_is_labelled() {
+    let home = Home::new();
+    let now = unix_now();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::UsageQuota {
+            accounts: vec![QuotaAccountView {
+                provider: "codex".to_owned(),
+                account: "default".to_owned(),
+                plan: Some("plus".to_owned()),
+                is_blocked: true,
+                observed_at: Some(now - 60),
+                is_current: true,
+                failure: Some(QuotaFailureView {
+                    at: now - 3 * 86_400,
+                    reason: "did not answer within 12000 ms".to_owned(),
+                }),
+                windows: Vec::new(),
+            }],
+        }),
+    );
+
+    let output = home.cockpit(&["usage", "quota"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "codex\tdefault\tplan plus\tread 60 s ago\tcurrent\tblocked\n\
+         \x20 refresh failed 3 days ago, before the last reading: did not answer within 12000 ms\n"
+    );
+    daemon.await.unwrap();
+}
+
+#[tokio::test]
+async fn the_providers_words_are_printed_escaped() {
+    let home = Home::new();
+    let now = unix_now();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::UsageQuota {
+            accounts: vec![QuotaAccountView {
+                provider: "codex".to_owned(),
+                account: "default".to_owned(),
+                plan: Some("plus\u{1b}[2J".to_owned()),
+                is_blocked: false,
+                observed_at: None,
+                is_current: false,
+                failure: Some(QuotaFailureView {
+                    at: now - 60,
+                    reason: "refused\nclaude\tdefault\tplan max".to_owned(),
+                }),
+                windows: Vec::new(),
+            }],
+        }),
+    );
+
+    let output = home.cockpit(&["usage", "quota"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "codex\tdefault\tplan plus\\u{1b}[2J\tnever read\tstale\n\
+         \x20 refresh failed 60 s ago: refused\\nclaude\\tdefault\\tplan max\n"
     );
     daemon.await.unwrap();
 }
