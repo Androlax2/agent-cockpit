@@ -66,6 +66,13 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26.12.0
+      # The conformance tests run a harness with `PATH=/usr/bin:/bin` and nothing else (#1106),
+      # and codex is a Node script (`#!/usr/bin/env node`) whose launcher fails there: the runner
+      # keeps its Node under the tool cache, outside that PATH.
+      - name: Make node resolvable on the harness's isolated PATH
+        run: |
+          sudo ln -s "$(command -v node)" /usr/bin/node
+          env -i PATH=/usr/bin:/bin node --version
       - name: Test each adapter's latest harness
         id: test
         run: |
