@@ -265,6 +265,28 @@ fn a_failed_turn_reports_the_context_of_the_last_real_model_call() {
 }
 
 #[test]
+fn a_turns_end_after_a_compaction_without_a_model_call_since_reports_no_context() {
+    let directory = tempfile::tempdir().unwrap();
+    let transcript = directory.path().join("transcript.jsonl");
+    let mut tail = std::fs::read_to_string(common::transcript("transcript-turn")).unwrap();
+    tail.push_str(
+        r#"{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"manual","preTokens":45123,"postTokens":3000}}"#,
+    );
+    tail.push('\n');
+    std::fs::write(&transcript, tail).unwrap();
+    let mut payload: serde_json::Value = serde_json::from_str(&common::fixture("stop")).unwrap();
+    payload["transcript_path"] = transcript.to_str().unwrap().into();
+
+    let arguments =
+        hooks::measured_arguments(&hooks::normalize(&payload.to_string()).unwrap()).unwrap();
+
+    assert!(
+        !arguments.contains(&"--context-tokens".to_owned()),
+        "the size before a compaction is no longer the context: {arguments:?}"
+    );
+}
+
+#[test]
 fn a_turns_end_whose_transcript_cannot_be_read_reports_without_a_context() {
     let event = hooks::normalize(&common::fixture("stop")).unwrap();
 

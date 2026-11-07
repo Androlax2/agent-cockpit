@@ -233,6 +233,12 @@ fn compaction(phase: CompactionPhase, trigger: Option<&str>) -> EventKind {
 /// yet, reports without it.
 pub fn measured_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     let mut arguments = bridge_arguments(event)?;
+    if !matches!(
+        event.kind,
+        EventKind::Compaction(_) | EventKind::TurnEnded { .. }
+    ) {
+        return Some(arguments);
+    }
     let payload: Option<serde_json::Value> = serde_json::from_str(&event.raw).ok();
     let Some(rollout) = payload
         .as_ref()

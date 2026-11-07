@@ -362,6 +362,27 @@ fn a_turns_end_reports_the_context_and_window_the_rollout_holds() {
 }
 
 #[test]
+fn a_turns_end_after_a_compaction_without_a_model_call_since_reports_no_context() {
+    let directory = tempfile::tempdir().unwrap();
+    let rollout = directory.path().join("rollout.jsonl");
+    let mut tail =
+        std::fs::read_to_string(common::fixtures_dir().join("rollout-turn.jsonl")).unwrap();
+    tail.push_str(r#"{"type":"compacted","payload":{"message":""}}"#);
+    tail.push('\n');
+    std::fs::write(&rollout, tail).unwrap();
+    let mut payload: serde_json::Value = serde_json::from_str(&common::fixture("stop")).unwrap();
+    payload["transcript_path"] = rollout.to_str().unwrap().into();
+
+    let arguments =
+        hooks::measured_arguments(&hooks::normalize(&payload.to_string()).unwrap()).unwrap();
+
+    assert!(
+        !arguments.contains(&"--context-tokens".to_owned()),
+        "the size before a compaction is no longer the context: {arguments:?}"
+    );
+}
+
+#[test]
 fn a_turns_end_whose_rollout_cannot_be_read_reports_without_a_context() {
     let event = hooks::normalize(&common::fixture("stop")).unwrap();
 

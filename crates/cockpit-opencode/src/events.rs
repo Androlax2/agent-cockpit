@@ -247,10 +247,12 @@ fn turn_context(raw: &str) -> Option<ContextUsage> {
         .pointer("/properties/info/tokens")
         .or_else(|| value.pointer("/data/info/tokens"))
         .filter(|tokens| tokens.is_object())?;
-    let total: u64 = ["/input", "/cache/read", "/cache/write"]
-        .iter()
-        .filter_map(|pointer| tokens.pointer(pointer).and_then(serde_json::Value::as_u64))
-        .sum();
+    let input = tokens.get("input").and_then(serde_json::Value::as_u64)?;
+    let total: u64 = input
+        + ["/cache/read", "/cache/write"]
+            .iter()
+            .filter_map(|pointer| tokens.pointer(pointer).and_then(serde_json::Value::as_u64))
+            .sum::<u64>();
     (total > 0).then_some(ContextUsage {
         tokens: total,
         window: None,

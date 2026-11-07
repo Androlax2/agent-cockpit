@@ -224,18 +224,29 @@ fn a_turns_end_reports_the_context_its_message_holds() {
 /// no context, never a context of zero tokens.
 #[test]
 fn a_turns_end_without_usage_reports_no_context() {
-    let mut event: serde_json::Value =
-        serde_json::from_str(&common::fixture("message-assistant-stop")).unwrap();
-    event["properties"]["info"]["tokens"] = serde_json::json!({
-        "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 }
-    });
+    for (case, tokens) in [
+        (
+            "all zero",
+            serde_json::json!({
+                "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 }
+            }),
+        ),
+        (
+            "no input",
+            serde_json::json!({ "output": 10, "cache": { "read": 44000, "write": 0 } }),
+        ),
+    ] {
+        let mut event: serde_json::Value =
+            serde_json::from_str(&common::fixture("message-assistant-stop")).unwrap();
+        event["properties"]["info"]["tokens"] = tokens;
 
-    let report = events::bridge_arguments(&events::normalize(&event.to_string()).unwrap());
+        let report = events::bridge_arguments(&events::normalize(&event.to_string()).unwrap());
 
-    assert!(
-        !report.unwrap().contains(&"--context-tokens".to_owned()),
-        "a zero usage is no context"
-    );
+        assert!(
+            !report.unwrap().contains(&"--context-tokens".to_owned()),
+            "{case}: no context"
+        );
+    }
 }
 
 #[test]

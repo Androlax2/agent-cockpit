@@ -7,9 +7,10 @@ Issue #479. Decided by the worker, from the formulas in
 
 - **Two columns on `session_reports`** (sessions migration 16: `context_tokens`,
   `context_window`), written by `cockpit-sessions::report` in the report's own write
-  transaction and merged like the other report fields. A report without a context keeps the
-  last one; a new launch or a new conversation (`/clear`, an in-session `/resume`) starts
-  without one, because its harness context starts again. `current_context` reads it only for
+  transaction. A report without an outcome keeps the last context; a turn's end without one
+  clears it, as that size is no longer the latest turn's; a new launch or a new conversation
+  (`/clear`, an in-session `/resume`) starts without one, because its harness context starts
+  again. `current_context` reads it only for
   the session's latest launch, so a brief before the new launch's first report says "not
   reported yet". Rejected: a table of its own, as compactions have, because only the latest
   value is kept and the report row already carries the launch and conversation rules.
@@ -23,8 +24,10 @@ Issue #479. Decided by the worker, from the formulas in
   Codex: the rollout's last `token_count` (`last_token_usage.input_tokens`) with
   `model_context_window`. OpenCode: the turn-ending assistant message's `tokens` (input plus
   cache read and write), no window; all zero means the provider reported no usage, never a
-  context of zero. As for compactions (decision 782), a transcript or rollout not flushed yet
-  can give the previous model call's size.
+  context of zero, and OpenCode usage without `input` is none either. A compaction recorded
+  after the last model call gives no size, as that call's size is no longer the context. As
+  for compactions (decision 782), a transcript or rollout not flushed yet can give the
+  previous model call's size; a failed turn reports its last real model call's.
 - **`brief --measure` prints tokens beside bytes, never converted.** The daemon adds
   `harness_context` to the brief's reply (optional, absent from an older daemon); the owner's
   `SessionReport` wire is unchanged.

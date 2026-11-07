@@ -19,12 +19,13 @@ pub fn tokens_before(rollout: &Path) -> Option<u64> {
 
 /// The harness's context at a turn's end: the last `token_count` event's input tokens, as
 /// [`tokens_before`] counts them, with the window it names (`info.model_context_window`).
+/// `None` when a compaction came after it: that size is no longer the context.
 pub fn context_usage(rollout: &Path) -> Option<ContextUsage> {
     let records = records(rollout)?;
     let last = records
         .iter()
         .rev()
-        .find(|record| context_tokens(record).is_some())?;
+        .find(|record| record["type"] == "compacted" || context_tokens(record).is_some())?;
     Some(ContextUsage {
         tokens: context_tokens(last)?,
         window: last["payload"]["info"]["model_context_window"]

@@ -134,6 +134,27 @@ async fn a_report_without_a_context_keeps_the_last_turns() {
 }
 
 #[tokio::test]
+async fn a_turns_end_without_a_context_clears_the_last_turns() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = reporting_session(dir.path()).await;
+    send(&database, turn_ended_with(usage(45_123, None)))
+        .await
+        .unwrap();
+
+    send(
+        &database,
+        Report {
+            outcome: Some(TurnOutcome::Completed),
+            ..Report::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(current(&database).await, None);
+}
+
+#[tokio::test]
 async fn a_session_whose_turn_never_ended_has_no_context() {
     let dir = tempfile::tempdir().unwrap();
     let database = reporting_session(dir.path()).await;

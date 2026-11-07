@@ -15,31 +15,53 @@ const TAIL_BYTES: u64 = 4 * 1024 * 1024;
 /// the formula report 686 measured with. It is the context before a compaction, and at a
 /// turn's end the harness's own total.
 pub fn context_tokens(transcript: &Path) -> Option<u64> {
-    last_record(transcript, |record| {
-        if record["type"] != "assistant" || record["isSidechain"] == true {
-            return None;
-        }
-        let message = &record["message"];
-        if message["model"] == "<synthetic>" {
-            return None;
-        }
-        let usage = &message["usage"];
-        let tokens: u64 = [
-            "input_tokens",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
-        ]
-        .iter()
-        .map(|field| usage[*field].as_u64().unwrap_or(0))
-        .sum();
-        (tokens > 0).then_some(tokens)
-    })
+    last_record(transcript, model_call_tokens)
+}
+
+/// The harness's total at a turn's end: [`context_tokens`], or `None` when a compaction
+/// boundary came after that model call, as that size is no longer the context.
+pub fn turn_context(transcript: &Path) -> Option<u64> {
+    tail(transcript)?
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find_map(|record| {
+            if is_compact_boundary(&record) {
+                return Some(None);
+            }
+            model_call_tokens(&record).map(Some)
+        })
+        .flatten()
+}
+
+fn model_call_tokens(record: &serde_json::Value) -> Option<u64> {
+    if record["type"] != "assistant" || record["isSidechain"] == true {
+        return None;
+    }
+    let message = &record["message"];
+    if message["model"] == "<synthetic>" {
+        return None;
+    }
+    let usage = &message["usage"];
+    let tokens: u64 = [
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ]
+    .iter()
+    .map(|field| usage[*field].as_u64().unwrap_or(0))
+    .sum();
+    (tokens > 0).then_some(tokens)
+}
+
+fn is_compact_boundary(record: &serde_json::Value) -> bool {
+    record["type"] == "system" && record["subtype"] == "compact_boundary"
 }
 
 /// The context after a compaction: `postTokens` of the latest `compact_boundary` record.
 pub fn tokens_after(transcript: &Path) -> Option<u64> {
     last_record(transcript, |record| {
-        if record["type"] != "system" || record["subtype"] != "compact_boundary" {
+        if !is_compact_boundary(record) {
             return None;
         }
         record["compactMetadata"]["postTokens"].as_u64()

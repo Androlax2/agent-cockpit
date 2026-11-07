@@ -219,6 +219,12 @@ pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
 /// that cannot be read, or does not hold the size yet, reports without it.
 pub fn measured_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     let mut arguments = bridge_arguments(event)?;
+    if !matches!(
+        event.kind,
+        EventKind::Compaction(_) | EventKind::TurnEnded { .. }
+    ) {
+        return Some(arguments);
+    }
     let payload: Option<serde_json::Value> = serde_json::from_str(&event.raw).ok();
     let Some(transcript) = payload
         .as_ref()
@@ -242,7 +248,7 @@ pub fn measured_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
             }
         }
         EventKind::TurnEnded { .. } => {
-            if let Some(tokens) = crate::transcript::context_tokens(transcript) {
+            if let Some(tokens) = crate::transcript::turn_context(transcript) {
                 let usage = ContextUsage {
                     tokens,
                     window: None,

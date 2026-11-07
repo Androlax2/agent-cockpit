@@ -131,7 +131,8 @@ pub struct SessionReport {
     /// owner (`agent escalate`, #710).
     pub question_escalated_at: Option<i64>,
     /// The harness's context at the end of this launch's and conversation's latest turn
-    /// (#479); a new launch or conversation starts without one.
+    /// (#479), when that turn's report gave one; a new launch or conversation starts without
+    /// one.
     pub context: Option<ContextUsage>,
 }
 
@@ -401,6 +402,7 @@ fn merge(
     let previous = previous.unwrap_or_else(|| unreported(session));
     let at = now();
     let is_continuing = previous.launch == launch && !is_new_conversation;
+    let ends_turn = report.outcome.is_some();
     let is_asking = report.needs_input.is_some() || report.dialog.is_some();
     // Only a report saying what the agent does answers a dialog: a label, a doing-now or the
     // agent's own question may come from a parallel tool or a subagent while the dialog
@@ -459,9 +461,13 @@ fn merge(
         launch,
         question_asked_at,
         question_escalated_at,
-        context: report
-            .context
-            .or(previous.context.filter(|_| is_continuing)),
+        // A turn's end without a context replaces the last turn's: that size is no longer
+        // the latest turn's.
+        context: if ends_turn {
+            report.context
+        } else {
+            previous.context.filter(|_| is_continuing)
+        },
     }
 }
 
