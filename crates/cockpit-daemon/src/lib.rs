@@ -313,6 +313,7 @@ impl Instance {
                 &storage_settings,
             )),
             session_temps: options.session_temps(),
+            logs: cockpit_diagnostics::logs_dir_in(&options.state_dir),
             sweep_now: Arc::new(tokio::sync::Notify::new()),
             retention: Arc::new(database_retention::DatabasePolicy::from_settings(
                 &storage_settings,

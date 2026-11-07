@@ -119,19 +119,25 @@ async fn storage_uses_bulk_admission_and_leaves_control_capacity() {
         "{storage:?}"
     );
     assert_eq!(ping.unwrap(), Reply::Pong);
-    assert_eq!(
-        client
-            .request(Command::StorageReport, GENEROUS)
-            .await
-            .unwrap(),
+    match client
+        .request(Command::StorageReport, GENEROUS)
+        .await
+        .unwrap()
+    {
         Reply::Storage {
-            clones: Vec::new(),
+            clones,
             truncated: false,
-            end_sweeps: Vec::new(),
-            session_temps: Some(Vec::new()),
+            end_sweeps,
+            session_temps: Some(session_temps),
             session_temps_truncated: false,
             session_temps_unavailable: None,
+            areas: Some(areas),
+        } => {
+            assert!(clones.is_empty() && end_sweeps.is_empty() && session_temps.is_empty());
+            assert_eq!(areas.outputs, Some(Vec::new()));
+            assert_eq!(areas.database_unavailable, None);
         }
-    );
+        other => panic!("expected an empty storage report, got {other:?}"),
+    }
     drop(daemon);
 }

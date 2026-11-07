@@ -6,7 +6,8 @@ use std::process::ExitCode;
 
 use cockpit_protocol::{
     CloneStorageView, Command, DatabaseStorageView, EndSweepView, OutputRetentionView,
-    PayloadRetentionView, PruneVerdictView, Reply, SessionTempStorageView, TargetSizeView,
+    PayloadRetentionView, PruneVerdictView, Reply, SessionTempStorageView, StorageAreasView,
+    TargetSizeView,
 };
 
 use crate::daemon::{BULK_DEADLINE, request, unexpected};
@@ -38,6 +39,7 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
         session_temps,
         session_temps_truncated,
         session_temps_unavailable,
+        areas,
     } = &reply
     else {
         return Ok(unexpected(&reply));
@@ -79,20 +81,71 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
             cell(reason)
         );
     }
-    let is_partial = |measurement: &TargetSizeView| {
-        matches!(
-            measurement,
-            TargetSizeView::Incomplete { .. } | TargetSizeView::Unavailable { .. }
-        )
-    };
-    let incomplete = *truncated
-        || *session_temps_truncated
-        || session_temps_unavailable.is_some()
-        || session_temps.is_none()
-        || clones.iter().any(|clone| is_partial(&clone.measurement))
-        || reported_temps
-            .iter()
-            .any(|temp| is_partial(&temp.measurement));
+    let (clone_bytes, clones_complete) = observed(clones.iter().map(|clone| &clone.measurement));
+    let (temp_bytes, temps_complete) =
+        observed(reported_temps.iter().map(|temp| &temp.measurement));
+    let mut rows = vec![
+        AreaRow {
+            area: "build folders",
+            bytes: Some(clone_bytes),
+            retires: Some(eligible(clones).1),
+            is_complete: clones_complete && !*truncated,
+            freed_by: "torlek storage prune CHECKOUT".to_owned(),
+        },
+        AreaRow {
+            area: "session temp folders",
+            bytes: listed_bytes(
+                reported_temps,
+                session_temps.is_some(),
+                session_temps_unavailable,
+                temp_bytes,
+            ),
+            retires: listed_bytes(
+                reported_temps,
+                session_temps.is_some(),
+                session_temps_unavailable,
+                0,
+            ),
+            is_complete: temps_complete
+                && session_temps.is_some()
+                && !*session_temps_truncated
+                && session_temps_unavailable.is_none(),
+            freed_by: "removed when its session ends".to_owned(),
+        },
+    ];
+    let mut explanations = Vec::new();
+    match areas {
+        Some(areas) => {
+            rows.extend(area_rows(areas));
+            explanations.extend(area_explanations(areas));
+        }
+        None => {
+            rows.extend(
+                ["ended check outputs", "database", "backups", "logs"].map(|area| AreaRow {
+                    area,
+                    bytes: None,
+                    retires: None,
+                    is_complete: false,
+                    freed_by: "-".to_owned(),
+                }),
+            );
+            explanations
+                .push("the daemon reported no check outputs, database, backups or logs".to_owned());
+        }
+    }
+    outln!("");
+    outln!(
+        "storage by area: apparent bytes, and what each area's prune would retire now; database pages it retires are reused, the file does not shrink, so the total leaves them out"
+    );
+    outln!("area\tbytes\tretires\tstatus\tfreed by");
+    for row in &rows {
+        outln!("{}", area_row(row));
+    }
+    outln!("{}", area_row(&total(&rows)));
+    for explanation in &explanations {
+        outln!("incomplete report: {}", cell(explanation));
+    }
+    let incomplete = rows.iter().any(|row| !row.is_complete);
     Ok(if incomplete {
         ExitCode::FAILURE
     } else {
@@ -171,9 +224,10 @@ fn end_sweep_row(sweep: &EndSweepView) -> String {
     )
 }
 
-/// Only complete measurements count: a partial size is not what prune would free.
-fn eligible_total(clones: &[CloneStorageView]) -> String {
-    let eligible: Vec<u64> = clones
+/// How many clones prune would accept, and their apparent bytes. Only complete measurements
+/// count: a partial size is not what prune would free.
+fn eligible(clones: &[CloneStorageView]) -> (usize, u64) {
+    clones
         .iter()
         .filter_map(|clone| match (&clone.prune, &clone.measurement) {
             (
@@ -182,12 +236,185 @@ fn eligible_total(clones: &[CloneStorageView]) -> String {
             ) => Some(*apparent_bytes),
             _ => None,
         })
-        .collect();
+        .fold((0, 0), |(count, bytes), clone_bytes| {
+            (count + 1, bytes + clone_bytes)
+        })
+}
+
+fn eligible_total(clones: &[CloneStorageView]) -> String {
+    let (count, bytes) = eligible(clones);
     format!(
-        "eligible for prune: {} of {} clones, {} apparent bytes",
-        eligible.len(),
-        clones.len(),
-        eligible.iter().sum::<u64>()
+        "eligible for prune: {count} of {} clones, {bytes} apparent bytes",
+        clones.len()
+    )
+}
+
+/// Whether the output pass measured every output it listed and listed every one.
+fn outputs_are_complete(projects: &[OutputRetentionView], truncated: bool) -> bool {
+    !truncated
+        && projects
+            .iter()
+            .all(|project| project.unmeasured == 0 && project.failures.is_empty())
+}
+
+/// `bytes` of a listing; `None` when the daemon sent none or could list nothing at all.
+fn listed_bytes<T>(
+    listed: &[T],
+    is_reported: bool,
+    unavailable: &Option<String>,
+    bytes: u64,
+) -> Option<u64> {
+    let listed_nothing = unavailable.is_some() && listed.is_empty();
+    (is_reported && !listed_nothing).then_some(bytes)
+}
+
+/// One area of the summary; `None` bytes when the daemon could not read it at all.
+struct AreaRow {
+    area: &'static str,
+    bytes: Option<u64>,
+    retires: Option<u64>,
+    is_complete: bool,
+    freed_by: String,
+}
+
+/// The bytes these measurements observed, partial ones included, and whether all were whole.
+fn observed<'view>(measurements: impl Iterator<Item = &'view TargetSizeView>) -> (u64, bool) {
+    measurements.fold(
+        (0, true),
+        |(bytes, is_complete), measurement| match measurement {
+            TargetSizeView::Complete { apparent_bytes } => (bytes + apparent_bytes, is_complete),
+            TargetSizeView::Missing => (bytes, is_complete),
+            TargetSizeView::Incomplete { apparent_bytes, .. } => (bytes + apparent_bytes, false),
+            TargetSizeView::Unavailable { .. } => (bytes, false),
+        },
+    )
+}
+
+fn area_rows(areas: &StorageAreasView) -> Vec<AreaRow> {
+    let outputs = areas.outputs.as_deref();
+    let database = areas.database.as_ref();
+    let (log_bytes, logs_complete) = observed(areas.logs.iter().map(|log| &log.measurement));
+    vec![
+        AreaRow {
+            area: "ended check outputs",
+            bytes: outputs
+                .map(|projects| projects.iter().map(|project| project.apparent_bytes).sum()),
+            retires: outputs
+                .map(|projects| projects.iter().map(|project| project.selected_bytes).sum()),
+            is_complete: outputs
+                .is_some_and(|projects| outputs_are_complete(projects, areas.outputs_truncated)),
+            freed_by: "torlek storage outputs prune".to_owned(),
+        },
+        AreaRow {
+            area: "database",
+            bytes: database.map(|database| database.file_bytes + database.wal_bytes),
+            retires: database.map(|database| {
+                database.sessions.selected_bytes + database.run_outputs.selected_bytes
+            }),
+            // A dry run's only failure is the backup listing, which the backups row shows.
+            is_complete: database.is_some_and(|database| !database.truncated),
+            freed_by: "torlek storage database prune".to_owned(),
+        },
+        AreaRow {
+            area: "backups",
+            bytes: database
+                .map(|database| database.backups.iter().map(|backup| backup.bytes).sum()),
+            retires: database.map(|_| 0),
+            is_complete: database.is_some_and(|database| database.failures.is_empty()),
+            freed_by: database.map_or_else(
+                || "-".to_owned(),
+                |database| format!("rotation keeps the newest {}", database.backups_kept),
+            ),
+        },
+        AreaRow {
+            area: "logs",
+            bytes: listed_bytes(&areas.logs, true, &areas.logs_unavailable, log_bytes),
+            retires: listed_bytes(&areas.logs, true, &areas.logs_unavailable, 0),
+            is_complete: logs_complete && !areas.logs_truncated && areas.logs_unavailable.is_none(),
+            freed_by: "rotation by size and age".to_owned(),
+        },
+    ]
+}
+
+/// Why each area of `areas` is incomplete; empty when all are whole.
+fn area_explanations(areas: &StorageAreasView) -> Vec<String> {
+    let mut explanations = Vec::new();
+    if let Some(reason) = &areas.outputs_unavailable {
+        explanations.push(format!("check outputs unavailable: {reason}"));
+    }
+    for project in areas.outputs.iter().flatten() {
+        if project.unmeasured > 0 {
+            explanations.push(format!(
+                "{} check outputs unmeasured in {}",
+                project.unmeasured, project.project
+            ));
+        }
+        for failure in &project.failures {
+            explanations.push(format!("check outputs of {}: {failure}", project.project));
+        }
+    }
+    if areas.outputs_truncated {
+        explanations.push("further check outputs left out by the pass bound".to_owned());
+    }
+    if let Some(reason) = &areas.database_unavailable {
+        explanations.push(format!("database unavailable: {reason}"));
+    }
+    if let Some(database) = &areas.database {
+        if database.truncated {
+            explanations.push(
+                "the database pass stopped at its bound; further sessions or run outputs uncounted"
+                    .to_owned(),
+            );
+        }
+        explanations.extend(database.failures.iter().cloned());
+    }
+    if let Some(reason) = &areas.logs_unavailable {
+        explanations.push(format!("log folders unavailable: {reason}"));
+    }
+    if areas.logs_truncated {
+        explanations.push("further log folders omitted by the row limit".to_owned());
+    }
+    for log in &areas.logs {
+        if let TargetSizeView::Incomplete { reason, .. } | TargetSizeView::Unavailable { reason } =
+            &log.measurement
+        {
+            explanations.push(format!("log folder {}: {reason}", log.process));
+        }
+    }
+    explanations
+}
+
+/// The sum of what each row could read; complete only when every row is. Its retires leave
+/// the database out: the pages it retires are reused, so the disk gets none of them back.
+fn total(rows: &[AreaRow]) -> AreaRow {
+    AreaRow {
+        area: "total",
+        bytes: Some(rows.iter().filter_map(|row| row.bytes).sum()),
+        retires: Some(
+            rows.iter()
+                .filter(|row| row.area != "database")
+                .filter_map(|row| row.retires)
+                .sum(),
+        ),
+        is_complete: rows.iter().all(|row| row.is_complete),
+        freed_by: "-".to_owned(),
+    }
+}
+
+fn area_row(row: &AreaRow) -> String {
+    let number =
+        |value: Option<u64>| value.map_or_else(|| "-".to_owned(), |value| value.to_string());
+    let status = match (row.bytes, row.is_complete) {
+        (None, _) => "unavailable",
+        (Some(_), true) => "complete",
+        (Some(_), false) => "incomplete",
+    };
+    format!(
+        "{}\t{}\t{}\t{status}\t{}",
+        row.area,
+        number(row.bytes),
+        number(row.retires),
+        row.freed_by
     )
 }
 
@@ -363,11 +590,7 @@ fn outputs(arguments: &[OsString]) -> Result<ExitCode, String> {
     if *truncated {
         outln!("incomplete pass: further outputs were left out by its bound");
     }
-    let incomplete = *truncated
-        || projects
-            .iter()
-            .any(|project| project.unmeasured > 0 || !project.failures.is_empty());
-    Ok(if incomplete {
+    Ok(if !outputs_are_complete(projects, *truncated) {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS

@@ -151,3 +151,26 @@ async fn an_agent_cannot_report_or_retire_outputs() {
         );
     }
 }
+
+#[tokio::test]
+async fn the_storage_report_counts_the_selected_outputs_and_removes_none() {
+    let (verification, receipts) = three_big_runs().await;
+
+    let areas = match verification.as_owner(Command::StorageReport).await.unwrap() {
+        Reply::Storage {
+            areas: Some(areas), ..
+        } => areas,
+        other => panic!("expected a storage report with its areas, got {other:?}"),
+    };
+
+    let projects = areas.outputs.expect("the outputs area");
+    assert_eq!(
+        projects
+            .iter()
+            .map(|row| (row.selected, row.selected_bytes, row.retired))
+            .collect::<Vec<_>>(),
+        [(2, 1_200_000, 0)]
+    );
+    assert!(receipts.iter().all(|receipt| stdout_of(receipt).exists()));
+    assert_eq!(outputs(&verification, false).await.selected, 2);
+}
