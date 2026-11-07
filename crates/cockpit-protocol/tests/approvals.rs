@@ -103,7 +103,20 @@ fn each_owner_decision_has_its_kebab_case_kind() {
             Command::ApprovalInput {
                 request: 4,
                 text: "y".to_owned(),
+                shown: false,
             },
+        ),
+        (
+            json!({"kind": "approval-input", "request": 4, "text": "y", "shown": true}),
+            Command::ApprovalInput {
+                request: 4,
+                text: "y".to_owned(),
+                shown: true,
+            },
+        ),
+        (
+            json!({"kind": "approval-purge-output", "request": 4}),
+            Command::ApprovalPurgeOutput { request: 4 },
         ),
         (
             json!({"kind": "guide-answer", "guide": 2, "step": 0}),

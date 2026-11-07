@@ -7,6 +7,8 @@ mod candidate;
 mod common;
 #[path = "approvals/durability.rs"]
 mod durability;
+#[path = "approvals/typed_input.rs"]
+mod typed_input;
 
 use std::time::Instant;
 
@@ -343,8 +345,9 @@ async fn a_declined_request_never_runs_and_the_agent_learns_it() {
     assert!(!marker.exists());
 }
 
+/// A visible prompt reads its answer with echo on; `shown` types it on purpose (#1160).
 #[tokio::test]
-async fn the_owner_answers_a_command_waiting_for_input() {
+async fn the_owner_answers_a_visible_prompt_with_shown_input() {
     let asking = started(true).await;
     let request = asking
         .asked("printf 'Continue? '; read answer; printf 'got %s\\n' \"$answer\"")
@@ -361,6 +364,7 @@ async fn the_owner_answers_a_command_waiting_for_input() {
             Command::ApprovalInput {
                 request: request.id,
                 text: "yes".to_owned(),
+                shown: true,
             },
             GENEROUS,
         )
@@ -760,13 +764,24 @@ impl Asking {
         waiting
     }
 
+    /// Types `text` as a secret: only while the terminal hides it.
     async fn type_line(&self, request: i64, text: &str) {
+        self.send_line(request, text, false).await;
+    }
+
+    /// Answers a visible prompt, whose terminal echoes: `shown` (#1160).
+    async fn answer_shown(&self, request: i64, text: &str) {
+        self.send_line(request, text, true).await;
+    }
+
+    async fn send_line(&self, request: i64, text: &str, shown: bool) {
         run(self
             .owner
             .request(
                 Command::ApprovalInput {
                     request,
                     text: text.to_owned(),
+                    shown,
                 },
                 GENEROUS,
             )
@@ -810,7 +825,7 @@ async fn a_prompt_in_a_pipeline_stage_reads_the_terminal_in_the_foreground_group
         )
         .await;
 
-    asking.type_line(request.id, "theo").await;
+    asking.answer_shown(request.id, "theo").await;
 
     let ended = asking.ended(request.id).await;
     let result = ended.result.unwrap();
@@ -833,7 +848,7 @@ async fn a_new_request_queues_behind_a_command_waiting_for_input() {
         .map(|run| (run.id, run.waiting_for_input))
         .collect();
     assert_eq!(order, [(waiting.id, true), (newer.id, false)]);
-    asking.type_line(waiting.id, "done").await;
+    asking.answer_shown(waiting.id, "done").await;
 }
 
 #[tokio::test]
@@ -850,7 +865,7 @@ async fn the_owners_queue_shows_what_a_waiting_command_asks() {
         .as_ref()
         .map(|shown| shown.text.as_str());
     assert_eq!(prompt, Some("Replace the lock file? [y/N] "));
-    asking.type_line(waiting.id, "done").await;
+    asking.answer_shown(waiting.id, "done").await;
 }
 
 #[tokio::test]
@@ -867,7 +882,7 @@ async fn a_secret_in_a_waiting_commands_prompt_is_redacted() {
     let prompt = &queue[0].waiting_prompt.as_ref().expect("a prompt").text;
     assert!(!prompt.contains("ghp_abcdef"), "{prompt}");
     assert!(prompt.ends_with("ok? "), "{prompt}");
-    asking.type_line(waiting.id, "done").await;
+    asking.answer_shown(waiting.id, "done").await;
 }
 
 #[tokio::test]
@@ -886,7 +901,7 @@ async fn a_prompt_drawn_after_a_carriage_return_shows_alone() {
         .as_ref()
         .map(|shown| shown.text.as_str());
     assert_eq!(prompt, Some("Overwrite config? [y/N] "));
-    asking.type_line(waiting.id, "n").await;
+    asking.answer_shown(waiting.id, "n").await;
 }
 
 #[tokio::test]
@@ -907,7 +922,7 @@ async fn a_long_prompt_line_shows_its_end() {
         prompt.chars().count(),
         cockpit_approvals::PROMPT_MAX_CHARS + 1
     );
-    asking.type_line(waiting.id, "done").await;
+    asking.answer_shown(waiting.id, "done").await;
 }
 
 #[tokio::test]
@@ -920,7 +935,7 @@ async fn a_prompt_line_whose_start_was_dropped_is_not_shown() {
     let queue = asking.queue().await;
 
     assert_eq!(queue[0].waiting_prompt, None);
-    asking.type_line(waiting.id, "done").await;
+    asking.answer_shown(waiting.id, "done").await;
 }
 
 #[tokio::test]

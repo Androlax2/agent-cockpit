@@ -41,6 +41,17 @@ pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, Strin
         ("approval", ["input", id]) => Command::ApprovalInput {
             request: id_of(id)?,
             text: input_line()?,
+            shown: false,
+        },
+        ("approval", ["input", id, "--shown"] | ["input", "--shown", id]) => {
+            Command::ApprovalInput {
+                request: id_of(id)?,
+                text: input_line()?,
+                shown: true,
+            }
+        }
+        ("approval", ["purge-output", id]) => Command::ApprovalPurgeOutput {
+            request: id_of(id)?,
         },
         ("guide", ["show", id]) => Command::GuideShow { guide: id_of(id)? },
         ("guide", ["answer", id, step]) => Command::GuideAnswer {
@@ -262,7 +273,8 @@ fn run_detail(run: &RunRequestView) -> String {
     if run.waiting_for_input {
         let _ = writeln!(
             text,
-            "waiting for input: torlek approval input {} (reads one line from standard input)",
+            "waiting for input: torlek approval input {} (reads one line from standard input, \
+             typed only while the terminal hides it; --shown answers a visible prompt)",
             run.id
         );
     }
@@ -270,7 +282,7 @@ fn run_detail(run: &RunRequestView) -> String {
         if result.output_retired {
             let _ = writeln!(
                 text,
-                "exit {} (output removed by database retention)",
+                "exit {} (output removed by database retention or purge-output)",
                 result.exit_code
             );
         } else {

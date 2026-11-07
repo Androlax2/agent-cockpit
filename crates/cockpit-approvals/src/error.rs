@@ -28,6 +28,11 @@ pub enum Refusal {
     AlreadyDecided { state: &'static str },
     /// Input goes to a running command only.
     NotRunning,
+    /// The command's terminal may show what is typed, so the text could land in its output
+    /// (#1160); `why` says what it does.
+    InputWouldShow { why: String },
+    /// Only a finished command run stores output to purge; `what` says what the request is.
+    NoStoredOutput { what: &'static str },
     /// The answer names a guide step that is not the one shown now.
     StaleStep { current: usize },
     /// The approval came within the grace after the request appeared or changed: it may be a
@@ -86,6 +91,16 @@ impl Refusal {
                 UnblockedBy::Owner,
                 "send input only while the command runs".to_owned(),
             ),
+            Refusal::InputWouldShow { .. } => (
+                UnblockedBy::Owner,
+                "type a secret only at a prompt that hides it, such as a password prompt; send a \
+                 visible answer on purpose with `torlek approval input ID --shown` (Tab in the TUI)"
+                    .to_owned(),
+            ),
+            Refusal::NoStoredOutput { .. } => (
+                UnblockedBy::Owner,
+                "nothing to purge: purge a command run once it has finished".to_owned(),
+            ),
             Refusal::StaleStep { current } => (
                 UnblockedBy::Owner,
                 format!("answer the step shown now, step {}", current + 1),
@@ -134,6 +149,15 @@ impl fmt::Display for Refusal {
                 write!(formatter, "the request was decided already; it is {state}")
             }
             Refusal::NotRunning => formatter.write_str("the command is not running"),
+            Refusal::InputWouldShow { why } => write!(
+                formatter,
+                "the command's terminal {why}: what is typed could show in the output the agent \
+                 reads, so nothing was typed"
+            ),
+            Refusal::NoStoredOutput { what } => write!(
+                formatter,
+                "the request is {what}; only a finished command run stores output"
+            ),
             Refusal::StaleStep { current } => write!(
                 formatter,
                 "the guide is at step {}, not the one answered",
