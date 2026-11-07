@@ -63,6 +63,11 @@ Nothing above this contract is keyed on a provider's name, only on its reported
 - **Events.** Adapters map their harness's events onto [`EventKind`] and keep the raw event
   beside it; unknown events stay raw. Acceptance of a prompt is not completion: completion
   arrives as a turn-end event.
+- **Quota facts** (#58, report 18). An adapter turns its harness's raw usage data into a
+  [`QuotaReading`]: the plan, each window's [`LimitKey`], scope, length, used share and reset
+  time, and whether the provider refuses use now. They are validated where they are made;
+  `cockpit-usage` stores and judges them and never reads a provider's format. No account
+  identifier belongs in a reading.
 - **Screen reading** ([`Provider::read_screen`]) is a fallback for missing events and records
   its confidence (`observed-by: event|screen`, report 05); it never proves a task complete.
 - **Sandbox needs** (#830, #861). [`Provider::needs`] declares the [`Needs`] of its harness:

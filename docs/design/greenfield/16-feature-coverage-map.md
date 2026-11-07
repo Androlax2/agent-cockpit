@@ -82,7 +82,7 @@ Current release scope, decided 2026-11-02: [Alpha 1 is Linux/WSL2 archive instal
 
 | Feature | Verdict | Owner |
 | --- | --- | --- |
-| Plan windows (5 h / 7 d), 80/95 % alerts, Codex quota, cost archive at API prices, time with agent, digest | keep (core) / polish (views) | `cockpit-usage` (18); Status panel and digest views designed in M6 |
+| Plan windows (5 h / 7 d), 80/95 % alerts, Codex quota, cost archive at API prices, time with agent, digest | keep (core) / polish (views) | `cockpit-usage` (18); Status panel and digest views designed in M6. Windows per provider account and alerts once per threshold and window (#58): `cockpit-usage` `windows::*`, `alerts::*` (`alerts::fired_alerts_survive_a_restart`), facts from adapters `cockpit-provider-api` `quota::*`; cost archive #699, time and digest #700 |
 | Provider incident status pages | keep | usage/status; adapters supply URLs |
 | Waybar module, bar visibility | change | desktop client reads a status file (19) |
 

@@ -296,6 +296,14 @@ const ALLOW_LISTS: &[AllowList] = &[
         from: &["cockpit-bug-reports"],
         allowed: &["cockpit-turso"],
     },
+    // #58: usage stores the typed quota facts adapters build (report 18) and judges them; the
+    // daemon gathers the readings and delivers the alerts, so usage asks no capability and
+    // reaches no adapter.
+    AllowList {
+        rule: "usage -> provider-api/database only",
+        from: &["cockpit-usage"],
+        allowed: &["cockpit-provider-api", "cockpit-turso"],
+    },
     // Producers own what a message or an entity means and depend on messaging, never the
     // reverse; the daemon converts the feed to wire types (#41).
     AllowList {
@@ -711,6 +719,16 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-provider-api",
         ),
         (
+            "usage -> provider-api/database only",
+            "cockpit-usage",
+            "cockpit-protocol",
+        ),
+        (
+            "usage -> provider-api/database only",
+            "cockpit-usage",
+            "cockpit-sessions",
+        ),
+        (
             "messaging -> the database only",
             "cockpit-messaging",
             "cockpit-teams",
@@ -821,6 +839,8 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-opencode", "cockpit-provider-api"),
         ("cockpit-messaging", "cockpit-turso"),
         ("cockpit-bug-reports", "cockpit-turso"),
+        ("cockpit-usage", "cockpit-provider-api"),
+        ("cockpit-usage", "cockpit-turso"),
         ("cockpit-daemon", "cockpit-bug-reports"),
         ("cockpit-workflows", "cockpit-tasks"),
         ("cockpit-workflows", "cockpit-provider-api"),

@@ -1,0 +1,18 @@
+[package]
+name = "cockpit-usage"
+description = "Owns usage facts and their aggregates (report 18): each provider account's plan windows from the adapters' quota readings, their state as they fill, and the alerts at the owner's thresholds."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+cockpit-provider-api = { path = "../cockpit-provider-api" }
+cockpit-turso = { path = "../cockpit-turso" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
