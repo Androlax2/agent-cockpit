@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 
 use cockpit_agent_context::{
-    BRIEF_TARGET_BYTES, GithubTokenFact, Grants, LaunchFacts, ManifestEntry, Precedence, Scope,
-    Trust, WorkflowFacts, brief, context_budget, manifest,
+    BRIEF_TARGET_BYTES, Delivery, GithubTokenFact, Grants, LaunchFacts, ManifestEntry, Precedence,
+    Scope, Trust, WorkflowFacts, brief, context_budget, manifest,
 };
 
 fn facts() -> LaunchFacts {
@@ -185,11 +185,20 @@ fn the_brief_fits_the_orientation_target_with_long_fields() {
     assert!(size <= BRIEF_TARGET_BYTES, "{size} bytes");
 }
 
+const MCP_INSTRUCTIONS_BYTES: usize = 95;
+
+fn delivery(lists_skill: bool) -> Delivery {
+    Delivery {
+        lists_skill,
+        mcp_instructions_bytes: MCP_INSTRUCTIONS_BYTES,
+    }
+}
+
 #[test]
 fn the_budget_separates_what_is_always_loaded_from_what_is_read_on_demand() {
     let text = brief(&facts());
 
-    let budget = context_budget(&text);
+    let budget = context_budget(&text, delivery(true));
 
     assert_eq!(budget.brief_bytes, text.len());
     // What an Agent Skills harness preloads: the skill's name and description.
@@ -197,15 +206,29 @@ fn the_budget_separates_what_is_always_loaded_from_what_is_read_on_demand() {
         budget.catalog_bytes > 0 && budget.catalog_bytes < 512,
         "{budget:?}"
     );
+    assert_eq!(budget.mcp_instructions_bytes, MCP_INSTRUCTIONS_BYTES);
     assert_eq!(
         budget.always_loaded_bytes(),
-        budget.brief_bytes + budget.catalog_bytes
+        budget.brief_bytes + budget.catalog_bytes + MCP_INSTRUCTIONS_BYTES
     );
     assert_eq!(
         budget.on_demand_bytes,
         cockpit_agent_context::manual().len()
     );
     assert!(budget.always_loaded_bytes() < budget.on_demand_bytes);
+}
+
+#[test]
+fn a_harness_that_does_not_list_the_skill_pays_no_catalog_entry() {
+    let text = brief(&facts());
+
+    let budget = context_budget(&text, delivery(false));
+
+    assert_eq!(budget.catalog_bytes, 0);
+    assert_eq!(
+        budget.always_loaded_bytes(),
+        budget.brief_bytes + MCP_INSTRUCTIONS_BYTES
+    );
 }
 
 #[test]

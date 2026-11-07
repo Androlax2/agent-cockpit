@@ -87,7 +87,7 @@ static DOCUMENTS: LazyLock<Vec<Document>> = LazyLock::new(|| {
     let overview = Document {
         name: "overview",
         path: "torlek/SKILL.md",
-        summary: "start here: the brief, the rules nothing overrides, the topics",
+        summary: "start here: the brief, the topics",
         frontmatter: Some(frontmatter),
         body: body.trim_start(),
     };

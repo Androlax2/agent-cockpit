@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cockpit_agent_context::{GithubTokenFact, Grants, LaunchFacts, WorkflowFacts};
+use cockpit_agent_context::{Delivery, GithubTokenFact, Grants, LaunchFacts, WorkflowFacts};
 use cockpit_protocol::{
     Command, ContextBudgetView, ErrorCode, InstructionTopicView, Outcome, ProtocolError, Reply,
     Unblock, UnblockedBy,
@@ -95,6 +95,10 @@ pub(crate) async fn brief(
     let sender = Sender::read(connector).await;
     let session = identify(&sender, &database, launch_token).await?;
     let read = database.read().await?;
+    let provider = sessions
+        .get(&cockpit_sessions::SessionId::parse(session.as_str())?)
+        .await?
+        .provider;
     let mut facts = facts(&read, &sessions, session.clone(), &environment).await?;
     let packet = match &facts.workflow {
         Some(workflow) => {
@@ -111,7 +115,13 @@ pub(crate) async fn brief(
         facts.github_token = github_token_fact(environment, project).await?;
     }
     let brief = cockpit_agent_context::brief(&facts);
-    let budget = cockpit_agent_context::context_budget(&brief);
+    let budget = cockpit_agent_context::context_budget(
+        &brief,
+        Delivery {
+            lists_skill: harness_lists_skill(provider.as_str()),
+            mcp_instructions_bytes: cockpit_protocol::MCP_INSTRUCTIONS.len(),
+        },
+    );
     Ok(Reply::AgentBrief {
         brief,
         manifest: facts.manifest_id,
@@ -119,10 +129,19 @@ pub(crate) async fn brief(
             brief_bytes: budget.brief_bytes as u64,
             packet_bytes: packet.as_ref().map_or(0, String::len) as u64,
             catalog_bytes: budget.catalog_bytes as u64,
+            mcp_instructions_bytes: budget.mcp_instructions_bytes as u64,
             on_demand_bytes: budget.on_demand_bytes as u64,
         },
         packet,
     })
+}
+
+/// Whether the provider's launch makes the harness list the `torlek` skill (#419): Claude Code
+/// reads the added directory's skills and OpenCode its `skills.paths`; Codex gets the MCP
+/// server and the hooks only. A provider not named here is counted as not listing it, so
+/// `--measure` never claims a catalog entry nobody loads.
+fn harness_lists_skill(provider: &str) -> bool {
+    matches!(provider, "claude" | "opencode")
 }
 
 /// The packet of the step the session does, as `cockpit workflow packet` prints it but with
@@ -305,4 +324,16 @@ fn internal(error: &dyn std::fmt::Display) -> Failed {
         ErrorCode::Internal,
         "the daemon failed; the request may or may not have taken effect",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::harness_lists_skill;
+
+    #[test]
+    fn only_the_harnesses_that_read_the_skills_folder_list_the_skill() {
+        assert!(harness_lists_skill("claude"));
+        assert!(harness_lists_skill("opencode"));
+        assert!(!harness_lists_skill("codex"));
+    }
 }
