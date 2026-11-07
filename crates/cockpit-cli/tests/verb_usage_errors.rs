@@ -23,6 +23,7 @@ const MISTAKES: &[(&[&str], &str)] = &[
     (&["session", "send"], "session"),
     (&["sandbox", "show"], "sandbox"),
     (&["provider", "bogus"], "provider"),
+    (&["skills", "--all"], "skills"),
     (&["init", "--yes"], "init"),
     (&["doctor", "--bogus"], "doctor"),
     (&["tui", "--bogus"], "tui"),

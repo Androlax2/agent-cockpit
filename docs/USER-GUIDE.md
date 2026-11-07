@@ -218,6 +218,24 @@ For a project in `projects.trusted`, and its parallel clones, Torlek records the
 that home's Claude configuration before the agent starts, so Claude does not ask again; a project
 not in it asks at each session.
 
+### Optional skill pack
+
+Torlek ships six skills from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT),
+pinned to one commit and off until you turn them on. Starters `diagnosing-bugs`, `tdd` and
+`writing-for-agents` are on with the pack; `pr`, `codebase-design` and `wait-what` only when
+you name them:
+
+```toml
+[skill_pack]
+enabled = true
+skills = { tdd = false, pr = true }
+```
+
+The daemon delivers them at its next start to Claude Code and OpenCode sessions, not Codex. A
+skill of yours, or of a project in `projects.trusted`, with the same name wins. `torlek skills`
+lists the pack's skills and their state beside the skills you have, collisions marked; the
+pack never edits your skill folders. `torlek brief --measure` counts its bytes apart.
+
 ### Terminal screen
 
 The TUI rings the terminal bell when a session finishes, asks a question or fails. Add `[tui]` with `attention_bell = false` to turn that off, then close the manager session and run `torlek tui` again.

@@ -185,6 +185,8 @@ pub struct Capabilities {
     pub bug_report_facts: Arc<cockpit_bug_reports::Facts>,
     /// `$XDG_STATE_HOME/cockpit`, where bug report bundles are written beside the logs.
     pub state_dir: PathBuf,
+    /// The optional skill pack as this start delivered it (#786).
+    pub skill_pack: Arc<cockpit_agent_context::PackListing<'static>>,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -247,6 +249,10 @@ impl Instance {
         );
         cockpit_agent_context::write_bundle(&claude_skills)
             .map_err(StartError::InstructionBundle)?;
+        let skill_pack = Arc::new(agent_context::deliver_skill_pack(
+            &wiring.environment,
+            &[&bundle_dir, &claude_skills],
+        )?);
         wiring
             .sessions
             .base_environment
@@ -503,6 +509,7 @@ impl Instance {
                 network_decided: Arc::clone(&network_decided),
                 bug_report_facts: Arc::clone(&bug_report_facts),
                 state_dir: options.state_dir.clone(),
+                skill_pack,
             }),
         });
         let detected = bug_reports::Context {

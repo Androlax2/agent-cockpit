@@ -235,11 +235,14 @@ pub struct Delivery {
     pub lists_skill: bool,
     /// The length of the instructions `cockpit mcp` answers `initialize` with.
     pub mcp_instructions_bytes: usize,
+    /// What the skill pack's delivered skills add where the harness lists them (#786):
+    /// [`crate::PackListing::catalog_bytes`], zero for a harness given no skill folder.
+    pub pack_catalog_bytes: usize,
 }
 
 /// How much context Cockpit adds, in bytes: what a harness loads into every conversation
 /// (the brief, the MCP server's instructions and, where the harness lists the skill, its
-/// catalog entry) apart from what an agent reads on demand (the whole manual). The
+/// catalog entry and the skill pack's) apart from what an agent reads on demand (the whole manual). The
 /// harness's own instructions and tool schemas are the provider's to measure, not counted
 /// here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,12 +251,17 @@ pub struct ContextBudget {
     /// Zero when the harness does not list the skill.
     pub catalog_bytes: usize,
     pub mcp_instructions_bytes: usize,
+    /// The skill pack's catalog entries, apart from the `torlek` skill's (#786).
+    pub pack_catalog_bytes: usize,
     pub on_demand_bytes: usize,
 }
 
 impl ContextBudget {
     pub fn always_loaded_bytes(&self) -> usize {
-        self.brief_bytes + self.catalog_bytes + self.mcp_instructions_bytes
+        self.brief_bytes
+            + self.catalog_bytes
+            + self.mcp_instructions_bytes
+            + self.pack_catalog_bytes
     }
 }
 
@@ -269,6 +277,7 @@ pub fn context_budget(brief: &str, delivery: Delivery) -> ContextBudget {
             0
         },
         mcp_instructions_bytes: delivery.mcp_instructions_bytes,
+        pack_catalog_bytes: delivery.pack_catalog_bytes,
         on_demand_bytes: manual().len(),
     }
 }

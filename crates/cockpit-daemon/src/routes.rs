@@ -111,6 +111,8 @@ pub struct Routes {
     readiness: readiness::Context,
     coordination: coordination::Context,
     bug_reports: bug_reports::Context,
+    /// The optional skill pack as the start delivered it (#786).
+    skill_pack: Arc<cockpit_agent_context::PackListing<'static>>,
     log_level: Option<cockpit_diagnostics::LevelControl>,
 }
 
@@ -174,6 +176,7 @@ impl Routes {
                 facts: capabilities.bug_report_facts,
                 readiness: readiness.clone(),
             },
+            skill_pack: capabilities.skill_pack,
             readiness,
             resources: resources::Resources {
                 database: Arc::clone(&capabilities.database),
@@ -290,8 +293,14 @@ impl Handler for Routes {
                     connector,
                     Arc::clone(&self.database),
                     Arc::clone(&self.sessions),
+                    Arc::clone(&self.skill_pack),
                 )),
             },
+            // It names the owner's own skills and where they live.
+            (Command::SkillPack, Peer::Owner) => {
+                Route::Answer(agent_context::skill_pack_listing(&self.skill_pack))
+            }
+            (Command::SkillPack, Peer::Agent { .. }) => Route::Answer(owner_only()),
             (Command::AgentBrief { .. }, Peer::Owner) => Route::Answer(wrong_socket(
                 "a launch brief is a session's; the owner has none",
                 "run `torlek brief` from a session Torlek launched",

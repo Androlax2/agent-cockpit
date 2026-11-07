@@ -23,6 +23,10 @@ EXTENSIONS = {
     ".lua": "lua",
 }
 
+# Third-party files kept byte for byte as their upstream published them (#786): their style
+# is the upstream's, and an edit to satisfy a check here would fork them unreviewed.
+VENDORED = ("crates/cockpit-agent-context/pack/",)
+
 
 def interpreter(path):
     with path.open("rb") as source:
@@ -44,7 +48,7 @@ def discover(language):
     selected = []
     for name in sorted(set(tracked) - {""}):
         path = Path(name)
-        if path.is_symlink() or not path.is_file():
+        if path.is_symlink() or not path.is_file() or name.startswith(VENDORED):
             continue
         if language == "typos":
             selected.append(f"./{name}")

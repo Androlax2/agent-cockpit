@@ -47,6 +47,9 @@ pub enum StartError {
     Admission(cockpit_resource_admission::Error),
     /// The agent instruction bundle could not be written: agents would read a stale one.
     InstructionBundle(cockpit_agent_context::WriteError),
+    /// The owner's `[skill_pack]` names a skill the pack does not hold, or turns on one that
+    /// grants tools or hooks at a pin the owner has not confirmed (#786).
+    SkillPack(cockpit_agent_context::PackError),
 }
 
 impl StartError {
@@ -100,6 +103,7 @@ impl fmt::Display for StartError {
             Self::InstructionBundle(error) => {
                 write!(formatter, "agent instruction bundle: {error}")
             }
+            Self::SkillPack(error) => write!(formatter, "skill pack: {error}"),
         }
     }
 }

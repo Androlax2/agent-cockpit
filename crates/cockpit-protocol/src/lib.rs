@@ -47,7 +47,10 @@ pub use handshake::{
     Capability, HandshakeReply, Hello, ProtocolVersion, Refusal, RefusalReason, SUPPORTED_VERSIONS,
     Welcome, decode_hello, negotiate,
 };
-pub use instructions::{ContextBudgetView, InstructionTopicView, MCP_INSTRUCTIONS};
+pub use instructions::{
+    ContextBudgetView, InstalledSkillView, InstructionTopicView, MCP_INSTRUCTIONS,
+    PackSkillStateView, PackSkillView, SkillPackView,
+};
 pub use network::{
     NetworkDecisionView, NetworkGrantView, NetworkRequestStateView, NetworkRequestView,
     NetworkSubjectView, NetworkTargetKindView,

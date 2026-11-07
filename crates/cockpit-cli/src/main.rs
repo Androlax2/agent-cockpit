@@ -44,6 +44,7 @@ mod projects;
 mod queue;
 mod resources;
 mod sessions;
+mod skills;
 mod status_page;
 mod storage;
 mod todo;
@@ -113,6 +114,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek session sandbox-record SESSION --client CLIENT --observed TEXT...
        torlek sandbox show DIR [--agent NAME]
        torlek provider list
+       torlek skills
        torlek desktop-session import
        torlek init
        torlek doctor [--project DIR | --remove-old-sandbox]
@@ -280,6 +282,8 @@ fn main() -> ExitCode {
             Ok(command) => sessions::run(command),
             Err(problem) => verb_usage_error(&verb_name, problem),
         },
+        [Some("skills"), ..] => skills::run(&arguments[1..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("sandbox"), ..] => match sessions::parse_sandbox(&arguments[1..]) {
             Ok(command) => sessions::run(command),
             Err(problem) => verb_usage_error(&verb_name, problem),

@@ -6,10 +6,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cockpit_agent_context::{Delivery, GithubTokenFact, Grants, LaunchFacts, WorkflowFacts};
+use cockpit_agent_context::{
+    Delivery, GithubTokenFact, Grants, LaunchFacts, PackChoice, PackListing, SkillSearch,
+    SkillState, WorkflowFacts,
+};
 use cockpit_protocol::{
-    Command, ContextBudgetView, ErrorCode, InstructionTopicView, Outcome, ProtocolError, Reply,
-    Unblock, UnblockedBy,
+    Command, ContextBudgetView, ErrorCode, InstalledSkillView, InstructionTopicView, Outcome,
+    PackSkillStateView, PackSkillView, ProtocolError, Reply, SkillPackView, Unblock, UnblockedBy,
 };
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
@@ -29,6 +32,94 @@ pub(crate) fn bundle_dir(state_dir: &Path) -> PathBuf {
 /// not a link: Claude Code's documentation does not say it follows one.
 pub(crate) fn claude_skills_root(state_dir: &Path) -> PathBuf {
     state_dir.join("claude-skills")
+}
+
+/// Writes the optional skill pack (#786) as the owner's `[skill_pack]` chooses into each of
+/// `folders`, the ones the adapters list skills from, beside the bundle. The owner's skills
+/// and the trusted projects' are found now: one of the same name wins over the pack's, for
+/// every session until the next start. A setting the pack refuses fails the start.
+pub(crate) fn deliver_skill_pack(
+    environment: &cockpit_config::Environment,
+    folders: &[&Path],
+) -> Result<PackListing<'static>, crate::StartError> {
+    let config = cockpit_config::load(environment, None, &[]).map_err(crate::StartError::Config)?;
+    let settings = config.skill_pack;
+    let choice = PackChoice {
+        enabled: settings.enabled.value,
+        skills: settings.skills.value,
+        grants_confirmed_at: settings.grants_confirmed_at.value,
+    };
+    let home = environment.home_dir().ok();
+    let installed = cockpit_agent_context::discover_skills(&SkillSearch {
+        home: home.as_deref(),
+        project_roots: &config.trusted_projects.value,
+    });
+    let listing =
+        cockpit_agent_context::select_pack(cockpit_agent_context::skill_pack(), &choice, installed)
+            .map_err(crate::StartError::SkillPack)?;
+    for folder in folders {
+        cockpit_agent_context::write_pack(folder, &listing)
+            .map_err(crate::StartError::InstructionBundle)?;
+    }
+    let delivered: Vec<&str> = listing.delivered().map(|skill| skill.name).collect();
+    tracing::info!(
+        commit = listing.pack.commit,
+        enabled = listing.enabled,
+        delivered = %delivered.join(","),
+        "wrote the skill pack"
+    );
+    Ok(listing)
+}
+
+/// `skill-pack`: what the start delivered, beside the skills already installed.
+pub(crate) fn skill_pack_listing(listing: &PackListing<'static>) -> Outcome {
+    let display = |path: &Path| path.display().to_string();
+    Outcome::Ok(Reply::SkillPack {
+        pack: Box::new(SkillPackView {
+            source: listing.pack.source.to_owned(),
+            commit: listing.pack.commit.to_owned(),
+            tree: listing.pack.tree.to_owned(),
+            licence: listing.pack.licence.spdx.to_owned(),
+            enabled: listing.enabled,
+            skills: listing
+                .skills
+                .iter()
+                .map(|listed| PackSkillView {
+                    name: listed.skill.name.to_owned(),
+                    state: match &listed.state {
+                        SkillState::Delivered => PackSkillStateView::Delivered,
+                        SkillState::Off => PackSkillStateView::Off,
+                        SkillState::Shadowed { by } => {
+                            PackSkillStateView::Shadowed { by: display(by) }
+                        }
+                    },
+                    is_starter: listed.skill.is_starter,
+                    is_user_invoked: listed.skill.is_user_invoked(),
+                    grants: listed
+                        .skill
+                        .grants()
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                })
+                .collect(),
+            installed: listing
+                .installed
+                .iter()
+                .map(|skill| InstalledSkillView {
+                    name: skill.name.clone(),
+                    scope: match skill.scope {
+                        cockpit_agent_context::Scope::User => "user",
+                        cockpit_agent_context::Scope::Project => "project",
+                        cockpit_agent_context::Scope::Product => "product",
+                    }
+                    .to_owned(),
+                    path: display(&skill.path),
+                    collides: listing.collides(&skill.name),
+                })
+                .collect(),
+        }),
+    })
 }
 
 /// `instruction-catalog` and `instructions-read`: answered at once from the binary, needing
@@ -91,6 +182,7 @@ pub(crate) async fn brief(
     connector: Result<ProcessIdentity, ProcessError>,
     database: Arc<Database>,
     sessions: Arc<cockpit_sessions::Sessions>,
+    skill_pack: Arc<PackListing<'static>>,
 ) -> Answer {
     let sender = Sender::read(connector).await;
     let session = identify(&sender, &database, launch_token).await?;
@@ -120,6 +212,7 @@ pub(crate) async fn brief(
         Delivery {
             lists_skill: harness_lists_skill(provider.as_str()),
             mcp_instructions_bytes: cockpit_protocol::MCP_INSTRUCTIONS.len(),
+            pack_catalog_bytes: pack_catalog_bytes(provider.as_str(), &skill_pack),
         },
     );
     Ok(Reply::AgentBrief {
@@ -130,6 +223,7 @@ pub(crate) async fn brief(
             packet_bytes: packet.as_ref().map_or(0, String::len) as u64,
             catalog_bytes: budget.catalog_bytes as u64,
             mcp_instructions_bytes: budget.mcp_instructions_bytes as u64,
+            pack_catalog_bytes: budget.pack_catalog_bytes as u64,
             on_demand_bytes: budget.on_demand_bytes as u64,
         },
         packet,
@@ -142,6 +236,17 @@ pub(crate) async fn brief(
 /// `--measure` never claims a catalog entry nobody loads.
 fn harness_lists_skill(provider: &str) -> bool {
     matches!(provider, "claude" | "opencode")
+}
+
+/// What the skill pack adds to every conversation of `provider` (#786): the delivered skills'
+/// catalog entries where the harness lists the folder they are in, without the user-invoked
+/// ones on Claude Code, which keeps their descriptions out of the model's context. OpenCode
+/// lists every skill it finds.
+fn pack_catalog_bytes(provider: &str, skill_pack: &PackListing<'static>) -> usize {
+    if !harness_lists_skill(provider) {
+        return 0;
+    }
+    skill_pack.catalog_bytes(provider == "claude")
 }
 
 /// The packet of the step the session does, as `cockpit workflow packet` prints it but with
@@ -326,7 +431,44 @@ fn internal(error: &dyn std::fmt::Display) -> Failed {
 
 #[cfg(test)]
 mod tests {
-    use super::harness_lists_skill;
+    use super::{harness_lists_skill, pack_catalog_bytes};
+    use cockpit_agent_context::{PackChoice, select_pack, skill_pack};
+
+    /// The starter skills and `wait-what`, the one only the user invokes.
+    fn listing() -> cockpit_agent_context::PackListing<'static> {
+        let choice = PackChoice {
+            enabled: true,
+            skills: [("wait-what".to_owned(), true)].into(),
+            grants_confirmed_at: None,
+        };
+        select_pack(skill_pack(), &choice, Vec::new()).unwrap()
+    }
+
+    #[test]
+    fn claude_code_is_charged_for_the_packs_model_invoked_skills_alone() {
+        let listing = listing();
+
+        assert_eq!(
+            pack_catalog_bytes("claude", &listing),
+            listing.catalog_bytes(true)
+        );
+        assert!(pack_catalog_bytes("claude", &listing) < listing.catalog_bytes(false));
+    }
+
+    #[test]
+    fn opencode_is_charged_for_every_delivered_skill() {
+        let listing = listing();
+
+        assert_eq!(
+            pack_catalog_bytes("opencode", &listing),
+            listing.catalog_bytes(false)
+        );
+    }
+
+    #[test]
+    fn codex_given_no_skill_folder_is_charged_nothing_for_the_pack() {
+        assert_eq!(pack_catalog_bytes("codex", &listing()), 0);
+    }
 
     #[test]
     fn only_the_harnesses_that_read_the_skills_folder_list_the_skill() {
