@@ -232,6 +232,10 @@ this list grants none. For each published `vX.Y.Z-alpha.N` tag:
 6. Check the published route on a new machine: `scoop bucket add <name> <url>`,
    `scoop install <name>/torlek`, `torlek-wsl install`, `torlek doctor`. Link the evidence from #97.
 
+For v0.1.0-alpha.6, step 2 used the release's `SHA256SUMS` alone (no archive download or
+attestation check), step 3 passed, and step 5 pushed the bucket
+[Androlax2/scoop-torlek](https://github.com/Androlax2/scoop-torlek). Steps 4 and 6 are open.
+
 ## Not yet verified
 
 - `install-scoop` first went green on run 42282361877 (#1007, version `0.1.0-dev.316`): every
