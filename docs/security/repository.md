@@ -71,7 +71,7 @@ the `release` environment below.
 | Repository secrets | None | `gh api $R/actions/secrets --jq .total_count` → `0` |
 | `release` environment | Reviewer `Androlax2`, self-review allowed, admin bypass off; deploys only from branch `main` and tags `v*` | `gh api $R/environments/release --jq '{can_admins_bypass,protection_rules}'` and `gh api $R/environments/release/deployment-branch-policies --jq '[.branch_policies[]\|{name,type}]'` |
 | `release` secrets | `RELEASE_APP_PRIVATE_KEY` only | `gh api $R/environments/release/secrets --jq '[.secrets[].name]'` |
-| `release-proposal` environment | No reviewer (automatic proposals); deploys only from `main` | `gh api $R/environments/release-proposal/deployment-branch-policies --jq '[.branch_policies[]\|{name,type}]'` |
+| `release-proposal` environment | No reviewer (automatic proposals); deploys only from `main`; used by `release-plz.yml`'s `proposal` job and `harness-conformance.yml`'s `propose` job (nightly tested-versions pull requests, #732) | `gh api $R/environments/release-proposal/deployment-branch-policies --jq '[.branch_policies[]\|{name,type}]'` |
 | `release-proposal` secrets and variables | `PROPOSAL_APP_PRIVATE_KEY`, `PROPOSAL_GIT_SSH_KEY`; variable `PROPOSAL_APP_CLIENT_ID` | `gh api $R/environments/release-proposal/secrets --jq '[.secrets[].name]'` |
 | `github-pages` environment | Deploys only from `main`; no secrets | `gh api $R/environments/github-pages/deployment-branch-policies --jq '[.branch_policies[].name]'` |
 

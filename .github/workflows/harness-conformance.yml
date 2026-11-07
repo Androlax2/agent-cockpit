@@ -1,0 +1,147 @@
+name: Harness conformance
+
+# The nightly check of each adapter's latest harness (#732): docs/PROVIDER_CONFORMANCE.md.
+# A pass that is new opens a pull request adding the version to the adapter's tested list; a
+# failure opens an issue. Neither needs a provider account.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - .github/workflows/harness-conformance.yml
+      - tools/harness_conformance.py
+      - tools/release_pr.py
+      - tools/tests/test_harness_conformance.py
+      - Makefile
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Test the latest harnesses, then print what would be reported without writing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-conformance-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: make harness-conformance-check
+
+  # No secret and a read-only token: it installs software from npm and runs it.
+  conformance:
+    needs: check
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      results: ${{ steps.test.outputs.results }}
+      untested: ${{ steps.test.outputs.untested }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          fallback: none
+          tool: cargo-nextest@0.9.150
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.12.0
+      - name: Test each adapter's latest harness
+        id: test
+        run: |
+          results="$RUNNER_TEMP/results.json"
+          for adapter in claude codex opencode; do
+            python3 tools/harness_conformance.py check "$adapter" \
+              --prefix "$RUNNER_TEMP/harness-$adapter" --results "$results"
+          done
+          echo "results=$(cat "$results")" >> "$GITHUB_OUTPUT"
+          echo "untested=$(python3 tools/harness_conformance.py untested --results "$results")" >> "$GITHUB_OUTPUT"
+
+  # The only job that writes issues, and the only write it has.
+  report:
+    needs: conformance
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open, update or close an issue for each adapter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULTS: ${{ needs.conformance.outputs.results }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          printf '%s' "$RESULTS" > "$RUNNER_TEMP/results.json"
+          flag=()
+          if [ "$DRY_RUN" = true ]; then flag=(--dry-run); fi
+          python3 tools/harness_conformance.py report --results "$RUNNER_TEMP/results.json" "${flag[@]}"
+
+  # The release proposal App and deploy key, as release-plz.yml's proposal job: the environment
+  # deploys only from main, and the App token reads contents and writes pull requests.
+  propose:
+    needs: conformance
+    if: github.event_name != 'pull_request' && needs.conformance.outputs.untested == 'true'
+    environment: release-proposal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        if: github.event_name == 'schedule' || !inputs.dry_run
+        id: app
+        with:
+          client-id: ${{ vars.PROPOSAL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PROPOSAL_APP_PRIVATE_KEY }}
+          owner: Androlax2
+          repositories: agent-cockpit
+          permission-contents: read
+          permission-pull-requests: write
+      - name: Open a pull request for each version that passes and is not yet tested
+        if: github.event_name == 'schedule' || !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PROPOSAL_GIT_SSH_KEY: ${{ secrets.PROPOSAL_GIT_SSH_KEY }}
+          RESULTS: ${{ needs.conformance.outputs.results }}
+          BASE: ${{ github.sha }}
+        run: |
+          printf '%s' "$RESULTS" > "$RUNNER_TEMP/results.json"
+          python3 tools/harness_conformance.py propose --base "$BASE" \
+            --results "$RUNNER_TEMP/results.json"
+      - name: Print the pull requests a real run would open
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        env:
+          RESULTS: ${{ needs.conformance.outputs.results }}
+          BASE: ${{ github.sha }}
+        run: |
+          printf '%s' "$RESULTS" > "$RUNNER_TEMP/results.json"
+          python3 tools/harness_conformance.py propose --base "$BASE" --dry-run \
+            --results "$RUNNER_TEMP/results.json"

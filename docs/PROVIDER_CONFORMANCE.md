@@ -25,6 +25,28 @@ or account is required. Executed sign-in tests use fake programs; native sign-in
 and model probes remain ignored. The daemon target instantiates adapters directly;
 it does not use shared Git/project fixtures or launch a daemon.
 
+## Nightly check of the latest harnesses
+
+[harness-conformance.yml](../.github/workflows/harness-conformance.yml) runs every night
+(03:17 UTC) and on manual dispatch. [tools/harness_conformance.py](../tools/harness_conformance.py)
+installs the latest release of each harness from npm (`@anthropic-ai/claude-code`,
+`@openai/codex`, `opencode-ai`), checks that `--version` prints the installed version, and runs
+that adapter's ignored `tests/conformance.rs` against it with `cargo nextest run --locked -p
+cockpit-<adapter> --test conformance --run-ignored only`. The live tests read the harness's
+`--help`, its environment names and hook events, and run the runtime probe; none needs a
+provider account.
+
+| Outcome | What the workflow does | Token |
+| --- | --- | --- |
+| A version passes and is not on the adapter's `tested-versions.txt` | Opens one pull request adding that line, from branch `harness-conformance/<adapter>-<version>`. Nothing merges it; its checks run like any pull request's. At most one such pull request per adapter is open, and an existing branch is never overwritten | The release proposal App (contents read, pull requests write) and deploy key, through the `release-proposal` environment, as the release proposal drafts |
+| A version fails | Opens an issue per adapter naming the version and the stage that failed (`install`, `version` or `conformance`), updates it when the failure changes, and closes it when the adapter passes again | The workflow's `GITHUB_TOKEN`, `issues: write` in the `report` job only |
+| A version passes and is listed | Nothing | None |
+
+The job that installs from npm has a read-only token and no secret. A manual dispatch defaults
+to a dry run: it tests the harnesses, then prints what it would open or close, without minting the
+App token or reading the deploy key. Run the tool's own tests with `make harness-conformance-check`;
+they use a fake npm, a fake cargo, a fake GitHub and a bare Git remote.
+
 ## Six-area contract
 
 Tested versions (each adapter's `tested-versions.txt`, #732): **Claude Code 2.1.316**,
