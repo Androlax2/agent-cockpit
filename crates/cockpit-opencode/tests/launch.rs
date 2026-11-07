@@ -383,8 +383,8 @@ fn a_launch_without_the_bridge_loads_no_plugin() {
 }
 
 #[test]
-fn a_compaction_threshold_is_the_compaction_buffer_of_the_inline_config() {
-    for (threshold, buffer) in [
+fn a_compaction_threshold_is_the_compaction_reserve_of_the_inline_config() {
+    for (threshold, reserved) in [
         ("20000", serde_json::json!(20000)),
         ("1", serde_json::json!(1)),
     ] {
@@ -400,7 +400,7 @@ fn a_compaction_threshold_is_the_compaction_buffer_of_the_inline_config() {
 
         assert_eq!(
             config["compaction"],
-            serde_json::json!({ "buffer": buffer })
+            serde_json::json!({ "reserved": reserved })
         );
     }
 }
@@ -414,8 +414,8 @@ fn without_a_compaction_threshold_the_inline_config_names_no_compaction() {
 }
 
 #[test]
-fn the_owners_compaction_settings_are_kept_and_their_buffer_replaced() {
-    let owner = r#"{"compaction":{"auto":false,"buffer":"5%"}}"#;
+fn the_owners_compaction_settings_are_kept_and_their_reserve_replaced() {
+    let owner = r#"{"compaction":{"auto":false,"reserved":5}}"#;
 
     let config: serde_json::Value = serde_json::from_str(
         &common::opencode()
@@ -426,7 +426,7 @@ fn the_owners_compaction_settings_are_kept_and_their_buffer_replaced() {
 
     assert_eq!(
         config["compaction"],
-        serde_json::json!({ "auto": false, "buffer": 20000 })
+        serde_json::json!({ "auto": false, "reserved": 20000 })
     );
 }
 
@@ -446,7 +446,7 @@ fn a_compaction_threshold_without_the_bridge_sets_the_inline_config_without_a_pl
             .unwrap();
     assert_eq!(
         config,
-        serde_json::json!({ "compaction": { "buffer": 20000 } })
+        serde_json::json!({ "compaction": { "reserved": 20000 } })
     );
     for name in PLUGIN_VARIABLES {
         assert_eq!(common::variable(&launch, name), None, "{name}");
@@ -470,7 +470,7 @@ fn a_compaction_threshold_that_is_not_a_token_count_is_refused() {
         assert_eq!(
             refusal.reason,
             format!(
-                "compaction threshold {threshold:?} is not an OpenCode `compaction.buffer`: a \
+                "compaction threshold {threshold:?} is not an OpenCode `compaction.reserved`: a \
                  token count above zero"
             )
         );
