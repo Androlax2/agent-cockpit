@@ -27,8 +27,10 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   (`--header @-`), never on its command line, in an error or to a session; an expired one is
   refused, never refreshed, since Claude Code owns it. Both answer shapes are read, the
   `limits` list and the older flat keys, into the same limit names: `five-hour`,
-  `seven-day` and `seven-day:<model>`. A failed or limited request is refused in the
-  adapter's words, without the answer. The host daemon alone calls it (#858).
+  `seven-day` and `seven-day:<model>` (a limit scoped to a model on a surface names both;
+  a model listed twice is one window). A window with no share used yet is left out. A failed
+  or limited request is refused in the adapter's words, without the answer or curl's own
+  message. The host daemon alone calls it (#858).
 - **Runtime probe** (#732). On a version not in `tested-versions.txt`, the daemon runs
   `probe` once at its start: each launch flag in `claude --help`, each launch environment name
   and hook event in the program. A missing requirement is logged and shown by `torlek doctor`

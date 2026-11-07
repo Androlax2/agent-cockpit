@@ -11,7 +11,6 @@ use std::time::Duration;
 use cockpit_provider_api::{Capability, Provider, ProviderError, QuotaReading};
 use cockpit_turso::Database;
 use cockpit_usage::{AccountName, Alert, QuotaPolicy};
-use tokio::time::Instant;
 
 /// Until accounts arrive (#59), each provider has one: the one its harness is signed in to.
 const ACCOUNT: &str = "default";
@@ -51,40 +50,46 @@ impl QuotaPolling {
     }
 }
 
-struct Polled {
-    provider: Arc<dyn Provider>,
-    wait: Duration,
-    next_at: Instant,
-}
-
 /// Reads every provider of `providers` that reports `quota`, first at once, then each on its
-/// own schedule. Returns at once when none does.
+/// own schedule, in a task of its own so a slow reading delays no other provider. Returns at
+/// once when none does; a panic in one task is the worker's, for its supervisor.
 pub(crate) async fn poll_forever(
     database: Arc<Database>,
     providers: Vec<Arc<dyn Provider>>,
     polling: QuotaPolling,
 ) {
-    let account = AccountName::new(ACCOUNT).expect("`default` is a valid account name");
-    let started = Instant::now();
-    let mut polled: Vec<Polled> = providers
+    let polling = Arc::new(polling);
+    let mut tasks = tokio::task::JoinSet::new();
+    for provider in providers
         .into_iter()
         .filter(|provider| provider.capabilities().supports(Capability::Quota))
-        .map(|provider| Polled {
+    {
+        tasks.spawn(poll_one(
+            Arc::clone(&database),
             provider,
-            wait: polling.refresh,
-            next_at: started,
-        })
-        .collect();
-    while let Some(due) = polled.iter().map(|entry| entry.next_at).min() {
-        tokio::time::sleep_until(due).await;
-        for entry in polled
-            .iter_mut()
-            .filter(|entry| entry.next_at <= Instant::now())
+            Arc::clone(&polling),
+        ));
+    }
+    while let Some(ended) = tasks.join_next().await {
+        if let Err(error) = ended
+            && error.is_panic()
         {
-            let is_read = read_once(&database, &entry.provider, &account, &polling).await;
-            entry.wait = polling.wait_after(entry.wait, is_read);
-            entry.next_at = Instant::now() + entry.wait;
+            std::panic::resume_unwind(error.into_panic());
         }
+    }
+}
+
+async fn poll_one(
+    database: Arc<Database>,
+    provider: Arc<dyn Provider>,
+    polling: Arc<QuotaPolling>,
+) {
+    let account = AccountName::new(ACCOUNT).expect("`default` is a valid account name");
+    let mut wait = polling.refresh;
+    loop {
+        let is_read = read_once(&database, &provider, &account, &polling).await;
+        wait = polling.wait_after(wait, is_read);
+        tokio::time::sleep(wait).await;
     }
 }
 
@@ -97,14 +102,15 @@ async fn read_once(
 ) -> bool {
     let asked = Arc::clone(provider);
     let home = polling.home.clone();
+    let name = provider.name();
     let answer = tokio::task::spawn_blocking(move || asked.quota(&home))
         .await
-        .unwrap_or_else(|_| {
+        .unwrap_or_else(|error| {
+            tracing::error!(provider = %name, panic = %panic_message(error), "the quota reading panicked");
             Err(ProviderError {
                 reason: "the quota reading panicked".to_owned(),
             })
         });
-    let name = provider.name();
     match record(database, provider, account, &answer, polling).await {
         Err(error) => {
             tracing::error!(provider = %name, error, "recording the plan windows failed");
@@ -129,6 +135,18 @@ async fn read_once(
             false
         }
     }
+}
+
+fn panic_message(error: tokio::task::JoinError) -> String {
+    if !error.is_panic() {
+        return error.to_string();
+    }
+    let payload = error.into_panic();
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic without a message".to_owned())
 }
 
 async fn record(

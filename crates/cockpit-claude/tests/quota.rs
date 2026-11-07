@@ -180,6 +180,100 @@ fn the_older_flat_answer_gives_the_same_limit_names() {
 }
 
 #[test]
+fn a_model_listed_under_its_own_key_and_again_as_model_scoped_is_one_window() {
+    let home = Home::signed_in();
+    let claude = home.curl(
+        r#"{"seven_day_sonnet":{"utilization":4.0,"resets_at":null},
+            "model_scoped":[{"display_name":"Sonnet","utilization":4.0,"resets_at":null}]}"#,
+        "200",
+    );
+
+    let reading = read(&claude, &home);
+
+    assert_eq!(
+        windows(&reading),
+        [("seven-day:sonnet", Some("Sonnet"), Some(604_800), 4.0, None)]
+    );
+}
+
+#[test]
+fn a_limit_scoped_to_a_model_on_a_surface_is_keyed_by_both() {
+    let home = Home::signed_in();
+    let claude = home.curl(
+        r#"{"limits":[
+            {"kind":"weekly_scoped","percent":1,"resets_at":null,
+             "scope":{"model":{"display_name":"Opus"},"surface":{"display_name":"Code"}}},
+            {"kind":"weekly_scoped","percent":2,"resets_at":null,
+             "scope":{"model":{"display_name":"Opus"},"surface":{"display_name":"Chat"}}}]}"#,
+        "200",
+    );
+
+    let reading = read(&claude, &home);
+
+    let keys: Vec<&str> = windows(&reading).iter().map(|window| window.0).collect();
+    assert_eq!(keys, ["seven-day:opus-code", "seven-day:opus-chat"]);
+}
+
+#[test]
+fn a_scope_named_outside_ascii_keeps_a_key_of_its_own() {
+    let home = Home::signed_in();
+    let claude = home.curl(
+        r#"{"model_scoped":[{"display_name":"小","utilization":3,"resets_at":null}]}"#,
+        "200",
+    );
+
+    let reading = read(&claude, &home);
+
+    assert_eq!(
+        windows(&reading)[0].0,
+        "seven-day:u5c0f",
+        "{:?}",
+        windows(&reading)
+    );
+}
+
+#[test]
+fn an_answer_whose_windows_have_no_share_yet_is_a_reading_without_windows() {
+    let home = Home::signed_in();
+    let claude = home.curl(
+        r#"{"five_hour":{"utilization":null,"resets_at":null},"seven_day":null}"#,
+        "200",
+    );
+
+    let reading = read(&claude, &home);
+
+    assert!(reading.windows().is_empty(), "{:?}", windows(&reading));
+}
+
+#[test]
+fn a_sign_in_without_an_expiry_is_left_to_the_endpoint() {
+    let home = Home::empty();
+    home.write_credentials(&format!(
+        r#"{{"claudeAiOauth":{{"accessToken":"{TOKEN}"}}}}"#
+    ));
+    let claude = home.curl(&usage("limits"), "200");
+
+    let reading = read(&claude, &home);
+
+    assert_eq!(reading.windows().len(), 3);
+}
+
+#[test]
+fn an_expiry_that_is_no_number_is_refused_as_such_without_asking() {
+    let home = Home::empty();
+    home.write_credentials(&format!(
+        r#"{{"claudeAiOauth":{{"accessToken":"{TOKEN}","expiresAt":"soon"}}}}"#
+    ));
+    let claude = home.curl("{}", "200");
+
+    let reason = refusal(&claude, &home);
+
+    assert!(reason.contains("`expiresAt`"), "{reason}");
+    assert!(!reason.contains("expired"), "{reason}");
+    assert_eq!(home.curl_words(), None);
+}
+
+#[test]
 fn the_plan_is_the_subscription_claude_code_signed_in_to() {
     let home = Home::signed_in();
     let claude = home.curl(&usage("limits"), "200");
@@ -270,7 +364,7 @@ fn a_limited_or_failed_request_is_refused_without_its_output() {
         ("printf 'private\\n500'", "HTTP 500"),
         (
             "echo 'curl: (6) private host' >&2; printf '\\n000'; exit 6",
-            "curl exited with 6",
+            "curl exited with 6 (cannot resolve the host)",
         ),
     ] {
         let home = Home::signed_in();
@@ -293,6 +387,8 @@ fn an_answer_in_neither_shape_is_refused_without_echoing_it() {
         r#"{"private":"nothing"}"#,
         r#"{"limits":[{"kind":"session","percent":"private"}]}"#,
         r#"{"limits":[{"kind":"session","percent":5,"resets_at":"private"}]}"#,
+        r#"{"limits":[{"kind":"session","percent":5,"resets_at":"2027-02-31T00:00:00Z"}]}"#,
+        r#"{"limits":[{"kind":"weekly_scoped","percent":5,"resets_at":null}]}"#,
     ] {
         let home = Home::signed_in();
         let claude = home.curl(body, "200");

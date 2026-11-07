@@ -49,7 +49,6 @@ impl crate::ClaudeCode {
             &self.usage_client,
             &[
                 "--silent",
-                "--show-error",
                 "--proto",
                 "=https",
                 "--max-time",
@@ -87,10 +86,23 @@ impl crate::ClaudeCode {
             }
             (Some(0), None) => Err(refused("the usage request printed no HTTP status")),
             (Some(exit), _) => Err(refused(format!(
-                "the usage request failed: curl exited with {exit}"
+                "the usage request failed: curl exited with {exit}{}",
+                curl_failure(exit)
             ))),
             (None, _) => Err(refused("the usage request was stopped by a signal")),
         }
+    }
+}
+
+/// What a common curl exit status means. curl's own message is not repeated: it is the
+/// host's text, not ours, and could carry more than the cause.
+fn curl_failure(exit: i32) -> &'static str {
+    match exit {
+        6 => " (cannot resolve the host)",
+        7 => " (cannot connect)",
+        28 => " (timed out)",
+        35 | 60 => " (the TLS handshake or certificate failed)",
+        _ => "",
     }
 }
 
@@ -144,12 +156,22 @@ fn read_sign_in(home: &Path) -> Result<SignIn, ProviderError> {
             "the token in ~/.claude/.credentials.json is malformed",
         ));
     }
-    let expires_at_ms = oauth["expiresAt"].as_i64().unwrap_or(0);
-    if expires_at_ms <= now_ms() {
-        return Err(refused(
-            "Claude Code's sign-in in ~/.claude/.credentials.json expired; start `claude` so it \
-             refreshes it",
-        ));
+    match &oauth["expiresAt"] {
+        // No expiry written: the endpoint decides, and a refusal says to sign in again.
+        Value::Null => {}
+        expires_at => {
+            let Some(expires_at_ms) = expires_at.as_f64() else {
+                return Err(refused(
+                    "the `expiresAt` in ~/.claude/.credentials.json is not a number",
+                ));
+            };
+            if expires_at_ms <= now_ms() as f64 {
+                return Err(refused(
+                    "Claude Code's sign-in in ~/.claude/.credentials.json expired; start \
+                     `claude` so it refreshes it",
+                ));
+            }
+        }
     }
     Ok(SignIn {
         token: Token(token.to_owned()),
@@ -165,7 +187,8 @@ fn now_ms() -> i64 {
         })
 }
 
-/// The answer in either of its shapes: the `limits` list, or the older flat keys.
+/// The answer in either of its shapes: the `limits` list, or the older flat keys. A window
+/// whose share used is null is left out, so a reading may have none (an account not used yet).
 fn reading_of(body: &[u8], plan: Option<String>) -> Result<QuotaReading, ProviderError> {
     let usage: Value = serde_json::from_slice(body)
         .map_err(|_| refused("the usage endpoint answered something other than JSON"))?;
@@ -178,9 +201,6 @@ fn reading_of(body: &[u8], plan: Option<String>) -> Result<QuotaReading, Provide
         None if usage.is_object() => flat_windows(&usage)?,
         None => return Err(refused("the usage answer is not an object")),
     };
-    if windows.is_empty() {
-        return Err(refused("the usage answer lists no window"));
-    }
     QuotaReading::new(plan, windows, false)
         .map_err(|error| refused(format!("the usage answer breaks a rule: {error}")))
 }
@@ -189,20 +209,34 @@ fn limit_window(limit: &Value) -> Result<Option<QuotaWindow>, ProviderError> {
     let kind = limit["kind"]
         .as_str()
         .ok_or_else(|| refused("a usage limit has no kind"))?;
-    let scope = ["model", "surface"]
+    // A limit scoped to a model on one surface names both, so neither alone keys it.
+    let names: Vec<&str> = ["model", "surface"]
         .iter()
-        .find_map(|part| limit["scope"][part]["display_name"].as_str())
-        .filter(|name| !name.is_empty());
+        .filter_map(|part| limit["scope"][part]["display_name"].as_str())
+        .filter(|name| !name.is_empty())
+        .collect();
+    let scope = (!names.is_empty()).then(|| names.join(" / "));
+    if kind == "weekly_scoped" && scope.is_none() {
+        return Err(refused("a scoped usage limit names no model or surface"));
+    }
     let (base, length) = match kind {
         "session" => ("five-hour".to_owned(), Some(FIVE_HOURS)),
         "weekly_all" | "weekly_scoped" => ("seven-day".to_owned(), Some(SEVEN_DAYS)),
         other => (slug(other), None),
     };
-    window(&base, scope, length, &limit["percent"], &limit["resets_at"])
+    window(
+        &base,
+        scope.as_deref(),
+        length,
+        &limit["percent"],
+        &limit["resets_at"],
+    )
 }
 
+/// Refuses an object with none of the flat keys: that is no usage answer.
 fn flat_windows(usage: &Value) -> Result<Vec<QuotaWindow>, ProviderError> {
     let mut windows = Vec::new();
+    let mut is_usage = usage.get("model_scoped").is_some();
     for (key, window_value) in usage.as_object().into_iter().flatten() {
         let (base, scope, length) = match key.as_str() {
             "five_hour" => ("five-hour".to_owned(), None, Some(FIVE_HOURS)),
@@ -214,6 +248,7 @@ fn flat_windows(usage: &Value) -> Result<Vec<QuotaWindow>, ProviderError> {
                 None => continue,
             },
         };
+        is_usage = true;
         windows.extend(window(
             &base,
             scope,
@@ -227,13 +262,20 @@ fn flat_windows(usage: &Value) -> Result<Vec<QuotaWindow>, ProviderError> {
             .as_str()
             .filter(|name| !name.is_empty())
             .ok_or_else(|| refused("a model-scoped usage window has no name"))?;
-        windows.extend(window(
+        let found = window(
             "seven-day",
             Some(scope),
             Some(SEVEN_DAYS),
             &scoped["utilization"],
             &scoped["resets_at"],
-        )?);
+        )?;
+        // A model with a key of its own (`seven_day_sonnet`) may be listed here again.
+        windows.extend(
+            found.filter(|found| windows.iter().all(|known| known.limit() != found.limit())),
+        );
+    }
+    if !is_usage {
+        return Err(refused("the usage answer has none of its known windows"));
     }
     Ok(windows)
 }
@@ -265,8 +307,13 @@ fn window(
             )));
         }
     };
-    let key = match scope {
-        Some(scope) => format!("{base}:{}", slug(scope)),
+    let key = match scope.map(slug) {
+        Some(scoped) if scoped.is_empty() => {
+            return Err(refused(format!(
+                "a usage window `{base}` names a scope with no letter or digit"
+            )));
+        }
+        Some(scoped) => format!("{base}:{scoped}"),
         None => base.to_owned(),
     };
     let broken = |error| refused(format!("the usage answer breaks a rule: {error}"));
@@ -283,13 +330,23 @@ fn window(
 }
 
 /// `Opus 4.5` as `opus-4-5`: lower-case letters and digits, one dash for each run of others.
+/// A letter or digit outside ASCII is written by its code point (`小` as `u5c0f`), so a
+/// name in another script still has a key of its own.
 fn slug(text: &str) -> String {
     let mut slug = String::new();
+    let separate = |slug: &mut String| {
+        if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    };
     for character in text.chars() {
         if character.is_ascii_alphanumeric() {
             slug.push(character.to_ascii_lowercase());
-        } else if !slug.is_empty() && !slug.ends_with('-') {
-            slug.push('-');
+        } else if character.is_alphanumeric() {
+            separate(&mut slug);
+            slug.push_str(&format!("u{:x}-", u32::from(character)));
+        } else {
+            separate(&mut slug);
         }
     }
     slug.trim_end_matches('-').to_owned()
@@ -329,7 +386,7 @@ fn parse_timestamp(text: &str) -> Option<i64> {
         }
     };
     let in_range = (1..=12).contains(&month)
-        && (1..=31).contains(&day)
+        && (1..=days_in_month(year, month)).contains(&day)
         && hour < 24
         && minute < 60
         && second <= 60;
@@ -350,6 +407,16 @@ fn fields<const N: usize>(text: &str, separator: char) -> Option<[i64; N]> {
         *number = part.parse().ok()?;
     }
     parts.next().is_none().then_some(numbers)
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    match month {
+        2 if is_leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
 }
 
 /// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's `days_from_civil`,

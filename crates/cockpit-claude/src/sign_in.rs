@@ -89,7 +89,7 @@ pub(crate) fn bounded_output(
         .stdout(out)
         .stderr(err)
         .spawn()
-        .map_err(|_| format!("cannot run the {label}"))?;
+        .map_err(|error| format!("cannot run the {label}: {error}"))?;
     let pid = Pid::from_child(&child);
     let ends_at = Instant::now() + deadline;
     let mut stdin = child.stdin.take();

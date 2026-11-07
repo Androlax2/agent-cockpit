@@ -219,7 +219,7 @@ the pass, and with `apply` runs it (`docs/decisions/2026-11-04-406-database-rete
 
 A supervised task (`src/usage.rs`) reads the plan windows of each provider that reports
 `quota`, first at the start, then every `usage.quota_refresh_minutes`, in the owner's home
-(never a session's), off the async workers. Each reading, or why it failed, is recorded in
+(never a session's), off the async workers, each provider in a task of its own. Each reading, or why it failed, is recorded in
 `cockpit-usage` under the account `default` until accounts arrive (#59); the alerts it fires
 are logged. A provider that fails waits twice as long as before each time, up to an hour, and
 the refresh returns with its next reading. `Wiring::quota` is `None` in tests not about quota.
