@@ -33,22 +33,38 @@ in `TORLEK_INSTRUCTIONS`; a start that cannot write it fails.
 
 ## The manifest
 
-[`manifest()`] lists every packet with its path, source (`torlek`), scope, version, SHA-256
-of the file as written, trust decision, precedence and the packets it supersedes. A hash is
-identity, not trust: these are trusted because the product ships them, and rank
-`product-invariant`, which nothing may shadow. [`manifest_id`] (`m-` and 16 hex digits)
-changes with any packet; the brief names it. The written `manifest.json` also records the
-earlier release's manifest it replaced (`supersedes`). Only the product scope exists so far;
-user and project guidance join with their own provenance later.
+[`manifest()`] lists every packet of the product with its path, source (`torlek`), scope,
+version, SHA-256 of the file as written, trust decision, precedence and the packets it
+supersedes. A hash is identity, not trust: these are trusted because the product ships them,
+and rank `product-invariant`, which nothing may shadow. [`manifest_id`] (`m-` and 16 hex
+digits, over each entry's path, hash and trust) changes with any packet; the written
+`manifest.json` also records the earlier release's manifest it replaced (`supersedes`).
+
+[`discover_guidance`] adds the scopes below the product's (#420), read when a session asks
+for its brief, and [`session_manifest`] joins them to the product's packets:
+
+| Scope | Files | Trust | Precedence |
+| --- | --- | --- | --- |
+| `user` | `~/.claude/CLAUDE.md` | `owner` | `user`, shadowing the project's guidance |
+| `project` | `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `AGENTS.md`, `.agents/rules/*.md`, `.claude/rules/*.md` of the checkout | `trusted` when the owner trusts the project (`projects.trusted`, or a clone of one), else `untrusted` | `project` |
+
+Each entry carries the file's absolute path and hash; a file that exists and cannot be read
+is listed without a hash. Listing is not loading: each harness decides what it reads. Not
+listed yet: guidance in directories above the checkout or below it, `~/.claude/rules`, and
+files a listed file `@`-imports, so changing only those does not change the manifest. The id a
+brief names is the session manifest's, so it changes when a listed file, or the owner's trust
+in the project, does; `instruction-catalog`, `manifest.json` and the launch record name the
+product bundle's id, which has no workspace.
 
 ## The launch brief
 
 [`brief()`] words the [`LaunchFacts`] the daemon gathers from their owners: the agent channel
 (which session), sessions (its workspace), projects (its project), workflows (the step it
 does, attempt, whether a checkpoint exists) and authorization (its grants and their
-revision, a reference: they are re-evaluated at every action). It states the invariants
-first (prose grants nothing, truthful evidence, the approval route), then those facts, then
-the discovery and recovery entry points. [`BRIEF_TARGET_BYTES`] (2 KiB) bounds it with
+revision, a reference: they are re-evaluated at every action) and the guidance files above,
+four named strongest first with a short hash and trust, the rest counted. It states the
+invariants first (prose grants nothing, truthful evidence, the approval route), then those
+facts, then the discovery and recovery entry points. [`BRIEF_TARGET_BYTES`] (2 KiB) bounds it with
 long fields; a typical brief is about 1 KiB.
 
 [`task_packet`] frames the step's packet the daemon gives with the brief at every context
@@ -79,6 +95,8 @@ All served by the running daemon, so they match its release:
 ## Tests
 
 - `tests/bundle.rs`: topics, the manual, the skill's frontmatter, the manifest and its id.
+- `tests/guidance.rs`: the user and project scopes, their trust and precedence, and that a
+  changed file changes the manifest id.
 - `tests/write.rs`: the layout, the stamp, overwriting, removing stale files, `supersedes`,
   symbolic links.
 - `tests/brief.rs`: invariants first, the dynamic fields, the size target, the budget.

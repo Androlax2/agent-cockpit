@@ -2,6 +2,7 @@
 
 mod brief;
 mod bundle;
+mod guidance;
 mod manifest;
 mod packet;
 mod write;
@@ -11,6 +12,9 @@ pub use brief::{
     context_budget,
 };
 pub use bundle::{CatalogEntry, Document, VERSION, catalog, document, documents, manual};
-pub use manifest::{Manifest, ManifestEntry, Precedence, Scope, Trust, manifest, manifest_id};
+pub use guidance::{GuidanceSearch, discover_guidance};
+pub use manifest::{
+    Manifest, ManifestEntry, Precedence, Scope, Trust, manifest, manifest_id, session_manifest,
+};
 pub use packet::{TASK_PACKET_CAP_BYTES, task_packet, unreadable_task_packet};
 pub use write::{MANIFEST_FILE, WriteError, write_bundle};

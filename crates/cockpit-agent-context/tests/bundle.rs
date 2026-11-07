@@ -106,11 +106,14 @@ fn the_manifest_names_every_file_with_its_hash_and_product_provenance() {
     );
     for (entry, document) in manifest.entries.iter().zip(documents()) {
         assert_eq!(entry.source, "torlek");
-        assert_eq!(entry.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(entry.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!(entry.scope, Scope::Product);
         assert_eq!(entry.trust, Trust::Product);
         assert_eq!(entry.precedence, Precedence::ProductInvariant);
-        assert_eq!(entry.sha256, sha256_hex(document.file_text().as_bytes()));
+        assert_eq!(
+            entry.sha256.as_deref(),
+            Some(sha256_hex(document.file_text().as_bytes()).as_str())
+        );
         assert!(entry.supersedes.is_empty());
     }
 }
@@ -119,7 +122,7 @@ fn the_manifest_names_every_file_with_its_hash_and_product_provenance() {
 fn the_manifest_id_changes_with_any_document() {
     let manifest = manifest();
     let mut changed = manifest.entries.clone();
-    changed[3].sha256 = "0".repeat(64);
+    changed[3].sha256 = Some("0".repeat(64));
 
     assert!(manifest.id.starts_with("m-"), "{}", manifest.id);
     assert_eq!(manifest.id.len(), 2 + 16);
