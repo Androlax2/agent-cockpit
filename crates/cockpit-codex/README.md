@@ -19,8 +19,10 @@ provider and nothing above the contract sees a Codex type (#48).
   never the sessions' `~/.codex` (owner's decision, 2026-11-07). It runs `codex app-server -c
   cli_auth_credentials_store="file"` there on its standard streams, with `CODEX_HOME` and its
   folder set to that home, sends `initialize`, `account/read` (`refreshToken: false`) and
-  `account/rateLimits/read`, and stops the server's process group once both answer, or at 15 s.
-  Codex alone reads its sign-in; no token passes through the adapter. A missing home or a
+  `account/rateLimits/read`. Once both answer, within four fifths of 15 s, its input ends and
+  it has a fifth of 15 s more to exit by itself, so a sign-in it rewrites is not cut short; then its
+  process group is stopped. It gets `PATH`, `HOME` and `CODEX_HOME` only, none of the daemon's
+  other variables. Codex alone reads its sign-in; no token passes through the adapter. A missing home or a
   sign-in that is not a subscription is refused with the command that signs in. The `codex`
   bucket (`rateLimitsByLimitId.codex`, or the older `rateLimits`) gives up to two windows keyed
   by length: `five-hour`, `seven-day`, `window-<minutes>-minutes`, or the slot's name without a
