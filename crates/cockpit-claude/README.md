@@ -25,7 +25,7 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   with its name, and takes away the capabilities that need it; an extra flag changes nothing.
   A clean probe reports the capabilities `probed`, not `tested`. A launch asking for a
   capability the probe took away is refused with the missing requirement and the version
-  (`flag --autocompact in `claude --help` is missing in 9.9.9`, #783).
+  (``flag --autocompact in `claude --help` is missing in 9.9.9``, #783).
 - **Launch.** A new conversation runs under a `--session-id` UUID the adapter mints, so it
   is named from the start; a resumed one runs `--resume <id>`. `--remote-control` comes
   first (its optional name would take the next plain word), the first message last after
