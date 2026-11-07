@@ -16,6 +16,11 @@ provider and nothing above the contract sees an OpenCode type (#47).
   the probe; raw output never leaves the adapter. Provenance remains `discovered`:
   `tests/sign_in_conformance.rs` needs the pinned harness, which was unavailable for #443.
 
+- **Runtime probe** (#732). On a version not in `tested-versions.txt`, the daemon runs
+  `probe` once at its start: each launch flag in `opencode --help` and each environment
+  variable the adapter sets in the program. A missing one is named and takes away every
+  capability, since every launch uses them (OpenCode 2.2.5 no longer has `--port`,
+  `--hostname` or `OPENCODE_SERVER_USERNAME`).
 - **Capabilities with provenance.** Every capability is `tested` only when the running
   OpenCode is a version in `tested-versions.txt` (#732); on any other or unknown version it
   is `discovered` (unverified). `CONFORMANCE_VERSION` is only the version the recorded

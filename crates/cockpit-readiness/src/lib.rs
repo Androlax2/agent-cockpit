@@ -150,11 +150,22 @@ pub enum ProviderUnusable {
     DeclarationRefused { reason: String },
 }
 
+/// The runtime probe's result for one provider version: whether it found every requirement, and
+/// the sentence naming each one it did not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeFacts {
+    pub is_clean: bool,
+    pub summary: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderFound {
     pub version: Option<String>,
     /// Its version is one the adapter's conformance tests ran on.
     pub tested: bool,
+    /// What the runtime probe found in a version that is not tested (#732); `None` for a
+    /// tested version, or when the probe could not run.
+    pub probe: Option<ProbeFacts>,
     /// The capabilities it reports, by their protocol names.
     pub capabilities: Vec<String>,
     pub sign_in: SignInFacts,

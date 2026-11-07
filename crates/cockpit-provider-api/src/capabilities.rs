@@ -88,6 +88,9 @@ pub enum Provenance {
     /// The adapter's conformance tests pass against this exact harness version, the one
     /// running.
     Tested { version: String },
+    /// Not on the adapter's tested list, but the runtime probe found every flag, name and
+    /// event this capability needs in the version running (#732).
+    Probed { version: String },
     /// Documented or detected, but not tested against the version running.
     Discovered,
 }
@@ -95,7 +98,13 @@ pub enum Provenance {
 /// What the owner's capability report shows for one capability.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Availability {
-    Available { version: String },
+    Available {
+        version: String,
+    },
+    /// Not tested on this version, but its requirements were found by the runtime probe.
+    Probed {
+        version: String,
+    },
     Unverified,
     Unavailable,
 }
@@ -129,6 +138,9 @@ impl Capabilities {
     pub fn availability(&self, capability: Capability) -> Availability {
         match self.provenance(capability) {
             Some(Provenance::Tested { version }) => Availability::Available {
+                version: version.clone(),
+            },
+            Some(Provenance::Probed { version }) => Availability::Probed {
                 version: version.clone(),
             },
             Some(Provenance::Discovered) => Availability::Unverified,

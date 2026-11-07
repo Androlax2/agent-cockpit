@@ -125,3 +125,15 @@ impl Drop for Running {
         let _ = self.0.wait();
     }
 }
+
+/// What the daemon checks at its start on a version not on the tested list (#732); the
+/// nightly job runs it on the latest release.
+#[test]
+#[ignore = "needs an installed OpenCode (COCKPIT_OPENCODE_PROGRAM)"]
+fn the_installed_opencode_passes_the_runtime_probe() {
+    let opencode = OpenCode::discover(&common::installed(), None).unwrap();
+
+    let found = cockpit_opencode::probe(&common::installed(), opencode.version().unwrap()).unwrap();
+
+    assert!(found.is_clean(), "{}", found.summary());
+}

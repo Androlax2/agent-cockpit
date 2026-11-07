@@ -47,6 +47,7 @@ fn ready_host() -> HostFacts {
                 },
                 version: Some("2.1.316".to_owned()),
                 tested: true,
+                probe: None,
                 capabilities: vec!["resume".to_owned(), "events".to_owned()],
                 sandbox_credential: None,
             }),
@@ -780,6 +781,7 @@ fn a_preset_needs_a_provider_that_reports_its_steps_capabilities() {
                     },
                     version: None,
                     tested: false,
+                    probe: None,
                     capabilities: capabilities.iter().map(|name| name.to_string()).collect(),
                     sandbox_credential: None,
                 }),
@@ -1144,5 +1146,74 @@ fn a_sandboxed_provider_with_a_credential_names_its_file_and_variable() {
         ),
         "{}",
         fact.detail
+    );
+}
+
+fn host_running(tested: bool, probe: Option<cockpit_readiness::ProbeFacts>) -> HostFacts {
+    let mut host = ready_host();
+    let Ok(found) = &mut host.providers[0].found else {
+        unreachable!("the ready host's provider is found");
+    };
+    found.tested = tested;
+    found.probe = probe;
+    host
+}
+
+#[test]
+fn a_version_that_is_neither_tested_nor_probed_is_unverified() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+
+    let report = fixture.report(&host_running(false, None), &fixture.facts());
+
+    let provider = requirement(&report, "provider claude");
+    assert!(
+        provider.detail.contains("(unverified)"),
+        "{}",
+        provider.detail
+    );
+}
+
+#[test]
+fn a_probed_version_says_it_is_probed_and_not_tested() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let probe = cockpit_readiness::ProbeFacts {
+        is_clean: true,
+        summary: "2.2.0: every required flag, name and event found".to_owned(),
+    };
+
+    let report = fixture.report(&host_running(false, Some(probe)), &fixture.facts());
+
+    let provider = requirement(&report, "provider claude");
+    assert!(
+        provider.detail.contains("(probed, not tested)"),
+        "{}",
+        provider.detail
+    );
+    assert_eq!(provider.status, Status::Available);
+}
+
+#[test]
+fn a_failed_probe_names_what_is_missing_and_advises_without_blocking() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let probe = cockpit_readiness::ProbeFacts {
+        is_clean: false,
+        summary: "2.2.0: flag --effort in `claude --help` is missing, taking away effort"
+            .to_owned(),
+    };
+
+    let report = fixture.report(&host_running(false, Some(probe)), &fixture.facts());
+
+    let provider = requirement(&report, "provider claude");
+    assert!(provider.detail.contains("--effort"), "{}", provider.detail);
+    assert_eq!(provider.status, Status::Available);
+    assert!(
+        provider
+            .next
+            .as_deref()
+            .is_some_and(|next| next.contains("update Torlek")),
+        "{provider:#?}"
     );
 }

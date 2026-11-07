@@ -55,11 +55,16 @@ pub(crate) fn provider_found(provider: &dyn cockpit_provider_api::Provider) -> P
         && reported.iter().all(|(_, provenance)| {
             matches!(provenance, cockpit_provider_api::Provenance::Tested { .. })
         });
+    let probe = provider.probe().map(|probe| cockpit_readiness::ProbeFacts {
+        is_clean: probe.is_clean(),
+        summary: probe.summary(),
+    });
     ProviderFacts {
         name: provider.name().as_str().to_owned(),
         found: Ok(ProviderFound {
             version: provider.version().map(str::to_owned),
             tested,
+            probe,
             capabilities: reported
                 .into_iter()
                 .map(|(capability, _)| capability.as_str().to_owned())
@@ -344,7 +349,7 @@ fn sign_in_fact(fact: cockpit_provider_api::SignIn) -> SignInFacts {
     use cockpit_provider_api::{Provenance, SignInStatus};
     let provenance = match fact.provenance {
         Provenance::Tested { version } => format!("tested on {version}"),
-        Provenance::Discovered => "unverified".to_owned(),
+        Provenance::Probed { .. } | Provenance::Discovered => "unverified".to_owned(),
     };
     let (signed_in, detail, next) = match fact.status {
         SignInStatus::SignedIn => (Some(true), "signed in".to_owned(), String::new()),

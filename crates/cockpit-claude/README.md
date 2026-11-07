@@ -19,6 +19,11 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   fixtures come from. `events`, `outcome` and `inbox` need the hook bridge: an adapter wired
   without it subscribes no hooks. Commands, evidence and billing are not reported until their contract
   methods exist.
+- **Runtime probe** (#732). On a version not in `tested-versions.txt`, the daemon runs
+  `probe` once at its start: each launch flag in `claude --help`, each launch environment name
+  and hook event in the program. A missing requirement is logged and shown by `torlek doctor`
+  with its name, and takes away the capabilities that need it; an extra flag changes nothing.
+  A clean probe reports the capabilities `probed`, not `tested`.
 - **Launch.** A new conversation runs under a `--session-id` UUID the adapter mints, so it
   is named from the start; a resumed one runs `--resume <id>`. `--remote-control` comes
   first (its optional name would take the next plain word), the first message last after

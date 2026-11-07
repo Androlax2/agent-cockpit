@@ -17,8 +17,11 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   raw credential or account output. The default is unknown; adapters own detection.
 
 - **Capabilities with provenance** (report 08). Each reported [`Capability`] is `tested`
-  against the exact harness version running, or `discovered` (shown as unverified); one not
-  reported is unavailable. Resume, submit, events, cancel, outcome, effort, model, compact,
+  against the exact harness version running (a version on the adapter's
+  `tested-versions.txt`, #732), `probed` (not tested, but the runtime probe found every flag,
+  name and event the adapter relies on), or `discovered` (shown as unverified); one not
+  reported is unavailable. A probe that misses a requirement takes away the capabilities
+  that need it and names it ([`Probe::summary`]). Resume, submit, events, cancel, outcome, effort, model, compact,
   remote control, commands and screen reading have contract behavior; inbox says the
   adapter's bridge collects messages from other sessions itself (#703); evidence and billing are
   named so a capability report can show them, and get their methods with their first caller.
@@ -102,6 +105,7 @@ and marks the session's directory.
 
 - `tests/names.rs`: provider names and conversation ids.
 - `tests/capabilities.rs`: provenance, availability and refusals.
+- `tests/tested_versions.rs`, `tests/probe.rs`: the tested list, the probe's findings and its helpers.
 - `tests/contract.rs`: the capabilities a launch needs; default refusals, delivery included.
 - `tests/events.rs`: the activity each normalized event proves.
 - `tests/fake.rs`: the fake provider and its agent's log.

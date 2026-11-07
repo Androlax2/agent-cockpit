@@ -893,3 +893,15 @@ wait"#,
         "a failed check left its hangup-resistant child running"
     );
 }
+
+/// What the daemon checks at its start on a version not on the tested list (#732); the
+/// nightly job runs it on the latest release.
+#[test]
+#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM)"]
+fn the_installed_codex_passes_the_runtime_probe() {
+    let codex = Codex::discover(&installed(), None).unwrap();
+
+    let found = cockpit_codex::probe(&installed(), codex.version().unwrap()).unwrap();
+
+    assert!(found.is_clean(), "{}", found.summary());
+}

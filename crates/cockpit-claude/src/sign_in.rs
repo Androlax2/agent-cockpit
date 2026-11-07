@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use cockpit_provider_api::{SignIn, SignInStatus};
+use cockpit_provider_api::{Provenance, SignIn, SignInStatus};
 
 impl crate::ClaudeCode {
     /// Probe the harness's local credentials, giving up after `deadline`. No model request
@@ -46,7 +46,7 @@ impl crate::ClaudeCode {
                         .to_owned(),
                 }
             },
-            provenance: self.provenance(),
+            provenance: Provenance::for_version(self.version.as_deref(), crate::TESTED_VERSIONS),
         }
     }
 }
