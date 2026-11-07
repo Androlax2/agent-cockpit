@@ -65,6 +65,35 @@ fn requiring_an_unavailable_capability_names_it() {
 }
 
 #[test]
+fn requiring_a_withheld_capability_repeats_the_reason() {
+    let capabilities = Capabilities::none().withholding(
+        Capability::CompactionThreshold,
+        "flag --autocompact in `claude --help` is missing in 1.0.0".to_owned(),
+    );
+
+    let error = capabilities
+        .require(Capability::CompactionThreshold)
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "it does not report the `compaction-threshold` capability: flag --autocompact in \
+         `claude --help` is missing in 1.0.0"
+    );
+    assert!(!capabilities.supports(Capability::CompactionThreshold));
+}
+
+#[test]
+fn reporting_a_withheld_capability_drops_its_reason() {
+    let capabilities = Capabilities::none()
+        .withholding(Capability::Effort, "gone".to_owned())
+        .with(Capability::Effort, tested());
+
+    assert_eq!(capabilities.withheld(Capability::Effort), None);
+    assert!(capabilities.require(Capability::Effort).is_ok());
+}
+
+#[test]
 fn every_capability_has_a_distinct_name() {
     let mut names: Vec<&str> = Capability::ALL.iter().map(|c| c.as_str()).collect();
     names.sort_unstable();

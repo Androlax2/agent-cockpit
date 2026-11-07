@@ -236,6 +236,7 @@ async fn starting_sleeping_and_ending_a_session_each_reach_a_subscriber() {
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -361,6 +362,7 @@ async fn a_broken_owner_config_holds_back_checkouts_but_not_sessions() {
             clone: Some("work".to_owned()),
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;

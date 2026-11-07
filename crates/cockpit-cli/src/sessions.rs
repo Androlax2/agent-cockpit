@@ -106,10 +106,11 @@ pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
     })
 }
 
-/// `new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL]`.
+/// `new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL]
+/// [--compaction-threshold VALUE]`.
 fn session_new(dir: &str, options: &[&str]) -> Result<Command, String> {
     let (mut agent, mut prompt, mut clone) = (None, None, None);
-    let (mut model, mut effort) = (None, None);
+    let (mut model, mut effort, mut compaction_threshold) = (None, None, None);
     let mut options = options.iter();
     while let Some(flag) = options.next() {
         let slot = match *flag {
@@ -118,6 +119,7 @@ fn session_new(dir: &str, options: &[&str]) -> Result<Command, String> {
             "--clone" => &mut clone,
             "--model" => &mut model,
             "--effort" => &mut effort,
+            "--compaction-threshold" => &mut compaction_threshold,
             _ => return Err(format!("unknown argument {flag}")),
         };
         let value = options
@@ -134,6 +136,7 @@ fn session_new(dir: &str, options: &[&str]) -> Result<Command, String> {
         clone,
         model,
         effort,
+        compaction_threshold,
     })
 }
 
@@ -210,6 +213,7 @@ pub fn run(command: Command) -> ExitCode {
         }
         Reply::Session { session } if is_show => {
             out!("{}", session_line(session));
+            out!("{}", choice_lines(session));
             out!("{}", exit_lines(session));
             out!("{}", over_lines(session));
         }
@@ -326,6 +330,16 @@ fn session_line(session: &SessionView) -> String {
 /// The last line the session's latest agent printed before it exited by itself (#629).
 fn last_output(session: &SessionView) -> Option<&str> {
     session.exit.as_ref()?.output.last().map(String::as_str)
+}
+
+/// What `session show` adds for the settings chosen at the start (#783); nothing when the
+/// harness's own apply.
+fn choice_lines(session: &SessionView) -> String {
+    session
+        .compaction_threshold
+        .as_deref()
+        .map(|threshold| format!("compaction threshold: {threshold}\n"))
+        .unwrap_or_default()
 }
 
 /// How the session's latest agent exited by itself (#629): `exit:` and

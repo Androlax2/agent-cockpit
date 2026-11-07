@@ -54,6 +54,15 @@ pub const OPENCODE_VARIABLES: [&str; 3] = [
     "OPENCODE_CONFIG_CONTENT",
 ];
 
+/// OpenCode's own compaction threshold, the `compaction.buffer` setting: the room kept free
+/// below the model's context window before compaction starts, as a token count (`20000`).
+/// The tested 1.19.5 takes a token count only; the `"15%"` form came on 2026-10-30
+/// (anomalyco/opencode#60647, after 2.0.0), and follows the tested version. Its dotted name is
+/// in the program (its config normaliser), so the probe finds a version that has the setting
+/// (#783). A launch with a [`LaunchRequest::compaction_threshold`] sets it in
+/// `OPENCODE_CONFIG_CONTENT`.
+pub const COMPACTION_BUFFER_SETTING: &str = "compaction.buffer";
+
 /// The variables the plugin reads: the bridge program, the `cockpit` program it reports
 /// through, and the port of the server the plugin must run in.
 pub const PLUGIN_VARIABLES: [&str; 3] = [
@@ -149,15 +158,17 @@ impl Bridge {
 /// `OPENCODE_CONFIG_CONTENT`: OpenCode merges it over the owner's configuration files. With
 /// the bridge, its plugin joins the owner's and `cockpit mcp` is registered as the
 /// [`MCP_SERVER_NAME`] MCP server (#419); with `instruction_skills`, that folder joins the
-/// owner's `skills.paths`, so OpenCode lists the bundle's `cockpit` skill (#419). `owner` is
-/// the value the owner already set, which this one replaces: its settings are kept. Refused
-/// when it is not a JSON object, a list or table Cockpit joins has another shape, or it
-/// already names a [`MCP_SERVER_NAME`] server, rather than dropping the owner's settings
-/// unseen.
+/// owner's `skills.paths`, so OpenCode lists the bundle's `cockpit` skill (#419); with
+/// `compaction_threshold`, it is the session's [`COMPACTION_BUFFER_SETTING`], over the one in
+/// the owner's `compaction` table (#783). `owner` is the value the owner already set, which
+/// this one replaces: its settings are kept. Refused when it is not a JSON object, a list or
+/// table Cockpit joins has another shape, or it already names a [`MCP_SERVER_NAME`] server,
+/// rather than dropping the owner's settings unseen.
 fn inline_config(
     owner: Option<&OsStr>,
     bridge: Option<&Bridge>,
     instruction_skills: Option<&Path>,
+    compaction_threshold: Option<&str>,
 ) -> Result<String, ProviderError> {
     let refused = |why: &str| ProviderError {
         reason: format!("OPENCODE_CONFIG_CONTENT {why}, so Torlek's settings cannot join it"),
@@ -209,7 +220,35 @@ fn inline_config(
             .ok_or_else(|| refused("has a `skills.paths` that is not a list"))?;
         paths.push(folder.to_string_lossy().into());
     }
+    if let Some(threshold) = compaction_threshold {
+        let buffer = compaction_buffer(threshold)?;
+        config_object
+            .entry("compaction")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| refused("has a `compaction` that is not an object"))?
+            .insert("buffer".to_owned(), buffer);
+    }
     Ok(config.to_string())
+}
+
+/// `threshold` as the JSON value of [`COMPACTION_BUFFER_SETTING`], in OpenCode's own words: a
+/// token count as a number (`20000`), the form every version with the setting takes. Anything
+/// else is refused before the launch, since OpenCode would refuse its whole configuration.
+fn compaction_buffer(threshold: &str) -> Result<serde_json::Value, ProviderError> {
+    let refused = || ProviderError {
+        reason: format!(
+            "compaction threshold {threshold:?} is not an OpenCode `{COMPACTION_BUFFER_SETTING}`: \
+             a token count above zero"
+        ),
+    };
+    let is_plain_count = !threshold.is_empty()
+        && !threshold.starts_with('0')
+        && threshold.bytes().all(|byte| byte.is_ascii_digit());
+    let tokens = is_plain_count
+        .then(|| threshold.parse::<u64>().ok())
+        .flatten();
+    tokens.map(serde_json::Value::from).ok_or_else(refused)
 }
 
 fn is_executable(program: &Path) -> bool {
@@ -258,12 +297,18 @@ impl OpenCode {
     }
 
     /// The `OPENCODE_CONFIG_CONTENT` a launch sets over `owner`'s: the bridge's plugin and
-    /// MCP server, and the instruction skills, each when this adapter has it.
-    pub fn inline_config(&self, owner: Option<&OsStr>) -> Result<String, ProviderError> {
+    /// MCP server, and the instruction skills, each when this adapter has it, and the
+    /// session's `compaction_threshold` when one was chosen.
+    pub fn inline_config(
+        &self,
+        owner: Option<&OsStr>,
+        compaction_threshold: Option<&str>,
+    ) -> Result<String, ProviderError> {
         inline_config(
             owner,
             self.bridge.as_ref(),
             self.instruction_skills.as_deref(),
+            compaction_threshold,
         )
     }
 
@@ -345,21 +390,14 @@ impl Provider for OpenCode {
             Capability::Outcome,
             Capability::Commands,
         ]);
-        [Capability::Resume]
-            .into_iter()
-            .chain(bridged.into_iter().flatten())
-            .fold(
-                Capabilities::none(),
-                |capabilities, capability| match Provenance::for_probe(
-                    self.version.as_deref(),
-                    TESTED_VERSIONS,
-                    self.probe.as_ref(),
-                    capability,
-                ) {
-                    Some(provenance) => capabilities.with(capability, provenance),
-                    None => capabilities,
-                },
-            )
+        Capabilities::from_probe(
+            self.version.as_deref(),
+            TESTED_VERSIONS,
+            self.probe.as_ref(),
+            [Capability::Resume, Capability::CompactionThreshold]
+                .into_iter()
+                .chain(bridged.into_iter().flatten()),
+        )
     }
 
     fn probe(&self) -> Option<&Probe> {
@@ -403,16 +441,20 @@ impl Provider for OpenCode {
             ("OPENCODE_SERVER_PASSWORD".into(), new_password()?.into()),
             ("OPENCODE_SERVER_USERNAME".into(), SERVER_USERNAME.into()),
         ];
-        // Only with the bridge, like `cockpit mcp` (#419): a launch without it leaves the
-        // owner's inline configuration as it is, so a shape Cockpit cannot join never stops it.
-        if let Some(bridge) = &self.bridge {
+        // Only with the bridge, like `cockpit mcp` (#419), or a chosen compaction threshold
+        // (#783): a launch with neither leaves the owner's inline configuration as it is, so a
+        // shape Cockpit cannot join never stops it.
+        if self.bridge.is_some() || request.compaction_threshold.is_some() {
             let owner = std::env::var_os("OPENCODE_CONFIG_CONTENT");
+            environment.push((
+                "OPENCODE_CONFIG_CONTENT".into(),
+                self.inline_config(owner.as_deref(), request.compaction_threshold)?
+                    .into(),
+            ));
+        }
+        if let Some(bridge) = &self.bridge {
             let [bridge_variable, cockpit_variable, port_variable] = PLUGIN_VARIABLES;
             environment.extend([
-                (
-                    "OPENCODE_CONFIG_CONTENT".into(),
-                    self.inline_config(owner.as_deref())?.into(),
-                ),
                 (bridge_variable.into(), bridge.bridge_program.clone().into()),
                 (
                     cockpit_variable.into(),

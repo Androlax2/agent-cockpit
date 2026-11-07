@@ -73,6 +73,7 @@ fn the_native_plugin_captures_tool_permission_and_aborted_turns() {
             effort: None,
             model: None,
             remote_control: false,
+            compaction_threshold: None,
         })
         .unwrap();
     let config = root.join("launch.json");

@@ -18,8 +18,11 @@ use std::time::{Duration, Instant};
 
 use approval_model::{Model, Scenario};
 use cockpit_codex::app_server::AppServer;
-use cockpit_codex::{Bridge, Codex, HOOKS_FEATURE, LAUNCH_FLAGS, SERVER_FLAGS, TUI_FLAGS, hooks};
-use cockpit_provider_api::{Action, ConversationId, Delivered, Provider};
+use cockpit_codex::{
+    Bridge, COMPACTION_THRESHOLD_KEY, COMPACTION_THRESHOLD_PROBE_VALUE, CONFIG_FLAG, Codex,
+    HOOKS_FEATURE, LAUNCH_FLAGS, SERVER_FLAGS, TUI_FLAGS, hooks,
+};
+use cockpit_provider_api::{Action, ConversationId, Delivered, Provider, documents_flag};
 use rustix::process::{Pid, Signal, kill_process_group};
 use serde_json::json;
 
@@ -81,6 +84,20 @@ fn codex_output(home: &Path, arguments: &[&str]) -> String {
     .unwrap();
     assert!(output.status.success(), "{arguments:?}: {output:?}");
     String::from_utf8(output.stdout).unwrap()
+}
+
+/// Both streams of a Codex command, whatever its status: a refusal goes to standard error.
+fn codex_answer(home: &Path, arguments: &[&str]) -> String {
+    let output = bounded_command::output(
+        native_command(&installed(), home).args(arguments),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
 }
 
 fn native_command(program: &Path, home: &Path) -> Command {
@@ -175,6 +192,39 @@ fn the_installed_codex_documents_every_flag_a_launch_passes() {
     let help = codex_output(home.path(), &["app-server", "--help"]);
     for flag in SERVER_FLAGS {
         assert!(documents(&help, flag), "{flag} is not in app-server --help");
+    }
+}
+
+/// #783: the probe tells a Codex that knows the compaction threshold key from one that does
+/// not by the refusal naming the key; a Codex that accepted any key silently would hide the
+/// setting's loss.
+#[test]
+#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM)"]
+fn the_installed_codex_refuses_a_word_for_the_compaction_threshold_naming_the_key() {
+    let home = tempfile::tempdir().unwrap();
+    let probe_config = format!("{COMPACTION_THRESHOLD_KEY}={COMPACTION_THRESHOLD_PROBE_VALUE}");
+    let unknown_config = format!("torlek_unknown_key={COMPACTION_THRESHOLD_PROBE_VALUE}");
+
+    let refusal = codex_answer(
+        home.path(),
+        &[CONFIG_FLAG, &probe_config, "features", "list"],
+    );
+    let accepted = codex_answer(
+        home.path(),
+        &[CONFIG_FLAG, &unknown_config, "features", "list"],
+    );
+
+    assert!(
+        documents_flag(&refusal, COMPACTION_THRESHOLD_KEY),
+        "{refusal}"
+    );
+    assert!(!accepted.contains("torlek_unknown_key"), "{accepted}");
+    for command in [&["--help"][..], &["resume", "--help"][..]] {
+        let help = codex_output(home.path(), command);
+        assert!(
+            documents(&help, CONFIG_FLAG),
+            "{CONFIG_FLAG} is not in {command:?}"
+        );
     }
 }
 
@@ -656,6 +706,7 @@ impl TerminalSession {
                 effort: None,
                 model: None,
                 remote_control: false,
+                compaction_threshold: None,
             })
             .unwrap();
         session.launch(work, &command.program, &command.arguments);

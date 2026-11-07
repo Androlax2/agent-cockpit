@@ -74,6 +74,7 @@ Use the same profile for every command. To keep a preview's state apart from an 
 
 3. Choose a model and effort for a Claude session. Pass `--model MODEL` (an alias such as `opus` or a model id) and `--effort LEVEL` (`low`, `medium`, `high`, `xhigh` or `max`) to `torlek session new`.
    Every restart, wake and resume of the session keeps them. Without them, Claude Code's own settings apply. A provider that cannot set them refuses the start.
+   `--compaction-threshold VALUE` sets the harness's own compaction threshold, off by default, in the harness's words: Claude Code `auto` or a context window such as `200k` (`--autocompact`), Codex a whole percent such as `75` (`model_post_turn_compact_threshold_percent`), OpenCode a token count such as `20000` (`compaction.buffer`). The session card shows it. An installed harness version without the option refuses the start with the missing flag or setting.
 
 ## Approvals
 

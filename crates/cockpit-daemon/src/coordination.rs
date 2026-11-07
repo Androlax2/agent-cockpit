@@ -717,6 +717,7 @@ async fn start(
             start.agent.as_deref(),
             start.model.as_deref(),
             start.effort.as_deref(),
+            None,
         )
         .await?;
     let write = context.database.write().await?;
@@ -949,6 +950,8 @@ fn start_request(
         clone_branch: start.clone,
         model: start.model,
         effort: start.effort,
+        // A coordinator's start chooses no compaction threshold yet (#783).
+        compaction_threshold: None,
         started_by: Some(SessionId::parse(coordinator.as_str())?),
     })
 }

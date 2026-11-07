@@ -1,7 +1,7 @@
 //! A provider with the baseline contract only, for tests (feature `fake`): it launches a new
 //! or resumed conversation and reports `resume`, nothing else. Its agent is a shell script
 //! that appends one line per launch to a log (session, conversation mode and id, first
-//! message, pid, launch token, model and effort), leaves an `agent-was-here` file in the session's directory
+//! message, pid, launch token, model, effort and compaction threshold), leaves an `agent-was-here` file in the session's directory
 //! ([`crate::LaunchRequest::session_dir`]), then sleeps until stopped (`FAKE_AGENT_SLEEP`
 //! seconds, 600 by default). A test may give it more capabilities ([`FakeProvider::reporting`]) and a
 //! program its agent runs, in its own process tree, before it sleeps
@@ -21,7 +21,7 @@ use crate::{
 /// The efforts the fake takes once it reports [`Capability::Effort`]; any other is refused.
 pub const FAKE_EFFORT_LEVELS: [&str; 3] = ["low", "medium", "high"];
 
-const AGENT_SCRIPT: &str = r#"printf '%s %s %s %s pid=%s token=%s model=%s effort=%s\n' "$TORLEK_SESSION" "$1" "$2" "${3:-}" "$$" "$TORLEK_LAUNCH_TOKEN" "${FAKE_AGENT_MODEL:-}" "${FAKE_AGENT_EFFORT:-}" >> "$FAKE_AGENT_LOG"
+const AGENT_SCRIPT: &str = r#"printf '%s %s %s %s pid=%s token=%s model=%s effort=%s compaction-threshold=%s\n' "$TORLEK_SESSION" "$1" "$2" "${3:-}" "$$" "$TORLEK_LAUNCH_TOKEN" "${FAKE_AGENT_MODEL:-}" "${FAKE_AGENT_EFFORT:-}" "${FAKE_AGENT_COMPACTION_THRESHOLD:-}" >> "$FAKE_AGENT_LOG"
 : > "$FAKE_AGENT_SESSION_DIR/agent-was-here"
 if [ -n "${FAKE_AGENT_RUN:-}" ]; then "$FAKE_AGENT_RUN"; fi
 if [ -n "${FAKE_AGENT_EXIT:-}" ]; then printf '%s\n' "$FAKE_AGENT_EXIT_OUTPUT" >&2; exit "$FAKE_AGENT_EXIT"; fi
@@ -234,6 +234,9 @@ impl Provider for FakeProvider {
         if let Some(effort) = request.effort {
             environment.push(("FAKE_AGENT_EFFORT".into(), effort.into()));
         }
+        if let Some(threshold) = request.compaction_threshold {
+            environment.push(("FAKE_AGENT_COMPACTION_THRESHOLD".into(), threshold.into()));
+        }
         if let Some(program) = &self.agent_program {
             environment.push(("FAKE_AGENT_RUN".into(), program.clone().into()));
         }
@@ -289,6 +292,8 @@ pub struct FakeLaunch {
     /// The model it was launched on, when one was chosen.
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The compaction threshold it was launched with, when one was chosen (#783).
+    pub compaction_threshold: Option<String>,
 }
 
 impl FakeLaunch {
@@ -322,6 +327,7 @@ impl FakeLaunch {
             token: field("token="),
             model: chosen("model="),
             effort: chosen("effort="),
+            compaction_threshold: chosen("compaction-threshold="),
         }
     }
 }

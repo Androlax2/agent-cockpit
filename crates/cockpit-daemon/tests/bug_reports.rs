@@ -595,6 +595,7 @@ async fn a_draft_and_its_bundle_carry_no_prompt_or_agent_output() {
                 clone: None,
                 model: None,
                 effort: None,
+                compaction_threshold: None,
             },
             GENEROUS,
         )

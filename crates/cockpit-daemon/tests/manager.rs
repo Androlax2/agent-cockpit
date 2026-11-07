@@ -361,6 +361,7 @@ async fn the_daemon_opens_its_tmux_server_once_for_the_sessions_and_the_manager(
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -390,6 +391,7 @@ async fn without_tmux_the_manager_and_sessions_are_refused_naming_the_same_cause
                 clone: None,
                 model: None,
                 effort: None,
+                compaction_threshold: None,
             },
         )
         .await,
@@ -656,6 +658,7 @@ async fn showing_an_asleep_session_wakes_it_and_attaches_the_viewer_to_it() {
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -701,6 +704,7 @@ async fn showing_a_session_before_the_manager_is_open_is_refused_naming_the_fix(
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -741,6 +745,7 @@ async fn showing_a_running_session_whose_tmux_session_is_gone_names_the_missing_
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -798,6 +803,7 @@ async fn showing_a_running_session_after_the_whole_tmux_server_is_gone_is_not_in
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -832,6 +838,7 @@ async fn ended_session(client: &Connection, root: &Path) -> SessionView {
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -940,6 +947,7 @@ async fn showing_an_asleep_session_without_a_manager_leaves_it_asleep() {
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -1078,6 +1086,7 @@ async fn shown_agent(home: &Home, client: &Connection, columns: u16, agent: &str
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -1345,6 +1354,7 @@ async fn session_type_into_a_session_not_on_screen_is_refused() {
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;

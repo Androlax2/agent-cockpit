@@ -99,7 +99,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID
        torlek network list | allow ID [--always] | deny ID | grants [PROJECT] | revoke GRANT
        torlek session send ID MESSAGE | cancel ID
-       torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL]
+       torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL] [--compaction-threshold VALUE]
        torlek session list [--ended]
        torlek session restart SESSION|--all
        torlek session sleep|wake|resume|end|show SESSION

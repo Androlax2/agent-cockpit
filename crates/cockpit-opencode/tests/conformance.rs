@@ -56,6 +56,20 @@ fn the_installed_opencode_reads_every_variable_the_adapter_sets() {
     }
 }
 
+/// #783: the probe tells a version with the `compaction.buffer` setting by its dotted name in
+/// the program; a build that lost it would make the threshold a silent no-op.
+#[test]
+#[ignore = "needs an installed OpenCode (COCKPIT_OPENCODE_PROGRAM)"]
+fn the_installed_opencode_has_the_compaction_buffer_setting() {
+    let missing = cockpit_provider_api::names_missing_from_file(
+        &common::installed(),
+        &[cockpit_opencode::COMPACTION_BUFFER_SETTING],
+    )
+    .unwrap();
+
+    assert!(missing.is_empty(), "{missing:?} not in the binary");
+}
+
 /// The server a launch's words start answers its own password only, with its version, and
 /// lists native commands. `serve` runs the same server as the TUI without a terminal.
 #[test]
@@ -74,6 +88,7 @@ fn a_launched_server_answers_its_password_and_lists_commands() {
             effort: None,
             model: None,
             remote_control: false,
+            compaction_threshold: None,
         })
         .unwrap();
     let server = Server::from_launch(&launch).unwrap();

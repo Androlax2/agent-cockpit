@@ -329,6 +329,9 @@ fn card(board: &Board, session: &SessionView, is_selected: bool, width: usize) -
     if let Some(compaction) = board.report(&session.id).and_then(compaction_line) {
         card.push(format!("{CARD_INDENT}{compaction}"));
     }
+    if let Some(threshold) = &session.compaction_threshold {
+        card.push(format!("{CARD_INDENT}compaction threshold {threshold}"));
+    }
     if let Some(coordination) = coordination_line(session, is_selected) {
         let line = format!("{CARD_INDENT}{coordination}");
         card.push(if is_selected {

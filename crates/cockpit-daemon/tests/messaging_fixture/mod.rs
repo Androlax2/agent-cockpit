@@ -115,6 +115,7 @@ impl Home {
                     clone: None,
                     model: None,
                     effort: None,
+                    compaction_threshold: None,
                 },
                 GENEROUS,
             )

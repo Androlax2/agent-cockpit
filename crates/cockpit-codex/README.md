@@ -14,16 +14,20 @@ provider and nothing above the contract sees a Codex type (#48).
   per stream. `tests/sign_in_conformance.rs` proved signed-out and placeholder API-key states
   on `SIGN_IN_CONFORMANCE_VERSION` (0.166.0), independently of the delivery capability pin.
 
-- **Capabilities with provenance.** Resume and, with the bridge, events, submit, cancel and
+- **Capabilities with provenance.** Resume, compaction threshold and, with the bridge, events, submit, cancel and
   outcome are `tested` only when the running Codex is a version in `tested-versions.txt`
   (#732); on any other or unknown version they are `discovered` (unverified).
   `CONFORMANCE_VERSION` (0.166.0) is only the version the recorded fixtures come from. Effort, compact, billing, commands,
   evidence, remote control and screen reading are untested and not reported.
 - **Runtime probe** (#732). On a version not in `tested-versions.txt`, the daemon runs
   `probe` once at its start: the launch flags in `codex --help` and `codex resume --help`, the
-  server flags in `codex app-server --help`, the hooks feature in `codex features list`. A
-  missing requirement is named and takes away the capabilities that need it (the hooks feature
-  takes away what the bridge adds to resume).
+  server flags in `codex app-server --help`, the hooks feature in `codex features list`, and
+  the compaction threshold key: `codex --config model_post_turn_compact_threshold_percent=torlek-probe
+  features list` names the key in its refusal when Codex knows it, and says nothing when it
+  does not (#783). A missing requirement is named and takes away the capabilities that need it
+  (the hooks feature takes away what the bridge adds to resume; the key, the compaction
+  threshold only); a launch asking for a capability taken away is refused with that
+  requirement and the version.
 - **Launch with the bridge** (#407). The session runs `torlek-codex-session`, which starts
   the session's private app-server, `codex app-server --listen unix://<session dir>/codex.sock
   --enable hooks --config <hook>…` (`server_arguments`), then the TUI against it, `codex
@@ -35,7 +39,13 @@ provider and nothing above the contract sees a Codex type (#48).
   the socket. A private server per session, never Codex's shared one: the shared server
   runs hooks with whichever launch's token started it (as #184 for Claude Code).
 - **Launch without the bridge.** `codex [resume] --no-daemon`, with the thread id and the
-  first message after `--`, where neither can be read as a flag; only resume is reported.
+  first message after `--`, where neither can be read as a flag; only resume and the
+  compaction threshold are reported.
+- **Compaction threshold** (#783). A chosen threshold is passed as `--config
+  model_post_turn_compact_threshold_percent=<percent>`, Codex's own setting in its own words
+  (a whole percent of the usable context window, `0` off), to the app-server with the bridge
+  and to the TUI without; the adapter refuses anything but 0 to 100 before the launch. Without
+  one, nothing is passed and Codex's own configuration applies.
 - **Thread ids.** Codex mints a new conversation's thread id itself, so a new launch names no
   conversation: the first report does (`--conversation`).
 - **Hooks with launch-scoped trust.** Codex runs a hook only when its trusted hash is recorded.

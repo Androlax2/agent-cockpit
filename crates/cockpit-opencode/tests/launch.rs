@@ -18,6 +18,7 @@ fn request(conversation: &Conversation) -> LaunchRequest<'_> {
         effort: None,
         model: None,
         remote_control: false,
+        compaction_threshold: None,
     }
 }
 
@@ -170,7 +171,7 @@ fn the_owners_inline_config_is_kept_and_the_plugin_joins_its_plugins() {
 
     let config: serde_json::Value = serde_json::from_str(
         &common::opencode()
-            .inline_config(Some(OsStr::new(owner)))
+            .inline_config(Some(OsStr::new(owner)), None)
             .unwrap(),
     )
     .unwrap();
@@ -193,7 +194,7 @@ fn a_launch_with_the_bridge_registers_cockpits_mcp_server_beside_the_owners() {
 
     let config: serde_json::Value = serde_json::from_str(
         &common::opencode()
-            .inline_config(Some(OsStr::new(owner)))
+            .inline_config(Some(OsStr::new(owner)), None)
             .unwrap(),
     )
     .unwrap();
@@ -215,8 +216,12 @@ fn a_launch_adds_the_instruction_bundle_to_the_owners_skill_paths() {
     let opencode = common::opencode().with_instruction_skills("/state/agent-context".into());
     let owner = r#"{"skills":{"paths":["~/my-skills"],"urls":["https://example.invalid/s/"]}}"#;
 
-    let config: serde_json::Value =
-        serde_json::from_str(&opencode.inline_config(Some(OsStr::new(owner))).unwrap()).unwrap();
+    let config: serde_json::Value = serde_json::from_str(
+        &opencode
+            .inline_config(Some(OsStr::new(owner)), None)
+            .unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(
         config["skills"],
@@ -246,7 +251,7 @@ fn a_launch_carries_the_instruction_skills_in_its_inline_config() {
 #[test]
 fn without_instruction_skills_the_inline_config_names_no_skill_path() {
     let config: serde_json::Value =
-        serde_json::from_str(&common::opencode().inline_config(None).unwrap()).unwrap();
+        serde_json::from_str(&common::opencode().inline_config(None, None).unwrap()).unwrap();
 
     assert_eq!(config.get("skills"), None);
 }
@@ -256,7 +261,9 @@ fn an_owners_skills_the_bundle_cannot_join_are_refused() {
     let opencode = common::opencode().with_instruction_skills("/state/agent-context".into());
 
     for owner in [r#"{"skills":[]}"#, r#"{"skills":{"paths":"one"}}"#] {
-        let refusal = opencode.inline_config(Some(OsStr::new(owner))).unwrap_err();
+        let refusal = opencode
+            .inline_config(Some(OsStr::new(owner)), None)
+            .unwrap_err();
 
         assert!(
             refusal.reason.starts_with("OPENCODE_CONFIG_CONTENT "),
@@ -275,7 +282,7 @@ fn an_owners_inline_config_the_plugin_cannot_join_is_refused() {
         r#"{"mcp":{"torlek":{"type":"local","command":["theirs"]}}}"#,
     ] {
         let refusal = common::opencode()
-            .inline_config(Some(OsStr::new(owner)))
+            .inline_config(Some(OsStr::new(owner)), None)
             .unwrap_err();
 
         assert!(
@@ -300,6 +307,114 @@ fn a_launch_without_the_bridge_loads_no_plugin() {
 }
 
 #[test]
+fn a_compaction_threshold_is_the_compaction_buffer_of_the_inline_config() {
+    for (threshold, buffer) in [
+        ("20000", serde_json::json!(20000)),
+        ("1", serde_json::json!(1)),
+    ] {
+        let launch = common::opencode()
+            .launch(&LaunchRequest {
+                compaction_threshold: Some(threshold),
+                ..request(&Conversation::New)
+            })
+            .unwrap();
+        let config: serde_json::Value =
+            serde_json::from_str(common::variable(&launch, "OPENCODE_CONFIG_CONTENT").unwrap())
+                .unwrap();
+
+        assert_eq!(
+            config["compaction"],
+            serde_json::json!({ "buffer": buffer })
+        );
+    }
+}
+
+#[test]
+fn without_a_compaction_threshold_the_inline_config_names_no_compaction() {
+    let config: serde_json::Value =
+        serde_json::from_str(&common::opencode().inline_config(None, None).unwrap()).unwrap();
+
+    assert_eq!(config.get("compaction"), None);
+}
+
+#[test]
+fn the_owners_compaction_settings_are_kept_and_their_buffer_replaced() {
+    let owner = r#"{"compaction":{"auto":false,"buffer":"5%"}}"#;
+
+    let config: serde_json::Value = serde_json::from_str(
+        &common::opencode()
+            .inline_config(Some(OsStr::new(owner)), Some("20000"))
+            .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        config["compaction"],
+        serde_json::json!({ "auto": false, "buffer": 20000 })
+    );
+}
+
+#[test]
+fn a_compaction_threshold_without_the_bridge_sets_the_inline_config_without_a_plugin() {
+    let opencode = OpenCode::new("/usr/bin/opencode".into(), None, None);
+
+    let launch = opencode
+        .launch(&LaunchRequest {
+            compaction_threshold: Some("20000"),
+            ..request(&Conversation::New)
+        })
+        .unwrap();
+
+    let config: serde_json::Value =
+        serde_json::from_str(common::variable(&launch, "OPENCODE_CONFIG_CONTENT").unwrap())
+            .unwrap();
+    assert_eq!(
+        config,
+        serde_json::json!({ "compaction": { "buffer": 20000 } })
+    );
+    for name in PLUGIN_VARIABLES {
+        assert_eq!(common::variable(&launch, name), None, "{name}");
+    }
+}
+
+#[test]
+/// The `"15%"` form is OpenCode's since 2026-10-30 (after 2.0.0), not the tested 1.19.5's, so
+/// it is refused rather than passed to a version that would refuse its whole configuration.
+fn a_compaction_threshold_that_is_not_a_token_count_is_refused() {
+    for threshold in [
+        "abc", "", "-5", "+5", "15%", "20 000", "200k", "0", "007", "1.5",
+    ] {
+        let refusal = common::opencode()
+            .launch(&LaunchRequest {
+                compaction_threshold: Some(threshold),
+                ..request(&Conversation::New)
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            refusal.reason,
+            format!(
+                "compaction threshold {threshold:?} is not an OpenCode `compaction.buffer`: a \
+                 token count above zero"
+            )
+        );
+    }
+}
+
+#[test]
+fn an_owners_compaction_that_is_not_an_object_is_refused() {
+    let refusal = common::opencode()
+        .inline_config(Some(OsStr::new(r#"{"compaction":"15%"}"#)), Some("20000"))
+        .unwrap_err();
+
+    assert_eq!(
+        refusal.reason,
+        "OPENCODE_CONFIG_CONTENT has a `compaction` that is not an object, so Torlek's \
+         settings cannot join it"
+    );
+}
+
+#[test]
 fn an_effort_or_remote_control_is_refused_naming_its_capability() {
     let opencode = common::opencode();
 
@@ -312,6 +427,7 @@ fn an_effort_or_remote_control_is_refused_naming_its_capability() {
     let remote = opencode
         .launch(&LaunchRequest {
             remote_control: true,
+            compaction_threshold: None,
             ..request(&Conversation::New)
         })
         .unwrap_err();

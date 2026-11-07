@@ -16,6 +16,7 @@ fn request(conversation: &Conversation) -> LaunchRequest<'_> {
         effort: None,
         model: None,
         remote_control: false,
+        compaction_threshold: None,
     }
 }
 
@@ -107,6 +108,28 @@ fn the_fake_agent_logs_its_launch_and_the_log_reads_back() {
         ("s000000000001", "new", "conversation-1", "hello", "token-1")
     );
     assert!(dir.path().join("agent-was-here").exists());
+}
+
+#[test]
+fn the_fake_passes_a_compaction_threshold_to_its_agent_once_it_reports_the_capability() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = fake(&dir).reporting(Capability::CompactionThreshold);
+    let request = LaunchRequest {
+        compaction_threshold: Some("75"),
+        ..request(&Conversation::New)
+    };
+
+    let command = provider.launch(&request).unwrap();
+
+    assert!(
+        command
+            .environment
+            .contains(&("FAKE_AGENT_COMPACTION_THRESHOLD".into(), "75".into()))
+    );
+    assert_eq!(
+        fake(&dir).launch(&request).unwrap_err().reason,
+        "it does not report the `compaction-threshold` capability"
+    );
 }
 
 #[test]

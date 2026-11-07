@@ -417,6 +417,10 @@ pub enum Command {
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
+        /// The harness's own compaction threshold, in the provider's own words (#783); as
+        /// `model`, kept for every launch and refused when the provider lacks the capability.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compaction_threshold: Option<String>,
     },
     /// Sessions not ended; with `ended`, the ended ones too (recent first is the
     /// client's to sort).

@@ -196,6 +196,7 @@ impl Form {
             clone,
             model: None,
             effort: None,
+            compaction_threshold: None,
         })
     }
 }

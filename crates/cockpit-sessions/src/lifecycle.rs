@@ -366,6 +366,7 @@ impl Sessions {
             Some(provider.name().as_str()),
             request.model.as_deref(),
             request.effort.as_deref(),
+            request.compaction_threshold.as_deref(),
         )
         .await?;
         let dir = self
@@ -402,6 +403,7 @@ impl Sessions {
                 working_dir: &working_dir,
                 model: request.model.as_deref(),
                 effort: request.effort.as_deref(),
+                compaction_threshold: request.compaction_threshold.as_deref(),
                 started_by: request.started_by.as_ref(),
             },
         )
@@ -425,24 +427,30 @@ impl Sessions {
     }
 
     /// Refuses an agent name no wired provider has, and a missing one when several are wired
-    /// (naming the wired ones, #480), then a model or effort `provider` would not launch, before a session is recorded or
-    /// the owner is asked to start one (#701): the provider reports the capability and knows
-    /// the value. [`Provider::launch`] only builds words, so a trial build checks the
-    /// capability and the value's shape (the paths it is given are never used), then
+    /// (naming the wired ones, #480), then a model, effort or compaction threshold `provider`
+    /// would not launch, before a session is recorded or the owner is asked to start one
+    /// (#701, #783): the provider reports the capability and knows the value.
+    /// [`Provider::launch`] only builds words, so a trial build checks the capability and the
+    /// value's shape (the paths it is given are never used), then
     /// [`Provider::check_choices`] asks the harness which values it has (#743).
     pub async fn check_launch_choices(
         &self,
         provider: Option<&str>,
         model: Option<&str>,
         effort: Option<&str>,
+        compaction_threshold: Option<&str>,
     ) -> Result<(), Error> {
-        // Resolved first, even with no model or effort to check: an unknown or missing agent
-        // name must be refused before the owner is asked or a start is counted (#480).
+        // Resolved first, even with no choice to check: an unknown or missing agent name must
+        // be refused before the owner is asked or a start is counted (#480).
         let provider = Arc::clone(self.provider(provider)?);
-        if model.is_none() && effort.is_none() {
+        if model.is_none() && effort.is_none() && compaction_threshold.is_none() {
             return Ok(());
         }
-        for (kind, value) in [("model", model), ("effort", effort)] {
+        for (kind, value) in [
+            ("model", model),
+            ("effort", effort),
+            ("compaction-threshold", compaction_threshold),
+        ] {
             if value.is_some_and(|value| value.trim().is_empty()) {
                 return Err(Error::InvalidValue(cockpit_provider_api::InvalidValue {
                     kind,
@@ -452,19 +460,24 @@ impl Sessions {
             }
         }
         let (model, effort) = (model.map(str::to_owned), effort.map(str::to_owned));
-        self.blocking("check the model and effort", move || {
-            provider.launch(&LaunchRequest {
-                working_dir: Path::new("/"),
-                session_dir: Path::new("/"),
-                conversation: &Conversation::New,
-                first_message: None,
-                effort: effort.as_deref(),
-                model: model.as_deref(),
-                remote_control: false,
-            })?;
-            provider.check_choices(model.as_deref(), effort.as_deref())?;
-            Ok(())
-        })
+        let compaction_threshold = compaction_threshold.map(str::to_owned);
+        self.blocking(
+            "check the model, effort and compaction threshold",
+            move || {
+                provider.launch(&LaunchRequest {
+                    working_dir: Path::new("/"),
+                    session_dir: Path::new("/"),
+                    conversation: &Conversation::New,
+                    first_message: None,
+                    effort: effort.as_deref(),
+                    model: model.as_deref(),
+                    remote_control: false,
+                    compaction_threshold: compaction_threshold.as_deref(),
+                })?;
+                provider.check_choices(model.as_deref(), effort.as_deref())?;
+                Ok(())
+            },
+        )
         .await
     }
 
@@ -2023,6 +2036,7 @@ impl Sessions {
             let conversation = conversation.clone();
             let first_message = first_message.map(str::to_owned);
             let (model, effort) = (session.model.clone(), session.effort.clone());
+            let compaction_threshold = session.compaction_threshold.clone();
             // Off the async workers and bounded: the contract says it does not block, but
             // a provider that does would otherwise hold the launch forever (#272).
             let counted = TerminalStep::start(&self.session_lock(id));
@@ -2036,6 +2050,7 @@ impl Sessions {
                     effort: effort.as_deref(),
                     model: model.as_deref(),
                     remote_control: false,
+                    compaction_threshold: compaction_threshold.as_deref(),
                 })?)
             })
             .await?

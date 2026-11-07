@@ -268,6 +268,7 @@ async fn new_session(client: &Connection, dir: &Path) -> SessionView {
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await

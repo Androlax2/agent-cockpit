@@ -53,6 +53,29 @@ fn app_reporting(report: SessionReport, now: Instant) -> App {
     app
 }
 
+/// #783: the threshold chosen at the start is on the card, in the harness's own words.
+#[test]
+fn a_chosen_compaction_threshold_is_on_the_card() {
+    let now = Instant::now();
+    let mut chosen = session(SESSION, 1, 1);
+    chosen.compaction_threshold = Some("200k".to_owned());
+    let app = app_with(&["app"], vec![chosen], now);
+
+    let screen = screen_text(&app, now);
+
+    assert!(screen.contains("compaction threshold 200k"), "{screen}");
+}
+
+#[test]
+fn a_session_without_a_chosen_threshold_shows_no_threshold_line() {
+    let now = Instant::now();
+    let app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+
+    let screen = screen_text(&app, now);
+
+    assert!(!screen.contains("compaction threshold"), "{screen}");
+}
+
 #[test]
 fn a_finished_compaction_shows_its_trigger_sizes_and_seconds() {
     let now = Instant::now();

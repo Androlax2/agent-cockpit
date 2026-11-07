@@ -21,6 +21,7 @@ fn flag_blocks(flag: &str) -> Vec<Capability> {
         "--effort" => vec![Capability::Effort],
         "--model" => vec![Capability::Model],
         "--remote-control" => vec![Capability::RemoteControl],
+        "--autocompact" => vec![Capability::CompactionThreshold],
         _ => Capability::ALL.to_vec(),
     }
 }

@@ -27,8 +27,11 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   named so a capability report can show them, and get their methods with their first caller.
 - **Launch.** A launch refuses a request that needs a capability the provider does not
   report ([`LaunchRequest::needed_capabilities`]): a resumed conversation, an effort level, a
-  model, remote control. The adapter validates an effort or a model in its harness's own
-  words; a launch that only builds words checks them before anything is recorded (#701). A
+  model, a compaction threshold, remote control. The adapter validates an effort, a model or
+  a compaction threshold in its harness's own words; a launch that only builds words checks
+  them before anything is recorded (#701, #783). A capability the installed harness version
+  lacks is withheld with the missing requirement as the reason
+  ([`Capabilities::withheld`]), and the refusal repeats it. A
   provider names the conversation it started when it can
   ([`LaunchCommand::conversation`]); a session whose conversation is unknown cannot be
   resumed, restarted or put to sleep. A resumed launch keeps the conversation it was asked
