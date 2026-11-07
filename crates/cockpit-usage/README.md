@@ -1,8 +1,9 @@
 # cockpit-usage
 
-Owns usage facts and their aggregates (report 18). This first part holds each provider
-account's plan windows, their state as they fill, and the alerts at the owner's thresholds
-(#58). The cost archive (#699) and time with agent and the digest (#700) are their own issues.
+Owns usage facts and their aggregates (report 18): each provider account's plan windows from the adapters' quota readings, their state as they fill, and the alerts at the owner's thresholds.
+
+Quota windows and alerts are #58; the cost archive (#699) and time with agent and the digest
+(#700) are their own issues.
 
 **Depends on:** `cockpit-provider-api` for the typed facts adapters build, and `cockpit-turso`
 (rule `usage -> provider-api/database only` in `cockpit-workspace-rules/tests/crate_graph.rs`).
