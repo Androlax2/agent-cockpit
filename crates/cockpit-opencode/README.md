@@ -42,10 +42,12 @@ provider and nothing above the contract sees an OpenCode type (#47).
   `--session` it does not know: the bridge's first report names it. The first message goes
   as one word, `--prompt=<message>`, so a message starting with `-` is not a flag.
 - **Compaction threshold** (#783). A chosen threshold is OpenCode's own `compaction.buffer`
-  in the launch's `OPENCODE_CONFIG_CONTENT`, over the owner's `compaction` table: a percent of
-  the context window kept free (`15%`, as a string) or a token count (`20000`, as a number);
-  anything else is refused before the launch. It is set with or without the bridge; without
-  one, nothing is set and OpenCode's own configuration applies.
+  in the launch's `OPENCODE_CONFIG_CONTENT`, over the owner's `compaction` table: the room kept
+  free below the context window as a token count (`20000`, as a number); anything else is
+  refused before the launch. The `"15%"` form is OpenCode's since 2026-10-30
+  (anomalyco/opencode#60647, after 2.0.0), not the tested 1.19.5's, and follows the tested
+  version. It is set with or without the bridge; without one, nothing is set and OpenCode's
+  own configuration applies.
 - **Plugin bridge.** With a bridge, a launch sets `OPENCODE_CONFIG_CONTENT` to load
   `plugin/cockpit-opencode-plugin.js` (`PLUGIN_SOURCE`, written by the daemon where
   `Bridge::plugin` says) on top of the owner's configuration (an `OPENCODE_CONFIG_CONTENT`

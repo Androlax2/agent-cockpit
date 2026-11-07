@@ -359,7 +359,11 @@ const BRIDGED_CAPABILITIES: [Capability; 4] = [
 /// percent from 0 to 100 in Codex's own words; Codex itself would refuse anything else, so
 /// the refusal comes before the launch.
 fn compaction_threshold_config(threshold: &str) -> Result<String, ProviderError> {
-    let percent = (threshold.len() <= 3 && threshold.bytes().all(|byte| byte.is_ascii_digit()))
+    // The value lands in a TOML document, which refuses a leading zero on an integer.
+    let is_plain_integer = threshold.len() <= 3
+        && threshold.bytes().all(|byte| byte.is_ascii_digit())
+        && (threshold == "0" || !threshold.starts_with('0'));
+    let percent = is_plain_integer
         .then(|| threshold.parse::<u8>().ok())
         .flatten()
         .filter(|percent| *percent <= 100);
@@ -368,7 +372,7 @@ fn compaction_threshold_config(threshold: &str) -> Result<String, ProviderError>
         None => Err(ProviderError {
             reason: format!(
                 "compaction threshold {threshold:?} is not a Codex \
-                 `{COMPACTION_THRESHOLD_KEY}`: a whole percent from 0 to 100"
+                 `{COMPACTION_THRESHOLD_KEY}`: a whole percent from 0 to 100, written plainly"
             ),
         }),
     }

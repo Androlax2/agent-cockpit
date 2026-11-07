@@ -332,8 +332,6 @@ fn last_output(session: &SessionView) -> Option<&str> {
     session.exit.as_ref()?.output.last().map(String::as_str)
 }
 
-/// How the session's latest agent exited by itself (#629): `exit:` and
-/// its status, then `output:` and the last lines it printed, indented. Empty when it did not.
 /// What `session show` adds for the settings chosen at the start (#783); nothing when the
 /// harness's own apply.
 fn choice_lines(session: &SessionView) -> String {
@@ -344,6 +342,8 @@ fn choice_lines(session: &SessionView) -> String {
         .unwrap_or_default()
 }
 
+/// How the session's latest agent exited by itself (#629): `exit:` and
+/// its status, then `output:` and the last lines it printed, indented. Empty when it did not.
 fn exit_lines(session: &SessionView) -> String {
     let Some(exit) = &session.exit else {
         return String::new();

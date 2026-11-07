@@ -120,7 +120,7 @@ fn a_harness_without_the_compaction_buffer_setting_refuses_a_threshold_naming_it
             effort: None,
             model: None,
             remote_control: false,
-            compaction_threshold: Some("15%"),
+            compaction_threshold: Some("20000"),
         })
         .unwrap_err();
     assert_eq!(

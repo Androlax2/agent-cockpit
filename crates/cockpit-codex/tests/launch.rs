@@ -318,7 +318,7 @@ fn without_a_compaction_threshold_no_launch_names_the_key() {
 
 #[test]
 fn a_compaction_threshold_that_is_not_a_whole_percent_is_refused_before_the_launch() {
-    for threshold in ["101", "-5", "+5", "50%", "abc", "", "0100"] {
+    for threshold in ["101", "-5", "+5", "50%", "abc", "", "0100", "05", "007"] {
         let refused = common::codex()
             .launch(&LaunchRequest {
                 compaction_threshold: Some(threshold),
@@ -330,7 +330,7 @@ fn a_compaction_threshold_that_is_not_a_whole_percent_is_refused_before_the_laun
             refused.reason,
             format!(
                 "compaction threshold {threshold:?} is not a Codex \
-                 `model_post_turn_compact_threshold_percent`: a whole percent from 0 to 100"
+                 `model_post_turn_compact_threshold_percent`: a whole percent from 0 to 100, written plainly"
             )
         );
     }

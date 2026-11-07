@@ -54,11 +54,13 @@ pub const OPENCODE_VARIABLES: [&str; 3] = [
     "OPENCODE_CONFIG_CONTENT",
 ];
 
-/// OpenCode's own compaction threshold, the `compaction.buffer` setting: the share of the
-/// model's context window kept free before compaction starts (`"15%"`) or a token count
-/// (`20000`). Its dotted name is in the program (the schema's path), so the probe finds a
-/// version that has the setting (#783). A launch with a [`LaunchRequest::compaction_threshold`]
-/// sets it in `OPENCODE_CONFIG_CONTENT`.
+/// OpenCode's own compaction threshold, the `compaction.buffer` setting: the room kept free
+/// below the model's context window before compaction starts, as a token count (`20000`).
+/// The tested 1.19.5 takes a token count only; the `"15%"` form came on 2026-10-30
+/// (anomalyco/opencode#60647, after 2.0.0), and follows the tested version. Its dotted name is
+/// in the program (its config normaliser), so the probe finds a version that has the setting
+/// (#783). A launch with a [`LaunchRequest::compaction_threshold`] sets it in
+/// `OPENCODE_CONFIG_CONTENT`.
 pub const COMPACTION_BUFFER_SETTING: &str = "compaction.buffer";
 
 /// The variables the plugin reads: the bridge program, the `cockpit` program it reports
@@ -231,33 +233,19 @@ fn inline_config(
 }
 
 /// `threshold` as the JSON value of [`COMPACTION_BUFFER_SETTING`], in OpenCode's own words: a
-/// percent from 1 to under 100 of the context window as a string (`"15%"`, `"12.5%"`), or a
-/// token count as a number (`20000`). Anything else is refused before the launch, since
-/// OpenCode would refuse its whole configuration.
+/// token count as a number (`20000`), the form every version with the setting takes. Anything
+/// else is refused before the launch, since OpenCode would refuse its whole configuration.
 fn compaction_buffer(threshold: &str) -> Result<serde_json::Value, ProviderError> {
     let refused = || ProviderError {
         reason: format!(
             "compaction threshold {threshold:?} is not an OpenCode `{COMPACTION_BUFFER_SETTING}`: \
-             a percent of the context window from 1% to under 100%, or a token count"
+             a token count above zero"
         ),
     };
-    if let Some(percent) = threshold.strip_suffix('%') {
-        let is_decimal = !percent.is_empty()
-            && percent
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || byte == b'.')
-            && percent.bytes().filter(|byte| *byte == b'.').count() <= 1
-            && !percent.ends_with('.');
-        let in_range = percent
-            .parse::<f64>()
-            .is_ok_and(|value| (1.0..100.0).contains(&value));
-        return if is_decimal && in_range {
-            Ok(serde_json::Value::String(threshold.to_owned()))
-        } else {
-            Err(refused())
-        };
-    }
-    let tokens = (!threshold.is_empty() && threshold.bytes().all(|byte| byte.is_ascii_digit()))
+    let is_plain_count = !threshold.is_empty()
+        && !threshold.starts_with('0')
+        && threshold.bytes().all(|byte| byte.is_ascii_digit());
+    let tokens = is_plain_count
         .then(|| threshold.parse::<u64>().ok())
         .flatten();
     tokens.map(serde_json::Value::from).ok_or_else(refused)

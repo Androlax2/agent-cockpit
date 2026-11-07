@@ -309,9 +309,8 @@ fn a_launch_without_the_bridge_loads_no_plugin() {
 #[test]
 fn a_compaction_threshold_is_the_compaction_buffer_of_the_inline_config() {
     for (threshold, buffer) in [
-        ("15%", serde_json::json!("15%")),
-        ("12.5%", serde_json::json!("12.5%")),
         ("20000", serde_json::json!(20000)),
+        ("1", serde_json::json!(1)),
     ] {
         let launch = common::opencode()
             .launch(&LaunchRequest {
@@ -344,14 +343,14 @@ fn the_owners_compaction_settings_are_kept_and_their_buffer_replaced() {
 
     let config: serde_json::Value = serde_json::from_str(
         &common::opencode()
-            .inline_config(Some(OsStr::new(owner)), Some("15%"))
+            .inline_config(Some(OsStr::new(owner)), Some("20000"))
             .unwrap(),
     )
     .unwrap();
 
     assert_eq!(
         config["compaction"],
-        serde_json::json!({ "auto": false, "buffer": "15%" })
+        serde_json::json!({ "auto": false, "buffer": 20000 })
     );
 }
 
@@ -361,7 +360,7 @@ fn a_compaction_threshold_without_the_bridge_sets_the_inline_config_without_a_pl
 
     let launch = opencode
         .launch(&LaunchRequest {
-            compaction_threshold: Some("15%"),
+            compaction_threshold: Some("20000"),
             ..request(&Conversation::New)
         })
         .unwrap();
@@ -371,7 +370,7 @@ fn a_compaction_threshold_without_the_bridge_sets_the_inline_config_without_a_pl
             .unwrap();
     assert_eq!(
         config,
-        serde_json::json!({ "compaction": { "buffer": "15%" } })
+        serde_json::json!({ "compaction": { "buffer": 20000 } })
     );
     for name in PLUGIN_VARIABLES {
         assert_eq!(common::variable(&launch, name), None, "{name}");
@@ -379,9 +378,11 @@ fn a_compaction_threshold_without_the_bridge_sets_the_inline_config_without_a_pl
 }
 
 #[test]
-fn a_compaction_threshold_that_is_neither_a_percent_nor_a_token_count_is_refused() {
+/// The `"15%"` form is OpenCode's since 2026-10-30 (after 2.0.0), not the tested 1.19.5's, so
+/// it is refused rather than passed to a version that would refuse its whole configuration.
+fn a_compaction_threshold_that_is_not_a_token_count_is_refused() {
     for threshold in [
-        "abc", "", "-5", "0%", "0.5%", "100%", "15 %", "1.%", "200k", "%",
+        "abc", "", "-5", "+5", "15%", "20 000", "200k", "0", "007", "1.5",
     ] {
         let refusal = common::opencode()
             .launch(&LaunchRequest {
@@ -394,7 +395,7 @@ fn a_compaction_threshold_that_is_neither_a_percent_nor_a_token_count_is_refused
             refusal.reason,
             format!(
                 "compaction threshold {threshold:?} is not an OpenCode `compaction.buffer`: a \
-                 percent of the context window from 1% to under 100%, or a token count"
+                 token count above zero"
             )
         );
     }
@@ -403,7 +404,7 @@ fn a_compaction_threshold_that_is_neither_a_percent_nor_a_token_count_is_refused
 #[test]
 fn an_owners_compaction_that_is_not_an_object_is_refused() {
     let refusal = common::opencode()
-        .inline_config(Some(OsStr::new(r#"{"compaction":"15%"}"#)), Some("15%"))
+        .inline_config(Some(OsStr::new(r#"{"compaction":"15%"}"#)), Some("20000"))
         .unwrap_err();
 
     assert_eq!(
