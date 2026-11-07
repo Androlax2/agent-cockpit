@@ -2,12 +2,10 @@
 
 **Status:** packages built from the published v0.1.0-alpha.4 and alpha.3 archives install,
 upgrade and remove through apt on clean Ubuntu 26.04 and Debian 13 containers, amd64 and arm64,
-from a repository signed with a throwaway key ([CI evidence](#ci-evidence)). The publication
-job exists but is off. [Owner setup](#owner-setup) steps 1 to 5 are done: the key, its public
-half in `packaging/deb/torlek.asc`, the `apt` environment (required reviewer, `v*` tags), the
-deploy key, `TORLEK_APT_SIGNING_KEY` and `TORLEK_APT_MAINTAINER`. Only step 6 remains: the
-coordinator sets `TORLEK_APT_PUBLISH` after this merges. Do not document `apt install torlek` as an install
-route until the first publication has passed its [site check](#publication).
+from a repository signed with a throwaway key ([CI evidence](#ci-evidence)). The site
+`https://androlax2.github.io/torlek-apt/` serves `0.1.0~alpha.6-1`, published by the v0.1.0-alpha.6
+release run 42386034419; [check-site.sh](../../packaging/deb/check-site.sh) verified it signed and
+complete (recorded on #563). The README documents the route.
 
 This repackages the published release archives, like the [AUR recipe](aur.md). It is not an
 official Debian or Ubuntu package.
@@ -130,7 +128,7 @@ pool/main/t/torlek/torlek_<version>_<arch>.deb
   and no bad, expired or revoked one. Then it checks every index against the signed hashes, and
   every package against its index. It is a publication check written here, not apt.
 
-A client adds the source like this, once the first publication has passed:
+A client adds the source like this:
 
 ```text
 # /etc/apt/sources.list.d/torlek.sources
@@ -252,8 +250,9 @@ After `publish` releases a tag, [release.yml](../../.github/workflows/release.ym
 holds no usable signing key or one outside `torlek.asc`, the published site does not verify,
 or the release is already in the pool. Neither job gates the release itself.
 
-**After the first publication,** follow the README instructions from the start on a new
-fixture, and link that evidence from #97 before documenting the route.
+**Still open after the first publication:** follow the README instructions from the start on a
+new fixture, and link that evidence from #97. The README documents the route before that
+evidence exists, by the coordinator's decision for alpha.6.
 
 **A packaging fix alone** (the same archives, `--debian-revision 2`) is not automated: the
 release workflow only publishes new tags. Until it is, rebuild by hand only with Theo's
@@ -305,11 +304,9 @@ lintian fails the job on any error. The warnings and notes left, with the reason
 - `publish-apt` builds the packages again with the real maintainer; they differ from the
   installed fixtures only in the `Maintainer` field and the changelog's signature line, and
   are not themselves installed before the push.
-- No publication: owner setup steps 1 to 5 are done (the `apt` environment with its required
-  reviewer and `v*` tags, the deploy key, `TORLEK_APT_SIGNING_KEY`, `TORLEK_APT_MAINTAINER`)
-  and only step 6, `TORLEK_APT_PUBLISH`, remains. `publish-apt`, the deploy key, the
-  force-push and `check-site.sh` against GitHub Pages (including `~` in file names) have not
-  run. Their logic is tested against a local Git remote and `file://` URLs.
+- The published packages themselves are not installed by CI: `check-site.sh` verifies the
+  signature and hashes, and the install fixtures used throwaway keys. The README route has not
+  yet been followed on a clean fixture (the step after first publication, above).
 - apt verified the fixtures with whichever verifier each distribution's apt uses (`sqv` or
   `gpgv`); a dual-signed index has been checked only by `verify` and the tests.
 - No #97 onboarding beyond `torlek doctor`, `torlek version --all` and `verify-install`'s
