@@ -8,8 +8,8 @@ mod packet;
 mod write;
 
 pub use brief::{
-    BRIEF_TARGET_BYTES, ContextBudget, GithubTokenFact, Grants, LaunchFacts, WorkflowFacts, brief,
-    context_budget,
+    BRIEF_TARGET_BYTES, ContextBudget, Delivery, GithubTokenFact, Grants, LaunchFacts,
+    WorkflowFacts, brief, context_budget,
 };
 pub use bundle::{CatalogEntry, Document, VERSION, catalog, document, documents, manual};
 pub use guidance::{GuidanceSearch, discover_guidance};

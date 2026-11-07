@@ -13,7 +13,7 @@ skill so any harness that reads skills can load it, and provider-neutral in its 
 
 | Topic | File | Read it when |
 | --- | --- | --- |
-| `overview` | `torlek/SKILL.md` | always first: the brief, the rules nothing overrides, the topics |
+| `overview` | `torlek/SKILL.md` | always first: where the brief is, the topics |
 | `workflow` | `torlek/references/workflow.md` | beginning, checkpointing, finishing or blocking a step |
 | `checks` | `torlek/references/checks.md` | proving a result, reading a gate |
 | `approvals` | `torlek/references/approvals.md` | a host command, manual steps, a decision |

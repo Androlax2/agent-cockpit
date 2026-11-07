@@ -8,7 +8,7 @@ use std::io::{BufRead, Write};
 use std::process::ExitCode;
 
 use cockpit_client::ClientError;
-use cockpit_protocol::{Command, ErrorCode, Reply};
+use cockpit_protocol::{Command, ErrorCode, MCP_INSTRUCTIONS, Reply};
 use serde_json::{Value, json};
 
 use crate::agent::{exchange, launch_token};
@@ -96,8 +96,7 @@ fn initialize(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": {"resources": {}, "tools": {}},
         "serverInfo": {"name": "torlek", "version": env!("CARGO_PKG_VERSION")},
-        "instructions": "Torlek's manual for agents. Read torlek://instructions/overview first, \
-                         or call torlek_brief from a Torlek session."
+        "instructions": MCP_INSTRUCTIONS
     })
 }
 

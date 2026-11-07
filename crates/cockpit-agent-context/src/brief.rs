@@ -227,30 +227,48 @@ fn guidance_path(path: &str, workspace_roots: &[PathBuf]) -> String {
     format!("…{}", &shown[start..])
 }
 
+/// What a harness loads at start besides the brief, as its launch registers it (#775).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Delivery {
+    /// Whether the harness lists the skill, so its catalog entry is loaded (Claude Code and
+    /// OpenCode do; Codex does not).
+    pub lists_skill: bool,
+    /// The length of the instructions `cockpit mcp` answers `initialize` with.
+    pub mcp_instructions_bytes: usize,
+}
+
 /// How much context Cockpit adds, in bytes: what a harness loads into every conversation
-/// (the brief and the skill's catalog entry) apart from what an agent reads on demand (the
-/// whole manual). The harness's own instructions and tool schemas are the provider's to
-/// measure, not counted here.
+/// (the brief, the MCP server's instructions and, where the harness lists the skill, its
+/// catalog entry) apart from what an agent reads on demand (the whole manual). The
+/// harness's own instructions and tool schemas are the provider's to measure, not counted
+/// here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextBudget {
     pub brief_bytes: usize,
+    /// Zero when the harness does not list the skill.
     pub catalog_bytes: usize,
+    pub mcp_instructions_bytes: usize,
     pub on_demand_bytes: usize,
 }
 
 impl ContextBudget {
     pub fn always_loaded_bytes(&self) -> usize {
-        self.brief_bytes + self.catalog_bytes
+        self.brief_bytes + self.catalog_bytes + self.mcp_instructions_bytes
     }
 }
 
-pub fn context_budget(brief: &str) -> ContextBudget {
+pub fn context_budget(brief: &str, delivery: Delivery) -> ContextBudget {
     let frontmatter = document("overview")
         .and_then(|overview| overview.frontmatter)
         .expect("the overview is the skill and has frontmatter");
     ContextBudget {
         brief_bytes: brief.len(),
-        catalog_bytes: frontmatter.len(),
+        catalog_bytes: if delivery.lists_skill {
+            frontmatter.len()
+        } else {
+            0
+        },
+        mcp_instructions_bytes: delivery.mcp_instructions_bytes,
         on_demand_bytes: manual().len(),
     }
 }

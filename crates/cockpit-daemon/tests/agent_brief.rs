@@ -354,6 +354,13 @@ async fn a_session_doing_a_step_is_briefed_with_its_task_workspace_and_grants() 
         budget.brief_bytes <= cockpit_agent_context::BRIEF_TARGET_BYTES as u64,
         "{budget:?}"
     );
+    // The provider here is not one whose harness lists the skill, so no catalog entry is
+    // counted, but the MCP server's instructions are (#775).
+    assert_eq!(budget.catalog_bytes, 0);
+    assert_eq!(
+        budget.mcp_instructions_bytes,
+        cockpit_protocol::MCP_INSTRUCTIONS.len() as u64
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

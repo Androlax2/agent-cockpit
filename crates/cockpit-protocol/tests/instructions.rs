@@ -74,6 +74,7 @@ fn a_brief_reply_carries_its_context_budget() {
             brief_bytes: 22,
             packet_bytes: 13,
             catalog_bytes: 280,
+            mcp_instructions_bytes: 95,
             on_demand_bytes: 7478,
         },
     };
@@ -89,6 +90,7 @@ fn a_brief_reply_carries_its_context_budget() {
                 "brief_bytes": 22,
                 "packet_bytes": 13,
                 "catalog_bytes": 280,
+                "mcp_instructions_bytes": 95,
                 "on_demand_bytes": 7478
             }
         })

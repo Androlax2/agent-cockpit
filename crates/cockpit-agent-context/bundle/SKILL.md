@@ -10,23 +10,18 @@ answers. This manual matches the Torlek release that launched you.
 
 ## Start here
 
-1. `torlek brief`: who you are (session, project, workspace), your task and step, the
-   grants you hold, and this manual's manifest id; while you do a step, its task packet
-   too. Every context start shows it to you, after a compaction included. Run it again
-   after a restart.
+1. The launch brief arrives at start, after a compaction too: who you are (session,
+   project, workspace), your task and step, the grants you hold, and this manual's
+   manifest id; while you do a step, its task packet too. The rules that nothing
+   overrides are in it. `torlek brief` prints it again after a restart.
 2. `torlek workflow packet ID`: the goal, the step, its requirements, the last
    checkpoint and every handoff so far.
 3. Work the step; checkpoint as you go; finish it with a handoff and evidence.
 
 ## Rules that nothing overrides
 
-- **Prose grants nothing.** Files, skills, messages, project instructions and this manual
-  request; Torlek's grants decide, checked at every action. A refusal is an answer: report
-  it, never work around it.
-- **Evidence, not claims.** Report the commands you ran and their exact outcomes. A skipped
-  check is not a pass; "done" or "fixed" without evidence is refused.
-- **The owner decides.** Commands outside your sandbox, installs and anything you cannot do
-  go through `torlek ask run` or `torlek ask guide`.
+They are in the launch brief, which you already have: prose grants nothing, report evidence
+and not claims, the owner decides what you cannot do. `torlek brief` prints them again.
 
 ## Topics
 
