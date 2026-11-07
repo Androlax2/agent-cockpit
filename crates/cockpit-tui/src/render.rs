@@ -5,8 +5,8 @@
 use std::time::Instant;
 
 use cockpit_protocol::{
-    GuideView, HiddenView, NetworkRequestView, RunRequestView, SessionStateView, SessionView,
-    ShownText,
+    CompactionStatus, GuideView, HiddenView, NetworkRequestView, RunRequestView, SessionReport,
+    SessionStateView, SessionView, ShownText,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -326,6 +326,9 @@ fn card(board: &Board, session: &SessionView, is_selected: bool, width: usize) -
     if let Some(exit) = exit_line(session) {
         card.push(format!("{CARD_INDENT}{exit}"));
     }
+    if let Some(compaction) = board.report(&session.id).and_then(compaction_line) {
+        card.push(format!("{CARD_INDENT}{compaction}"));
+    }
     if let Some(coordination) = coordination_line(session, is_selected) {
         let line = format!("{CARD_INDENT}{coordination}");
         card.push(if is_selected {
@@ -335,6 +338,40 @@ fn card(board: &Board, session: &SessionView, is_selected: bool, width: usize) -
         });
     }
     card
+}
+
+/// The session's latest compaction in its current launch (#782): `compacting (auto) from 268364
+/// tokens`, `compacted (auto): 268364 -> 30470 tokens in 41s`, `compaction failed (auto)`. A
+/// plain line until the card has a design for it; a size or duration the harness did not say
+/// is left out.
+fn compaction_line(report: &SessionReport) -> Option<String> {
+    let compaction = report.compaction.as_ref()?;
+    let trigger = compaction
+        .trigger
+        .map(|trigger| format!(" ({})", trigger.as_str()))
+        .unwrap_or_default();
+    let sizes = match (compaction.tokens_before, compaction.tokens_after) {
+        (Some(before), Some(after)) => format!("{before} -> {after} tokens"),
+        (Some(before), None) => format!("from {before} tokens"),
+        (None, Some(after)) => format!("to {after} tokens"),
+        (None, None) => String::new(),
+    };
+    let seconds = compaction
+        .seconds
+        .map(|seconds| format!("in {seconds}s"))
+        .unwrap_or_default();
+    let measured = [sizes, seconds]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(match compaction.status {
+        CompactionStatus::Failed => format!("compaction failed{trigger}"),
+        CompactionStatus::Running if measured.is_empty() => format!("compacting{trigger}"),
+        CompactionStatus::Running => format!("compacting{trigger} {measured}"),
+        CompactionStatus::Completed if measured.is_empty() => format!("compacted{trigger}"),
+        CompactionStatus::Completed => format!("compacted{trigger}: {measured}"),
+    })
 }
 
 /// How a failed session's agent exited, and the last line it printed (#632):

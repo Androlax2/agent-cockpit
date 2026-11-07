@@ -26,7 +26,8 @@ pub enum Place {
 pub enum FormOutcome {
     Editing,
     Cancelled,
-    Submit(Command),
+    /// Boxed: `Command` is large, and clippy refuses the size gap to the other variants.
+    Submit(Box<Command>),
 }
 
 #[derive(Debug, Clone)]
@@ -160,7 +161,7 @@ impl Form {
             Ok(command) => {
                 self.submitted = Some(command.clone());
                 self.problem = None;
-                FormOutcome::Submit(command)
+                FormOutcome::Submit(Box::new(command))
             }
             Err(problem) => {
                 self.problem = Some(problem);

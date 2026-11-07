@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 pub use capabilities::{Availability, Capabilities, Capability, Provenance};
 pub use commands::{CommandResult, NativeCommand};
 pub use events::{
-    Activity, Confidence, EventKind, Observation, ObservedBy, ProviderEvent, TurnOutcome,
+    Activity, CompactionMoment, CompactionPhase, CompactionTrigger, Confidence, EventKind,
+    Observation, ObservedBy, ProviderEvent, TurnOutcome,
 };
 pub use needs::{
     CredentialBinding, CredentialHeader, Credentials, HomePath, Host, Needs, is_credential_header,

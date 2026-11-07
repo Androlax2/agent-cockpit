@@ -40,6 +40,7 @@ async fn cockpit(home: &Path, arguments: &[&str]) -> Output {
 fn reported() -> Outcome {
     Outcome::Ok(Reply::AgentReported {
         report: Box::new(SessionReport {
+            compaction: None,
             session: "s1".to_owned(),
             state: Some(AgentState::Waiting),
             label: None,

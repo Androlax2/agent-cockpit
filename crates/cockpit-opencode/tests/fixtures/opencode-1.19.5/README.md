@@ -83,6 +83,18 @@ Question dialogs, child-session routing, retry, API errors, unfinished messages 
 deprecated `session.idle` remain schema-derived coverage, with Node plugin tests where
 applicable. This capture does not claim native proof of those forms.
 
+## Compaction events (#782)
+
+`session-compaction-started.json`, `-ended.json` and `-failed.json` are **not captured and not
+from 1.19.5**: a compaction needs a model reply, and 1.19.5 has no `session.compaction.*`
+events. They follow OpenCode 2.2.5's event schemas, read as strings in its binary on
+2026-11-07: `started` (`sessionID`, `reason` `auto|manual`, `inputID`), `ended` (`reason`,
+`model`, `native`, `text`, `cost`, `tokens`) and `failed` (`reason`, `error`, `inputID`, `cost`,
+`tokens`), with 2's `data` object where 1.19.5 has `properties`. The `tokens` object's shape
+(`input`, `output`, `reasoning`, `cache.read`, `cache.write`) is OpenCode 1's assistant-message
+shape, assumed to be the same, and the adapter reads the context before as the summary call's
+input, cache read and cache write, and the context after as its output (report 686).
+
 `cockpit-opencode`'s `CONFORMANCE_VERSION` names this directory; a new pinned version gets
 a new directory and the tests move to it. `tests/conformance.rs` separately checks native
 flags, variables, server authentication and command discovery.

@@ -1,0 +1,5 @@
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200000},"model_context_window":258400}}}
+{"type":"response_item","payload":{"type":"message"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":243752},"model_context_window":258400}}}
+{"type":"compacted","payload":{"message":""}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30525},"model_context_window":258400}}}

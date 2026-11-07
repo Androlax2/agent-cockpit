@@ -78,6 +78,86 @@ impl TurnOutcome {
     }
 }
 
+/// What triggered a compaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionTrigger {
+    /// The harness compacted by itself.
+    Auto,
+    /// Someone asked for it, as with `/compact`.
+    Manual,
+}
+
+impl CompactionTrigger {
+    /// The trigger's name, as the agent channel's `--compaction-trigger` and its stored
+    /// column spell it.
+    pub fn name(self) -> &'static str {
+        match self {
+            CompactionTrigger::Auto => "auto",
+            CompactionTrigger::Manual => "manual",
+        }
+    }
+
+    /// The trigger `name` spells; `None` for another name.
+    pub fn from_name(name: &str) -> Option<CompactionTrigger> {
+        [CompactionTrigger::Auto, CompactionTrigger::Manual]
+            .into_iter()
+            .find(|trigger| trigger.name() == name)
+    }
+}
+
+/// Which moment of a context compaction a harness announced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionPhase {
+    Started,
+    Ended,
+    Failed,
+}
+
+impl CompactionPhase {
+    /// The phase's name, as the agent channel's `--compaction` spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            CompactionPhase::Started => "started",
+            CompactionPhase::Ended => "ended",
+            CompactionPhase::Failed => "failed",
+        }
+    }
+}
+
+/// One moment of a compaction with what the harness said about it. Sizes are the harness's
+/// own token counts of the context, never converted from bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionMoment {
+    pub phase: CompactionPhase,
+    pub trigger: Option<CompactionTrigger>,
+    pub tokens_before: Option<u64>,
+    pub tokens_after: Option<u64>,
+}
+
+impl CompactionMoment {
+    /// The `cockpit` arguments that report this moment on the agent channel: `agent report
+    /// --compaction PHASE`, then the trigger and the sizes the harness gave. The adapter adds
+    /// `--conversation`.
+    pub fn report_arguments(&self) -> Vec<String> {
+        let mut arguments: Vec<String> = ["agent", "report", "--compaction", self.phase.name()]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        if let Some(trigger) = self.trigger {
+            arguments.extend(["--compaction-trigger".to_owned(), trigger.name().to_owned()]);
+        }
+        for (flag, tokens) in [
+            ("--compaction-tokens-before", self.tokens_before),
+            ("--compaction-tokens-after", self.tokens_after),
+        ] {
+            if let Some(tokens) = tokens {
+                arguments.extend([flag.to_owned(), tokens.to_string()]);
+            }
+        }
+        arguments
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventKind {
     /// The conversation started or was resumed, and waits at its prompt.
@@ -99,6 +179,12 @@ pub enum EventKind {
     },
     /// The harness says the conversation ended; its process may still be running.
     Ended,
+    /// A moment of a context compaction. It proves no activity: a compaction can run in the
+    /// middle of a turn (#782).
+    Compaction(CompactionMoment),
+    /// The context a compaction produced started, with the launch brief re-added. Like the
+    /// compaction it follows, it proves no activity: it is no wait (#782).
+    ContextCompacted,
     /// An event the adapter does not normalize; [`ProviderEvent::raw`] keeps it.
     Unknown,
 }
@@ -122,7 +208,10 @@ impl ProviderEvent {
             }
             EventKind::PromptSubmitted | EventKind::ToolUsed { .. } => Activity::Working,
             EventKind::NeedsYou { .. } => Activity::NeedsYou,
-            EventKind::Ended | EventKind::Unknown => return None,
+            EventKind::Ended
+            | EventKind::Compaction(_)
+            | EventKind::ContextCompacted
+            | EventKind::Unknown => return None,
         };
         Some(Observation {
             activity,

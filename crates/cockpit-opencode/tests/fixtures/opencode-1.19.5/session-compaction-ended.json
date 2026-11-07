@@ -1,0 +1,1 @@
+{"id":"evt_e3b0c44200000031","type":"session.compaction.ended","data":{"sessionID":"ses_1c4f2e8a3ffeJ7qkR2mWbXzD0v","reason":"auto","text":"Summary of the compacted conversation...","cost":0.12,"tokens":{"input":1200,"output":1686,"reasoning":0,"cache":{"read":250000,"write":18000}}}}

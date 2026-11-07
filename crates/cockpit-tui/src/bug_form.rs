@@ -97,6 +97,6 @@ impl BugForm {
         };
         self.submitted = Some(command.clone());
         self.problem = None;
-        FormOutcome::Submit(command)
+        FormOutcome::Submit(Box::new(command))
     }
 }

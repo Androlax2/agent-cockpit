@@ -116,7 +116,7 @@ impl TaskForm {
         };
         self.problem = None;
         self.submitted = Some(command.clone());
-        FormOutcome::Submit(command)
+        FormOutcome::Submit(Box::new(command))
     }
     pub(crate) fn draw(&self, frame: &mut Frame<'_>, area: Rect) {
         let fields = [

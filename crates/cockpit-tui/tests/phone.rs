@@ -46,6 +46,7 @@ fn reports(app: &mut App, reports: Vec<SessionReport>, now: Instant) {
 
 fn report(session: &str, doing: &str, question: Option<&str>) -> SessionReport {
     SessionReport {
+        compaction: None,
         session: session.to_owned(),
         state: Some(AgentState::Working),
         label: None,

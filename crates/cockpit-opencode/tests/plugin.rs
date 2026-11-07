@@ -30,7 +30,7 @@ fn run_plugin(
         "cockpit-opencode-bridge",
         "payload=$(cat)\n\
          case \"$payload\" in *'\"busy\"'*) sleep 0.3 ;; esac\n\
-         type=$(printf '%s' \"$payload\" | sed 's/.*\"type\":\"\\([a-z.]*\\)\",\"properties\".*/\\1/')\n\
+         type=$(printf '%s' \"$payload\" | sed 's/.*\"type\":\"\\([a-z.]*\\)\",\"\\(properties\\|data\\)\".*/\\1/')\n\
          session=$(printf '%s' \"$payload\" | sed 's/^[^}]*\"sessionID\":\"\\([a-zA-Z0-9_]*\\)\".*/\\1/')\n\
          printf '%s %s %s\\n' \"$1\" \"$type\" \"$session\" >> \"$BRIDGE_LOG\"",
     );
@@ -132,6 +132,29 @@ fn a_turn_is_forwarded_in_order_without_the_events_that_prove_nothing() {
             "/opt/cockpit/bin/cockpit message.part.updated",
             "/opt/cockpit/bin/cockpit message.updated",
             "/opt/cockpit/bin/cockpit session.status",
+        ]
+    );
+}
+
+#[test]
+fn a_compaction_is_forwarded_whole_and_a_subagents_is_not() {
+    let subagent = common::fixture("session-created-subagent");
+    let child_compaction = common::fixture("session-compaction-started").replace(
+        "ses_1c4f2e8a3ffeJ7qkR2mWbXzD0v",
+        "ses_1c4f2d11affeQ0aZ9yTnLcVb3u",
+    );
+    let events = vec![
+        common::fixture("session-compaction-started"),
+        subagent,
+        child_compaction,
+        common::fixture("session-compaction-ended"),
+    ];
+
+    assert_eq!(
+        run_launched(&events, 2),
+        [
+            "/opt/cockpit/bin/cockpit session.compaction.started",
+            "/opt/cockpit/bin/cockpit session.compaction.ended"
         ]
     );
 }

@@ -5,17 +5,23 @@
 
 use std::fmt;
 
-use cockpit_provider_api::{Activity, ConversationId, EventKind, ProviderEvent, TurnOutcome};
+use cockpit_provider_api::{
+    Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ConversationId, EventKind,
+    ProviderEvent, TurnOutcome,
+};
 
 /// The event types the plugin forwards, each only in the forms [`normalize`] maps to an
 /// activity; the plugin's own `FORWARDED` list must match (a test compares them).
-pub const FORWARDED_EVENTS: [&str; 6] = [
+pub const FORWARDED_EVENTS: [&str; 9] = [
     "session.created",
     "session.status",
     "permission.asked",
     "question.asked",
     "message.part.updated",
     "message.updated",
+    "session.compaction.started",
+    "session.compaction.ended",
+    "session.compaction.failed",
 ];
 
 /// Assistant `finish` reasons after which OpenCode's loop goes on: the turn is not over.
@@ -57,8 +63,10 @@ pub fn normalize(event: &str) -> Result<ProviderEvent, EventError> {
         .ok_or_else(|| EventError {
             reason: "the event names no `type`".to_owned(),
         })?;
+    // OpenCode 2 names an event's fields `data`, OpenCode 1 `properties`.
     let properties = value
         .get("properties")
+        .or_else(|| value.get("data"))
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     let text = |pointer: &str| {
@@ -112,12 +120,49 @@ pub fn normalize(event: &str) -> Result<ProviderEvent, EventError> {
             _ => EventKind::Unknown,
         },
         "message.updated" => turn_end(&properties).unwrap_or(EventKind::Unknown),
+        "session.compaction.started" => compaction(CompactionPhase::Started, &properties),
+        "session.compaction.ended" => compaction(CompactionPhase::Ended, &properties),
+        "session.compaction.failed" => compaction(CompactionPhase::Failed, &properties),
         _ => EventKind::Unknown,
     };
     Ok(ProviderEvent {
         kind,
         name: name.to_owned(),
         raw: event.to_owned(),
+    })
+}
+
+/// A compaction event: its `reason` is `auto` or `manual`. Its `tokens` are those of the model
+/// call that wrote the summary, so the context before is that call's input (input, cache read
+/// and cache write, report 686's formula) and the context after is the summary it wrote
+/// (`output`). A start carries none.
+fn compaction(phase: CompactionPhase, properties: &serde_json::Value) -> EventKind {
+    let count = |pointer: &str| {
+        properties
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_u64)
+    };
+    let has_tokens = properties
+        .get("tokens")
+        .is_some_and(|tokens| tokens.is_object());
+    let tokens_before = has_tokens.then(|| {
+        ["/tokens/input", "/tokens/cache/read", "/tokens/cache/write"]
+            .iter()
+            .filter_map(|pointer| count(pointer))
+            .sum()
+    });
+    EventKind::Compaction(CompactionMoment {
+        phase,
+        trigger: properties
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .and_then(CompactionTrigger::from_name),
+        tokens_before: tokens_before.filter(|tokens| *tokens > 0),
+        tokens_after: if phase == CompactionPhase::Ended {
+            count("/tokens/output")
+        } else {
+            None
+        },
     })
 }
 
@@ -155,6 +200,9 @@ fn turn_end(properties: &serde_json::Value) -> Option<EventKind> {
 /// with a state clears; a turn's start adds `--prompt`, which clears the agent's own
 /// question.
 pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
+    if let EventKind::Compaction(moment) = &event.kind {
+        return Some(moment.report_arguments());
+    }
     let activity = event.observation()?.activity;
     let mut arguments: Vec<String> = ["agent", "report", "--state"]
         .into_iter()
@@ -196,7 +244,11 @@ pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     let value: Option<serde_json::Value> = serde_json::from_str(&event.raw).ok();
     let conversation = value
         .as_ref()
-        .and_then(|value| value.pointer("/properties/sessionID"))
+        .and_then(|value| {
+            value
+                .pointer("/properties/sessionID")
+                .or_else(|| value.pointer("/data/sessionID"))
+        })
         .and_then(serde_json::Value::as_str)
         .and_then(|id| ConversationId::new(id).ok());
     if let Some(conversation) = conversation {

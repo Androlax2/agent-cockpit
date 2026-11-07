@@ -20,6 +20,9 @@ const FORWARDED = [
   "question.asked",
   "message.part.updated",
   "message.updated",
+  "session.compaction.started",
+  "session.compaction.ended",
+  "session.compaction.failed",
 ]
 
 // How long `cockpit brief` may take before the prompt goes without it.
@@ -55,7 +58,8 @@ export const CockpitBridge = async ({ serverUrl }) => {
   let queue = Promise.resolve()
 
   const isForwarded = (event) => {
-    const properties = event?.properties ?? {}
+    // OpenCode 2 names an event's fields `data`, OpenCode 1 `properties`.
+    const properties = event?.properties ?? event?.data ?? {}
     if (!FORWARDED.includes(event?.type)) return false
     if (event.type === "session.created" && properties.info?.parentID) {
       roots.set(properties.info.id, properties.info.parentID)
@@ -132,9 +136,10 @@ export const CockpitBridge = async ({ serverUrl }) => {
     },
     event: async ({ event }) => {
       if (!isForwarded(event)) return
-      const sessionID = event.properties?.sessionID
+      const body = event.properties ?? event.data
+      const sessionID = body?.sessionID
       const forwarded = roots.has(sessionID)
-        ? { ...event, properties: { ...event.properties, sessionID: rootOf(sessionID) } }
+        ? { ...event, properties: { ...body, sessionID: rootOf(sessionID) } }
         : event
       const payload = JSON.stringify(forwarded)
       queue = queue.then(() => run(payload))

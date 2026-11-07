@@ -46,7 +46,7 @@ fn run() -> Result<(), String> {
     let (reported, brief) = std::thread::scope(|scope| {
         let reporting = scope.spawn(|| {
             let state = std::env::var_os(cockpit_codex::reports::STATE_VARIABLE);
-            hooks::bridge_arguments(&event).map_or(Ok(()), |report| {
+            hooks::measured_arguments(&event).map_or(Ok(()), |report| {
                 cockpit_codex::reports::send(
                     &cockpit,
                     state.as_deref().map(Path::new),

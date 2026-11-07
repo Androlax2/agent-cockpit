@@ -3,17 +3,22 @@
 
 use std::fmt;
 
-use cockpit_provider_api::{Activity, ConversationId, EventKind, ProviderEvent, TurnOutcome};
+use cockpit_provider_api::{
+    Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ConversationId, EventKind,
+    ProviderEvent, TurnOutcome,
+};
 
 /// The hook events launches subscribe the bridge to. `SessionEnd` reports nothing: the
 /// process ending is observed by `cockpit-processes`, not claimed by the agent.
-pub const HOOK_EVENTS: [&str; 7] = [
+pub const HOOK_EVENTS: [&str; 9] = [
     "SessionStart",
     "UserPromptSubmit",
     "PostToolUse",
     "Notification",
     "Stop",
     "StopFailure",
+    "PreCompact",
+    "PostCompact",
     "SessionEnd",
 ];
 
@@ -81,7 +86,9 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
     let text = |field: &str| value.get(field).and_then(serde_json::Value::as_str);
     let kind = match name {
         // After a compaction, possibly automatic in the middle of a turn, it proves no wait.
-        "SessionStart" if text("source") == Some("compact") => EventKind::Unknown,
+        "SessionStart" if text("source") == Some("compact") => EventKind::ContextCompacted,
+        "PreCompact" => compaction(CompactionPhase::Started, text("trigger")),
+        "PostCompact" => compaction(CompactionPhase::Ended, text("trigger")),
         "SessionStart" => EventKind::Started {
             conversation: text("session_id").and_then(|id| ConversationId::new(id).ok()),
         },
@@ -116,6 +123,17 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
         kind,
         name: name.to_owned(),
         raw: payload.to_owned(),
+    })
+}
+
+/// A compaction hook's moment; the trigger is `manual` or `auto`. Claude Code's payload
+/// carries no sizes: [`measured_arguments`] reads them from the transcript.
+fn compaction(phase: CompactionPhase, trigger: Option<&str>) -> EventKind {
+    EventKind::Compaction(CompactionMoment {
+        phase,
+        trigger: trigger.and_then(CompactionTrigger::from_name),
+        tokens_before: None,
+        tokens_after: None,
     })
 }
 
@@ -176,6 +194,11 @@ pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     let conversation = text("session_id")
         .and_then(|id| ConversationId::new(id).ok())
         .map(|id| ["--conversation".to_owned(), id.as_str().to_owned()]);
+    if let EventKind::Compaction(moment) = &event.kind {
+        let mut arguments = moment.report_arguments();
+        arguments.extend(conversation.into_iter().flatten());
+        return Some(arguments);
+    }
     if event.kind == EventKind::Ended {
         let is_changing =
             text("reason").is_some_and(|reason| CONVERSATION_CHANGES.contains(&reason));
@@ -187,6 +210,32 @@ pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     }
     let mut arguments = report_arguments(event)?;
     arguments.extend(conversation.into_iter().flatten());
+    Some(arguments)
+}
+
+/// [`bridge_arguments`] with the compaction's context size the transcript holds: the size
+/// before at `PreCompact`, the size after at `PostCompact` (#782). A transcript that cannot be
+/// read, or does not hold the size yet, reports the compaction without it.
+pub fn measured_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
+    let mut arguments = bridge_arguments(event)?;
+    let EventKind::Compaction(moment) = &event.kind else {
+        return Some(arguments);
+    };
+    let payload: serde_json::Value = serde_json::from_str(&event.raw).ok()?;
+    let transcript = payload
+        .get("transcript_path")
+        .and_then(serde_json::Value::as_str)
+        .map(std::path::Path::new);
+    let measured = transcript.and_then(|transcript| match moment.phase {
+        CompactionPhase::Started => crate::transcript::tokens_before(transcript)
+            .map(|tokens| ("--compaction-tokens-before", tokens)),
+        CompactionPhase::Ended => crate::transcript::tokens_after(transcript)
+            .map(|tokens| ("--compaction-tokens-after", tokens)),
+        CompactionPhase::Failed => None,
+    });
+    if let Some((flag, tokens)) = measured {
+        arguments.extend([flag.to_owned(), tokens.to_string()]);
+    }
     Some(arguments)
 }
 

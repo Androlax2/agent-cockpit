@@ -80,7 +80,7 @@ fn run(cockpit: &OsStr) -> Result<(), String> {
         .read_to_string(&mut payload)
         .map_err(|error| format!("cannot read the hook payload: {error}"))?;
     let event = hooks::normalize(&payload).map_err(|error| error.to_string())?;
-    let report = hooks::bridge_arguments(&event).map(|report| {
+    let report = hooks::measured_arguments(&event).map(|report| {
         let started = start_report(cockpit, &report);
         (report, started)
     });

@@ -16,6 +16,7 @@ const LAUNCHED_AT: i64 = 100;
 
 fn report(state: Option<AgentState>, doing: Option<&str>, reported_at: i64) -> SessionReport {
     SessionReport {
+        compaction: None,
         session: SESSION.to_owned(),
         state,
         label: None,

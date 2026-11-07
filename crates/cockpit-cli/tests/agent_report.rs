@@ -59,6 +59,7 @@ impl Home {
 
 fn session_report(session: &str) -> SessionReport {
     SessionReport {
+        compaction: None,
         session: session.to_owned(),
         state: Some(AgentState::Waiting),
         label: Some("Agent channel issue".to_owned()),

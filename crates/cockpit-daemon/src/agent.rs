@@ -5,8 +5,11 @@ use std::sync::Arc;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity, Refusal};
 use cockpit_protocol::{ErrorCode, Outcome, ProtocolError, Reply, Unblock, UnblockedBy};
-use cockpit_provider_api::TurnOutcome;
-use cockpit_sessions::{AgentState, Error, QuestionSource, Report, SessionId, SessionReport};
+use cockpit_provider_api::{CompactionMoment, CompactionPhase, CompactionTrigger, TurnOutcome};
+use cockpit_sessions::{
+    AgentState, Compaction, CompactionStatus, Error, QuestionSource, Report, SessionId,
+    SessionReport,
+};
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
 
@@ -88,7 +91,8 @@ async fn wire_report(
     at: i64,
 ) -> Result<cockpit_protocol::SessionReport, Error> {
     let held_by = cockpit_sessions::question_holder(connection, &report, at).await?;
-    Ok(to_wire(report, held_by.as_ref()))
+    let compaction = cockpit_sessions::latest_compaction(connection, &report.session).await?;
+    Ok(to_wire(report, held_by.as_ref(), compaction))
 }
 
 fn internal(error: &dyn std::fmt::Display) -> Outcome {
@@ -142,10 +146,53 @@ fn from_wire(report: cockpit_protocol::AgentReport) -> Report {
         is_new_prompt: report.is_new_prompt,
         conversation: report.conversation,
         is_conversation_ending: report.is_conversation_ending,
+        compaction: report.compaction.map(compaction_from_wire),
     }
 }
 
-fn to_wire(report: SessionReport, held_by: Option<&SessionId>) -> cockpit_protocol::SessionReport {
+fn compaction_from_wire(report: cockpit_protocol::CompactionReport) -> CompactionMoment {
+    CompactionMoment {
+        phase: match report.phase {
+            cockpit_protocol::CompactionPhase::Started => CompactionPhase::Started,
+            cockpit_protocol::CompactionPhase::Ended => CompactionPhase::Ended,
+            cockpit_protocol::CompactionPhase::Failed => CompactionPhase::Failed,
+        },
+        trigger: report.trigger.map(trigger_from_wire),
+        tokens_before: report.tokens_before,
+        tokens_after: report.tokens_after,
+    }
+}
+
+fn trigger_from_wire(trigger: cockpit_protocol::CompactionTrigger) -> CompactionTrigger {
+    match trigger {
+        cockpit_protocol::CompactionTrigger::Auto => CompactionTrigger::Auto,
+        cockpit_protocol::CompactionTrigger::Manual => CompactionTrigger::Manual,
+    }
+}
+
+fn compaction_to_wire(compaction: Compaction) -> cockpit_protocol::CompactionView {
+    cockpit_protocol::CompactionView {
+        status: match compaction.status {
+            CompactionStatus::Running => cockpit_protocol::CompactionStatus::Running,
+            CompactionStatus::Completed => cockpit_protocol::CompactionStatus::Completed,
+            CompactionStatus::Failed => cockpit_protocol::CompactionStatus::Failed,
+        },
+        trigger: compaction.trigger.map(|trigger| match trigger {
+            CompactionTrigger::Auto => cockpit_protocol::CompactionTrigger::Auto,
+            CompactionTrigger::Manual => cockpit_protocol::CompactionTrigger::Manual,
+        }),
+        tokens_before: compaction.tokens_before,
+        tokens_after: compaction.tokens_after,
+        seconds: compaction.seconds,
+        at: compaction.at,
+    }
+}
+
+fn to_wire(
+    report: SessionReport,
+    held_by: Option<&SessionId>,
+    compaction: Option<Compaction>,
+) -> cockpit_protocol::SessionReport {
     cockpit_protocol::SessionReport {
         session: report.session.as_str().to_owned(),
         state: report.state.map(|state| match state {
@@ -167,5 +214,6 @@ fn to_wire(report: SessionReport, held_by: Option<&SessionId>) -> cockpit_protoc
         covered_question: report.covered_question,
         held_by: held_by.map(|coordinator| coordinator.as_str().to_owned()),
         reported_at: report.reported_at,
+        compaction: compaction.map(compaction_to_wire),
     }
 }

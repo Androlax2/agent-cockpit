@@ -4,7 +4,9 @@
 mod common;
 
 use cockpit_opencode::events::{self, FORWARDED_EVENTS};
-use cockpit_provider_api::{ConversationId, EventKind, TurnOutcome};
+use cockpit_provider_api::{
+    CompactionMoment, CompactionPhase, CompactionTrigger, ConversationId, EventKind, TurnOutcome,
+};
 
 const SESSION: &str = "ses_1c4f2e8a3ffeJ7qkR2mWbXzD0v";
 
@@ -74,6 +76,33 @@ fn each_pinned_event_normalizes_to_its_kind() {
         ("message-assistant-api-error", failed("APIError")),
         ("message-assistant-streaming", EventKind::Unknown),
         ("session-idle", EventKind::Unknown),
+        (
+            "session-compaction-started",
+            EventKind::Compaction(CompactionMoment {
+                phase: CompactionPhase::Started,
+                trigger: Some(CompactionTrigger::Auto),
+                tokens_before: None,
+                tokens_after: None,
+            }),
+        ),
+        (
+            "session-compaction-ended",
+            EventKind::Compaction(CompactionMoment {
+                phase: CompactionPhase::Ended,
+                trigger: Some(CompactionTrigger::Auto),
+                tokens_before: Some(269_200),
+                tokens_after: Some(1686),
+            }),
+        ),
+        (
+            "session-compaction-failed",
+            EventKind::Compaction(CompactionMoment {
+                phase: CompactionPhase::Failed,
+                trigger: Some(CompactionTrigger::Manual),
+                tokens_before: Some(900),
+                tokens_after: None,
+            }),
+        ),
     ] {
         assert_eq!(kind(fixture), expected, "{fixture}");
     }
@@ -109,6 +138,43 @@ fn each_event_reports_its_state_from_its_session() {
         expected.extend(["--conversation".to_owned(), SESSION.to_owned()]);
         assert_eq!(report(fixture), Some(expected), "{fixture}");
     }
+}
+
+#[test]
+fn a_compaction_reports_itself_and_no_state() {
+    assert_eq!(
+        report("session-compaction-started"),
+        Some(words(&format!(
+            "agent report --compaction started --compaction-trigger auto --conversation {SESSION}"
+        )))
+    );
+    assert_eq!(
+        report("session-compaction-ended"),
+        Some(words(&format!(
+            "agent report --compaction ended --compaction-trigger auto \
+             --compaction-tokens-before 269200 --compaction-tokens-after 1686 \
+             --conversation {SESSION}"
+        )))
+    );
+    assert_eq!(
+        report("session-compaction-failed"),
+        Some(words(&format!(
+            "agent report --compaction failed --compaction-trigger manual \
+             --compaction-tokens-before 900 --conversation {SESSION}"
+        )))
+    );
+}
+
+/// OpenCode 1 names an event's fields `properties`; the same compaction reads alike.
+#[test]
+fn a_compaction_event_in_the_properties_form_reads_alike() {
+    let in_properties =
+        common::fixture("session-compaction-ended").replace("\"data\"", "\"properties\"");
+
+    assert_eq!(
+        events::normalize(&in_properties).unwrap().kind,
+        kind("session-compaction-ended")
+    );
 }
 
 #[test]

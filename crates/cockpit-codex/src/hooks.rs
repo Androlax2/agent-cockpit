@@ -4,7 +4,10 @@
 
 use std::fmt;
 
-use cockpit_provider_api::{Activity, ConversationId, EventKind, ProviderEvent};
+use cockpit_provider_api::{
+    Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ConversationId, EventKind,
+    ProviderEvent,
+};
 use sha2::{Digest, Sha256};
 
 /// One hook event a launch subscribes the bridge to.
@@ -24,7 +27,7 @@ const REPORT_SECONDS: u64 = 10;
 /// The hook events launches subscribe the bridge to. `Interrupt` is capped at 3 seconds by
 /// Codex. `SessionEnd` is not subscribed: it fires only when the thread shuts down, which
 /// `cockpit-processes` observes, not when `/clear` leaves it (measured on 0.161.0).
-pub const HOOK_EVENTS: [HookEvent; 6] = [
+pub const HOOK_EVENTS: [HookEvent; 8] = [
     HookEvent {
         name: "SessionStart",
         label: "session_start",
@@ -48,6 +51,16 @@ pub const HOOK_EVENTS: [HookEvent; 6] = [
     HookEvent {
         name: "Stop",
         label: "stop",
+        timeout_seconds: REPORT_SECONDS,
+    },
+    HookEvent {
+        name: "PreCompact",
+        label: "pre_compact",
+        timeout_seconds: REPORT_SECONDS,
+    },
+    HookEvent {
+        name: "PostCompact",
+        label: "post_compact",
         timeout_seconds: REPORT_SECONDS,
     },
     HookEvent {
@@ -174,7 +187,9 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
         "PermissionRequest" => EventKind::NeedsYou { question: None },
         _ if is_subagent => EventKind::Unknown,
         // After a compaction, possibly automatic in the middle of a turn, it proves no wait.
-        "SessionStart" if text("source") == Some("compact") => EventKind::Unknown,
+        "SessionStart" if text("source") == Some("compact") => EventKind::ContextCompacted,
+        "PreCompact" => compaction(CompactionPhase::Started, text("trigger")),
+        "PostCompact" => compaction(CompactionPhase::Ended, text("trigger")),
         "SessionStart" => EventKind::Started {
             conversation: text("session_id").and_then(|id| ConversationId::new(id).ok()),
         },
@@ -201,15 +216,46 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
     })
 }
 
-/// The `cockpit` arguments the bridge runs for `event`, naming the conversation the payload
-/// comes from (`--conversation`, Codex's thread id) so the daemon refuses a report of
-/// another conversation and names the session's conversation from its first report. A
-/// permission request goes as `--dialog`, which the next report with a state clears; a
-/// submitted prompt adds `--prompt`, which clears the agent's own question (#200). A turn's
-/// end reports its `--outcome`; a failed turn sends no hook, and the session launcher
-/// reports it ([`crate::turns`]). `None` when nothing is reported; a payload that names no
-/// valid conversation reports without one.
-pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
+/// A compaction hook's moment; the trigger is `manual` or `auto`. Codex's payload carries no
+/// sizes: [`measured_arguments`] reads them from the rollout.
+fn compaction(phase: CompactionPhase, trigger: Option<&str>) -> EventKind {
+    EventKind::Compaction(CompactionMoment {
+        phase,
+        trigger: trigger.and_then(CompactionTrigger::from_name),
+        tokens_before: None,
+        tokens_after: None,
+    })
+}
+
+/// [`bridge_arguments`] with the compaction's context size the rollout holds: the size before
+/// at `PreCompact`, the size after at `PostCompact` (#782). A rollout that cannot be read, or
+/// does not hold the size yet, reports the compaction without it.
+pub fn measured_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
+    let mut arguments = bridge_arguments(event)?;
+    let EventKind::Compaction(moment) = &event.kind else {
+        return Some(arguments);
+    };
+    let payload: serde_json::Value = serde_json::from_str(&event.raw).ok()?;
+    let rollout = payload
+        .get("transcript_path")
+        .and_then(serde_json::Value::as_str)
+        .map(std::path::Path::new);
+    let measured = rollout.and_then(|rollout| match moment.phase {
+        CompactionPhase::Started => crate::rollout::tokens_before(rollout)
+            .map(|tokens| ("--compaction-tokens-before", tokens)),
+        CompactionPhase::Ended => crate::rollout::tokens_after(rollout)
+            .map(|tokens| ("--compaction-tokens-after", tokens)),
+        CompactionPhase::Failed => None,
+    });
+    if let Some((flag, tokens)) = measured {
+        arguments.extend([flag.to_owned(), tokens.to_string()]);
+    }
+    Some(arguments)
+}
+
+/// The `cockpit` arguments that report the state `event` proves; `None` for an event that
+/// proves none.
+fn state_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     let activity = event.observation()?.activity;
     let mut arguments: Vec<String> = ["agent", "report", "--state"]
         .into_iter()
@@ -232,6 +278,22 @@ pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
             arguments.extend(["waiting", "--dialog", PLAIN_QUESTION].map(str::to_owned));
         }
     }
+    Some(arguments)
+}
+
+/// The `cockpit` arguments the bridge runs for `event`, naming the conversation the payload
+/// comes from (`--conversation`, Codex's thread id) so the daemon refuses a report of
+/// another conversation and names the session's conversation from its first report. A
+/// permission request goes as `--dialog`, which the next report with a state clears; a
+/// submitted prompt adds `--prompt`, which clears the agent's own question (#200). A turn's
+/// end reports its `--outcome`; a failed turn sends no hook, and the session launcher
+/// reports it ([`crate::turns`]). `None` when nothing is reported; a payload that names no
+/// valid conversation reports without one.
+pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
+    let mut arguments = match &event.kind {
+        EventKind::Compaction(moment) => moment.report_arguments(),
+        _ => state_arguments(event)?,
+    };
     let payload: Option<serde_json::Value> = serde_json::from_str(&event.raw).ok();
     let conversation = payload
         .as_ref()

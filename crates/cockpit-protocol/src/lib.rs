@@ -22,7 +22,8 @@ mod versions;
 mod workflows;
 
 pub use agent::{
-    AGENT_SOCKET_VARIABLE, AgentReport, AgentState, LAUNCH_TOKEN_VARIABLE, QuestionSource,
+    AGENT_SOCKET_VARIABLE, AgentReport, AgentState, CompactionPhase, CompactionReport,
+    CompactionStatus, CompactionTrigger, CompactionView, LAUNCH_TOKEN_VARIABLE, QuestionSource,
     SessionReport, TurnOutcome,
 };
 pub use approvals::{

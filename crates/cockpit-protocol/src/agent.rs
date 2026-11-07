@@ -55,6 +55,89 @@ pub enum QuestionSource {
     Dialog,
 }
 
+/// What triggered a compaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompactionTrigger {
+    /// The harness compacted by itself, near the end of its window.
+    Auto,
+    /// The owner (or the agent) asked for it, as with `/compact`.
+    Manual,
+}
+
+impl CompactionTrigger {
+    /// The trigger's wire name, as serialized and as `--compaction-trigger` spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CompactionTrigger::Auto => "auto",
+            CompactionTrigger::Manual => "manual",
+        }
+    }
+}
+
+/// Which moment of a compaction a report announces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompactionPhase {
+    Started,
+    Ended,
+    Failed,
+}
+
+impl CompactionPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CompactionPhase::Started => "started",
+            CompactionPhase::Ended => "ended",
+            CompactionPhase::Failed => "failed",
+        }
+    }
+}
+
+/// One moment of a context compaction, as the harness announced it (#782). It proves nothing
+/// about what the agent does: a compaction can run in the middle of a turn. The daemon
+/// measures the seconds between a start and its end by its own clock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionReport {
+    pub phase: CompactionPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<CompactionTrigger>,
+    /// The context's size in tokens before the compaction, when the harness says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_before: Option<u64>,
+    /// The context's size in tokens after it, when the harness says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_after: Option<u64>,
+}
+
+/// How a recorded compaction stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompactionStatus {
+    /// Started, not yet ended.
+    Running,
+    Completed,
+    /// The harness reported a failure, or started another compaction without ending this one.
+    Failed,
+}
+
+/// A session's latest compaction in its current launch, as its card shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionView {
+    pub status: CompactionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<CompactionTrigger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_before: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_after: Option<u64>,
+    /// Whole seconds from the start to the end, when both were seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u64>,
+    /// Seconds since 1970 of the last report about this compaction.
+    pub at: i64,
+}
+
 /// What an agent reports about its session. Every field is optional; one left out keeps its
 /// previous value. The session is never named: the daemon identifies the sender.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +170,10 @@ pub struct AgentReport {
     /// `conversation`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_conversation_ending: bool,
+    /// A moment of a context compaction. Comes alone (with `conversation`): it changes
+    /// nothing else in the report (#782).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionReport>,
 }
 
 /// A session's latest report as the daemon recorded it.
@@ -116,4 +203,7 @@ pub struct SessionReport {
     pub held_by: Option<String>,
     /// Seconds since 1970.
     pub reported_at: i64,
+    /// The latest compaction of the session's current launch. Absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionView>,
 }
