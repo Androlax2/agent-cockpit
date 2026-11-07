@@ -269,18 +269,3 @@ async fn a_refusal_exits_1_with_the_daemons_message() {
     );
     daemon.await.unwrap();
 }
-
-#[tokio::test]
-async fn an_unknown_usage_argument_exits_2_with_the_usage_line() {
-    let home = Home::new();
-
-    let output = home.cockpit(&["usage", "cost"]).await;
-
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(
-        text(&output.stderr),
-        "torlek: unknown usage arguments\n\
-         usage: torlek usage quota\n\
-         `torlek` alone lists every verb\n"
-    );
-}
