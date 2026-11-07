@@ -476,6 +476,12 @@ async fn report(context: &Context) -> Result<Reply, ProtocolError> {
     })
 }
 
+/// A pass answering another reply is a daemon bug: logged in full, reported in a line.
+fn unexpected_pass_reply(pass: &str, reply: &Reply) -> String {
+    tracing::error!(?reply, pass, "a storage pass answered an unexpected reply");
+    format!("internal error: the {pass} pass answered an unexpected reply")
+}
+
 /// The check-output and database dry runs and the log folders, each read on its own so one
 /// that fails leaves the others. The dry runs retire nothing.
 async fn areas(context: &Context) -> StorageAreasView {
@@ -486,13 +492,13 @@ async fn areas(context: &Context) -> StorageAreasView {
                 truncated,
                 ..
             }) => (Some(projects), truncated, None),
-            Ok(other) => (None, false, Some(format!("the pass answered {other:?}"))),
+            Ok(other) => (None, false, Some(unexpected_pass_reply("output", &other))),
             Err(error) => (None, false, Some(error.message)),
         };
     let (database, database_unavailable) =
         match crate::database_retention::pass(context, false).await {
             Ok(Reply::StorageDatabase { database, .. }) => (Some(*database), None),
-            Ok(other) => (None, Some(format!("the pass answered {other:?}"))),
+            Ok(other) => (None, Some(unexpected_pass_reply("database", &other))),
             Err(error) => (None, Some(error.message)),
         };
     let logs = cockpit_projects::folder_storage(context.logs.clone()).await;

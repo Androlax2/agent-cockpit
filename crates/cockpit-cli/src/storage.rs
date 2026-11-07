@@ -94,8 +94,18 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
         },
         AreaRow {
             area: "session temp folders",
-            bytes: session_temps.as_ref().map(|_| temp_bytes),
-            retires: session_temps.as_ref().map(|_| 0),
+            bytes: listed_bytes(
+                reported_temps,
+                session_temps.is_some(),
+                session_temps_unavailable,
+                temp_bytes,
+            ),
+            retires: listed_bytes(
+                reported_temps,
+                session_temps.is_some(),
+                session_temps_unavailable,
+                0,
+            ),
             is_complete: temps_complete
                 && session_temps.is_some()
                 && !*session_temps_truncated
@@ -111,7 +121,7 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
         }
         None => {
             rows.extend(
-                ["check outputs", "database", "backups", "logs"].map(|area| AreaRow {
+                ["ended check outputs", "database", "backups", "logs"].map(|area| AreaRow {
                     area,
                     bytes: None,
                     retires: None,
@@ -125,7 +135,7 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     }
     outln!("");
     outln!(
-        "storage by area: apparent bytes, and what each area's prune would retire now; database pages it retires are reused, the file does not shrink"
+        "storage by area: apparent bytes, and what each area's prune would retire now; database pages it retires are reused, the file does not shrink, so the total leaves them out"
     );
     outln!("area\tbytes\tretires\tstatus\tfreed by");
     for row in &rows {
@@ -239,6 +249,25 @@ fn eligible_total(clones: &[CloneStorageView]) -> String {
     )
 }
 
+/// Whether the output pass measured every output it listed and listed every one.
+fn outputs_are_complete(projects: &[OutputRetentionView], truncated: bool) -> bool {
+    !truncated
+        && projects
+            .iter()
+            .all(|project| project.unmeasured == 0 && project.failures.is_empty())
+}
+
+/// `bytes` of a listing; `None` when the daemon sent none or could list nothing at all.
+fn listed_bytes<T>(
+    listed: &[T],
+    is_reported: bool,
+    unavailable: &Option<String>,
+    bytes: u64,
+) -> Option<u64> {
+    let listed_nothing = unavailable.is_some() && listed.is_empty();
+    (is_reported && !listed_nothing).then_some(bytes)
+}
+
 /// One area of the summary; `None` bytes when the daemon could not read it at all.
 struct AreaRow {
     area: &'static str,
@@ -267,16 +296,13 @@ fn area_rows(areas: &StorageAreasView) -> Vec<AreaRow> {
     let (log_bytes, logs_complete) = observed(areas.logs.iter().map(|log| &log.measurement));
     vec![
         AreaRow {
-            area: "check outputs",
+            area: "ended check outputs",
             bytes: outputs
                 .map(|projects| projects.iter().map(|project| project.apparent_bytes).sum()),
             retires: outputs
                 .map(|projects| projects.iter().map(|project| project.selected_bytes).sum()),
-            is_complete: outputs.is_some_and(|projects| {
-                projects
-                    .iter()
-                    .all(|project| project.unmeasured == 0 && project.failures.is_empty())
-            }) && !areas.outputs_truncated,
+            is_complete: outputs
+                .is_some_and(|projects| outputs_are_complete(projects, areas.outputs_truncated)),
             freed_by: "torlek storage outputs prune".to_owned(),
         },
         AreaRow {
@@ -285,8 +311,8 @@ fn area_rows(areas: &StorageAreasView) -> Vec<AreaRow> {
             retires: database.map(|database| {
                 database.sessions.selected_bytes + database.run_outputs.selected_bytes
             }),
-            is_complete: database
-                .is_some_and(|database| !database.truncated && database.failures.is_empty()),
+            // A dry run's only failure is the backup listing, which the backups row shows.
+            is_complete: database.is_some_and(|database| !database.truncated),
             freed_by: "torlek storage database prune".to_owned(),
         },
         AreaRow {
@@ -302,8 +328,8 @@ fn area_rows(areas: &StorageAreasView) -> Vec<AreaRow> {
         },
         AreaRow {
             area: "logs",
-            bytes: areas.logs_unavailable.is_none().then_some(log_bytes),
-            retires: areas.logs_unavailable.is_none().then_some(0),
+            bytes: listed_bytes(&areas.logs, true, &areas.logs_unavailable, log_bytes),
+            retires: listed_bytes(&areas.logs, true, &areas.logs_unavailable, 0),
             is_complete: logs_complete && !areas.logs_truncated && areas.logs_unavailable.is_none(),
             freed_by: "rotation by size and age".to_owned(),
         },
@@ -358,12 +384,18 @@ fn area_explanations(areas: &StorageAreasView) -> Vec<String> {
     explanations
 }
 
-/// The sum of what each row could read; complete only when every row is.
+/// The sum of what each row could read; complete only when every row is. Its retires leave
+/// the database out: the pages it retires are reused, so the disk gets none of them back.
 fn total(rows: &[AreaRow]) -> AreaRow {
     AreaRow {
         area: "total",
         bytes: Some(rows.iter().filter_map(|row| row.bytes).sum()),
-        retires: Some(rows.iter().filter_map(|row| row.retires).sum()),
+        retires: Some(
+            rows.iter()
+                .filter(|row| row.area != "database")
+                .filter_map(|row| row.retires)
+                .sum(),
+        ),
         is_complete: rows.iter().all(|row| row.is_complete),
         freed_by: "-".to_owned(),
     }
@@ -558,11 +590,7 @@ fn outputs(arguments: &[OsString]) -> Result<ExitCode, String> {
     if *truncated {
         outln!("incomplete pass: further outputs were left out by its bound");
     }
-    let incomplete = *truncated
-        || projects
-            .iter()
-            .any(|project| project.unmeasured > 0 || !project.failures.is_empty());
-    Ok(if incomplete {
+    Ok(if !outputs_are_complete(projects, *truncated) {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS

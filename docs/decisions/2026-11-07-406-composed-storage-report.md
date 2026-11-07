@@ -12,12 +12,15 @@ smallest one that reuses the passes already merged.
   shows those rows as unavailable and exits 1, as it does for a daemon without temp folders.
 - **Each area is read on its own.** An output or database pass that fails leaves the other
   areas; its reason travels in `outputs_unavailable` or `database_unavailable`. Partial reads
-  keep the bytes they saw and make the row and the report incomplete.
+  keep the bytes they saw and make the row and the report incomplete; a backup listing that
+  fails marks the backups row, not the database row. A stray file directly under `logs/` is
+  listed as an unavailable folder, as one under the session temp folders is.
 - **What "retires" means per area.** Build folders: the complete `target/` sizes prune would
   accept now. Check outputs and database: the bytes their dry run selects. Session temp
   folders, backups and logs: zero, because the session end, backup rotation and log rotation
-  free them, not a prune. Database pages retired are reused; the file does not shrink, and the
-  report says so. All are apparent bytes, not reclaimable disk space.
+  free them, not a prune. Database pages retired are reused and the file does not shrink, so
+  the total's retires leave the database out. The check-output row counts ended runs' outputs,
+  the ones retention can select, and says so. All are apparent bytes, not reclaimable space.
 - **No new deletion path, setting or retention rule.** `torlek storage prune`,
   `storage outputs prune` and `storage database prune` stay the only ways to delete.
 - **Rejected:** the CLI sending `StorageReport`, `StorageOutputs` and `StorageDatabase` itself,

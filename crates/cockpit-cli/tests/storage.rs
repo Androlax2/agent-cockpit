@@ -573,6 +573,10 @@ async fn storage_says_when_the_session_temp_folders_cannot_be_listed() {
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("2\tapp\t1\t8\tcomplete\t"), "{stdout}");
     assert!(
+        stdout.contains("session temp folders\t-\t-\tunavailable\t"),
+        "{stdout}"
+    );
+    assert!(
         stdout.contains(
             "incomplete report: session temp folders unavailable: cannot open /state/tmp: EACCES"
         ),
@@ -800,11 +804,11 @@ async fn storage_totals_each_area_and_what_its_prune_would_retire() {
         "area\tbytes\tretires\tstatus\tfreed by",
         "build folders\t150\t100\tcomplete\ttorlek storage prune CHECKOUT",
         "session temp folders\t20\t0\tcomplete\tremoved when its session ends",
-        "check outputs\t1800\t1200\tcomplete\ttorlek storage outputs prune",
+        "ended check outputs\t1800\t1200\tcomplete\ttorlek storage outputs prune",
         "database\t8192\t340\tcomplete\ttorlek storage database prune",
         "backups\t12288\t0\tcomplete\trotation keeps the newest 7",
         "logs\t80\t0\tcomplete\trotation by size and age",
-        "total\t22530\t1640\tcomplete\t-",
+        "total\t22530\t1300\tcomplete\t-",
     ] {
         assert!(
             stdout.lines().any(|line| line == row),
@@ -825,7 +829,7 @@ async fn storage_from_a_daemon_without_the_composed_areas_is_incomplete() {
         "{stdout}"
     );
     for row in [
-        "check outputs\t-\t-\tunavailable\t",
+        "ended check outputs\t-\t-\tunavailable\t",
         "database\t-\t-\tunavailable\t",
         "backups\t-\t-\tunavailable\t",
         "logs\t-\t-\tunavailable\t",
@@ -842,12 +846,12 @@ async fn an_area_read_in_part_marks_its_row_and_the_report_incomplete() {
     let cases: [(Change, &str, &str); 6] = [
         (
             |areas| areas.outputs.as_mut().unwrap()[0].unmeasured = 1,
-            "check outputs\t1800\t1200\tincomplete\t",
+            "ended check outputs\t1800\t1200\tincomplete\t",
             "incomplete report: 1 check outputs unmeasured",
         ),
         (
             |areas| areas.outputs_truncated = true,
-            "check outputs\t1800\t1200\tincomplete\t",
+            "ended check outputs\t1800\t1200\tincomplete\t",
             "incomplete report: further check outputs left out by the pass bound",
         ),
         (
@@ -855,7 +859,7 @@ async fn an_area_read_in_part_marks_its_row_and_the_report_incomplete() {
                 areas.outputs = None;
                 areas.outputs_unavailable = Some("no read slot".to_owned());
             },
-            "check outputs\t-\t-\tunavailable\t",
+            "ended check outputs\t-\t-\tunavailable\t",
             "incomplete report: check outputs unavailable: no read slot",
         ),
         (
@@ -900,4 +904,22 @@ async fn an_area_read_in_part_marks_its_row_and_the_report_incomplete() {
             "{stdout}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_backup_listing_failure_marks_only_the_backups_row() {
+    let mut areas = complete_areas();
+    areas.database.as_mut().unwrap().failures = vec!["backups: permission denied".to_owned()];
+
+    let (_, code, stdout) = against_scripted(&["storage"], composed_report(Some(areas))).await;
+
+    assert_eq!(code, Some(1), "{stdout}");
+    assert!(
+        stdout.contains("database\t8192\t340\tcomplete\t"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("backups\t12288\t0\tincomplete\t"),
+        "{stdout}"
+    );
 }
