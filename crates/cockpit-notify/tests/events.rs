@@ -73,13 +73,38 @@ fn a_finish_the_feed_and_the_report_both_show_is_told_once() {
     let from_report = set_reports(&mut notifier, vec![ended_turn(TurnOutcome::Completed)]);
 
     assert_eq!(events(&from_feed), [Event::Finished]);
-    assert_eq!(from_report, []);
+    assert_eq!(events(&from_report), [Event::Turn]);
+}
+
+#[test]
+fn a_completed_turn_alone_is_a_turn_and_never_finished() {
+    let mut notifier = running();
+
+    let told = set_reports(&mut notifier, vec![ended_turn(TurnOutcome::Completed)]);
+
+    assert_eq!(events(&told), [Event::Turn]);
+}
+
+#[test]
+fn the_task_item_done_after_a_turn_tells_finished_once() {
+    let mut notifier = running();
+    set_reports(&mut notifier, vec![ended_turn(TurnOutcome::Completed)]);
+
+    let told = change_session(
+        &mut notifier,
+        &SessionView {
+            finished: true,
+            ..worker()
+        },
+    );
+
+    assert_eq!(events(&told), [Event::Finished]);
 }
 
 #[test]
 fn each_turn_outcome_is_its_own_event() {
     for (outcome, event) in [
-        (TurnOutcome::Completed, Event::Finished),
+        (TurnOutcome::Completed, Event::Turn),
         (TurnOutcome::Failed { reason: None }, Event::Failure),
         (TurnOutcome::QuotaStopped, Event::Quota),
     ] {

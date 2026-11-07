@@ -23,17 +23,17 @@ fn load(home: &Path, project_dir: Option<&Path>) -> Result<EffectiveConfig, Conf
 }
 
 #[test]
-fn a_clean_home_tells_every_event_both_ways() {
+fn a_clean_home_tells_every_event_but_turn_both_ways() {
     let home = TempDir::new().unwrap();
 
     let config = load(home.path(), None).unwrap();
 
     for events in [&config.notify.desktop, &config.notify.sound] {
         for (name, setting) in events.by_name() {
-            assert!(setting.value, "{name}");
+            assert_eq!(setting.value, name != "turn", "{name}");
             assert_eq!(setting.source, Source::ProductDefault, "{name}");
         }
-        assert_eq!(events.to_argument(), NOTIFY_EVENTS.join(","));
+        assert_eq!(events.to_argument(), "failure,hold,question,quota,finished");
     }
 }
 
@@ -196,5 +196,20 @@ fn the_owner_turns_autostart_off_and_config_show_says_where() {
         cockpit_config::render(&config).contains("notify.autostart = false  # user config"),
         "{}",
         cockpit_config::render(&config)
+    );
+}
+
+#[test]
+fn the_owner_turns_on_the_completed_turn_event_for_the_desktop_only() {
+    let home = TempDir::new().unwrap();
+    write_user_config(home.path(), "[notify.desktop]\nturn = true\n");
+
+    let config = load(home.path(), None).unwrap();
+
+    assert!(config.notify.desktop.turn.value);
+    assert!(!config.notify.sound.turn.value);
+    assert_eq!(
+        config.notify.desktop.to_argument(),
+        format!("{},turn", "failure,hold,question,quota,finished")
     );
 }

@@ -277,7 +277,15 @@ finished = false    # no notification when a session finishes
 question = false    # no sound for a question
 ```
 
-The events are `failure`, `hold`, `question`, `quota` and `finished`.
+The events are `failure`, `hold`, `question`, `quota`, `finished` and `turn`. `finished` means the
+session's task item is marked done; a session that exits by itself is a `failure`. A completed turn
+alone is the `turn` event, which is off by default for the desktop and the sound; set `turn = true`
+under `[notify.desktop]` or `[notify.sound]` to be told of every one.
+
+The notifier writes one line to its standard error for every notice it tells or skips, with the
+event, the session, what the desktop and the sound did and why one did not (a setting, a hold, a
+missing program). Read them with `journalctl --user -u torlek-notify` when it runs as a service, to
+find which event notifies you.
 
 To keep it quiet for a while, `torlek notify away on`; `torlek notify away off` ends it, and so
 does logging out where your desktop sets `XDG_RUNTIME_DIR`. Your own programs can hold it quiet as well: a program that exits 0

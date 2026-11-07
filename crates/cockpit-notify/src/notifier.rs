@@ -149,7 +149,10 @@ impl Notifier {
                 .get(session.id.as_str())
                 .unwrap_or(&no_needs);
             let report = self.board.report(&session.id);
-            let state = if needs.iter().any(|event| *event != Event::Finished) {
+            let state = if needs
+                .iter()
+                .any(|event| !matches!(event, Event::Finished | Event::Turn))
+            {
                 SessionState::NeedsYou
             } else {
                 match &session.state {
