@@ -3,9 +3,12 @@
 **Status:** the Scoop manifest template, its renderer, the two Windows launcher scripts and the
 script they run inside WSL are written and tested on Linux, and the release workflow's
 `install-scoop` job runs them on a hosted Windows runner with a WSL 2 distribution
-([below](#validation-in-ci)) (#565). No bucket exists, nothing is published, and no release
-exists yet to bind the manifest to. Do not document `scoop install` as an install route until
-the [publication checklist](#publication-checklist) has passed.
+([below](#validation-in-ci)) (#565). The bucket
+[Androlax2/scoop-torlek](https://github.com/Androlax2/scoop-torlek) holds the manifest rendered
+from the v0.1.0-alpha.6 `SHA256SUMS`; the tag run's
+[`install-scoop` job](https://github.com/Androlax2/agent-cockpit/actions/runs/42386034419/job/128445651194)
+passed. The README documents the route. Checklist steps 4 and 6 (a clean Windows 11 machine, WSL 1,
+arm64, the #97 onboarding) have not run: the route is verified by CI only.
 
 Torlek is a Linux program. On Windows it runs **inside a WSL 2 distribution**, from the
 `linux-x86_64` release archive ([user guide](../USER-GUIDE.md#platforms-and-prerequisites)). There
@@ -245,11 +248,12 @@ this list grants none. For each published `vX.Y.Z-alpha.N` tag:
   (fixed, with a regression test).
 - `install-in-wsl.sh` also ran on an Arch host with faked `uname` and `id`, not in a WSL kernel
   (`install-scoop` runs it in one).
-- No published release archive was rendered, downloaded or installed. `v0.1.0-alpha.5`'s run
-  (42298786664) failed `install-scoop` before Scoop ran: `rehearse` then took only a `-dev.N`
-  version and refused `0.1.0-alpha.5`. It now takes a tag's version too; the first tag run with
-  that fix is the first evidence for a real release.
-- A published bucket, a WSL 1 distribution, an arm64 machine and the #97 onboarding are unrun.
+- `v0.1.0-alpha.5`'s run (42298786664) failed `install-scoop` before Scoop ran: `rehearse` then
+  took only a `-dev.N` version and refused `0.1.0-alpha.5`. It now takes a tag's version, and
+  `v0.1.0-alpha.6`'s run (42386034419) passed. That run rehearses the tag on loopback; the
+  published manifest was rendered from the release's `SHA256SUMS` but not installed from the
+  bucket on Windows.
+- An install from the published bucket, a WSL 1 distribution, an arm64 machine and the #97 onboarding are unrun.
 - The in-WSL layout is the README's archive layout since #1047, which #97 published; the earlier
   `~/.local/lib/torlek/v<tag>` plus `current` layout was never released. `install-scoop`
   checks it from this change on; run 42282361877 above checked the earlier layout.
