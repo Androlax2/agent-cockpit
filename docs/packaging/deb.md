@@ -128,7 +128,7 @@ pool/main/t/torlek/torlek_<version>_<arch>.deb
   and no bad, expired or revoked one. Then it checks every index against the signed hashes, and
   every package against its index. It is a publication check written here, not apt.
 
-A client adds the source like this, once the first publication has passed:
+A client adds the source like this:
 
 ```text
 # /etc/apt/sources.list.d/torlek.sources
@@ -250,8 +250,9 @@ After `publish` releases a tag, [release.yml](../../.github/workflows/release.ym
 holds no usable signing key or one outside `torlek.asc`, the published site does not verify,
 or the release is already in the pool. Neither job gates the release itself.
 
-**After the first publication,** follow the README instructions from the start on a new
-fixture, and link that evidence from #97 before documenting the route.
+**Still open after the first publication:** follow the README instructions from the start on a
+new fixture, and link that evidence from #97. The README documents the route before that
+evidence exists, by the coordinator's decision for alpha.6.
 
 **A packaging fix alone** (the same archives, `--debian-revision 2`) is not automated: the
 release workflow only publishes new tags. Until it is, rebuild by hand only with Theo's
