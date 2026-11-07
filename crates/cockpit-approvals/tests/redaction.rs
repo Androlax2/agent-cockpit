@@ -38,6 +38,16 @@ fn sudos_password_prompt_is_not_a_secret() {
 }
 
 #[test]
+fn a_password_shown_after_sudos_prompt_is_redacted() {
+    let (text, count) = redact_secrets("[sudo] password for theo: hunter22\nok");
+
+    assert_eq!(
+        (text.as_str(), count),
+        ("[sudo] password for theo: [redacted]\nok", 1)
+    );
+}
+
+#[test]
 fn a_netrc_password_is_still_redacted() {
     let (text, count) = redact_secrets("machine example.com login theo password hunter22");
 

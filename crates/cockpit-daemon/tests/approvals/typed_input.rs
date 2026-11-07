@@ -106,6 +106,36 @@ async fn input_typed_after_echo_came_back_on_is_refused_and_not_in_the_output() 
     }
 }
 
+/// A program that reads keys one at a time, echo off, may print each key itself (readline).
+#[tokio::test]
+async fn input_to_a_terminal_reading_keys_one_at_a_time_is_refused() {
+    let asking = started(true).await;
+    let request = asking
+        .waiting_at_a_prompt("printf 'Token: '; stty -echo -icanon; sleep 4; stty echo icanon")
+        .await;
+
+    let refusal = refused(
+        asking
+            .owner
+            .request(
+                Command::ApprovalInput {
+                    request: request.id,
+                    text: TYPED_SECRET.to_owned(),
+                    shown: false,
+                },
+                GENEROUS,
+            )
+            .await,
+    );
+
+    assert_eq!(refusal.code, ErrorCode::Conflict);
+    assert!(
+        refusal.message.contains("one at a time"),
+        "{}",
+        refusal.message
+    );
+}
+
 async fn purge_output(asking: &Asking, request: i64) -> Result<Reply, ClientError> {
     asking
         .owner

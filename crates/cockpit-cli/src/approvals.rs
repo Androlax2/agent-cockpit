@@ -43,11 +43,13 @@ pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, Strin
             text: input_line()?,
             shown: false,
         },
-        ("approval", ["input", id, "--shown"]) => Command::ApprovalInput {
-            request: id_of(id)?,
-            text: input_line()?,
-            shown: true,
-        },
+        ("approval", ["input", id, "--shown"] | ["input", "--shown", id]) => {
+            Command::ApprovalInput {
+                request: id_of(id)?,
+                text: input_line()?,
+                shown: true,
+            }
+        }
         ("approval", ["purge-output", id]) => Command::ApprovalPurgeOutput {
             request: id_of(id)?,
         },

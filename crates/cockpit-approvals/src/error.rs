@@ -28,9 +28,9 @@ pub enum Refusal {
     AlreadyDecided { state: &'static str },
     /// Input goes to a running command only.
     NotRunning,
-    /// The command's terminal echoes what is typed, so the text would land in its output
-    /// (#1160).
-    TerminalEchoes,
+    /// The command's terminal may show what is typed, so the text could land in its output
+    /// (#1160); `why` says what it does.
+    InputWouldShow { why: String },
     /// Only a finished command run stores output to purge; `what` says what the request is.
     NoStoredOutput { what: &'static str },
     /// The answer names a guide step that is not the one shown now.
@@ -91,7 +91,7 @@ impl Refusal {
                 UnblockedBy::Owner,
                 "send input only while the command runs".to_owned(),
             ),
-            Refusal::TerminalEchoes => (
+            Refusal::InputWouldShow { .. } => (
                 UnblockedBy::Owner,
                 "type a secret only at a prompt that hides it, such as a password prompt; send a \
                  visible answer on purpose with `torlek approval input ID --shown` (Tab in the TUI)"
@@ -149,9 +149,10 @@ impl fmt::Display for Refusal {
                 write!(formatter, "the request was decided already; it is {state}")
             }
             Refusal::NotRunning => formatter.write_str("the command is not running"),
-            Refusal::TerminalEchoes => formatter.write_str(
-                "the command's terminal has echo on: what is typed would show in the output the \
-                 agent reads, so nothing was typed",
+            Refusal::InputWouldShow { why } => write!(
+                formatter,
+                "the command's terminal {why}: what is typed could show in the output the agent \
+                 reads, so nothing was typed"
             ),
             Refusal::NoStoredOutput { what } => write!(
                 formatter,

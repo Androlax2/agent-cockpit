@@ -68,7 +68,7 @@ impl From<Refusal> for Failed {
             | Refusal::AskerMayNotAsk
             | Refusal::AlreadyDecided { .. }
             | Refusal::NotRunning
-            | Refusal::TerminalEchoes
+            | Refusal::InputWouldShow { .. }
             | Refusal::NoStoredOutput { .. } => ErrorCode::Conflict,
             Refusal::TooSoon { .. } => ErrorCode::Refused,
         };

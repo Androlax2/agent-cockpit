@@ -62,7 +62,7 @@ static KEY_BLOCK_END: LazyLock<Regex> = LazyLock::new(|| {
 /// what lies between becomes `[redacted]`, so the agent still sees what was there. A value
 /// listed with its pattern is a word of a sentence, not a value, and stays.
 static SECRET_VALUES: LazyLock<Vec<(Regex, &[&str])>> = LazyLock::new(|| {
-    let values: [(&str, &[&str]); 7] = [
+    let values: [(&str, &[&str]); 8] = [
         (
             r"(?im)(Or type this code in the Home Screen app within [0-9]+ minutes:[ \t]*)[0-9]{3}[ \t]*[0-9]{3}\b",
             &[],
@@ -87,6 +87,8 @@ static SECRET_VALUES: LazyLock<Vec<(Regex, &[&str])>> = LazyLock::new(|| {
         // .netrc and .pgpass style: the keyword, a space, the value; `for` starts sudo's
         // prompt, `[sudo] password for theo:` (#1160).
         (r"(?im)(\b(?:password|passwd)\s+)[^\s=:]\S*", &["for"]),
+        // What follows that prompt on its line: a password the terminal showed.
+        (r"(?i)(\b(?:password|passwd) for [^\s:]+:[ \t]*)[^\s]+", &[]),
         (r"(?i)([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+(@)", &[]),
     ];
     values

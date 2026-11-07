@@ -417,8 +417,8 @@ impl Runner {
             .cloned()
             .ok_or(Refusal::NotRunning)?;
         let mut input = live.input.lock().expect("the input lock is never poisoned");
-        if !is_shown && echoes_input(&input).map_err(|_| Refusal::NotRunning)? {
-            return Err(Refusal::TerminalEchoes);
+        if !is_shown && let Some(why) = input_would_show(&input) {
+            return Err(Refusal::InputWouldShow { why });
         }
         input
             .write_all(text.as_bytes())
@@ -524,12 +524,23 @@ fn with_terminal_output(reason: String, live: &LiveRun) -> String {
     }
 }
 
-/// Whether the terminal echoes what is typed. Read on the master side, which on Linux reads the
-/// terminal side's settings. A program could turn echo on between this read and the write
-/// that follows; a password prompt turns it on only after it read its line.
-fn echoes_input(master: &File) -> std::io::Result<bool> {
-    let settings = rustix::termios::tcgetattr(master)?;
-    Ok(settings.local_modes.contains(LocalModes::ECHO))
+/// How the terminal may show what is typed, or `None` when it hides it as a password prompt
+/// does: echo off and lines read whole. A program reading keys one at a time (readline, most
+/// REPLs) may echo each one itself. Read on the master side, which on Linux reads the terminal
+/// side's settings. A program could change them between this read and the write that follows;
+/// a password prompt turns echo on only after it read its line.
+fn input_would_show(master: &File) -> Option<String> {
+    let settings = match rustix::termios::tcgetattr(master) {
+        Ok(settings) => settings,
+        Err(error) => return Some(format!("settings could not be read ({error})")),
+    };
+    if settings.local_modes.contains(LocalModes::ECHO) {
+        return Some("has echo on".to_owned());
+    }
+    if !settings.local_modes.contains(LocalModes::ICANON) {
+        return Some("reads keys one at a time, which a program may echo itself".to_owned());
+    }
+    None
 }
 
 /// A new pseudo-terminal: the master side for the daemon, the terminal side for the run.

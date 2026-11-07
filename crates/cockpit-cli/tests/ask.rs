@@ -490,25 +490,29 @@ async fn the_owner_types_input_from_standard_input_not_the_command_line() {
 
 #[tokio::test]
 async fn shown_input_answers_a_visible_prompt_on_purpose() {
-    let home = Home::new();
-    let daemon = scripted_conversation(
-        &home.owner_socket(),
-        vec![run_reply(request(RunStateView::Running))],
-    );
+    for arguments in [
+        ["approval", "input", "7", "--shown"],
+        ["approval", "input", "--shown", "7"],
+    ] {
+        let home = Home::new();
+        let daemon = scripted_conversation(
+            &home.owner_socket(),
+            vec![run_reply(request(RunStateView::Running))],
+        );
 
-    let output = home
-        .cockpit_as_owner(&["approval", "input", "7", "--shown"], "y\n")
-        .await;
+        let output = home.cockpit_as_owner(&arguments, "y\n").await;
 
-    assert!(output.status.success(), "{}", text(&output.stderr));
-    assert_eq!(
-        daemon.await.unwrap(),
-        [Command::ApprovalInput {
-            request: 7,
-            text: "y".to_owned(),
-            shown: true,
-        }]
-    );
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert_eq!(
+            daemon.await.unwrap(),
+            [Command::ApprovalInput {
+                request: 7,
+                text: "y".to_owned(),
+                shown: true,
+            }],
+            "{arguments:?}"
+        );
+    }
 }
 
 #[tokio::test]
