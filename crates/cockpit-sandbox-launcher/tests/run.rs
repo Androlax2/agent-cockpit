@@ -413,7 +413,8 @@ impl Fixture {
 }
 
 /// #832: the launcher reads the values and removes their file before the program starts;
-/// inside, only the session CA's certificate and the host's roots are readable.
+/// inside, only the session CA's certificate and the host's roots are readable. The CA's key
+/// stays in the launcher's memory: no private key is in those folders either.
 #[test]
 fn a_bound_credential_leaves_only_the_session_cas_certificate_inside() {
     let mut fixture = Fixture::new();
@@ -423,7 +424,8 @@ fn a_bound_credential_leaves_only_the_session_cas_certificate_inside() {
 
     let printed = fixture.run(&format!(
         "head -1 {ca}; grep -c 'BEGIN CERTIFICATE' {bundle}; \
-         grep -rl {SECRET} {mounts} {config} /proc/self/environ 2>/dev/null; true",
+         grep -rl {SECRET} {mounts} {config} /proc/self/environ 2>/dev/null; \
+         grep -rl 'PRIVATE KEY' {mounts} {config} 2>/dev/null; true",
         ca = config.join(SESSION_CA_FILE).display(),
         bundle = config.join(CA_BUNDLE_FILE).display(),
         mounts = fixture.path("mounts").display(),

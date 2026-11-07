@@ -258,3 +258,22 @@ fn a_checks_proxy_names_the_check_and_allows_no_host() {
         ("check unit", 0)
     );
 }
+
+/// #862, Q2: a check run holds no bound credential, so its proxy intercepts nothing and its
+/// environment names no session CA.
+#[test]
+fn a_check_gets_no_interception_and_no_trust_variable() {
+    let prepared = required_check();
+
+    assert_eq!(prepared.staged.unwrap().spec.interception, None);
+    let trust_variables: Vec<_> = prepared
+        .environment
+        .iter()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .filter(|name| {
+            cockpit_sandbox::BUNDLE_VARIABLES.contains(&name.as_str())
+                || name == cockpit_sandbox::EXTRA_CA_VARIABLE
+        })
+        .collect();
+    assert_eq!(trust_variables, Vec::<String>::new());
+}
