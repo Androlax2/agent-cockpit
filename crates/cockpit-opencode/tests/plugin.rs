@@ -251,10 +251,12 @@ fn a_bridge_that_cannot_run_never_stops_the_plugin() {
     );
 }
 
-/// Calls the plugin's system transform twice with `cockpit` as the `cockpit` program and
-/// prints each resulting system prompt as JSON, one line each.
+/// Calls the plugin's system transform three times with `cockpit` as the `cockpit` program,
+/// the events in the file `events` (when given) fed between the first call and the second,
+/// and prints each resulting system prompt as JSON, one line each.
 const SYSTEM_DRIVER: &str = r#"
-const [plugin, port, apart] = process.argv.slice(2)
+import { readFileSync } from "node:fs"
+const [plugin, port, apart, events] = process.argv.slice(2)
 const { CockpitBridge } = await import(plugin)
 const hooks = await CockpitBridge({ serverUrl: new URL(`http://127.0.0.1:${port}`) })
 const now = Date.now
@@ -262,6 +264,9 @@ let elapsed = 0
 Date.now = () => now() + elapsed
 for (let call = 0; call < 3; call++) {
   if (call > 0) elapsed += Number(apart)
+  if (call === 1 && events) {
+    for (const event of JSON.parse(readFileSync(events, "utf8"))) await hooks.event({ event })
+  }
   const output = { system: ["OpenCode's own prompt"] }
   await hooks["experimental.chat.system.transform"]({ sessionID: "ses_1", model: {} }, output)
   console.log(JSON.stringify(output.system))
@@ -271,7 +276,18 @@ for (let call = 0; call < 3; call++) {
 /// The system prompts three model calls `apart_ms` apart get, with a fake `cockpit` that runs
 /// `brief_body` for `cockpit brief`, and how many times it ran.
 fn system_prompts(brief_body: &str, apart_ms: u64) -> (Vec<String>, usize) {
+    system_prompts_around(brief_body, apart_ms, &[])
+}
+
+/// As [`system_prompts`], with `events` reaching the plugin after the first model call.
+fn system_prompts_around(
+    brief_body: &str,
+    apart_ms: u64,
+    events: &[String],
+) -> (Vec<String>, usize) {
     let dir = tempfile::tempdir().unwrap();
+    let events_file = dir.path().join("events.json");
+    std::fs::write(&events_file, format!("[{}]", events.join(","))).unwrap();
     let plugin = dir.path().join("cockpit-opencode-plugin.mjs");
     std::fs::write(&plugin, PLUGIN_SOURCE).unwrap();
     common::script(
@@ -290,6 +306,7 @@ fn system_prompts(brief_body: &str, apart_ms: u64) -> (Vec<String>, usize) {
         .arg(&plugin)
         .arg(PORT)
         .arg(apart_ms.to_string())
+        .args((!events.is_empty()).then_some(&events_file))
         .env(
             "TORLEK_OPENCODE_BRIDGE",
             dir.path().join("cockpit-opencode-bridge"),
@@ -325,6 +342,26 @@ fn every_system_prompt_carries_the_launch_brief_read_once() {
         [r##"["OpenCode's own prompt","# Cockpit launch brief"]"##; 3]
     );
     assert_eq!(runs, 1);
+}
+
+/// #781: a compaction starts the context again, so the next model call reads the brief and
+/// the task packet again (the pinned `session.compaction.ended`), and they hold from there.
+#[test]
+fn a_compactions_end_reads_the_brief_and_task_packet_again() {
+    let (prompts, runs) = system_prompts_around(
+        "printf '# Torlek launch brief\\n\\n# Task packet\\n\\nread %s\\n' \
+         \"$(wc -l < \"$(dirname \"$0\")/runs\")\"",
+        0,
+        &fixtures(&["session-compaction-ended"]),
+    );
+
+    let carrying = |read: u32| {
+        format!(
+            r##"["OpenCode's own prompt","# Torlek launch brief\n\n# Task packet\n\nread {read}"]"##
+        )
+    };
+    assert_eq!(prompts, [carrying(1), carrying(2), carrying(2)]);
+    assert_eq!(runs, 2);
 }
 
 /// The hook runs before every model call of a turn: a daemon that is down must not make each

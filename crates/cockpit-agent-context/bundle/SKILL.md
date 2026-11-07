@@ -11,7 +11,9 @@ answers. This manual matches the Torlek release that launched you.
 ## Start here
 
 1. `torlek brief`: who you are (session, project, workspace), your task and step, the
-   grants you hold, and this manual's manifest id. Run it again after a restart.
+   grants you hold, and this manual's manifest id; while you do a step, its task packet
+   too. Every context start shows it to you, after a compaction included. Run it again
+   after a restart.
 2. `torlek workflow packet ID`: the goal, the step, its requirements, the last
    checkpoint and every handoff so far.
 3. Work the step; checkpoint as you go; finish it with a handoff and evidence.

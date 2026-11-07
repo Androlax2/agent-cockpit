@@ -143,7 +143,8 @@ fn tools() -> Value {
         {
             "name": "torlek_brief",
             "description": "This Torlek session's launch brief: its rules, workspace, task step \
-                            and grants. Only from a session Torlek launched.",
+                            and grants, then the step's task packet. Only from a session Torlek \
+                            launched.",
             "inputSchema": {"type": "object", "properties": {}},
         },
     ]})
@@ -184,7 +185,9 @@ fn brief() -> Result<String, (i64, String)> {
     match daemon(Command::AgentBrief {
         launch_token: launch_token(),
     })? {
-        Reply::AgentBrief { brief, .. } => Ok(brief),
+        Reply::AgentBrief { brief, packet, .. } => {
+            Ok(crate::instructions::with_packet(&brief, packet.as_deref()))
+        }
         other => Err(unexpected(&other)),
     }
 }

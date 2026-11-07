@@ -246,9 +246,44 @@ fn brief_of(seen: &Seen) -> (&str, &str, &cockpit_protocol::ContextBudgetView) {
             brief,
             manifest,
             budget,
+            ..
         }) => (brief, manifest, budget),
         other => panic!("the brief was not answered: {other:?}"),
     }
+}
+
+/// The task packet the brief came with (#781).
+fn packet_of(seen: &Seen) -> Option<&str> {
+    match &seen.brief {
+        Answer::Reply(Reply::AgentBrief { packet, .. }) => packet.as_deref(),
+        other => panic!("the brief was not answered: {other:?}"),
+    }
+}
+
+/// The owner completes `run`'s current step, `position`, with a handoff naming it, waiving
+/// `waive`.
+async fn owner_completes(owner: &Connection, run: i64, position: u32, waive: &[&str]) {
+    let completed = request(
+        owner,
+        Command::WorkflowComplete {
+            launch_token: None,
+            workflow: run,
+            expected_step: None,
+            expected_attempt: None,
+            handoff: cockpit_protocol::WorkflowHandoffView {
+                changed: format!("Handed off step {position}"),
+                checked: "the fixture's word".to_owned(),
+                outcome: "passed".to_owned(),
+                ..Default::default()
+            },
+            waive: waive.iter().map(|name| (*name).to_owned()).collect(),
+        },
+    )
+    .await;
+    assert!(
+        matches!(completed, Ok(Reply::Workflow { .. })),
+        "{completed:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -357,8 +392,43 @@ async fn a_session_without_a_step_is_told_where_to_find_one() {
     launched(&owner, &root).await;
     let seen = home.seen().await;
 
-    let (brief, _, _) = brief_of(&seen);
+    let (brief, _, budget) = brief_of(&seen);
     assert!(brief.contains("no workflow step yet"), "{brief}");
+    assert_eq!((packet_of(&seen), budget.packet_bytes), (None, 0));
+}
+
+/// #781: the packet that comes with the brief keeps the last handoff only, the rest one
+/// command away, within its cap.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_packet_with_the_brief_keeps_only_the_last_handoff_within_its_cap() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let owner = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&owner).await;
+    let run = started_code_change(&owner).await;
+    owner_completes(&owner, run, 1, &[]).await;
+    owner_completes(&owner, run, 2, &["checks", "review"]).await;
+    home.arm_helper(&daemon, Some(run));
+
+    launched(&owner, &root).await;
+    let seen = home.seen().await;
+
+    let (_, _, budget) = brief_of(&seen);
+    let packet = packet_of(&seen).expect("a session doing a step gets its packet");
+    assert!(packet.contains("step 3 deliver (active"), "{packet}");
+    assert!(
+        packet.contains("handoff from step 2 check (completed): changed: Handed off step 2"),
+        "{packet}"
+    );
+    assert!(!packet.contains("Handed off step 1"), "{packet}");
+    assert!(
+        packet.contains(&format!("`torlek workflow packet {run}`")),
+        "{packet}"
+    );
+    assert_eq!(budget.packet_bytes, packet.len() as u64);
+    assert!(packet.len() <= cockpit_agent_context::TASK_PACKET_CAP_BYTES);
 }
 
 #[tokio::test(flavor = "multi_thread")]

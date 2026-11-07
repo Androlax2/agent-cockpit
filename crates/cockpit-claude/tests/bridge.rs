@@ -7,8 +7,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-/// What the fake `cockpit brief` prints.
-const BRIEF: &str = "# Cockpit launch brief";
+/// What the fake `cockpit brief` prints: the brief, then the task packet of the step the
+/// session does (#781).
+const BRIEF: &str = "# Cockpit launch brief\n\n\
+# Task packet\n\n\
+Your step as `torlek workflow packet 7` prints it, with only the last handoff.\n\n\
+workflow 7 (code-change v1, running)\n\
+step 2 check (active, s0123456789ab) [--step 2 --attempt 1]: tests pass, review next";
 
 struct FakeCockpit {
     dir: tempfile::TempDir,
@@ -148,6 +153,25 @@ fn each_session_start_adds_the_launch_brief_to_claudes_context() {
             "{fixture}"
         );
     }
+}
+
+/// #781: the pinned `source: "compact"` payload gets the brief and the task packet back
+/// whole, so a compaction's summary is never the only record of the step.
+#[test]
+fn a_compactions_session_start_adds_the_brief_and_task_packet() {
+    let cockpit = FakeCockpit::exiting_with(0);
+    let payload = common::fixture("session-start-compact");
+    assert!(payload.contains(r#""source":"compact""#), "{payload}");
+
+    let output = run_hook(&cockpit.program(), &payload, Some("token-1"));
+
+    assert!(output.status.success(), "{output:?}");
+    let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let context = answer["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert_eq!(context, format!("{BRIEF}\n"));
+    assert!(context.contains("# Task packet"), "{context}");
 }
 
 /// The report and the brief run side by side; when both fail, neither failure is hidden.

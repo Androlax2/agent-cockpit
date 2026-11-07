@@ -5,8 +5,9 @@
 // bridge normalizes and reports them; this file only filters, so the per-event rules live in
 // Rust (events.rs) beside their tests.
 //
-// It also adds the session's launch brief (`cockpit brief`, #419) to every system prompt, so
-// the agent sees it without asking and a compaction never drops it.
+// It also adds the session's launch brief and task packet (`cockpit brief`, #419, #781) to
+// every system prompt, so the agent sees them without asking and a compaction never drops
+// them; a compaction's end reads them again, as Claude Code's and Codex's SessionStart do.
 //
 // It stays silent unless it runs in the server its launch started: an `opencode` a tool
 // starts inherits the environment, but not the port (TORLEK_OPENCODE_PORT).
@@ -96,8 +97,8 @@ export const CockpitBridge = async ({ serverUrl }) => {
       }
     })
 
-  // What `cockpit brief` printed, asked once; a failed read (null) is asked again once
-  // BRIEF_RETRY_MS have passed, and the prompts meanwhile go without it rather than wait.
+  // What `cockpit brief` printed, asked once per context; a failed read (null) is asked again
+  // once BRIEF_RETRY_MS have passed, and the prompts meanwhile go without it rather than wait.
   let brief
   let failedAt = -Infinity
   const readBrief = () =>
@@ -126,16 +127,22 @@ export const CockpitBridge = async ({ serverUrl }) => {
         if (Date.now() - failedAt < BRIEF_RETRY_MS) return
         brief = readBrief()
       }
-      const text = await brief
+      const reading = brief
+      const text = await reading
       if (text === null) {
-        brief = undefined
-        failedAt = Date.now()
+        // A compaction may have started a newer read meanwhile: only this read's failure waits.
+        if (brief === reading) {
+          brief = undefined
+          failedAt = Date.now()
+        }
         return
       }
       if (text) output.system.push(text)
     },
     event: async ({ event }) => {
       if (!isForwarded(event)) return
+      // The conversation's context starts again: its step may have moved since the last read.
+      if (event.type === "session.compaction.ended") brief = undefined
       const body = event.properties ?? event.data
       const sessionID = body?.sessionID
       const forwarded = roots.has(sessionID)

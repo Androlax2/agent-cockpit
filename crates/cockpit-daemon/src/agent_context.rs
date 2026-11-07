@@ -13,7 +13,7 @@ use cockpit_protocol::{
 };
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
-use cockpit_workflows::{Actor, Refusal, RunFilter, StepStatus};
+use cockpit_workflows::{Actor, Refusal, RunFilter, RunId, StepStatus};
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
@@ -98,10 +98,20 @@ pub(crate) async fn brief(
     let mut facts = facts(
         &read,
         &sessions,
-        session,
+        session.clone(),
         environment.profile.value.name().to_owned(),
     )
     .await?;
+    let packet = match &facts.workflow {
+        Some(workflow) => {
+            let actor = Actor::Session {
+                session,
+                project: facts.project.clone(),
+            };
+            Some(task_packet(&read, &actor, workflow.run).await)
+        }
+        None => None,
+    };
     drop(read);
     if let Some(project) = facts.project.clone() {
         facts.github_token = github_token_fact(environment, project).await?;
@@ -113,10 +123,29 @@ pub(crate) async fn brief(
         manifest: facts.manifest_id,
         budget: ContextBudgetView {
             brief_bytes: budget.brief_bytes as u64,
+            packet_bytes: packet.as_ref().map_or(0, String::len) as u64,
             catalog_bytes: budget.catalog_bytes as u64,
             on_demand_bytes: budget.on_demand_bytes as u64,
         },
+        packet,
     })
+}
+
+/// The packet of the step the session does, as `cockpit workflow packet` prints it but with
+/// only the last handoff and no decisions, capped (#781): what a context start must not lose.
+/// A packet that cannot be read is said to be missing rather than costing the agent its brief.
+async fn task_packet(read: &Connection, actor: &Actor, run: i64) -> String {
+    let mut packet = match cockpit_workflows::packet(read, actor, RunId(run)).await {
+        Ok(packet) => crate::workflows::packet_view(packet),
+        Err(error) => {
+            tracing::error!(%error, run, "the task packet for an agent brief failed");
+            return cockpit_agent_context::unreadable_task_packet(run);
+        }
+    };
+    let earlier = packet.handoffs.len().saturating_sub(1);
+    packet.handoffs.drain(..earlier);
+    packet.decisions.clear();
+    cockpit_agent_context::task_packet(run, &packet.text())
 }
 
 /// The sender's session; a launch not bound yet is bound under the writer.

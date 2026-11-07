@@ -599,7 +599,7 @@ fn workflow_view(run: &Run) -> WorkflowView {
     }
 }
 
-fn packet_view(packet: Packet) -> WorkflowPacketView {
+pub(crate) fn packet_view(packet: Packet) -> WorkflowPacketView {
     WorkflowPacketView {
         workflow: packet.run.0,
         status: status_view(packet.run_status),
