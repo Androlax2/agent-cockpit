@@ -113,8 +113,10 @@ and Codex `agents/openai.yaml`'s `allow_implicit_invocation: false` (`tests/pack
 two in step; Codex lists no pack skill anyway). OpenCode reads neither and lists every skill it
 finds (`Skill.fmt`, v1.19.5), so its adapter denies each delivered user-invoked skill in
 `permission.skill` (`OpenCode::with_hidden_skills`): the system prompt leaves it out and the
-user's `/name` command still loads it. An owner's own `permission.skill` set to one action
-(`"ask"`) in a configuration file is replaced by that table. The fixtures are in
+user's `/name` command still loads it (read from the v1.19.5 source, not a run). A launch
+whose inline `OPENCODE_CONFIG_CONTENT` sets `permission` or `permission.skill` to one action is
+refused; the same setting in an owner's configuration file is replaced by that table, which
+Cockpit cannot see. The fixtures are in
 `cockpit-daemon/tests/skill_pack.rs`.
 
 ## Channels

@@ -322,8 +322,9 @@ impl OpenCode {
     /// user's `/name` command still loads it (`Command` reads `Skill.all`). Give only names
     /// this release delivered: a skill of the owner's with the same name would be hidden too.
     ///
-    /// An owner's file that sets `permission.skill` to one action (`"ask"`) has it replaced by
-    /// this table when OpenCode merges the inline configuration over it.
+    /// An inline owner value that sets `permission` or `permission.skill` to one action is
+    /// refused; an owner's configuration file that does so (`"ask"`) has it replaced by this
+    /// table when OpenCode merges the inline configuration over it, and Cockpit cannot see it.
     pub fn with_hidden_skills(mut self, names: Vec<String>) -> OpenCode {
         self.hidden_skills = names;
         self
