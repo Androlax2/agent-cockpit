@@ -3,9 +3,10 @@
 //! instead of carrying it, so it stays within its orientation target.
 
 use std::fmt::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::bundle::{VERSION, document, manual};
+use crate::manifest::{ManifestEntry, Scope, UNREADABLE};
 
 /// The orientation target's upper end, measured on the rendered brief; tool schemas and the
 /// harness's own instructions are not part of it.
@@ -13,6 +14,16 @@ pub const BRIEF_TARGET_BYTES: usize = 2048;
 
 /// Grants named one by one; the rest are counted, so many grants cannot outgrow the target.
 const LISTED_GRANTS: usize = 6;
+
+/// Guidance files named one by one, strongest first; the rest are counted, and the manifest id
+/// still covers them.
+const LISTED_GUIDANCE: usize = 4;
+
+/// A guidance path longer than this is cut at its front, keeping the file's own name.
+const GUIDANCE_PATH_BYTES: usize = 48;
+
+/// Hex digits of a guidance file's hash the brief shows.
+const GUIDANCE_HASH_DIGITS: usize = 12;
 
 /// What the session's owners say about it when the brief is asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +35,12 @@ pub struct LaunchFacts {
     pub grants: Grants,
     /// The step the session is doing, if any.
     pub workflow: Option<WorkflowFacts>,
+    /// The id of the product's packets and the `guidance` below ([`crate::session_manifest`]):
+    /// it changes when any of them does.
     pub manifest_id: String,
+    /// The user and project guidance the session's harness reads, strongest first
+    /// ([`crate::discover_guidance`]).
+    pub guidance: Vec<ManifestEntry>,
     /// The profile of the daemon that launched the session (#196): its `cockpit` reaches
     /// that daemon alone.
     pub profile: String,
@@ -101,6 +117,7 @@ pub fn brief(facts: &LaunchFacts) -> String {
         .map(|root| root.display().to_string())
         .collect();
     let _ = writeln!(text, "- Workspace: {}", roots.join(", "));
+    push_guidance(&mut text, facts);
     if let Some(github_token) = facts.github_token {
         text.push_str(match github_token {
             GithubTokenFact::Configured => {
@@ -155,6 +172,55 @@ pub fn brief(facts: &LaunchFacts) -> String {
     );
     text.push_str(DISCOVERY);
     text
+}
+
+fn push_guidance(text: &mut String, facts: &LaunchFacts) {
+    if facts.guidance.is_empty() {
+        return;
+    }
+    text.push_str(
+        "- Guidance, strongest first (a change to a file changes the instructions id):\n",
+    );
+    for entry in facts.guidance.iter().take(LISTED_GUIDANCE) {
+        let scope = match entry.scope {
+            Scope::Product => "product",
+            Scope::User => "user",
+            Scope::Project => "project",
+        };
+        let hash = if entry.sha256 == UNREADABLE {
+            UNREADABLE
+        } else {
+            &entry.sha256[..GUIDANCE_HASH_DIGITS.min(entry.sha256.len())]
+        };
+        let _ = writeln!(
+            text,
+            "  - {scope} {} {hash} {}",
+            guidance_path(&entry.path, &facts.workspace_roots),
+            entry.trust.as_str()
+        );
+    }
+    let unlisted = facts.guidance.len().saturating_sub(LISTED_GUIDANCE);
+    if unlisted > 0 {
+        let _ = writeln!(text, "  - and {unlisted} more");
+    }
+}
+
+/// `path` relative to the workspace it lies in, cut at its front when still long.
+fn guidance_path(path: &str, workspace_roots: &[PathBuf]) -> String {
+    let shown = workspace_roots
+        .iter()
+        .find_map(|root| Path::new(path).strip_prefix(root).ok())
+        .map_or_else(
+            || path.to_owned(),
+            |relative| relative.display().to_string(),
+        );
+    if shown.len() <= GUIDANCE_PATH_BYTES {
+        return shown;
+    }
+    let start = (shown.len() - GUIDANCE_PATH_BYTES..=shown.len())
+        .find(|&at| shown.is_char_boundary(at))
+        .unwrap_or(shown.len());
+    format!("…{}", &shown[start..])
 }
 
 /// How much context Cockpit adds, in bytes: what a harness loads into every conversation

@@ -106,7 +106,7 @@ fn the_manifest_names_every_file_with_its_hash_and_product_provenance() {
     );
     for (entry, document) in manifest.entries.iter().zip(documents()) {
         assert_eq!(entry.source, "torlek");
-        assert_eq!(entry.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(entry.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!(entry.scope, Scope::Product);
         assert_eq!(entry.trust, Trust::Product);
         assert_eq!(entry.precedence, Precedence::ProductInvariant);

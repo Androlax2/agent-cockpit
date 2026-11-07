@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 
 use cockpit_agent_context::{
-    BRIEF_TARGET_BYTES, GithubTokenFact, Grants, LaunchFacts, WorkflowFacts, brief, context_budget,
-    manifest,
+    BRIEF_TARGET_BYTES, GithubTokenFact, Grants, LaunchFacts, ManifestEntry, Precedence, Scope,
+    Trust, WorkflowFacts, brief, context_budget, manifest,
 };
 
 fn facts() -> LaunchFacts {
@@ -25,6 +25,7 @@ fn facts() -> LaunchFacts {
             has_checkpoint: true,
         }),
         manifest_id: manifest().id,
+        guidance: Vec::new(),
         profile: "dev".to_owned(),
         github_token: Some(GithubTokenFact::Configured),
     }
@@ -167,6 +168,15 @@ fn the_brief_fits_the_orientation_target_with_long_fields() {
         }),
         session: "s".repeat(64),
         github_token: Some(GithubTokenFact::Unusable),
+        guidance: (0..8)
+            .map(|index| {
+                guidance_entry(
+                    Scope::Project,
+                    &format!("/{}/{index}.md", "d".repeat(250)),
+                    Trust::Untrusted,
+                )
+            })
+            .collect(),
         ..facts()
     };
 
@@ -209,4 +219,89 @@ fn many_grants_keep_the_brief_within_the_target_and_say_how_many_are_left_out() 
 
     assert!(text.len() <= BRIEF_TARGET_BYTES, "{} bytes", text.len());
     assert!(text.contains("and 34 more"), "{text}");
+}
+
+fn guidance_entry(scope: Scope, path: &str, trust: Trust) -> ManifestEntry {
+    ManifestEntry {
+        path: path.to_owned(),
+        source: "guidance".to_owned(),
+        scope,
+        version: None,
+        sha256: "0123456789abcdef".repeat(4),
+        trust,
+        precedence: match scope {
+            Scope::Product => Precedence::ProductInvariant,
+            Scope::User => Precedence::User,
+            Scope::Project => Precedence::Project,
+        },
+        supersedes: Vec::new(),
+    }
+}
+
+#[test]
+fn the_brief_lists_each_guidance_file_with_its_hash_and_trust_strongest_first() {
+    let text = brief(&LaunchFacts {
+        guidance: vec![
+            guidance_entry(Scope::User, "/home/owner/.claude/CLAUDE.md", Trust::Owner),
+            guidance_entry(
+                Scope::Project,
+                "/home/owner/projects/app/AGENTS.md",
+                Trust::Untrusted,
+            ),
+        ],
+        ..facts()
+    });
+
+    let user = text
+        .find("  - user /home/owner/.claude/CLAUDE.md 0123456789ab owner")
+        .unwrap_or_else(|| panic!("no user line in\n{text}"));
+    let project = text
+        .find("  - project AGENTS.md 0123456789ab untrusted")
+        .unwrap_or_else(|| panic!("no project line, shown relative to the workspace, in\n{text}"));
+    assert!(user < project, "{text}");
+}
+
+#[test]
+fn a_session_without_guidance_gets_no_guidance_section() {
+    let text = brief(&facts());
+
+    assert!(!text.contains("Guidance"), "{text}");
+}
+
+#[test]
+fn a_guidance_file_that_cannot_be_read_is_shown_as_unreadable() {
+    let mut unreadable = guidance_entry(Scope::User, "/home/owner/.claude/CLAUDE.md", Trust::Owner);
+    unreadable.sha256 = cockpit_agent_context::UNREADABLE.to_owned();
+
+    let text = brief(&LaunchFacts {
+        guidance: vec![unreadable],
+        ..facts()
+    });
+
+    assert!(
+        text.contains("  - user /home/owner/.claude/CLAUDE.md unreadable owner"),
+        "{text}"
+    );
+}
+
+#[test]
+fn guidance_beyond_the_listed_files_is_counted() {
+    let guidance = (0..7)
+        .map(|index| {
+            guidance_entry(
+                Scope::Project,
+                &format!("/home/owner/projects/app/rule-{index}.md"),
+                Trust::Trusted,
+            )
+        })
+        .collect();
+
+    let text = brief(&LaunchFacts {
+        guidance,
+        ..facts()
+    });
+
+    assert!(text.contains("rule-3.md"), "{text}");
+    assert!(!text.contains("rule-4.md"), "{text}");
+    assert!(text.contains("  - and 3 more"), "{text}");
 }

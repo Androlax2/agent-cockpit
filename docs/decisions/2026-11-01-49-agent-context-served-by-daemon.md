@@ -18,8 +18,8 @@ Issue #49. Decided by the implementing session, within report 08 and the Herdr r
   the wrong commands.
 - **The brief is a reference, not a grant.** It names the grants and their revision;
   authorization still decides at every action. Target 2 KiB; the manual is read on demand.
-- **The manifest covers the product scope only.** User and project guidance join with their
-  own provenance and precedence later (leftover).
+- **The manifest first covered the product scope only.** User and project guidance joined it
+  with their own provenance, trust and precedence in #420 (see the crate's README).
 - **Rejected:** the CLI embedding the bundle offline, because it would add
   `cockpit-agent-context` to the CLI's allow-list and could drift from the running daemon.
 - **Rejected:** writing per-provider files (`CLAUDE.md`, `AGENTS.md`, plugin config) here,

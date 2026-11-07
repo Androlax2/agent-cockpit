@@ -378,6 +378,137 @@ async fn a_brief_asked_from_outside_the_checkout_still_names_the_sessions_projec
     );
 }
 
+fn write_file(path: &Path, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+/// #420: the brief lists the owner's file and the project's, each with its hash and trust.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_brief_lists_the_user_and_project_guidance_with_their_hash_and_trust() {
+    let home = Home::new();
+    write_file(
+        &home.path().join("home/.claude/CLAUDE.md"),
+        "owner policy\n",
+    );
+    let daemon = home.start().await;
+    let owner = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&owner).await;
+    write_file(&root.join("AGENTS.md"), "project guidance\n");
+    home.arm_helper(&daemon, None);
+
+    launched(&owner, &root).await;
+    let seen = home.seen().await;
+
+    let (brief, manifest, _) = brief_of(&seen);
+    // The brief cuts a long path at its front, keeping the file's own name.
+    let user_path = format!("{}/home/.claude/CLAUDE.md", home.path().display());
+    let user_line = format!(
+        "  - user …{} {} owner",
+        &user_path[user_path.len() - 48..],
+        &sha256_hex("owner policy\n")[..12]
+    );
+    let project_line = format!(
+        "  - project AGENTS.md {} untrusted",
+        &sha256_hex("project guidance\n")[..12]
+    );
+    for expected in [&user_line, &project_line] {
+        assert!(
+            brief.contains(expected.as_str()),
+            "missing {expected:?} in\n{brief}"
+        );
+    }
+    assert!(
+        brief.find(&user_line) < brief.find(&project_line),
+        "{brief}"
+    );
+    assert_ne!(manifest, cockpit_agent_context::manifest().id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_the_owner_trusts_has_its_guidance_listed_as_trusted() {
+    let home = Home::new();
+    write_file(
+        &home.path().join("home/.config/torlek/config.toml"),
+        &format!(
+            "[projects]\ntrusted = [\"{}\"]\n",
+            home.path().join("projects/app").display()
+        ),
+    );
+    let daemon = home.start().await;
+    let owner = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&owner).await;
+    write_file(&root.join("CLAUDE.md"), "trusted guidance\n");
+    home.arm_helper(&daemon, None);
+
+    launched(&owner, &root).await;
+    let seen = home.seen().await;
+
+    let (brief, _, _) = brief_of(&seen);
+    assert!(
+        brief.contains(&format!(
+            "  - project CLAUDE.md {} trusted",
+            &sha256_hex("trusted guidance\n")[..12]
+        )),
+        "{brief}"
+    );
+}
+
+/// The acceptance of #420 through the daemon.
+#[tokio::test(flavor = "multi_thread")]
+async fn changing_a_project_guidance_file_changes_the_manifest_id_the_next_brief_names() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let owner = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&owner).await;
+    write_file(&root.join("AGENTS.md"), "first\n");
+    home.arm_helper(&daemon, None);
+    launched(&owner, &root).await;
+    let first = home.seen().await;
+    let first_id = brief_of(&first).1.to_owned();
+
+    write_file(&root.join("AGENTS.md"), "second\n");
+    home.arm_helper(&daemon, None);
+    launched(&owner, &root).await;
+    let second = home.seen().await;
+
+    let (second_brief, second_id, _) = brief_of(&second);
+    assert_ne!(first_id, second_id);
+    assert!(
+        second_brief.contains(&format!("instructions {second_id}")),
+        "{second_brief}"
+    );
+}
+
+/// The file's SHA-256 as `sha256sum` prints it, so the expected hash is not the code's own.
+fn sha256_hex(text: &str) -> String {
+    use std::io::Write;
+    let mut child = Process::new("sha256sum")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(text.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_without_a_step_is_told_where_to_find_one() {
     let home = Home::new();

@@ -95,13 +95,7 @@ pub(crate) async fn brief(
     let sender = Sender::read(connector).await;
     let session = identify(&sender, &database, launch_token).await?;
     let read = database.read().await?;
-    let mut facts = facts(
-        &read,
-        &sessions,
-        session.clone(),
-        environment.profile.value.name().to_owned(),
-    )
-    .await?;
+    let mut facts = facts(&read, &sessions, session.clone(), &environment).await?;
     let packet = match &facts.workflow {
         Some(workflow) => {
             let actor = Actor::Session {
@@ -173,14 +167,16 @@ async fn facts(
     read: &Connection,
     sessions: &cockpit_sessions::Sessions,
     session: cockpit_authorization::SessionId,
-    profile: String,
+    environment: &cockpit_config::Environment,
 ) -> Result<LaunchFacts, Failed> {
     let id = cockpit_sessions::SessionId::parse(session.as_str())?;
     let working_dir = sessions.get(&id).await?.working_dir;
     // The session's own directory, not the caller's: `cockpit brief` may run from anywhere.
-    let project = crate::approvals::project_at(read, &working_dir)
-        .await?
-        .map(|project| project.name);
+    let checkout = crate::approvals::checkout_at(read, &working_dir).await?;
+    let project = checkout
+        .as_ref()
+        .map(|checkout| checkout.project.as_str().to_owned());
+    let guidance = guidance(environment, checkout.as_ref(), &working_dir).await?;
     let grants = grants(read, &session).await?;
     let actor = Actor::Session {
         session: session.clone(),
@@ -212,10 +208,46 @@ async fn facts(
         workspace_roots: vec![working_dir],
         grants,
         workflow,
-        manifest_id: cockpit_agent_context::manifest().id,
-        profile,
+        manifest_id: cockpit_agent_context::session_manifest(guidance.clone()).id,
+        guidance,
+        profile: environment.profile.value.name().to_owned(),
         github_token: None,
     })
+}
+
+/// The user and project guidance files of the session's harness, read now (#420). Project
+/// guidance is trusted only when the owner trusts the checkout; a directory in no registered
+/// project is listed from `working_dir` as untrusted. A broken owner configuration fails the
+/// brief, as it fails the launch: it must not pass for "no project is trusted".
+async fn guidance(
+    environment: &cockpit_config::Environment,
+    checkout: Option<&cockpit_projects::Checkout>,
+    working_dir: &Path,
+) -> Result<Vec<cockpit_agent_context::ManifestEntry>, Failed> {
+    let project_is_trusted = match checkout {
+        Some(checkout) => {
+            let trusted_roots = crate::projects::trusted_roots(environment.clone())
+                .await
+                .map_err(|error| internal(&error))?;
+            matches!(
+                cockpit_projects::trust(checkout, &trusted_roots),
+                cockpit_projects::Trust::Trusted | cockpit_projects::Trust::Inherited { .. }
+            )
+        }
+        None => false,
+    };
+    let home = environment.home.clone().map(PathBuf::from);
+    let project_root =
+        checkout.map_or_else(|| working_dir.to_path_buf(), |found| found.path.clone());
+    tokio::task::spawn_blocking(move || {
+        cockpit_agent_context::discover_guidance(&cockpit_agent_context::GuidanceSearch {
+            home: home.as_deref(),
+            project_root: &project_root,
+            project_is_trusted,
+        })
+    })
+    .await
+    .map_err(|error| internal(&error))
 }
 
 /// Whether `project` has a GitHub token, read now (#754); none when the owner's home is

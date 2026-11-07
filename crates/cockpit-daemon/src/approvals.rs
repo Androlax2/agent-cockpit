@@ -386,18 +386,27 @@ impl Sender {
     }
 }
 
-/// The project whose checkout holds `path`, the deepest one when checkouts nest.
-pub(crate) async fn project_at(
+/// The checkout that holds `path`, the deepest one when checkouts nest.
+pub(crate) async fn checkout_at(
     connection: &Connection,
     path: &std::path::Path,
-) -> Result<Option<Project>, Failed> {
+) -> Result<Option<cockpit_projects::Checkout>, Failed> {
     let checkouts = cockpit_projects::checkouts(connection, None)
         .await
         .map_err(|error| internal(&error))?;
     Ok(checkouts
         .into_iter()
         .filter(|checkout| path.starts_with(&checkout.path))
-        .max_by_key(|checkout| checkout.path.components().count())
+        .max_by_key(|checkout| checkout.path.components().count()))
+}
+
+/// The project whose checkout holds `path`, the deepest one when checkouts nest.
+pub(crate) async fn project_at(
+    connection: &Connection,
+    path: &std::path::Path,
+) -> Result<Option<Project>, Failed> {
+    Ok(checkout_at(connection, path)
+        .await?
         .map(|checkout| Project {
             name: checkout.project.as_str().to_owned(),
             root: checkout.path,

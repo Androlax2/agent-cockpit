@@ -1,6 +1,8 @@
 //! The instruction manifest: every packet an agent is given, with its source, scope, version,
 //! content hash, trust decision, precedence and what it supersedes (report 08). A hash is
-//! identity, not trust: these packets are trusted because the product ships them.
+//! identity, not trust: the product's packets are trusted because the product ships them, the
+//! owner's user guidance because it is the owner's, and a project's guidance only when the
+//! owner trusts the project (#420, [`crate::guidance`]).
 
 use std::sync::LazyLock;
 
@@ -9,11 +11,15 @@ use sha2::{Digest, Sha256};
 
 use crate::bundle::{VERSION, documents};
 
-/// Where a packet applies. Only the product's own bundle exists so far.
+/// Where a packet applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Scope {
     Product,
+    /// The owner's own guidance file, such as `~/.claude/CLAUDE.md`.
+    User,
+    /// A file of the session's project: `CLAUDE.md`, `AGENTS.md`, its rules.
+    Project,
 }
 
 /// Why a packet is believed.
@@ -22,30 +28,62 @@ pub enum Scope {
 pub enum Trust {
     /// Shipped with the installed release.
     Product,
+    /// The owner's own file.
+    Owner,
+    /// A file of a project the owner trusts (`projects.trusted`, or a clone of one).
+    Trusted,
+    /// A file of a project without the owner's trust decision, a review clone or a directory
+    /// that is no registered project: listed so it is seen, never believed for that.
+    Untrusted,
 }
 
-/// How a packet ranks against others on the same subject.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+impl Trust {
+    /// The word the manifest, the brief and [`manifest_id`] use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Trust::Product => "product",
+            Trust::Owner => "owner",
+            Trust::Trusted => "trusted",
+            Trust::Untrusted => "untrusted",
+        }
+    }
+}
+
+/// How a packet ranks against others on the same subject; the variants run strongest first,
+/// so a smaller one shadows a larger one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Precedence {
     /// Reserved: no user or project guidance may shadow it.
     ProductInvariant,
+    /// The owner's policy constrains the guidance of a project.
+    User,
+    Project,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestEntry {
-    /// Relative to the bundle directory.
+    /// Relative to the bundle directory for a product packet; the file's own absolute path for
+    /// user and project guidance.
     pub path: String,
     pub source: String,
     pub scope: Scope,
-    pub version: String,
-    /// Of the file as written, stamp included.
+    /// The release that ships a product packet; guidance has none, its hash is its version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Of the file as written, stamp included, or [`UNREADABLE`] for a guidance file that
+    /// exists and could not be read.
     pub sha256: String,
     pub trust: Trust,
     pub precedence: Precedence,
-    /// Paths of the packets this one shadows; a product invariant shadows nothing.
+    /// Paths of the packets this one shadows: the user's guidance shadows the project's; a
+    /// product invariant is shadowed by nothing and, in its own scope, shadows nothing.
     pub supersedes: Vec<String>,
 }
+
+/// Stands for the hash of a guidance file that exists and cannot be read, so the manifest
+/// shows it instead of leaving it out, and its id changes once the file becomes readable.
+pub const UNREADABLE: &str = "unreadable";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -66,6 +104,19 @@ pub fn manifest() -> Manifest {
     MANIFEST.clone()
 }
 
+/// The manifest a session is given: the product's packets, then `guidance` (user, then
+/// project; see [`crate::discover_guidance`]). Its id is what that session's brief names.
+pub fn session_manifest(guidance: Vec<ManifestEntry>) -> Manifest {
+    let mut entries = manifest().entries;
+    entries.extend(guidance);
+    Manifest {
+        id: manifest_id(&entries),
+        version: VERSION.to_owned(),
+        supersedes: None,
+        entries,
+    }
+}
+
 fn computed() -> Manifest {
     let entries: Vec<ManifestEntry> = documents()
         .iter()
@@ -73,7 +124,7 @@ fn computed() -> Manifest {
             path: document.path.to_owned(),
             source: "torlek".to_owned(),
             scope: Scope::Product,
-            version: VERSION.to_owned(),
+            version: Some(VERSION.to_owned()),
             sha256: hex(&Sha256::digest(document.file_text().as_bytes())),
             trust: Trust::Product,
             precedence: Precedence::ProductInvariant,
@@ -88,20 +139,23 @@ fn computed() -> Manifest {
     }
 }
 
-/// `m-` and 16 hex digits of the SHA-256 over each entry's path and hash: any changed packet
-/// changes it, so a brief names exactly the instructions it was written against.
+/// `m-` and 16 hex digits of the SHA-256 over each entry's path, hash and trust: any changed
+/// packet, or a project the owner starts or stops trusting, changes it, so a brief names
+/// exactly the instructions it was written against.
 pub fn manifest_id(entries: &[ManifestEntry]) -> String {
     let mut hasher = Sha256::new();
     for entry in entries {
         hasher.update(entry.path.as_bytes());
         hasher.update([0]);
         hasher.update(entry.sha256.as_bytes());
+        hasher.update([0]);
+        hasher.update(entry.trust.as_str().as_bytes());
         hasher.update(b"\n");
     }
     let digest = hex(&hasher.finalize());
     format!("m-{}", &digest[..16])
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
