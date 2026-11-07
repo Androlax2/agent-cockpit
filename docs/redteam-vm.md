@@ -1,9 +1,9 @@
 # Red-team host
 
-A disposable virtual machine for the red-team of [#685](https://github.com/Androlax2/agent-cockpit/issues/685):
-agents try to break Torlek there, never on the owner's live setup. `tools/redteam-vm.sh`
-builds and resets it. This page is the host and the brief; the attempts and the report are
-separate work under the same issue.
+Read this to build, reset or destroy the disposable VM that the red-team of [#685](https://github.com/Androlax2/agent-cockpit/issues/685)
+attacks, and to brief the agents that attack it. Agents try to break Torlek there, never on the
+owner's live setup. `tools/redteam-vm.sh` builds and resets it. The attempts and the report
+are separate work under the same issue.
 
 ## What the host provides
 
