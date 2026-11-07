@@ -91,6 +91,7 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
         finished: false,
         coordinator_grants: Vec::new(),
         inbound_message: None,
+        compaction_threshold: None,
         sign_in_needed: None,
     }
 }
@@ -137,6 +138,7 @@ async fn session_new_sends_an_absolute_dir_with_its_options_and_prints_the_sessi
             clone: Some("feature/x".to_owned()),
             model: None,
             effort: None,
+            compaction_threshold: None,
         }
     );
 }
@@ -177,7 +179,64 @@ async fn session_new_sends_the_chosen_model_and_effort_as_typed() {
             clone: None,
             model: Some("claude-opus-5-5".to_owned()),
             effort: Some("xhigh".to_owned()),
+            compaction_threshold: None,
         }
+    );
+}
+
+#[tokio::test]
+async fn session_new_sends_the_chosen_compaction_threshold_as_typed() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Session {
+            session: Box::new(view("s0123456789ab", SessionStateView::Running)),
+        }),
+    );
+    let cwd = home.dir.path().canonicalize().unwrap();
+
+    let output = home
+        .cockpit(
+            &cwd,
+            &["session", "new", "app", "--compaction-threshold", "200k"],
+        )
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::SessionNew {
+            dir: cwd.join("app").display().to_string(),
+            agent: None,
+            prompt: None,
+            clone: None,
+            model: None,
+            effort: None,
+            compaction_threshold: Some("200k".to_owned()),
+        }
+    );
+}
+
+#[tokio::test]
+async fn session_show_prints_the_chosen_compaction_threshold() {
+    let home = Home::new();
+    let mut shown = view("s0123456789ab", SessionStateView::Running);
+    shown.compaction_threshold = Some("75".to_owned());
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Session {
+            session: Box::new(shown),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "show", "s0123456789ab"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "s0123456789ab\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\ncompaction threshold: 75\n"
     );
 }
 
@@ -440,13 +499,23 @@ async fn a_refused_session_verb_exits_1_with_the_daemons_reason() {
 #[tokio::test]
 async fn malformed_session_arguments_exit_2_before_any_connection() {
     let home = Home::new();
-    let cases: [&[&str]; 7] = [
+    let cases: [&[&str]; 9] = [
         &["session"],
         &["session", "new"],
         &["session", "new", "app", "--agent"],
         &["session", "new", "app", "--clone", "a", "--clone", "b"],
         &[
             "session", "new", "app", "--effort", "low", "--effort", "max",
+        ],
+        &["session", "new", "app", "--compaction-threshold"],
+        &[
+            "session",
+            "new",
+            "app",
+            "--compaction-threshold",
+            "200k",
+            "--compaction-threshold",
+            "1M",
         ],
         &["session", "new", "app", "--sandbox", "x"],
         &["session", "link", "s0123456789ab"],
@@ -477,6 +546,7 @@ async fn session_list_marks_a_finished_session_in_its_work_column() {
                     finished: true,
                     coordinator_grants: Vec::new(),
                     inbound_message: None,
+                    compaction_threshold: None,
                     sign_in_needed: None,
                     ..view("s000000000001", SessionStateView::Running)
                 },

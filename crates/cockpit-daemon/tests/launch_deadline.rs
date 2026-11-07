@@ -245,6 +245,7 @@ async fn new_session(client: &Connection, root: &Path) -> Result<Reply, ClientEr
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await

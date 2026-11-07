@@ -203,7 +203,8 @@ impl Home {
         if variant.chooses {
             provider = provider
                 .reporting(cockpit_provider_api::Capability::Model)
-                .reporting(cockpit_provider_api::Capability::Effort);
+                .reporting(cockpit_provider_api::Capability::Effort)
+                .reporting(cockpit_provider_api::Capability::CompactionThreshold);
         }
         if variant.reports_at_launch {
             provider = provider.reporting_at_launch();
@@ -512,12 +513,22 @@ async fn new_session(client: &Connection, dir: &Path, prompt: Option<&str>) -> S
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await
 }
 
 fn new_session_choosing(dir: &Path, model: Option<&str>, effort: Option<&str>) -> Command {
+    new_session_choosing_with_threshold(dir, model, effort, None)
+}
+
+fn new_session_choosing_with_threshold(
+    dir: &Path,
+    model: Option<&str>,
+    effort: Option<&str>,
+    compaction_threshold: Option<&str>,
+) -> Command {
     Command::SessionNew {
         dir: dir.display().to_string(),
         agent: Some("fake".to_owned()),
@@ -525,6 +536,7 @@ fn new_session_choosing(dir: &Path, model: Option<&str>, effort: Option<&str>) -
         clone: None,
         model: model.map(str::to_owned),
         effort: effort.map(str::to_owned),
+        compaction_threshold: compaction_threshold.map(str::to_owned),
     }
 }
 
@@ -652,6 +664,7 @@ async fn a_new_session_in_a_clone_occupies_a_parallel_clone_on_its_branch() {
             clone: Some("feature/x".to_owned()),
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -687,6 +700,7 @@ async fn a_directory_in_no_registered_project_is_refused() {
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -766,6 +780,69 @@ async fn a_chosen_model_and_effort_reach_the_first_launch_and_a_restart() {
     }
 }
 
+/// #783: the harness's own compaction threshold is a per-start choice like the model, kept
+/// for every launch and shown on the session's view.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chosen_compaction_threshold_reaches_every_launch_and_shows_on_the_session() {
+    let home = Home::new();
+    let daemon = home.start(CHOOSING, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = session_reply(
+        &client,
+        new_session_choosing_with_threshold(&root, None, None, Some("200k")),
+    )
+    .await;
+    home.launches(1).await;
+
+    session_reply(
+        &client,
+        Command::SessionRestart {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    assert_eq!(started.compaction_threshold.as_deref(), Some("200k"));
+    let shown = sessions(&client, false).await;
+    assert_eq!(shown[0].compaction_threshold.as_deref(), Some("200k"));
+    for launch in &home.launches(2).await {
+        assert_eq!(
+            launch.compaction_threshold.as_deref(),
+            Some("200k"),
+            "{launch:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provider_without_the_compaction_threshold_capability_refuses_the_start_and_records_nothing()
+ {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let refused = refusal(
+        request(
+            &client,
+            new_session_choosing_with_threshold(&root, None, None, Some("200k")),
+        )
+        .await,
+    );
+
+    assert_eq!(refused.code, ErrorCode::Refused);
+    assert!(
+        refused
+            .message
+            .contains("it does not report the `compaction-threshold` capability"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(sessions(&client, true).await, []);
+    home.still_logged(0).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_start_without_a_choice_leaves_model_and_effort_to_the_harness() {
     let home = Home::new();
@@ -777,8 +854,12 @@ async fn a_start_without_a_choice_leaves_model_and_effort_to_the_harness() {
 
     let launch = &home.launches(1).await[0];
     assert_eq!(
-        (launch.model.as_deref(), launch.effort.as_deref()),
-        (None, None)
+        (
+            launch.model.as_deref(),
+            launch.effort.as_deref(),
+            launch.compaction_threshold.as_deref()
+        ),
+        (None, None, None)
     );
 }
 
@@ -1378,6 +1459,7 @@ async fn without_tmux_the_daemon_starts_and_refuses_new_sessions_naming_tmux() {
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -1584,6 +1666,7 @@ async fn end_stops_the_agent_and_releases_the_clone() {
             clone: Some("work".to_owned()),
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -1830,6 +1913,7 @@ async fn the_agent_socket_refuses_every_session_command() {
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
         Command::SessionList { ended: false },
         Command::SessionRestart {
@@ -2049,6 +2133,7 @@ async fn start_in(client: &Connection, dir: &Path, clone: Option<&str>) -> Sessi
             clone: clone.map(str::to_owned),
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await

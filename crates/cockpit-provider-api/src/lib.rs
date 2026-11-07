@@ -128,6 +128,10 @@ pub struct LaunchRequest<'request> {
     pub model: Option<&'request str>,
     /// Turn the provider's own remote control on; needs [`Capability::RemoteControl`].
     pub remote_control: bool,
+    /// The harness's own compaction threshold, in the harness's own words (a context window
+    /// for Claude Code, a percent for Codex, a buffer for OpenCode); needs
+    /// [`Capability::CompactionThreshold`]. `None` leaves the harness's own setting alone.
+    pub compaction_threshold: Option<&'request str>,
 }
 
 impl LaunchRequest<'_> {
@@ -145,6 +149,9 @@ impl LaunchRequest<'_> {
         }
         if self.remote_control {
             needed.push(Capability::RemoteControl);
+        }
+        if self.compaction_threshold.is_some() {
+            needed.push(Capability::CompactionThreshold);
         }
         needed
     }
@@ -383,6 +390,16 @@ impl ProviderError {
         ProviderError {
             reason: format!(
                 "it does not report the `{}` capability",
+                capability.as_str()
+            ),
+        }
+    }
+
+    /// An operation that needs `capability`, which the provider withholds for `reason`.
+    pub fn withheld(capability: Capability, reason: &str) -> ProviderError {
+        ProviderError {
+            reason: format!(
+                "it does not report the `{}` capability: {reason}",
                 capability.as_str()
             ),
         }

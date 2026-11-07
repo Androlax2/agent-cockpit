@@ -217,6 +217,7 @@ async fn target_prune_abandon_preserves_files_other_guards_and_terminal_history(
                 clone: None,
                 model: None,
                 effort: None,
+                compaction_threshold: None,
             },
         )
         .await,

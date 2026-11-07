@@ -105,10 +105,48 @@ fn a_launch_asking_for_a_capability_the_probe_took_away_is_refused() {
             effort: Some("high"),
             model: None,
             remote_control: false,
+            compaction_threshold: None,
         })
         .unwrap_err();
 
     assert!(refusal.reason.contains("effort"), "{refusal}");
+}
+
+#[test]
+fn a_harness_without_autocompact_refuses_a_compaction_threshold_naming_the_flag_and_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = fake_claude(dir.path(), &everything_but("--autocompact"), &[]);
+    let found = probe(&program, NEW_VERSION).unwrap();
+    let claude = adapter(program, NEW_VERSION, found);
+
+    let capabilities = claude.capabilities();
+    assert_eq!(
+        capabilities.availability(Capability::CompactionThreshold),
+        Availability::Unavailable
+    );
+    assert_eq!(
+        capabilities.availability(Capability::Model),
+        Availability::Probed {
+            version: NEW_VERSION.to_owned()
+        }
+    );
+    let refusal = claude
+        .launch(&cockpit_provider_api::LaunchRequest {
+            working_dir: dir.path(),
+            session_dir: dir.path(),
+            conversation: &cockpit_provider_api::Conversation::New,
+            first_message: None,
+            effort: None,
+            model: None,
+            remote_control: false,
+            compaction_threshold: Some("200k"),
+        })
+        .unwrap_err();
+    assert_eq!(
+        refusal.reason,
+        "it does not report the `compaction-threshold` capability: flag --autocompact in \
+         `claude --help` is missing in 9.9.9"
+    );
 }
 
 #[test]

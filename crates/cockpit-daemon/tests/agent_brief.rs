@@ -231,6 +231,7 @@ async fn launched(owner: &Connection, root: &Path) -> String {
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await

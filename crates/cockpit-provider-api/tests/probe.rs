@@ -71,6 +71,46 @@ fn a_probe_of_another_version_or_no_probe_leaves_the_version_discovered() {
 }
 
 #[test]
+fn capabilities_from_a_probe_withhold_what_it_blocks_with_the_requirement_as_the_reason() {
+    let probe = missing_effort();
+
+    let capabilities = Capabilities::from_probe(
+        Some("2.2.0"),
+        LIST,
+        Some(&probe),
+        [Capability::Resume, Capability::Effort],
+    );
+
+    assert!(capabilities.supports(Capability::Resume));
+    assert_eq!(
+        capabilities.withheld(Capability::Effort),
+        Some("flag --effort in `claude --help` is missing in 2.2.0")
+    );
+    assert_eq!(
+        capabilities.require(Capability::Effort).unwrap_err().reason,
+        "it does not report the `effort` capability: flag --effort in `claude --help` is \
+         missing in 2.2.0"
+    );
+}
+
+#[test]
+fn capabilities_from_a_tested_version_withhold_nothing() {
+    let capabilities = Capabilities::from_probe(
+        Some("2.1.316"),
+        LIST,
+        Some(&missing_effort()),
+        [Capability::Effort],
+    );
+
+    assert_eq!(
+        capabilities.availability(Capability::Effort),
+        Availability::Available {
+            version: "2.1.316".to_owned()
+        }
+    );
+}
+
+#[test]
 fn a_probed_capability_is_available_as_probed_not_as_tested() {
     let capabilities = Capabilities::none().with(
         Capability::Resume,

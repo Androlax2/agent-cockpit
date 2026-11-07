@@ -332,6 +332,7 @@ exec sleep 60
                 clone: None,
                 model: None,
                 effort: None,
+                compaction_threshold: None,
             },
             GENEROUS,
         )

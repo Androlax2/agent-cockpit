@@ -7,15 +7,19 @@ use cockpit_provider_api::{
     Capability, Missing, Probe, ProbeError, command_output, documents_flag,
 };
 
-use crate::{BRIDGED_CAPABILITIES, HOOKS_FEATURE, LAUNCH_FLAGS, SERVER_FLAGS, TUI_FLAGS};
+use crate::{
+    BRIDGED_CAPABILITIES, COMPACTION_THRESHOLD_KEY, COMPACTION_THRESHOLD_PROBE_VALUE, CONFIG_FLAG,
+    HOOKS_FEATURE, LAUNCH_FLAGS, SERVER_FLAGS, TUI_FLAGS,
+};
 
 /// How long each Codex command the probe runs may take.
 const COMMAND_DEADLINE: Duration = Duration::from_secs(5);
 
 /// What the Codex at `program`, running `version`, lacks of what the adapter relies on: each
 /// launch flag in `codex --help` and `codex resume --help`, each server flag in
-/// `codex app-server --help`, and the hooks feature in `codex features list`. An error when
-/// Codex cannot be asked, which says nothing about the version.
+/// `codex app-server --help`, the hooks feature in `codex features list`, and the compaction
+/// threshold key, which a Codex that knows it refuses by name when given a word instead of a
+/// percent (#783). An error when Codex cannot be asked, which says nothing about the version.
 pub fn probe(program: &Path, version: &str) -> Result<Probe, ProbeError> {
     let mut missing: Vec<Missing> = Vec::new();
     for command in [&["--help"][..], &["resume", "--help"][..]] {
@@ -27,6 +31,12 @@ pub fn probe(program: &Path, version: &str) -> Result<Probe, ProbeError> {
                     blocks: Capability::ALL.to_vec(),
                 });
             }
+        }
+        if !documents_flag(&help, CONFIG_FLAG) {
+            missing.push(Missing {
+                requirement: format!("flag {CONFIG_FLAG} in `codex {}`", command.join(" ")),
+                blocks: vec![Capability::CompactionThreshold],
+            });
         }
     }
     let server_help = command_output(program, &["app-server", "--help"], COMMAND_DEADLINE)?;
@@ -46,6 +56,21 @@ pub fn probe(program: &Path, version: &str) -> Result<Probe, ProbeError> {
         missing.push(Missing {
             requirement: format!("feature {HOOKS_FEATURE} in `codex features list`"),
             blocks: BRIDGED_CAPABILITIES.to_vec(),
+        });
+    }
+    let probe_config = format!("{COMPACTION_THRESHOLD_KEY}={COMPACTION_THRESHOLD_PROBE_VALUE}");
+    let refusal = command_output(
+        program,
+        &[CONFIG_FLAG, &probe_config, "features", "list"],
+        COMMAND_DEADLINE,
+    )?;
+    if !documents_flag(&refusal, COMPACTION_THRESHOLD_KEY) {
+        missing.push(Missing {
+            requirement: format!(
+                "key {COMPACTION_THRESHOLD_KEY} in `codex {CONFIG_FLAG}`, refused by name when \
+                 not a percent"
+            ),
+            blocks: vec![Capability::CompactionThreshold],
         });
     }
     Ok(Probe::new(version, missing))

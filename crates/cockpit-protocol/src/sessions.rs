@@ -27,6 +27,10 @@ pub struct SessionView {
     pub working_dir: String,
     /// The provider's conversation id, once known.
     pub conversation: Option<String>,
+    /// The harness's own compaction threshold chosen at its start, in the provider's own
+    /// words (#783); `None` when the harness's own setting applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_threshold: Option<String>,
     pub design_link: Option<String>,
     pub state: SessionStateView,
     /// Why the session is in its state: a failure, an exit, an expiry.

@@ -236,6 +236,7 @@ async fn launched(owner: &Connection, root: &Path, agent: &str) -> SessionView {
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await

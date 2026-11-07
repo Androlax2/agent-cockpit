@@ -20,11 +20,13 @@ provider and nothing above the contract sees an OpenCode type (#47).
   `probe` once at its start: each launch flag in `opencode --help` and each environment
   variable the adapter sets in the program. A missing one is named and takes away every
   capability, since every launch uses them (OpenCode 2.2.5 no longer has `--port`,
-  `--hostname` or `OPENCODE_SERVER_USERNAME`).
+  `--hostname` or `OPENCODE_SERVER_USERNAME`). The `compaction.buffer` setting's name in the
+  program is probed too; its loss takes away the compaction threshold alone, and a launch
+  asking for it is then refused with that requirement and the version (#783).
 - **Capabilities with provenance.** Every capability is `tested` only when the running
   OpenCode is a version in `tested-versions.txt` (#732); on any other or unknown version it
   is `discovered` (unverified). `CONFORMANCE_VERSION` is only the version the recorded
-  fixtures come from. Without the plugin bridge only resume is offered: no events means the
+  fixtures come from. Without the plugin bridge only resume and the compaction threshold are offered: no events means the
   activity is never known, so submit and cancel would always be refused. Effort is not
   reported: the TUI sends the variant it saved for the model with every prompt, so a
   launch cannot choose one; a variant goes with a message the server delivers instead. Compact and screen reading are not reported. Commands are
@@ -39,6 +41,11 @@ provider and nothing above the contract sees an OpenCode type (#47).
   one runs unnamed, because OpenCode creates its session at the first prompt and refuses a
   `--session` it does not know: the bridge's first report names it. The first message goes
   as one word, `--prompt=<message>`, so a message starting with `-` is not a flag.
+- **Compaction threshold** (#783). A chosen threshold is OpenCode's own `compaction.buffer`
+  in the launch's `OPENCODE_CONFIG_CONTENT`, over the owner's `compaction` table: a percent of
+  the context window kept free (`15%`, as a string) or a token count (`20000`, as a number);
+  anything else is refused before the launch. It is set with or without the bridge; without
+  one, nothing is set and OpenCode's own configuration applies.
 - **Plugin bridge.** With a bridge, a launch sets `OPENCODE_CONFIG_CONTENT` to load
   `plugin/cockpit-opencode-plugin.js` (`PLUGIN_SOURCE`, written by the daemon where
   `Bridge::plugin` says) on top of the owner's configuration (an `OPENCODE_CONFIG_CONTENT`

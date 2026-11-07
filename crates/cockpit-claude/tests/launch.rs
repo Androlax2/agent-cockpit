@@ -16,6 +16,7 @@ fn request(conversation: &Conversation) -> LaunchRequest<'_> {
         effort: None,
         model: None,
         remote_control: false,
+        compaction_threshold: None,
     }
 }
 
@@ -342,9 +343,54 @@ fn a_model_that_would_read_as_a_flag_or_holds_a_space_is_refused() {
 }
 
 #[test]
+fn a_compaction_threshold_is_passed_as_the_autocompact_window() {
+    for threshold in ["auto", "200k", "1M", "500000"] {
+        let launch = LaunchRequest {
+            compaction_threshold: Some(threshold),
+            ..request(&Conversation::New)
+        };
+        let words = words(&common::claude().launch(&launch).unwrap().arguments);
+
+        assert_eq!(value_after(&words, "--autocompact"), Some(threshold));
+    }
+}
+
+#[test]
+fn without_a_compaction_threshold_no_autocompact_flag_is_passed() {
+    let words = words(
+        &common::claude()
+            .launch(&request(&Conversation::New))
+            .unwrap()
+            .arguments,
+    );
+
+    assert!(!words.contains(&"--autocompact".to_owned()), "{words:?}");
+}
+
+#[test]
+fn a_compaction_threshold_that_would_read_as_a_flag_or_holds_a_space_is_refused() {
+    for threshold in ["--settings", "200k 300k", "", "50%"] {
+        let launch = LaunchRequest {
+            compaction_threshold: Some(threshold),
+            ..request(&Conversation::New)
+        };
+        let error = common::claude().launch(&launch).unwrap_err();
+
+        assert!(
+            error.reason.starts_with(&format!(
+                "compaction threshold {threshold:?} is not a Claude Code `--autocompact` value"
+            )),
+            "{threshold:?}: {}",
+            error.reason
+        );
+    }
+}
+
+#[test]
 fn remote_control_is_turned_on_at_launch() {
     let launch = LaunchRequest {
         remote_control: true,
+        compaction_threshold: None,
         first_message: Some("hello"),
         ..request(&Conversation::New)
     };

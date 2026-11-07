@@ -42,10 +42,13 @@ pub enum Capability {
     /// and gives each to the model as input of its own, never through the terminal's prompt
     /// (#703).
     Inbox,
+    /// Launch with the harness's own compaction threshold set
+    /// ([`crate::LaunchRequest::compaction_threshold`], #783).
+    CompactionThreshold,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 14] = [
+    pub const ALL: [Capability; 15] = [
         Capability::Resume,
         Capability::Submit,
         Capability::Events,
@@ -60,6 +63,7 @@ impl Capability {
         Capability::RemoteControl,
         Capability::ScreenReading,
         Capability::Inbox,
+        Capability::CompactionThreshold,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -78,6 +82,7 @@ impl Capability {
             Capability::RemoteControl => "remote-control",
             Capability::ScreenReading => "screen-reading",
             Capability::Inbox => "inbox",
+            Capability::CompactionThreshold => "compaction-threshold",
         }
     }
 }
@@ -109,10 +114,12 @@ pub enum Availability {
     Unavailable,
 }
 
-/// The capabilities a provider reports. One not reported is unavailable.
+/// The capabilities a provider reports. One not reported is unavailable; one withheld is
+/// unavailable with a reason the owner reads.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Capabilities {
     reported: BTreeMap<Capability, Provenance>,
+    withheld: BTreeMap<Capability, String>,
 }
 
 impl Capabilities {
@@ -122,8 +129,22 @@ impl Capabilities {
 
     /// Reports `capability`, replacing what was reported for it before.
     pub fn with(mut self, capability: Capability, provenance: Provenance) -> Capabilities {
+        self.withheld.remove(&capability);
         self.reported.insert(capability, provenance);
         self
+    }
+
+    /// Does not report `capability` and says why, such as the requirement the runtime probe
+    /// did not find in the version running; [`Capabilities::require`] repeats the reason.
+    pub fn withholding(mut self, capability: Capability, reason: String) -> Capabilities {
+        self.reported.remove(&capability);
+        self.withheld.insert(capability, reason);
+        self
+    }
+
+    /// Why `capability` is not reported, when the provider said.
+    pub fn withheld(&self, capability: Capability) -> Option<&str> {
+        self.withheld.get(&capability).map(String::as_str)
     }
 
     /// Whether the provider reports `capability`, tested or not.
@@ -148,13 +169,16 @@ impl Capabilities {
         }
     }
 
-    /// The refusal for an operation that needs `capability`, when it is not reported.
+    /// The refusal for an operation that needs `capability`, when it is not reported; with
+    /// the reason it is withheld, when there is one.
     pub fn require(&self, capability: Capability) -> Result<(), ProviderError> {
         if self.supports(capability) {
-            Ok(())
-        } else {
-            Err(ProviderError::unsupported(capability))
+            return Ok(());
         }
+        Err(match self.withheld(capability) {
+            Some(reason) => ProviderError::withheld(capability, reason),
+            None => ProviderError::unsupported(capability),
+        })
     }
 
     /// Every reported capability with its provenance, in [`Capability`] order.

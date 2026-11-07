@@ -3,14 +3,16 @@
 
 mod common;
 
-use cockpit_opencode::{LAUNCH_FLAGS, OPENCODE_VARIABLES, OpenCode, probe};
+use cockpit_opencode::{
+    COMPACTION_BUFFER_SETTING, LAUNCH_FLAGS, OPENCODE_VARIABLES, OpenCode, probe,
+};
 use cockpit_provider_api::{Availability, Capability, Provider};
 
 const NEW_VERSION: &str = "9.9.9";
 
 /// An `opencode` whose `--help` (on standard error, as OpenCode prints it) documents
-/// `LAUNCH_FLAGS` less `without_flags`, and whose file holds `OPENCODE_VARIABLES` less
-/// `without_variables`.
+/// `LAUNCH_FLAGS` less `without_flags`, and whose file holds `OPENCODE_VARIABLES` and the
+/// compaction buffer setting's name less `without_variables`.
 fn fake_opencode(
     dir: &std::path::Path,
     without_flags: &[&str],
@@ -23,6 +25,7 @@ fn fake_opencode(
         .collect();
     let variables: Vec<&str> = OPENCODE_VARIABLES
         .into_iter()
+        .chain([COMPACTION_BUFFER_SETTING])
         .filter(|name| !without_variables.contains(name))
         .collect();
     common::script(
@@ -88,6 +91,43 @@ fn a_variable_the_program_no_longer_reads_is_named() {
     let found = probe(&program, NEW_VERSION).unwrap();
 
     assert!(found.summary().contains(lost), "{}", found.summary());
+}
+
+#[test]
+fn a_harness_without_the_compaction_buffer_setting_refuses_a_threshold_naming_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = fake_opencode(dir.path(), &[], &[COMPACTION_BUFFER_SETTING]);
+    let found = probe(&program, NEW_VERSION).unwrap();
+    let opencode = adapter(program, found);
+
+    let capabilities = opencode.capabilities();
+    assert_eq!(
+        capabilities.availability(Capability::CompactionThreshold),
+        Availability::Unavailable
+    );
+    assert_eq!(
+        capabilities.availability(Capability::Resume),
+        Availability::Probed {
+            version: NEW_VERSION.to_owned()
+        }
+    );
+    let refusal = opencode
+        .launch(&cockpit_provider_api::LaunchRequest {
+            working_dir: dir.path(),
+            session_dir: dir.path(),
+            conversation: &cockpit_provider_api::Conversation::New,
+            first_message: None,
+            effort: None,
+            model: None,
+            remote_control: false,
+            compaction_threshold: Some("15%"),
+        })
+        .unwrap_err();
+    assert_eq!(
+        refusal.reason,
+        "it does not report the `compaction-threshold` capability: setting \
+         `compaction.buffer` in the opencode program is missing in 9.9.9"
+    );
 }
 
 #[test]

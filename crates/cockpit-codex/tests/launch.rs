@@ -20,6 +20,7 @@ fn request(conversation: &Conversation) -> LaunchRequest<'_> {
         effort: None,
         model: None,
         remote_control: false,
+        compaction_threshold: None,
     }
 }
 
@@ -260,6 +261,82 @@ fn a_launch_adds_no_environment() {
 }
 
 #[test]
+fn with_the_bridge_a_compaction_threshold_is_one_more_config_value_for_the_app_server() {
+    let command = common::codex()
+        .launch(&LaunchRequest {
+            compaction_threshold: Some("75"),
+            ..request(&Conversation::New)
+        })
+        .unwrap();
+
+    let configs = values_of(&common::words(&command.arguments), "--config");
+    assert_eq!(
+        configs.last().map(String::as_str),
+        Some("model_post_turn_compact_threshold_percent=75")
+    );
+}
+
+#[test]
+fn without_the_bridge_a_compaction_threshold_is_a_config_value_before_the_separator() {
+    let conversation = Conversation::Resume(thread());
+    let command = without_bridge()
+        .launch(&LaunchRequest {
+            compaction_threshold: Some("0"),
+            first_message: Some("go"),
+            ..request(&conversation)
+        })
+        .unwrap();
+
+    assert_eq!(
+        common::words(&command.arguments),
+        [
+            "resume",
+            "--no-daemon",
+            "--config",
+            "model_post_turn_compact_threshold_percent=0",
+            "--",
+            thread().as_str(),
+            "go"
+        ]
+    );
+}
+
+#[test]
+fn without_a_compaction_threshold_no_launch_names_the_key() {
+    for codex in [common::codex(), without_bridge()] {
+        let command = codex.launch(&request(&Conversation::New)).unwrap();
+
+        let words = common::words(&command.arguments);
+        assert!(
+            !words
+                .iter()
+                .any(|word| word.contains("model_post_turn_compact_threshold_percent")),
+            "{words:?}"
+        );
+    }
+}
+
+#[test]
+fn a_compaction_threshold_that_is_not_a_whole_percent_is_refused_before_the_launch() {
+    for threshold in ["101", "-5", "+5", "50%", "abc", "", "0100"] {
+        let refused = common::codex()
+            .launch(&LaunchRequest {
+                compaction_threshold: Some(threshold),
+                ..request(&Conversation::New)
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            refused.reason,
+            format!(
+                "compaction threshold {threshold:?} is not a Codex \
+                 `model_post_turn_compact_threshold_percent`: a whole percent from 0 to 100"
+            )
+        );
+    }
+}
+
+#[test]
 fn an_effort_level_is_refused_naming_the_capability() {
     let refused = common::codex()
         .launch(&LaunchRequest {
@@ -288,6 +365,7 @@ fn remote_control_is_refused_naming_the_capability() {
     let refused = common::codex()
         .launch(&LaunchRequest {
             remote_control: true,
+            compaction_threshold: None,
             ..request(&Conversation::New)
         })
         .unwrap_err();

@@ -916,6 +916,7 @@ pub fn session_new_command(dir: &Path) -> Command {
         clone: None,
         model: None,
         effort: None,
+        compaction_threshold: None,
     }
 }
 

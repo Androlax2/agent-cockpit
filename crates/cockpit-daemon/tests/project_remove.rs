@@ -106,6 +106,7 @@ async fn a_live_sessions_own_clone_is_not_offered_for_release() {
                 clone: Some("feature".to_owned()),
                 model: None,
                 effort: None,
+                compaction_threshold: None,
             },
             GENEROUS,
         )

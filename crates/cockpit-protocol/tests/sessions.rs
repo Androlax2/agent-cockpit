@@ -23,6 +23,31 @@ fn a_session_new_round_trips_with_only_the_options_it_was_given() {
             clone: Some("feature/x".to_owned()),
             model: None,
             effort: None,
+            compaction_threshold: None,
+        }
+    );
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+}
+
+#[test]
+fn a_session_new_carries_its_compaction_threshold_in_the_providers_words() {
+    let wire = json!({
+        "id": 1,
+        "command": {"kind": "session-new", "dir": "/p/app", "compaction_threshold": "15%"}
+    });
+
+    let request = decode_request(&wire.to_string()).unwrap();
+
+    assert_eq!(
+        request.command,
+        Command::SessionNew {
+            dir: "/p/app".to_owned(),
+            agent: None,
+            prompt: None,
+            clone: None,
+            model: None,
+            effort: None,
+            compaction_threshold: Some("15%".to_owned()),
         }
     );
     assert_eq!(serde_json::to_value(request).unwrap(), wire);
@@ -65,6 +90,7 @@ fn a_session_view_names_its_state_and_latest_launch_on_the_wire() {
         finished: false,
         coordinator_grants: Vec::new(),
         inbound_message: None,
+        compaction_threshold: None,
         sign_in_needed: None,
     };
 

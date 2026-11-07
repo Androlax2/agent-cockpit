@@ -266,6 +266,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             CREATE INDEX session_compactions_by_session
                 ON session_compactions (session_id, launch_id, id);",
         },
+        // #783: the harness's own compaction threshold chosen at the start, in the provider's
+        // own words, which every launch passes again.
+        Migration {
+            version: 15,
+            sql: "ALTER TABLE sessions ADD COLUMN compaction_threshold TEXT
+                CHECK (compaction_threshold <> '');",
+        },
     ],
 };
 
@@ -292,7 +299,7 @@ const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout
     s.changed_at, l.id, l.kind, l.execution_id, l.launched_at,
     EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id),
     (SELECT max(w.working_order) FROM session_launches w WHERE w.session_id = s.id),
-    e.ended_by, e.code, e.output, s.model, s.effort, s.started_by";
+    e.ended_by, e.code, e.output, s.model, s.effort, s.started_by, s.compaction_threshold";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
     (SELECT max(id) FROM session_launches WHERE session_id = s.id)
     LEFT JOIN session_exits e ON e.launch_id = l.id";
@@ -387,6 +394,7 @@ pub(crate) struct NewSession<'values> {
     pub(crate) working_dir: &'values Path,
     pub(crate) model: Option<&'values str>,
     pub(crate) effort: Option<&'values str>,
+    pub(crate) compaction_threshold: Option<&'values str>,
     pub(crate) started_by: Option<&'values SessionId>,
 }
 
@@ -401,8 +409,9 @@ pub(crate) async fn insert_session(
     write
         .execute(
             "INSERT INTO sessions (id, provider, checkout_id, holds_checkout, working_dir,
-                 state, revision, created_at, changed_at, model, effort, started_by)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'launching', 1, ?6, ?6, ?7, ?8, ?9)",
+                 state, revision, created_at, changed_at, model, effort, started_by,
+                 compaction_threshold)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'launching', 1, ?6, ?6, ?7, ?8, ?9, ?10)",
             (
                 new.id.as_str(),
                 new.provider.as_str(),
@@ -413,6 +422,7 @@ pub(crate) async fn insert_session(
                 optional_text(new.model),
                 optional_text(new.effort),
                 optional_text(new.started_by.map(SessionId::as_str)),
+                optional_text(new.compaction_threshold),
             ),
         )
         .await?;
@@ -908,6 +918,7 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
         conversation,
         model: row.get(22)?,
         effort: row.get(23)?,
+        compaction_threshold: row.get(25)?,
         design_link: row.get(6)?,
         state,
         reason: row.get(9)?,

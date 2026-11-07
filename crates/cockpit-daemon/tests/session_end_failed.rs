@@ -198,6 +198,7 @@ async fn session_left_in(assignment: &str) -> LeftBehind {
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -319,6 +320,7 @@ async fn an_unidentified_restart_retains_its_execution_and_checkout_without_clai
             clone: Some("stop-537".to_owned()),
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;

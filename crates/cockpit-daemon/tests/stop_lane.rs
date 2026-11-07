@@ -303,6 +303,7 @@ fn session_new(root: &Path) -> Command {
         clone: None,
         model: None,
         effort: None,
+        compaction_threshold: None,
     }
 }
 

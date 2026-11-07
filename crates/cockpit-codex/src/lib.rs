@@ -59,6 +59,19 @@ pub const MCP_SERVER_NAME: &str = "torlek";
 /// gets the session's events.
 pub const HOOKS_FEATURE: &str = "hooks";
 
+/// The flag a launch sets a configuration value with, on the TUI (`codex`, `codex resume`)
+/// and the app-server; the probe finds it where a compaction threshold is passed (#783).
+pub const CONFIG_FLAG: &str = "--config";
+
+/// Codex's own compaction threshold: a whole percent of the usable context window, after
+/// which a turn's end compacts the history; `0` turns it off (#783). A launch with a
+/// [`LaunchRequest::compaction_threshold`] passes it as `--config <key>=<percent>`.
+pub const COMPACTION_THRESHOLD_KEY: &str = "model_post_turn_compact_threshold_percent";
+
+/// The value the probe gives [`COMPACTION_THRESHOLD_KEY`]: a Codex that knows the key refuses
+/// it as not a number, naming the key; one that does not know it says nothing.
+pub const COMPACTION_THRESHOLD_PROBE_VALUE: &str = "torlek-probe";
+
 /// How long `codex --version` may take at discovery.
 const VERSION_DEADLINE: Duration = Duration::from_secs(10);
 
@@ -248,30 +261,23 @@ impl Provider for Codex {
         self.version.as_deref()
     }
 
-    /// Resume; with the bridge, also events, submit, cancel and outcome, which its session
-    /// launcher and app-server provide (#407). Not effort, model, compact, billing, commands,
-    /// evidence, remote control or screen reading: untested.
+    /// Resume and compaction threshold; with the bridge, also events, submit, cancel and
+    /// outcome, which its session launcher and app-server provide (#407). Not effort, model,
+    /// compact, billing, commands, evidence, remote control or screen reading: untested.
     fn capabilities(&self) -> Capabilities {
         let bridged = if self.bridge.is_some() {
             BRIDGED_CAPABILITIES.as_slice()
         } else {
             &[]
         };
-        [Capability::Resume]
-            .into_iter()
-            .chain(bridged.iter().copied())
-            .fold(
-                Capabilities::none(),
-                |capabilities, capability| match Provenance::for_probe(
-                    self.version.as_deref(),
-                    TESTED_VERSIONS,
-                    self.probe.as_ref(),
-                    capability,
-                ) {
-                    Some(provenance) => capabilities.with(capability, provenance),
-                    None => capabilities,
-                },
-            )
+        Capabilities::from_probe(
+            self.version.as_deref(),
+            TESTED_VERSIONS,
+            self.probe.as_ref(),
+            [Capability::Resume, Capability::CompactionThreshold]
+                .into_iter()
+                .chain(bridged.iter().copied()),
+        )
     }
 
     fn probe(&self) -> Option<&Probe> {
@@ -290,23 +296,29 @@ impl Provider for Codex {
     /// --codex <codex> --socket <session dir>/codex.sock --config <hook>… --config <mcp>…
     /// [--resume <thread id>] [--message <first message>]`. It runs Codex's app-server with the hooks and the
     /// TUI against it ([`server_arguments`], [`tui_arguments`]). Without the bridge, the TUI
-    /// alone: `codex [resume] --no-daemon [-- [<thread id>] [<first message>]]`. A new
-    /// conversation's thread id is Codex's own and unknown at launch: the first report names
-    /// it.
+    /// alone: `codex [resume] --no-daemon [--config <threshold>] [-- [<thread id>]
+    /// [<first message>]]`. A chosen compaction threshold is one more `--config` value
+    /// ([`COMPACTION_THRESHOLD_KEY`]), for the app-server with the bridge and the TUI without.
+    /// A new conversation's thread id is Codex's own and unknown at launch: the first report
+    /// names it.
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
         request.require(&self.capabilities())?;
         let resumed = match request.conversation {
             Conversation::New => None,
             Conversation::Resume(id) => Some(id),
         };
+        let threshold_config = request
+            .compaction_threshold
+            .map(compaction_threshold_config)
+            .transpose()?;
         let (program, arguments) = match &self.bridge {
             Some(bridge) => (
                 bridge.session_program.clone(),
-                session_arguments(&self.program, bridge, request, resumed),
+                session_arguments(&self.program, bridge, request, resumed, threshold_config),
             ),
             None => (
                 self.program.clone(),
-                direct_arguments(resumed, request.first_message),
+                direct_arguments(resumed, request.first_message, threshold_config),
             ),
         };
         Ok(LaunchCommand {
@@ -343,12 +355,33 @@ const BRIDGED_CAPABILITIES: [Capability; 4] = [
     Capability::Outcome,
 ];
 
-/// The session launcher's arguments for `request`.
+/// The `--config` value that sets Codex's compaction threshold to `threshold`, a whole
+/// percent from 0 to 100 in Codex's own words; Codex itself would refuse anything else, so
+/// the refusal comes before the launch.
+fn compaction_threshold_config(threshold: &str) -> Result<String, ProviderError> {
+    let percent = (threshold.len() <= 3 && threshold.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| threshold.parse::<u8>().ok())
+        .flatten()
+        .filter(|percent| *percent <= 100);
+    match percent {
+        Some(_) => Ok(format!("{COMPACTION_THRESHOLD_KEY}={threshold}")),
+        None => Err(ProviderError {
+            reason: format!(
+                "compaction threshold {threshold:?} is not a Codex \
+                 `{COMPACTION_THRESHOLD_KEY}`: a whole percent from 0 to 100"
+            ),
+        }),
+    }
+}
+
+/// The session launcher's arguments for `request`; `threshold_config` is the compaction
+/// threshold's `--config` value, after the hooks and the MCP server.
 fn session_arguments(
     codex: &Path,
     bridge: &Bridge,
     request: &LaunchRequest<'_>,
     resumed: Option<&ConversationId>,
+    threshold_config: Option<String>,
 ) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = vec![
         "--torlek".into(),
@@ -361,8 +394,9 @@ fn session_arguments(
     for value in hooks::subscription(&bridge.hook_command())
         .into_iter()
         .chain(mcp_configs(&bridge.cockpit_program))
+        .chain(threshold_config)
     {
-        arguments.extend(["--config".into(), value.into()]);
+        arguments.extend([CONFIG_FLAG.into(), value.into()]);
     }
     if let Some(id) = resumed {
         arguments.extend(["--resume".into(), id.as_str().into()]);
@@ -407,17 +441,21 @@ const MCP_ENVIRONMENT: [&str; 8] = [
     "XDG_CACHE_HOME",
 ];
 
-/// `[resume] --no-daemon [-- [<thread id>] [<first message>]]`: every word after `--` is
-/// positional, so neither can be read as a flag.
+/// `[resume] --no-daemon [--config <threshold>] [-- [<thread id>] [<first message>]]`: every
+/// word after `--` is positional, so neither can be read as a flag.
 fn direct_arguments(
     resumed: Option<&ConversationId>,
     first_message: Option<&str>,
+    threshold_config: Option<String>,
 ) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = Vec::new();
     if resumed.is_some() {
         arguments.push("resume".into());
     }
     arguments.push("--no-daemon".into());
+    if let Some(value) = threshold_config {
+        arguments.extend([CONFIG_FLAG.into(), value.into()]);
+    }
     arguments.extend(positional(resumed, first_message));
     arguments
 }
@@ -445,7 +483,7 @@ pub fn server_arguments(socket: &Path, configs: &[String]) -> Vec<OsString> {
         HOOKS_FEATURE.into(),
     ];
     for value in configs {
-        arguments.extend(["--config".into(), value.into()]);
+        arguments.extend([CONFIG_FLAG.into(), value.into()]);
     }
     arguments
 }

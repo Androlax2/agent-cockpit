@@ -274,6 +274,9 @@ pub struct Session {
     /// of the session passes them again (#701). `None`: the harness's own setting.
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The harness's own compaction threshold chosen at its start, in its provider's own
+    /// words; every launch passes it again (#783). `None`: the harness's own setting.
+    pub compaction_threshold: Option<String>,
     pub design_link: Option<String>,
     pub state: SessionState,
     /// Why the session is in its state, for the owner: a failure, an exit, an expiry.
@@ -329,6 +332,9 @@ pub struct StartRequest {
     /// does not know, before the session is recorded (#701).
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The harness's own compaction threshold, in the provider's own words; refused as the
+    /// model is (#783).
+    pub compaction_threshold: Option<String>,
     /// The coordinator session asking for the start; `None` when the owner starts it.
     pub started_by: Option<SessionId>,
 }

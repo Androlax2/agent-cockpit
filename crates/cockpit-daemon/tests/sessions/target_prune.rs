@@ -192,6 +192,7 @@ async fn target_prune_active_bulk_step_keeps_control_responsive_and_refuses_dupl
                         clone: None,
                         model: None,
                         effort: None,
+                        compaction_threshold: None,
                     }
                 )
                 .await
@@ -418,6 +419,7 @@ async fn target_prune_guard_refuses_unrelated_session_start_before_any_launch_in
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;
@@ -695,6 +697,7 @@ async fn target_prune_recovery_releases_global_guard_but_keeps_candidate_exclude
                 clone: None,
                 model: None,
                 effort: None,
+                compaction_threshold: None,
             },
         )
         .await,

@@ -46,6 +46,7 @@ fn request(conversation: &Conversation) -> LaunchRequest<'_> {
         effort: None,
         model: None,
         remote_control: false,
+        compaction_threshold: None,
     }
 }
 
@@ -60,6 +61,7 @@ fn a_resumed_launch_with_effort_and_remote_control_needs_each_capability() {
     let launch = LaunchRequest {
         effort: Some("high"),
         remote_control: true,
+        compaction_threshold: None,
         ..request(&conversation)
     };
 
@@ -81,6 +83,19 @@ fn a_launch_on_a_chosen_model_needs_the_model_capability() {
     };
 
     assert_eq!(launch.needed_capabilities(), [Capability::Model]);
+}
+
+#[test]
+fn a_launch_with_a_compaction_threshold_needs_the_compaction_threshold_capability() {
+    let launch = LaunchRequest {
+        compaction_threshold: Some("200k"),
+        ..request(&Conversation::New)
+    };
+
+    assert_eq!(
+        launch.needed_capabilities(),
+        [Capability::CompactionThreshold]
+    );
 }
 
 #[test]
@@ -161,6 +176,7 @@ fn a_request_is_refused_naming_the_first_capability_the_provider_lacks() {
     let launch = LaunchRequest {
         effort: Some("high"),
         remote_control: true,
+        compaction_threshold: None,
         ..request(&Conversation::New)
     };
     let capabilities = Capabilities::none().with(Capability::Effort, Provenance::Discovered);

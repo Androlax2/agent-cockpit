@@ -46,6 +46,7 @@ fn a_live_launch_reports_its_hooks_with_its_own_launch_token() {
             effort: None,
             model: None,
             remote_control: false,
+            compaction_threshold: None,
         })
         .unwrap();
 

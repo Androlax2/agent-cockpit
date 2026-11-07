@@ -44,8 +44,12 @@ const MAX_EFFORT_BYTES: usize = 64;
 /// How long `claude --help` may take when a start chooses an effort.
 const HELP_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Longest `--autocompact` value: `auto`, or a context window such as `200000`, `500k` or
+/// `1M` (#783).
+const MAX_COMPACTION_THRESHOLD_BYTES: usize = 16;
+
 /// Every flag a launch may pass; the conformance test finds each in `claude --help`.
-pub const LAUNCH_FLAGS: [&str; 8] = [
+pub const LAUNCH_FLAGS: [&str; 9] = [
     "--remote-control",
     "--session-id",
     "--resume",
@@ -54,6 +58,7 @@ pub const LAUNCH_FLAGS: [&str; 8] = [
     "--effort",
     "--model",
     "--add-dir",
+    "--autocompact",
 ];
 
 /// The name Cockpit's MCP server (`cockpit mcp`) has in every harness a launch registers it
@@ -366,29 +371,23 @@ impl Provider for ClaudeCode {
             Capability::Outcome,
             Capability::Inbox,
         ]);
-        [
-            Capability::Resume,
-            Capability::Submit,
-            Capability::Cancel,
-            Capability::Effort,
-            Capability::Model,
-            Capability::Compact,
-            Capability::RemoteControl,
-            Capability::ScreenReading,
-        ]
-        .into_iter()
-        .chain(bridged.into_iter().flatten())
-        .fold(
-            Capabilities::none(),
-            |capabilities, capability| match Provenance::for_probe(
-                self.version.as_deref(),
-                TESTED_VERSIONS,
-                self.probe.as_ref(),
-                capability,
-            ) {
-                Some(provenance) => capabilities.with(capability, provenance),
-                None => capabilities,
-            },
+        Capabilities::from_probe(
+            self.version.as_deref(),
+            TESTED_VERSIONS,
+            self.probe.as_ref(),
+            [
+                Capability::Resume,
+                Capability::Submit,
+                Capability::Cancel,
+                Capability::Effort,
+                Capability::Model,
+                Capability::Compact,
+                Capability::RemoteControl,
+                Capability::ScreenReading,
+                Capability::CompactionThreshold,
+            ]
+            .into_iter()
+            .chain(bridged.into_iter().flatten()),
         )
     }
 
@@ -429,6 +428,10 @@ impl Provider for ClaudeCode {
         if let Some(model) = request.model {
             check_model(model)?;
             arguments.extend(["--model".into(), model.into()]);
+        }
+        if let Some(threshold) = request.compaction_threshold {
+            check_compaction_threshold(threshold)?;
+            arguments.extend(["--autocompact".into(), threshold.into()]);
         }
         // Variadic too: a flag or the `--` before the first message follows it.
         if let Some(root) = &self.instruction_skills {
@@ -651,6 +654,27 @@ fn check_effort_shape(effort: &str) -> Result<(), ProviderError> {
         reason: format!(
             "effort {effort:?} is not a Claude Code effort level: 1 to {MAX_EFFORT_BYTES} ASCII \
              letters, digits and `-._:+/@`, starting with a letter or digit"
+        ),
+    })
+}
+
+/// Claude Code's `--autocompact` takes `auto` or a context window (`200000`, `500k`, `1M`) and
+/// itself refuses one outside its range, so only the shape is checked here: letters and
+/// digits that cannot read as a flag.
+fn check_compaction_threshold(threshold: &str) -> Result<(), ProviderError> {
+    let is_plain = !threshold.is_empty()
+        && threshold.len() <= MAX_COMPACTION_THRESHOLD_BYTES
+        && threshold
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric());
+    if is_plain {
+        return Ok(());
+    }
+    Err(ProviderError {
+        reason: format!(
+            "compaction threshold {threshold:?} is not a Claude Code `--autocompact` value: \
+             `auto` or a context window such as `200k`, 1 to {MAX_COMPACTION_THRESHOLD_BYTES} \
+             ASCII letters and digits"
         ),
     })
 }

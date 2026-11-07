@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::{Capability, Provenance};
+use crate::{Capabilities, Capability, Provenance};
 
 /// The most output of one command the probe reads; `--help` is a few kilobytes.
 const MAX_OUTPUT_BYTES: u64 = 1 << 20;
@@ -63,6 +63,25 @@ impl Probe {
         self.missing
             .iter()
             .any(|missing| missing.blocks.contains(&capability))
+    }
+
+    /// Why `capability` cannot be offered, for the owner: each requirement of it that was not
+    /// found, such as ``flag --autocompact in `claude --help` is missing in 1.0.0``; `None`
+    /// when they were all found.
+    pub fn reason_against(&self, capability: Capability) -> Option<String> {
+        let requirements: Vec<&str> = self
+            .missing
+            .iter()
+            .filter(|missing| missing.blocks.contains(&capability))
+            .map(|missing| missing.requirement.as_str())
+            .collect();
+        (!requirements.is_empty()).then(|| {
+            format!(
+                "{} is missing in {}",
+                requirements.join(" and "),
+                self.version
+            )
+        })
     }
 
     /// The probe's result in a sentence for the owner: every requirement found, or each one
@@ -143,6 +162,38 @@ impl Provenance {
             }
             _ => Some(Provenance::Discovered),
         }
+    }
+}
+
+impl Capabilities {
+    /// What an adapter running `version` reports of `offered`, each with the provenance of
+    /// [`Provenance::for_probe`]; one the probe blocks is withheld with the probe's reason, so
+    /// a refusal names the requirement the version lacks.
+    pub fn from_probe(
+        version: Option<&str>,
+        tested_versions: &str,
+        probe: Option<&Probe>,
+        offered: impl IntoIterator<Item = Capability>,
+    ) -> Capabilities {
+        offered
+            .into_iter()
+            .fold(
+                Capabilities::none(),
+                |capabilities, capability| match Provenance::for_probe(
+                    version,
+                    tested_versions,
+                    probe,
+                    capability,
+                ) {
+                    Some(provenance) => capabilities.with(capability, provenance),
+                    None => {
+                        let reason = probe
+                            .and_then(|probe| probe.reason_against(capability))
+                            .expect("`for_probe` withholds only what the probe blocks");
+                        capabilities.withholding(capability, reason)
+                    }
+                },
+            )
     }
 }
 

@@ -164,6 +164,7 @@ async fn probe(provider: &str, variable: &str, version: &str) {
                 clone: None,
                 model: None,
                 effort: None,
+                compaction_threshold: None,
             },
             Duration::from_secs(15),
         )

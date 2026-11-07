@@ -258,6 +258,7 @@ async fn new_session(home: &Home, client: &Connection, dir: &Path) -> SessionVie
             clone: None,
             model: None,
             effort: None,
+            compaction_threshold: None,
         },
     )
     .await;

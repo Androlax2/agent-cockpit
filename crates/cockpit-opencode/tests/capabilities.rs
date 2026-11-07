@@ -27,6 +27,7 @@ fn on_the_pinned_version_each_capability_is_tested() {
             Capability::Cancel,
             Capability::Outcome,
             Capability::Commands,
+            Capability::CompactionThreshold,
         ]
         .map(|capability| (capability, tested.clone()))
     );
@@ -51,7 +52,7 @@ fn on_another_version_each_capability_is_unverified() {
 }
 
 #[test]
-fn without_the_bridge_only_resume_is_offered() {
+fn without_the_bridge_only_resume_and_the_compaction_threshold_are_offered() {
     let opencode = OpenCode::new(
         PathBuf::from("/usr/bin/opencode"),
         Some(CONFORMANCE_VERSION.to_owned()),
@@ -70,6 +71,9 @@ fn without_the_bridge_only_resume_is_offered() {
             opencode.capabilities().availability(capability),
             Availability::Unavailable
         );
+    }
+    for capability in [Capability::Resume, Capability::CompactionThreshold] {
+        assert!(opencode.capabilities().supports(capability));
     }
 }
 

@@ -53,6 +53,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
             clone,
             model,
             effort,
+            compaction_threshold,
         } => job(async move {
             let inputs = card_inputs(&sessions).await?;
             let started = sessions
@@ -63,6 +64,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
                     clone_branch: clone,
                     model,
                     effort,
+                    compaction_threshold,
                     started_by: None,
                 })
                 .await?;
@@ -670,6 +672,7 @@ fn session_view(
         finished: is_finished(session, &inputs.items),
         coordinator_grants: inputs.coordination.grants_of(session.id.as_str()),
         inbound_message: inputs.coordination.inbound_message_of(session.id.as_str()),
+        compaction_threshold: session.compaction_threshold.clone(),
         sign_in_needed: None,
     }
 }

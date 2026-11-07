@@ -13,7 +13,7 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   signed-out and placeholder API-key states on 2.1.316 in an isolated Linux home.
 
 - **Capabilities with provenance.** Resume, submit, events, outcome, cancel, effort, model,
-  compact, remote control and screen reading are `tested` only when the running Claude Code
+  compact, remote control, screen reading and compaction threshold are `tested` only when the running Claude Code
   is a version in `tested-versions.txt` (#732); on any other or unknown version they are
   `discovered` (unverified). `CONFORMANCE_VERSION` is only the version the recorded
   fixtures come from. `events`, `outcome` and `inbox` need the hook bridge: an adapter wired
@@ -23,7 +23,9 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   `probe` once at its start: each launch flag in `claude --help`, each launch environment name
   and hook event in the program. A missing requirement is logged and shown by `torlek doctor`
   with its name, and takes away the capabilities that need it; an extra flag changes nothing.
-  A clean probe reports the capabilities `probed`, not `tested`.
+  A clean probe reports the capabilities `probed`, not `tested`. A launch asking for a
+  capability the probe took away is refused with the missing requirement and the version
+  (`flag --autocompact in `claude --help` is missing in 9.9.9`, #783).
 - **Launch.** A new conversation runs under a `--session-id` UUID the adapter mints, so it
   is named from the start; a resumed one runs `--resume <id>`. `--remote-control` comes
   first (its optional name would take the next plain word), the first message last after
@@ -31,7 +33,9 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   by `Provider::check_choices` before a start and passed through when the help lists none (#743);
   `--model` takes Claude Code's own alias or
   model id, checked only for its shape, since Claude Code refuses a model the account cannot
-  use (#701). Every launch passes `--settings` with the hook bridge; the hooks therefore run only
+  use (#701). A chosen compaction threshold is passed as `--autocompact <value>` in Claude
+  Code's own words (`auto` or a context window such as `200k`), checked only for its shape;
+  without one, nothing is passed and Claude Code's own setting applies (#783). Every launch passes `--settings` with the hook bridge; the hooks therefore run only
   in this conversation, never in a nested `claude` a tool starts. Every launch also sets
   `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, which a nested `claude` inherits, so the conversation
   never moves into Claude Code's shared background daemon (`LAUNCH_ENVIRONMENT`, #184), and
