@@ -1,4 +1,5 @@
-//! Native 0.166.0 capability evidence, independent of production pin promotion.
+//! Native capability evidence for the installed Codex (the nightly job runs the latest, #732),
+//! independent of production pin promotion.
 //! Ignored native tests require explicit approval and COCKPIT_CODEX_PROGRAM.
 //! They use scratch homes, local canned responses, no credentials and private tmux.
 
@@ -25,8 +26,6 @@ use cockpit_codex::{
 use cockpit_provider_api::{Action, ConversationId, Delivered, Provider, documents_flag};
 use rustix::process::{Pid, Signal, kill_process_group};
 use serde_json::json;
-
-const NATIVE_VERSION: &str = "0.166.0";
 
 /// The installed Codex the ignored live tests run.
 fn installed() -> PathBuf {
@@ -364,9 +363,10 @@ fn start_server(
     session_dir: &Path,
     model: &Model,
 ) -> (Server, AppServer) {
-    assert_eq!(
-        codex_output(home, &["--version"]).trim(),
-        format!("codex-cli {NATIVE_VERSION}")
+    let version = codex_output(home, &["--version"]);
+    assert!(
+        version.trim().starts_with("codex-cli "),
+        "not a Codex: {version:?}"
     );
     let socket = cockpit_codex::delivery::socket_path(session_dir);
     let reports = cockpit_codex::reports::LaunchReports::new(&socket).unwrap();
