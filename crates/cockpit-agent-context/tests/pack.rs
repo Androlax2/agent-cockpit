@@ -119,6 +119,27 @@ fn only_wait_what_is_invoked_by_the_user_alone() {
     assert_eq!(user_invoked, ["wait-what"]);
 }
 
+/// Codex hides a skill from its prompt when `agents/openai.yaml` sets
+/// `policy.allow_implicit_invocation: false` (`hidden_from_prompt`, codex 0.166.0), the way
+/// Claude Code does for `disable-model-invocation`. The pack's skills must agree, so a re-pin
+/// that adds a user-invoked skill without the Codex policy fails here, not in a conversation.
+#[test]
+fn a_skill_is_user_invoked_for_claude_code_exactly_when_it_is_for_codex() {
+    for skill in &skill_pack().skills {
+        let policy = skill
+            .files
+            .iter()
+            .find(|file| file.path == "agents/openai.yaml")
+            .unwrap_or_else(|| panic!("{} has no agents/openai.yaml", skill.name));
+        let hides_from_codex = policy
+            .text
+            .lines()
+            .any(|line| line.trim_end() == "  allow_implicit_invocation: false");
+
+        assert_eq!(hides_from_codex, skill.is_user_invoked(), "{}", skill.name);
+    }
+}
+
 /// Each skill's files are its upstream directory byte for byte: Git's tree id of them,
 /// computed here with `git hash-object`, is the one recorded for the pin.
 #[test]
@@ -311,21 +332,26 @@ fn a_skill_that_grants_tools_needs_no_confirmation_while_it_is_off() {
 }
 
 #[test]
-fn the_catalog_counts_each_delivered_skills_frontmatter() {
+fn the_catalog_counts_the_frontmatter_of_each_delivered_skill_the_model_may_invoke() {
     let choice = with_skills(turned_on(), &[("wait-what", true)]);
     let listing = select_pack(skill_pack(), &choice, Vec::new()).unwrap();
-    let frontmatter_bytes: usize = listing
+    let model_invoked_bytes: usize = listing
         .delivered()
+        .filter(|skill| !skill.is_user_invoked())
         .map(|skill| skill.frontmatter().len())
         .sum();
 
-    assert_eq!(listing.catalog_bytes(false), frontmatter_bytes);
+    assert_eq!(listing.catalog_bytes(), model_invoked_bytes);
 }
 
 #[test]
-fn a_harness_that_hides_user_invoked_skills_is_not_charged_for_them() {
+fn the_catalog_is_not_charged_for_a_user_invoked_skill() {
     let choice = with_skills(turned_on(), &[("wait-what", true)]);
     let listing = select_pack(skill_pack(), &choice, Vec::new()).unwrap();
+    let delivered_bytes: usize = listing
+        .delivered()
+        .map(|skill| skill.frontmatter().len())
+        .sum();
     let wait_what = skill_pack()
         .skills
         .iter()
@@ -333,9 +359,25 @@ fn a_harness_that_hides_user_invoked_skills_is_not_charged_for_them() {
         .unwrap();
 
     assert_eq!(
-        listing.catalog_bytes(true),
-        listing.catalog_bytes(false) - wait_what.frontmatter().len()
+        listing.catalog_bytes(),
+        delivered_bytes - wait_what.frontmatter().len()
     );
+}
+
+#[test]
+fn a_listing_names_the_delivered_skills_only_the_user_invokes() {
+    let off = with_skills(turned_on(), &[("wait-what", false)]);
+    let on = with_skills(turned_on(), &[("wait-what", true)]);
+    let user_invoked_names = |choice: &PackChoice| -> Vec<&'static str> {
+        select_pack(skill_pack(), choice, Vec::new())
+            .unwrap()
+            .user_invoked()
+            .map(|skill| skill.name)
+            .collect()
+    };
+
+    assert_eq!(user_invoked_names(&off), Vec::<&str>::new());
+    assert_eq!(user_invoked_names(&on), ["wait-what"]);
 }
 
 #[test]

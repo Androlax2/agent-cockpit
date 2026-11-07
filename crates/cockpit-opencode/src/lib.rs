@@ -160,14 +160,16 @@ impl Bridge {
 /// [`MCP_SERVER_NAME`] MCP server (#419); with `instruction_skills`, that folder joins the
 /// owner's `skills.paths`, so OpenCode lists the bundle's `cockpit` skill (#419); with
 /// `compaction_threshold`, it is the session's [`COMPACTION_BUFFER_SETTING`], over the one in
-/// the owner's `compaction` table (#783). `owner` is the value the owner already set, which
-/// this one replaces: its settings are kept. Refused when it is not a JSON object, a list or
-/// table Cockpit joins has another shape, or it already names a [`MCP_SERVER_NAME`] server,
-/// rather than dropping the owner's settings unseen.
+/// the owner's `compaction` table (#783); each of `hidden_skills` is denied in `permission.skill`
+/// (#787). `owner` is the value the owner already set, which this one replaces: its settings
+/// are kept. Refused when it is not a JSON object, a list or table Cockpit joins has another
+/// shape, or it already names a [`MCP_SERVER_NAME`] server, rather than dropping the owner's
+/// settings unseen.
 fn inline_config(
     owner: Option<&OsStr>,
     bridge: Option<&Bridge>,
     instruction_skills: Option<&Path>,
+    hidden_skills: &[String],
     compaction_threshold: Option<&str>,
 ) -> Result<String, ProviderError> {
     let refused = |why: &str| ProviderError {
@@ -220,6 +222,20 @@ fn inline_config(
             .ok_or_else(|| refused("has a `skills.paths` that is not a list"))?;
         paths.push(folder.to_string_lossy().into());
     }
+    if !hidden_skills.is_empty() {
+        let denied = config_object
+            .entry("permission")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| refused("has a `permission` that is not an object"))?
+            .entry("skill")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| refused("has a `permission.skill` that is not an object"))?;
+        for name in hidden_skills {
+            denied.insert(name.clone(), serde_json::json!("deny"));
+        }
+    }
     if let Some(threshold) = compaction_threshold {
         let buffer = compaction_buffer(threshold)?;
         config_object
@@ -265,6 +281,8 @@ pub struct OpenCode {
     bridge: Option<Bridge>,
     /// The instruction bundle's folder, added to OpenCode's skill paths (#419).
     instruction_skills: Option<PathBuf>,
+    /// The skills of that folder only the user invokes, denied to the model (#787).
+    hidden_skills: Vec<String>,
     /// What the runtime probe found in this version, when it ran (#732).
     probe: Option<Probe>,
 }
@@ -278,6 +296,7 @@ impl OpenCode {
             version,
             bridge,
             instruction_skills: None,
+            hidden_skills: Vec::new(),
             probe: None,
         }
     }
@@ -296,9 +315,23 @@ impl OpenCode {
         self
     }
 
+    /// Every launch with the bridge denies the model these skills of the folders it lists
+    /// (#787). OpenCode lists every skill it finds and reads no `disable-model-invocation`
+    /// (`Skill.fmt`, v1.19.5), but a denied one is left out of the system prompt
+    /// (`Skill.available`) and the `skill` tool asks permission before loading it, while the
+    /// user's `/name` command still loads it (`Command` reads `Skill.all`). Give only names
+    /// this release delivered: a skill of the owner's with the same name would be hidden too.
+    ///
+    /// An owner's file that sets `permission.skill` to one action (`"ask"`) has it replaced by
+    /// this table when OpenCode merges the inline configuration over it.
+    pub fn with_hidden_skills(mut self, names: Vec<String>) -> OpenCode {
+        self.hidden_skills = names;
+        self
+    }
+
     /// The `OPENCODE_CONFIG_CONTENT` a launch sets over `owner`'s: the bridge's plugin and
-    /// MCP server, and the instruction skills, each when this adapter has it, and the
-    /// session's `compaction_threshold` when one was chosen.
+    /// MCP server, the instruction skills and the skills hidden from the model, each when
+    /// this adapter has it, and the session's `compaction_threshold` when one was chosen.
     pub fn inline_config(
         &self,
         owner: Option<&OsStr>,
@@ -308,6 +341,7 @@ impl OpenCode {
             owner,
             self.bridge.as_ref(),
             self.instruction_skills.as_deref(),
+            &self.hidden_skills,
             compaction_threshold,
         )
     }

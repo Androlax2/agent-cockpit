@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use tokio::sync::Semaphore;
 
-pub use agent_context::DeliveredSkillPack;
+pub use agent_context::{DeliveredSkillPack, opencode_hidden_skills};
 pub use approvals::{RUN_LEADER_FLAG, run_settings};
 pub use error::StartError;
 pub use instance::{Instance, Options};

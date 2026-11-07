@@ -3,7 +3,9 @@
 //! `[skill_pack]` turns on, an owner's or trusted project's skill of the same name winning.
 //! Each adapter is wired with the folder `serve.rs` gives it (Claude Code `claude-skills`
 //! through `--add-dir`, OpenCode `agent-context` in `skills.paths`, Codex none), and the
-//! test reads the folder back from the launch itself.
+//! test reads the folder back from the launch itself. Issue #787: from that launch, each
+//! harness's listing is built the way its source builds it, and a skill only the user invokes
+//! has no description in it.
 #![cfg(target_os = "linux")]
 
 mod candidate;
@@ -65,16 +67,20 @@ impl Home {
         dir
     }
 
+    fn environment(&self) -> cockpit_config::Environment {
+        cockpit_config::Environment {
+            home: Some(self.owner_home().into()),
+            ..cockpit_config::Environment::default()
+        }
+    }
+
     async fn start(&self) -> Result<Daemon, StartError> {
         let options = Options {
             runtime_dir: self.path().join("run/cockpit"),
             state_dir: self.state_dir(),
             limits: Limits::default(),
         };
-        let environment = cockpit_config::Environment {
-            home: Some(self.owner_home().into()),
-            ..cockpit_config::Environment::default()
-        };
+        let environment = self.environment();
         Instance::acquire(options)
             .unwrap()
             .start(
@@ -116,6 +122,7 @@ impl Home {
             }),
         )
         .with_instruction_skills(self.state_dir().join("agent-context"))
+        .with_hidden_skills(cockpit_daemon::opencode_hidden_skills(&self.environment()).unwrap())
     }
 
     fn codex(&self) -> cockpit_codex::Codex {
@@ -192,6 +199,107 @@ fn skills_under(folder: &Path) -> BTreeSet<String> {
         found.extend(skills_under(&path));
     }
     found
+}
+
+/// A skill's `SKILL.md` frontmatter, as the harnesses read it.
+fn frontmatter_of(skill_dir: &Path) -> String {
+    let text = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+    let (_, rest) = text.split_once("---\n").unwrap();
+    rest.split_once("\n---\n").unwrap().0.to_owned()
+}
+
+/// Every directory below `folder` that holds a `SKILL.md`, with its frontmatter.
+fn skill_frontmatters(folder: &Path) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(folder).unwrap() {
+        let path = entry.unwrap().path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.join("SKILL.md").is_file() {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            found.push((name, frontmatter_of(&path)));
+        }
+        found.extend(skill_frontmatters(&path));
+    }
+    found
+}
+
+/// What Claude Code puts in the model's context for the skills of the folder the launch adds:
+/// each frontmatter, but not that of a skill with `disable-model-invocation: true`
+/// (code.claude.com/docs/en/skills, "Description not in context").
+fn claude_listing(launch: &LaunchCommand) -> String {
+    let words: Vec<String> = launch
+        .arguments
+        .iter()
+        .map(|word| word.to_string_lossy().into_owned())
+        .collect();
+    let added = words.iter().position(|word| word == "--add-dir").unwrap();
+    let folder = cockpit_claude::instruction_skills_dir(Path::new(&words[added + 1]));
+    skill_frontmatters(&folder)
+        .into_iter()
+        .filter(|(_, frontmatter)| {
+            !frontmatter
+                .lines()
+                .any(|line| line == "disable-model-invocation: true")
+        })
+        .map(|(_, frontmatter)| frontmatter)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What OpenCode v1.19.5 puts in the model's system prompt: `Skill.available` drops a skill
+/// the agent's `permission.skill` denies, and `Skill.fmt` prints the description of the rest.
+/// OpenCode reads no `disable-model-invocation`, so the launch's inline configuration is
+/// all that can leave a description out.
+fn opencode_listing(launch: &LaunchCommand) -> String {
+    let config = launch
+        .environment
+        .iter()
+        .find(|(name, _)| name == "OPENCODE_CONFIG_CONTENT")
+        .map(|(_, value)| value.to_str().unwrap())
+        .unwrap();
+    let config: serde_json::Value = serde_json::from_str(config).unwrap();
+    let is_denied = |name: &str| config["permission"]["skill"][name] == "deny";
+    config["skills"]["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|path| skill_frontmatters(Path::new(path.as_str().unwrap())))
+        .filter(|(name, _)| !is_denied(name))
+        .map(|(_, frontmatter)| frontmatter)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What Codex 0.166.0 lists: the skills of folders its launch is given, none (#419).
+fn codex_listing(launch: &LaunchCommand) -> String {
+    let state_dir_arguments = launch
+        .arguments
+        .iter()
+        .chain(launch.environment.iter().map(|(_, value)| value));
+    assert!(
+        !state_dir_arguments
+            .map(|word| word.to_string_lossy())
+            .any(|word| word.contains("claude-skills") || word.contains("agent-context")),
+        "a Codex launch names a skill folder"
+    );
+    String::new()
+}
+
+/// The `description` line of a pack skill, quotes stripped.
+fn description_of(name: &str) -> String {
+    let skill = cockpit_agent_context::skill_pack()
+        .skills
+        .iter()
+        .find(|skill| skill.name == name)
+        .unwrap();
+    let line = skill
+        .frontmatter()
+        .lines()
+        .find_map(|line| line.strip_prefix("description: "))
+        .unwrap();
+    line.trim_matches('"').to_owned()
 }
 
 fn names(names: &[&str]) -> BTreeSet<String> {
@@ -397,4 +505,92 @@ async fn an_agent_may_not_list_the_owners_skills() {
     let refused = agent.request(Command::SkillPack, GENEROUS).await;
 
     assert!(refused.is_err(), "{refused:?}");
+}
+
+const WAIT_WHAT_AND_TDD: &str =
+    "[skill_pack]\nenabled = true\nskills = { wait-what = true, tdd = true }\n";
+
+/// A listing that names `tdd`'s description shows the fixture reads the delivered skills at
+/// all, so the absence of `wait-what`'s is not an empty listing's.
+fn assert_lists_tdd_but_not_wait_what(harness: &str, listing: &str) {
+    assert!(
+        listing.contains(&description_of("tdd")),
+        "{harness} lists no description of a skill the model may invoke:\n{listing}"
+    );
+    assert!(
+        !listing.contains(&description_of("wait-what")),
+        "{harness} lists the description of a user-invoked skill:\n{listing}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_codes_listing_has_no_description_of_a_user_invoked_skill() {
+    let home = Home::new();
+    home.write_owner_config(WAIT_WHAT_AND_TDD);
+    let _daemon = home.start().await.unwrap();
+
+    assert_lists_tdd_but_not_wait_what("Claude Code", &claude_listing(&launch(&home.claude())));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn opencodes_listing_has_no_description_of_a_user_invoked_skill() {
+    let home = Home::new();
+    home.write_owner_config(WAIT_WHAT_AND_TDD);
+    let _daemon = home.start().await.unwrap();
+
+    assert_lists_tdd_but_not_wait_what("OpenCode", &opencode_listing(&launch(&home.opencode())));
+}
+
+/// Without the adapter's denial OpenCode lists the description: the fixture is not vacuous.
+#[tokio::test(flavor = "multi_thread")]
+async fn opencode_would_list_a_user_invoked_skill_without_the_denial() {
+    let home = Home::new();
+    home.write_owner_config(WAIT_WHAT_AND_TDD);
+    let _daemon = home.start().await.unwrap();
+    let undenied = cockpit_opencode::OpenCode::new(
+        "/usr/bin/opencode".into(),
+        None,
+        Some(cockpit_opencode::Bridge {
+            plugin: "/opt/torlek/plugin.js".into(),
+            bridge_program: "/opt/torlek/bin/bridge".into(),
+            cockpit_program: "/opt/torlek/bin/torlek".into(),
+        }),
+    )
+    .with_instruction_skills(home.state_dir().join("agent-context"));
+
+    let listing = opencode_listing(&launch(&undenied));
+
+    assert!(listing.contains(&description_of("wait-what")), "{listing}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn codexs_listing_has_no_description_of_a_user_invoked_skill() {
+    let home = Home::new();
+    home.write_owner_config(WAIT_WHAT_AND_TDD);
+    let _daemon = home.start().await.unwrap();
+
+    let listing = codex_listing(&launch(&home.codex()));
+
+    assert!(!listing.contains(&description_of("wait-what")), "{listing}");
+}
+
+/// An owner's skill of the same name wins over the pack's for OpenCode, so the adapter has no
+/// pack skill to deny: denying the name would hide the owner's own skill from the model.
+#[tokio::test(flavor = "multi_thread")]
+async fn opencode_does_not_deny_an_owners_skill_that_shadows_a_user_invoked_one() {
+    let home = Home::new();
+    home.write_owner_config(WAIT_WHAT_AND_TDD);
+    home.owner_skill_in(".agents/skills", "wait-what");
+    let _daemon = home.start().await.unwrap();
+
+    let launch = launch(&home.opencode());
+
+    let config = launch
+        .environment
+        .iter()
+        .find(|(name, _)| name == "OPENCODE_CONFIG_CONTENT")
+        .map(|(_, value)| value.to_str().unwrap())
+        .unwrap();
+    let config: serde_json::Value = serde_json::from_str(config).unwrap();
+    assert_eq!(config.get("permission"), None);
 }

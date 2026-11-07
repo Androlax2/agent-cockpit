@@ -90,7 +90,9 @@ impl PackSkill {
     }
 
     /// Whether only the user invokes it (`disable-model-invocation: true`): Claude Code then
-    /// keeps its description out of the model's context.
+    /// keeps its description out of the model's context. Codex does the same for the
+    /// `allow_implicit_invocation: false` of its `agents/openai.yaml`, which the pack's skills
+    /// carry in step; OpenCode reads neither, so its adapter denies the skill (#787).
     pub fn is_user_invoked(&self) -> bool {
         self.frontmatter()
             .lines()
@@ -253,11 +255,17 @@ impl<'pack> PackListing<'pack> {
             .any(|skill| skill.name == installed_name)
     }
 
+    /// The delivered skills only the user invokes: every harness keeps their descriptions out
+    /// of the model's context (#787).
+    pub fn user_invoked(&self) -> impl Iterator<Item = &'pack PackSkill> + '_ {
+        self.delivered().filter(|skill| skill.is_user_invoked())
+    }
+
     /// The bytes the delivered skills add to every conversation of a harness that lists the
-    /// folder: their frontmatter, without the user-invoked ones when the harness hides them.
-    pub fn catalog_bytes(&self, hides_user_invoked: bool) -> usize {
+    /// folder: their frontmatter, without the user-invoked ones, which no harness lists.
+    pub fn catalog_bytes(&self) -> usize {
         self.delivered()
-            .filter(|skill| !(hides_user_invoked && skill.is_user_invoked()))
+            .filter(|skill| !skill.is_user_invoked())
             .map(|skill| skill.frontmatter().len())
             .sum()
     }

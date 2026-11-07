@@ -47,15 +47,12 @@ pub struct DeliveredSkillPack {
     pub installed: Vec<InstalledSkill>,
 }
 
-/// Writes the optional skill pack (#786) as the owner's `[skill_pack]` chooses into Claude
-/// Code's folder and OpenCode's, beside the bundle. The owner's skills and the trusted
-/// projects' are found now: one of the same name wins over the pack's for each harness that
-/// reads its folder, for every session until the next start. A setting the pack refuses
-/// fails the start.
-pub(crate) fn deliver_skill_pack(
+/// What the optional skill pack (#786) delivers as the owner's `[skill_pack]` chooses, to
+/// Claude Code's folder and OpenCode's. The owner's skills and the trusted projects' are
+/// found now: one of the same name wins over the pack's for each harness that reads its
+/// folder, for every session until the next start. A setting the pack refuses fails the start.
+fn select_skill_pack(
     environment: &cockpit_config::Environment,
-    claude_skills: &Path,
-    opencode_skills: &Path,
 ) -> Result<DeliveredSkillPack, crate::StartError> {
     let config = cockpit_config::load(environment, None, &[]).map_err(crate::StartError::Config)?;
     let settings = config.skill_pack;
@@ -79,7 +76,38 @@ pub(crate) fn deliver_skill_pack(
         .map_err(crate::StartError::SkillPack)?;
     let opencode = cockpit_agent_context::select_pack(pack, &choice, installed.clone())
         .map_err(crate::StartError::SkillPack)?;
-    for (folder, listing) in [(claude_skills, &claude), (opencode_skills, &opencode)] {
+    Ok(DeliveredSkillPack {
+        claude,
+        opencode,
+        installed,
+    })
+}
+
+/// The pack skills OpenCode will list that only the user invokes, which its adapter denies
+/// the model (#787): OpenCode reads no `disable-model-invocation`. Chosen as the start
+/// delivers the pack, so a skill of the owner's that shadows one of the pack's is not named.
+pub fn opencode_hidden_skills(
+    environment: &cockpit_config::Environment,
+) -> Result<Vec<String>, crate::StartError> {
+    Ok(select_skill_pack(environment)?
+        .opencode
+        .user_invoked()
+        .map(|skill| skill.name.to_owned())
+        .collect())
+}
+
+/// Writes the optional skill pack [`select_skill_pack`] chooses into Claude Code's folder and
+/// OpenCode's, beside the bundle.
+pub(crate) fn deliver_skill_pack(
+    environment: &cockpit_config::Environment,
+    claude_skills: &Path,
+    opencode_skills: &Path,
+) -> Result<DeliveredSkillPack, crate::StartError> {
+    let delivered_pack = select_skill_pack(environment)?;
+    for (folder, listing) in [
+        (claude_skills, &delivered_pack.claude),
+        (opencode_skills, &delivered_pack.opencode),
+    ] {
         cockpit_agent_context::write_pack(folder, listing)
             .map_err(crate::StartError::InstructionBundle)?;
     }
@@ -88,17 +116,13 @@ pub(crate) fn deliver_skill_pack(
         names.join(",")
     };
     tracing::info!(
-        commit = pack.commit,
-        enabled = choice.enabled,
-        claude = %delivered(&claude),
-        opencode = %delivered(&opencode),
+        commit = delivered_pack.claude.pack.commit,
+        enabled = delivered_pack.claude.enabled,
+        claude = %delivered(&delivered_pack.claude),
+        opencode = %delivered(&delivered_pack.opencode),
         "wrote the skill pack"
     );
-    Ok(DeliveredSkillPack {
-        claude,
-        opencode,
-        installed,
-    })
+    Ok(delivered_pack)
 }
 
 /// `skill-pack`: what the start delivered to each harness, beside the skills already
@@ -277,12 +301,11 @@ fn harness_lists_skill(provider: &str) -> bool {
 
 /// What the skill pack adds to every conversation of `provider` (#786): the delivered skills'
 /// catalog entries where the harness lists the folder they are in, without the user-invoked
-/// ones on Claude Code, which keeps their descriptions out of the model's context. OpenCode
-/// lists every skill it finds.
+/// ones, which every harness keeps out of the model's context (#787).
 fn pack_catalog_bytes(provider: &str, skill_pack: &DeliveredSkillPack) -> usize {
     match provider {
-        "claude" => skill_pack.claude.catalog_bytes(true),
-        "opencode" => skill_pack.opencode.catalog_bytes(false),
+        "claude" => skill_pack.claude.catalog_bytes(),
+        "opencode" => skill_pack.opencode.catalog_bytes(),
         _ => 0,
     }
 }
@@ -491,24 +514,21 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_is_charged_for_the_packs_model_invoked_skills_alone() {
+    fn claude_code_and_opencode_are_charged_for_the_packs_model_invoked_skills_alone() {
         let listing = listing();
+        let user_invoked_bytes: usize = listing
+            .user_invoked()
+            .map(|skill| skill.frontmatter().len())
+            .sum();
 
-        assert_eq!(
-            pack_catalog_bytes("claude", &delivered()),
-            listing.catalog_bytes(true)
-        );
-        assert!(pack_catalog_bytes("claude", &delivered()) < listing.catalog_bytes(false));
-    }
-
-    #[test]
-    fn opencode_is_charged_for_every_delivered_skill() {
-        let listing = listing();
-
-        assert_eq!(
-            pack_catalog_bytes("opencode", &delivered()),
-            listing.catalog_bytes(false)
-        );
+        assert!(user_invoked_bytes > 0);
+        for provider in ["claude", "opencode"] {
+            assert_eq!(
+                pack_catalog_bytes(provider, &delivered()),
+                listing.catalog_bytes(),
+                "{provider}"
+            );
+        }
     }
 
     #[test]
