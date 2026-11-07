@@ -134,7 +134,9 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     match opencode(&serve.programs_dir, &plugin_dir) {
         Ok(opencode) => {
             providers.push(Arc::new(
-                opencode.with_instruction_skills(bundle_dir.clone()),
+                opencode
+                    .with_instruction_skills(bundle_dir.clone())
+                    .with_hidden_skills(crate::opencode_hidden_skills(&environment)?),
             ));
         }
         Err(reason) => unavailable_providers.push(("opencode".to_owned(), reason)),

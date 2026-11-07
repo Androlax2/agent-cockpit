@@ -107,8 +107,17 @@ bundle folder in `skills.paths`). Codex gets no skill folder (#419), so no pack 
 Collisions are judged at the daemon's start, against the trusted projects' main checkouts:
 a project skill added later, or only on a parallel clone's branch, shadows nothing until it
 is on the main checkout at a start, so the harness lists both. [`PackListing::catalog_bytes`] is the pack's always-loaded catalog,
-counted apart in `torlek brief --measure`; Claude Code hides a user-invoked skill's
-(`disable-model-invocation`), OpenCode lists every one.
+counted apart in `torlek brief --measure`, without the user-invoked skills, whose descriptions
+no harness puts in the model's context (#787): Claude Code honours `disable-model-invocation`
+and Codex `agents/openai.yaml`'s `allow_implicit_invocation: false` (`tests/pack.rs` keeps the
+two in step; Codex lists no pack skill anyway). OpenCode reads neither and lists every skill it
+finds (`Skill.fmt`, v1.19.5), so its adapter denies each delivered user-invoked skill in
+`permission.skill` (`OpenCode::with_hidden_skills`): the system prompt leaves it out and the
+user's `/name` command still loads it (read from the v1.19.5 source, not a run). A launch
+whose inline `OPENCODE_CONFIG_CONTENT` sets `permission` or `permission.skill` to one action is
+refused; the same setting in an owner's configuration file is replaced by that table, which
+Cockpit cannot see. The fixtures are in
+`cockpit-daemon/tests/skill_pack.rs`.
 
 ## Channels
 

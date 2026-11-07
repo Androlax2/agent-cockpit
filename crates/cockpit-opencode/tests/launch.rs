@@ -273,6 +273,82 @@ fn an_owners_skills_the_bundle_cannot_join_are_refused() {
 }
 
 #[test]
+fn a_launch_denies_the_model_each_hidden_skill() {
+    let launch = common::opencode()
+        .with_hidden_skills(vec!["wait-what".into(), "other".into()])
+        .launch(&request(&Conversation::New))
+        .unwrap();
+    let config: serde_json::Value =
+        serde_json::from_str(common::variable(&launch, "OPENCODE_CONFIG_CONTENT").unwrap())
+            .unwrap();
+
+    assert_eq!(
+        config["permission"],
+        serde_json::json!({ "skill": { "wait-what": "deny", "other": "deny" } })
+    );
+}
+
+#[test]
+fn the_owners_skill_permissions_are_kept_beside_the_denied_skills() {
+    let owner = r#"{"permission":{"bash":"ask","skill":{"theirs":"ask"}}}"#;
+    let config: serde_json::Value = serde_json::from_str(
+        &common::opencode()
+            .with_hidden_skills(vec!["wait-what".into()])
+            .inline_config(Some(OsStr::new(owner)), None)
+            .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        config["permission"],
+        serde_json::json!({
+            "bash": "ask",
+            "skill": { "theirs": "ask", "wait-what": "deny" },
+        })
+    );
+}
+
+#[test]
+fn without_hidden_skills_the_inline_config_denies_nothing() {
+    let owner = r#"{"permission":"ask"}"#;
+    let config: serde_json::Value = serde_json::from_str(
+        &common::opencode()
+            .inline_config(Some(OsStr::new(owner)), None)
+            .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(config["permission"], "ask");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            &common::opencode().inline_config(None, None).unwrap()
+        )
+        .unwrap()
+        .get("permission"),
+        None
+    );
+}
+
+#[test]
+fn an_owners_permissions_the_denied_skills_cannot_join_are_refused() {
+    let opencode = common::opencode().with_hidden_skills(vec!["wait-what".into()]);
+
+    for owner in [
+        r#"{"permission":"ask"}"#,
+        r#"{"permission":{"skill":"ask"}}"#,
+    ] {
+        let refusal = opencode
+            .inline_config(Some(OsStr::new(owner)), None)
+            .unwrap_err();
+
+        assert!(
+            refusal.reason.starts_with("OPENCODE_CONFIG_CONTENT "),
+            "{owner}: {refusal:?}"
+        );
+    }
+}
+
+#[test]
 fn an_owners_inline_config_the_plugin_cannot_join_is_refused() {
     for owner in [
         "not json",
