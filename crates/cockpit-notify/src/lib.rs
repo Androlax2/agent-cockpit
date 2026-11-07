@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod board;
+mod bundled;
 mod event;
 mod feed;
 mod hold;
@@ -9,6 +10,7 @@ mod outlets;
 mod status;
 
 pub use board::FeedError;
+pub use bundled::install as install_bundled_sounds;
 pub use event::{Event, names};
 pub use feed::{FeedEvent, follow_feed};
 pub use hold::{AWAY, Detector, Detectors, Hold, standing_holds};

@@ -257,6 +257,13 @@ pub fn render(config: &EffectiveConfig) -> String {
             ));
         }
     }
+    for (event, file) in &config.notify.sound_files {
+        lines.push(line(
+            &format!("notify.sound.files.{event}"),
+            &Value::from(file.value.display().to_string()).to_string(),
+            &file.source,
+        ));
+    }
     let skill_pack = &config.skill_pack;
     lines.push(line(
         "skill_pack.enabled",

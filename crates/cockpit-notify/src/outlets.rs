@@ -2,7 +2,7 @@
 //! through a program the desktop already has, so a host without them loses only the notice
 //! (#62: a headless run works with notify absent).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -229,18 +229,33 @@ impl Sound {
         })
     }
 
-    /// The program and arguments that play `event`'s sound; `None` when its file is missing.
-    fn command(&self, event: Event) -> Option<(PathBuf, Vec<OsString>)> {
+    /// The program and arguments that play `event`'s sound: `file` when there is one, else the
+    /// theme's; `None` when the theme's file is missing.
+    fn command(&self, event: Event, file: Option<&Path>) -> Option<(PathBuf, Vec<OsString>)> {
         let id = sound_id(event);
-        match self {
-            Sound::Canberra(program) => Some((
+        match (self, file) {
+            (Sound::Canberra(program), Some(file)) => {
+                let mut argument = OsString::from("--file=");
+                argument.push(file);
+                Some((
+                    program.clone(),
+                    vec![
+                        argument,
+                        format!("--description={APP_NAME}: {event}").into(),
+                    ],
+                ))
+            }
+            (Sound::Player { program, .. }, Some(file)) => {
+                Some((program.clone(), vec![file.as_os_str().to_owned()]))
+            }
+            (Sound::Canberra(program), None) => Some((
                 program.clone(),
                 vec![
                     format!("--id={id}").into(),
                     format!("--description={APP_NAME}: {event}").into(),
                 ],
             )),
-            Sound::Player { program, data_dirs } => {
+            (Sound::Player { program, data_dirs }, None) => {
                 let file = data_dirs
                     .iter()
                     .map(|dir| {
@@ -254,7 +269,8 @@ impl Sound {
     }
 }
 
-/// One distinct sound per event, by its freedesktop sound-naming name.
+/// The theme sound an event with no file of its own plays, by its freedesktop sound-naming
+/// name. Every event but `turn` has a bundled file, or the owner's, ahead of it.
 pub fn sound_id(event: Event) -> &'static str {
     match event {
         Event::Failure => "dialog-error",
@@ -299,6 +315,9 @@ pub struct Outlets {
     pub desktop_events: BTreeSet<Event>,
     pub sound: Option<Sound>,
     pub sound_events: BTreeSet<Event>,
+    /// The file each event's sound plays, the owner's over the bundled one; an event without
+    /// one plays its theme sound.
+    pub sound_files: BTreeMap<Event, PathBuf>,
 }
 
 impl Outlets {
@@ -326,6 +345,39 @@ impl Outlets {
             arguments.into_iter().map(Into::into).collect(),
         );
         shown.iter().map(|notice| notice.session.clone()).collect()
+    }
+
+    fn sound_command(&self, sound: &Sound, event: Event) -> Option<(PathBuf, Vec<OsString>)> {
+        sound.command(event, self.sound_files.get(&event).map(PathBuf::as_path))
+    }
+
+    /// Plays `event`'s sound once and waits for the player, whatever the owner's settings say
+    /// (`torlek notify test`); returns why it could not.
+    pub async fn play(&self, event: Event) -> Result<(), String> {
+        let sound = self.sound.as_ref().ok_or("no sound player on this host")?;
+        let (program, arguments) = self
+            .sound_command(sound, event)
+            .ok_or("the sound theme has no file for this event")?;
+        let output = tokio::time::timeout(
+            PROGRAM_DEADLINE,
+            tokio::process::Command::new(&program)
+                .args(&arguments)
+                .stdin(Stdio::null())
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| format!("{} took too long", program.display()))?
+        .map_err(|error| format!("cannot run {}: {error}", program.display()))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(format!(
+            "{} failed ({}): {}",
+            program.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
     }
 
     /// Whether the owner turned `event` on for the desktop or the sound.
@@ -366,7 +418,7 @@ impl Outlets {
                     if self
                         .sound
                         .as_ref()
-                        .is_some_and(|sound| sound.command(notice.event).is_none())
+                        .is_some_and(|sound| self.sound_command(sound, notice.event).is_none())
                     {
                         Outlet::NoFile
                     } else {
@@ -411,7 +463,7 @@ impl Outlets {
         }
         if let Some(sound) = &self.sound {
             let loudest = self.loudest_sound(notices);
-            match loudest.map(|event| (event, sound.command(event))) {
+            match loudest.map(|event| (event, self.sound_command(sound, event))) {
                 Some((_, Some((program, arguments)))) => start(program, arguments),
                 Some((event, None)) => {
                     tracing::warn!(%event, "the sound theme has no file for this event");
@@ -516,7 +568,31 @@ mod tests {
             desktop_events: desktop_events.iter().copied().collect(),
             sound: Some(Sound::Canberra(PathBuf::from("canberra-gtk-play"))),
             sound_events: sound_events.iter().copied().collect(),
+            sound_files: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn an_event_with_no_file_plays_its_theme_sound() {
+        let sound = Sound::Canberra(PathBuf::from("canberra-gtk-play"));
+
+        let (_, arguments) = sound.command(Event::Turn, None).unwrap();
+
+        assert_eq!(arguments[0], OsString::from("--id=message"));
+    }
+
+    #[test]
+    fn a_file_replaces_the_theme_sound_for_a_player_too() {
+        let sound = Sound::Player {
+            program: PathBuf::from("pw-play"),
+            data_dirs: Vec::new(),
+        };
+
+        let (_, arguments) = sound
+            .command(Event::Quota, Some(Path::new("/sounds/quota.oga")))
+            .unwrap();
+
+        assert_eq!(arguments, [OsString::from("/sounds/quota.oga")]);
     }
 
     #[test]

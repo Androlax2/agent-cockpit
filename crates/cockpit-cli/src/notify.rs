@@ -30,6 +30,14 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     match words.as_slice() {
         [] => Ok(notifier_arguments().map_or_else(|code| code, |arguments| execute(&arguments))),
         ["--version"] => Ok(execute(&["--version".into()])),
+        ["test", event] => Ok(notifier_arguments().map_or_else(
+            |code| code,
+            |mut arguments| {
+                arguments.extend(["--test".into(), (*event).into()]);
+                execute(&arguments)
+            },
+        )),
+        ["test", ..] => Err("use test EVENT".to_owned()),
         ["away", "on"] => Ok(set_away(true).unwrap_or_else(|code| code)),
         ["away", "off"] => Ok(set_away(false).unwrap_or_else(|code| code)),
         ["away", ..] => Err("use away on or away off".to_owned()),
@@ -97,6 +105,11 @@ fn notifier_arguments() -> Result<Vec<OsString>, ExitCode> {
         "--away-file".into(),
         runtime.join(AWAY_FILE).into(),
     ];
+    for (event, file) in &config.notify.sound_files {
+        let mut sound_file = OsString::from(format!("{event}="));
+        sound_file.push(&file.value);
+        arguments.extend(["--sound-file".into(), sound_file]);
+    }
     for (name, program) in &config.notify.holds {
         let mut hold = OsString::from(format!("{name}="));
         hold.push(&program.value);

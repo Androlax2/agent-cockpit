@@ -2,7 +2,7 @@
 //! a sound (#62, #682), and the detectors that hold both (report 19). Read when the notifier
 //! starts.
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{ConfigError, Layer, Source, Sourced};
 use serde::Deserialize;
@@ -73,6 +73,9 @@ pub struct NotifySettings {
     pub desktop: NotifyEvents,
     /// What plays a sound.
     pub sound: NotifyEvents,
+    /// The owner's sound file by event name; an event without one
+    /// plays Torlek's own sound (#1130).
+    pub sound_files: BTreeMap<String, Sourced<PathBuf>>,
     /// Each hold's detector, by the hold's name: a program the notifier runs at every refresh,
     /// whose exit status 0 means the hold stands (a meeting, a game). None by default.
     pub holds: BTreeMap<String, Sourced<PathBuf>>,
@@ -85,9 +88,22 @@ pub struct NotifySettings {
 #[serde(deny_unknown_fields)]
 pub(super) struct NotifyTable {
     desktop: Option<NotifyEventsTable>,
-    sound: Option<NotifyEventsTable>,
+    sound: Option<NotifySoundTable>,
     hold: Option<BTreeMap<String, Spanned<String>>>,
     autostart: Option<Spanned<bool>>,
+}
+
+/// `[notify.sound]`: the on/off switches of [`NotifyEventsTable`] plus `[notify.sound.files]`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotifySoundTable {
+    failure: Option<Spanned<bool>>,
+    hold: Option<Spanned<bool>>,
+    question: Option<Spanned<bool>>,
+    quota: Option<Spanned<bool>>,
+    finished: Option<Spanned<bool>>,
+    turn: Option<Spanned<bool>>,
+    files: Option<BTreeMap<String, Spanned<String>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +121,7 @@ pub(super) fn settings(layers: &[Layer]) -> Result<NotifySettings, ConfigError> 
     let mut result = NotifySettings {
         desktop: NotifyEvents::all_on(),
         sound: NotifyEvents::all_on(),
+        sound_files: BTreeMap::new(),
         holds: BTreeMap::new(),
         autostart: Sourced::new(true, Source::ProductDefault),
     };
@@ -117,7 +134,14 @@ pub(super) fn settings(layers: &[Layer]) -> Result<NotifySettings, ConfigError> 
             apply(layer, desktop, &mut result.desktop);
         }
         if let Some(sound) = &table.sound {
-            apply(layer, sound, &mut result.sound);
+            apply(layer, &sound.switches(), &mut result.sound);
+            for (event, path) in sound.files.iter().flatten() {
+                let source = layer.source_at(path.span());
+                let file = sound_file(event, path.get_ref(), &source)?;
+                result
+                    .sound_files
+                    .insert(event.clone(), Sourced::new(file, source));
+            }
         }
         if let Some(autostart) = &table.autostart {
             result.autostart =
@@ -130,6 +154,9 @@ pub(super) fn settings(layers: &[Layer]) -> Result<NotifySettings, ConfigError> 
                 .holds
                 .insert(name.clone(), Sourced::new(detector, source));
         }
+    }
+    for (event, file) in &result.sound_files {
+        check_readable(event, &file.value, &file.source)?;
     }
     Ok(result)
 }
@@ -164,6 +191,59 @@ fn hold_detector(name: &str, program: &str, source: &Source) -> Result<PathBuf, 
         )));
     }
     Ok(program)
+}
+
+impl NotifySoundTable {
+    fn switches(&self) -> NotifyEventsTable {
+        NotifyEventsTable {
+            failure: self.failure.clone(),
+            hold: self.hold.clone(),
+            question: self.question.clone(),
+            quota: self.quota.clone(),
+            finished: self.finished.clone(),
+            turn: self.turn.clone(),
+        }
+    }
+}
+
+/// An owner's sound file, refused when the notifier could not play it as named: an unknown
+/// event or a relative path (it would depend on the directory `torlek notify` starts in).
+fn sound_file(event: &str, path: &str, source: &Source) -> Result<PathBuf, ConfigError> {
+    let key = format!("notify.sound.files.{event}");
+    let invalid = |reason: String| ConfigError::Invalid {
+        key: key.clone(),
+        source: source.clone(),
+        reason,
+    };
+    if !NOTIFY_EVENTS.contains(&event) {
+        return Err(invalid(format!(
+            "unknown event; use one of {}",
+            NOTIFY_EVENTS.join(", ")
+        )));
+    }
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err(invalid(format!(
+            "{}: name the sound file by its absolute path",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
+/// Only the file that stays in force is read: a lower layer's file another layer replaces
+/// cannot break the load.
+fn check_readable(event: &str, path: &Path, source: &Source) -> Result<(), ConfigError> {
+    let invalid = |reason: String| ConfigError::Invalid {
+        key: format!("notify.sound.files.{event}"),
+        source: source.clone(),
+        reason,
+    };
+    match std::fs::File::open(path).and_then(|file| file.metadata()) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(invalid(format!("{} is not a file", path.display()))),
+        Err(error) => Err(invalid(format!("cannot read {}: {error}", path.display()))),
+    }
 }
 
 fn apply(layer: &Layer, table: &NotifyEventsTable, events: &mut NotifyEvents) {

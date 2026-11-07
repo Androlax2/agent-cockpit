@@ -10,14 +10,14 @@ Issues #62 and #682; report 19 and decision 11 of the greenfield design.
 One event per reason a session needs the owner, each on or off apart for the desktop and for
 sound:
 
-| Event | Raised when | Sound (freedesktop name) |
+| Event | Raised when | Sound (bundled; theme name if no file) |
 | --- | --- | --- |
-| `failure` | the session failed, its agent exited by itself, or its turn failed | `dialog-error` |
-| `hold` | a command waits for approval, a sandboxed host was refused, or a provider's permission dialog is open | `dialog-warning` |
-| `question` | the agent asks a question, a guide waits on its step, or a command waits for a line of input | `message-new-instant` |
-| `quota` | the plan's usage limit stopped its turn | `alarm-clock-elapsed` |
-| `finished` | the task item is marked done (the task list says it finished) | `complete` |
-| `turn` | its agent completed a turn, done or not; off by default for both outlets (#1127) | `message` |
+| `failure` | the session failed, its agent exited by itself, or its turn failed | marimba, E5 then C5 |
+| `hold` | a command waits for approval, a sandboxed host was refused, or a provider's permission dialog is open | glass, D6 twice |
+| `question` | the agent asks a question, a guide waits on its step, or a command waits for a line of input | marimba, D5 then A5 |
+| `quota` | the plan's usage limit stopped its turn | soft sine, G5 E5 C5 falling |
+| `finished` | the task item is marked done (the task list says it finished) | kalimba, E5 then C6 |
+| `turn` | its agent completed a turn, done or not; off by default for both outlets (#1127) | `message` (theme) |
 
 An event is told when it is raised, never while it stays. A session that exits by itself
 raises `failure`, not `finished`. Events that land together make one
@@ -29,9 +29,13 @@ coordinator holds (#710).
 
 - **Desktop:** `notify-send`, over the session bus (`DBUS_SESSION_BUS_ADDRESS` or
   `$XDG_RUNTIME_DIR/bus`). A failure is critical, everything else normal.
-- **Sound:** `canberra-gtk-play --id=NAME`, which plays the owner's sound theme, when there
-  is a display (`DISPLAY` or `WAYLAND_DISPLAY`); otherwise `pw-play` or `paplay` plays
-  `sounds/freedesktop/stereo/NAME.oga` from `XDG_DATA_DIRS`.
+- **Sound:** each event but `turn` has Torlek's own Ogg Vorbis sound (#1130), rendered by the
+  owner from synthesized partials, no sample, and embedded in the binary; the notifier writes
+  them under `DIR/sounds/` at start. `--sound-file EVENT=PATH` (the owner's
+  `[notify.sound.files]`) replaces one. `canberra-gtk-play --file=PATH` plays the file when
+  there is a display (`DISPLAY` or `WAYLAND_DISPLAY`); otherwise `pw-play` or `paplay` does.
+  `turn` has no file: it plays the owner's sound theme (`canberra-gtk-play --id=message`, or
+  `message.oga` from `XDG_DATA_DIRS`). `--test EVENT` plays one event's sound and exits.
 - **Text:** the agent writes the names and details, so each shows on one line, cut short, its
   markup escaped (notification servers read the body as markup).
 
@@ -108,7 +112,7 @@ yet.
 
 ## How it runs
 
-`torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS]
+`torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS] [--sound-file EVENT=PATH]... [--test EVENT]
 [--status-file FILE] [--away-file FILE] [--hold NAME=PROGRAM]...`, where
 `EVENTS` is `none` or a comma-separated list of event names; left out, every event is on. It
 follows the change feed for sessions and view stamps, asks the daemon for the agents' reports,

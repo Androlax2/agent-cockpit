@@ -213,3 +213,73 @@ fn the_owner_turns_on_the_completed_turn_event_for_the_desktop_only() {
         format!("{},turn", "failure,hold,question,quota,finished")
     );
 }
+
+#[test]
+fn the_owner_sets_a_sound_file_for_one_event_with_its_line() {
+    let home = TempDir::new().unwrap();
+    let sound = home.path().join("question.wav");
+    fs::write(&sound, b"RIFF").unwrap();
+    write_user_config(
+        home.path(),
+        &format!(
+            "[notify.sound.files]\nquestion = {:?}\n",
+            sound.display().to_string()
+        ),
+    );
+
+    let config = load(home.path(), None).unwrap();
+
+    let question = &config.notify.sound_files["question"];
+    assert_eq!(question.value, sound);
+    assert_eq!(
+        question.source,
+        Source::UserFile {
+            path: config.user_file.path.clone(),
+            line: 2
+        }
+    );
+    assert_eq!(config.notify.sound_files.len(), 1);
+    assert!(config.notify.sound.question.value);
+}
+
+#[test]
+fn a_clean_home_sets_no_sound_file() {
+    let home = TempDir::new().unwrap();
+
+    let config = load(home.path(), None).unwrap();
+
+    assert!(config.notify.sound_files.is_empty());
+}
+
+#[test]
+fn a_bad_sound_file_is_refused_with_the_event_and_the_path() {
+    let home = TempDir::new().unwrap();
+    let directory = home.path().join("a-directory");
+    fs::create_dir(&directory).unwrap();
+    let cases = [
+        ("question = \"relative.wav\"".to_owned(), "absolute path"),
+        (
+            format!(
+                "question = {:?}",
+                home.path().join("missing.wav").display().to_string()
+            ),
+            "missing.wav",
+        ),
+        (
+            format!("question = {:?}", directory.display().to_string()),
+            "is not a file",
+        ),
+        ("loud = \"/x.wav\"".to_owned(), "unknown event"),
+    ];
+    for (line, reason) in cases {
+        write_user_config(home.path(), &format!("[notify.sound.files]\n{line}\n"));
+
+        let error = load(home.path(), None).unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigError::Invalid { key, .. } if key.starts_with("notify.sound.files.")),
+            "{line}: {error}"
+        );
+        assert!(error.to_string().contains(reason), "{line}: {error}");
+    }
+}

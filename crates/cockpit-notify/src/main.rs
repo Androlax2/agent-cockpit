@@ -1,5 +1,6 @@
 //! `torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS]
-//! [--status-file FILE] [--away-file FILE] [--hold NAME=PROGRAM]...`: tells the owner, with a
+//! [--sound-file EVENT=PATH]... [--test EVENT] [--status-file FILE] [--away-file FILE]
+//! [--hold NAME=PROGRAM]...`: tells the owner, with a
 //! desktop notification and a sound, when a session of the daemon at `PATH` needs them.
 //! `EVENTS` is `none` or a comma-separated list of `failure`, `hold`, `question`, `quota` and
 //! `finished` and `turn`; left out, every event but `turn` is on. It logs under `DIR`, keeps the status file up to
@@ -9,7 +10,7 @@
 //! A host without a session bus, `notify-send` or a sound player runs it all the same: that
 //! outlet is off and the log says why.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -34,7 +35,7 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 /// stays out of reach, as the feed's own retry does.
 const LONGEST_PAUSE: Duration = Duration::from_secs(30);
 
-const USAGE: &str = "usage: torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS] [--status-file FILE] [--away-file FILE] [--hold NAME=PROGRAM]... | --version
+const USAGE: &str = "usage: torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS] [--sound-file EVENT=PATH]... [--test EVENT] [--status-file FILE] [--away-file FILE] [--hold NAME=PROGRAM]... | --version
 EVENTS: none, or a comma-separated list of failure, hold, question, quota, finished, turn (default: all but turn)";
 
 struct Options {
@@ -42,6 +43,8 @@ struct Options {
     state_dir: PathBuf,
     desktop_events: BTreeSet<Event>,
     sound_events: BTreeSet<Event>,
+    sound_files: BTreeMap<Event, PathBuf>,
+    play_once: Option<Event>,
     status_file: Option<PathBuf>,
     away_file: Option<PathBuf>,
     detectors: Vec<Detector>,
@@ -74,6 +77,8 @@ fn parse(arguments: &[String]) -> Result<Options, String> {
     let mut state_dir = None;
     let mut desktop_events = Event::defaults();
     let mut sound_events = Event::defaults();
+    let mut sound_files = BTreeMap::new();
+    let mut play_once = None;
     let mut status_file = None;
     let mut away_file = None;
     let mut detectors = Vec::new();
@@ -87,6 +92,15 @@ fn parse(arguments: &[String]) -> Result<Options, String> {
             "--state-dir" => state_dir = Some(PathBuf::from(value)),
             "--desktop" => desktop_events = Event::parse_list(value)?,
             "--sound" => sound_events = Event::parse_list(value)?,
+            "--sound-file" => {
+                let (event, path) = parse_sound_file(value)?;
+                sound_files.insert(event, path);
+            }
+            "--test" => {
+                play_once = Some(
+                    Event::from_name(value).ok_or_else(|| format!("unknown event {value:?}"))?,
+                );
+            }
             "--status-file" => status_file = Some(PathBuf::from(value)),
             "--away-file" => away_file = Some(PathBuf::from(value)),
             "--hold" => detectors.push(Detector::parse(value)?),
@@ -98,10 +112,38 @@ fn parse(arguments: &[String]) -> Result<Options, String> {
         state_dir: state_dir.ok_or("--state-dir is required")?,
         desktop_events,
         sound_events,
+        sound_files,
+        play_once,
         status_file,
         away_file,
         detectors,
     })
+}
+
+/// Plays `event`'s sound once, for `torlek notify test`.
+fn play_once(outlets: &Outlets, event: Event) -> Result<(), String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("cannot start the runtime: {error}"))?
+        .block_on(outlets.play(event))
+        .map_err(|problem| format!("cannot play the {event} sound: {problem}"))
+}
+
+/// `EVENT=ABSOLUTE_PATH`, as `torlek notify` passes the owner's sound files.
+fn parse_sound_file(value: &str) -> Result<(Event, PathBuf), String> {
+    let (name, path) = value
+        .split_once('=')
+        .ok_or_else(|| format!("--sound-file takes EVENT=PATH, not {value:?}"))?;
+    let event = Event::from_name(name).ok_or_else(|| format!("unknown event {name:?}"))?;
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err(format!(
+            "--sound-file {name}: {} is not absolute",
+            path.display()
+        ));
+    }
+    Ok((event, path))
 }
 
 fn notify(options: Options) -> Result<(), String> {
@@ -115,6 +157,9 @@ fn notify(options: Options) -> Result<(), String> {
     tracing::dispatcher::set_global_default(diagnostics.dispatch().clone())
         .map_err(|error| error.to_string())?;
     let outlets = find_outlets(&Host::from_env(), &options);
+    if let Some(event) = options.play_once {
+        return play_once(&outlets, event);
+    }
     tracing::info!(
         socket = %options.socket.display(),
         desktop = outlets.desktop.is_some(),
@@ -155,11 +200,18 @@ fn find_outlets(host: &Host, options: &Options) -> Outlets {
     let sound = Sound::find(host)
         .inspect_err(|reason| tracing::warn!(reason, "sounds are off"))
         .ok();
+    let mut sound_files = if sound.is_some() {
+        cockpit_notify::install_bundled_sounds(&options.state_dir)
+    } else {
+        BTreeMap::new()
+    };
+    sound_files.extend(options.sound_files.clone());
     Outlets {
         desktop,
         desktop_events: options.desktop_events.clone(),
         sound,
         sound_events: options.sound_events.clone(),
+        sound_files,
     }
 }
 

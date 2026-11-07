@@ -199,6 +199,14 @@ impl Setup {
         command
     }
 
+    /// Where the notifier writes the sound it ships for `event_name`.
+    fn bundled_sound(&self, event_name: &str) -> PathBuf {
+        self.dir
+            .path()
+            .join("state/sounds")
+            .join(format!("{event_name}.oga"))
+    }
+
     /// Where the notifier's standard error goes: journald under the unit (#1127).
     fn stderr_file(&self) -> PathBuf {
         self.dir.path().join("stderr")
@@ -270,7 +278,10 @@ fn a_finished_session_shows_a_notification_and_plays_its_sound() {
     assert_eq!(
         calls,
         [
-            "canberra-gtk-play [--id=complete] [--description=Torlek: finished]".to_owned(),
+            format!(
+                "canberra-gtk-play [--file={}] [--description=Torlek: finished]",
+                setup.bundled_sound("finished").display()
+            ),
             format!("notify-send [--app-name=Torlek] [--urgency=normal] [--] [{WORKER} finished]"),
         ]
     );
@@ -292,11 +303,8 @@ fn an_event_turned_off_for_sound_still_shows_its_notification() {
 }
 
 #[test]
-fn without_canberra_the_player_plays_the_themes_file() {
+fn without_canberra_the_player_plays_the_bundled_file() {
     let setup = Setup::new();
-    let stereo = setup.dir.path().join("share/sounds/freedesktop/stereo");
-    fs::create_dir_all(&stereo).unwrap();
-    fs::write(stereo.join("complete.oga"), b"").unwrap();
     fake_program(&setup.bin, "pw-play", &setup.record);
     let _notifier = setup.start(&["--desktop", "none"], true);
 
@@ -306,7 +314,7 @@ fn without_canberra_the_player_plays_the_themes_file() {
         calls,
         [format!(
             "pw-play [{}]",
-            stereo.join("complete.oga").display()
+            setup.bundled_sound("finished").display()
         )]
     );
 }
@@ -363,7 +371,10 @@ fn events_that_land_together_make_one_notification_and_one_sound() {
     assert_eq!(
         calls,
         [
-            "canberra-gtk-play [--id=dialog-error] [--description=Torlek: failure]".to_owned(),
+            format!(
+                "canberra-gtk-play [--file={}] [--description=Torlek: failure]",
+                setup.bundled_sound("failure").display()
+            ),
             format!(
                 "notify-send [--app-name=Torlek] [--urgency=critical] [--] [{OTHER} failed (1 more)] \
                  [{OTHER} failed: the launch failed"
@@ -376,9 +387,6 @@ fn events_that_land_together_make_one_notification_and_one_sound() {
 #[test]
 fn without_a_display_the_player_plays_instead_of_canberra() {
     let setup = Setup::new();
-    let stereo = setup.dir.path().join("share/sounds/freedesktop/stereo");
-    fs::create_dir_all(&stereo).unwrap();
-    fs::write(stereo.join("complete.oga"), b"").unwrap();
     fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
     fake_program(&setup.bin, "paplay", &setup.record);
     let _notifier = setup.start(&[], false);
@@ -389,7 +397,7 @@ fn without_a_display_the_player_plays_instead_of_canberra() {
         calls,
         [format!(
             "paplay [{}]",
-            stereo.join("complete.oga").display()
+            setup.bundled_sound("finished").display()
         )]
     );
 }
@@ -602,4 +610,60 @@ fn an_event_that_is_off_is_not_logged_as_kept_back_by_a_hold() {
     let stderr = setup.stderr_with("skipped finished");
 
     assert!(stderr.contains("reason=setting off"), "{stderr}");
+}
+
+#[test]
+fn a_failure_plays_the_file_the_owner_set_for_it() {
+    let failed = SessionView {
+        state: SessionStateView::Failed,
+        reason: Some("the launch failed".to_owned()),
+        ..session(WORKER, 1, 1)
+    };
+    let setup = Setup::with_later(after_snapshot(vec![upsert(
+        EntityKind::Session,
+        WORKER,
+        &failed,
+    )]));
+    let owners_file = setup.dir.path().join("my-failure.wav");
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+    let sound_file = format!("failure={}", owners_file.display());
+    let _notifier = setup.start(&["--desktop", "none", "--sound-file", &sound_file], true);
+
+    let calls = setup.calls(1);
+
+    assert_eq!(
+        calls,
+        [format!(
+            "canberra-gtk-play [--file={}] [--description=Torlek: failure]",
+            owners_file.display()
+        )]
+    );
+}
+
+#[test]
+fn notify_test_plays_one_event_and_exits() {
+    let setup = Setup::new();
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+
+    let status = setup.notifier(&["--test", "hold"], true).status().unwrap();
+
+    assert!(status.success());
+    assert_eq!(
+        setup.calls(1),
+        [format!(
+            "canberra-gtk-play [--file={}] [--description=Torlek: hold]",
+            setup.bundled_sound("hold").display()
+        )]
+    );
+}
+
+#[test]
+fn notify_test_fails_loudly_without_a_sound_player() {
+    let setup = Setup::new();
+
+    let status = setup.notifier(&["--test", "hold"], false).status().unwrap();
+
+    assert!(!status.success());
+    let stderr = fs::read_to_string(setup.stderr_file()).unwrap();
+    assert!(stderr.contains("cannot play the hold sound"), "{stderr}");
 }
