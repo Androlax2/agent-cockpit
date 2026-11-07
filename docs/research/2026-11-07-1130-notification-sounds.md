@@ -25,8 +25,14 @@ theme (#1130 lists `dialog-error`, `dialog-warning`, `message-new-instant`,
 finished. Theo dislikes the theme sounds. What would five original sounds look like, how are
 such sounds designed, and how does each stay distinct from the others?
 
-Not checked: `crates/cockpit-notify` is not in this checkout (base commit `728c3fff`), so the
-event names and default sound names are taken from the text of #1130, not from code.
+Read in code (`crates/cockpit-notify` README and `src/outlets.rs`, base commit `1a7d869b`):
+the notifier plays one sound per batch of events, the most urgent event's, and never while a
+hold stands. It plays by freedesktop name with `canberra-gtk-play --id=NAME` when there is a
+display, otherwise `pw-play` or `paplay` plays `NAME.oga` from the theme's `stereo` folder.
+`failure` is raised when a session failed or its turn failed, `hold` when a command waits for
+approval or a permission dialog is open, `question` when the agent asks one, `quota` when the
+usage limit stopped a turn, and `finished` when the task list finished or a turn completed.
+The crate has no terminal-bell code.
 
 ## How the surveyed tools got their sounds
 
@@ -55,8 +61,8 @@ What the survey does tell Torlek:
   (above) is the cost of mixing sounds that were not made together.
 - **A second sound source can double the beep.** A Herdr discussion notes the terminal bell is
   a separate path from the agent sounds, so muting one leaves the other. Claude Code's
-  `terminal_bell` and Codex's `bel` method are such paths. Torlek's notifier should not also
-  ring the session's terminal for the same event; a note for the #1127 and #1130 authors.
+  `terminal_bell` and Codex's `bel` method are such paths. Torlek's notifier rings no bell
+  (checked in code), so the double would come from the agent's own settings.
 - **Herdr falls back, #1130 refuses.** Herdr reports a non-mp3 path and plays the default
   sound. #1130 asks for a refusal at configuration load, which is the stricter rule in the
   user's global guidance ("fail loud"). Keep #1130 as written.
@@ -104,10 +110,10 @@ sound like one family, and uses the scale degree where a sound ends to say "reso
 
 | Event | Notes and rhythm | Timbre | Ends on | Length | Why |
 | --- | --- | --- | --- | --- | --- |
-| finished | One note, D5 | Bell-like (partials 1, 2, 3) | The tonic (D): resolved | 0.30 s | The calmest, shortest sound: nothing is wrong |
-| question | Two notes, short then long, A4 then E5, rising | Plucked | The 2nd degree (E): unresolved | 0.46 s | A rising, open ending asks for an answer |
-| hold | Three equal pulses, G5 | Dry, woodblock-like | A single repeated pitch | 0.41 s | A note count no other event uses: urgency through pulse count |
-| failure | Two falling notes, D4 then B3, a minor third down | Triangle wave, dull | The 6th degree (B): falls away | 0.54 s | The only low, falling sound |
+| finished | One note, D5 | Bell-like (inharmonic partials 1, 2.76, 5.4: the author's choice, to audition) | The tonic (D): resolved | 0.30 s | The calmest, shortest sound: nothing is wrong |
+| question | Two notes, short then long, A4 then E5, rising | Plucked (harmonic partials 1 to 4) | The 2nd degree (E): unresolved | 0.46 s | A rising, open ending asks for an answer |
+| hold | Three equal 0.09 s pulses, G5 | Dry, woodblock-like | A single repeated pitch | 0.45 s | A note count no other event uses: urgency through pulse count |
+| failure | Two falling notes, D4 then B3, a minor third down | Triangle wave (alternating-sign odd harmonics), dull | The 6th degree (B): falls away | 0.54 s | The only low, falling sound |
 | quota | One long note, A4, slow attack | Soft sine with a slightly detuned copy | The 5th degree (A): neutral | 0.80 s | A long soft single note for an informational limit |
 
 The weakest pair is finished and quota: both are single notes, told apart by length, attack
@@ -132,6 +138,7 @@ import numpy as np
 
 SAMPLE_RATE = 44100
 TARGET_RMS_DBFS = -22.0
+GAIN_OFFSET_DB = {"finished": -3.0}
 PEAK_CEILING_DBFS = -3.0
 
 
@@ -158,10 +165,10 @@ def silence(seconds):
     return np.zeros(int(seconds * SAMPLE_RATE))
 
 
-BELL = [(1, 1.0), (2, 0.35), (3, 0.12)]
+BELL = [(1, 1.0), (2.76, 0.4), (5.4, 0.2)]
 PLUCK = [(1, 1.0), (2, 0.5), (3, 0.3), (4, 0.15)]
 WOODBLOCK = [(1, 1.0), (2.4, 0.5)]
-TRIANGLE = [(1, 1.0), (3, 1 / 9), (5, 1 / 25)]
+TRIANGLE = [(1, 1.0), (3, -1 / 9), (5, 1 / 25), (7, -1 / 49)]
 DETUNED_SOFT = [(1, 1.0), (1.007, 0.7), (2, 0.2)]
 
 D4, B3, A4, E5, D5, G5 = 62, 59, 69, 76, 74, 79
@@ -170,18 +177,19 @@ SOUNDS = {
     "finished": note(D5, 0.30, BELL, 0.10),
     "question": sequence(note(A4, 0.12, PLUCK, 0.06), note(E5, 0.34, PLUCK, 0.12)),
     "hold": sequence(
-        note(G5, 0.07, WOODBLOCK, 0.02), silence(0.10),
-        note(G5, 0.07, WOODBLOCK, 0.02), silence(0.10),
-        note(G5, 0.07, WOODBLOCK, 0.02),
+        note(G5, 0.09, WOODBLOCK, 0.03), silence(0.09),
+        note(G5, 0.09, WOODBLOCK, 0.03), silence(0.09),
+        note(G5, 0.09, WOODBLOCK, 0.03),
     ),
     "failure": sequence(note(D4, 0.20, TRIANGLE, 0.12), silence(0.04), note(B3, 0.30, TRIANGLE, 0.15)),
     "quota": note(A4, 0.80, DETUNED_SOFT, 0.30, attack_seconds=0.08),
 }
 
 
-def level_match(samples):
+def level_match(samples, event_name):
     rms = np.sqrt(np.mean(samples**2))
-    scaled = samples * (10 ** (TARGET_RMS_DBFS / 20) / rms)
+    target_dbfs = TARGET_RMS_DBFS + GAIN_OFFSET_DB.get(event_name, 0.0)
+    scaled = samples * (10 ** (target_dbfs / 20) / rms)
     ceiling = 10 ** (PEAK_CEILING_DBFS / 20)
     peak = np.max(np.abs(scaled))
     return scaled * min(1.0, ceiling / peak)
@@ -200,17 +208,17 @@ if __name__ == "__main__":
     output_dir = Path(sys.argv[1])
     output_dir.mkdir(parents=True, exist_ok=True)
     for event_name, samples in SOUNDS.items():
-        write_wav(output_dir / f"{event_name}.wav", level_match(samples))
+        write_wav(output_dir / f"{event_name}.wav", level_match(samples, event_name))
 ```
 
 Measured result of that run (16-bit mono, 44.1 kHz):
 
 | Event | Length | Peak (dBFS) | RMS (dBFS) |
 | --- | --- | --- | --- |
-| finished | 0.30 s | -10.5 | -22.0 |
+| finished | 0.30 s | -11.8 | -25.0 |
 | question | 0.46 s | -10.1 | -22.0 |
-| hold | 0.41 s | -6.1 | -22.0 |
-| failure | 0.54 s | -13.6 | -22.0 |
+| hold | 0.45 s | -7.1 | -22.0 |
+| failure | 0.54 s | -11.6 | -22.0 |
 | quota | 0.80 s | -10.5 | -22.0 |
 
 Findings from the run:
@@ -219,9 +227,16 @@ Findings from the run:
   (no measurement) for the 0.3 s file, because the EBU R128 measure needs longer sounds. So
   `loudnorm` does not suit these; the sketch scales each file to the same RMS and caps the
   peak.
-- **Equal RMS leaves unequal peaks.** The `hold` file, mostly silence between pulses, peaks
-  4.5 dB above `finished` at the same RMS. Whether that sounds balanced is for the audition;
-  the two constants at the top are the knobs.
+- **Equal RMS leaves unequal peaks.** The `hold` file, partly silence between pulses, peaks
+  about 3 to 4.7 dB above the others. Whether that sounds balanced is for the audition; the
+  constants at the top are the knobs.
+- **The sketch carries the "frequent is quieter" rule.** `GAIN_OFFSET_DB` lowers `finished`
+  by 3 dB (-25 dBFS RMS against -22) on the assumption that it fires most often: the notifier
+  raises it whenever a turn completes. The offset is a guess; set it from the owner's event
+  log.
+- **Only one sound plays per batch.** Sounds never overlap, so no combination of two has to be
+  designed; what matters is that each of the five is told apart alone, and the most urgent
+  event wins the batch.
 - **One note needs no script.** `ffmpeg -f lavfi -i "sine=frequency=587.33:duration=0.3"
   -af "afade=t=in:d=0.005,afade=t=out:st=0.05:d=0.25:curve=exp,volume=-12dB" -ac 1 out.wav`
   made a 0.30 s file; it is a plain sine, so softer and less bell-like than the sketch.
@@ -250,7 +265,9 @@ points each event at a file. Pros: nothing to maintain, matches #1130's acceptan
 users who dislike the theme still have to make their own sounds.
 
 **Option B: keep the recipe in the repository and commit the generated files.** A generator
-plus a test that regenerates and compares keeps the files honest. Pros: greppable, no new
+plus a test that regenerates and compares keeps the files honest, if the comparison has a
+tolerance (or a pinned numpy): sine and exponential results can differ in the last bit between
+numpy builds, and 16-bit rounding turns that into different samples. Pros: greppable, no new
 runtime code, the files are Torlek's. Cons: about 220 KB of binaries in git; about half a day
 including auditions with Theo.
 
@@ -284,8 +301,9 @@ Additions to #1130's text (proposed, Theo applies them):
 
 > - The user guide names `.oga` and `.wav` as safe formats and says an mp3 depends on the
 >   player. (Herdr accepts mp3 only; kitty accepts WAV and OGA on Linux.)
-> - A custom sound replaces only the sound: the notifier must not also trigger a terminal bell
->   for the same event.
+> - The user guide notes that an agent's own terminal bell (Claude Code `terminal_bell`, Codex
+>   `bel`) is a second sound path the notifier does not control. The notifier itself has no
+>   bell code.
 > - The user guide says no sound ships with Torlek and links the recipe in this report.
 
 ## Decisions for the owner
@@ -322,6 +340,7 @@ it gave one.
 | [MS Indy on IEC 60601-1-8](https://mspindy.com/technical-articles/using-audible-alarms-in-medical-equipment-iec-60601-1-8/) | Undated | Pulse count and pitch range (secondary) |
 | [Arch `sound-theme-freedesktop`](https://archlinux.org/packages/extra/any/sound-theme-freedesktop) | Package 0.8-6, built 2024-07-05 | Licence mix of the theme |
 | Local checks: `ffmpeg -h filter=sine`, `aevalsrc`, `loudnorm` and the recipe run | 2026-11-07 | Options, measurements |
+| `crates/cockpit-notify/README.md` and `src/outlets.rs` | At `1a7d869b` | Events, default sound names, one sound per batch |
 | Issues [#1130](https://github.com/Androlax2/agent-cockpit/issues/1130), [#1127](https://github.com/Androlax2/agent-cockpit/issues/1127) | 2026-11-07 | Scope |
 
 Limits:
@@ -335,7 +354,7 @@ Limits:
 - The Material sound pages and the Edworthy alarm-design paper could not be fetched; the first
   is represented by the Google Design feature, the second by a trade article.
 - Which formats `pw-play`, `paplay` and `canberra-gtk-play` decode on Theo's machine was not
-  tested; the document for #1130 should state them after a test with a fake player and one
-  real run.
+  tested (playing them would use the live audio service); the document for #1130 should state
+  them after a test with a fake player and one real run.
 - Warp and iTerm2 behaviour rests on documentation pages or search summaries, not on running
   the products. Licence summaries are not legal advice.
