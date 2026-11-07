@@ -46,13 +46,15 @@ for its brief, and [`session_manifest`] joins them to the product's packets:
 | Scope | Files | Trust | Precedence |
 | --- | --- | --- | --- |
 | `user` | `~/.claude/CLAUDE.md` | `owner` | `user`, shadowing the project's guidance |
-| `project` | `CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.md`, `.agents/rules/*.md`, `.claude/rules/*.md` of the checkout | `trusted` when the owner trusts the project (`projects.trusted`, or a clone of one), else `untrusted` | `project` |
+| `project` | `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `AGENTS.md`, `.agents/rules/*.md`, `.claude/rules/*.md` of the checkout | `trusted` when the owner trusts the project (`projects.trusted`, or a clone of one), else `untrusted` | `project` |
 
 Each entry carries the file's absolute path and hash; a file that exists and cannot be read
-is listed with the hash `unreadable`. Listing is not loading: each harness decides what it
-reads, and an `@`-imported file is part of the file that imports it, so changing only an
-import does not change the manifest. The id a brief names is the session manifest's, so it
-changes when a guidance file, or the owner's trust in the project, does.
+is listed without a hash. Listing is not loading: each harness decides what it reads. Not
+listed yet: guidance in directories above the checkout or below it, `~/.claude/rules`, and
+files a listed file `@`-imports, so changing only those does not change the manifest. The id a
+brief names is the session manifest's, so it changes when a listed file, or the owner's trust
+in the project, does; `instruction-catalog`, `manifest.json` and the launch record name the
+product bundle's id, which has no workspace.
 
 ## The launch brief
 

@@ -5,19 +5,24 @@
 //! that a harness loads it: each harness decides that, and an `@`-imported file is part of the
 //! file that imports it, so changing only an import does not change the manifest.
 
-use std::fs;
-use std::io::ErrorKind;
+use std::fs::{self, File};
+use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::manifest::{ManifestEntry, Precedence, Scope, Trust, UNREADABLE, hex};
+use crate::manifest::{ManifestEntry, Precedence, Scope, Trust, hex};
 
 /// Under the owner's home.
 const USER_FILES: [&str; 1] = [".claude/CLAUDE.md"];
 
 /// Under the project root.
-const PROJECT_FILES: [&str; 3] = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md"];
+const PROJECT_FILES: [&str; 4] = [
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    ".claude/CLAUDE.md",
+    "AGENTS.md",
+];
 
 /// Under the project root: every `.md` file directly inside is a rule.
 const PROJECT_RULE_DIRECTORIES: [&str; 2] = [".agents/rules", ".claude/rules"];
@@ -34,15 +39,15 @@ pub struct GuidanceSearch<'a> {
 }
 
 /// The guidance files that exist, user first, then project: the order of their precedence.
-/// A file that exists but cannot be read is listed with [`UNREADABLE`] for a hash.
+/// A file that exists but cannot be read is listed without a hash.
 pub fn discover_guidance(search: &GuidanceSearch<'_>) -> Vec<ManifestEntry> {
-    let user_files: Vec<(PathBuf, String)> = search
+    let user_files: Vec<(PathBuf, Option<String>)> = search
         .home
         .into_iter()
         .flat_map(|home| USER_FILES.map(|relative| home.join(relative)))
         .filter_map(hash_file)
         .collect();
-    let project_files: Vec<(PathBuf, String)> = project_candidates(search.project_root)
+    let project_files: Vec<(PathBuf, Option<String>)> = project_candidates(search.project_root)
         .into_iter()
         .filter(|(path, _)| user_files.iter().all(|(user_path, _)| user_path != path))
         .collect();
@@ -80,8 +85,8 @@ pub fn discover_guidance(search: &GuidanceSearch<'_>) -> Vec<ManifestEntry> {
     user_entries.chain(project_entries).collect()
 }
 
-fn project_candidates(root: &Path) -> Vec<(PathBuf, String)> {
-    let mut files: Vec<(PathBuf, String)> = PROJECT_FILES
+fn project_candidates(root: &Path) -> Vec<(PathBuf, Option<String>)> {
+    let mut files: Vec<(PathBuf, Option<String>)> = PROJECT_FILES
         .iter()
         .filter_map(|relative| hash_file(root.join(relative)))
         .collect();
@@ -93,11 +98,15 @@ fn project_candidates(root: &Path) -> Vec<(PathBuf, String)> {
 
 /// The `.md` files directly in `directory`, by name; an unreadable directory is itself listed
 /// as unreadable instead of silently holding no rules.
-fn rule_files(directory: &Path) -> Vec<(PathBuf, String)> {
-    let names = match fs::read_dir(directory) {
-        Ok(entries) => entries,
+fn rule_files(directory: &Path) -> Vec<(PathBuf, Option<String>)> {
+    match fs::metadata(directory) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Vec::new(),
         Err(error) if error.kind() == ErrorKind::NotFound => return Vec::new(),
-        Err(_) => return vec![(directory.to_path_buf(), UNREADABLE.to_owned())],
+        Err(_) => return vec![(directory.to_path_buf(), None)],
+    }
+    let Ok(names) = fs::read_dir(directory) else {
+        return vec![(directory.to_path_buf(), None)];
     };
     let mut paths: Vec<PathBuf> = names
         .filter_map(Result::ok)
@@ -108,16 +117,21 @@ fn rule_files(directory: &Path) -> Vec<(PathBuf, String)> {
     paths.into_iter().filter_map(hash_file).collect()
 }
 
-/// The path with the hash of the file it names; none when nothing is there or it is no file.
-fn hash_file(path: PathBuf) -> Option<(PathBuf, String)> {
+/// The path with the hash of the file it names, none when it cannot be read; nothing when
+/// nothing is there or it is no file.
+fn hash_file(path: PathBuf) -> Option<(PathBuf, Option<String>)> {
     let sha256 = match fs::metadata(&path) {
-        Ok(metadata) if metadata.is_file() => match fs::read(&path) {
-            Ok(bytes) => hex(&Sha256::digest(bytes)),
-            Err(_) => UNREADABLE.to_owned(),
-        },
+        Ok(metadata) if metadata.is_file() => stream_hash(&path).ok(),
         Ok(_) => return None,
         Err(error) if error.kind() == ErrorKind::NotFound => return None,
-        Err(_) => UNREADABLE.to_owned(),
+        Err(_) => None,
     };
     Some((path, sha256))
+}
+
+/// Streamed, so a large file costs no memory.
+fn stream_hash(path: &Path) -> io::Result<String> {
+    let mut hasher = Sha256::new();
+    io::copy(&mut File::open(path)?, &mut hasher)?;
+    Ok(hex(&hasher.finalize()))
 }

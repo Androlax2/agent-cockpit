@@ -5,8 +5,8 @@ use std::fs;
 use std::path::Path;
 
 use cockpit_agent_context::{
-    GuidanceSearch, ManifestEntry, Precedence, Scope, Trust, UNREADABLE, discover_guidance,
-    manifest, session_manifest,
+    GuidanceSearch, ManifestEntry, Precedence, Scope, Trust, discover_guidance, manifest,
+    session_manifest,
 };
 use sha2::{Digest, Sha256};
 
@@ -50,7 +50,7 @@ fn a_project_guidance_file_is_listed_with_its_path_hash_and_trust() {
         project.path().join("AGENTS.md").display().to_string()
     );
     assert_eq!(entry.scope, Scope::Project);
-    assert_eq!(entry.sha256, sha256_hex("Run cargo directly.\n"));
+    assert_eq!(entry.sha256, Some(sha256_hex("Run cargo directly.\n")));
     assert_eq!(entry.trust, Trust::Trusted);
     assert_eq!(entry.precedence, Precedence::Project);
     assert_eq!(entry.version, None);
@@ -164,7 +164,30 @@ fn a_symbolic_link_to_a_guidance_file_is_hashed_as_the_file_it_names() {
 
     let entries = discover_guidance(&search(home.path(), project.path(), true));
 
-    assert_eq!(entries[0].sha256, sha256_hex("shared\n"));
+    assert_eq!(entries[0].sha256, Some(sha256_hex("shared\n")));
+}
+
+#[test]
+fn a_rules_path_that_is_a_file_holds_no_rules() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    write(project.path(), ".claude/rules", "not a directory\n");
+
+    assert!(discover_guidance(&search(home.path(), project.path(), true)).is_empty());
+}
+
+#[test]
+fn a_local_claude_file_is_project_guidance() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    write(project.path(), "CLAUDE.local.md", "mine\n");
+
+    let entries = discover_guidance(&search(home.path(), project.path(), true));
+
+    assert_eq!(
+        paths(&entries),
+        [project.path().join("CLAUDE.local.md").display().to_string()]
+    );
 }
 
 #[test]
@@ -194,7 +217,7 @@ fn a_guidance_file_that_cannot_be_read_is_listed_as_unreadable() {
         return;
     }
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].sha256, UNREADABLE);
+    assert_eq!(entries[0].sha256, None);
 }
 
 #[test]

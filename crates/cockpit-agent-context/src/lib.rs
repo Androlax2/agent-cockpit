@@ -14,8 +14,7 @@ pub use brief::{
 pub use bundle::{CatalogEntry, Document, VERSION, catalog, document, documents, manual};
 pub use guidance::{GuidanceSearch, discover_guidance};
 pub use manifest::{
-    Manifest, ManifestEntry, Precedence, Scope, Trust, UNREADABLE, manifest, manifest_id,
-    session_manifest,
+    Manifest, ManifestEntry, Precedence, Scope, Trust, manifest, manifest_id, session_manifest,
 };
 pub use packet::{TASK_PACKET_CAP_BYTES, task_packet, unreadable_task_packet};
 pub use write::{MANIFEST_FILE, WriteError, write_bundle};

@@ -227,7 +227,7 @@ fn guidance_entry(scope: Scope, path: &str, trust: Trust) -> ManifestEntry {
         source: "guidance".to_owned(),
         scope,
         version: None,
-        sha256: "0123456789abcdef".repeat(4),
+        sha256: Some("0123456789abcdef".repeat(4)),
         trust,
         precedence: match scope {
             Scope::Product => Precedence::ProductInvariant,
@@ -271,7 +271,7 @@ fn a_session_without_guidance_gets_no_guidance_section() {
 #[test]
 fn a_guidance_file_that_cannot_be_read_is_shown_as_unreadable() {
     let mut unreadable = guidance_entry(Scope::User, "/home/owner/.claude/CLAUDE.md", Trust::Owner);
-    unreadable.sha256 = cockpit_agent_context::UNREADABLE.to_owned();
+    unreadable.sha256 = None;
 
     let text = brief(&LaunchFacts {
         guidance: vec![unreadable],
@@ -303,5 +303,32 @@ fn guidance_beyond_the_listed_files_is_counted() {
 
     assert!(text.contains("rule-3.md"), "{text}");
     assert!(!text.contains("rule-4.md"), "{text}");
-    assert!(text.contains("  - and 3 more"), "{text}");
+    assert!(text.contains("  - and 3 more (0 untrusted)"), "{text}");
+}
+
+#[test]
+fn the_count_of_unlisted_guidance_says_how_many_of_them_are_untrusted() {
+    let mut guidance: Vec<ManifestEntry> = (0..4)
+        .map(|index| {
+            guidance_entry(
+                Scope::Project,
+                &format!("/home/owner/projects/app/rule-{index}.md"),
+                Trust::Trusted,
+            )
+        })
+        .collect();
+    guidance.extend((4..7).map(|index| {
+        guidance_entry(
+            Scope::Project,
+            &format!("/home/owner/projects/app/rule-{index}.md"),
+            Trust::Untrusted,
+        )
+    }));
+
+    let text = brief(&LaunchFacts {
+        guidance,
+        ..facts()
+    });
+
+    assert!(text.contains("  - and 3 more (3 untrusted)"), "{text}");
 }

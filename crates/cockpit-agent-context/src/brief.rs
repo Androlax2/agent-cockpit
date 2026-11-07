@@ -6,7 +6,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use crate::bundle::{VERSION, document, manual};
-use crate::manifest::{ManifestEntry, Scope, UNREADABLE};
+use crate::manifest::{ManifestEntry, Scope, Trust};
 
 /// The orientation target's upper end, measured on the rendered brief; tool schemas and the
 /// harness's own instructions are not part of it.
@@ -187,11 +187,9 @@ fn push_guidance(text: &mut String, facts: &LaunchFacts) {
             Scope::User => "user",
             Scope::Project => "project",
         };
-        let hash = if entry.sha256 == UNREADABLE {
-            UNREADABLE
-        } else {
-            &entry.sha256[..GUIDANCE_HASH_DIGITS.min(entry.sha256.len())]
-        };
+        let hash = entry.sha256.as_deref().map_or("unreadable", |sha256| {
+            &sha256[..GUIDANCE_HASH_DIGITS.min(sha256.len())]
+        });
         let _ = writeln!(
             text,
             "  - {scope} {} {hash} {}",
@@ -199,9 +197,15 @@ fn push_guidance(text: &mut String, facts: &LaunchFacts) {
             entry.trust.as_str()
         );
     }
-    let unlisted = facts.guidance.len().saturating_sub(LISTED_GUIDANCE);
-    if unlisted > 0 {
-        let _ = writeln!(text, "  - and {unlisted} more");
+    let unlisted = facts.guidance.iter().skip(LISTED_GUIDANCE);
+    let (count, untrusted) = unlisted.fold((0, 0), |(count, untrusted), entry| {
+        (
+            count + 1,
+            untrusted + usize::from(entry.trust == Trust::Untrusted),
+        )
+    });
+    if count > 0 {
+        let _ = writeln!(text, "  - and {count} more ({untrusted} untrusted)");
     }
 }
 

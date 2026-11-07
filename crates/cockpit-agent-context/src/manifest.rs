@@ -71,19 +71,15 @@ pub struct ManifestEntry {
     /// The release that ships a product packet; guidance has none, its hash is its version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Of the file as written, stamp included, or [`UNREADABLE`] for a guidance file that
-    /// exists and could not be read.
-    pub sha256: String,
+    /// Of the file as written, stamp included; none for a guidance file that exists and could
+    /// not be read, which the manifest still shows instead of leaving it out.
+    pub sha256: Option<String>,
     pub trust: Trust,
     pub precedence: Precedence,
     /// Paths of the packets this one shadows: the user's guidance shadows the project's; a
     /// product invariant is shadowed by nothing and, in its own scope, shadows nothing.
     pub supersedes: Vec<String>,
 }
-
-/// Stands for the hash of a guidance file that exists and cannot be read, so the manifest
-/// shows it instead of leaving it out, and its id changes once the file becomes readable.
-pub const UNREADABLE: &str = "unreadable";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -125,7 +121,7 @@ fn computed() -> Manifest {
             source: "torlek".to_owned(),
             scope: Scope::Product,
             version: Some(VERSION.to_owned()),
-            sha256: hex(&Sha256::digest(document.file_text().as_bytes())),
+            sha256: Some(hex(&Sha256::digest(document.file_text().as_bytes()))),
             trust: Trust::Product,
             precedence: Precedence::ProductInvariant,
             supersedes: Vec::new(),
@@ -147,7 +143,7 @@ pub fn manifest_id(entries: &[ManifestEntry]) -> String {
     for entry in entries {
         hasher.update(entry.path.as_bytes());
         hasher.update([0]);
-        hasher.update(entry.sha256.as_bytes());
+        hasher.update(entry.sha256.as_deref().unwrap_or("unreadable").as_bytes());
         hasher.update([0]);
         hasher.update(entry.trust.as_str().as_bytes());
         hasher.update(b"\n");
