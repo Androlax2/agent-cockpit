@@ -63,12 +63,12 @@ benchmark, not for arithmetic.
 
 ### What the rules say for this machine (*Est.*)
 
-Assumption to confirm: both 16 GB RX 9000-series parts have about 640 GB/s of memory bandwidth
-(from the published specification, not measured here).
+Assumption to confirm: the 16 GB RX 9000-series parts are published at roughly 620 to 640 GB/s of
+memory bandwidth (the SKU is not known here, nothing was measured), so 630 GB/s is used.
 
 | Model class (source of size) | Weights | Fits 16 GiB GPU? | Speed bound | Note |
 | --- | --- | --- | --- | --- |
-| Gemma 4 12B, 4-bit (8 GB download, [Hashnode guide](https://hashnode.com/blog/best-local-llm-for-coding), 2026-10-28) | about 8 GB | Yes, room for a long context | about 80 tokens/s bound; 30 to 50 realistic | Comfortable class |
+| Gemma 4 12B, 4-bit (8 GB download, [Hashnode guide](https://hashnode.com/blog/best-local-llm-for-coding), 2026-10-28) | about 8 GB | Yes, room for a long context | about 80 tokens/s bound; 30 to 45 realistic | Comfortable class |
 | gpt-oss-20b (14 GB download, same guide) | about 14 GB | Borderline: about 2 GiB left for KV cache and overhead, so a small context | about 45 tokens/s bound; 18 to 27 realistic | The guides say tool calls need 64K context; likely needs offload |
 | Qwen3.8-27B, 4-bit (14 GB at 4-bit, vendor figure via a [secondary summary](https://www.qubrid.com/blog-news/qwen38-27b-benchmarks-official-and-independent-results)) | about 14 GB | Borderline, same as above | about 45 tokens/s bound if fully on GPU | Offload to RAM slows it much further |
 | Gemma 4 26B A4B, mixture of experts (16 to 19 GB download) | about 16 to 19 GB | No; experts spill to RAM | Faster than dense models of its size because few experts are active; not computable here | Candidate to test with offload |

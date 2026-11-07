@@ -12,8 +12,10 @@ Recommended: **go on recording, no-go on automatic selection for now.**
 
 1. **Build the record first.** Nothing in Cockpit today stores which model, effort and harness
    did a task, what it cost and whether the result was accepted without rework. The coordinator's
-   [trials log](../../.agents/skills/coordinator/trials-log.md) is the only data, 34 rows kept by
-   hand, and its sample is too small to rank models (see [Local evidence](#local-evidence)).
+   [trials log](../../.agents/skills/coordinator/trials-log.md) is the only data in the repository:
+   34 rows kept by hand. That sample is too small to rank models, and the coordinator's longer
+   private log (about 93 rows by 2026-11-06) is not in the repository to check (see
+   [Local evidence](#local-evidence)). Syncing it (F1) is the first step.
 2. **Start with an advisory shortlist** per task kind (Option A below), shown to the Chief and to
    the owner, with the evidence count and age next to every entry. This is the same conclusion as the
    legacy research (todo `c40433a5`, as the issue summarizes it) and it still holds on the greenfield
@@ -48,8 +50,8 @@ Decisions for Theo, in the order I suggest taking them (details in [Decisions](#
   [#496](https://github.com/Androlax2/agent-cockpit/pull/496) and
   [#498](https://github.com/Androlax2/agent-cockpit/pull/498), `git log` trailers, the coordinator's
   trials log, and a read-only probe of this session's host.
-- **Commands.** Trailer counts: `git log main --format='%(trailers:key=Co-Authored-By,valueonly)'`
-  grouped by line. Trial counts: the table rows of `trials-log.md` grouped by model and kind;
+- **Commands.** Trailer counts, pinned to the branch base `728c3fff` (1,088 commits):
+  `git log 728c3fff --format='%(trailers:key=Co-Authored-By,valueonly)'` grouped by line. Trial counts: the table rows of `trials-log.md` grouped by model and kind;
   intervals are Wilson at 95%. Hardware: the read-only probe in the appendix.
 - **Not found.** The coordinator's `.handoff/h2h-154/`, `.handoff/h2h-494/` and
   `.handoff/astra-trial/` folders named in the issue are not on this host (searched under the
@@ -125,10 +127,14 @@ Two limits to carry forward. First, **`git` trailers cannot replace the log**: o
 2026-11-05, 344 of 1,088 commits carry `Co-Authored-By: Claude Opus 5.5`, 32 Sonnet 5.5, 7 Fable
 5.1 and 705 carry none, so the trailer undercounts and names no effort or harness. Second, the
 coordinator keeps a longer private log (its working notes, not in the repository, not verified
-here). Its 2026-11-06 comparison of about 93 rows reports the same pattern: security work on Opus
-needed CI fixes in 10 of 11 PRs and the notes attribute that to sandbox CI difficulty, and Fable
-had 4 of 10 PRs needing a nudge after idling. That is *Secondary* evidence; the repository copy
-should be synced before anyone relies on it (follow-up F1).
+here). Its 2026-11-06 comparison of about 93 rows reports: security work on Opus needed CI fixes in
+10 of 11 PRs (the notes attribute that to sandbox CI difficulty, not the model), and Fable had 4
+of 10 PRs needing a nudge after idling. That is far from the 5 of 12 Opus rows above, because it
+counts a different, larger set and classifies "security" separately from "risky"; the two cannot
+be reconciled from here. It is *Secondary* evidence. **Until the longer log is synced and its
+rows re-counted (follow-up F1), treat the repository's 34 rows as a sample of unknown
+representativeness, and treat the shortlist below as the coordinator's rule restated, not as a
+finding.**
 
 ## External evidence
 
@@ -163,7 +169,10 @@ should be synced before anyone relies on it (follow-up F1).
   show no CI signal either way. All three can be true: a premium model helps on the hardest
   long-horizon tasks and is wasted on contained ones.
 - **Defaults.** Anthropic made `medium` the default for Opus 5.5, while the coordinator runs Opus
-  at `high`. Without a Cockpit-side sweep neither is known to be right for this repository.
+  at `high`. For Sonnet 5.5 the models overview lists `high` as the API default, while the
+  announcement says Claude Code and the apps default to `medium`; a worker started without
+  `--effort` therefore gets a default the record must capture as "effective", not "unset". Without
+  a Cockpit-side sweep no level is known to be right for this repository.
 - **Perception vs measurement.** METR found developers' own speed estimates 39 points off.
   A routing system that learns from worker or owner impressions inherits that error; it needs
   measured time to accepted completion.
@@ -189,7 +198,7 @@ says what would change it.
 
 | Task kind | Proposed first choice | Escalate to | Evidence basis | Would change it |
 | --- | --- | --- | --- | --- |
-| Bounded fix, one file, clear test | Sonnet 5.5, `medium` | Opus 5.5 `high` after a failed review | 4 counted Sonnet-medium contained rows, 2 with a CI fix (both flake or main drift) | 10 records per cell |
+| Bounded fix, one file, clear test | Sonnet 5.5, `medium` (the coordinator's rule; `high` is the alternative) | Opus 5.5 `high` after a failed review | Weak: 4 counted Sonnet `medium` rows, 2 with a CI fix (both flake or main drift), against 1 of 3 for Sonnet `high`. The numbers show no usable difference, and if anything lean toward `high`. | 10 records per cell; a Phase 2 pair of `medium` vs `high` |
 | Documentation, mechanical | Sonnet 5.5, `low` or `medium` | none | 1 docs row (#777), clean | A defect found only after merge |
 | Synthesis and research report | Sonnet 5.5, `high` | Opus 5.5 `high` | 4 of 5 Sonnet research rows had no CI fix | A reviewer finding unsupported claims |
 | Ordinary implementation, contained | Sonnet 5.5, `high` (up to a few hundred lines) | Opus 5.5 `high` | Mixed; CI-fix share 3 of 7 for Sonnet, 1 of 2 for Opus | Failure classification |
@@ -198,8 +207,9 @@ says what would change it.
 | Independent review | A different model from the author, one step above its effort if affordable | none | The merged #498 used two models and a blind review | A measured miss rate |
 
 Two constraints apply to every row. **The harness is not free:** today only the Claude adapter
-reports the `Model` and `Effort` capabilities (`crates/cockpit-claude/src/lib.rs`; Codex and
-OpenCode do not, so a start that chooses one is refused by design, per the #701 decision). And
+reports the `Model` and `Effort` capabilities (`crates/cockpit-claude/src/lib.rs`). The Codex
+and OpenCode capability lists (`crates/cockpit-codex/src/lib.rs`, `crates/cockpit-opencode/src/lib.rs`)
+name neither, so a start that chooses one is refused by design, per the #701 decision. And
 **effort and model are fixed at start** (#701), so escalation means ending the session and
 starting another, which costs the work in progress.
 
@@ -262,8 +272,10 @@ research found. A tie-break weight is allowed only when Theo sets it.
 - **Strength of evidence:** under 3 records: none. 3 to 9: weak, shown but never a rule. 10 or
   more: supported. A record older than 90 days, or from a harness version two minor releases back,
   is shown dimmed and not counted toward the 10.
-- **Escalation after failure:** after two blocking review findings or two own-fault CI failures,
-  the Chief proposes one step up (effort, then model). It asks Theo when the step exceeds the
+- **Escalation after failure:** after two blocking review findings, or two CI failures that the
+  record classifies as own-fault, the Chief proposes one step up (effort, then model). Own-fault
+  needs the classification of Phase 0; until it exists, only the review-finding trigger applies and
+  the Chief classifies a CI failure by hand before counting it. It asks Theo when the step exceeds the
   budget. It never switches silently, which matches the statement already in #412.
 - **When an expensive reviewer pays:** when the expected cost of an escaped defect (rework,
   incident, trust) times the miss rate of the cheaper review exceeds the cost of the stronger review.
@@ -300,9 +312,10 @@ The long version, with commands and estimates, is in
   useful context; a 14 GB class (27B at 4-bit, gpt-oss-20b) fits the GPU only with a small context
   and is the borderline case; anything needing 48 GB or more (Qwen3-Coder-Next, gpt-oss-120b) cannot
   run.
-- **Quality (third party and vendor, weak):** vendor-reported agentic scores for the newest open
-  27B model are well below the Claude 5.5 family's on comparable suites, and no independent
-  coding-agent result for a model that fits this machine was found. Treat local models as
+- **Quality (third party and vendor, weak):** the only numbers found are vendor-reported, secondary, for a
+  27B model that fits this GPU only marginally, and they are not comparable with Claude's (other
+  harness, other Claude version). For the 8 to 12 billion class that does fit comfortably, no
+  coding-agent result was found at all. No measured gap to the hosted models can be stated. Treat local models as
   candidates for bounded, well-tested tasks (documentation, mechanical fixes, first-pass review),
   pending the benchmark.
 - **Harness support (docs, 2026-11-07):** OpenCode discovers Ollama and LM Studio on localhost
@@ -319,9 +332,9 @@ All *Proposed*. Phase 0 spends nothing beyond normal delivery.
 
 | Phase | What | Budget | Success | Stop |
 | --- | --- | --- | --- | --- |
-| 0, record | Backfill the 34 log rows into the record; add the fields; classify CI failures | Normal work; about two days for the schema and backfill | Every merged worker PR has a complete row for 4 weeks | A field cannot be filled without reading private content |
+| 0, record | Backfill the synced log (F1) into the record; add the fields; classify CI failures | Normal work; about two days for the schema and backfill | Every merged worker PR has a complete row for 4 weeks | A field cannot be filled without reading private content |
 | 1, advise | Show the shortlist beside each worker start | Normal work | Theo follows or overrides it knowingly; no cell is presented as supported below 10 records | Theo finds the display misleading |
-| 2, paired trials (optional, paid) | For 4 task kinds, 2 configurations, 3 repeats each: 24 task-runs on matched revisions, equal briefs, executable checks and blind review | A ceiling Theo sets in allowance share or dollars; I give no figure because Cockpit has no measured usage per accepted PR yet. As an order of magnitude only, Insight's study reports about $3 to $33 per merged feature at API-equivalent prices on older models | At 10 runs per cell each interval is about 26 points either side, so only differences near 50 points between two cells show; Phase 2 tests for large effects only | The ceiling is reached, or a trial causes a production side effect |
+| 2, paired trials (optional, paid) | For 4 task kinds, 2 configurations, 3 repeats each: 24 task-runs on matched revisions, equal briefs, executable checks and blind review. A screen, not a source of supported cells | A ceiling Theo sets in allowance share or dollars; I give no figure because Cockpit has no measured usage per accepted PR yet. As an order of magnitude only, Insight's study reports about $3 to $33 per merged feature at API-equivalent prices on older models | With 3 runs per cell an interval is about 60 points wide, so only near-total differences (3 of 3 against 0 of 3) show. Supported cells (10 records) come from Phases 0 and 1, not from this phase. Reaching 10 per cell would take about 80 runs and needs a separate decision | The ceiling is reached, or a trial causes a production side effect |
 | 3, rules | Write Option B from supported cells, owner-approved | None | At least one task kind has a supported cell and a rule beats the baseline on accepted-completion and allowance share | A model update invalidates the cell |
 
 **Baseline:** the current coordinator rule on the same task kinds. **Evidence before activating
@@ -360,7 +373,7 @@ Proposed follow-ups. **None is filed**; filing them is Theo's call.
 
 ## What this does not show
 
-- No ranking of models. The local data is 34 rows, the head-to-head runs left no timing or usage,
+- No ranking of models. The repository's local data is 34 rows (the longer private log is unverified), the head-to-head runs left no timing or usage,
   and external scores are mostly vendor-published and unreplicated.
 - Nothing about Codex or OpenCode workers' quality in Cockpit: there are no trial rows for them.
 - No local-model result. The benchmark is specified, not run.
