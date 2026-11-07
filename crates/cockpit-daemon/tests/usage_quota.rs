@@ -187,7 +187,7 @@ async fn the_owner_reads_each_accounts_windows_as_recorded_and_judged_now() {
 
     let accounts = polled.asked(&daemon).await.unwrap();
 
-    assert_eq!(accounts.len(), 1, "{accounts:#?}");
+    assert_eq!(accounts.len(), 1);
     let account = &accounts[0];
     assert_eq!(
         (
@@ -224,10 +224,7 @@ async fn the_owner_reads_each_accounts_windows_as_recorded_and_judged_now() {
             QuotaWindowStateView::Available
         )
     );
-    assert!(
-        resets_at.is_some_and(|at| at > common::unix_now()),
-        "{resets_at:?}"
-    );
+    assert!(resets_at.is_some_and(|at| at > common::unix_now()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -240,8 +237,7 @@ async fn an_account_the_provider_blocks_is_answered_blocked_even_without_windows
 
     assert_eq!(
         (accounts[0].is_blocked, accounts[0].windows.len()),
-        (true, 0),
-        "{accounts:#?}"
+        (true, 0)
     );
 }
 
