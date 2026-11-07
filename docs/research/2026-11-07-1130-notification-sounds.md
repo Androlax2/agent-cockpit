@@ -1,128 +1,243 @@
-# Notification sounds: what comparable tools use, and what Torlek could ship
+# Making Torlek's own notification sounds: a sound-design guide
 
-Research for issue [#1130](https://github.com/Androlax2/agent-cockpit/issues/1130)
-(milestone v0.1.0-alpha.7, owner request from Theo, 2026-11-07: "I'd like to create custom sounds for each
-notification, I don't really like the default one."). It follows the layout of the other
-reports in this folder. **Research and proposal.** Merging this document accepts research
-delivery only: it adds no audio file, no product code and no dependency, it does not implement
-#1130 (which waits on #1127) and it leaves #1130 open. Every recommendation below is a
-proposal for Theo to accept or change.
+For whoever builds Torlek's own notification sounds (Theo first, then the issue that follows
+[#1130](https://github.com/Androlax2/agent-cockpit/issues/1130)). Research for #1130
+(milestone v0.1.0-alpha.7, owner request from Theo, 2026-11-07: "I'd like to create custom
+sounds for each notification, I don't really like the default one"). It follows the layout of
+the other reports in this folder.
+
+**Research and proposal.** Merging this document accepts research delivery only: it adds no
+audio file, no product code and no dependency, it does not implement #1130 (which waits on
+[#1127](https://github.com/Androlax2/agent-cockpit/issues/1127)) and it leaves #1130 open.
+Every recommendation below is a proposal for Theo to accept or change.
+
+**Scope, as Theo clarified it on 2026-11-07** (relayed by the coordinator session after the
+first version of this report): the goal is not to copy, ship or recommend other projects'
+sound files. It is to learn how other tools got or made their sounds, so that Torlek can
+create its own. The report is therefore a guide: techniques with sources, then concrete
+recipes Torlek can synthesize itself.
 
 ## The question
 
 Today each notification event plays a fixed freedesktop sound name from the owner's sound
 theme (#1130 lists `dialog-error`, `dialog-warning`, `message-new-instant`,
-`alarm-clock-elapsed`, `complete`). The events are failure, hold, question, quota and finished.
-Theo dislikes the default theme sounds and wants his own per event. Three things to learn:
+`alarm-clock-elapsed`, `complete`). The events are failure, hold, question, quota and
+finished. Theo dislikes the theme sounds. What would five original sounds look like, how are
+such sounds designed, and how does each stay distinct from the others?
 
-1. What do Herdr and comparable tools play, where do those sounds come from, and under what
-   licence?
-2. Could Torlek ship or recommend them?
-3. What makes a notification sound good, so Theo's own set (and any default set) works?
+Not checked: `crates/cockpit-notify` is not in this checkout (base commit `728c3fff`), so the
+event names and default sound names are taken from the text of #1130, not from code.
 
-Not checked: `crates/cockpit-notify` is not in this checkout (base commit `728c3fff`; the report's own commit adds only this file), so the event
-names and default sound names are taken from the text of #1130, not from code.
+## How the surveyed tools got their sounds
 
-## What the surveyed tools do
+Read on 2026-11-07. The finding is mostly an absence: almost no project says how its sounds
+were made.
 
-Read on 2026-11-07 unless a date says otherwise. "Origin" is where the sound file came from.
-
-| Tool | Events with a sound | Sounds | Origin and licence of the audio | Owner can change it |
-| --- | --- | --- | --- | --- |
-| Herdr | done, request (2) | `assets/sounds/done.mp3` (34,560 bytes), `request.mp3` (46,811 bytes), embedded in the binary | Not stated. The repository is Apache-2.0; no separate licence for the audio was found. Added 2026-03-27 | Yes: `ui.sound.path` (all), `ui.sound.done_path`, `ui.sound.request_path`, mp3 only; `ui.sound.agents.<name>` is `default`, `on` or `off` per agent; plays only for background workspaces. A file that is not mp3 is reported and the default sound plays |
-| OpenCode | default, question, permission, error, subagent done (5) | 45 sounds, each as mp3 and aac, in `packages/ui/src/assets/audio`, in five families: `alert` (10), `bip-bop` (10), `nope` (12), `staplebops` (7), `yup` (6). Defaults: `bip-bop-01` general, `bip-bop-03` question, `staplebops-06` permission, `nope-03` error, `yup-01` subagent done | Not stated in what was read. The repository is MIT. Notifications and sounds ship disabled in v1 (PR merged 2026-05-13) | Sound packs can be registered by plugins; the TUI config has an `attention` block. Community plugins add more (below) |
-| Zed | agent done and input required, one shared sound | `assets/sounds/agent_done.wav` (459,980 bytes), added 2025-05-27 | Not stated. Zed's repository mixes licences (GitHub reports none for the whole; a `LICENSE-GPL` file exists) | On or off only: `play_sound_when_agent_done` is `never` (default), `when_hidden` or `always`. No custom file |
-| Claude Code | None of its own | Desktop notification or terminal bell, depending on terminal | Not applicable | `preferredNotifChannel` (`terminal_bell` and others); a `Notification` hook runs any command, and the official example is `afplay /System/Library/Sounds/Glass.aiff` |
-| Codex | None of its own | `tui.notification_method` is `auto`, `osc9` or `bel`; `tui.notification_condition` is `unfocused` or `always` | Not applicable | The `notify` program receives `agent-turn-complete` as JSON and can play anything; project config ignores `notify` |
-| Warp | None found | Toasts and desktop alerts for completion, errors and waiting for input | Not applicable | No sound setting found in Warp's documentation |
-| Ghostty | Terminal bell | `bell-features` includes `audio`, `system`, `attention`, `title`, `border` | The sound is the owner's file or the system alert | `bell-audio-path` (absolute, `~/` or config-relative) and `bell-audio-volume` (0.0 to 1.0, default 0.5); since 1.2.0 on GTK and 1.3.0 on macOS |
-| kitty | Terminal bell | System bell through libcanberra, or the compositor's bell on Wayland | System sound theme | `bell_path` (WAV or OGA on Linux, AIFF, MP3 or WAV on macOS), `linux_bell_theme`, `enable_audio_bell`, `command_on_bell` |
-| iTerm2 | Terminal bell | System bell sound | macOS | "Silence bell" switch; a trigger action "Ring Bell" plays the standard system bell and "Post Notification" posts to Notification Center. No custom bell sound is documented on the pages read |
-
-Findings that matter for #1130:
-
-- **No surveyed tool lets the owner pick a file for five distinct events.** Herdr has two file
-  keys, OpenCode five built-in ids, Zed one shared sound. Torlek's five-event, per-file
-  setting is finer than all of them.
-- **Tools that ship sounds ship very few, and say nothing about their licence.** Herdr, OpenCode
-  and Zed embed their own audio without a visible origin or licence for the files. Torlek
-  cannot treat "a popular tool ships it" as a licence.
-- **OpenCode's families are a usable vocabulary.** Its names (`yup` for done, `nope` for
-  error, `bip-bop` for neutral and question, `staplebops` for permission) show the same
-  event-to-character mapping Torlek needs, with several variants per event.
-- **Herdr falls back, #1130 refuses.** Herdr reports a non-mp3 path and plays the default.
-  #1130 asks for a refusal at configuration load, which is the stricter rule in the user's
-  global guidance ("fail loud"). Keep #1130 as written.
-- **A second sound source can double the beep.** A Herdr discussion notes that the terminal
-  bell is a separate path from Herdr's completion sounds, so muting agent sounds still leaves
-  bells. Claude Code's `terminal_bell` and Codex's `bel` method are such paths. Torlek's
-  notifier should not also trigger a bell in the session's terminal; this is a note for the
-  #1127 and #1130 authors, not a finding about the current code.
-- **Level matching is real work.** One user's dotfiles moved Claude Code, Devin and Codex hook
-  sounds into Herdr's settings, then changed the level of both files five times (first to the
-  hooks' old mpv volume, then to 30%, 10%, 20% and finally 26.7% amplitude). Any set Torlek ships or recommends should come already
-  level-matched.
-
-### Community setups around Claude Code and OpenCode
-
-| Setup | What it uses | Licence and origin |
+| Tool | What it plays | How the sounds were made or sourced |
 | --- | --- | --- |
-| Blog post by alexop.dev, 2026-02-11 | Age of Empires clips on four hooks (`SessionStart` horn, `UserPromptSubmit` "yes", `Stop` "All hail", `PreCompact` "wololo"), played with `afplay ... &` | Game audio of unstated provenance; the post's CC BY 4.0 footer covers the text, not the clips. Not shippable |
-| `StaticB1/claude-code-sounds` | One `notification.wav` on the `PermissionRequest` hook | MIT repository; audio origin not stated |
-| `opencode-plugin-boops` v2.7.0 | 448 named sounds (`pristine`, `relax`, ...), per-event TOML, local path or URL allowed | Plugin MIT; sounds from notificationsounds.com under CC BY (attribution) |
-| `opencode-starcraft` | StarCraft voice lines for `session.idle` and `permission.asked` | Downloads game audio on first run and distributes none: the author avoids shipping it |
-| `opencode-alert`, `opencode-notify` (retired) | macOS system sounds (`Glass`, `Submarine`, `Blow`) or small `.wav` files | System sounds, not redistributable |
+| Herdr | Two embedded mp3 files, `done` and `request` (34,560 and 46,811 bytes), added 2026-03-27 | Not stated. Owners can replace them (`ui.sound.path`, `done_path`, `request_path`; mp3 only). One user's dotfiles lowered the same two files with ffmpeg five times before the level felt right |
+| OpenCode | 45 embedded sounds in five families (`alert`, `bip-bop`, `nope`, `staplebops`, `yup`); defaults: `bip-bop-01` general, `bip-bop-03` question, `staplebops-06` permission, `nope-03` error, `yup-01` subagent done | Not stated. The family names show a vocabulary: a positive, a negative, a neutral, a "needs you" and an alert character, each with several variants. Ships disabled in v1 (2026-05-13) |
+| Zed | One embedded wav, `agent_done`, for both "done" and "input required" (added 2025-05-27) | Not stated. The owner can only choose `never`, `when_hidden` or `always` |
+| Claude Code, Codex | Nothing of their own; terminal bell, desktop notification, or a hook that runs a player | Owners run a system sound (`afplay .../Glass.aiff`) or a downloaded file |
+| Warp | Toasts and desktop alerts; no sound setting found in its documentation | Not applicable |
+| Ghostty, kitty, iTerm2 | The terminal bell: the system sound, or an owner file (`bell-audio-path`, `bell_path`) | The owner's file or the system theme |
+| Community hook setups | Game voice lines (Age of Empires, StarCraft), a stock wav, 448 stock sounds from a notification-sound site, macOS system sounds | Taken from games, stock sites or the OS. The StarCraft plugin downloads the clips on first run and ships none |
 
-The common pattern is a hook that runs a player in the background, with the sound as the
-owner's choice and the tool shipping nothing, or shipping an unexplained handful. Game audio
-is popular among individuals and is the one thing the authors themselves avoid distributing.
+What the survey does tell Torlek:
 
-Chat tools such as Slack offer a fixed list of built-in sounds (the default is "Knock Brush");
-whether custom uploads are supported is disputed in the secondary sources found, so they are
-not used as evidence. CI tools were not surveyed: their notifications go through chat or email.
+- **Torlek's five events are finer than any surveyed tool.** Herdr keys two files, OpenCode five
+  built-in ids, Zed one sound. Original sounds would have to be made for a finer split.
+- **The two well-documented cases of how sounds were made are Google's, not a terminal
+  tool's.** Zafrin and O'Sullivan describe recording two piano notes an octave apart for a
+  brand sound, building progress cues from stacked chords, and reusing one key across the
+  family. Section "Techniques" builds on them.
+- **Level matching is where hand-made sets cost time.** Five amplitude changes on two files
+  (above) is the cost of mixing sounds that were not made together.
+- **A second sound source can double the beep.** A Herdr discussion notes the terminal bell is
+  a separate path from the agent sounds, so muting one leaves the other. Claude Code's
+  `terminal_bell` and Codex's `bel` method are such paths. Torlek's notifier should not also
+  ring the session's terminal for the same event; a note for the #1127 and #1130 authors.
+- **Herdr falls back, #1130 refuses.** Herdr reports a non-mp3 path and plays the default
+  sound. #1130 asks for a refusal at configuration load, which is the stricter rule in the
+  user's global guidance ("fail loud"). Keep #1130 as written.
 
-## Where sounds can come from, and whether Torlek could use them
+## Techniques, with sources
 
-The repository is Apache-2.0. Three licence questions decide everything: may the file be
-redistributed in a repository or release, is attribution needed, and does the licence force
-terms on the project. "Link only" below means the user guide may point an owner at the site;
-it does not mean copying files into a Torlek folder or release.
+| Technique | What to do | Source |
+| --- | --- | --- |
+| Keep it short | Short sounds keep up with the interface; no single note under 0.0825 s or it may not be noticed | Brewster, Wright and Edwards, "Guidelines for the Creation of Earcons" (Glasgow; no year on the page) |
+| Treat loudness as the main risk | Intensity is "the main cause of annoyance due to sound"; level-match every sound; the more often an event fires, the quieter its sound | Same; Zafrin and O'Sullivan, Google design feature "Good Vibrations" (undated) |
+| Separate sounds by timbre first, then rhythm and register | Choose timbres that are "subjectively easy to tell apart"; start a family from timbre, register and rhythm, then refine with pitch and intensity | Brewster et al. |
+| Use rhythm and note count, not pitch alone | Different note counts tell rhythms apart; similar rhythms are confused (Patterson 1982, cited by Brewster); register helps only if the registers differ widely | Brewster et al. |
+| Shape the envelope | An envelope is attack, sustain and decay. A longer attack gives a smoother start; "decay is the fade-out time". A sharp-attack accent keeps a sound audible if the melody is missed | sfxr readme (DrPetter, 2007-12-14); Ahva, Futurice, 2017-09-05 |
+| Pick the waveform for the character | sfxr offers a small set of base waveforms (square by default, also sawtooth, sine, noise). A sine is soft, a square or sawtooth is buzzy; adding partials to a sine makes bell, pluck or woodblock timbres | sfxr readme; pyfxr documentation (undated) |
+| Choose intervals relative to a key | Treating a melody as a bag of intervals had no predictive power; intervals counted relative to the key predicted happy versus sad passages with 85% accuracy. So make "resolved" and "unresolved" by which scale degree a sound ends on, not by an isolated interval | Kaygusuz and Zuluaga, "Impact of Intervals on the Emotional Effect in Western Music", arXiv 2018-12-10. A 2023 summary on musicscience.net notes automatic effects may be weaker than self-reports |
+| Stack for progress | Share a first note, add notes or chords as the state advances (Google: a two-note, a three-note and a four-note chord as a subject nears the centre; Futurice: the same first note, a tritone for the final stage) | Google design feature; Ahva |
+| Use one key as the palette | Let variations differ but keep one system: Google reuses a G-based key across newer sounds "like a color palette" | Google design feature |
+| Add a little warmth | A tiny gap between two close notes gives a "flamming" playfulness (Google); a slight detune between two copies of a note gives a slow beat | Google design feature; the beat is the author's addition, to audition |
+| Avoid the extremes | Bass distorts on small speakers; a simple, light high note rarely startles | Ahva |
+| Encode priority by pulse count | Medical alarm standard IEC 60601-1-8 separates priorities by the number of pulses in a burst, each pulse with a fundamental between 150 and 1000 Hz. An analogy only: Torlek's events are not safety alarms | MS Indy summary (undated); the standard itself was not read |
+| Use silence on purpose | Not every event needs a sound; too many dilute the ones that matter | Google design feature |
 
-| Source | Licence (as found) | Could Torlek ship the files? | Could Torlek recommend them? |
+Not found in any source read: a numeric loudness target or a maximum length for a desktop
+notification sound. The lengths and levels below are proposals.
+
+### Tools that can make these sounds on the host
+
+Checked on this host on 2026-11-07: `ffmpeg` n9.0.2, `python3` with numpy 2.5.4, and the
+libvorbis encoder. `sox` is not installed.
+
+- **ffmpeg** has a `sine` source (`frequency`, `duration`, `sample_rate`), an `aevalsrc`
+  expression source, `afade` (`type`, `duration`, curves such as `exp` and `qsin`), `adelay`
+  and `loudnorm`. It is good for one-note sounds and for converting to `.oga`.
+- **numpy plus the standard `wave` module** gives full control over partials, envelopes and
+  sequences; the sketch below uses only those.
+- **sfxr and its ports** (DrPetter's sfxr is MIT-licensed, by its readme) make chip-style
+  sounds from a few sliders. They suit blips, not bell or woodblock timbres; mentioned only
+  because several game-sound tools follow its envelope vocabulary.
+
+## Keeping five events distinct
+
+The proposal gives each event its own rhythm and timbre, shares one key (D major) so the five
+sound like one family, and uses the scale degree where a sound ends to say "resolved" or
+"waiting".
+
+| Event | Notes and rhythm | Timbre | Ends on | Length | Why |
+| --- | --- | --- | --- | --- | --- |
+| finished | One note, D5 | Bell-like (partials 1, 2, 3) | The tonic (D): resolved | 0.30 s | The calmest, shortest sound: nothing is wrong |
+| question | Two notes, short then long, A4 then E5, rising | Plucked | The 2nd degree (E): unresolved | 0.46 s | A rising, open ending asks for an answer |
+| hold | Three equal pulses, G5 | Dry, woodblock-like | A single repeated pitch | 0.41 s | A note count no other event uses: urgency through pulse count |
+| failure | Two falling notes, D4 then B3, a minor third down | Triangle wave, dull | The 6th degree (B): falls away | 0.54 s | The only low, falling sound |
+| quota | One long note, A4, slow attack | Soft sine with a slightly detuned copy | The 5th degree (A): neutral | 0.80 s | A long soft single note for an informational limit |
+
+The weakest pair is finished and quota: both are single notes, told apart by length, attack
+and timbre. Audition that pair first. How often each event fires is unknown here; the rule
+"frequent events are quietest" should be checked against the owner's event log once #1127
+lands.
+
+## A recipe Torlek can run
+
+The sketch below makes all five WAV files. It was run on 2026-11-07 into a scratch folder
+outside the repository (nothing was committed) with Python and numpy 2.5.4, and measured with
+ffprobe and ffmpeg `astats`. The audio was not heard: an agent cannot listen, so Theo must
+audition it.
+
+```python
+"""Sketch: synthesize five notification sounds with numpy and the stdlib wave module."""
+import sys
+import wave
+from pathlib import Path
+
+import numpy as np
+
+SAMPLE_RATE = 44100
+TARGET_RMS_DBFS = -22.0
+PEAK_CEILING_DBFS = -3.0
+
+
+def midi_to_hz(midi_note):
+    return 440.0 * 2 ** ((midi_note - 69) / 12)
+
+
+def note(midi_note, seconds, partials, decay_seconds, attack_seconds=0.005):
+    time = np.linspace(0, seconds, int(seconds * SAMPLE_RATE), endpoint=False)
+    fundamental = midi_to_hz(midi_note)
+    wave_sum = sum(
+        weight * np.sin(2 * np.pi * fundamental * ratio * time) for ratio, weight in partials
+    )
+    envelope = np.exp(-time / decay_seconds) * np.minimum(1.0, time / attack_seconds)
+    tail = np.minimum(1.0, (seconds - time) / 0.01)
+    return wave_sum * envelope * tail
+
+
+def sequence(*parts):
+    return np.concatenate(parts)
+
+
+def silence(seconds):
+    return np.zeros(int(seconds * SAMPLE_RATE))
+
+
+BELL = [(1, 1.0), (2, 0.35), (3, 0.12)]
+PLUCK = [(1, 1.0), (2, 0.5), (3, 0.3), (4, 0.15)]
+WOODBLOCK = [(1, 1.0), (2.4, 0.5)]
+TRIANGLE = [(1, 1.0), (3, 1 / 9), (5, 1 / 25)]
+DETUNED_SOFT = [(1, 1.0), (1.007, 0.7), (2, 0.2)]
+
+D4, B3, A4, E5, D5, G5 = 62, 59, 69, 76, 74, 79
+
+SOUNDS = {
+    "finished": note(D5, 0.30, BELL, 0.10),
+    "question": sequence(note(A4, 0.12, PLUCK, 0.06), note(E5, 0.34, PLUCK, 0.12)),
+    "hold": sequence(
+        note(G5, 0.07, WOODBLOCK, 0.02), silence(0.10),
+        note(G5, 0.07, WOODBLOCK, 0.02), silence(0.10),
+        note(G5, 0.07, WOODBLOCK, 0.02),
+    ),
+    "failure": sequence(note(D4, 0.20, TRIANGLE, 0.12), silence(0.04), note(B3, 0.30, TRIANGLE, 0.15)),
+    "quota": note(A4, 0.80, DETUNED_SOFT, 0.30, attack_seconds=0.08),
+}
+
+
+def level_match(samples):
+    rms = np.sqrt(np.mean(samples**2))
+    scaled = samples * (10 ** (TARGET_RMS_DBFS / 20) / rms)
+    ceiling = 10 ** (PEAK_CEILING_DBFS / 20)
+    peak = np.max(np.abs(scaled))
+    return scaled * min(1.0, ceiling / peak)
+
+
+def write_wav(path, samples):
+    pcm = (np.clip(samples, -1, 1) * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(SAMPLE_RATE)
+        wav_file.writeframes(pcm.tobytes())
+
+
+if __name__ == "__main__":
+    output_dir = Path(sys.argv[1])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for event_name, samples in SOUNDS.items():
+        write_wav(output_dir / f"{event_name}.wav", level_match(samples))
+```
+
+Measured result of that run (16-bit mono, 44.1 kHz):
+
+| Event | Length | Peak (dBFS) | RMS (dBFS) |
 | --- | --- | --- | --- |
-| freedesktop sound theme (`sound-theme-freedesktop` 0.8-6) | A mix: CC-BY-3.0, CC-BY-4.0, CC-BY-SA-3.0, GPL-2.0-only, GPL-2.0-or-later, LGPL-2.0-or-later (Arch Linux package metadata, built 2024-07-05) | No. The share-alike and GPL parts do not fit an Apache-2.0 tree, and which file carries which licence was not found (the package's per-file copyright file was not read), so a CC-BY-only subset could not be shown to be safe. Referring to the sounds by name, as today, ships nothing | Yes, as the fallback |
-| Kenney "Interface Sounds" | CC0 (kenney.nl page): 100 Ogg files, no attribution needed | Yes, legally; attribution is courtesy | Yes |
-| notificationsounds.com | CC BY 4.0: credit with a link back, note modifications; do not rehost the whole library (terms and licence pages) | Yes, with a `NOTICE` credit; one file at a time | Yes |
-| Pixabay | Attribution not required; "you cannot sell or distribute Content ... on a Standalone basis" (licence summary) | Doubtful: a sound file in a repository is standalone distribution. Not advised | Link only |
-| Freesound | Per file: CC0, CC BY or CC BY-NC (FAQ). NC cannot go in a project that may be sold | Only CC0, checked file by file | Link only, filtered to CC0 |
-| Mixkit | Own "Sound Effects Free License"; its terms were not read | Unknown: treat as no | Link only |
-| Google Assistant sound library | CC BY 4.0, but the page says distributing the files separately is not permitted (search summary of the page) | No | No |
-| Game or film audio (Age of Empires, StarCraft, ...) | Copyright of the publisher | No | Only as Theo's private choice, never in the repository |
-| Original sounds made for Torlek | Torlek's own, under the repository licence | Yes | Yes |
+| finished | 0.30 s | -10.5 | -22.0 |
+| question | 0.46 s | -10.1 | -22.0 |
+| hold | 0.41 s | -6.1 | -22.0 |
+| failure | 0.54 s | -13.6 | -22.0 |
+| quota | 0.80 s | -10.5 | -22.0 |
 
-This is a reading of the licence summaries, not legal advice; the full licence text governs.
+Findings from the run:
 
-Concrete CC0 candidates, named from a community mirror of the Kenney pack
-([`Calinou/kenney-interface-sounds`](https://github.com/Calinou/kenney-interface-sounds), WAV
-conversions; the originals are Ogg and the names may differ): `error_001` to `error_008`,
-`confirmation_001` to `confirmation_004`, `question_001` to `question_004`, `bong_001`,
-`glass_001` to `glass_006`, `pluck_001`, `pluck_002`. Nothing was downloaded or auditioned.
+- **Match by RMS, not by LUFS.** ffmpeg's `ebur128` reports an integrated loudness of -70 LUFS
+  (no measurement) for the 0.3 s file, because the EBU R128 measure needs longer sounds. So
+  `loudnorm` does not suit these; the sketch scales each file to the same RMS and caps the
+  peak.
+- **Equal RMS leaves unequal peaks.** The `hold` file, mostly silence between pulses, peaks
+  4.5 dB above `finished` at the same RMS. Whether that sounds balanced is for the audition;
+  the two constants at the top are the knobs.
+- **One note needs no script.** `ffmpeg -f lavfi -i "sine=frequency=587.33:duration=0.3"
+  -af "afade=t=in:d=0.005,afade=t=out:st=0.05:d=0.25:curve=exp,volume=-12dB" -ac 1 out.wav`
+  made a 0.30 s file; it is a plain sine, so softer and less bell-like than the sketch.
+- **`.oga` works.** `ffmpeg -i question.wav -c:a libvorbis -q:a 4 question.oga` produced a
+  0.46 s Ogg file of about 5.6 KB (the WAV is about 40 KB). The five WAVs total about 220 KB.
 
-## What makes a notification sound good
+Licence notes, only where they matter for what Torlek creates:
 
-| Principle | Source | What it means for five events |
-| --- | --- | --- |
-| Keep it short; no note under 0.0825 s or it may go unnoticed | Brewster, Wright and Edwards, "Guidelines for the Creation of Earcons" (University of Glasgow; the page gives no year) | About 0.3 to 0.8 s per sound is the working range proposed here; the cited rule only fixes the shortest note. The range is a judgement, not a measurement |
-| Loudness is "the main cause of annoyance due to sound" | Same | Level-match all five files; the sound is a nudge, not an alarm |
-| Make sounds "subjectively easy to tell apart"; build a family from timbre, register and rhythm first, then pitch and intensity | Same | Give each event its own timbre or rhythm, not just a different pitch |
-| Different numbers of notes tell rhythms apart; similar rhythms get confused | Same, citing Patterson (1982) | Differ in note count or rhythm as well as timbre; with five events the counts cannot all differ, so rhythm and timbre must carry the rest |
-| Register works only for relative judgements, and only if registers differ widely; absolute pitch should not carry meaning | Same | Do not rely on "this one is a bit higher" to tell failure from question |
-| The more often something happens, the less intrusive its sound should be; use silence on purpose; sounds should feel like one palette | Zafrin and O'Sullivan, Google Material Design feature "Good Vibrations" (no date on the page) | Frequent events get the quietest sound; a rare failure may stand out; all five share a character |
-| A simple, light high note rarely startles; bass distorts on small speakers; a sharp-attack accent survives a missed melody; loudness should match importance; related events can share a motif; sound should be optional | Ahva, Futurice, "Please design notifications responsibly (+ free sounds)", 2017-09-05 | Avoid deep bass; per-event on/off already exists |
-| Medical alarm standard IEC 60601-1-8 encodes priority by the number of pulses in a burst, with each pulse's fundamental between 150 and 1000 Hz | Trade articles summarizing the standard ([MS Indy](https://mspindy.com/technical-articles/using-audible-alarms-in-medical-equipment-iec-60601-1-8/), undated); the standard itself was not read | An analogy only: Torlek's events are not safety alarms. It supports "count of pulses carries urgency" |
-
-Not found in any source read: a numeric loudness target for desktop notifications, or a
-maximum length. The 0.3 to 0.8 s figure and the pitch plan below are proposals.
+- A sound made by this recipe is Torlek's own work under the repository's Apache-2.0 licence;
+  the recipe embeds no sample from any other project, so there is nothing to attribute.
+- Copying another project's files, game audio or stock-site files into Torlek is out of scope
+  by Theo's clarification. Referring to the freedesktop theme by name, as today, ships nothing
+  (the package mixes CC-BY, CC-BY-SA and GPL licences, per its Arch Linux metadata).
+- Audio generated by an AI model (Google's "Ethereal Vibration" ringtone began as such a clip)
+  has unsettled licence questions; this guide does not use it.
+- A recording Theo makes himself is his own work.
 
 ## Options
 
@@ -130,122 +245,97 @@ Costs are rough guesses for one agent with focused tests, as in the other report
 
 ### For Torlek's defaults
 
-**Option A: ship nothing, keep the freedesktop names (what #1130 asks for).** An event without
-a file plays its theme sound; the document names safe formats (`.oga`, `.wav`).
-Pros: no licence question; matches #1130's acceptance; small. Cons: new users keep the
-default sounds Theo dislikes.
+**Option A: ship no sounds; keep the freedesktop fallback (what #1130 asks for).** The owner
+points each event at a file. Pros: nothing to maintain, matches #1130's acceptance. Cons:
+users who dislike the theme still have to make their own sounds.
 
-**Option B: an original set from a checked-in recipe.** One small script, with its parameters,
-generates five short WAV files (and their `.oga` forms) that Torlek owns. Distinct timbre,
-rhythm and note count per event; level-matched by the same script. Pros: no third-party
-licence, no attribution, reproducible, the recipe is greppable. Cons: needs listening and
-tuning, which an agent cannot do (this report did not hear any sound); about half a day for
-the script and a round of auditions with Theo.
+**Option B: keep the recipe in the repository and commit the generated files.** A generator
+plus a test that regenerates and compares keeps the files honest. Pros: greppable, no new
+runtime code, the files are Torlek's. Cons: about 220 KB of binaries in git; about half a day
+including auditions with Theo.
 
-**Option C: copy five Kenney CC0 files with a `NOTICE` line.** Pros: legal at once, about an
-hour. Cons: the files were not made as a family and have different levels; the project then
-owns 5 binaries it did not design.
+**Option C: synthesize at first use in Rust.** About 100 lines of sine math, no files in git.
+Pros: no binaries, parameters in code. Cons: product code and tests in the notifier, so it
+belongs to a follow-up after #1127 and #1130; about a day.
 
 ### For Theo's own set (kept outside the repository)
 
-**Option 1: pick five from the Kenney CC0 pack.** Audition the candidate names above, copy the
-five chosen files to a folder under his home, set the `[notify.sound.files]` paths from #1130. The originals are `.ogg`, which #1130 does
-not name; use the mirror's WAVs, or convert the chosen five to `.wav` or `.oga`.
-About 20 minutes once #1130 lands. No licence concern at all.
+**Option 1: run the sketch and tune the numbers.** Change the notes, lengths and the two level
+constants, play the five files, repeat. About 30 minutes for the first pass.
 
-**Option 2: make five with the Option B recipe.** Same script, Theo tunes the numbers. About
-an hour, and the set matches the event character he wants. Depends on Option B existing, or on
-running the recipe privately.
+**Option 2: ffmpeg one-liners per event.** Simpler and plainer (sines, fades); about 20
+minutes. Good for a first listen, less varied in timbre.
 
-**Option 3: game or film clips.** Fun, instantly recognizable, copyright stays with the
-publisher; fine as a private choice, never in the repository or a Torlek release.
-
-### Proposed character per event (for Options 2 and B; not auditioned)
-
-The Glasgow guidance says to separate a family by timbre and rhythm first, and that register
-and contour are weak cues. With five events the note counts cannot all differ, so each event
-gets its own rhythm and timbre, and contour only supports them.
-
-| Event | Notes and rhythm | Timbre | Register and length |
-| --- | --- | --- | --- |
-| finished | One short note | Soft, bell-like | Mid, about 0.25 s |
-| question | Two notes, short then long, rising | Plucked, marimba-like | Mid to high, about 0.5 s |
-| hold | Three equal pulses | Dry, woodblock-like | Mid, about 0.6 s |
-| failure | Two equal notes, falling | Dull, muted | Low, about 0.6 s |
-| quota | One long note with a slow decay | Soft, pad-like | Mid to low, about 0.8 s |
-
-Finished and quota are both single notes; they differ in length and timbre, which is the
-weakest pair in this table and the first one to audition.
-
-How often each event fires is unknown here; if finished turns out rare after #1127, its
-"quietest" rule should be revisited with the owner's event log.
+**Option 3: record his own sounds.** A finger on a glass, a voice, an instrument, trimmed and
+level-matched with ffmpeg. Fully his; the time depends on how particular he is.
 
 ## Recommendation (proposal)
 
-1. **#1130 as written, Option A, with the two additions below.** No audio goes into the
-   repository. The fallback stays the freedesktop name.
-2. **For Theo's own sounds now: Option 1.** Audition the Kenney candidates and set five paths.
-   It is the fastest path to sounds he likes and carries no licence risk.
-3. **File a follow-up issue for Option B only if Theo wants better defaults after living with
-   his own set.** Do it after #1130 so it can use the real settings and `torlek notify test`.
-   Do not start it from this report.
+1. **#1130 as written (Option A).** No audio goes into the repository; the fallback stays the
+   freedesktop name.
+2. **For Theo's own sounds: Option 1 now.** Run the sketch, audition the five files starting
+   with finished against quota, adjust, and set the five paths once #1130 lands. Use `.wav`,
+   which #1130 names as safe.
+3. **For Torlek's defaults: decide after Theo has lived with his set.** If he likes the result,
+   file a follow-up for Option B (committed files and a regenerating test), after #1130 so it
+   uses the real settings and `torlek notify test`. Do not start it from this report.
 
 Additions to #1130's text (proposed, Theo applies them):
 
 > - The user guide names `.oga` and `.wav` as safe formats and says an mp3 depends on the
->   player. (Herdr accepts mp3 only; kitty accepts WAV and OGA on Linux.) Kenney's original
->   files are `.ogg`: say whether `.ogg` is accepted, or point owners at converted WAVs.
+>   player. (Herdr accepts mp3 only; kitty accepts WAV and OGA on Linux.)
 > - A custom sound replaces only the sound: the notifier must not also trigger a terminal bell
 >   for the same event.
-> - The user guide says no sound ships with Torlek, and links Kenney's CC0 pack as a starting
->   point for owners who want one.
+> - The user guide says no sound ships with Torlek and links the recipe in this report.
 
 ## Decisions for the owner
 
 Proposals only; none is decided.
 
 1. Keep Option A for #1130, or also ship defaults (B or C)? Recommended: A now.
-2. For Theo's set, Option 1 (Kenney CC0), 2 (generated) or 3 (game clips)? Recommended: 1.
+2. Does Theo want to start from the sketch (Option 1), one-liners (Option 2) or recordings
+   (Option 3)? Recommended: 1.
 
 ## Sources, limits and what was not checked
 
-All pages were read on 2026-11-07. A date in the first column is the source's own date where
+All pages were read on 2026-11-07. A date in the second column is the source's own date where
 it gave one.
 
-| Source | Used for | Date |
+| Source | Date | Used for |
 | --- | --- | --- |
-| [Herdr config reference](https://herdr.dev/tui/docs/config-reference/); [repository](https://github.com/herdrdev/herdr) (`src/config/sound.rs`, `src/sound.rs`, `assets/sounds/`, read through the GitHub API) | Keys, file formats, players, embedded files | Sound files added 2026-03-27 (`0403775f`) |
-| [Herdr discussion #2529](https://github.com/herdrdev/herdr/discussions/2529) | BEL is a separate path from completion sounds | Read 2026-11-07 |
-| [ogadra/dotfiles PR #448](https://github.com/ogadra/dotfiles/pull/448) | A user's done and waiting sounds, five level changes | Opened 2026-11-02, merged 2026-11-03 |
-| [OpenCode repository](https://github.com/anomalyco/opencode) (`packages/ui/src/assets/audio`, `packages/tui/src/attention-sounds.node.ts`), [PR #26980](https://github.com/anomalyco/opencode/pull/26980) | Bundled files, per-event defaults, disabled by default | Merged 2026-05-13 |
-| [`opencode-plugin-boops`](https://www.pkgstats.com/pkg:opencode-plugin-boops), [`opencode-starcraft`](https://github.com/spartandingo/opencode-starcraft) | Community sound plugins | v2.7.0, no exact date; starcraft undated |
-| [Zed repository](https://github.com/zed-industries/zed) (`assets/sounds/`, `docs/src/reference/all-settings.md`, `assets/settings/default.json`), commit `d211f88d` | One shared agent sound, the setting | Sound added 2025-05-27 |
-| [Claude Code hooks reference](https://code.claude.com/docs/en/hooks) and [terminal configuration](https://code.claude.com/docs/en/terminal-config) | Notification types, `preferredNotifChannel`, hook example | Undated pages, read 2026-11-07 |
-| [alexop.dev post](https://alexop.dev/posts/how-i-added-sound-effects-to-claude-code-with-hooks/); [StaticB1/claude-code-sounds](https://github.com/StaticB1/claude-code-sounds) | Community hook setups | 2026-02-11; repository undated |
-| [Codex advanced configuration](https://developers.openai.com/codex/config-advanced) (redirects to learn.chatgpt.com) | `notify`, `tui.notifications`, `notification_method` | Undated |
-| [Warp agent notifications](https://docs.warp.dev/agents/capabilities/agent-notifications/) | No sound setting found | Undated; found through search, the page itself was not opened |
-| [Ghostty `Config.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/config/Config.zig), [kitty `definition.py`](https://github.com/kovidgoyal/kitty/blob/master/kitty/options/definition.py) (kitty v0.50.0, 2026-11-03), [iTerm2 terminal profile](https://iterm2.com/documentation-preferences-profiles-terminal.html), [iTerm2 triggers](https://iterm2.com/documentation-triggers.html) | Bell options | `main` and `master` as of 2026-11-07 |
-| [Arch `sound-theme-freedesktop`](https://archlinux.org/packages/extra/any/sound-theme-freedesktop) | Licence mix | Package 0.8-6, built 2024-07-05 |
-| [Kenney Interface Sounds](https://kenney.nl/assets/interface-sounds), [Calinou mirror](https://github.com/Calinou/kenney-interface-sounds) | CC0, file names | Mirror last pushed 2020-12-06 |
-| [notificationsounds.com terms](https://notificationsounds.com/terms-of-use) and [licence](https://notificationsounds.com/license) | CC BY 4.0 terms | Undated |
-| [Pixabay licence summary](https://pixabay.com/service/license-summary/), [Freesound FAQ](https://freesound.org/help/faq/), [Mixkit licence](https://mixkit.co/license/) | Licence terms | Undated; Mixkit's sound licence text not read |
-| [Glasgow earcon guidelines](https://www.dcs.gla.ac.uk/~stephen/earcon_guidelines.shtml) | Length, timbre, rhythm, loudness | Year not on the page |
-| [Zafrin and O'Sullivan, Good Vibrations](https://design.google/library/ux-sound-haptic-material-design) | Frequency, hierarchy, palette | Undated |
-| [Ahva, Futurice](https://www.futurice.com/blog/designing-notification-sounds) | Pitch, loudness, shared motif | 2017-09-05 |
-| [MS Indy on IEC 60601-1-8](https://mspindy.com/technical-articles/using-audible-alarms-in-medical-equipment-iec-60601-1-8/) | Pulse count and pitch range (secondary) | Undated |
-| Issues [#1130](https://github.com/Androlax2/agent-cockpit/issues/1130), [#1127](https://github.com/Androlax2/agent-cockpit/issues/1127), [#62](https://github.com/Androlax2/agent-cockpit/issues/62) | Scope | 2026-11-07 |
+| [Herdr config reference](https://herdr.dev/tui/docs/config-reference/) and [repository](https://github.com/herdrdev/herdr) (`src/config/sound.rs`, `src/sound.rs`, `assets/sounds/`, read through the GitHub API) | Sounds added 2026-03-27 (`0403775f`) | Keys, formats, embedded files |
+| [Herdr discussion #2529](https://github.com/herdrdev/herdr/discussions/2529) | Undated | The terminal bell is a separate path |
+| [ogadra/dotfiles PR #448](https://github.com/ogadra/dotfiles/pull/448) | Opened 2026-11-02, merged 2026-11-03 | Five level changes on two files |
+| [OpenCode repository](https://github.com/anomalyco/opencode) (`packages/ui/src/assets/audio`, `packages/tui/src/attention-sounds.node.ts`) and [PR #26980](https://github.com/anomalyco/opencode/pull/26980) | Merged 2026-05-13 | Families, per-event defaults |
+| [Zed repository](https://github.com/zed-industries/zed) (`assets/sounds/`, `docs/src/reference/all-settings.md`), commit `d211f88d` | 2025-05-27 | One shared agent sound |
+| [Claude Code terminal configuration](https://code.claude.com/docs/en/terminal-config) and [hooks reference](https://code.claude.com/docs/en/hooks) | Undated | Bell and hook options |
+| [Codex advanced configuration](https://developers.openai.com/codex/config-advanced) (redirects to learn.chatgpt.com) | Undated | `notify`, `notification_method` |
+| [Warp agent notifications](https://docs.warp.dev/agents/capabilities/agent-notifications/) | Undated; found through search | No sound setting found |
+| [Ghostty `Config.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/config/Config.zig) and [kitty `definition.py`](https://github.com/kovidgoyal/kitty/blob/master/kitty/options/definition.py) | `main` and `master` as read | Bell options |
+| [alexop.dev post](https://alexop.dev/posts/how-i-added-sound-effects-to-claude-code-with-hooks/), [`opencode-plugin-boops`](https://www.pkgstats.com/pkg:opencode-plugin-boops), [`opencode-starcraft`](https://github.com/spartandingo/opencode-starcraft) | 2026-02-11; v2.7.0 without exact date; undated | Community sound sourcing |
+| [Brewster, Wright and Edwards, Guidelines for the Creation of Earcons](https://www.dcs.gla.ac.uk/~stephen/earcon_guidelines.shtml) | Year not on the page | Length, loudness, timbre, rhythm |
+| [Zafrin and O'Sullivan, Good Vibrations](https://design.google/library/ux-sound-haptic-material-design) | Undated | How Google made its sounds; hierarchy, palette, chords |
+| [Ahva, Futurice](https://www.futurice.com/blog/designing-notification-sounds) | 2017-09-05 | Pitch, accent, shared motif, tritone |
+| [sfxr readme (DrPetter), via sfxr-qt](https://github.com/agateau/sfxr-qt/blob/478f69bd0de0e129fd29f5f2c0a7499f70621a2d/readme-sfxr-sdl.txt) and [pyfxr documentation](https://pyfxr.readthedocs.io/en/stable/generating.html) | 2007-12-14; undated | Envelope vocabulary, waveforms, MIT licence of sfxr |
+| [Kaygusuz and Zuluaga, Impact of Intervals on the Emotional Effect in Western Music](https://arxiv.org/abs/1812.04723) | 2018-12-10 | Intervals relative to a key |
+| [musicscience.net summary](https://musicscience.net/2023/11/21/how-automatic-are-emotional-responses-to-musical-chords/) | 2023-11-21 | Caveat: automatic effects of chords are weaker than self-reports |
+| [MS Indy on IEC 60601-1-8](https://mspindy.com/technical-articles/using-audible-alarms-in-medical-equipment-iec-60601-1-8/) | Undated | Pulse count and pitch range (secondary) |
+| [Arch `sound-theme-freedesktop`](https://archlinux.org/packages/extra/any/sound-theme-freedesktop) | Package 0.8-6, built 2024-07-05 | Licence mix of the theme |
+| Local checks: `ffmpeg -h filter=sine`, `aevalsrc`, `loudnorm` and the recipe run | 2026-11-07 | Options, measurements |
+| Issues [#1130](https://github.com/Androlax2/agent-cockpit/issues/1130), [#1127](https://github.com/Androlax2/agent-cockpit/issues/1127) | 2026-11-07 | Scope |
 
 Limits:
 
-- No audio file was downloaded, played or heard. Every sound judgement above (what is pleasant,
-  whether two files are distinct) is untested; Theo must listen before choosing.
-- The origin of the audio shipped by Herdr, OpenCode and Zed was not found; absence of a
-  stated licence is not a statement that none exists.
+- No sound was heard. The recipe's lengths, levels and the claim that two sounds are distinct
+  are measured or reasoned, not auditioned; Theo must listen before choosing.
+- How Herdr, OpenCode and Zed made their audio was not found; absence of a statement is not a
+  statement that nothing exists.
+- The interval research is about melodies in music, not notification sounds; it supports "end
+  on a different scale degree", not any single interval.
+- The Material sound pages and the Edworthy alarm-design paper could not be fetched; the first
+  is represented by the Google Design feature, the second by a trade article.
 - Which formats `pw-play`, `paplay` and `canberra-gtk-play` decode on Theo's machine was not
-  tested; the document for #1130 should state them after a test against a fake player and one
+  tested; the document for #1130 should state them after a test with a fake player and one
   real run.
-- The Google Material sound guidance pages and the Edworthy alarm-design paper could not be
-  fetched; the first is represented by the Google Design feature, the second by trade articles.
-- Warp, Slack and iTerm2 custom-bell behaviour rests on documentation pages or search
-  summaries, not on running the products.
-- Licence summaries are not legal advice.
+- Warp and iTerm2 behaviour rests on documentation pages or search summaries, not on running
+  the products. Licence summaries are not legal advice.
