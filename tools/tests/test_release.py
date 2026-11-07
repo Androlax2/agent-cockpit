@@ -21,6 +21,8 @@ SPEC = importlib.util.spec_from_file_location("release", ROOT / "tools/release.p
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
 
+import harness_conformance  # noqa: E402  (tools/ is on sys.path above)
+
 WORKSPACE_MANIFEST = """[workspace]
 members = ["crates/*"]
 
@@ -976,24 +978,24 @@ class VerifyInstallTests(PackagingTestCase):
         self.assertIn("no state dir", error)
 
 
-class StandInProviderTests(unittest.TestCase):
-    """The daemon probes a harness whose version is off its adapter's tested list (#732), and
-    a stand-in that answers only `--version` fails that probe: its provider then reports
-    neither resume nor events, and verify-install refuses the candidate (#1100)."""
+# How each adapter's `--version` line looks, in the words its `discover` reads.
+STAND_IN_ANSWER_FORMS = {
+    "claude": "{} (Claude Code)",
+    "codex": "codex-cli {}",
+    "opencode": "{}",
+}
 
-    def test_each_stand_in_reports_a_version_on_its_adapters_tested_list(self):
+
+class StandInProviderTests(unittest.TestCase):
+    def test_each_stand_in_answers_a_version_on_its_adapters_tested_list(self):
         for provider, answer in release.STAND_IN_VERSIONS.items():
             with self.subTest(provider=provider):
-                tested_versions = tested_versions_of(provider)
-                self.assertTrue(
-                    set(answer.split()) & set(tested_versions),
-                    f"{provider} stand-in answers {answer!r}; tested: {tested_versions}",
-                )
-
-
-def tested_versions_of(provider):
-    lines = (ROOT / f"crates/cockpit-{provider}/tested-versions.txt").read_text().splitlines()
-    return [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+                path = ROOT / harness_conformance.tested_versions_path(provider)
+                tested_versions = harness_conformance.listed_versions(path.read_text())
+                tested_answers = [
+                    STAND_IN_ANSWER_FORMS[provider].format(version) for version in tested_versions
+                ]
+                self.assertIn(answer, tested_answers)
 
 
 class GateGapTests(unittest.TestCase):
