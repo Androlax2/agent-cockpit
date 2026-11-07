@@ -57,7 +57,8 @@ fn write_if_changed(path: &Path, content: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let partial = path.with_extension("oga.partial");
+    // Per process: the service and `torlek notify test` may install at the same time.
+    let partial = path.with_extension(format!("oga.{}.partial", std::process::id()));
     fs::write(&partial, content)?;
     fs::rename(&partial, path)
 }

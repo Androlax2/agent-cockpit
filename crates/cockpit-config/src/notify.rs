@@ -2,7 +2,7 @@
 //! a sound (#62, #682), and the detectors that hold both (report 19). Read when the notifier
 //! starts.
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{ConfigError, Layer, Source, Sourced};
 use serde::Deserialize;
@@ -73,7 +73,7 @@ pub struct NotifySettings {
     pub desktop: NotifyEvents,
     /// What plays a sound.
     pub sound: NotifyEvents,
-    /// The owner's sound file by event name, in [`NOTIFY_EVENTS`] order; an event without one
+    /// The owner's sound file by event name; an event without one
     /// plays Torlek's own sound (#1130).
     pub sound_files: BTreeMap<String, Sourced<PathBuf>>,
     /// Each hold's detector, by the hold's name: a program the notifier runs at every refresh,
@@ -155,6 +155,9 @@ pub(super) fn settings(layers: &[Layer]) -> Result<NotifySettings, ConfigError> 
                 .insert(name.clone(), Sourced::new(detector, source));
         }
     }
+    for (event, file) in &result.sound_files {
+        check_readable(event, &file.value, &file.source)?;
+    }
     Ok(result)
 }
 
@@ -204,8 +207,7 @@ impl NotifySoundTable {
 }
 
 /// An owner's sound file, refused when the notifier could not play it as named: an unknown
-/// event, a relative path (it would depend on the directory `torlek notify` starts in), or a
-/// file that is missing or unreadable. No fallback to Torlek's own sound hides the mistake.
+/// event or a relative path (it would depend on the directory `torlek notify` starts in).
 fn sound_file(event: &str, path: &str, source: &Source) -> Result<PathBuf, ConfigError> {
     let key = format!("notify.sound.files.{event}");
     let invalid = |reason: String| ConfigError::Invalid {
@@ -226,8 +228,19 @@ fn sound_file(event: &str, path: &str, source: &Source) -> Result<PathBuf, Confi
             path.display()
         )));
     }
-    match std::fs::File::open(&path).and_then(|file| file.metadata()) {
-        Ok(metadata) if metadata.is_file() => Ok(path),
+    Ok(path)
+}
+
+/// Only the file that stays in force is read: a lower layer's file another layer replaces
+/// cannot break the load.
+fn check_readable(event: &str, path: &Path, source: &Source) -> Result<(), ConfigError> {
+    let invalid = |reason: String| ConfigError::Invalid {
+        key: format!("notify.sound.files.{event}"),
+        source: source.clone(),
+        reason,
+    };
+    match std::fs::File::open(path).and_then(|file| file.metadata()) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
         Ok(_) => Err(invalid(format!("{} is not a file", path.display()))),
         Err(error) => Err(invalid(format!("cannot read {}: {error}", path.display()))),
     }

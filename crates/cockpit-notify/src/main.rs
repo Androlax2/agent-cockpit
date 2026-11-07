@@ -200,7 +200,11 @@ fn find_outlets(host: &Host, options: &Options) -> Outlets {
     let sound = Sound::find(host)
         .inspect_err(|reason| tracing::warn!(reason, "sounds are off"))
         .ok();
-    let mut sound_files = cockpit_notify::install_bundled_sounds(&options.state_dir);
+    let mut sound_files = if sound.is_some() {
+        cockpit_notify::install_bundled_sounds(&options.state_dir)
+    } else {
+        BTreeMap::new()
+    };
     sound_files.extend(options.sound_files.clone());
     Outlets {
         desktop,
