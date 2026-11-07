@@ -1,5 +1,7 @@
 # `torlek storage` composes every storage area into one read-only report, built by the daemon
 
+Status: accepted
+
 Issue #406, part 3 of the plan in its comments (the composed report). Decided by the worker:
 the plan named the areas and the "what each prune would free" column; the shape below is the
 smallest one that reuses the passes already merged.
