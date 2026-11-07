@@ -236,8 +236,8 @@ fn a_report_counts_destinations_past_its_bound_together() {
     assert_eq!(report.other.refused, 1);
 }
 
-/// #832: a client that refused the session CA reaches the owner in the evidence, on its
-/// host's line, with the proxy's reason.
+/// #832: the count of clients that refused the session CA reaches the owner in the evidence,
+/// on its host's line, then the last reason. The proxy's own reason is the launcher's test.
 #[test]
 fn the_evidence_names_the_host_whose_client_refused_the_session_ca() {
     let mut report = EgressReport::new(Subject::Session {

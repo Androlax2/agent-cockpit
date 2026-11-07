@@ -334,6 +334,9 @@ fn a_host_without_a_credential_stays_a_plain_tunnel() {
     );
 }
 
+/// base64 of `x-access-token:github_pat_secret`: the token as Git's reads carry it.
+const BASIC_SECRET: &str = "eC1hY2Nlc3MtdG9rZW46Z2l0aHViX3BhdF9zZWNyZXQ=";
+
 fn git_reads() -> CredentialScheme {
     CredentialScheme::GitReads {
         username: "x-access-token".to_owned(),
@@ -360,7 +363,7 @@ fn a_git_push_over_https_is_answered_403_naming_torlek_push() {
 
         assert!(answer.starts_with("HTTP/1.1 403 Forbidden: "), "{answer}");
         assert!(answer.contains("`torlek push`"), "{answer}");
-        assert!(!answer.contains(SECRET), "{answer}");
+        assert!(!answer.contains(BASIC_SECRET), "{answer}");
         let counters = counters_of(&running, GIT_HOST, |counters| counters.refused == 1);
         assert_eq!(
             (counters.refused, counters.credential_added),
@@ -389,9 +392,8 @@ fn a_git_fetch_discovery_gets_the_token_as_basic_through_the_proxy() {
     .unwrap();
 
     assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
-    // base64 of `x-access-token:github_pat_secret`.
     assert!(
-        answer.contains("Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2l0aHViX3BhdF9zZWNyZXQ=\r\n"),
+        answer.contains(&format!("Authorization: Basic {BASIC_SECRET}\r\n")),
         "{answer}"
     );
     let counters = counters_of(&running, GIT_HOST, |counters| {
@@ -425,11 +427,52 @@ fn a_providers_request_to_its_host_carries_the_key_in_place_of_the_placeholder()
     )
     .unwrap();
 
+    assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
     assert!(
         answer.contains(&format!("x-api-key: {SECRET}\r\n")),
         "{answer}"
     );
     assert!(!answer.contains(PLACEHOLDER), "{answer}");
+    let counters = counters_of(&running, PROVIDER_HOST, |counters| {
+        counters.credential_added == 1
+    });
+    assert_eq!(counters.credential_added, 1);
+}
+
+/// #858: on its own host, the placeholder in a field the binding does not name stays the
+/// placeholder; only the named header carries the key.
+#[test]
+fn the_placeholder_in_another_field_of_a_bound_host_is_left_as_it_is() {
+    let folder = tempfile::tempdir().unwrap();
+    let (ca, ca_pem) = upstream_ca();
+    let scheme = CredentialScheme::Header {
+        name: "x-api-key".to_owned(),
+    };
+    let (authority, interception) =
+        authority_binding(folder.path(), &ca_pem, PROVIDER_HOST, scheme);
+    let running = running(authority, upstream_server(&ca, PROVIDER_HOST));
+    let session_ca = std::fs::read_to_string(&interception.ca_file).unwrap();
+
+    let answer = request_to(
+        running.address,
+        PROVIDER_HOST,
+        &session_ca,
+        &format!(
+            "GET /v1/models HTTP/1.1\r\nHost: api.anthropic.com\r\n\
+             Authorization: Bearer {PLACEHOLDER}\r\n\r\n"
+        ),
+    )
+    .unwrap();
+
+    assert!(
+        answer.contains(&format!("Authorization: Bearer {PLACEHOLDER}\r\n")),
+        "{answer}"
+    );
+    assert_eq!(answer.matches(SECRET).count(), 1, "{answer}");
+    assert!(
+        answer.contains(&format!("x-api-key: {SECRET}\r\n")),
+        "{answer}"
+    );
 }
 
 /// #858: the same placeholder sent to a host with no bound credential passes as the agent

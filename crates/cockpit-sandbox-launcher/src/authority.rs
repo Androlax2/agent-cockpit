@@ -156,20 +156,7 @@ fn server_config(
     host: &str,
 ) -> Result<Arc<rustls::ServerConfig>, String> {
     let failed = |error: String| format!("cannot issue the certificate for {host}: {error}");
-    let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
-        .map_err(|error| failed(error.to_string()))?;
-    let mut params =
-        CertificateParams::new(vec![host.to_owned()]).map_err(|error| failed(error.to_string()))?;
-    let mut name = DistinguishedName::new();
-    name.push(DnType::CommonName, host);
-    params.distinguished_name = name;
-    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    params.use_authority_key_identifier_extension = true;
-    set_validity(&mut params);
-    let certificate = params
-        .signed_by(&key, issuer)
-        .map_err(|error| failed(error.to_string()))?;
+    let (certificate, key) = host_certificate(issuer, host).map_err(failed)?;
     let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
     let mut config = rustls::ServerConfig::builder_with_provider(Arc::clone(provider))
         .with_safe_default_protocol_versions()
@@ -179,6 +166,28 @@ fn server_config(
         .map_err(|error| failed(error.to_string()))?;
     config.alpn_protocols = vec![HTTP_1_1.to_vec()];
     Ok(Arc::new(config))
+}
+
+/// A fresh key and the server certificate the CA signs with it for `host`.
+fn host_certificate(
+    issuer: &Issuer<'_, &KeyPair>,
+    host: &str,
+) -> Result<(rcgen::Certificate, KeyPair), String> {
+    let key =
+        KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).map_err(|error| error.to_string())?;
+    let mut params =
+        CertificateParams::new(vec![host.to_owned()]).map_err(|error| error.to_string())?;
+    let mut name = DistinguishedName::new();
+    name.push(DnType::CommonName, host);
+    params.distinguished_name = name;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    params.use_authority_key_identifier_extension = true;
+    set_validity(&mut params);
+    let certificate = params
+        .signed_by(&key, issuer)
+        .map_err(|error| error.to_string())?;
+    Ok((certificate, key))
 }
 
 /// The client side towards upstream servers: the host's roots, HTTP/1.1.
@@ -267,16 +276,12 @@ mod tests {
 
     use super::*;
 
-    /// A certificate the session CA signed for `host`, checked as a client trusting that CA
-    /// and connecting to `host` checks it.
+    /// The certificate the proxy presents for `host`, from a session CA bound to `bound`,
+    /// checked as a client trusting that CA and connecting to `host` checks it.
     fn verify_as_a_client(bound: &str, host: &str) -> Result<(), rustls::Error> {
         let (ca_params, ca_key, ca_pem) = generate_ca("s1", &[bound]).unwrap();
         let issuer = Issuer::from_params(&ca_params, &ca_key);
-        let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
-        let mut params = CertificateParams::new(vec![host.to_owned()]).unwrap();
-        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-        set_validity(&mut params);
-        let certificate = params.signed_by(&key, &issuer).unwrap();
+        let (certificate, _) = host_certificate(&issuer, host).unwrap();
         let mut roots = rustls::RootCertStore::empty();
         roots
             .add(CertificateDer::from_pem_slice(ca_pem.as_bytes()).unwrap())
@@ -312,6 +317,8 @@ mod tests {
     fn the_session_ca_vouches_for_no_other_host() {
         let refused = verify_as_a_client("api.github.com", "evil.example.com");
 
+        // webpki's own error is wrapped in `Other`; naming its type would take webpki as a
+        // dependency of this crate.
         assert!(
             format!("{refused:?}").contains("NameConstraintViolation"),
             "{refused:?}"

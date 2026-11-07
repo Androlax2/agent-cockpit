@@ -385,9 +385,10 @@ async fn a_sandboxed_agent_gets_no_github_token_or_gh_sign_in() {
 }
 
 /// #857 decision 1: with both of the project's GitHub tokens kept, the push token still
-/// stays with the daemon: neither the agent's environment nor its home holds its value.
+/// stays with the daemon: neither the agent's environment nor its home, checkout or temporary
+/// folders hold its value. A file the agent writes with it first shows the scan finds one.
 #[tokio::test(flavor = "multi_thread")]
-async fn with_both_github_tokens_kept_the_push_token_never_reaches_the_agent() {
+async fn with_both_github_tokens_kept_the_push_token_is_in_no_folder_the_agent_sees() {
     let home = Home::new();
     let agent = sandboxed_agent(&home, |home| {
         home.write_github_token(COMMANDED_PROJECT, "ghp_push_token\n", 0o600);
@@ -401,11 +402,25 @@ async fn with_both_github_tokens_kept_the_push_token_never_reaches_the_agent() {
         // The value is spelled in two halves: the command's own script is in the home too.
         "value=ghp_push; value=${value}_token; \
          cat /proc/self/environ | tr '\\0' '\\n' | grep -c \"$value\"; \
-         grep -rl \"$value\" ~ 2>/dev/null | wc -l",
+         printf '%s' \"$value\" > push-token-control; \
+         grep -RlsD skip \"$value\" ~ \"$PWD\" \"${TMPDIR:-/tmp}\" /tmp",
     )
     .await;
 
-    assert_eq!(printed, "0\n0\nexit=0\n");
+    let mut lines = printed.lines();
+    assert_eq!(lines.next(), Some("0"), "{printed}");
+    assert!(printed.ends_with("exit=0\n"), "{printed}");
+    let found: Vec<&str> = lines.filter(|line| !line.starts_with("exit=")).collect();
+    assert!(
+        !found.is_empty(),
+        "the scan found not even the control: {printed}"
+    );
+    assert!(
+        found
+            .iter()
+            .all(|path| path.ends_with("/push-token-control")),
+        "{printed}"
+    );
 }
 
 /// Every provider adapter's credential paths, `~/` stripped.
