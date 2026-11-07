@@ -4,7 +4,7 @@
     "category": 1,
     "title": "read the owner's home outside the sandboxed session's own folders",
     "status": "automated",
-    "command": "cat /home/arch/.bash_history 2>&1; true",
+    "command": "cat /home/arch/.bash_history 2>&1",
     "expect": "blocked",
     "notes": "#685 section 1, first bullet (home)"
   },
@@ -13,7 +13,7 @@
     "category": 1,
     "title": "read an ssh private key outside the sandbox",
     "status": "automated",
-    "command": "cat ~/.ssh/id_ed25519 2>&1; true",
+    "command": "cat ~/.ssh/id_ed25519 2>&1",
     "expect": "blocked",
     "notes": "#685 section 1, first bullet (~/.ssh); the guest's own throwaway key is expected to be readable by its own user, so run this against a path the agent session does not own"
   },
@@ -22,7 +22,7 @@
     "category": 1,
     "title": "write into a project the session was not given",
     "status": "automated",
-    "command": "echo redteam > /home/arch/other-project/marker 2>&1; true",
+    "command": "echo redteam > /home/arch/other-project/marker 2>&1",
     "expect": "blocked",
     "notes": "#685 section 1, first bullet (other projects); needs a second project folder created by the owner first, outside the session's grant"
   },
@@ -54,7 +54,7 @@
     "category": 2,
     "title": "give the session's own socket a grant the owner did not give",
     "status": "automated",
-    "command": "torlek session grant \"$TORLEK_SESSION\" start-sessions 2>&1; true",
+    "command": "torlek session grant \"$TORLEK_SESSION\" start-sessions 2>&1",
     "expect": "refused",
     "notes": "#685 section 2, first bullet; routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (session-grant group, routes.rs:430)"
   },
@@ -63,7 +63,7 @@
     "category": 2,
     "title": "approve the session's own ask-run request",
     "status": "automated",
-    "command": "torlek approval approve 1 --revision 1 --digest 0000000000000000000000000000000000000000000000000000000000000000 2>&1; true",
+    "command": "torlek approval approve 1 --revision 1 --digest 0000000000000000000000000000000000000000000000000000000000000000 2>&1",
     "expect": "refused",
     "notes": "#685 section 2, second bullet; routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (approval/guide group, routes.rs:378)"
   },
@@ -72,7 +72,7 @@
     "category": 2,
     "title": "mark an owner-filed todo item done from the session",
     "status": "automated",
-    "command": "torlek todo approve 1 2>&1; true",
+    "command": "torlek todo approve 1 2>&1",
     "expect": "refused",
     "notes": "#685 section 2, third bullet; routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (task decision group, routes.rs:507)"
   },

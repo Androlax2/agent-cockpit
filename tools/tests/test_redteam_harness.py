@@ -49,7 +49,7 @@ class ClassifyOutcomeTests(unittest.TestCase):
 
 
 class CatalogTests(unittest.TestCase):
-    def test_the_shipped_catalog_has_one_automated_entry_per_host_only_verb_group(self):
+    def test_the_shipped_catalog_has_unique_ids_and_well_formed_entries(self):
         catalog = redteam_harness.load_catalog(redteam_harness.DEFAULT_CATALOG)
         ids = [entry["id"] for entry in catalog]
         self.assertEqual(len(ids), len(set(ids)), "duplicate catalog ids")

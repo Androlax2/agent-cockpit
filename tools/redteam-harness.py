@@ -115,7 +115,7 @@ def print_summary(records: list[dict]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
-    parser.add_argument("--results-log", type=Path, required=True, help="JSONL file to append to")
+    parser.add_argument("--results-log", type=Path, help="JSONL file to append to")
     parser.add_argument(
         "--id", action="append", dest="only_ids", help="run only this check id (repeatable)"
     )
@@ -132,6 +132,9 @@ def main() -> int:
                 f"{entry['id']} [{entry['status']}] (category {entry['category']}): {entry['title']}"
             )
         return 0
+
+    if arguments.results_log is None:
+        parser.error("--results-log is required unless --list is given")
 
     records = run_catalog(catalog, arguments.results_log, default_guest_runner, arguments.only_ids)
     print_summary(records)
