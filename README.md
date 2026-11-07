@@ -94,8 +94,22 @@ Ubuntu 24.04 ships tmux 3.4: install a newer tmux first.
    Add `desktop_session = "withheld"` on the next line to keep agents away from your screen and desktop session.
    Without it, agents can use them.
 
-Packages for Arch Linux (AUR) and Windows (Scoop) are prepared but not published yet.
-Use the install script above on those systems.
+The package for Arch Linux (AUR) is prepared but not published yet. Use the install script above there.
+
+### Windows: Scoop
+
+Torlek runs inside WSL 2, not natively. With Scoop installed, run this in PowerShell on Windows. The package adds a launcher that installs Torlek into a WSL 2 distribution (x86_64). The distribution needs tmux 3.6 or newer, which Ubuntu 24.04 does not ship:
+
+```powershell
+scoop bucket add torlek https://github.com/Androlax2/scoop-torlek
+scoop install torlek/torlek
+torlek-wsl check -Distribution <name>
+torlek-wsl install -Distribution <name>
+```
+
+Then open that distribution and run step 2 above inside it. Only a hosted CI run has checked this route so far; no clean Windows machine, WSL 1 or arm64 has.
+
+[Windows packaging](docs/packaging/windows.md) says what each command does and checks.
 
 ### Debian and Ubuntu: APT
 
