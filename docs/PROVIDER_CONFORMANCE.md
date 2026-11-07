@@ -27,8 +27,9 @@ it does not use shared Git/project fixtures or launch a daemon.
 
 ## Six-area contract
 
-Pins: **Claude Code 2.1.316**, **Codex 0.166.0**, **OpenCode 1.19.5**. These are
-the adapters' capability pins, not a claim that every row was measured natively.
+Tested versions (each adapter's `tested-versions.txt`, #732): **Claude Code 2.1.316**,
+**Codex 0.166.0**, **OpenCode 1.19.5**. These are the versions the adapters report
+`Tested` on, not a claim that every row was measured natively on each of them.
 
 | Area | Claude Code | Codex | OpenCode |
 | --- | --- | --- | --- |
@@ -37,7 +38,7 @@ the adapters' capability pins, not a claim that every row was measured natively.
 | Cancellation | Direct delivery unsupported; terminal Escape has no affirmative interruption receipt | Active turn returns `Interrupted` after server acknowledgement; no active turn is refused | `Interrupted` only after authenticated affirmative abort; false/refused responses fail |
 | Command discovery/invocation | Unsupported: exact `Commands` capability refusal before socket access | Unsupported: exact `Commands` capability refusal before socket access | Authenticated launch endpoint; command name, description and source retained; invocation message ID is not completion evidence |
 | Evidence retrieval | Unavailable; no provider trait operation exists | Unavailable; no provider trait operation exists | Unavailable; no provider trait operation exists |
-| Capability provenance | Pin reports `Tested`; different/unknown version reports `Discovered` | 0.166.0 reports `Tested` after separate native capability validation; 0.161.0 and different/unknown versions are unverified | Same policy; unknown version is unverified for every reported capability |
+| Capability provenance | A version in `tested-versions.txt` reports `Tested`; any other or unknown version reports `Discovered` | A version in `tested-versions.txt` reports `Tested`; 0.166.0 got there after separate native capability validation (#436), and a version is added only after the same checks. 0.161.0 and different/unknown versions are unverified | Same policy; unknown version is unverified for every reported capability |
 
 ### Executable anchors
 

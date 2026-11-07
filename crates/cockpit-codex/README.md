@@ -15,8 +15,9 @@ provider and nothing above the contract sees a Codex type (#48).
   on `SIGN_IN_CONFORMANCE_VERSION` (0.166.0), independently of the delivery capability pin.
 
 - **Capabilities with provenance.** Resume and, with the bridge, events, submit, cancel and
-  outcome are `tested` only when the running Codex is `CONFORMANCE_VERSION` (0.166.0); on any other or
-  unknown version they are `discovered` (unverified). Effort, compact, billing, commands,
+  outcome are `tested` only when the running Codex is a version in `tested-versions.txt`
+  (#732); on any other or unknown version they are `discovered` (unverified).
+  `CONFORMANCE_VERSION` (0.166.0) is only the version the recorded fixtures come from. Effort, compact, billing, commands,
   evidence, remote control and screen reading are untested and not reported.
 - **Launch with the bridge** (#407). The session runs `torlek-codex-session`, which starts
   the session's private app-server, `codex app-server --listen unix://<session dir>/codex.sock

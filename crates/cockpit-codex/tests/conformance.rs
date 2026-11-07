@@ -155,12 +155,10 @@ fn wait_until<T>(what: &str, mut found: impl FnMut() -> Option<T>) -> T {
 
 #[test]
 #[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM)"]
-fn the_installed_codex_is_the_validated_version() {
-    let home = tempfile::tempdir().unwrap();
-    assert_eq!(
-        codex_output(home.path(), &["--version"]).trim(),
-        format!("codex-cli {NATIVE_VERSION}")
-    );
+fn the_installed_codex_prints_a_version_the_adapter_reads() {
+    let codex = Codex::discover(&installed(), None).unwrap();
+
+    assert!(codex.version().is_some());
 }
 
 #[test]

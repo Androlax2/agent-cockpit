@@ -23,8 +23,12 @@ use cockpit_provider_api::{
     ProviderError, ProviderName, TerminalInput, TrustRequest, WorkspaceTrust,
 };
 
-/// The Claude Code version this adapter's conformance tests pin; capabilities are `tested`
-/// only on it.
+/// The Claude Code versions the adapter's conformance tests pass against (`tested-versions.txt`,
+/// #732); capabilities are `tested` on each of them.
+pub const TESTED_VERSIONS: &str = include_str!("../tested-versions.txt");
+
+/// The Claude Code version the recorded fixtures and the native evidence come from, kept on
+/// [`TESTED_VERSIONS`]. Not the version capabilities are tested on: any listed version is.
 pub const CONFORMANCE_VERSION: &str = "2.1.316";
 
 /// Longest `--model` value: an alias (`opus`), a model id (`claude-opus-5-5[1m]`) or a cloud
@@ -232,15 +236,10 @@ impl ClaudeCode {
             })
     }
 
-    /// `tested` on [`CONFORMANCE_VERSION`], `discovered` on any other version; every
-    /// capability it reports has this provenance.
+    /// `tested` on a version in [`TESTED_VERSIONS`], `discovered` on any other or unknown
+    /// version; every capability it reports has this provenance.
     pub fn provenance(&self) -> Provenance {
-        match &self.version {
-            Some(version) if version == CONFORMANCE_VERSION => Provenance::Tested {
-                version: version.clone(),
-            },
-            _ => Provenance::Discovered,
-        }
+        Provenance::for_version(self.version.as_deref(), TESTED_VERSIONS)
     }
 
     /// The effort levels the installed `claude --help` lists; none when it could not be read

@@ -8,6 +8,7 @@ pub mod fake;
 mod needs;
 mod sign_in;
 mod terminal;
+mod tested_versions;
 pub mod toolchains;
 
 use std::ffi::OsString;
@@ -26,6 +27,7 @@ pub use needs::{
 };
 pub use sign_in::{SignIn, SignInStatus};
 pub use terminal::{Action, Delivered, Key, TerminalInput};
+pub use tested_versions::parse_tested_versions;
 
 /// Longest provider name; it is typed on the command line (`--agent`).
 const MAX_NAME_BYTES: usize = 32;
