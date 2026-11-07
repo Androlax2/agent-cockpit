@@ -87,11 +87,13 @@ COMMAND_TIMEOUT_SECONDS = 60
 # A constant so tests can point it at a fixture directory.
 VERIFY_HOME_PARENT = "/tmp"
 # The providers verify-install puts first on the daemon's PATH: each answers only
-# `--version`, which is all the daemon runs of it at its start, in the words its adapter reads.
+# `--version`, in the words its adapter reads. The version is on the adapter's
+# tested-versions.txt: the daemon probes any other one (#732), and a stand-in fails that
+# probe, so its provider would report neither resume nor events (#1100).
 STAND_IN_VERSIONS = {
-    "claude": "0.0.0 (Claude Code stand-in)",
-    "codex": "codex-cli 0.0.0",
-    "opencode": "0.0.0",
+    "claude": "2.1.316 (Claude Code)",
+    "codex": "codex-cli 0.166.0",
+    "opencode": "1.19.5",
 }
 STAND_IN_PROVIDER = """#!/bin/sh
 if [ "$1" = --version ]; then echo '{version}'; exit 0; fi

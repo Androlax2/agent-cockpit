@@ -21,6 +21,8 @@ SPEC = importlib.util.spec_from_file_location("release", ROOT / "tools/release.p
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
 
+import harness_conformance  # noqa: E402  (tools/ is on sys.path above)
+
 WORKSPACE_MANIFEST = """[workspace]
 members = ["crates/*"]
 
@@ -976,6 +978,26 @@ class VerifyInstallTests(PackagingTestCase):
         self.assertIn("no state dir", error)
 
 
+# How each adapter's `--version` line looks, in the words its `discover` reads.
+STAND_IN_ANSWER_FORMS = {
+    "claude": "{} (Claude Code)",
+    "codex": "codex-cli {}",
+    "opencode": "{}",
+}
+
+
+class StandInProviderTests(unittest.TestCase):
+    def test_each_stand_in_answers_a_version_on_its_adapters_tested_list(self):
+        for provider, answer in release.STAND_IN_VERSIONS.items():
+            with self.subTest(provider=provider):
+                path = ROOT / harness_conformance.tested_versions_path(provider)
+                tested_versions = harness_conformance.listed_versions(path.read_text())
+                tested_answers = [
+                    STAND_IN_ANSWER_FORMS[provider].format(version) for version in tested_versions
+                ]
+                self.assertIn(answer, tested_answers)
+
+
 class GateGapTests(unittest.TestCase):
     def test_future_native_intel_install_and_current_compatibility_keep_their_wiring(self):
         workflow = RELEASE_WORKFLOW.read_text()
@@ -1190,6 +1212,9 @@ class ReleaseTriggerTests(unittest.TestCase):
                 "crates/cockpit-daemon/tests/restart_reattach.rs",
                 "crates/cockpit-daemon/tests/session_restore_crash.rs",
                 "crates/cockpit-turso/tests/migrations.rs",
+                "crates/cockpit-claude/tested-versions.txt",
+                "crates/cockpit-codex/tested-versions.txt",
+                "crates/cockpit-opencode/tested-versions.txt",
                 "packaging/aur/ci-install.sh",
                 "packaging/aur/render.py",
                 "packaging/aur/torlek-bin/PKGBUILD.in",
