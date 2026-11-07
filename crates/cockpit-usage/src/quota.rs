@@ -29,25 +29,21 @@ pub async fn record_reading(
             recorded_at,
         });
     }
-    let is_blocked = i64::from(reading.is_blocked());
-    if recorded.is_some() {
-        write
-            .execute(
-                "UPDATE usage_quota_accounts SET plan = ?3, is_blocked = ?4, observed_at = ?5
-                 WHERE provider = ?1 AND account = ?2",
-                params![key.0, key.1, reading.plan(), is_blocked, observed_at],
-            )
-            .await?;
-    } else {
-        write
-            .execute(
-                "INSERT INTO usage_quota_accounts (provider, account, plan, is_blocked,
-                    observed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![key.0, key.1, reading.plan(), is_blocked, observed_at],
-            )
-            .await?;
-    }
+    write
+        .execute(
+            "INSERT INTO usage_quota_accounts (provider, account, plan, is_blocked, observed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (provider, account) DO UPDATE SET plan = excluded.plan,
+                is_blocked = excluded.is_blocked, observed_at = excluded.observed_at",
+            params![
+                key.0,
+                key.1,
+                reading.plan(),
+                i64::from(reading.is_blocked()),
+                observed_at
+            ],
+        )
+        .await?;
     write
         .execute(
             "DELETE FROM usage_quota_windows WHERE provider = ?1 AND account = ?2",
@@ -115,47 +111,50 @@ pub async fn record_failure(
 }
 
 /// Every account's windows as last read, judged at `now` under `policy`, by provider and
-/// account, each account's windows by limit.
+/// account, each account's windows by limit. One query, so an account and its windows always
+/// come from the same reading.
 pub async fn quotas(
     connection: &Connection,
     policy: &QuotaPolicy,
     now: i64,
 ) -> Result<Vec<AccountQuota>, Error> {
-    let mut accounts = Vec::new();
     let mut rows = connection
         .query(
-            "SELECT provider, account, plan, is_blocked, observed_at, failed_at, failure
-             FROM usage_quota_accounts ORDER BY provider, account",
+            "SELECT account.provider, account.account, account.plan, account.is_blocked,
+                account.observed_at, account.failed_at, account.failure, window.limit_key,
+                window.scope, window.length_seconds, window.used_percent, window.resets_at
+             FROM usage_quota_accounts AS account
+             LEFT JOIN usage_quota_windows AS window
+                ON window.provider = account.provider AND window.account = account.account
+             ORDER BY account.provider, account.account, window.limit_key",
             (),
         )
         .await?;
+    let mut quotas: Vec<(AccountQuota, bool)> = Vec::new();
     while let Some(row) = rows.next().await? {
-        accounts.push(account_from(&row)?);
-    }
-    let mut quotas = Vec::with_capacity(accounts.len());
-    for (account, is_blocked) in accounts {
-        let is_current = is_current(&account, policy, now);
-        let mut windows = Vec::new();
-        let mut rows = connection
-            .query(
-                "SELECT limit_key, scope, length_seconds, used_percent, resets_at
-                 FROM usage_quota_windows WHERE provider = ?1 AND account = ?2
-                 ORDER BY limit_key",
-                params![account.provider.as_str(), account.account.as_str()],
-            )
-            .await?;
-        while let Some(row) = rows.next().await? {
-            let mut window = window_from(&row)?;
-            window.state = window_state(&window, is_current, is_blocked, policy, now);
-            windows.push(window);
-        }
-        quotas.push(AccountQuota {
-            is_current,
-            windows,
-            ..account
+        let (account, is_blocked) = account_from(&row)?;
+        let is_same_account = quotas.last().is_some_and(|(last, _)| {
+            last.provider == account.provider && last.account == account.account
         });
+        if !is_same_account {
+            let is_current = is_current(&account, policy, now);
+            quotas.push((
+                AccountQuota {
+                    is_current,
+                    ..account
+                },
+                is_blocked,
+            ));
+        }
+        let Some((quota, is_blocked)) = quotas.last_mut() else {
+            unreachable!("an account was pushed above");
+        };
+        if let Some(mut window) = window_from(&row)? {
+            window.state = window_state(&window, quota.is_current, *is_blocked, policy, now);
+            quota.windows.push(window);
+        }
     }
-    Ok(quotas)
+    Ok(quotas.into_iter().map(|(quota, _)| quota).collect())
 }
 
 struct RecordedAccount {
@@ -185,6 +184,7 @@ async fn recorded_account(
 }
 
 /// An alert row: `threshold` fired for `limit` in the window instance `window_reset`.
+#[derive(Clone)]
 struct Fired {
     limit: String,
     threshold: u8,
@@ -194,9 +194,10 @@ struct Fired {
 }
 
 /// Rewrites the account's alert rows for `reading` and returns the alerts that fire now.
-/// Rows of limits the reading no longer has, of thresholds the policy no longer has and of an
-/// earlier window instance are dropped. A window without a reset time re-arms a threshold
-/// once a reading shows it below.
+/// A window the reading leaves out, or reports with its reset already past, keeps its rows,
+/// so it does not alert again when it comes back. Rows of an earlier window instance and of
+/// thresholds the policy no longer has are dropped. A window without a reset time re-arms a
+/// threshold once a reading shows it below.
 async fn record_alerts(
     write: &WriteTransaction<'_>,
     provider: &ProviderName,
@@ -206,26 +207,38 @@ async fn record_alerts(
     observed_at: i64,
 ) -> Result<Vec<Alert>, Error> {
     let recorded = fired_alerts(write, provider, account).await?;
-    let mut kept = Vec::new();
+    let mut kept: Vec<Fired> = recorded
+        .iter()
+        .filter(|fired| {
+            !reading
+                .windows()
+                .iter()
+                .any(|window| window.limit().as_str() == fired.limit)
+        })
+        .cloned()
+        .collect();
     let mut alerts = Vec::new();
     for window in reading.windows() {
+        let of_window = recorded
+            .iter()
+            .filter(|fired| fired.limit == window.limit().as_str());
         if window.resets_at().is_some_and(|reset| reset <= observed_at) {
+            kept.extend(of_window.cloned());
             continue;
         }
-        let instance = window.resets_at().map(to_the_minute);
+        let instance = window.resets_at();
+        let this_instance: Vec<&Fired> = of_window
+            .filter(|fired| is_same_instance(fired.window_reset, instance))
+            .collect();
+        let highest_fired = this_instance.iter().map(|fired| fired.threshold).max();
         let mut newly_crossed = None;
         for &threshold in policy.alert_thresholds() {
             let is_crossed = window.used_percent() >= f64::from(threshold);
-            let already = recorded.iter().find(|fired| {
-                fired.limit == window.limit().as_str()
-                    && fired.threshold == threshold
-                    && fired.window_reset == instance
-            });
+            let already = this_instance
+                .iter()
+                .find(|fired| fired.threshold == threshold);
             match already {
-                Some(fired) if is_crossed || instance.is_some() => kept.push(Fired {
-                    limit: fired.limit.clone(),
-                    ..*fired
-                }),
+                Some(fired) if is_crossed || instance.is_some() => kept.push((*fired).clone()),
                 Some(_) => {}
                 None if is_crossed => {
                     kept.push(Fired {
@@ -235,7 +248,10 @@ async fn record_alerts(
                         used_percent: window.used_percent(),
                         fired_at: observed_at,
                     });
-                    newly_crossed = Some(threshold);
+                    // A threshold the owner added below one already fired stays silent.
+                    if highest_fired.is_none_or(|highest| threshold > highest) {
+                        newly_crossed = Some(threshold);
+                    }
                 }
                 None => {}
             }
@@ -317,11 +333,20 @@ fn alert(
     }
 }
 
-/// A window instance is named by its reset time to the nearest minute: a provider's fraction
-/// of a second changes between readings ("23:59:59.63", then "00:00:00.10"), which made every
-/// reading look like a new window in the legacy cockpit.
-fn to_the_minute(reset: i64) -> i64 {
-    (reset + 30).div_euclid(60) * 60
+/// Two reset times at most this far apart name the same window instance. A provider's reset
+/// time moves between readings: by a fraction of a second ("23:59:59.63", then "00:00:00.10",
+/// which made every reading a new window in the legacy cockpit), or by a second when an
+/// adapter computes it from a countdown. The next instance resets hours later.
+const SAME_INSTANCE_SECONDS: i64 = 60;
+
+fn is_same_instance(stored: Option<i64>, reset: Option<i64>) -> bool {
+    match (stored, reset) {
+        (None, None) => true,
+        (Some(stored), Some(reset)) => {
+            stored.abs_diff(reset) <= SAME_INSTANCE_SECONDS.unsigned_abs()
+        }
+        _ => false,
+    }
 }
 
 fn is_current(account: &AccountQuota, policy: &QuotaPolicy, now: i64) -> bool {
@@ -332,7 +357,7 @@ fn is_current(account: &AccountQuota, policy: &QuotaPolicy, now: i64) -> bool {
     let failed_since = account
         .failure
         .as_ref()
-        .is_some_and(|failure| failure.at >= observed_at);
+        .is_some_and(|failure| failure.at > observed_at);
     is_young && !failed_since
 }
 
@@ -379,20 +404,23 @@ fn account_from(row: &Row) -> Result<(AccountQuota, bool), Error> {
     Ok((quota, is_blocked))
 }
 
-fn window_from(row: &Row) -> Result<WindowQuota, Error> {
-    let limit = row.get::<String>(0)?;
+/// The window columns of a [`quotas`] row; `None` for an account without windows.
+fn window_from(row: &Row) -> Result<Option<WindowQuota>, Error> {
+    let Some(limit) = row.get::<Option<String>>(7)? else {
+        return Ok(None);
+    };
     let length_seconds = row
-        .get::<Option<i64>>(2)?
+        .get::<Option<i64>>(9)?
         .map(|length| {
             u32::try_from(length).map_err(|_| invalid_row(format!("window length {length}")))
         })
         .transpose()?;
-    Ok(WindowQuota {
+    Ok(Some(WindowQuota {
         limit: LimitKey::new(limit).map_err(|error| invalid_row(format!("limit: {error}")))?,
-        scope: row.get(1)?,
+        scope: row.get(8)?,
         length_seconds,
-        used_percent: row.get(3)?,
-        resets_at: row.get(4)?,
+        used_percent: row.get(10)?,
+        resets_at: row.get(11)?,
         state: WindowState::Stale,
-    })
+    }))
 }

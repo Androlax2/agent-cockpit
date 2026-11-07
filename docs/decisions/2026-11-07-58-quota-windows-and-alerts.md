@@ -15,11 +15,13 @@ subscription may have two accounts (2026-11-03).
   refresh after it or a reset time already past make a window `stale`; the provider's block
   makes it `blocked` whatever the percentages say. A late reading older than the recorded one
   is refused instead of overwriting it.
-- **An alert fires once per threshold and window instance.** The instance is the reset time
-  to the nearest minute (the legacy cockpit's fraction-of-a-second jitter made every fetch a
-  new window); fired thresholds are stored with the reading, in the same transaction, so a
-  restart does not repeat them. A jump past several thresholds fires the highest only. A
-  window without a reset time re-arms once a reading shows it below.
+- **An alert fires once per threshold and window instance.** Reset times within 60 s of each
+  other are one instance (the legacy cockpit's fraction-of-a-second jitter made every fetch a
+  new window; rounding to the minute still splits two times either side of :30). Fired
+  thresholds are stored with the reading, in the same transaction, so a restart does not
+  repeat them; a window a reading leaves out or reports already reset keeps them. A jump past
+  several thresholds fires the highest only, and a threshold added below one already fired
+  stays silent. A window without a reset time re-arms once a reading shows it below.
 - **Thresholds and freshness are the owner's.** `QuotaPolicy` takes them; the defaults are
   report 18's 80 % and 95 % and 600 s. The daemon reads them from configuration with the
   refresh worker.

@@ -173,6 +173,17 @@ async fn a_reading_after_a_failure_is_current_again() {
 }
 
 #[tokio::test]
+async fn a_reading_in_the_same_second_as_a_failure_is_current() {
+    let fixture = Fixture::new().await;
+    fixture.fail("usage request timed out", NOW).await.unwrap();
+    fixture.record(&five_hour(10.0, RESET), NOW).await;
+
+    let quota = fixture.only_account_at(NOW).await;
+
+    assert!(quota.is_current);
+}
+
+#[tokio::test]
 async fn an_account_whose_every_refresh_failed_has_no_windows() {
     let fixture = Fixture::new().await;
     fixture.fail("not signed in", NOW).await.unwrap();

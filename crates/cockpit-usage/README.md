@@ -37,9 +37,11 @@ never implies new capacity.
 
 ## Alerts
 
-The defaults are report 18's 80 % and 95 %. A threshold fires once per window instance, named
-by the window's reset time to the nearest minute, and the fired thresholds are stored with
-the reading, so a restarted daemon does not repeat them. A reading that jumps past several
-thresholds fires the highest only. A window without a reset time re-arms a threshold once a
-reading shows it below. `record_reading` returns the alerts that fired; delivering them is
+The defaults are report 18's 80 % and 95 %. A threshold fires once per window instance (reset
+times within a minute of each other are the same instance), and the fired thresholds are
+stored with the reading, so a restarted daemon does not repeat them. A reading that jumps past
+several thresholds fires the highest only, and a threshold the owner adds below one already
+fired stays silent. A window a reading leaves out, or reports with its reset already past,
+keeps its fired thresholds. A window without a reset time re-arms a threshold once a reading
+shows it below. `record_reading` returns the alerts that fired; delivering them is
 the caller's.

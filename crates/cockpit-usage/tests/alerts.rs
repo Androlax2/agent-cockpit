@@ -160,3 +160,64 @@ async fn the_owners_thresholds_decide_when_alerts_fire() {
     assert_eq!(thresholds(&at_60), [("five-hour".to_owned(), 50)]);
     assert!(at_99.is_empty(), "{at_99:#?}");
 }
+
+#[tokio::test]
+async fn a_reset_time_moving_across_a_half_minute_is_the_same_window() {
+    let fixture = Fixture::new().await;
+    fixture.record(&five_hour(96.0, RESET + 29), NOW).await;
+
+    let jittered = fixture.record(&five_hour(97.0, RESET + 31), NOW + 60).await;
+
+    assert!(jittered.is_empty(), "{jittered:#?}");
+}
+
+#[tokio::test]
+async fn a_window_left_out_of_one_reading_does_not_alert_again_when_it_returns() {
+    let fixture = Fixture::new().await;
+    let both = |five_hour_used| {
+        QuotaReading::new(
+            None,
+            vec![
+                window("five-hour", five_hour_used, Some(RESET)),
+                window("seven-day", 96.0, Some(NOW + 50 * HOUR)),
+            ],
+            false,
+        )
+        .unwrap()
+    };
+    fixture.record(&both(10.0), NOW).await;
+    fixture.record(&five_hour(11.0, RESET), NOW + 60).await;
+
+    let returned = fixture.record(&both(12.0), NOW + 120).await;
+
+    assert!(returned.is_empty(), "{returned:#?}");
+}
+
+#[tokio::test]
+async fn a_reading_with_its_reset_already_past_keeps_the_fired_alerts() {
+    let fixture = Fixture::new().await;
+    fixture.record(&five_hour(96.0, RESET), NOW).await;
+    assert!(
+        fixture
+            .record(&five_hour(96.0, RESET), RESET + 1)
+            .await
+            .is_empty()
+    );
+
+    let corrected = fixture
+        .record(&five_hour(96.0, RESET + 30), RESET + 2)
+        .await;
+
+    assert!(corrected.is_empty(), "{corrected:#?}");
+}
+
+#[tokio::test]
+async fn a_threshold_added_below_one_already_fired_stays_silent() {
+    let mut fixture = Fixture::new().await;
+    fixture.record(&five_hour(96.0, RESET), NOW).await;
+    fixture.policy = QuotaPolicy::new(vec![50, 80, 95], 600).unwrap();
+
+    let after_change = fixture.record(&five_hour(97.0, RESET), NOW + 60).await;
+
+    assert!(after_change.is_empty(), "{after_change:#?}");
+}
