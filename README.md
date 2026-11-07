@@ -44,19 +44,19 @@ Ubuntu 24.04 ships tmux 3.4: install a newer tmux first.
 1. Install the newest alpha with the install script, as your own user (not root):
 
    ```sh
-   curl -fsSL https://github.com/Androlax2/agent-cockpit/releases/download/v0.1.0-alpha.5/install.sh | sh
+   curl -fsSL https://github.com/Androlax2/agent-cockpit/releases/download/v0.1.0-alpha.6/install.sh | sh
    ```
 
    It downloads your machine's release archive and its `SHA256SUMS`, checks the archive before unpacking it into `~/.local/lib/torlek`, and links `~/.local/bin/torlek` to it.
-   It never uses sudo and leaves your Torlek settings, data and daemon alone. Run it again to upgrade; `| sh -s -- --version v0.1.0-alpha.5` installs one release.
+   It never uses sudo and leaves your Torlek settings, data and daemon alone. Run it again to upgrade; `| sh -s -- --version v0.1.0-alpha.6` installs one release.
    [Install script](docs/packaging/install-script.md) says what it checks and what it does not.
 
    To read the script before it runs, download it with the release's checksums, check it, read it, then run it:
 
    ```sh
    cd "$(mktemp -d)"
-   curl -fLO https://github.com/Androlax2/agent-cockpit/releases/download/v0.1.0-alpha.5/install.sh
-   curl -fLO https://github.com/Androlax2/agent-cockpit/releases/download/v0.1.0-alpha.5/SHA256SUMS
+   curl -fLO https://github.com/Androlax2/agent-cockpit/releases/download/v0.1.0-alpha.6/install.sh
+   curl -fLO https://github.com/Androlax2/agent-cockpit/releases/download/v0.1.0-alpha.6/SHA256SUMS
    sha256sum --check --ignore-missing SHA256SUMS
    less install.sh
    sh install.sh
@@ -94,8 +94,30 @@ Ubuntu 24.04 ships tmux 3.4: install a newer tmux first.
    Add `desktop_session = "withheld"` on the next line to keep agents away from your screen and desktop session.
    Without it, agents can use them.
 
-Packages for Arch Linux (AUR), Debian and Ubuntu (APT) and Windows (Scoop) are prepared but not published yet.
-Until they are, use the archive above on every system.
+Packages for Arch Linux (AUR) and Windows (Scoop) are prepared but not published yet.
+Use the install script above on those systems.
+
+### Debian and Ubuntu: APT
+
+On Ubuntu 26.04, or Debian 13 after `sudo apt install -t trixie-backports tmux`, install from the signed APT source (amd64 and arm64).
+Ubuntu 24.04 and Debian 12 cannot meet `tmux (>= 3.6)`: use the install script there.
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://raw.githubusercontent.com/Androlax2/agent-cockpit/main/packaging/deb/torlek.asc -o torlek.asc
+gpg --show-keys torlek.asc
+```
+
+`gpg` must print the primary key fingerprint `CC46 0FBB B9A6 9E1A 5239  A8D4 CABB C6ED 28E3 4720`. If it does not, stop. Then:
+
+```sh
+sudo install -m 0644 torlek.asc /etc/apt/keyrings/torlek.asc
+printf '%s\n' 'Types: deb' 'URIs: https://androlax2.github.io/torlek-apt/' 'Suites: alpha' 'Components: main' 'Signed-By: /etc/apt/keyrings/torlek.asc' | sudo tee /etc/apt/sources.list.d/torlek.sources
+sudo apt update
+sudo apt install torlek
+```
+
+Then run step 2 above. [Debian and Ubuntu packaging](docs/packaging/deb.md) says what the package contains and how updates and key changes work.
 
 ## Next
 
