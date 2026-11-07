@@ -376,7 +376,10 @@ fn a_quota_home_without_a_subscription_sign_in_is_refused() {
 
         let reason = refusal(&codex, &home);
 
-        assert!(reason.contains("codex-usage.sh --login"), "{case}: {reason}");
+        assert!(
+            reason.contains("codex-usage.sh --login"),
+            "{case}: {reason}"
+        );
     }
 }
 
