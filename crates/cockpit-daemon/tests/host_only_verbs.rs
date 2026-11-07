@@ -72,6 +72,7 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
             Command::SessionGrant {
                 session: "s0".to_owned(),
                 permission: "change-state".to_owned(),
+                all_projects: false,
                 without_confirmation: false,
                 per_hour: None,
                 max_active: None,
