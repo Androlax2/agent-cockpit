@@ -75,6 +75,41 @@ that prints all of it, cut at [`TASK_PACKET_CAP_BYTES`] (2 KiB).
 catalog entry; the daemon adds the packet) apart from read on demand (the manual). The harness's own instructions and
 tool schemas are the provider's to measure.
 
+## The optional skill pack
+
+`pack/` vendors six skills from [mattpocock/skills](https://github.com/mattpocock/skills) at
+commit `4ae2317ddb22b046e26455e4f9c9b3aaaf62212d` with its MIT `LICENSE`, byte for byte (#786;
+research in [#687](../../docs/research/2026-11-04-687-mattpocock-skills.md)). Nothing is
+fetched at runtime. [`skill_pack()`] holds them with their upstream paths and git tree ids;
+`tests/pack.rs` recomputes each tree with `git hash-object`, so an edited file fails it.
+Starters: `diagnosing-bugs`, `tdd`, `writing-for-agents`; present but off: `pr`,
+`codebase-design`, `wait-what`.
+
+[`select_pack`] applies the owner's `[skill_pack]` (`cockpit-config`): off unless enabled,
+each skill on or off by name, starters on by default. A skill installed under the same name
+([`discover_skills`]: the owner's `~/.claude/skills`, `~/.agents/skills`,
+`~/.config/opencode/skills`, and each trusted project's `.claude/skills`, `.agents/skills`,
+`.opencode/skills`) wins: the pack's is not delivered to a harness that reads that folder.
+Claude Code reads only `.claude/skills` ([`CLAUDE_CODE_SKILL_FOLDERS`]); OpenCode reads every
+one, so the daemon selects once per harness folder. An unknown name is refused, and so is a
+delivered skill whose frontmatter has `allowed-tools` or `hooks` until the owner confirms that
+pin (`grants_confirmed_at`).
+
+[`write_pack`] writes the delivered skills beside the bundle, in each folder the adapters
+already point their harness at, and removes the ones turned off, the files and folders an
+earlier pin left in a skill, and a skill the last manifest names that this pin dropped; it
+never writes outside that folder, so no owner file is edited. `skill-pack/manifest.json` records the source URL,
+commit, tree, the licence file's hash and each skill's state and file hashes. The daemon does
+this at every start; `torlek skills` lists the result beside the installed skills.
+
+Reaches: Claude Code (the `claude-skills` folder it adds) and OpenCode with its bridge (the
+bundle folder in `skills.paths`). Codex gets no skill folder (#419), so no pack skill.
+Collisions are judged at the daemon's start, against the trusted projects' main checkouts:
+a project skill added later, or only on a parallel clone's branch, shadows nothing until it
+is on the main checkout at a start, so the harness lists both. [`PackListing::catalog_bytes`] is the pack's always-loaded catalog,
+counted apart in `torlek brief --measure`; Claude Code hides a user-invoked skill's
+(`disable-model-invocation`), OpenCode lists every one.
+
 ## Channels
 
 All served by the running daemon, so they match its release:
@@ -101,7 +136,10 @@ All served by the running daemon, so they match its release:
   symbolic links.
 - `tests/brief.rs`: invariants first, the dynamic fields, the size target, the budget.
 - `tests/packet.rs`: the packet's frame, its cap, cuts on character boundaries.
+- `tests/pack.rs`: the pin, licence and trees, the selection rules, discovery, writing and
+  removing, the manifest.
 - Through the sockets: `cockpit-daemon` `tests/agent_brief.rs` (the bundle at start,
   `TORLEK_INSTRUCTIONS`, a launched session's brief) and `tests/agent_onboarding.rs` (a
   clean-home agent finds its workflow, checks and approval route through `torlek`);
-  `cockpit-cli` `tests/instructions.rs` (the verbs and the MCP server).
+  `tests/skill_pack.rs` (what each adapter's launch lists, an owner's skill winning);
+  `cockpit-cli` `tests/instructions.rs` (the verbs and the MCP server) and `tests/skill_pack.rs`.

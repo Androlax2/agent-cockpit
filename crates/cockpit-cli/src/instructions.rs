@@ -61,15 +61,13 @@ pub(crate) fn brief(arguments: &[OsString]) -> Result<ExitCode, String> {
                 if measures {
                     outln!(
                         "always loaded: {} bytes (brief {}, task packet {}, MCP instructions {}, \
-                         skill catalog entry {})",
-                        budget.brief_bytes
-                            + budget.packet_bytes
-                            + budget.mcp_instructions_bytes
-                            + budget.catalog_bytes,
+                         skill catalog entry {}, skill pack {})",
+                        budget.always_loaded_bytes(),
                         budget.brief_bytes,
                         budget.packet_bytes,
                         budget.mcp_instructions_bytes,
-                        budget.catalog_bytes
+                        budget.catalog_bytes,
+                        budget.pack_catalog_bytes
                     );
                     outln!(
                         "on demand: {} bytes (the whole manual)",

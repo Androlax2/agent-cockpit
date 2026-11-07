@@ -28,5 +28,74 @@ pub struct ContextBudgetView {
     pub catalog_bytes: u64,
     #[serde(default)]
     pub mcp_instructions_bytes: u64,
+    /// The optional skill pack's delivered skills, where the harness lists them (#786).
+    #[serde(default)]
+    pub pack_catalog_bytes: u64,
     pub on_demand_bytes: u64,
+}
+
+impl ContextBudgetView {
+    /// What every conversation loads: all of it but the manual.
+    pub fn always_loaded_bytes(&self) -> u64 {
+        self.brief_bytes
+            + self.packet_bytes
+            + self.mcp_instructions_bytes
+            + self.catalog_bytes
+            + self.pack_catalog_bytes
+    }
+}
+
+/// The optional skill pack as the daemon delivered it at its start (#786), beside the skills
+/// the owner and the trusted projects already have.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillPackView {
+    pub source: String,
+    pub commit: String,
+    pub tree: String,
+    /// Its SPDX identifier.
+    pub licence: String,
+    pub enabled: bool,
+    pub skills: Vec<PackSkillView>,
+    pub installed: Vec<InstalledSkillView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackSkillView {
+    pub name: String,
+    /// Its state in each harness's skill folder: a harness only sees the installed skills in
+    /// the folders it reads, so one name can shadow the pack's for one harness alone.
+    pub deliveries: Vec<PackDeliveryView>,
+    pub is_starter: bool,
+    /// Only the user invokes it; Claude Code keeps its description out of the model's context.
+    pub is_user_invoked: bool,
+    /// The frontmatter keys with which it grants a harness tools or hooks.
+    pub grants: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackDeliveryView {
+    /// The provider name, `claude` or `opencode`: Codex gets no skill folder.
+    pub harness: String,
+    pub state: PackSkillStateView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PackSkillStateView {
+    Delivered,
+    Off,
+    /// The installed skill at `by` has its name and wins.
+    Shadowed {
+        by: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledSkillView {
+    pub name: String,
+    /// `user` or `project`.
+    pub scope: String,
+    pub path: String,
+    /// Whether the pack holds a skill of the same name.
+    pub collides: bool,
 }

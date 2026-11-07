@@ -866,6 +866,9 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         topic: Option<String>,
     },
+    /// Owner only: the optional skill pack as the daemon's start delivered it, beside the
+    /// skills the owner and the trusted projects have (#786).
+    SkillPack,
     /// Agent socket only: the sender's launch brief, assembled from what its owners say now.
     AgentBrief {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1258,6 +1261,9 @@ pub enum Reply {
         version: String,
         manifest: String,
         text: String,
+    },
+    SkillPack {
+        pack: Box<crate::SkillPackView>,
     },
     AgentBrief {
         brief: String,

@@ -18,7 +18,7 @@ grants: owner settings are inputs to `cockpit-authorization`, which decides.
 | Project config | `<project>/.torlek/config.toml` | describing settings only (`workflow.preset`, `[[checks]]`, `[execution]`, `[needs]`, `[results]`) |
 | Overrides | `--set key=value` (TOML value) | `projects.trusted`, `workflow.preset` |
 
-A project file that sets an owner setting (`projects`, `start_files`, `tasks`, `sessions`, `storage`, `memory`, `tui`) fails with its file and
+A project file that sets an owner setting (`projects`, `start_files`, `tasks`, `sessions`, `storage`, `memory`, `tui`, `skill_pack`) fails with its file and
 line: repository configuration describes requirements, owner settings grant. An owner file
 that declares `[[checks]]` fails the same way: a check describes a project (#313); each needs
 a `name` and a `command`, and a name declared twice fails at its second line. The project's
@@ -82,6 +82,23 @@ keep for it; the changes it missed reach it later in fewer, merged batches.
 `agentless_session_minutes` is how long a session may stay running after its agent exited,
 kept alive by processes the agent started, before it shows as waiting on the owner with the
 command that ends it. Nothing is ended automatically.
+
+## Skill pack
+
+The optional skill pack Torlek ships from `mattpocock/skills` (#786). Off until the owner
+turns it on; the daemon reads it at start and writes the skills it turns on next to Torlek's
+own (`cockpit-agent-context`). `torlek skills` shows what it delivered.
+
+```toml
+[skill_pack]
+enabled = true                       # off by default
+skills = { tdd = false, pr = true }  # by name; unnamed starters are on, the rest off
+grants_confirmed_at = "4ae2317..."   # the pin whose allowed-tools or hooks you accept
+```
+
+A name the pack does not hold stops the start. So does an on skill whose frontmatter grants
+tools or hooks (`allowed-tools`, `hooks`) unless `grants_confirmed_at` is the pack's commit;
+none of the pinned skills does.
 
 ## TUI
 

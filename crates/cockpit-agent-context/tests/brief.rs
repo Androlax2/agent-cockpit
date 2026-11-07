@@ -191,6 +191,7 @@ fn delivery(lists_skill: bool) -> Delivery {
     Delivery {
         lists_skill,
         mcp_instructions_bytes: MCP_INSTRUCTIONS_BYTES,
+        pack_catalog_bytes: 0,
     }
 }
 
@@ -228,6 +229,24 @@ fn a_harness_that_does_not_list_the_skill_pays_no_catalog_entry() {
     assert_eq!(
         budget.always_loaded_bytes(),
         budget.brief_bytes + MCP_INSTRUCTIONS_BYTES
+    );
+}
+
+/// #786: the skill pack's catalog entries are always loaded too, counted apart from Torlek's.
+#[test]
+fn the_skill_packs_catalog_is_counted_apart_from_torleks_own() {
+    let text = brief(&facts());
+    let pack_delivery = Delivery {
+        pack_catalog_bytes: 504,
+        ..delivery(true)
+    };
+
+    let budget = context_budget(&text, pack_delivery);
+
+    assert_eq!(budget.pack_catalog_bytes, 504);
+    assert_eq!(
+        budget.always_loaded_bytes(),
+        context_budget(&text, delivery(true)).always_loaded_bytes() + 504
     );
 }
 

@@ -13,11 +13,13 @@ mod notify;
 mod profile;
 mod provider_credential;
 mod show;
+mod skill_pack;
 mod start_files;
 mod storage;
 mod token_file;
 pub use memory::MemorySettings;
 pub use notify::{AWAY_HOLD, NOTIFY_EVENTS, NotifyEvents, NotifySettings};
+pub use skill_pack::SkillPackSettings;
 pub use storage::StorageSettings;
 
 use std::fmt;
@@ -143,6 +145,8 @@ pub struct EffectiveConfig {
     /// Which events `torlek notify` tells on the desktop and with a sound (#62, #682), and
     /// what holds them.
     pub notify: NotifySettings,
+    /// The optional skill pack and which of its skills agents get (#786).
+    pub skill_pack: SkillPackSettings,
     pub layout: Layout,
     pub user_file: ConfigFile,
     pub project_file: Option<ConfigFile>,
@@ -361,6 +365,7 @@ struct SettingsFile {
     agents: Option<Spanned<AgentsTable>>,
     tui: Option<Spanned<TuiTable>>,
     notify: Option<Spanned<notify::NotifyTable>>,
+    skill_pack: Option<Spanned<skill_pack::SkillPackTable>>,
     checks: Option<Spanned<Vec<Spanned<CheckEntry>>>>,
     execution: Option<Spanned<ExecutionTable>>,
     needs: Option<Spanned<NeedsTable>>,
@@ -524,6 +529,7 @@ pub fn load(
         storage: storage::settings(&layers)?,
         memory: memory::settings(&layers)?,
         notify: notify::settings(&layers)?,
+        skill_pack: skill_pack::settings(&layers),
         layout,
         user_file,
         project_file,
@@ -597,6 +603,7 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         agents,
         tui,
         notify,
+        skill_pack,
         workflow: _,
         checks: _,
         execution: _,
@@ -655,6 +662,12 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         return Err(ConfigError::OwnerOnly {
             key: "notify",
             source: layer.source_at(notify.span()),
+        });
+    }
+    if let Some(skill_pack) = skill_pack {
+        return Err(ConfigError::OwnerOnly {
+            key: "skill_pack",
+            source: layer.source_at(skill_pack.span()),
         });
     }
     Ok(())

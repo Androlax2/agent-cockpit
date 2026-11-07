@@ -252,6 +252,30 @@ pub fn render(config: &EffectiveConfig) -> String {
             ));
         }
     }
+    let skill_pack = &config.skill_pack;
+    lines.push(line(
+        "skill_pack.enabled",
+        &skill_pack.enabled.value.to_string(),
+        &skill_pack.enabled.source,
+    ));
+    for (name, is_on) in &skill_pack.skills.value {
+        lines.push(line(
+            &format!("skill_pack.skills.{name}"),
+            &is_on.to_string(),
+            &skill_pack.skills.source,
+        ));
+    }
+    lines.push(line(
+        "skill_pack.grants_confirmed_at",
+        &skill_pack
+            .grants_confirmed_at
+            .value
+            .as_ref()
+            .map_or(UNSET.to_string(), |commit| {
+                Value::from(commit.as_str()).to_string()
+            }),
+        &skill_pack.grants_confirmed_at.source,
+    ));
     for (name, program) in &config.notify.holds {
         lines.push(line(
             &format!("notify.hold.{name}"),

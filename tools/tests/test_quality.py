@@ -64,6 +64,20 @@ class QualityTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(json.loads(result.stdout), ["./owned.py"])
 
+    def test_vendored_files_are_not_checked(self):
+        self.source("owned.md", "# Owned\n")
+        self.source("crates/cockpit-agent-context/pack/tdd/SKILL.md", "upstream *style*\n")
+        self.source("crates/cockpit-agent-context/pack/tdd/loop.sh", "echo  upstream\n")
+        for language, expected in {
+            "markdown": ["./owned.md"],
+            "shell": [],
+            "typos": ["./owned.md"],
+        }.items():
+            with self.subTest(language=language):
+                result = self.run_check(language, "--list")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), expected)
+
     def test_missing_tool_is_a_named_failure(self):
         self.source("entry.py", "print('ok')\n")
         tools = self.root / "tools"
