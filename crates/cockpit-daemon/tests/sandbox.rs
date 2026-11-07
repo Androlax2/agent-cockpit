@@ -17,8 +17,8 @@ use std::time::Duration;
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{Command, ErrorCode, SessionStateView, SessionView};
 use real_daemon::{
-    BUILD_PROFILE_DIR, COMMANDED_PROJECT, Daemon, GENEROUS, Home, SETTLE, is_alive, listed,
-    new_session, session_new_command,
+    BUILD_PROFILE_DIR, COMMANDED_PROJECT, Daemon, GENEROUS, Home, SETTLE, added_context, is_alive,
+    listed, mcp_tool_text, new_session, session_new_command,
 };
 
 const REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
@@ -580,6 +580,59 @@ async fn a_claude_launch_adds_the_instruction_skills() {
     let skill =
         std::fs::read_to_string(skills_root.join(".claude/skills/torlek/SKILL.md")).unwrap();
     assert!(skill.starts_with("---\nname: torlek\n"), "{skill}");
+}
+
+/// #419: a sandboxed Claude Code runs the launch's `SessionStart` hook in the sandbox, and
+/// its answer still adds this session's brief to the model's context.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_claude_gets_the_sessions_brief_as_its_context_starts() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    let printed = home.start_claude_context(&agent.root).await;
+
+    let context = added_context(&printed);
+    assert!(
+        context.contains(&format!("Session {}", agent.session)),
+        "{context}"
+    );
+}
+
+/// #419: the MCP server a Claude launch registers runs in the sandbox and reaches the daemon.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_claudes_mcp_server_answers_the_sessions_brief() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+
+    let printed = home.call_claude_mcp_tool(&agent.root, "torlek_brief").await;
+
+    let brief = mcp_tool_text(&printed);
+    assert!(
+        brief.contains(&format!("Session {}", agent.session)),
+        "{brief}"
+    );
+}
+
+/// #419: the skill a sandboxed Claude Code is pointed at with `--add-dir` is readable there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_claude_reads_the_skill_its_launch_adds() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    let arguments = home.launch_arguments(&agent.root).await;
+    let added = arguments
+        .iter()
+        .position(|argument| argument == "--add-dir")
+        .map(|at| &arguments[at + 1])
+        .expect("a launch adds the instruction skills");
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        &format!("head -n 2 '{added}/.claude/skills/torlek/SKILL.md'"),
+    )
+    .await;
+
+    assert_eq!(printed, "---\nname: torlek\nexit=0\n");
 }
 
 #[tokio::test(flavor = "multi_thread")]

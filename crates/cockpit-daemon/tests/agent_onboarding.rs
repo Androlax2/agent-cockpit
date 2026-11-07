@@ -1,13 +1,17 @@
 //! The acceptance of #49: an agent in a clean home, with nothing but what Cockpit launched it
 //! with, finds its workflow, the checks route and the approval route. Through the real daemon
-//! binary, the real `cockpit` program and a stand-in Claude Code.
+//! binary, the real `cockpit` program and a stand-in Claude Code. And #419's: the launch puts
+//! the brief in front of the agent as its context starts, without the agent asking.
 
 mod candidate;
 mod real_daemon;
 
 use std::time::{Duration, Instant};
 
-use real_daemon::{GENEROUS, Home, ONBOARD_PROJECT, cockpit_program, new_session};
+use real_daemon::{
+    COMMANDED_PROJECT, GENEROUS, Home, ONBOARD_PROJECT, added_context, cockpit_program,
+    mcp_tool_text, new_session,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_clean_home_agent_finds_its_workflow_checks_and_approval_route() {
@@ -65,5 +69,42 @@ async fn a_hand_edited_bundle_is_rewritten_by_the_next_start() {
     assert_eq!(
         std::fs::read_to_string(&skill).unwrap(),
         cockpit_agent_context::documents()[0].file_text()
+    );
+}
+
+/// #419: Claude Code runs the launch's `SessionStart` hook as a context starts, and its answer
+/// adds this session's brief to the model's context.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claude_launch_adds_the_sessions_brief_as_its_context_starts() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    let session = new_session(&client, &root).await;
+
+    let printed = home.start_claude_context(&root).await;
+
+    let context = added_context(&printed);
+    assert!(
+        context.contains(&format!("Session {}", session.id)),
+        "{context}"
+    );
+}
+
+/// #419: the MCP server a Claude launch registers answers the agent with its own brief.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_mcp_server_a_claude_launch_registers_answers_the_sessions_brief() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    let session = new_session(&client, &root).await;
+
+    let printed = home.call_claude_mcp_tool(&root, "torlek_brief").await;
+
+    let brief = mcp_tool_text(&printed);
+    assert!(
+        brief.contains(&format!("Session {}", session.id)),
+        "{brief}"
     );
 }
