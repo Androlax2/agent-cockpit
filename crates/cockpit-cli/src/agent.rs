@@ -10,8 +10,8 @@ use std::time::Duration;
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
     AGENT_SOCKET_VARIABLE, AgentReport, AgentState, Command, CompactionPhase, CompactionReport,
-    CompactionStatus, CompactionTrigger, LAUNCH_TOKEN_VARIABLE, QuestionSource, Reply,
-    SessionReport, TurnOutcome, Unblock, UnblockedBy,
+    CompactionStatus, CompactionTrigger, ContextUsage, LAUNCH_TOKEN_VARIABLE, QuestionSource,
+    Reply, SessionReport, TurnOutcome, Unblock, UnblockedBy,
 };
 
 /// Long enough for a busy daemon, short enough that a hook never hangs its agent.
@@ -22,7 +22,9 @@ pub(crate) const DEADLINE: Duration = Duration::from_secs(10);
 /// (with `failed` only), `--conversation` and the value-less `--conversation-ends` (with
 /// `--conversation` only), and a context compaction's moment: `--compaction
 /// started|ended|failed` with `--compaction-trigger auto|manual`, `--compaction-tokens-before N`
-/// and `--compaction-tokens-after N`, which report nothing else (#782). Each at most once.
+/// and `--compaction-tokens-after N`, which report nothing else (#782), and the harness's
+/// context at a turn's end: `--context-tokens N` and `--context-window N`, with `--outcome`
+/// only (#479). Each at most once.
 pub(crate) fn report(flags: &[OsString]) -> Result<ExitCode, String> {
     let report = parse_report(flags)?;
     let launch_token = launch_token();
@@ -71,6 +73,8 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
     let mut compaction_trigger = None;
     let mut tokens_before = None;
     let mut tokens_after = None;
+    let mut context_tokens = None;
+    let mut context_window = None;
     let mut flags = flags.iter();
     while let Some(flag) = flags.next() {
         let name = flag.to_string_lossy().into_owned();
@@ -116,6 +120,8 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
             "--compaction-trigger" => &mut compaction_trigger,
             "--compaction-tokens-before" => &mut tokens_before,
             "--compaction-tokens-after" => &mut tokens_after,
+            "--context-tokens" => &mut context_tokens,
+            "--context-window" => &mut context_window,
             "--dialog" => &mut report.dialog,
             "--conversation" => &mut report.conversation,
             _ => return Err(format!("unknown argument {name}")),
@@ -127,6 +133,12 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
     report.outcome = turn_outcome(outcome, outcome_reason)?;
     report.compaction =
         compaction_report(compaction, compaction_trigger, tokens_before, tokens_after)?;
+    report.context = context_usage(context_tokens, context_window)?;
+    if report.context.is_some() && report.outcome.is_none() {
+        return Err(
+            "--context-tokens needs --outcome: it is the context at a turn's end".to_owned(),
+        );
+    }
     if report.is_conversation_ending && report.conversation.is_none() {
         return Err("--conversation-ends needs --conversation".to_owned());
     }
@@ -191,21 +203,40 @@ fn compaction_report(
                 .ok_or_else(|| format!("--compaction-trigger {trigger}: use auto or manual"))
         })
         .transpose()?;
-    let tokens = |flag: &str, value: Option<String>| {
-        value
-            .map(|value| {
-                value
-                    .parse::<u64>()
-                    .map_err(|_| format!("{flag} {value}: use a whole number of tokens"))
-            })
-            .transpose()
-    };
     Ok(Some(CompactionReport {
         phase,
         trigger,
-        tokens_before: tokens("--compaction-tokens-before", tokens_before)?,
-        tokens_after: tokens("--compaction-tokens-after", tokens_after)?,
+        tokens_before: token_count("--compaction-tokens-before", tokens_before)?,
+        tokens_after: token_count("--compaction-tokens-after", tokens_after)?,
     }))
+}
+
+/// The harness's context the `--context-*` flags describe; its window needs its tokens.
+fn context_usage(
+    tokens: Option<String>,
+    window: Option<String>,
+) -> Result<Option<ContextUsage>, String> {
+    let Some(tokens) = token_count("--context-tokens", tokens)? else {
+        if window.is_some() {
+            return Err("--context-window needs --context-tokens".to_owned());
+        }
+        return Ok(None);
+    };
+    Ok(Some(ContextUsage {
+        tokens,
+        window: token_count("--context-window", window)?,
+    }))
+}
+
+/// `value` of `flag` as a whole number of tokens.
+fn token_count(flag: &str, value: Option<String>) -> Result<Option<u64>, String> {
+    value
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| format!("{flag} {value}: use a whole number of tokens"))
+        })
+        .transpose()
 }
 
 fn turn_outcome(

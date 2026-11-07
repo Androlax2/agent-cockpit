@@ -314,3 +314,32 @@ fn a_compaction_is_reported_through_the_cockpit_program_with_its_sizes() {
         assert_eq!(cockpit.token(), "token-1");
     }
 }
+
+/// #479: a turn's end reaches the agent channel with the harness's context, read from the
+/// transcript's last main-chain model call; Claude Code names no window.
+#[test]
+fn a_turns_end_is_reported_with_the_context_the_transcript_holds() {
+    let directory = tempfile::tempdir().unwrap();
+    let transcript = directory.path().join("transcript.jsonl");
+    std::fs::copy(common::transcript("transcript-turn"), &transcript).unwrap();
+    let mut payload: serde_json::Value = serde_json::from_str(&common::fixture("stop")).unwrap();
+    payload["transcript_path"] = transcript.to_str().unwrap().into();
+    let cockpit = FakeCockpit::exiting_with(0);
+
+    let output = run_hook(&cockpit.program(), &payload.to_string(), Some("token-1"));
+
+    assert!(output.status.success(), "{output:?}");
+    let arguments = cockpit.arguments().unwrap();
+    assert!(
+        arguments
+            .windows(2)
+            .any(|found| found == ["--context-tokens", "45123"]),
+        "{arguments:?}"
+    );
+    assert!(
+        !arguments
+            .iter()
+            .any(|argument| argument == "--context-window"),
+        "{arguments:?}"
+    );
+}

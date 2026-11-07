@@ -8,7 +8,7 @@
 mod common;
 
 use cockpit_authorization::Permission;
-use cockpit_provider_api::TurnOutcome;
+use cockpit_provider_api::{ContextUsage, TurnOutcome};
 use cockpit_sessions::{AgentState, Error, QuestionSource, Report, SessionReport, report};
 use cockpit_turso::Database;
 use common::{grant, launch, open, session, this_process, this_process_identity};
@@ -126,6 +126,24 @@ async fn a_new_conversation_clears_the_agents_question() {
 
     assert_eq!(started.needs_input, None);
     assert_eq!(started.question_source, None);
+}
+
+/// #479: the harness's context belongs to the conversation that ended.
+#[tokio::test]
+async fn a_new_conversation_starts_without_the_last_turns_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let measured_turn = Report {
+        outcome: Some(TurnOutcome::Completed),
+        context: Some(ContextUsage {
+            tokens: 45_123,
+            window: None,
+        }),
+        ..Report::default()
+    };
+
+    let started = cleared_after(dir.path(), [measured_turn]).await;
+
+    assert_eq!(started.context, None);
 }
 
 #[tokio::test]

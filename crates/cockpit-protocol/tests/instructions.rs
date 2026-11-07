@@ -1,8 +1,8 @@
 //! The instruction bundle and launch brief on the wire (#49): topics are read by name, the
 //! brief names no session in its request.
 use cockpit_protocol::{
-    Command, ContextBudgetView, InstalledSkillView, InstructionTopicView, PackDeliveryView,
-    PackSkillStateView, PackSkillView, Reply, SkillPackView, decode_request,
+    Command, ContextBudgetView, ContextUsage, InstalledSkillView, InstructionTopicView,
+    PackDeliveryView, PackSkillStateView, PackSkillView, Reply, SkillPackView, decode_request,
 };
 use serde_json::json;
 
@@ -73,14 +73,18 @@ fn a_brief_reply_carries_its_context_budget() {
         brief: "# Cockpit launch brief".to_owned(),
         packet: Some("# Task packet".to_owned()),
         manifest: "m-0123456789abcdef".to_owned(),
-        budget: ContextBudgetView {
+        budget: Box::new(ContextBudgetView {
             brief_bytes: 22,
             packet_bytes: 13,
             catalog_bytes: 280,
             mcp_instructions_bytes: 95,
             pack_catalog_bytes: 504,
             on_demand_bytes: 7478,
-        },
+        }),
+        harness_context: Some(ContextUsage {
+            tokens: 45_123,
+            window: None,
+        }),
     };
 
     assert_eq!(
@@ -97,7 +101,8 @@ fn a_brief_reply_carries_its_context_budget() {
                 "mcp_instructions_bytes": 95,
                 "pack_catalog_bytes": 504,
                 "on_demand_bytes": 7478
-            }
+            },
+            "harness_context": { "tokens": 45_123 }
         })
     );
 }

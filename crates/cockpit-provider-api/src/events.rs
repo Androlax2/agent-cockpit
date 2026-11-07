@@ -158,6 +158,27 @@ impl CompactionMoment {
     }
 }
 
+/// The harness's own context usage at a turn's end (#479), in its own tokens, never converted
+/// from bytes: what its last model call was given. `window` is the model's context window,
+/// when the harness says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextUsage {
+    pub tokens: u64,
+    pub window: Option<u64>,
+}
+
+impl ContextUsage {
+    /// The arguments that add it to a turn's end report on the agent channel:
+    /// `--context-tokens N`, then `--context-window N` when the harness gave one.
+    pub fn report_arguments(&self) -> Vec<String> {
+        let mut arguments = vec!["--context-tokens".to_owned(), self.tokens.to_string()];
+        if let Some(window) = self.window {
+            arguments.extend(["--context-window".to_owned(), window.to_string()]);
+        }
+        arguments
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventKind {
     /// The conversation started or was resumed, and waits at its prompt.

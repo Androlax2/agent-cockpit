@@ -1272,7 +1272,11 @@ pub enum Reply {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         packet: Option<String>,
         manifest: String,
-        budget: ContextBudgetView,
+        budget: Box<ContextBudgetView>,
+        /// The harness's own context at the end of the current launch's latest turn (#479);
+        /// none before its first turn ends, and from a daemon before #479.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        harness_context: Option<crate::ContextUsage>,
     },
     /// The manager session: `attach` are the words that attach a terminal to it; `created`
     /// says whether this request opened it.

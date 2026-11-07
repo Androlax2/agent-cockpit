@@ -64,6 +64,7 @@ async fn a_version_3_report_keeps_every_column_and_its_question_becomes_the_agen
                 launch: Some(7),
                 question_asked_at: None,
                 question_escalated_at: None,
+                context: None,
             },
             SessionReport {
                 session: SessionId::new("s2").unwrap(),
@@ -78,6 +79,7 @@ async fn a_version_3_report_keeps_every_column_and_its_question_becomes_the_agen
                 launch: Some(8),
                 question_asked_at: None,
                 question_escalated_at: None,
+                context: None,
             },
         ]
     );

@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity, Refusal};
 use cockpit_protocol::{ErrorCode, Outcome, ProtocolError, Reply, Unblock, UnblockedBy};
-use cockpit_provider_api::{CompactionMoment, CompactionPhase, CompactionTrigger, TurnOutcome};
+use cockpit_provider_api::{
+    CompactionMoment, CompactionPhase, CompactionTrigger, ContextUsage, TurnOutcome,
+};
 use cockpit_sessions::{
     AgentState, Compaction, CompactionStatus, Error, QuestionSource, Report, SessionId,
     SessionReport,
@@ -147,6 +149,10 @@ fn from_wire(report: cockpit_protocol::AgentReport) -> Report {
         conversation: report.conversation,
         is_conversation_ending: report.is_conversation_ending,
         compaction: report.compaction.map(compaction_from_wire),
+        context: report.context.map(|context| ContextUsage {
+            tokens: context.tokens,
+            window: context.window,
+        }),
     }
 }
 

@@ -127,8 +127,9 @@ fn set_once(field: &mut Option<String>, flag: &str, value: &str) -> Result<(), S
 /// What `cockpit bug-report` was asked to do.
 #[derive(Debug)]
 pub enum Verb {
-    /// A command whose answer is printed as it is.
-    Daemon(Command),
+    /// A command whose answer is printed as it is; boxed, as `Command` is far larger than
+    /// `Send`.
+    Daemon(Box<Command>),
     Send(Send),
 }
 
@@ -150,7 +151,7 @@ pub fn parse(arguments: &[OsString]) -> Result<Verb, String> {
     let Some((&verb, rest)) = words.split_first() else {
         return Err("bug-report needs a verb".to_owned());
     };
-    Ok(Verb::Daemon(match (verb, rest) {
+    Ok(Verb::Daemon(Box::new(match (verb, rest) {
         ("new", rest) => {
             let (description, [title, steps, since]) =
                 text_and_flags(rest, &["--title", "--steps", "--since"])?;
@@ -188,15 +189,15 @@ pub fn parse(arguments: &[OsString]) -> Result<Verb, String> {
             report: report_id(report)?,
         },
         _ => return Err("unknown bug-report arguments".to_owned()),
-    }))
+    })))
 }
 
 fn parse_send(report: &str, flags: &[&str]) -> Result<Verb, String> {
     if let ["--filed", issue_url] = flags {
-        return Ok(Verb::Daemon(Command::BugReportSent {
+        return Ok(Verb::Daemon(Box::new(Command::BugReportSent {
             report: report_id(report)?,
             issue_url: Some((*issue_url).to_owned()),
-        }));
+        })));
     }
     let mut send = Send {
         report: report_id(report)?,
@@ -294,7 +295,7 @@ fn report_id(word: &str) -> Result<i64, String> {
 /// Runs `verb` and prints what it answers. Exit 1 when the daemon refuses.
 pub fn run(verb: Verb) -> ExitCode {
     let command = match verb {
-        Verb::Daemon(command) => command,
+        Verb::Daemon(command) => *command,
         Verb::Send(send) => return send_report(&send),
     };
     let reply = match command {

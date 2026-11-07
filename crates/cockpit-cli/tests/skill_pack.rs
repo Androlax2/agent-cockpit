@@ -185,14 +185,15 @@ async fn brief_measure_counts_the_skill_packs_bytes_apart() {
             brief: "brief".to_owned(),
             packet: None,
             manifest: "m-1".to_owned(),
-            budget: ContextBudgetView {
+            budget: Box::new(ContextBudgetView {
                 brief_bytes: 100,
                 packet_bytes: 20,
                 catalog_bytes: 3,
                 mcp_instructions_bytes: 4,
                 pack_catalog_bytes: 500,
                 on_demand_bytes: 9000,
-            },
+            }),
+            harness_context: None,
         }),
     );
 

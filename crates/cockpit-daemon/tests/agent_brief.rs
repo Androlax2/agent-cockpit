@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{Daemon, Instance, Limits, Options, Routes};
-use cockpit_protocol::{Command, ErrorCode, ProtocolError, Reply};
+use cockpit_protocol::{
+    AgentReport, Command, ContextUsage, ErrorCode, ProtocolError, Reply, TurnOutcome,
+};
 use cockpit_provider_api::fake::FakeProvider;
 use cockpit_provider_api::{Capability, ProviderName};
 use common::GENEROUS;
@@ -28,6 +30,7 @@ const AGENT_SOCKET: &str = "BRIEF_AGENT_SOCKET";
 const AGENT_WORKFLOW: &str = "BRIEF_AGENT_WORKFLOW";
 const AGENT_ANSWER: &str = "BRIEF_AGENT_ANSWER";
 const AGENT_BRIEF_FROM: &str = "BRIEF_AGENT_FROM";
+const AGENT_TURN_CONTEXT: &str = "BRIEF_AGENT_TURN_CONTEXT";
 
 #[derive(Debug, Serialize, Deserialize)]
 enum Answer {
@@ -40,6 +43,8 @@ enum Answer {
 struct Seen {
     instructions: Option<String>,
     begun: Option<Answer>,
+    /// The brief asked before the agent reported a turn's end with its context, when asked to.
+    brief_before_turn: Option<Answer>,
     brief: Answer,
 }
 
@@ -103,6 +108,12 @@ impl Home {
         self.arm_helper_asking_from(daemon, workflow, None);
     }
 
+    /// The next launched agent asks for its brief, ends a turn reporting the harness's
+    /// context of `tokens` in a `window`, then asks again.
+    fn arm_helper_ending_a_turn(&self, daemon: &Daemon, tokens: u64, window: u64) {
+        self.arm(daemon, &format!("{AGENT_TURN_CONTEXT}={tokens},{window} "));
+    }
+
     /// As [`Home::arm_helper`], the brief asked from `directory` when given one.
     fn arm_helper_asking_from(
         &self,
@@ -110,15 +121,20 @@ impl Home {
         workflow: Option<i64>,
         directory: Option<&Path>,
     ) {
-        let _ = std::fs::remove_file(self.answer_path());
         let workflow = workflow
             .map(|id| format!("{AGENT_WORKFLOW}={id} "))
             .unwrap_or_default();
         let directory = directory
             .map(|path| format!("{AGENT_BRIEF_FROM}='{}' ", path.display()))
             .unwrap_or_default();
+        self.arm(daemon, &format!("{workflow}{directory}"));
+    }
+
+    /// Writes the helper the fake provider runs, with `variables` (`NAME=value `) set.
+    fn arm(&self, daemon: &Daemon, variables: &str) {
+        let _ = std::fs::remove_file(self.answer_path());
         let script = format!(
-            "#!/bin/sh\nexec /usr/bin/env {AGENT_SOCKET}='{}' {workflow}{directory}{AGENT_ANSWER}='{}' '{}' \
+            "#!/bin/sh\nexec /usr/bin/env {AGENT_SOCKET}='{}' {variables}{AGENT_ANSWER}='{}' '{}' \
              --exact brief_agent --nocapture >'{}' 2>&1\n",
             daemon.agent_socket_path().display(),
             self.answer_path().display(),
@@ -573,6 +589,46 @@ async fn the_packet_with_the_brief_keeps_only_the_last_handoff_within_its_cap() 
     assert!(packet.len() <= cockpit_agent_context::TASK_PACKET_CAP_BYTES);
 }
 
+fn harness_context_of(answer: &Answer) -> Option<ContextUsage> {
+    match answer {
+        Answer::Reply(Reply::AgentBrief {
+            harness_context, ..
+        }) => *harness_context,
+        other => panic!("the brief was not answered: {other:?}"),
+    }
+}
+
+/// #479: the brief's measure carries the harness's own context, in its tokens, beside
+/// Cockpit's bytes once a turn has ended, and none before.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_brief_carries_the_harness_context_the_latest_turn_reported() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let owner = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&owner).await;
+    home.arm_helper_ending_a_turn(&daemon, 45_123, 258_400);
+
+    launched(&owner, &root).await;
+    let seen = home.seen().await;
+
+    let before = seen
+        .brief_before_turn
+        .as_ref()
+        .expect("asked before the turn");
+    assert_eq!(harness_context_of(before), None);
+    assert_eq!(
+        harness_context_of(&seen.brief),
+        Some(ContextUsage {
+            tokens: 45_123,
+            window: Some(258_400),
+        })
+    );
+    let (_, _, budget) = brief_of(&seen);
+    assert!(budget.brief_bytes > 0, "{budget:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unknown_topic_is_not_found_naming_the_topics() {
     let home = Home::new();
@@ -636,6 +692,43 @@ async fn brief_agent() {
     if let Some(directory) = std::env::var_os(AGENT_BRIEF_FROM) {
         std::env::set_current_dir(directory).unwrap();
     }
+    let brief_before_turn = match std::env::var(AGENT_TURN_CONTEXT) {
+        Ok(context) => {
+            let (tokens, window) = context.split_once(',').unwrap();
+            let before = answered(
+                agent
+                    .request(
+                        Command::AgentBrief {
+                            launch_token: token.clone(),
+                        },
+                        GENEROUS,
+                    )
+                    .await,
+            );
+            let ended = agent
+                .request(
+                    Command::AgentReport {
+                        launch_token: token.clone(),
+                        report: AgentReport {
+                            outcome: Some(TurnOutcome::Completed),
+                            context: Some(ContextUsage {
+                                tokens: tokens.parse().unwrap(),
+                                window: Some(window.parse().unwrap()),
+                            }),
+                            ..AgentReport::default()
+                        },
+                    },
+                    GENEROUS,
+                )
+                .await;
+            assert!(
+                matches!(ended, Ok(Reply::AgentReported { .. })),
+                "{ended:?}"
+            );
+            Some(before)
+        }
+        Err(_) => None,
+    };
     // Sent again, as `cockpit brief` does: a bound launch is known by its tree.
     let brief = answered(
         agent
@@ -650,6 +743,7 @@ async fn brief_agent() {
     let seen = Seen {
         instructions: std::env::var("TORLEK_INSTRUCTIONS").ok(),
         begun,
+        brief_before_turn,
         brief,
     };
     let partial = answer_path.with_extension("partial");

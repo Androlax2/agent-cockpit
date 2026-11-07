@@ -300,3 +300,29 @@ fn a_compaction_is_reported_through_the_cockpit_program_and_its_session_start_re
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("# Cockpit launch brief"));
 }
+
+/// #479: a turn's end reaches the agent channel with the harness's context and window, read
+/// from the rollout's last `token_count`.
+#[test]
+fn a_turns_end_is_reported_with_the_context_the_rollout_holds() {
+    let directory = tempfile::tempdir().unwrap();
+    let rollout = directory.path().join("rollout.jsonl");
+    std::fs::copy(common::fixtures_dir().join("rollout-turn.jsonl"), &rollout).unwrap();
+    let mut payload: serde_json::Value = serde_json::from_str(&common::fixture("stop")).unwrap();
+    payload["transcript_path"] = rollout.to_str().unwrap().into();
+    let cockpit = FakeCockpit::exiting_with(0);
+
+    let output = run_hook(&cockpit.program(), &payload.to_string(), Some("token-1"));
+
+    assert!(output.status.success(), "{output:?}");
+    let arguments = cockpit.arguments().unwrap();
+    for pair in [
+        ["--context-tokens", "45123"],
+        ["--context-window", "258400"],
+    ] {
+        assert!(
+            arguments.windows(2).any(|found| found == pair),
+            "{pair:?} in {arguments:?}"
+        );
+    }
+}

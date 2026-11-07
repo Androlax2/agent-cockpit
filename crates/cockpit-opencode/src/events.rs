@@ -6,8 +6,8 @@
 use std::fmt;
 
 use cockpit_provider_api::{
-    Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ConversationId, EventKind,
-    ProviderEvent, TurnOutcome,
+    Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ContextUsage, ConversationId,
+    EventKind, ProviderEvent, TurnOutcome,
 };
 
 /// The event types the plugin forwards, each only in the forms [`normalize`] maps to an
@@ -198,7 +198,7 @@ fn turn_end(properties: &serde_json::Value) -> Option<EventKind> {
 /// The `cockpit` arguments that report `event` on the agent channel; `None` for an event
 /// that proves no activity. A dialog's question goes as `--dialog`, which the next report
 /// with a state clears; a turn's start adds `--prompt`, which clears the agent's own
-/// question.
+/// question. A turn's end adds the harness's context its message holds (#479).
 pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     if let EventKind::Compaction(moment) = &event.kind {
         return Some(moment.report_arguments());
@@ -219,6 +219,9 @@ pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
             arguments.push("waiting".to_owned());
             if let EventKind::TurnEnded { outcome } = &event.kind {
                 arguments.extend(outcome_arguments(outcome));
+                if let Some(context) = turn_context(&event.raw) {
+                    arguments.extend(context.report_arguments());
+                }
             }
         }
         Activity::NeedsYou => {
@@ -232,6 +235,28 @@ pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
         }
     }
     Some(arguments)
+}
+
+/// The harness's context at a turn's end: the last model call's input, cache read and cache
+/// write tokens of the assistant message that ended it (report 686's formula, as for a
+/// compaction). OpenCode names no window there. All zero means the provider reported no
+/// usage, which is not a context of zero tokens.
+fn turn_context(raw: &str) -> Option<ContextUsage> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let tokens = value
+        .pointer("/properties/info/tokens")
+        .or_else(|| value.pointer("/data/info/tokens"))
+        .filter(|tokens| tokens.is_object())?;
+    let input = tokens.get("input").and_then(serde_json::Value::as_u64)?;
+    let total: u64 = input
+        + ["/cache/read", "/cache/write"]
+            .iter()
+            .filter_map(|pointer| tokens.pointer(pointer).and_then(serde_json::Value::as_u64))
+            .sum::<u64>();
+    (total > 0).then_some(ContextUsage {
+        tokens: total,
+        window: None,
+    })
 }
 
 /// The `cockpit` arguments the bridge runs for `event`: its report ([`report_arguments`])

@@ -1,0 +1,5 @@
+{"type":"user","isSidechain":false,"message":{"content":"Create probe.txt"}}
+{"type":"assistant","isSidechain":false,"message":{"model":"claude-opus-5-5","stop_reason":"tool_use","usage":{"input_tokens":4,"cache_read_input_tokens":40000,"cache_creation_input_tokens":2500,"output_tokens":120}}}
+{"type":"user","isSidechain":false,"message":{"content":[{"type":"tool_result","content":"ok"}]}}
+{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-5-5","usage":{"input_tokens":5,"cache_read_input_tokens":900,"cache_creation_input_tokens":0}}}
+{"type":"assistant","isSidechain":false,"message":{"model":"claude-opus-5-5","stop_reason":"end_turn","usage":{"input_tokens":3,"cache_read_input_tokens":44000,"cache_creation_input_tokens":1120,"output_tokens":250}}}

@@ -1,0 +1,6 @@
+{"type":"event_msg","payload":{"type":"task_started","model_context_window":258400}}
+{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"primary":{"used_percent":4.0}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40210,"cached_input_tokens":38000,"output_tokens":120,"reasoning_output_tokens":64,"total_tokens":40330},"last_token_usage":{"input_tokens":40210,"cached_input_tokens":38000,"output_tokens":120,"reasoning_output_tokens":64,"total_tokens":40330},"model_context_window":258400}}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"ok"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":85333,"cached_input_tokens":78000,"output_tokens":370,"reasoning_output_tokens":128,"total_tokens":85703},"last_token_usage":{"input_tokens":45123,"cached_input_tokens":40000,"output_tokens":250,"reasoning_output_tokens":64,"total_tokens":45373},"model_context_window":258400}}}
+{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Done."}}
