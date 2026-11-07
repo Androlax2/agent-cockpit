@@ -83,6 +83,20 @@ test("a fence-like content line does not end code protection", () => {
   assert.equal(content.toMdx(markdown), markdown.trimEnd());
 });
 
+test("a heading-like line inside a fence does not end a staged section", () => {
+  const markdown = "# Title\n\n## Install\n\n```sh\n## not a heading\necho ok\n```\n\n## Next\n";
+  const [install, next] = content.headings(markdown);
+  assert.deepEqual([install.title, next.title], ["Install", "Next"]);
+  assert.equal(
+    markdown.slice(install.end, next.index).trim(),
+    "```sh\n## not a heading\necho ok\n```",
+  );
+  assert.deepEqual(
+    content.headings("## One\r\n```\r\n## two\r\n```\r\n## Three\r\n").map(({ title }) => title),
+    ["One", "Three"],
+  );
+});
+
 test("split README fragments resolve to their generated page", () => {
   const anchors = new Map([["README.md#approvals", "guide/approvals"]]);
   const result = content.rewriteLinks(
