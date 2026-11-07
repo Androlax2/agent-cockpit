@@ -695,7 +695,7 @@ impl Home {
             .into_iter()
             .flatten()
             .flat_map(|matcher| matcher["hooks"].as_array().into_iter().flatten())
-            .filter(|hook| hook.get("asyncRewake").is_none())
+            .filter(|hook| hook["asyncRewake"] != true)
             .filter_map(|hook| hook["command"].as_str())
             .collect();
         let [hook] = hooks.as_slice() else {
@@ -709,7 +709,11 @@ impl Home {
             "source": "startup",
         });
         std::fs::write(root.join(".agent/session-start.json"), payload.to_string()).unwrap();
-        let number = self.command_agent(root, &format!("{hook} < .agent/session-start.json"));
+        // Claude Code reads the hook's standard output alone.
+        let number = self.command_agent(
+            root,
+            &format!("{hook} < .agent/session-start.json 2> .agent/session-start.err"),
+        );
         self.agent_output(root, number).await
     }
 
@@ -724,12 +728,22 @@ impl Home {
         let [(_, server)] = servers.iter().collect::<Vec<_>>()[..] else {
             panic!("one MCP server, not {servers:?}");
         };
-        let program = server["command"].as_str().unwrap();
-        let server_arguments: Vec<&str> = server["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|argument| argument.as_str().unwrap())
+        // As Claude Code starts it: its own `env` on top of the agent's, then the command.
+        let variables = server["env"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(name, value)| format!("{name}={}", value.as_str().unwrap()));
+        let words: Vec<String> = variables
+            .chain([server["command"].as_str().unwrap().to_owned()])
+            .chain(
+                server["args"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|argument| argument.as_str().unwrap().to_owned()),
+            )
+            .map(|word| shell_quoted(&word))
             .collect();
         let messages = [
             serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -744,7 +758,7 @@ impl Home {
             .map(|message| format!("{message}\n"))
             .collect();
         std::fs::write(root.join(".agent/mcp.in"), input).unwrap();
-        let line = format!("'{program}' {} < .agent/mcp.in", server_arguments.join(" "));
+        let line = format!("env {} < .agent/mcp.in 2> .agent/mcp.err", words.join(" "));
         let number = self.command_agent(root, &line);
         self.agent_output(root, number).await
     }
@@ -814,7 +828,10 @@ pub fn mcp_tool_text(printed: &str) -> String {
         .unwrap_or_else(|| panic!("the MCP server failed: {printed}"));
     let answers: Vec<serde_json::Value> = answers
         .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("{error}: the MCP server printed {line}"))
+        })
         .collect();
     let [initialized, called] = answers.as_slice() else {
         panic!("two answers, not {answers:?}");
@@ -830,8 +847,13 @@ pub fn mcp_tool_text(printed: &str) -> String {
         .to_owned()
 }
 
+/// `word` as one shell word.
+fn shell_quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
 /// The word after `flag` in a launch's `arguments`.
-fn launch_option<'a>(arguments: &'a [String], flag: &str) -> &'a str {
+pub fn launch_option<'a>(arguments: &'a [String], flag: &str) -> &'a str {
     arguments
         .iter()
         .position(|argument| argument == flag)

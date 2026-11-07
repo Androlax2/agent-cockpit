@@ -18,7 +18,7 @@ use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{Command, ErrorCode, SessionStateView, SessionView};
 use real_daemon::{
     BUILD_PROFILE_DIR, COMMANDED_PROJECT, Daemon, GENEROUS, Home, SETTLE, added_context, is_alive,
-    listed, mcp_tool_text, new_session, session_new_command,
+    launch_option, listed, mcp_tool_text, new_session, session_new_command,
 };
 
 const REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
@@ -619,11 +619,7 @@ async fn a_sandboxed_claude_reads_the_skill_its_launch_adds() {
     let home = Home::new();
     let agent = sandboxed_agent(&home, |_| {}).await;
     let arguments = home.launch_arguments(&agent.root).await;
-    let added = arguments
-        .iter()
-        .position(|argument| argument == "--add-dir")
-        .map(|at| &arguments[at + 1])
-        .expect("a launch adds the instruction skills");
+    let added = launch_option(&arguments, "--add-dir");
 
     let printed = run_in_agent(
         &home,
