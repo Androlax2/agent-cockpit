@@ -304,7 +304,7 @@ async fn notify_runs_the_notifier_beside_cockpit_with_the_socket_state_settings_
     std::fs::write(
         &config,
         "[notify.desktop]\nfinished = false\n[notify.sound]\nfailure = false\nhold = false\n\
-         question = false\nquota = false\nfinished = false\n\
+         question = false\nquota = false\ndisk = false\nfinished = false\n\
          [notify.hold]\nmeeting = \"/opt/hold/in-a-meeting\"\n",
     )
     .unwrap();
@@ -315,7 +315,7 @@ async fn notify_runs_the_notifier_beside_cockpit_with_the_socket_state_settings_
     assert_eq!(
         text(&output.stdout),
         format!(
-            "--socket\n{}\n--state-dir\n{}\n--desktop\nfailure,hold,question,quota\n--sound\nnone\n\
+            "--socket\n{}\n--state-dir\n{}\n--desktop\nfailure,hold,question,quota,disk\n--sound\nnone\n\
              --status-file\n{}\n--away-file\n{}\n--hold\nmeeting=/opt/hold/in-a-meeting\n",
             socket.display(),
             home.dir.path().join(".local/state/torlek-dev").display(),

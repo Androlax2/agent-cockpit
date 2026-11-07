@@ -17,6 +17,9 @@ pub enum Event {
     Question,
     /// The plan's usage limit stopped its turn.
     Quota,
+    /// Free disk space is below the owner's floor (#1143). Not a session's: the notice names
+    /// the host.
+    Disk,
     /// It finished its work: the task list says so (#1127).
     Finished,
     /// Its agent completed a turn, whether or not its work is done. Off by default for both
@@ -25,11 +28,12 @@ pub enum Event {
 }
 
 impl Event {
-    pub const ALL: [Event; 6] = [
+    pub const ALL: [Event; 7] = [
         Event::Failure,
         Event::Hold,
         Event::Question,
         Event::Quota,
+        Event::Disk,
         Event::Finished,
         Event::Turn,
     ];
@@ -49,6 +53,7 @@ impl Event {
             Event::Hold => "hold",
             Event::Question => "question",
             Event::Quota => "quota",
+            Event::Disk => "disk",
             Event::Finished => "finished",
             Event::Turn => "turn",
         }

@@ -7,13 +7,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cockpit_protocol::{
-    Change, ChangeBatch, EntityKind, FeedPosition, GuideStateView, GuideView,
+    Change, ChangeBatch, DiskView, EntityKind, FeedPosition, GuideStateView, GuideView,
     NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, QuestionSource,
     RunRequestView, RunStateView, SessionReport, SessionStateView, SessionView, TurnOutcome,
     ViewArea, ViewStamp,
 };
 
 use crate::event::Event;
+
+/// The "session" of an event that is the host's, not a session's (the low disk). A session id
+/// is `s` and twelve hex digits, so no session can have it.
+pub(crate) const HOST: &str = "host";
 
 /// One reason a session needs the owner. A session raises it while its cause stands; the
 /// owner is told when it is raised, never while it stays.
@@ -35,6 +39,8 @@ pub enum Cause {
     Input(i64),
     Guide(i64),
     Network(i64),
+    /// The free disk space is below the floor.
+    Disk,
 }
 
 /// A change the notifier cannot read: the batch is refused whole, never applied in part.
@@ -62,6 +68,9 @@ pub(crate) struct Board {
     /// Each checkout's project, by checkout id.
     projects: BTreeMap<i64, String>,
     reports: BTreeMap<String, SessionReport>,
+    /// The guard's reading while it finds the disk low (#1143); none while the entity is not
+    /// on the feed.
+    disk: Option<DiskView>,
     runs: Vec<RunRequestView>,
     guides: Vec<GuideView>,
     network: Vec<NetworkRequestView>,
@@ -76,11 +85,13 @@ enum Edit {
     PutCheckout(i64, String),
     RemoveCheckout(i64),
     PutStamp(ViewArea, ViewStamp),
+    PutDisk(DiskView),
+    RemoveDisk,
 }
 
 impl Board {
-    /// Applies `batch` whole: sessions, checkouts and view stamps change, other kinds are not
-    /// read. A snapshot replaces the sessions and the checkouts.
+    /// Applies `batch` whole: sessions, checkouts, the disk and view stamps change, other kinds are
+    /// not read. A snapshot replaces the sessions and the checkouts.
     pub(crate) fn apply(&mut self, batch: &ChangeBatch) -> Result<(), FeedError> {
         // Every change is decoded before any is applied: only decoding can fail.
         let mut edits = Vec::with_capacity(batch.changes.len());
@@ -107,6 +118,10 @@ impl Board {
                         .parse()
                         .map_err(|_| refused("a checkout id is a number".to_owned()))?,
                 ),
+                (EntityKind::Disk, Change::Upsert { state }) => {
+                    Edit::PutDisk(decode(state).map_err(refused)?)
+                }
+                (EntityKind::Disk, Change::Tombstone) => Edit::RemoveDisk,
                 (EntityKind::ViewStamp, Change::Upsert { state }) => {
                     // An area this version does not know has no view here to ask for.
                     let Some(area) = ViewArea::from_id(&event.entity.id) else {
@@ -120,6 +135,7 @@ impl Board {
         if batch.follows == FeedPosition::Snapshot {
             self.sessions.clear();
             self.projects.clear();
+            self.disk = None;
         }
         for edit in edits {
             match edit {
@@ -135,6 +151,8 @@ impl Board {
                 Edit::RemoveCheckout(id) => {
                     self.projects.remove(&id);
                 }
+                Edit::PutDisk(disk) => self.disk = Some(disk),
+                Edit::RemoveDisk => self.disk = None,
                 Edit::PutStamp(area, stamp) => {
                     if self.stamps.insert(area, stamp) != Some(stamp) {
                         self.stale_areas.insert(area);
@@ -168,9 +186,15 @@ impl Board {
 
     /// Everything every known session needs the owner for now.
     pub(crate) fn raised(&self) -> BTreeSet<Raised> {
+        let low_disk = self.disk.map(|_| Raised {
+            session: HOST.to_owned(),
+            event: Event::Disk,
+            cause: Cause::Disk,
+        });
         self.sessions
             .values()
             .flat_map(|session| self.raised_by(session))
+            .chain(low_disk)
             .collect()
     }
 
@@ -247,6 +271,9 @@ impl Board {
 
     /// The name the owner knows `session` by: the label its agent reported, else its id.
     pub(crate) fn name_of(&self, session: &str) -> String {
+        if session == HOST {
+            return "Free disk space".to_owned();
+        }
         self.reports
             .get(session)
             .and_then(|report| report.label.clone())
@@ -274,6 +301,12 @@ impl Board {
                 .iter()
                 .find(|request| request.id == *id)
                 .map(|request| request.target.clone()),
+            Cause::Disk => self.disk.map(|disk| {
+                format!(
+                    "{} MiB free, below the floor of {} MiB",
+                    disk.free_mib, disk.floor_mib
+                )
+            }),
             Cause::State if raised.event == Event::Failure => {
                 let turn_reason = report.and_then(|report| match &report.outcome {
                     Some(TurnOutcome::Failed { reason }) => reason.clone(),

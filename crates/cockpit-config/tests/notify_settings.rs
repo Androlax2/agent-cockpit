@@ -33,7 +33,10 @@ fn a_clean_home_tells_every_event_but_turn_both_ways() {
             assert_eq!(setting.value, name != "turn", "{name}");
             assert_eq!(setting.source, Source::ProductDefault, "{name}");
         }
-        assert_eq!(events.to_argument(), "failure,hold,question,quota,finished");
+        assert_eq!(
+            events.to_argument(),
+            "failure,hold,question,quota,disk,finished"
+        );
     }
 }
 
@@ -55,7 +58,22 @@ fn the_owner_turns_one_sound_off_with_its_line_and_keeps_its_notification() {
     assert!(config.notify.desktop.finished.value);
     assert_eq!(
         config.notify.sound.to_argument(),
-        "failure,hold,question,quota"
+        "failure,hold,question,quota,disk"
+    );
+}
+
+#[test]
+fn the_owner_turns_the_low_disk_notice_off_for_the_desktop_only() {
+    let home = TempDir::new().unwrap();
+    write_user_config(home.path(), "[notify.desktop]\ndisk = false\n");
+
+    let config = load(home.path(), None).unwrap();
+
+    assert!(!config.notify.desktop.disk.value);
+    assert!(config.notify.sound.disk.value);
+    assert_eq!(
+        config.notify.desktop.to_argument(),
+        "failure,hold,question,quota,finished"
     );
 }
 
@@ -210,7 +228,7 @@ fn the_owner_turns_on_the_completed_turn_event_for_the_desktop_only() {
     assert!(!config.notify.sound.turn.value);
     assert_eq!(
         config.notify.desktop.to_argument(),
-        format!("{},turn", "failure,hold,question,quota,finished")
+        format!("{},turn", "failure,hold,question,quota,disk,finished")
     );
 }
 
