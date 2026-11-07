@@ -21,3 +21,12 @@ Issue #732. The owner agreed the proposal on 2026-11-04; the worker chose the fi
   environment name or hook event in the program) takes away the capabilities that need it, so
   a launch asking for one is refused with the requirement named; a clean probe reports
   `Probed`. Rejected: a stored result, which only saves seconds and adds a state path.
+- **The nightly conformance job opens its pull requests with the release proposal App and the
+  `release-proposal` environment** (the owner chose this on 2026-11-07). A pull request opened
+  with the workflow's `GITHUB_TOKEN` starts no checks, and the repository neither lets
+  workflows approve pull requests nor lets `main` take a change without green CI, so the job
+  needs a credential that triggers CI. The App's token (contents read, pull requests write) and
+  deploy key (cannot touch `main` or tags) already exist for the same shape of change, one
+  generated branch and a draft. Failures open issues with `GITHUB_TOKEN`, `issues: write` in
+  one job. Rejected: a new App or a personal token (a second credential to hold), and arming
+  auto-merge on the pull request (a tested list is the trust claim, so a person merges it).

@@ -230,6 +230,13 @@ def remote_git(*args, cwd):
 def push_proposal(base, head, cwd):
     if not re.fullmatch(SHA, base) or not re.fullmatch(SHA, head):
         raise Refusal("proposal push needs full base and head commit SHAs")
+    push_branch(f"release-plz/{base}", head, cwd)
+
+
+def push_branch(branch, head, cwd):
+    """Push `head` as a new branch with the Git-only deploy key; it cannot reach main or tags."""
+    if not re.fullmatch(SHA, head):
+        raise Refusal("branch push needs a full commit SHA")
     private_key = os.environ.get("PROPOSAL_GIT_SSH_KEY")
     if not private_key:
         raise Refusal("proposal push requires PROPOSAL_GIT_SSH_KEY")
@@ -288,7 +295,7 @@ def push_proposal(base, head, cwd):
             "push",
             "--no-follow-tags",
             f"git@github.com:{REPOSITORY}.git",
-            f"{head}:refs/heads/release-plz/{base}",
+            f"{head}:refs/heads/{branch}",
             cwd=cwd,
             env=environment,
         )

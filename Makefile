@@ -305,6 +305,10 @@ release-pr-check: ## Check release proposal retries with isolated Git and fake G
 release-pr-conformance: ## Prove pinned release-plz/git-cliff generation in a throwaway workspace
 	python3 tools/tests/release_pr_conformance.py
 
+.PHONY: harness-conformance-check
+harness-conformance-check: ## Check the nightly harness conformance tool with fake npm, cargo and GitHub
+	python3 -m unittest discover -s tools/tests -p test_harness_conformance.py
+
 .PHONY: release-compatibility release-responsiveness
 release-compatibility: ## Check archived protocol/restart plus source migration/crash fixtures
 	@test -n "$${COCKPIT_CANDIDATE_ROOT:-}" || { echo "COCKPIT_CANDIDATE_ROOT is required"; exit 2; }
