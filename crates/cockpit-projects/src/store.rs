@@ -322,6 +322,25 @@ pub async fn checkouts(
     Ok(stored.into_iter().map(|stored| stored.checkout).collect())
 }
 
+/// The name of the project checkout `id` belongs to, removed or not: the project a session in
+/// it works for, which a coordinator grant over one project covers (#1131).
+pub async fn checkout_project(
+    connection: &Connection,
+    checkout: CheckoutId,
+) -> Result<ProjectName, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT p.name FROM project_checkouts c JOIN projects p ON p.id = c.project_id
+             WHERE c.id = ?1",
+            [checkout.0],
+        )
+        .await?;
+    match rows.next().await? {
+        Some(row) => ProjectName::new(row.get::<String>(0)?),
+        None => Err(Error::UnknownCheckout { checkout }),
+    }
+}
+
 /// The checkout `id`, refusing one that was removed.
 pub(crate) async fn stored_checkout(
     connection: &Connection,

@@ -209,6 +209,7 @@ pub(crate) fn route_owner(command: Command, context: Context) -> Route {
             Command::SessionGrant {
                 session,
                 permission,
+                all_projects,
                 without_confirmation,
                 per_hour,
                 max_active,
@@ -217,9 +218,12 @@ pub(crate) fn route_owner(command: Command, context: Context) -> Route {
                     &context,
                     &session,
                     &permission,
-                    without_confirmation,
-                    per_hour,
-                    max_active,
+                    all_projects,
+                    StartChoices {
+                        without_confirmation,
+                        per_hour,
+                        max_active,
+                    },
                 )
                 .await
             }
@@ -241,20 +245,22 @@ pub(crate) fn route_owner(command: Command, context: Context) -> Route {
     }
 }
 
-/// `agent-sessions`: every other session not ended, with its agent's latest report. Read
-/// only: the sender's launch is bound with a write only when it is not yet.
+/// `agent-sessions`: every other session not ended that the sender's `observe-sessions`
+/// grant covers (its project's, or every project's, #1131), with its agent's latest report.
+/// Read only: the sender's launch is bound with a write only when it is not yet.
 async fn observe(context: &Context, sender: &Sender, launch_token: Option<String>) -> Answer {
     let coordinator = identified(&context.database, sender, launch_token).await?;
     let read = context.database.read().await?;
+    let own_scope = scope_of(&read, &coordinator).await?;
     let decision = cockpit_authorization::evaluate(
         &read,
         &Actor::Session(coordinator.clone()),
         Permission::ObserveSessions,
-        &Scope::Owner,
+        &own_scope,
     )
     .await?;
     if let Outcome::Refused(refusal) = decision.outcome {
-        return Err(not_granted(&coordinator, &refusal));
+        return Err(not_granted(&read, &coordinator, &refusal).await);
     }
     let mut reports: HashMap<String, cockpit_protocol::SessionReport> =
         crate::agent::wire_reports(&read, cockpit_sessions::latest_reports(&read).await?)
@@ -264,12 +270,37 @@ async fn observe(context: &Context, sender: &Sender, launch_token: Option<String
             .collect();
     let notes = notes(&read).await?;
     drop(read);
-    let sessions = context
-        .sessions
-        .list(false)
-        .await?
+    let listed = context.sessions.list(false).await?;
+    let read = context.database.read().await?;
+    let mut observed = Vec::new();
+    let mut covered = HashMap::from([(own_scope, true)]);
+    for session in listed {
+        if session.id.as_str() == coordinator.as_str() {
+            continue;
+        }
+        let scope = cockpit_sessions::coordinator_scope(&read, &session).await?;
+        let is_covered = match covered.get(&scope) {
+            Some(is_covered) => *is_covered,
+            None => {
+                let decision = cockpit_authorization::evaluate(
+                    &read,
+                    &Actor::Session(coordinator.clone()),
+                    Permission::ObserveSessions,
+                    &scope,
+                )
+                .await?;
+                let is_covered = matches!(decision.outcome, Outcome::Allowed(_));
+                covered.insert(scope, is_covered);
+                is_covered
+            }
+        };
+        if is_covered {
+            observed.push(session);
+        }
+    }
+    drop(read);
+    let sessions = observed
         .into_iter()
-        .filter(|session| session.id.as_str() != coordinator.as_str())
         .map(|session| ObservedSessionView {
             // Its own message only: what other coordinators wrote is not this one's to read.
             inbound_message: notes
@@ -309,27 +340,38 @@ async fn message(
     }
     {
         let read = context.database.read().await?;
+        // An unknown target is asked over everything: only a sender whose grant covers every
+        // project learns it does not exist, and to one scoped to a project it reads as a
+        // session of another project, so probing ids tells it nothing (#1131).
+        let scope = match cockpit_sessions::session(&read, &target_id).await {
+            Ok(target_session) => {
+                cockpit_sessions::coordinator_scope(&read, &target_session).await?
+            }
+            Err(cockpit_sessions::Error::UnknownSession { .. }) => Scope::Owner,
+            Err(error) => return Err(error.into()),
+        };
         let decision = cockpit_authorization::evaluate(
             &read,
             &Actor::Session(coordinator.clone()),
             Permission::MessageSessions,
-            &Scope::Session(target_holder.clone()),
+            &scope,
         )
         .await?;
-        granted(&coordinator, decision.outcome)?;
+        granted(&read, &coordinator, decision.outcome).await?;
     }
     let write = context.database.write().await?;
     let coordinator = sender.identify(&write, launch_token).await?;
+    // Read in this transaction, so the sender learns the state the message is queued in.
+    let target_session = cockpit_sessions::session(&write, &target_id).await?;
+    let scope = cockpit_sessions::coordinator_scope(&write, &target_session).await?;
     let decision = cockpit_authorization::evaluate(
         &write,
         &Actor::Session(coordinator.clone()),
         Permission::MessageSessions,
-        &Scope::Session(target_holder.clone()),
+        &scope,
     )
     .await?;
-    let grant = granted(&coordinator, decision.outcome)?;
-    // Read in this transaction, so the sender learns the state the message is queued in.
-    let target_session = cockpit_sessions::session(&write, &target_id).await?;
+    let grant = granted(&write, &coordinator, decision.outcome).await?;
     refuse_if_over(&target_session)?;
     let report = cockpit_sessions::latest_report(&write, &target_holder).await?;
     // An unknown provider is not refused here: `delivery_target` below names it to the sender.
@@ -583,15 +625,8 @@ async fn end(
             &target_id,
             &Ender::Coordinator(SessionId::parse(coordinator.as_str())?),
             async |target_session: &Session| {
-                let read = context.database.read().await?;
-                let decision = cockpit_authorization::evaluate(
-                    &read,
-                    &Actor::Session(coordinator.clone()),
-                    Permission::EndSessions,
-                    &Scope::Session(target_holder.clone()),
-                )
-                .await?;
-                let grant = granted(&coordinator, decision.outcome)?;
+                // Checked first: no grant, over any scope, lets it end a session it did not
+                // start, so a scope refusal must not suggest one would.
                 if target_session.started_by.as_ref().map(SessionId::as_str)
                     != Some(coordinator.as_str())
                 {
@@ -605,6 +640,16 @@ async fn end(
                         UnblockedBy::Agent,
                     ));
                 }
+                let read = context.database.read().await?;
+                let scope = cockpit_sessions::coordinator_scope(&read, target_session).await?;
+                let decision = cockpit_authorization::evaluate(
+                    &read,
+                    &Actor::Session(coordinator.clone()),
+                    Permission::EndSessions,
+                    &scope,
+                )
+                .await?;
+                let grant = granted(&read, &coordinator, decision.outcome).await?;
                 refuse_if_over(target_session)?;
                 let work = cockpit_tasks::work_of(&read, &target_holder).await?;
                 if !crate::sessions::is_finished_with(target_session, &work) {
@@ -725,8 +770,16 @@ async fn start(
     let at = now();
     let active = crate::coordinator_workers::active_workers(&write, &coordinator, at).await?
         + context.launching.count(&coordinator);
+    let project = crate::approvals::project_at(&write, &dir).await?;
+    // A directory in no project is covered by a grant over everything only (#1131).
+    let scope = match &project {
+        Some(project) => project_scope(&project.name)?,
+        None => Scope::Owner,
+    };
     let (grant, revision, needs_confirmation) =
-        match cockpit_authorization::start_allowance(&write, &coordinator, at, active).await? {
+        match cockpit_authorization::start_allowance(&write, &coordinator, &scope, at, active)
+            .await?
+        {
             StartAllowance::Allowed {
                 grant,
                 revision,
@@ -757,7 +810,9 @@ async fn start(
                     UnblockedBy::Owner,
                 ));
             }
-            StartAllowance::Refused(refusal) => return Err(not_granted(&coordinator, &refusal)),
+            StartAllowance::Refused(refusal) => {
+                return Err(not_granted(&write, &coordinator, &refusal).await);
+            }
         };
     let mut audit = Audit {
         actor: coordinator.clone(),
@@ -770,7 +825,6 @@ async fn start(
         at,
     };
     if needs_confirmation {
-        let project = crate::approvals::project_at(&write, &dir).await?;
         let ask = StartAsk {
             dir,
             start,
@@ -1035,16 +1089,28 @@ async fn record_started(
     Ok(())
 }
 
-/// `session-grant`: gives `session` one coordinator grant over the owner's scope. Giving one
-/// it holds changes nothing; giving `start-sessions` with other terms replaces it.
+/// `session-grant`'s terms of `start-sessions`.
+struct StartChoices {
+    without_confirmation: bool,
+    per_hour: Option<u32>,
+    max_active: Option<u32>,
+}
+
+/// `session-grant`: gives `session` one coordinator grant over its own project, or over every
+/// project with `all_projects` (#1131). Giving one it holds changes nothing; giving it over
+/// another scope, or `start-sessions` with other terms, replaces it.
 async fn give(
     context: &Context,
     session: &str,
     permission: &str,
-    without_confirmation: bool,
-    per_hour: Option<u32>,
-    max_active: Option<u32>,
+    all_projects: bool,
+    choices: StartChoices,
 ) -> Answer {
+    let StartChoices {
+        without_confirmation,
+        per_hour,
+        max_active,
+    } = choices;
     let permission = coordinator_permission(permission)?;
     let has_terms = without_confirmation || per_hour.is_some() || max_active.is_some();
     if has_terms && permission != Permission::StartSessions {
@@ -1058,23 +1124,30 @@ async fn give(
         ));
     }
     let id = SessionId::parse(session)?;
-    refuse_if_over(&context.sessions.get(&id).await?)?;
+    let granted_session = context.sessions.get(&id).await?;
+    refuse_if_over(&granted_session)?;
     let holder = holder(session)?;
     let write = context.database.write().await?;
+    let scope = if all_projects {
+        Scope::Owner
+    } else {
+        cockpit_sessions::coordinator_scope(&write, &granted_session).await?
+    };
     let given = if permission == Permission::StartSessions {
         let terms = StartTerms {
             per_hour: per_hour.unwrap_or(StartTerms::DEFAULT.per_hour),
             max_active: max_active.unwrap_or(StartTerms::DEFAULT.max_active),
             needs_confirmation: !without_confirmation,
         };
-        cockpit_authorization::grant_start_sessions(&write, &holder, terms).await?
+        cockpit_authorization::grant_start_sessions(&write, &holder, &scope, terms).await?
     } else {
-        cockpit_authorization::grant(&write, &holder, permission, &Scope::Owner).await?
+        cockpit_authorization::grant_coordinator(&write, &holder, permission, &scope).await?
     };
     write.commit().await?;
     tracing::info!(
         session,
         %permission,
+        scope = %given.scope,
         grant = given.id.value(),
         "the owner gave a coordinator grant"
     );
@@ -1082,21 +1155,19 @@ async fn give(
     grants_reply(&read, &holder).await
 }
 
-/// `session-revoke`: takes back `session`'s coordinator grant; a start it waits on leaves the
-/// queue with it.
+/// `session-revoke`: takes back `session`'s coordinator grant, whatever its scope; a start it
+/// waits on leaves the queue with it.
 async fn take_back(context: &Context, session: &str, permission: &str) -> Answer {
     let permission = coordinator_permission(permission)?;
     let holder = holder(session)?;
     let write = context.database.write().await?;
-    let Some(held) =
-        cockpit_authorization::active_grant(&write, &holder, permission, &Scope::Owner).await?
-    else {
+    let revoked = cockpit_authorization::revoke_permission(&write, &holder, permission).await?;
+    if revoked.is_empty() {
         return Err(Failed(ProtocolError::new(
             ErrorCode::NotFound,
             format!("session {session} holds no {permission} grant"),
         )));
-    };
-    cockpit_authorization::revoke(&write, held.id).await?;
+    }
     write.commit().await?;
     tracing::info!(session, %permission, "the owner revoked a coordinator grant");
     let read = context.database.read().await?;
@@ -1111,6 +1182,7 @@ async fn grants_reply(connection: &Connection, holder: &Holder) -> Answer {
         .map(|grant| CoordinatorGrantView {
             permission: grant.permission.as_str().to_owned(),
             grant: grant.id.value(),
+            scope: grant.scope.to_string(),
             per_hour: grant.start_terms.map(|terms| terms.per_hour),
             max_active: grant.start_terms.map(|terms| terms.max_active),
             needs_confirmation: grant.start_terms.map(|terms| terms.needs_confirmation),
@@ -1315,9 +1387,9 @@ async fn authorship(connection: &Connection, claim: &Claim) -> Result<Authorship
             claim.effect_key
         )));
     };
-    let target = match holder(&claim.destination) {
+    let target = match SessionId::parse(&claim.destination) {
         Ok(target) => target,
-        Err(Failed(error)) => return Ok(Authorship::Rejected(error.message)),
+        Err(error) => return Ok(Authorship::Rejected(error.to_string())),
     };
     let Some(entry) = cockpit_authorization::audit_entry(connection, entry)
         .await
@@ -1329,18 +1401,28 @@ async fn authorship(connection: &Connection, claim: &Claim) -> Result<Authorship
         )));
     };
     let sender = entry.audit.actor;
+    let target_session = match cockpit_sessions::session(connection, &target).await {
+        Ok(session) => session,
+        Err(error @ cockpit_sessions::Error::UnknownSession { .. }) => {
+            return Ok(Authorship::Rejected(error.to_string()));
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let scope = cockpit_sessions::coordinator_scope(connection, &target_session)
+        .await
+        .map_err(|error| error.to_string())?;
     let decision = cockpit_authorization::evaluate(
         connection,
         &Actor::Session(sender.clone()),
         Permission::MessageSessions,
-        &Scope::Session(target),
+        &scope,
     )
     .await
     .map_err(|error| error.to_string())?;
     Ok(match decision.outcome {
         Outcome::Allowed(_) => Authorship::Granted(sender),
         Outcome::Refused(_) => Authorship::Rejected(format!(
-            "session {} no longer holds message-sessions",
+            "session {} no longer holds message-sessions over {scope}",
             sender.as_str()
         )),
     })
@@ -1663,27 +1745,63 @@ async fn identified(
     Ok(session)
 }
 
-fn granted(coordinator: &Holder, outcome: Outcome) -> Result<GrantId, Failed> {
+async fn granted(
+    connection: &Connection,
+    coordinator: &Holder,
+    outcome: Outcome,
+) -> Result<GrantId, Failed> {
     match outcome {
         Outcome::Allowed(Basis::Grant(grant)) => Ok(grant),
         Outcome::Allowed(Basis::Owner) => unreachable!("a session is never allowed as the owner"),
-        Outcome::Refused(refusal) => Err(not_granted(coordinator, &refusal)),
+        Outcome::Refused(refusal) => Err(not_granted(connection, coordinator, &refusal).await),
     }
 }
 
-/// The refusal of a coordinator verb without its grant, naming the owner's command that
-/// gives it.
-fn not_granted(coordinator: &Holder, refusal: &Refusal) -> Failed {
+/// The refusal of a coordinator verb, naming the owner's command that gives its grant: it
+/// holds no such grant, or holds it over another scope than the one asked for (#1131).
+async fn not_granted(connection: &Connection, coordinator: &Holder, refusal: &Refusal) -> Failed {
     let permission = match refusal {
-        Refusal::NoGrant { permission, .. } | Refusal::OwnerOnly { permission } => permission,
+        Refusal::NoGrant { permission, .. } | Refusal::OwnerOnly { permission } => *permission,
     };
+    let held = match cockpit_authorization::active_grants(connection, coordinator).await {
+        Ok(held) => held,
+        Err(error) => return error.into(),
+    };
+    let held_scope = held
+        .into_iter()
+        .find(|grant| grant.permission == permission)
+        .map(|grant| grant.scope);
     let coordinator = coordinator.as_str();
-    refused(
-        ErrorCode::NotAuthorized,
-        format!("session {coordinator} holds no {permission} grant"),
-        format!("the owner runs `torlek session grant {coordinator} {permission}`"),
-        UnblockedBy::Owner,
-    )
+    // The scope asked is not named: it would tell a coordinator another project's sessions.
+    match held_scope {
+        Some(held_scope) => refused(
+            ErrorCode::NotAuthorized,
+            format!("session {coordinator}'s {permission} grant covers {held_scope} only"),
+            format!(
+                "the owner runs `torlek session grant {coordinator} {permission} --all-projects` to cover every project"
+            ),
+            UnblockedBy::Owner,
+        ),
+        None => refused(
+            ErrorCode::NotAuthorized,
+            format!("session {coordinator} holds no {permission} grant"),
+            format!("the owner runs `torlek session grant {coordinator} {permission}`"),
+            UnblockedBy::Owner,
+        ),
+    }
+}
+
+/// The scope a coordinator grant must cover to act on `session`: its project's (#1131).
+async fn scope_of(connection: &Connection, session: &Holder) -> Result<Scope, Failed> {
+    let session =
+        cockpit_sessions::session(connection, &SessionId::parse(session.as_str())?).await?;
+    Ok(cockpit_sessions::coordinator_scope(connection, &session).await?)
+}
+
+fn project_scope(name: &str) -> Result<Scope, Failed> {
+    Ok(Scope::Project(
+        cockpit_authorization::ProjectName::new(name).map_err(|error| internal(&error))?,
+    ))
 }
 
 fn refused(code: ErrorCode, message: String, action: String, by: UnblockedBy) -> Failed {

@@ -52,6 +52,7 @@ async fn grant(owner: &Connection, session: &str, permission: &str) {
             Command::SessionGrant {
                 session: session.to_owned(),
                 permission: permission.to_owned(),
+                all_projects: true,
                 without_confirmation: false,
                 per_hour: None,
                 max_active: None,
@@ -390,6 +391,7 @@ async fn an_unconfirmed_start_begins_at_once_until_the_hourly_cap() {
             Command::SessionGrant {
                 session: coordinator.id.clone(),
                 permission: "start-sessions".to_owned(),
+                all_projects: true,
                 without_confirmation: true,
                 per_hour: Some(1),
                 max_active: None,
@@ -592,6 +594,7 @@ async fn a_start_naming_no_wired_agent_is_refused_before_it_is_filed_or_counted(
                 Command::SessionGrant {
                     session: coordinator.id.clone(),
                     permission: "start-sessions".to_owned(),
+                    all_projects: true,
                     without_confirmation: true,
                     per_hour: Some(1),
                     max_active: None,
@@ -642,6 +645,7 @@ async fn grant_at_once(
             Command::SessionGrant {
                 session: coordinator.to_owned(),
                 permission: "start-sessions".to_owned(),
+                all_projects: true,
                 without_confirmation,
                 per_hour: Some(100),
                 max_active: Some(max_active),
@@ -824,7 +828,7 @@ async fn max_active_round_trips_through_session_grant_and_session_grants() {
     let shown = String::from_utf8_lossy(&shown.stdout);
     assert!(
         shown.contains("\tstart-sessions\t")
-            && shown.contains("\tper-hour=20 max-active=3 confirmed\n"),
+            && shown.contains("\tper-hour=20 max-active=3 confirmed\tproject plain\n"),
         "{shown}"
     );
 }
@@ -1339,6 +1343,7 @@ async fn no_grant_is_given_from_the_agent_socket() {
             Command::SessionGrant {
                 session: "s0".to_owned(),
                 permission: "start-sessions".to_owned(),
+                all_projects: true,
                 without_confirmation: true,
                 per_hour: Some(100),
                 max_active: None,
@@ -1366,6 +1371,7 @@ async fn only_a_coordinator_grant_is_given_with_session_grant() {
             Command::SessionGrant {
                 session: session.id,
                 permission: "run-commands".to_owned(),
+                all_projects: true,
                 without_confirmation: false,
                 per_hour: None,
                 max_active: None,

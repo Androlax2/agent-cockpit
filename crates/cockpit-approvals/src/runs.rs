@@ -224,7 +224,8 @@ pub struct StartAsk {
 pub(crate) enum AskedUnder {
     /// `run-commands` over the session itself: commands and guides.
     RunCommands,
-    /// `start-sessions` over the owner's scope: start requests (#410).
+    /// `start-sessions` over the project the start is in, or over everything: start
+    /// requests (#410, #1131).
     StartSessions,
 }
 
@@ -488,8 +489,10 @@ pub(crate) async fn asker_may_still_ask(
 
 /// Whether the grant a request was asked under, `asked_under`, still lets `session` ask:
 /// once a session ends or fails it loses `run-commands`, and nobody waits for its requests,
-/// even if a restart grants it again (#285). A start request needs its `start-sessions`
-/// grant the same way (#410). A request recorded without a grant is dead.
+/// even if a restart grants it again (#285). A start request needs the very `start-sessions`
+/// grant it was asked under to be active (#410): the start was checked against that grant's
+/// scope (#1131), and granting it again with another scope or other terms replaces it. A
+/// request recorded without a grant is dead.
 pub(crate) async fn may_still_ask(
     connection: &Connection,
     session: &SessionId,
@@ -499,22 +502,21 @@ pub(crate) async fn may_still_ask(
     if asked_under.is_none() {
         return Ok(false);
     }
-    let outcome = match asked_for {
-        AskedUnder::RunCommands => run_commands_over_itself(connection, session).await?,
-        AskedUnder::StartSessions => {
-            evaluate(
-                connection,
-                session,
-                Permission::StartSessions,
-                &Scope::Owner,
-            )
-            .await?
+    match asked_for {
+        AskedUnder::RunCommands => {
+            Ok(match run_commands_over_itself(connection, session).await? {
+                Outcome::Allowed(basis) => grant_of(&basis) == asked_under,
+                Outcome::Refused(_) => false,
+            })
         }
-    };
-    Ok(match outcome {
-        Outcome::Allowed(basis) => grant_of(&basis) == asked_under,
-        Outcome::Refused(_) => false,
-    })
+        AskedUnder::StartSessions => Ok(cockpit_authorization::active_grants(connection, session)
+            .await?
+            .iter()
+            .any(|grant| {
+                grant.permission == Permission::StartSessions
+                    && Some(grant.id.value()) == asked_under
+            })),
+    }
 }
 
 async fn run_commands_over_itself(

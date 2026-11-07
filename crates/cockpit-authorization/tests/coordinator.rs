@@ -26,14 +26,14 @@ async fn allowance_with_active(
     active: u32,
 ) -> StartAllowance {
     let read = database.read().await.unwrap();
-    start_allowance(&read, &session(holder), now, active)
+    start_allowance(&read, &session(holder), &Scope::Owner, now, active)
         .await
         .unwrap()
 }
 
 async fn give_start_terms(database: &Database, holder: &str, terms: StartTerms) {
     let write = database.write().await.unwrap();
-    grant_start_sessions(&write, &session(holder), terms)
+    grant_start_sessions(&write, &session(holder), &Scope::Owner, terms)
         .await
         .unwrap();
     write.commit().await.unwrap();
@@ -283,6 +283,7 @@ async fn a_cap_of_zero_is_refused() {
     let refused = grant_start_sessions(
         &write,
         &session("coordinator"),
+        &Scope::Owner,
         StartTerms {
             per_hour: 0,
             max_active: StartTerms::DEFAULT_MAX_ACTIVE,
@@ -357,6 +358,7 @@ async fn a_max_active_of_zero_is_refused() {
     let refused = grant_start_sessions(
         &write,
         &session("coordinator"),
+        &Scope::Owner,
         StartTerms {
             max_active: 0,
             ..TWO_AT_ONCE

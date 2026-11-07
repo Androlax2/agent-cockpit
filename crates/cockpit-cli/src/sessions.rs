@@ -140,13 +140,16 @@ fn session_new(dir: &str, options: &[&str]) -> Result<Command, String> {
     })
 }
 
-/// `grant SESSION PERMISSION [--per-hour N] [--max-active N] [--without-confirmation]`: the
-/// daemon checks which permission takes which terms (#410, #739).
+/// `grant SESSION PERMISSION [--all-projects] [--per-hour N] [--max-active N]
+/// [--without-confirmation]`: the daemon checks which permission takes which terms (#410,
+/// #739). Without `--all-projects` the grant covers the session's own project (#1131).
 fn session_grant(id: &str, permission: &str, options: &[&str]) -> Result<Command, String> {
     let (mut per_hour, mut max_active, mut without_confirmation) = (None, None, false);
+    let mut all_projects = false;
     let mut options = options.iter();
     while let Some(flag) = options.next() {
         match *flag {
+            "--all-projects" if !all_projects => all_projects = true,
             "--without-confirmation" if !without_confirmation => without_confirmation = true,
             "--per-hour" if per_hour.is_none() => {
                 per_hour = Some(count_value(flag, options.next(), "starts")?);
@@ -154,7 +157,7 @@ fn session_grant(id: &str, permission: &str, options: &[&str]) -> Result<Command
             "--max-active" if max_active.is_none() => {
                 max_active = Some(count_value(flag, options.next(), "sessions")?);
             }
-            "--without-confirmation" | "--per-hour" | "--max-active" => {
+            "--all-projects" | "--without-confirmation" | "--per-hour" | "--max-active" => {
                 return Err(format!("{flag} given twice"));
             }
             _ => return Err(format!("unknown argument {flag}")),
@@ -163,6 +166,7 @@ fn session_grant(id: &str, permission: &str, options: &[&str]) -> Result<Command
     Ok(Command::SessionGrant {
         session: id.to_owned(),
         permission: permission.to_owned(),
+        all_projects,
         without_confirmation,
         per_hour,
         max_active,
@@ -378,9 +382,9 @@ fn over_lines(session: &SessionView) -> String {
     }
 }
 
-/// `grant  permission  id  terms`, tab-separated; `terms` is
+/// `grant  permission  id  terms  scope`, tab-separated; `terms` is
 /// `per-hour=N max-active=M confirmed` or `... unconfirmed` for `start-sessions`, `-`
-/// otherwise.
+/// otherwise; `scope`, last since #1131, is `project NAME` or `everything`.
 fn grant_line(grant: &CoordinatorGrantView) -> String {
     let terms = match (grant.per_hour, grant.max_active, grant.needs_confirmation) {
         (Some(per_hour), Some(max_active), Some(needs_confirmation)) => {
@@ -393,7 +397,10 @@ fn grant_line(grant: &CoordinatorGrantView) -> String {
         }
         _ => "-".to_owned(),
     };
-    format!("grant\t{}\t{}\t{terms}", grant.permission, grant.grant)
+    format!(
+        "grant\t{}\t{}\t{terms}\t{}",
+        grant.permission, grant.grant, grant.scope
+    )
 }
 
 /// `audit  id  at  actor  action  target  detail`, tab-separated, newest first; `-` for what

@@ -8,7 +8,9 @@ session, within reports 07 and 17. The TUI line was chosen by Theo.
   (`Permission::COORDINATOR`). Only the owner socket gives or revokes them
   (`cockpit session grant|revoke SESSION PERMISSION`). Each is given over `Scope::Owner`:
   over every session. Observe and start are evaluated over the owner scope, message over the
-  target session, so a narrower grant can come later without a wire change. A session's
+  target session, so a narrower grant can come later without a wire change.
+  (Since #1131 each covers the coordinator's own project unless the owner names every project:
+  `2026-11-07-1131-coordinator-project-scope.md`.) A session's
   coordinator grants are revoked when it ends, like its other grants.
 - **Start terms live on the grant.** By default each start waits for the owner, at most 10 per
   hour. `--without-confirmation` needs an explicit `--per-hour N`, so an unconfirmed grant

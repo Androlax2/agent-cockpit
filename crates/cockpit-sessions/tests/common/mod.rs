@@ -14,6 +14,7 @@ pub async fn open(dir: &Path) -> Database {
         &[
             cockpit_authorization::MIGRATIONS,
             cockpit_agent_channel::MIGRATIONS,
+            cockpit_projects::MIGRATIONS,
             cockpit_sessions::MIGRATIONS,
         ],
     )

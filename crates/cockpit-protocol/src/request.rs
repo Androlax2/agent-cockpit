@@ -148,13 +148,16 @@ pub enum Command {
         launch_token: Option<String>,
         session: String,
     },
-    /// Owner only (#410): give `session` one coordinator grant over every session:
-    /// `observe-sessions`, `message-sessions`, `start-sessions` or `end-sessions` (#713).
+    /// Owner only (#410): give `session` one coordinator grant: `observe-sessions`,
+    /// `message-sessions`, `start-sessions` or `end-sessions` (#713). It covers the sessions
+    /// of `session`'s own project, or of every project with `all_projects` (#1131).
     /// `without_confirmation`, `per_hour` and `max_active` (#739) are `start-sessions`' terms;
     /// `without_confirmation` needs `per_hour`.
     SessionGrant {
         session: String,
         permission: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all_projects: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         without_confirmation: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]

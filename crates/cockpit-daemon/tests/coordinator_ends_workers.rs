@@ -58,6 +58,7 @@ async fn grant(owner: &Connection, session: &str, permission: &str) {
         Command::SessionGrant {
             session: session.to_owned(),
             permission: permission.to_owned(),
+            all_projects: true,
             without_confirmation: false,
             per_hour: None,
             max_active: None,
@@ -114,6 +115,7 @@ async fn a_coordinator_starts_a_worker() -> Started {
         Command::SessionGrant {
             session: coordinator.clone(),
             permission: "start-sessions".to_owned(),
+            all_projects: true,
             without_confirmation: true,
             per_hour: Some(5),
             max_active: None,
@@ -367,6 +369,7 @@ async fn end_sessions_takes_no_start_terms_and_is_revoked_when_the_coordinator_e
             Command::SessionGrant {
                 session: started.coordinator.clone(),
                 permission: "end-sessions".to_owned(),
+                all_projects: true,
                 without_confirmation: false,
                 per_hour: Some(3),
                 max_active: None,

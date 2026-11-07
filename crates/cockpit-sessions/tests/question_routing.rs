@@ -8,7 +8,7 @@
 #[allow(dead_code, reason = "each test file uses part of the shared fixtures")]
 mod common;
 
-use cockpit_authorization::{Permission, Scope};
+use cockpit_authorization::{Permission, ProjectName, Scope};
 use cockpit_sessions::{
     AgentState, QUESTION_HOLD_SECONDS, Report, SessionReport, answer_question, escalate_question,
     latest_report, question_holder, report,
@@ -22,11 +22,27 @@ const QUESTION: &str = "Which branch should I base the fix on?";
 
 /// A worker `COORDINATOR` started, launched once, bound to this test process and granted
 /// `change-state`;
-/// the coordinator runs and holds `message-sessions` over every session, as the owner's
-/// `session grant` gives it.
+/// both sessions are in project `app`; the coordinator runs and holds `message-sessions` over
+/// every project, as the owner's `session grant --all-projects` gives it.
 async fn started_worker(dir: &std::path::Path, started_by: Option<&str>) -> Database {
     let database = open(dir).await;
     let write = database.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO projects (id, name, root, registered_at) VALUES (1, 'app', '/work', 0)",
+            (),
+        )
+        .await
+        .unwrap();
+    write
+        .execute(
+            "INSERT INTO project_checkouts (id, project_id, kind, path, incarnation,
+                 git_dir_marker, state, created_at)
+             VALUES (1, 1, 'main', '/work', 1, 'marker', 'live', 0)",
+            (),
+        )
+        .await
+        .unwrap();
     for (id, starter) in [(COORDINATOR, None), (WORKER, started_by)] {
         write
             .execute(
@@ -246,6 +262,27 @@ async fn a_question_reaches_the_owner_once_the_coordinator_lost_message_sessions
     cockpit_authorization::revoke(&write, held.id)
         .await
         .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(holder_at(&database, &asked, asked.reported_at).await, None);
+}
+
+/// #1131: a coordinator whose `message-sessions` covers another project does not hold the
+/// question of a session in this one.
+#[tokio::test]
+async fn a_question_reaches_the_owner_when_the_coordinators_grant_covers_another_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = started_worker(dir.path(), Some(COORDINATOR)).await;
+    let asked = send(&database, asking(QUESTION)).await;
+    let write = database.write().await.unwrap();
+    cockpit_authorization::grant_coordinator(
+        &write,
+        &session(COORDINATOR),
+        Permission::MessageSessions,
+        &Scope::Project(ProjectName::new("other").unwrap()),
+    )
+    .await
+    .unwrap();
     write.commit().await.unwrap();
 
     assert_eq!(holder_at(&database, &asked, asked.reported_at).await, None);

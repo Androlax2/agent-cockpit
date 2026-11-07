@@ -41,6 +41,8 @@ pub struct CoordinatorGrantView {
     /// `observe-sessions`, `message-sessions`, `start-sessions` or `end-sessions`.
     pub permission: String,
     pub grant: i64,
+    /// What it covers (#1131): `project NAME`, or `everything`.
+    pub scope: String,
     /// `start-sessions` only: starts asked or made per hour, at most.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_hour: Option<u32>,
