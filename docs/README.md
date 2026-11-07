@@ -41,6 +41,7 @@ appears below as the first cell of a table row. A test in `cockpit-workspace-rul
 | `docs/packaging/` | Maintaining one distribution channel |
 | `docs/security/` | Maintaining the repository's forge settings |
 | `docs/redteam-vm.md` | Building and resetting the disposable red-team VM, and briefing the red-team |
+| `docs/redteam-harness.md` | Running the #685 red-team's checks and reading the host-only verb catalog |
 
 ### Agent-facing
 
