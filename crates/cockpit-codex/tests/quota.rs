@@ -367,16 +367,16 @@ fn a_home_without_the_quota_sign_in_is_refused_without_running_codex() {
 
 #[test]
 fn a_quota_home_without_a_subscription_sign_in_is_refused() {
-    for account in [Value::Null, json!({"type": "apiKey"})] {
+    for (case, signed_in_as) in [
+        ("no sign-in", Value::Null),
+        ("an API key", json!({"type": "apiKey"})),
+    ] {
         let home = Home::with_quota_home();
-        let codex = home.codex(account.clone(), json!({}));
+        let codex = home.codex(signed_in_as, json!({}));
 
         let reason = refusal(&codex, &home);
 
-        assert!(
-            reason.contains("codex-usage.sh --login"),
-            "{account}: {reason}"
-        );
+        assert!(reason.contains("codex-usage.sh --login"), "{case}: {reason}");
     }
 }
 
