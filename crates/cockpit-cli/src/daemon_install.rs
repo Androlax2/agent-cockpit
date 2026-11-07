@@ -16,6 +16,7 @@ use cockpit_config::Profile;
 
 use crate::daemon::fail;
 use crate::installations::{Legacy, ServiceManager, profile_of_unit};
+use crate::notifier_unit;
 
 const DAEMON_PROGRAM: &str = "torlek-daemon";
 
@@ -64,6 +65,15 @@ fn install() -> Result<ExitCode, String> {
     }
     let unit = unit_dir.join(manager.unit_file_name(profile));
     refuse_a_foreign_unit(&unit, profile)?;
+    let notifier = match manager {
+        ServiceManager::Systemd => Some(notifier_unit::Plan::new(
+            &unit_dir,
+            profile,
+            notify_autostart()?,
+        )?),
+        // macOS has no graphical-session target to bind to (#568).
+        ServiceManager::Launchd => None,
+    };
     if !profile.is_default() {
         link_command(&program, profile)?;
     }
@@ -81,6 +91,9 @@ fn install() -> Result<ExitCode, String> {
             service_manager("systemctl", &["--user", "enable", &unit_name])?;
             // `restart`, not `enable --now`: a reinstall must replace a running daemon.
             service_manager("systemctl", &["--user", "restart", &unit_name])?;
+            if let Some(notifier) = &notifier {
+                notifier.apply(profile, &program)?;
+            }
         }
         ServiceManager::Launchd => {
             // The file was just written by this user: its owner is the user's launchd domain.
@@ -100,6 +113,14 @@ fn install() -> Result<ExitCode, String> {
         manager.unit_file_name(profile)
     );
     Ok(ExitCode::SUCCESS)
+}
+
+/// The owner's `[notify] autostart`; a configuration that does not load stops the install,
+/// since the setting cannot be known.
+fn notify_autostart() -> Result<bool, String> {
+    cockpit_config::load(&crate::profile::environment(), None, &[])
+        .map(|config| config.notify.autostart.value)
+        .map_err(|error| error.to_string())
 }
 
 /// `cockpit-<name>` beside this program, pointing at it; an existing link to it is kept, any
@@ -181,7 +202,7 @@ fn systemd_unit(
 }
 
 /// systemd's double-quoted word: `\` and `"` escaped, `%` doubled so no specifier expands.
-fn systemd_quoted(word: &str) -> String {
+pub(crate) fn systemd_quoted(word: &str) -> String {
     let escaped = word
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
@@ -249,7 +270,7 @@ fn xml_escaped(text: &str) -> String {
 /// The variables the daemon must see as this command does: `PATH` for the agents it launches,
 /// and the XDG bases this command resolved the profile's directories from, so `doctor` and the
 /// daemon agree on them. A service manager's own environment has none of the shell's.
-fn unit_variables() -> Result<Vec<(&'static str, String)>, String> {
+pub(crate) fn unit_variables() -> Result<Vec<(&'static str, String)>, String> {
     let mut variables = Vec::new();
     for name in [
         "PATH",
@@ -298,7 +319,7 @@ fn bootstrap(domain: &str, plist: &str) -> Result<(), String> {
 }
 
 /// Written beside, then renamed over the unit, so a service manager never reads half a file.
-fn write_unit(unit_dir: &Path, unit: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn write_unit(unit_dir: &Path, unit: &Path, text: &str) -> Result<(), String> {
     fs::create_dir_all(unit_dir).map_err(|error| format!("{}: {error}", unit_dir.display()))?;
     let mut partial = unit.as_os_str().to_owned();
     partial.push(".partial");
@@ -319,7 +340,7 @@ pub(crate) fn service_manager(program: &str, arguments: &[&str]) -> Result<(), S
     Ok(())
 }
 
-fn utf8(path: &Path) -> Result<String, String> {
+pub(crate) fn utf8(path: &Path) -> Result<String, String> {
     path.to_str()
         .map(str::to_owned)
         .ok_or_else(|| format!("{}: not UTF-8", path.display()))

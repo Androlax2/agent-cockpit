@@ -173,3 +173,28 @@ fn a_hold_detector_that_cannot_be_run_as_named_is_refused() {
         assert!(error.to_string().contains(reason), "{line}: {error}");
     }
 }
+
+#[test]
+fn autostart_is_on_by_default() {
+    let home = TempDir::new().unwrap();
+
+    let config = load(home.path(), None).unwrap();
+
+    assert!(config.notify.autostart.value);
+    assert_eq!(config.notify.autostart.source, Source::ProductDefault);
+}
+
+#[test]
+fn the_owner_turns_autostart_off_and_config_show_says_where() {
+    let home = TempDir::new().unwrap();
+    write_user_config(home.path(), "[notify]\nautostart = false\n");
+
+    let config = load(home.path(), None).unwrap();
+
+    assert!(!config.notify.autostart.value);
+    assert!(
+        cockpit_config::render(&config).contains("notify.autostart = false  # user config"),
+        "{}",
+        cockpit_config::render(&config)
+    );
+}

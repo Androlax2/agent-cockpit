@@ -72,6 +72,9 @@ pub struct NotifySettings {
     /// Each hold's detector, by the hold's name: a program the notifier runs at every refresh,
     /// whose exit status 0 means the hold stands (a meeting, a game). None by default.
     pub holds: BTreeMap<String, Sourced<PathBuf>>,
+    /// Whether `torlek daemon install` installs the unit that starts the notifier with the
+    /// desktop session (#1126). The one opt-out; `torlek notify` by hand is unaffected.
+    pub autostart: Sourced<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,6 +83,7 @@ pub(super) struct NotifyTable {
     desktop: Option<NotifyEventsTable>,
     sound: Option<NotifyEventsTable>,
     hold: Option<BTreeMap<String, Spanned<String>>>,
+    autostart: Option<Spanned<bool>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,6 +101,7 @@ pub(super) fn settings(layers: &[Layer]) -> Result<NotifySettings, ConfigError> 
         desktop: NotifyEvents::all_on(),
         sound: NotifyEvents::all_on(),
         holds: BTreeMap::new(),
+        autostart: Sourced::new(true, Source::ProductDefault),
     };
     for layer in layers {
         let Some(table) = &layer.settings.notify else {
@@ -108,6 +113,10 @@ pub(super) fn settings(layers: &[Layer]) -> Result<NotifySettings, ConfigError> 
         }
         if let Some(sound) = &table.sound {
             apply(layer, sound, &mut result.sound);
+        }
+        if let Some(autostart) = &table.autostart {
+            result.autostart =
+                Sourced::new(*autostart.get_ref(), layer.source_at(autostart.span()));
         }
         for (name, program) in table.hold.iter().flatten() {
             let source = layer.source_at(program.span());

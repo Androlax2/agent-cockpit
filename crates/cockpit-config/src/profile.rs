@@ -63,6 +63,11 @@ impl Profile {
                  digits and inner hyphens, starting with a letter"
             ));
         }
+        if name.ends_with("-notify") {
+            return Err(format!(
+                "profile {name:?} would name its daemon unit like another profile's notifier unit"
+            ));
+        }
         if PROGRAM_SUFFIXES.contains(&name) {
             return Err(format!(
                 "profile {name:?} would be named like Torlek's program torlek-{name}"
@@ -92,6 +97,13 @@ impl Profile {
     /// The systemd user unit the daemon of this profile runs as.
     pub fn systemd_unit(&self) -> String {
         format!("{}.service", self.qualified_name())
+    }
+
+    /// The systemd user unit that starts this profile's notifier with the desktop session
+    /// (#1126): `torlek-notify.service` for the default profile, which `notify` reserves as a
+    /// profile name.
+    pub fn notify_systemd_unit(&self) -> String {
+        format!("{}-notify.service", self.qualified_name())
     }
 
     /// The launchd agent's label on macOS, with the `-<name>` suffix OpenLogi's dev bundle
