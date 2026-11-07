@@ -51,6 +51,7 @@ mod storage;
 mod todo;
 mod tui;
 mod update;
+mod usage;
 mod version;
 mod workflow;
 
@@ -93,6 +94,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek storage outputs [prune]
        torlek storage database [prune]
        torlek storage prune CHECKOUT [--dry-run] | --plan ID --revision N --epoch E --confirm | status ID | abandon ID --revision N --epoch E
+       torlek usage quota
        torlek ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check
        torlek ask guide [--cwd DIR] < GUIDE | --wait ID
        torlek approval list | show ID | decline ID | input ID < LINE
@@ -244,6 +246,10 @@ fn main() -> ExitCode {
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("storage"), ..] => storage::run(&arguments[1..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
+        [Some("usage"), ..] => match usage::parse(&arguments[1..]) {
+            Ok(command) => usage::run(command),
+            Err(problem) => verb_usage_error(&verb_name, problem),
+        },
         [Some("session"), ..] => match sessions::parse(&arguments[1..]) {
             Ok(command) => {
                 let is_list = matches!(command, cockpit_protocol::Command::SessionList { .. });

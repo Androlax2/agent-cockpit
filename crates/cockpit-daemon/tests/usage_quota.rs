@@ -1,6 +1,6 @@
 //! Issue #58 through the daemon: each provider reporting `quota` is read at the owner's
 //! interval in the owner's home, its windows recorded, and a provider that fails is asked
-//! again later and later.
+//! again later and later. The owner reads what was recorded with `usage-quota`.
 #![cfg(target_os = "linux")]
 
 mod candidate;
@@ -10,10 +10,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{Daemon, Instance, Limits, Options, QuotaPolling, Routes};
+use cockpit_protocol::{
+    Command, ErrorCode, QuotaAccountView, QuotaWindowStateView, QuotaWindowView, Reply,
+};
 use cockpit_provider_api::fake::FakeProvider;
 use cockpit_provider_api::{LimitKey, ProviderError, ProviderName, QuotaReading, QuotaWindow};
 use cockpit_usage::{QuotaPolicy, WindowState};
+use common::GENEROUS;
 
 const REFRESH: Duration = Duration::from_millis(200);
 
@@ -86,6 +91,17 @@ impl Polled {
 
     async fn asks_once(&self, count: usize) -> Vec<(u128, PathBuf)> {
         common::once_logged(count, || FakeProvider::quota_asks(&self.log)).await
+    }
+
+    /// What the owner's `usage-quota` answers while the daemon runs.
+    async fn asked(&self, daemon: &Daemon) -> Result<Vec<QuotaAccountView>, ClientError> {
+        let client = Connection::open(daemon.socket_path(), GENEROUS)
+            .await
+            .unwrap();
+        match client.request(Command::UsageQuota, GENEROUS).await? {
+            Reply::UsageQuota { accounts } => Ok(accounts),
+            reply => panic!("{reply:?}"),
+        }
     }
 
     /// What the state database holds once the daemon stopped.
@@ -161,4 +177,106 @@ async fn a_reading_after_failures_is_current_and_the_refresh_returns() {
         "{after_success} ms"
     );
     assert!(recorded[0].is_current, "{:#?}", recorded[0]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owner_reads_each_accounts_windows_as_recorded_and_judged_now() {
+    let (polled, daemon) = Polled::start(vec![Ok(five_hour(42.7))]).await;
+    // The second ask comes after the first reading was recorded.
+    polled.asks_once(2).await;
+
+    let accounts = polled.asked(&daemon).await.unwrap();
+
+    assert_eq!(accounts.len(), 1, "{accounts:#?}");
+    let account = &accounts[0];
+    assert_eq!(
+        (
+            account.provider.as_str(),
+            account.account.as_str(),
+            account.plan.as_deref(),
+            account.is_current,
+            &account.failure,
+        ),
+        ("fake", "default", Some("max"), true, &None)
+    );
+    let QuotaWindowView {
+        limit,
+        scope,
+        length_seconds,
+        used_percent,
+        resets_at,
+        state,
+    } = &account.windows[0];
+    assert_eq!(
+        (
+            limit.as_str(),
+            scope,
+            *length_seconds,
+            *used_percent,
+            *state
+        ),
+        (
+            "five-hour",
+            &None,
+            Some(18_000),
+            42,
+            QuotaWindowStateView::Available
+        )
+    );
+    assert!(
+        resets_at.is_some_and(|at| at > common::unix_now()),
+        "{resets_at:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_account_whose_every_refresh_failed_is_answered_with_the_reason() {
+    let (polled, daemon) = Polled::start(vec![
+        refused("the usage endpoint answered HTTP 429"),
+        refused("the usage endpoint answered HTTP 429"),
+    ])
+    .await;
+    polled.asks_once(2).await;
+
+    let accounts = polled.asked(&daemon).await.unwrap();
+
+    let account = &accounts[0];
+    assert_eq!(
+        (
+            account.observed_at,
+            account.is_current,
+            account.windows.len(),
+            account
+                .failure
+                .as_ref()
+                .map(|failure| failure.reason.as_str()),
+        ),
+        (None, false, 0, Some("the usage endpoint answered HTTP 429"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_that_reads_no_quota_refuses_the_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let wiring = common::wiring_in(dir.path(), Vec::new());
+    assert!(wiring.quota.is_none(), "the test wiring reads no quota");
+    let environment = wiring.environment.clone();
+    let daemon = Instance::acquire(options_in(dir.path()))
+        .unwrap()
+        .start(wiring, move |capabilities| {
+            Arc::new(Routes::new(capabilities, environment))
+        })
+        .await
+        .unwrap();
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+
+    let answer = client.request(Command::UsageQuota, GENEROUS).await;
+
+    assert!(
+        matches!(&answer, Err(ClientError::Daemon(error))
+            if error.code == ErrorCode::Refused && error.message == "this daemon reads no quota"),
+        "{answer:?}"
+    );
 }

@@ -177,6 +177,13 @@ Unknown keys fail with the file and line. See the [current configuration guide](
 bytes, what its prune would retire now and the command that frees it, and a total. It deletes
 nothing; an area it could not read in full says why and makes it exit 1.
 
+`torlek usage quota` shows each provider account's plan windows as the daemon last read
+them: the share used, the state (`available`, `low` from your lowest alert threshold,
+`exhausted`, `blocked`, or `stale` when the reading is old, a refresh failed after it or
+its reset has passed), when each resets,
+and the last refresh that failed. The daemon reads them every `usage.quota_refresh_minutes`;
+Codex is read from its own sign-in in `~/.local/share/codex-quota`.
+
 To let a project's agents push and open pull requests without your own `gh` login, create a
 fine-grained token limited to that repository (contents and pull requests: read and write)
 and save it alone in `~/.config/torlek/github-tokens/<project>` (`mkdir -p -m 700` the

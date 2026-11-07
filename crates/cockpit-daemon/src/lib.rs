@@ -194,6 +194,8 @@ pub struct Capabilities {
     pub state_dir: PathBuf,
     /// The optional skill pack as this start delivered it (#786).
     pub skill_pack: Arc<DeliveredSkillPack>,
+    /// The policy the quota worker judges readings under; `None` when it reads none (#58).
+    pub quota_policy: Option<cockpit_usage::QuotaPolicy>,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -521,6 +523,7 @@ impl Instance {
                 bug_report_facts: Arc::clone(&bug_report_facts),
                 state_dir: options.state_dir.clone(),
                 skill_pack,
+                quota_policy: wiring.quota.as_ref().map(|polling| polling.policy.clone()),
             }),
         });
         let detected = bug_reports::Context {
