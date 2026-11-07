@@ -2,8 +2,8 @@
 //! are observed from structured sources, so their observation is never a screen guess.
 
 use cockpit_provider_api::{
-    Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ConversationId, EventKind,
-    Observation, ObservedBy, ProviderEvent, TurnOutcome,
+    Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ContextUsage, ConversationId,
+    EventKind, Observation, ObservedBy, ProviderEvent, TurnOutcome,
 };
 
 fn event(kind: EventKind) -> ProviderEvent {
@@ -62,5 +62,27 @@ fn each_event_kind_names_the_activity_it_proves() {
         (EventKind::Unknown, None),
     ] {
         assert_eq!(event(kind.clone()).observation(), expected, "{kind:?}");
+    }
+}
+
+#[test]
+fn a_context_usage_reports_its_tokens_and_the_window_when_the_harness_gave_one() {
+    for (usage, expected) in [
+        (
+            ContextUsage {
+                tokens: 45_123,
+                window: Some(258_400),
+            },
+            vec!["--context-tokens", "45123", "--context-window", "258400"],
+        ),
+        (
+            ContextUsage {
+                tokens: 45_123,
+                window: None,
+            },
+            vec!["--context-tokens", "45123"],
+        ),
+    ] {
+        assert_eq!(usage.report_arguments(), expected, "{usage:?}");
     }
 }

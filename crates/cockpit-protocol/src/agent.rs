@@ -138,6 +138,16 @@ pub struct CompactionView {
     pub at: i64,
 }
 
+/// The harness's own context usage at the end of a turn (#479), in its own tokens: what its
+/// last model call was given. Never converted from or into Cockpit's bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextUsage {
+    pub tokens: u64,
+    /// The model's context window in tokens, when the harness says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
+}
+
 /// What an agent reports about its session. Every field is optional; one left out keeps its
 /// previous value. The session is never named: the daemon identifies the sender.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +184,10 @@ pub struct AgentReport {
     /// nothing else in the report (#782).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<CompactionReport>,
+    /// The harness's context at the end of the turn `outcome` reports; it comes only with an
+    /// outcome (#479).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextUsage>,
 }
 
 /// A session's latest report as the daemon recorded it.

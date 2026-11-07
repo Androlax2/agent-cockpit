@@ -4,8 +4,8 @@
 use std::fmt;
 
 use cockpit_provider_api::{
-    Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ConversationId, EventKind,
-    ProviderEvent, TurnOutcome,
+    Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ContextUsage, ConversationId,
+    EventKind, ProviderEvent, TurnOutcome,
 };
 
 /// The hook events launches subscribe the bridge to. `SessionEnd` reports nothing: the
@@ -213,28 +213,44 @@ pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     Some(arguments)
 }
 
-/// [`bridge_arguments`] with the compaction's context size the transcript holds: the size
-/// before at `PreCompact`, the size after at `PostCompact` (#782). A transcript that cannot be
-/// read, or does not hold the size yet, reports the compaction without it.
+/// [`bridge_arguments`] with the context size the transcript holds: a compaction's size
+/// before at `PreCompact` and after at `PostCompact` (#782), and the harness's context at a
+/// turn's end, `Stop` or `StopFailure` (#479); Claude Code names no window there. A transcript
+/// that cannot be read, or does not hold the size yet, reports without it.
 pub fn measured_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     let mut arguments = bridge_arguments(event)?;
-    let EventKind::Compaction(moment) = &event.kind else {
+    let payload: Option<serde_json::Value> = serde_json::from_str(&event.raw).ok();
+    let Some(transcript) = payload
+        .as_ref()
+        .and_then(|payload| payload.get("transcript_path"))
+        .and_then(serde_json::Value::as_str)
+        .map(std::path::Path::new)
+    else {
         return Some(arguments);
     };
-    let payload: serde_json::Value = serde_json::from_str(&event.raw).ok()?;
-    let transcript = payload
-        .get("transcript_path")
-        .and_then(serde_json::Value::as_str)
-        .map(std::path::Path::new);
-    let measured = transcript.and_then(|transcript| match moment.phase {
-        CompactionPhase::Started => crate::transcript::tokens_before(transcript)
-            .map(|tokens| ("--compaction-tokens-before", tokens)),
-        CompactionPhase::Ended => crate::transcript::tokens_after(transcript)
-            .map(|tokens| ("--compaction-tokens-after", tokens)),
-        CompactionPhase::Failed => None,
-    });
-    if let Some((flag, tokens)) = measured {
-        arguments.extend([flag.to_owned(), tokens.to_string()]);
+    match &event.kind {
+        EventKind::Compaction(moment) => {
+            let measured = match moment.phase {
+                CompactionPhase::Started => crate::transcript::context_tokens(transcript)
+                    .map(|tokens| ("--compaction-tokens-before", tokens)),
+                CompactionPhase::Ended => crate::transcript::tokens_after(transcript)
+                    .map(|tokens| ("--compaction-tokens-after", tokens)),
+                CompactionPhase::Failed => None,
+            };
+            if let Some((flag, tokens)) = measured {
+                arguments.extend([flag.to_owned(), tokens.to_string()]);
+            }
+        }
+        EventKind::TurnEnded { .. } => {
+            if let Some(tokens) = crate::transcript::context_tokens(transcript) {
+                let usage = ContextUsage {
+                    tokens,
+                    window: None,
+                };
+                arguments.extend(usage.report_arguments());
+            }
+        }
+        _ => {}
     }
     Some(arguments)
 }

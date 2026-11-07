@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cockpit_protocol::{Command, Reply};
+use cockpit_protocol::{Command, ContextUsage, Reply};
 
 use crate::agent::{exchange, failed, launch_token};
 use crate::todo::socket;
@@ -32,7 +32,9 @@ pub(crate) fn docs(arguments: &[OsString]) -> Result<ExitCode, String> {
 }
 
 /// `cockpit brief [--measure]`: this session's launch brief and the packet of the step it
-/// does, or with `--measure` how much context Cockpit adds.
+/// does, or with `--measure` how much context Cockpit adds, in bytes, beside the harness's
+/// own total at the latest turn's end, in its tokens (#479). Neither is converted into the
+/// other's unit.
 pub(crate) fn brief(arguments: &[OsString]) -> Result<ExitCode, String> {
     let words = crate::daemon::utf8_words(arguments)?;
     let measures = match words[..] {
@@ -57,6 +59,7 @@ pub(crate) fn brief(arguments: &[OsString]) -> Result<ExitCode, String> {
                 packet,
                 manifest,
                 budget,
+                harness_context,
             }) => {
                 if measures {
                     outln!(
@@ -73,6 +76,7 @@ pub(crate) fn brief(arguments: &[OsString]) -> Result<ExitCode, String> {
                         "on demand: {} bytes (the whole manual)",
                         budget.on_demand_bytes
                     );
+                    outln!("{}", harness_context_line(harness_context));
                     outln!("instructions manifest: {manifest}");
                 } else {
                     out!("{}", with_packet(&brief, packet.as_deref()));
@@ -82,6 +86,23 @@ pub(crate) fn brief(arguments: &[OsString]) -> Result<ExitCode, String> {
             other => failed(&socket, other),
         },
     )
+}
+
+/// The harness's own context, as `--measure` prints it.
+fn harness_context_line(context: Option<ContextUsage>) -> String {
+    match context {
+        None => "harness context: not reported yet (it is read when a turn ends)".to_owned(),
+        Some(ContextUsage {
+            tokens,
+            window: None,
+        }) => format!("harness context: {tokens} tokens at the latest turn's end"),
+        Some(ContextUsage {
+            tokens,
+            window: Some(window),
+        }) => format!(
+            "harness context: {tokens} tokens at the latest turn's end, of a {window}-token window"
+        ),
+    }
 }
 
 fn catalog() -> ExitCode {

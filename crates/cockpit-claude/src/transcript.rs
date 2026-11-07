@@ -1,7 +1,7 @@
-//! The context sizes of a compaction, read from the transcript a hook payload names
-//! (`transcript_path`). The `PreCompact` and `PostCompact` payloads carry only the trigger,
-//! and Claude Code writes the transcript asynchronously, so a size the transcript does not
-//! hold yet is `None`, never a guess (#782).
+//! The context sizes of a compaction (#782) and at a turn's end (#479), read from the
+//! transcript a hook payload names (`transcript_path`). The `PreCompact`, `PostCompact` and
+//! `Stop` payloads carry no sizes, and Claude Code writes the transcript asynchronously, so a
+//! size the transcript does not hold yet is `None`, never a guess.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -11,9 +11,10 @@ use std::path::Path;
 /// boundary sit in it, while a whole transcript can be many megabytes.
 const TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
-/// The context before a compaction: the last model call's input, cache read and cache
-/// creation tokens, the formula report 686 measured with.
-pub fn tokens_before(transcript: &Path) -> Option<u64> {
+/// The last main-chain model call's context: its input, cache read and cache creation tokens,
+/// the formula report 686 measured with. It is the context before a compaction, and at a
+/// turn's end the harness's own total.
+pub fn context_tokens(transcript: &Path) -> Option<u64> {
     last_record(transcript, |record| {
         if record["type"] != "assistant" || record["isSidechain"] == true {
             return None;

@@ -27,7 +27,8 @@ pub use model::{
 };
 pub use questions::{QUESTION_HOLD_SECONDS, answer_question, escalate_question, question_holder};
 pub use reports::{
-    AgentState, QuestionSource, Report, SessionReport, latest_report, latest_reports, report,
+    AgentState, QuestionSource, Report, SessionReport, current_context, latest_report,
+    latest_reports, report,
 };
 pub use store::{MIGRATIONS, checkout_sessions, maintenance_sessions, session, sessions};
 

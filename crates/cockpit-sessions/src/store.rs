@@ -273,6 +273,16 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE sessions ADD COLUMN compaction_threshold TEXT
                 CHECK (compaction_threshold <> '');",
         },
+        // #479: the harness's own context at the end of the latest turn, in its tokens. A
+        // report recorded before has none, as a launch before its first turn ends.
+        Migration {
+            version: 16,
+            sql: "ALTER TABLE session_reports ADD COLUMN context_tokens INTEGER
+                CHECK (context_tokens >= 0);
+            ALTER TABLE session_reports ADD COLUMN context_window INTEGER
+                CHECK (context_window IS NULL
+                    OR (context_window > 0 AND context_tokens IS NOT NULL));",
+        },
     ],
 };
 

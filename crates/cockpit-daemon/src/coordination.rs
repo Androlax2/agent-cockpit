@@ -1736,6 +1736,7 @@ mod tests {
             launch: None,
             question_asked_at: None,
             question_escalated_at: None,
+            context: None,
         }
     }
 

@@ -62,7 +62,10 @@ provider and nothing above the contract sees a Codex type (#48).
   `--dialog` question, never the tool input; `Stop` reports `waiting --outcome completed`,
   `Interrupt` reports `waiting`. A compaction reports `--compaction started|ended` with its
   trigger and, best effort, the sizes read from the thread's rollout (`rollout`): the first
-  `token_count` after the latest `compacted` record is the size after it (#782). It prints nothing on standard output, so it never answers a
+  `token_count` after the latest `compacted` record is the size after it (#782). `Stop` adds
+  the harness's own context from the rollout's last `token_count`:
+  `--context-tokens` (`last_token_usage.input_tokens`) and `--context-window`
+  (`model_context_window`) (#479). It prints nothing on standard output, so it never answers a
   permission request, and never exits 2. A subagent's (`agent_id`) activity and a
   `SessionStart` after a compaction report nothing; a subagent's permission request still
   reports `--dialog`. `torlek-codex-hook --version` and `torlek-codex-session --version`

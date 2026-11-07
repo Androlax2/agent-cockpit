@@ -1,10 +1,12 @@
-//! The context sizes of a compaction, read from the rollout file a hook payload names
-//! (`transcript_path`). The `PreCompact` and `PostCompact` payloads carry only the trigger; a
-//! size the rollout does not hold yet is `None`, never a guess (#782).
+//! The context sizes of a compaction (#782) and at a turn's end (#479), read from the rollout
+//! file a hook payload names (`transcript_path`). The `PreCompact`, `PostCompact` and `Stop`
+//! payloads carry no sizes; a size the rollout does not hold yet is `None`, never a guess.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+
+use cockpit_provider_api::ContextUsage;
 
 /// How much of the rollout's end is read; a whole rollout can be many megabytes.
 const TAIL_BYTES: u64 = 4 * 1024 * 1024;
@@ -13,6 +15,22 @@ const TAIL_BYTES: u64 = 4 * 1024 * 1024;
 /// `token_count` event (`info.last_token_usage.input_tokens`, report 686's formula).
 pub fn tokens_before(rollout: &Path) -> Option<u64> {
     records(rollout)?.iter().rev().find_map(context_tokens)
+}
+
+/// The harness's context at a turn's end: the last `token_count` event's input tokens, as
+/// [`tokens_before`] counts them, with the window it names (`info.model_context_window`).
+pub fn context_usage(rollout: &Path) -> Option<ContextUsage> {
+    let records = records(rollout)?;
+    let last = records
+        .iter()
+        .rev()
+        .find(|record| context_tokens(record).is_some())?;
+    Some(ContextUsage {
+        tokens: context_tokens(last)?,
+        window: last["payload"]["info"]["model_context_window"]
+            .as_u64()
+            .filter(|window| *window > 0),
+    })
 }
 
 /// The context after a compaction: the first `token_count` event that follows the latest

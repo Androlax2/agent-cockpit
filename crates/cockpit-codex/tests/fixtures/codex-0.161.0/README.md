@@ -24,3 +24,8 @@ schemas in `schemas/` follow Codex's `pre-compact.command.input` and
 with the 0.166.0 table. `rollout-compaction.jsonl` is a made-up rollout tail with the records
 the adapter reads (`token_count` events and a `compacted` record; field names from report
 686's measurement appendix).
+
+`rollout-turn.jsonl` (#479) is a made-up rollout tail of one turn with two model calls: a
+`token_count` without `info` (a rate-limit update only), then one `token_count` per call
+with `last_token_usage` and `model_context_window`, and the turn's `task_complete`. Field
+names are those of `rollout-compaction.jsonl` and report 686's measurement appendix.

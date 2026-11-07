@@ -23,8 +23,8 @@ mod workflows;
 
 pub use agent::{
     AGENT_SOCKET_VARIABLE, AgentReport, AgentState, CompactionPhase, CompactionReport,
-    CompactionStatus, CompactionTrigger, CompactionView, LAUNCH_TOKEN_VARIABLE, QuestionSource,
-    SessionReport, TurnOutcome,
+    CompactionStatus, CompactionTrigger, CompactionView, ContextUsage, LAUNCH_TOKEN_VARIABLE,
+    QuestionSource, SessionReport, TurnOutcome,
 };
 pub use approvals::{
     DecidedThroughView, FoldedView, GuideStateView, GuideStepView, GuideView, HiddenView,

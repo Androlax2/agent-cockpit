@@ -86,6 +86,8 @@ fn an_ended_turn_reports_its_outcome_through_the_cockpit_program() {
             "waiting",
             "--outcome",
             "completed",
+            "--context-tokens",
+            "1200",
             "--conversation",
             "ses_1c4f2e8a3ffeJ7qkR2mWbXzD0v",
         ]

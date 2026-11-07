@@ -49,7 +49,7 @@ the capability crates whose verbs must work without the daemon, listed in
 | `torlek workflow begin ID`, `checkpoint ID NOTE` (agent socket); `start ITEM [--preset NAME]`, `cancel ID` (the owner's) | no | `cockpit-workflows` |
 | `torlek check run CHECK --project P [--checkout PATH]` (the owner's: prints the run's output and receipt, exits 0 only on a pass), `gate [--project P] [--checkout PATH]` (one line per check: status, receipt, next action; exits 0 only when the gate passed), `claim CHECK STATEMENT` (agent socket; recorded unverified) | no | `cockpit-verification` |
 | `torlek queue explain [ITEM]` (why each open item waits), `dispatch` (a scheduling pass now) | no | `cockpit-scheduling` |
-| `torlek --skill` (the whole agent manual in one read), `torlek docs [TOPIC]` (the topics, or one), `torlek brief [--measure]` (a launched session's launch brief; `--measure` adds the context budget, agent socket) | no | `cockpit-agent-context`, served by the daemon |
+| `torlek --skill` (the whole agent manual in one read), `torlek docs [TOPIC]` (the topics, or one), `torlek brief [--measure]` (a launched session's launch brief; `--measure` adds the context budget in bytes and the harness's own context in tokens at the latest turn's end, agent socket) | no | `cockpit-agent-context`, served by the daemon |
 | `torlek mcp` (an MCP server on standard input and output: the topics as resources, the `torlek_docs` and `torlek_brief` tools) | no | `cockpit-agent-context`, served by the daemon |
 | `torlek todo edit ID --kind KIND`, `priority ID LEVEL`, `queue`/`unqueue`/`approve`/`decline`/`reopen ID`, `after`/`unwait ID ON...`, `image add ID FILE`, `image get ID NUMBER FILE`, `draft save (ID \| --new PROJECT)`, `drafts`, `draft discard` | no | `cockpit-tasks` |
 

@@ -227,28 +227,40 @@ fn compaction(phase: CompactionPhase, trigger: Option<&str>) -> EventKind {
     })
 }
 
-/// [`bridge_arguments`] with the compaction's context size the rollout holds: the size before
-/// at `PreCompact`, the size after at `PostCompact` (#782). A rollout that cannot be read, or
-/// does not hold the size yet, reports the compaction without it.
+/// [`bridge_arguments`] with the context size the rollout holds: a compaction's size before at
+/// `PreCompact` and after at `PostCompact` (#782), and the harness's context with its window
+/// at a turn's end, `Stop` (#479). A rollout that cannot be read, or does not hold the size
+/// yet, reports without it.
 pub fn measured_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     let mut arguments = bridge_arguments(event)?;
-    let EventKind::Compaction(moment) = &event.kind else {
+    let payload: Option<serde_json::Value> = serde_json::from_str(&event.raw).ok();
+    let Some(rollout) = payload
+        .as_ref()
+        .and_then(|payload| payload.get("transcript_path"))
+        .and_then(serde_json::Value::as_str)
+        .map(std::path::Path::new)
+    else {
         return Some(arguments);
     };
-    let payload: serde_json::Value = serde_json::from_str(&event.raw).ok()?;
-    let rollout = payload
-        .get("transcript_path")
-        .and_then(serde_json::Value::as_str)
-        .map(std::path::Path::new);
-    let measured = rollout.and_then(|rollout| match moment.phase {
-        CompactionPhase::Started => crate::rollout::tokens_before(rollout)
-            .map(|tokens| ("--compaction-tokens-before", tokens)),
-        CompactionPhase::Ended => crate::rollout::tokens_after(rollout)
-            .map(|tokens| ("--compaction-tokens-after", tokens)),
-        CompactionPhase::Failed => None,
-    });
-    if let Some((flag, tokens)) = measured {
-        arguments.extend([flag.to_owned(), tokens.to_string()]);
+    match &event.kind {
+        EventKind::Compaction(moment) => {
+            let measured = match moment.phase {
+                CompactionPhase::Started => crate::rollout::tokens_before(rollout)
+                    .map(|tokens| ("--compaction-tokens-before", tokens)),
+                CompactionPhase::Ended => crate::rollout::tokens_after(rollout)
+                    .map(|tokens| ("--compaction-tokens-after", tokens)),
+                CompactionPhase::Failed => None,
+            };
+            if let Some((flag, tokens)) = measured {
+                arguments.extend([flag.to_owned(), tokens.to_string()]);
+            }
+        }
+        EventKind::TurnEnded { .. } => {
+            if let Some(usage) = crate::rollout::context_usage(rollout) {
+                arguments.extend(usage.report_arguments());
+            }
+        }
+        _ => {}
     }
     Some(arguments)
 }

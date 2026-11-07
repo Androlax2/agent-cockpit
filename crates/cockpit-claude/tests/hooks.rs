@@ -237,6 +237,43 @@ fn a_compaction_whose_transcript_cannot_be_read_reports_without_sizes() {
     );
 }
 
+/// #479: a failed turn's end reads the last real model call: Claude Code's own error message
+/// (`<synthetic>`) is no model call.
+#[test]
+fn a_failed_turn_reports_the_context_of_the_last_real_model_call() {
+    let directory = tempfile::tempdir().unwrap();
+    let transcript = directory.path().join("transcript.jsonl");
+    let mut tail = std::fs::read_to_string(common::transcript("transcript-turn")).unwrap();
+    tail.push_str(
+        r#"{"type":"assistant","isSidechain":false,"message":{"model":"<synthetic>","usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+    );
+    tail.push('\n');
+    std::fs::write(&transcript, tail).unwrap();
+    let mut payload: serde_json::Value =
+        serde_json::from_str(&common::fixture("stop-failure-rate-limit-transient")).unwrap();
+    payload["transcript_path"] = transcript.to_str().unwrap().into();
+
+    let arguments =
+        hooks::measured_arguments(&hooks::normalize(&payload.to_string()).unwrap()).unwrap();
+
+    assert!(
+        arguments
+            .windows(2)
+            .any(|pair| pair == ["--context-tokens", "45123"]),
+        "{arguments:?}"
+    );
+}
+
+#[test]
+fn a_turns_end_whose_transcript_cannot_be_read_reports_without_a_context() {
+    let event = hooks::normalize(&common::fixture("stop")).unwrap();
+
+    assert_eq!(
+        hooks::measured_arguments(&event),
+        hooks::bridge_arguments(&event)
+    );
+}
+
 #[test]
 fn a_tool_use_that_names_no_tool_is_unknown() {
     let payload = r#"{"hook_event_name":"PostToolUse","tool_input":{}}"#;

@@ -49,10 +49,13 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   `--conversation-ends` for the conversation that ends, so the daemon follows the next one
   and refuses a report of any other (#219).
   A compaction reports `--compaction started|ended` with its trigger and, best effort, its
-  sizes read from the transcript (`transcript::tokens_before`, `tokens_after`): the
+  sizes read from the transcript (`transcript::context_tokens`, `tokens_after`): the
   transcript is written after the hook runs, so a size that is not there yet is left out
   rather than guessed (#782). It proves no activity, and a `SessionStart` that follows one
   (`source: compact`) reports nothing and is not an unknown event.
+  `Stop` and `StopFailure` add the harness's own context, `--context-tokens`, read the same
+  way from the last main-chain model call (input plus cache read and creation); Claude Code
+  names no window there, so none is sent (#479).
   It prints nothing on standard output and never exits 2. `torlek-claude-hook --version`
   answers its name and version: `Bridge::check`, run by the daemon at its start, proves the
   bridge runs here (#203). A question the agent channel

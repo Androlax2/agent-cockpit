@@ -73,7 +73,9 @@ that prints all of it, cut at [`TASK_PACKET_CAP_BYTES`] (2 KiB).
 
 [`context_budget`] measures what Torlek adds: always loaded (the brief and the skill's
 catalog entry; the daemon adds the packet) apart from read on demand (the manual). The harness's own instructions and
-tool schemas are the provider's to measure.
+tool schemas are the provider's to measure: `torlek brief --measure` prints the harness's own
+total in its tokens beside these bytes, as its adapter reported it at the latest turn's end
+(#479), and never converts one unit into the other.
 
 ## The optional skill pack
 

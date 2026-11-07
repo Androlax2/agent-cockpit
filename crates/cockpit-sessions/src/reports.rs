@@ -3,7 +3,7 @@
 
 use cockpit_agent_channel::{PeerAncestry, Refusal};
 use cockpit_authorization::{Actor, Outcome, Permission, Scope, SessionId};
-use cockpit_provider_api::{CompactionMoment, ConversationId, TurnOutcome};
+use cockpit_provider_api::{CompactionMoment, ContextUsage, ConversationId, TurnOutcome};
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 
@@ -19,7 +19,7 @@ const OUTCOME_REASON_MAX_CHARS: usize = 80;
 /// The columns `report_from` reads, in its order.
 const SELECT_REPORTS: &str = "SELECT session, state, label, doing, needs_input, reported_at,
      launch_id, outcome, outcome_reason, question_source, covered_question, question_asked_at,
-     question_escalated_at FROM session_reports";
+     question_escalated_at, context_tokens, context_window FROM session_reports";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -97,6 +97,9 @@ pub struct Report {
     /// A moment of a context compaction (#782). It reports nothing about what the agent does,
     /// so it comes alone with `conversation`, and the latest report stays as it is.
     pub compaction: Option<CompactionMoment>,
+    /// The harness's own context at the end of the turn `outcome` reports (#479); it comes
+    /// only with an outcome.
+    pub context: Option<ContextUsage>,
 }
 
 /// A session's report as the channel last recorded it.
@@ -127,6 +130,9 @@ pub struct SessionReport {
     /// When the coordinator that started the session handed the agent's question to the
     /// owner (`agent escalate`, #710).
     pub question_escalated_at: Option<i64>,
+    /// The harness's context at the end of this launch's and conversation's latest turn
+    /// (#479); a new launch or conversation starts without one.
+    pub context: Option<ContextUsage>,
 }
 
 /// Records `report` for the session the sender is identified as (see
@@ -267,8 +273,8 @@ async fn store_report(write: &WriteTransaction<'_>, merged: &SessionReport) -> R
             "INSERT INTO session_reports
                 (session, state, label, doing, needs_input, reported_at, launch_id, outcome,
                  outcome_reason, question_source, covered_question, question_asked_at,
-                 question_escalated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 question_escalated_at, context_tokens, context_window)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             (
                 merged.session.as_str(),
                 merged.state.map(AgentState::as_str),
@@ -287,10 +293,34 @@ async fn store_report(write: &WriteTransaction<'_>, merged: &SessionReport) -> R
                 merged.covered_question.clone(),
                 merged.question_asked_at,
                 merged.question_escalated_at,
+                merged.context.map(|context| token_column(context.tokens)),
+                merged
+                    .context
+                    .and_then(|context| context.window.map(token_column)),
             ),
         )
         .await?;
     Ok(())
+}
+
+/// `tokens` as a column value; [`validate`] has checked that it fits.
+fn token_column(tokens: u64) -> i64 {
+    i64::try_from(tokens).expect("a validated token count fits an i64")
+}
+
+/// The harness's context at the end of `session`'s latest turn in its current launch (#479);
+/// `None` before that launch's first turn ends.
+pub async fn current_context(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Option<ContextUsage>, Error> {
+    let Some(report) = latest_report(connection, session).await? else {
+        return Ok(None);
+    };
+    let launch = latest_launch(connection, session).await?;
+    Ok(report
+        .context
+        .filter(|_| report.launch.is_some() && report.launch == launch))
 }
 
 /// Every session's latest report, by session id.
@@ -355,6 +385,7 @@ fn unreported(session: &SessionId) -> SessionReport {
         launch: None,
         question_asked_at: None,
         question_escalated_at: None,
+        context: None,
     }
 }
 
@@ -428,6 +459,9 @@ fn merge(
         launch,
         question_asked_at,
         question_escalated_at,
+        context: report
+            .context
+            .or(previous.context.filter(|_| is_continuing)),
     }
 }
 
@@ -484,6 +518,9 @@ fn validate(report: Report) -> Result<(Report, Option<ConversationId>), Refusal>
     }
     if reported == Report::default() {
         return Err(invalid("report", "names no field to report".to_owned()));
+    }
+    if let Some(context) = report.context {
+        validate_context(context, report.outcome.is_some())?;
     }
     let is_asking = report.needs_input.is_some() || report.dialog.is_some();
     if report.needs_input.is_some() && report.dialog.is_some() {
@@ -575,9 +612,33 @@ fn validate(report: Report) -> Result<(Report, Option<ConversationId>), Refusal>
             conversation: None,
             is_conversation_ending: false,
             compaction: None,
+            context: report.context,
         },
         conversation,
     ))
+}
+
+/// A context size is the harness's at a turn's end, so it comes with that turn's outcome;
+/// its counts must fit a column, and a window holds at least one token.
+fn validate_context(context: ContextUsage, has_outcome: bool) -> Result<(), Refusal> {
+    if !has_outcome {
+        return Err(invalid(
+            "context",
+            "comes without a turn's outcome; it is the context at a turn's end".to_owned(),
+        ));
+    }
+    for (field, tokens) in [
+        ("context-tokens", Some(context.tokens)),
+        ("context-window", context.window),
+    ] {
+        if tokens.is_some_and(|tokens| i64::try_from(tokens).is_err()) {
+            return Err(invalid(field, format!("is more than {} tokens", i64::MAX)));
+        }
+    }
+    if context.window == Some(0) {
+        return Err(invalid("context-window", "is zero tokens".to_owned()));
+    }
+    Ok(())
 }
 
 fn bounded_text(field: &'static str, text: &str, max_chars: usize) -> Result<String, Refusal> {
@@ -676,5 +737,22 @@ fn report_from(row: &Row) -> Result<SessionReport, Error> {
         launch: row.get(6)?,
         question_asked_at: row.get(11)?,
         question_escalated_at: row.get(12)?,
+        context: context_from(row.get(13)?, row.get(14)?).map_err(invalid_row)?,
     })
+}
+
+fn context_from(tokens: Option<i64>, window: Option<i64>) -> Result<Option<ContextUsage>, String> {
+    let count = |column: &str, value: i64| {
+        u64::try_from(value).map_err(|_| format!("{column} {value} is negative"))
+    };
+    match (tokens, window) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => Err("context_window without context_tokens".to_owned()),
+        (Some(tokens), window) => Ok(Some(ContextUsage {
+            tokens: count("context_tokens", tokens)?,
+            window: window
+                .map(|window| count("context_window", window))
+                .transpose()?,
+        })),
+    }
 }

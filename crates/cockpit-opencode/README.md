@@ -69,6 +69,9 @@ provider and nothing above the contract sees an OpenCode type (#47).
   A compaction reports `--compaction` with the `reason` OpenCode names as its trigger and the sizes its
   `ended` event carries (tokens before: input plus cache; after: output). OpenCode 2.2.5
   puts these events' payload under `data`, not `properties`; both are read (#782).
+  An assistant message that ended its turn adds the harness's own context, `--context-tokens`:
+  its `tokens` input plus cache read and write. All zero means the provider reported no usage,
+  and nothing is sent; OpenCode names no window there (#479).
 - **Terminal actions.** A message is typed then entered while it waits or works (OpenCode
   queues it behind the turn), refused while a dialog is open or the activity is unknown,
   and refused when typing it would open a menu (`/`, `!` first, any `@`) or quit

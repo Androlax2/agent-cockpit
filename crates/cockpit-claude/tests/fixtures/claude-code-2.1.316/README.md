@@ -30,3 +30,8 @@ because a compaction needs a model reply. `transcript-compaction.jsonl` is a mad
 transcript tail with the fields the adapter reads: an assistant record's `message.usage`,
 a sidechain record that must be skipped, and a `compact_boundary` record's `compactMetadata`
 (field names from report 686's measurement appendix).
+
+`transcript-turn.jsonl` (#479) is a made-up transcript tail of one turn, with the fields the
+adapter reads at `Stop` and `StopFailure`: the main-chain assistant records' `message.usage`
+(the last one is the turn's end) and a sidechain record that must be skipped. Its field names
+are those of `transcript-compaction.jsonl`.

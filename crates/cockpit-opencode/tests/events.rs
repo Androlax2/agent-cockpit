@@ -130,7 +130,7 @@ fn each_event_reports_its_state_from_its_session() {
         ("tool-completed", "agent report --state working"),
         (
             "message-assistant-stop",
-            "agent report --state waiting --outcome completed",
+            "agent report --state waiting --outcome completed --context-tokens 1200",
         ),
         ("message-assistant-aborted", "agent report --state waiting"),
     ] {
@@ -193,6 +193,48 @@ fn a_dialog_reports_its_question() {
             "--conversation",
             SESSION,
         ]
+    );
+}
+
+/// #479: a turn's end reports the last model call's input, cache read and cache write tokens.
+#[test]
+fn a_turns_end_reports_the_context_its_message_holds() {
+    let mut event: serde_json::Value =
+        serde_json::from_str(&common::fixture("message-assistant-stop")).unwrap();
+    event["properties"]["info"]["tokens"] = serde_json::json!({
+        "input": 3, "output": 250, "reasoning": 0, "cache": { "read": 44000, "write": 1120 }
+    });
+
+    let report = events::bridge_arguments(&events::normalize(&event.to_string()).unwrap());
+
+    let report = report.unwrap();
+    assert!(
+        report
+            .windows(2)
+            .any(|pair| pair == ["--context-tokens", "45123"]),
+        "{report:?}"
+    );
+    assert!(
+        !report.contains(&"--context-window".to_owned()),
+        "{report:?}"
+    );
+}
+
+/// A provider that reports no usage (all zero, as the captured loopback model does) reports
+/// no context, never a context of zero tokens.
+#[test]
+fn a_turns_end_without_usage_reports_no_context() {
+    let mut event: serde_json::Value =
+        serde_json::from_str(&common::fixture("message-assistant-stop")).unwrap();
+    event["properties"]["info"]["tokens"] = serde_json::json!({
+        "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 }
+    });
+
+    let report = events::bridge_arguments(&events::normalize(&event.to_string()).unwrap());
+
+    assert!(
+        !report.unwrap().contains(&"--context-tokens".to_owned()),
+        "a zero usage is no context"
     );
 }
 

@@ -252,6 +252,13 @@ pub(crate) async fn brief(
         .get(&cockpit_sessions::SessionId::parse(session.as_str())?)
         .await?;
     let provider = row.provider.clone();
+    let harness_context = cockpit_sessions::current_context(&read, &session)
+        .await
+        .map_err(|error| crate::approvals::internal(&error))?
+        .map(|context| cockpit_protocol::ContextUsage {
+            tokens: context.tokens,
+            window: context.window,
+        });
     let mut facts = facts(&read, row.working_dir, session.clone(), &environment).await?;
     let packet = match &facts.workflow {
         Some(workflow) => {
@@ -279,15 +286,16 @@ pub(crate) async fn brief(
     Ok(Reply::AgentBrief {
         brief,
         manifest: facts.manifest_id,
-        budget: ContextBudgetView {
+        budget: Box::new(ContextBudgetView {
             brief_bytes: budget.brief_bytes as u64,
             packet_bytes: packet.as_ref().map_or(0, String::len) as u64,
             catalog_bytes: budget.catalog_bytes as u64,
             mcp_instructions_bytes: budget.mcp_instructions_bytes as u64,
             pack_catalog_bytes: budget.pack_catalog_bytes as u64,
             on_demand_bytes: budget.on_demand_bytes as u64,
-        },
+        }),
         packet,
+        harness_context,
     })
 }
 
