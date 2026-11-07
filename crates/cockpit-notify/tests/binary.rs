@@ -190,13 +190,31 @@ impl Setup {
             .env("XDG_DATA_DIRS", self.dir.path().join("share"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(fs::File::create(self.stderr_file()).unwrap());
         if is_desktop {
             command
                 .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/bus")
                 .env("WAYLAND_DISPLAY", "wayland-test");
         }
         command
+    }
+
+    /// Where the notifier's standard error goes: journald under the unit (#1127).
+    fn stderr_file(&self) -> PathBuf {
+        self.dir.path().join("stderr")
+    }
+
+    /// The notifier's standard error once it holds `needle`, or what is there after
+    /// [`GENEROUS`].
+    fn stderr_with(&self, needle: &str) -> String {
+        let deadline = Instant::now() + GENEROUS;
+        loop {
+            let text = fs::read_to_string(self.stderr_file()).unwrap_or_default();
+            if text.contains(needle) || Instant::now() > deadline {
+                return text;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Starts no daemon yet: [`Setup::bind`] does.
@@ -507,5 +525,58 @@ fn away_keeps_the_finished_session_quiet_and_its_end_tells_it_once_quietly() {
             "notify-send [--app-name=Torlek] [--urgency=low] [--] \
              [While you were held: 1 thing still needs you] [{WORKER} finished]"
         )]
+    );
+}
+
+#[test]
+fn a_told_event_is_logged_to_stderr_with_its_session_and_outlets() {
+    let setup = Setup::new();
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+    let _notifier = setup.start(&[], true);
+
+    let stderr = setup.stderr_with("told finished");
+
+    assert!(
+        stderr.contains(&format!(
+            "torlek-notify: told finished session={WORKER} name=\"{WORKER}\" desktop=told sound=told"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn an_event_turned_off_is_logged_as_skipped_with_the_setting_as_the_reason() {
+    let setup = Setup::new();
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+    let _notifier = setup.start(&["--desktop", "none", "--sound", "failure"], true);
+
+    let stderr = setup.stderr_with("skipped finished");
+
+    assert!(
+        stderr.contains(&format!(
+            "torlek-notify: skipped finished session={WORKER} name=\"{WORKER}\" \
+             desktop=off(setting) sound=off(setting)"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn an_event_kept_back_by_away_is_logged_as_skipped_with_the_hold() {
+    let setup = Setup::new();
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    let away = setup.dir.path().join("away");
+    fs::write(&away, "").unwrap();
+    let _notifier = setup.start(&["--away-file", away.to_str().unwrap()], true);
+
+    let stderr = setup.stderr_with("skipped finished");
+
+    assert!(
+        stderr.contains(&format!(
+            "torlek-notify: skipped finished session={WORKER} name=\"{WORKER}\" reason=hold(away)"
+        )),
+        "{stderr}"
     );
 }

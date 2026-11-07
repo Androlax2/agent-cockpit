@@ -191,8 +191,11 @@ impl Board {
         if outcome == Some(&TurnOutcome::QuotaStopped) {
             raised.push(raise(Event::Quota, Cause::State));
         }
-        if session.finished || outcome == Some(&TurnOutcome::Completed) {
+        if session.finished {
             raised.push(raise(Event::Finished, Cause::State));
+        }
+        if outcome == Some(&TurnOutcome::Completed) {
+            raised.push(raise(Event::Turn, Cause::State));
         }
         // A question a coordinator holds waits on it, not on the owner (#710).
         if let Some(report) = report.filter(|report| report.held_by.is_none())

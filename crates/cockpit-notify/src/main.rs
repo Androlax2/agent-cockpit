@@ -2,7 +2,7 @@
 //! [--status-file FILE] [--away-file FILE] [--hold NAME=PROGRAM]...`: tells the owner, with a
 //! desktop notification and a sound, when a session of the daemon at `PATH` needs them.
 //! `EVENTS` is `none` or a comma-separated list of `failure`, `hold`, `question`, `quota` and
-//! `finished`; left out, every event is on. It logs under `DIR`, keeps the status file up to
+//! `finished` and `turn`; left out, every event but `turn` is on. It logs under `DIR`, keeps the status file up to
 //! date for bars (the README's schema), and keeps quiet while the away file exists or a
 //! hold's program exits 0.
 //!
@@ -35,7 +35,7 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 const LONGEST_PAUSE: Duration = Duration::from_secs(30);
 
 const USAGE: &str = "usage: torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS] [--status-file FILE] [--away-file FILE] [--hold NAME=PROGRAM]... | --version
-EVENTS: none, or a comma-separated list of failure, hold, question, quota, finished (default: all)";
+EVENTS: none, or a comma-separated list of failure, hold, question, quota, finished, turn (default: all but turn)";
 
 struct Options {
     socket: PathBuf,
@@ -72,8 +72,8 @@ fn main() -> ExitCode {
 fn parse(arguments: &[String]) -> Result<Options, String> {
     let mut socket = None;
     let mut state_dir = None;
-    let mut desktop_events = BTreeSet::from(Event::ALL);
-    let mut sound_events = BTreeSet::from(Event::ALL);
+    let mut desktop_events = Event::defaults();
+    let mut sound_events = Event::defaults();
     let mut status_file = None;
     let mut away_file = None;
     let mut detectors = Vec::new();
@@ -262,8 +262,41 @@ fn tell(
     notifier: &Notifier,
     notices: &[Notice],
 ) {
-    outlets.tell_summary(&hold.set_standing(standing, notifier));
+    let holds: Vec<String> = standing.iter().cloned().collect();
+    let summary = hold.set_standing(standing, notifier);
+    outlets.tell_summary(&summary);
+    if !summary.is_empty() {
+        eprintln!("torlek-notify: {}", summary_line(&summary));
+    }
+    // `pass` keeps everything back while a hold stands; each kept notice says which.
+    if holds.is_empty() {
+        for line in outlets.describe(notices) {
+            eprintln!("torlek-notify: {line}");
+        }
+    } else {
+        for notice in notices {
+            eprintln!(
+                "torlek-notify: skipped {} session={} name={:?} reason=hold({})",
+                notice.event,
+                notice.session,
+                notice.name,
+                holds.join(",")
+            );
+        }
+    }
     outlets.tell(&hold.pass(notices));
+}
+
+fn summary_line(summary: &[Notice]) -> String {
+    let sessions: Vec<&str> = summary
+        .iter()
+        .map(|notice| notice.session.as_str())
+        .collect();
+    format!(
+        "told summary of {} held notices, sessions={}",
+        summary.len(),
+        sessions.join(",")
+    )
 }
 
 /// Runs the owner's hold detectors at every refresh, apart from the requests and the feed,
@@ -420,10 +453,11 @@ mod tests {
     }
 
     #[test]
-    fn every_event_is_on_when_none_is_named() {
+    fn every_event_but_turn_is_on_when_none_is_named() {
         let options = parse(&words("--socket /s --state-dir /d")).unwrap();
-        assert_eq!(options.desktop_events, BTreeSet::from(Event::ALL));
-        assert_eq!(options.sound_events, BTreeSet::from(Event::ALL));
+        assert_eq!(options.desktop_events, Event::defaults());
+        assert_eq!(options.sound_events, Event::defaults());
+        assert!(!options.desktop_events.contains(&Event::Turn));
     }
 
     #[test]

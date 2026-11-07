@@ -17,18 +17,30 @@ pub enum Event {
     Question,
     /// The plan's usage limit stopped its turn.
     Quota,
-    /// It finished its work: the task list says so, or its turn completed.
+    /// It finished its work: the task list says so (#1127).
     Finished,
+    /// Its agent completed a turn, whether or not its work is done. Off by default for both
+    /// outlets: with several sessions it is the notification that spams (#1127).
+    Turn,
 }
 
 impl Event {
-    pub const ALL: [Event; 5] = [
+    pub const ALL: [Event; 6] = [
         Event::Failure,
         Event::Hold,
         Event::Question,
         Event::Quota,
         Event::Finished,
+        Event::Turn,
     ];
+
+    /// The events on for an outlet the owner did not configure: all but [`Event::Turn`].
+    pub fn defaults() -> BTreeSet<Event> {
+        Event::ALL
+            .into_iter()
+            .filter(|event| *event != Event::Turn)
+            .collect()
+    }
 
     /// The event's name in settings and on the command line.
     pub fn name(self) -> &'static str {
@@ -38,6 +50,7 @@ impl Event {
             Event::Question => "question",
             Event::Quota => "quota",
             Event::Finished => "finished",
+            Event::Turn => "turn",
         }
     }
 

@@ -169,6 +169,7 @@ fn headline(notice: &Notice) -> String {
         Event::Question => "needs your answer",
         Event::Quota => "hit its usage limit",
         Event::Finished => "finished",
+        Event::Turn => "completed a turn",
     };
     format!("{} {what}", one_line(&notice.name, NAME_CHARACTERS))
 }
@@ -261,6 +262,30 @@ pub fn sound_id(event: Event) -> &'static str {
         Event::Question => "message-new-instant",
         Event::Quota => "alarm-clock-elapsed",
         Event::Finished => "complete",
+        Event::Turn => "message",
+    }
+}
+
+/// What one outlet did with a notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outlet {
+    Told,
+    /// The owner turned the event off for this outlet.
+    SettingOff,
+    /// The host has no program for this outlet; the start-up log says why.
+    NoProgram,
+    /// A more urgent event that landed with it has the sound.
+    Covered,
+}
+
+impl Outlet {
+    fn label(self) -> &'static str {
+        match self {
+            Outlet::Told => "told",
+            Outlet::SettingOff => "off(setting)",
+            Outlet::NoProgram => "off(no program)",
+            Outlet::Covered => "off(covered by a more urgent event)",
+        }
     }
 }
 
@@ -298,6 +323,57 @@ impl Outlets {
         );
     }
 
+    /// The event whose sound plays for `notices` that landed together: the most urgent one
+    /// turned on for sound.
+    fn loudest_sound(&self, notices: &[Notice]) -> Option<Event> {
+        notices
+            .iter()
+            .map(|notice| notice.event)
+            .filter(|event| self.sound_events.contains(event))
+            .min()
+    }
+
+    /// One line per notice for the log (#1127): whether the desktop and the sound told it
+    /// or why not, so a notification the owner finds too many can be traced to its event.
+    /// Call it with what [`Outlets::tell`] gets.
+    pub fn describe(&self, notices: &[Notice]) -> Vec<String> {
+        let loudest = self.loudest_sound(notices);
+        notices
+            .iter()
+            .map(|notice| {
+                let desktop = if self.desktop.is_none() {
+                    Outlet::NoProgram
+                } else if self.desktop_events.contains(&notice.event) {
+                    Outlet::Told
+                } else {
+                    Outlet::SettingOff
+                };
+                let sound = if self.sound.is_none() {
+                    Outlet::NoProgram
+                } else if !self.sound_events.contains(&notice.event) {
+                    Outlet::SettingOff
+                } else if loudest == Some(notice.event) {
+                    Outlet::Told
+                } else {
+                    Outlet::Covered
+                };
+                let verb = if desktop == Outlet::Told || sound == Outlet::Told {
+                    "told"
+                } else {
+                    "skipped"
+                };
+                format!(
+                    "{verb} {} session={} name={:?} desktop={} sound={}",
+                    notice.event,
+                    notice.session,
+                    one_line(&notice.name, NAME_CHARACTERS),
+                    desktop.label(),
+                    sound.label()
+                )
+            })
+            .collect()
+    }
+
     /// Tells the owner about `notices` that landed together: one desktop notification and one
     /// sound, the most urgent event's, each for the events turned on for it. Never waits for
     /// the programs, and a program that fails is only logged.
@@ -316,11 +392,7 @@ impl Outlets {
             }
         }
         if let Some(sound) = &self.sound {
-            let loudest = notices
-                .iter()
-                .map(|notice| notice.event)
-                .filter(|event| self.sound_events.contains(event))
-                .min();
+            let loudest = self.loudest_sound(notices);
             match loudest.map(|event| (event, sound.command(event))) {
                 Some((_, Some((program, arguments)))) => start(program, arguments),
                 Some((event, None)) => {
@@ -416,5 +488,67 @@ mod tests {
 
         assert_eq!(body.lines().count(), LISTED_NOTICES + 1);
         assert!(body.ends_with("and 2 more"), "{body}");
+    }
+
+    fn outlets(desktop_events: &[Event], sound_events: &[Event]) -> Outlets {
+        Outlets {
+            desktop: Some(Desktop {
+                program: PathBuf::from("notify-send"),
+            }),
+            desktop_events: desktop_events.iter().copied().collect(),
+            sound: Some(Sound::Canberra(PathBuf::from("canberra-gtk-play"))),
+            sound_events: sound_events.iter().copied().collect(),
+        }
+    }
+
+    #[test]
+    fn a_completed_turn_is_skipped_until_the_owner_turns_the_event_on() {
+        let turn = notice(Event::Turn, "web", None);
+
+        let by_default =
+            outlets(&[Event::Finished], &[Event::Finished]).describe(std::slice::from_ref(&turn));
+        let turned_on = outlets(&[Event::Turn], &[]).describe(&[turn]);
+
+        assert_eq!(
+            by_default,
+            [
+                r#"skipped turn session=s00000000000a name="web" desktop=off(setting) sound=off(setting)"#
+            ]
+        );
+        assert_eq!(
+            turned_on,
+            [r#"told turn session=s00000000000a name="web" desktop=told sound=off(setting)"#]
+        );
+    }
+
+    #[test]
+    fn a_sound_a_more_urgent_event_has_is_logged_as_covered() {
+        let both = [
+            notice(Event::Question, "web", None),
+            notice(Event::Finished, "api", None),
+        ];
+
+        let lines = outlets(&[], &[Event::Question, Event::Finished]).describe(&both);
+
+        assert!(
+            lines[0].ends_with("desktop=off(setting) sound=told"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[1].ends_with("sound=off(covered by a more urgent event)"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn an_outlet_the_host_lacks_is_logged_as_having_no_program() {
+        let lines = Outlets::default().describe(&[notice(Event::Failure, "web", None)]);
+
+        assert_eq!(
+            lines,
+            [
+                r#"skipped failure session=s00000000000a name="web" desktop=off(no program) sound=off(no program)"#
+            ]
+        );
     }
 }

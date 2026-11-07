@@ -12,9 +12,10 @@ use toml::Spanned;
 pub const AWAY_HOLD: &str = "away";
 
 /// The events the notifier tells, in its names, most urgent first.
-pub const NOTIFY_EVENTS: [&str; 5] = ["failure", "hold", "question", "quota", "finished"];
+pub const NOTIFY_EVENTS: [&str; 6] = ["failure", "hold", "question", "quota", "finished", "turn"];
 
-/// Whether each of [`NOTIFY_EVENTS`] is on, in that order. Every event is on by default.
+/// Whether each of [`NOTIFY_EVENTS`] is on, in that order. Every event is on by default but
+/// `turn`, which tells every completed turn (#1127).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotifyEvents {
     pub failure: Sourced<bool>,
@@ -22,6 +23,7 @@ pub struct NotifyEvents {
     pub question: Sourced<bool>,
     pub quota: Sourced<bool>,
     pub finished: Sourced<bool>,
+    pub turn: Sourced<bool>,
 }
 
 impl NotifyEvents {
@@ -33,17 +35,19 @@ impl NotifyEvents {
             question: on(),
             quota: on(),
             finished: on(),
+            turn: Sourced::new(false, Source::ProductDefault),
         }
     }
 
     /// Each event's name with its setting, in [`NOTIFY_EVENTS`] order.
-    pub fn by_name(&self) -> [(&'static str, &Sourced<bool>); 5] {
+    pub fn by_name(&self) -> [(&'static str, &Sourced<bool>); 6] {
         [
             (NOTIFY_EVENTS[0], &self.failure),
             (NOTIFY_EVENTS[1], &self.hold),
             (NOTIFY_EVENTS[2], &self.question),
             (NOTIFY_EVENTS[3], &self.quota),
             (NOTIFY_EVENTS[4], &self.finished),
+            (NOTIFY_EVENTS[5], &self.turn),
         ]
     }
 
@@ -94,6 +98,7 @@ struct NotifyEventsTable {
     question: Option<Spanned<bool>>,
     quota: Option<Spanned<bool>>,
     finished: Option<Spanned<bool>>,
+    turn: Option<Spanned<bool>>,
 }
 
 pub(super) fn settings(layers: &[Layer]) -> Result<NotifySettings, ConfigError> {
@@ -168,6 +173,7 @@ fn apply(layer: &Layer, table: &NotifyEventsTable, events: &mut NotifyEvents) {
         (&table.question, &mut events.question),
         (&table.quota, &mut events.quota),
         (&table.finished, &mut events.finished),
+        (&table.turn, &mut events.turn),
     ];
     for (value, setting) in declared {
         if let Some(value) = value {

@@ -16,9 +16,11 @@ sound:
 | `hold` | a command waits for approval, a sandboxed host was refused, or a provider's permission dialog is open | `dialog-warning` |
 | `question` | the agent asks a question, a guide waits on its step, or a command waits for a line of input | `message-new-instant` |
 | `quota` | the plan's usage limit stopped its turn | `alarm-clock-elapsed` |
-| `finished` | the task list says it finished, or its turn completed | `complete` |
+| `finished` | the task item is marked done (the task list says it finished) | `complete` |
+| `turn` | its agent completed a turn, done or not; off by default for both outlets (#1127) | `message` |
 
-An event is told when it is raised, never while it stays. Events that land together make one
+An event is told when it is raised, never while it stays. A session that exits by itself
+raises `failure`, not `finished`. Events that land together make one
 notification, the most urgent first, and one sound, the most urgent event's. Nothing is told
 for the state the notifier started on, for a session the owner ended, or for a question a
 coordinator holds (#710).
@@ -95,7 +97,7 @@ profile's runtime directory (`paths.runtime_dir` in `torlek config show`): usual
   does, the notifier keeps quiet.
 - `sessions`: every session that has not ended, by id. `name` is the label the agent
   reported, else the id; `project` is `null` until the feed names its checkout.
-- `state`: `needs-you` when the session needs the owner for anything but having finished (a
+- `state`: `needs-you` when the session needs the owner for anything but having finished or completed a turn (a
   failed session among them), else `launching`, `working`, `waiting`, `running` (no report
   yet), `stopping`, `asleep` or `unknown`. `needs_you` counts the `needs-you` sessions.
 - `needs`: the events above that stand for it now, most urgent first.
@@ -124,3 +126,12 @@ and the away file.
   `serde_json`.
 - Used by: nothing; it is a client (`CLIENTS` in `cockpit-workspace-rules/tests/crate_graph.rs`:
   never persistence, scheduling or tmux).
+
+## The log
+
+Besides the log files, every notice the notifier handles is one line on standard error, which
+journald keeps under the unit (`journalctl --user -u torlek-notify`). A line starts with
+`torlek-notify: told` or `skipped`, then the event, `session=ID`, `name="..."` and one status per
+outlet: `desktop=` and `sound=` are `told`, `off(setting)`, `off(no program)` or, for a sound, `off(covered by a more urgent event)`. A notice
+kept back by a hold reads `skipped EVENT session=ID name="..." reason=hold(away)`. When the last
+hold ends, the quiet summary is `told summary of N held notices, sessions=...`.
