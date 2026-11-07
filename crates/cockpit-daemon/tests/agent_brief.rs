@@ -403,11 +403,14 @@ async fn the_brief_lists_the_user_and_project_guidance_with_their_hash_and_trust
     let seen = home.seen().await;
 
     let (brief, manifest, _) = brief_of(&seen);
-    // The brief cuts a long path at its front, keeping the file's own name.
+    // The brief cuts a path longer than 48 bytes at its front, keeping the file's own name.
     let user_path = format!("{}/home/.claude/CLAUDE.md", home.path().display());
+    let shown_user_path = match user_path.len().checked_sub(48) {
+        Some(excess) if excess > 0 => format!("…{}", &user_path[excess..]),
+        _ => user_path,
+    };
     let user_line = format!(
-        "  - user …{} {} owner",
-        &user_path[user_path.len() - 48..],
+        "  - user {shown_user_path} {} owner",
         &sha256_hex("owner policy\n")[..12]
     );
     let project_line = format!(
