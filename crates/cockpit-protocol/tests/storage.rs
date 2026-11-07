@@ -101,3 +101,23 @@ fn a_database_report_names_each_rule_the_feed_and_the_backups() {
     let reply: Reply = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(serde_json::to_value(reply).unwrap(), value);
 }
+
+#[test]
+fn a_storage_report_carries_outputs_database_and_logs_each_or_why_not() {
+    let measurement = json!({"kind":"complete", "apparent_bytes":512});
+    for areas in [
+        json!({"outputs":[{"project":"app","outputs":1,"apparent_bytes":10,"unmeasured":0,
+            "protected":1,"selected":0,"selected_bytes":0,"retired":0,"retired_bytes":0,
+            "failures":[]}],"outputs_truncated":false,"outputs_unavailable":null,
+            "database":null,"database_unavailable":"database is locked",
+            "logs":[{"process":"daemon","path":"/s/logs/daemon","measurement":measurement}],
+            "logs_truncated":false,"logs_unavailable":null}),
+        json!({"outputs":null,"outputs_truncated":false,"outputs_unavailable":"no read slot",
+            "database":null,"database_unavailable":null,"logs":[],"logs_truncated":false,
+            "logs_unavailable":"cannot list /s/logs: permission denied"}),
+    ] {
+        let value = json!({"kind":"storage", "clones":[], "truncated":false, "areas":areas});
+        let reply: Reply = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(reply).unwrap(), value);
+    }
+}

@@ -961,6 +961,10 @@ pub enum Reply {
         /// Why the folder holding them could not be listed; the clones still are.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_temps_unavailable: Option<String>,
+        /// Check outputs, database, backups and logs; absent from a daemon older than the
+        /// composed report (#406).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        areas: Option<Box<crate::storage::StorageAreasView>>,
     },
     StorageOutputs {
         projects: Vec<crate::storage::OutputRetentionView>,

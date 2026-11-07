@@ -3,8 +3,8 @@ mod common;
 mod scripted;
 
 use cockpit_protocol::{
-    CloneStorageView, Command, EndSweepView, Outcome, PruneVerdictView, Reply,
-    SessionTempStorageView, TargetSizeView,
+    CloneStorageView, Command, EndSweepView, LogFolderStorageView, Outcome, PruneVerdictView,
+    Reply, SessionTempStorageView, StorageAreasView, TargetSizeView,
 };
 use common::TestHome;
 use std::os::unix::fs::DirBuilderExt;
@@ -121,6 +121,7 @@ async fn storage_preserves_measurement_status_and_exits_unsuccessfully_on_partia
                 session_temps: Some(Vec::new()),
                 session_temps_truncated: false,
                 session_temps_unavailable: None,
+                areas: Some(Box::new(complete_areas())),
             }),
         );
         let output = tokio::task::spawn_blocking(move || home.cockpit(&["storage"]))
@@ -194,6 +195,7 @@ async fn storage_shows_each_clone_prune_verdict_and_the_eligible_total() {
             session_temps: Some(Vec::new()),
             session_temps_truncated: false,
             session_temps_unavailable: None,
+            areas: Some(Box::new(complete_areas())),
         }),
     );
 
@@ -252,6 +254,7 @@ async fn storage_lists_what_each_session_end_removed_or_kept_and_why() {
             session_temps: Some(Vec::new()),
             session_temps_truncated: false,
             session_temps_unavailable: None,
+            areas: Some(Box::new(complete_areas())),
             end_sweeps: vec![
                 sweep(5, None, None),
                 sweep(
@@ -510,6 +513,7 @@ async fn storage_lists_each_sessions_temp_folder_size() {
                 }]),
                 session_temps_truncated: truncated,
                 session_temps_unavailable: None,
+                areas: Some(Box::new(complete_areas())),
             }),
         );
         let output = tokio::task::spawn_blocking(move || home.cockpit(&["storage"]))
@@ -557,6 +561,7 @@ async fn storage_says_when_the_session_temp_folders_cannot_be_listed() {
             session_temps: Some(Vec::new()),
             session_temps_truncated: false,
             session_temps_unavailable: Some("cannot open /state/tmp: EACCES".to_owned()),
+            areas: Some(Box::new(complete_areas())),
         }),
     );
 
@@ -593,6 +598,7 @@ async fn storage_from_a_daemon_without_session_temp_folders_is_incomplete() {
             session_temps: None,
             session_temps_truncated: false,
             session_temps_unavailable: None,
+            areas: Some(Box::new(complete_areas())),
         }),
     );
 
@@ -721,4 +727,177 @@ fn storage_database_refuses_an_unknown_argument() {
     let home = TestHome::new();
     let output = home.cockpit(&["storage", "database", "now"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
+}
+
+/// Areas a daemon read in full: one project's outputs, the database with two backups and
+/// two log folders.
+fn complete_areas() -> StorageAreasView {
+    let Reply::StorageDatabase { database, .. } = database_report(0, &[]) else {
+        unreachable!("database_report answers a database report")
+    };
+    let mut database = *database;
+    database.backups.push(cockpit_protocol::BackupView {
+        path: "/s/backups/state-8.db".to_owned(),
+        taken_at: 8,
+        bytes: 4096,
+    });
+    let log = |process: &str, apparent_bytes| LogFolderStorageView {
+        process: process.to_owned(),
+        path: format!("/s/logs/{process}"),
+        measurement: TargetSizeView::Complete { apparent_bytes },
+    };
+    StorageAreasView {
+        outputs: Some(vec![output_row(0, &[])]),
+        outputs_truncated: false,
+        outputs_unavailable: None,
+        database: Some(database),
+        database_unavailable: None,
+        logs: vec![log("daemon", 64), log("tui", 16)],
+        logs_truncated: false,
+        logs_unavailable: None,
+    }
+}
+
+fn composed_report(areas: Option<StorageAreasView>) -> Reply {
+    Reply::Storage {
+        clones: vec![
+            scripted_row(
+                2,
+                100,
+                PruneVerdictView::Eligible {
+                    confirmation_required: true,
+                },
+            ),
+            scripted_row(
+                3,
+                50,
+                PruneVerdictView::Kept {
+                    reason: "a session works in this clone".to_owned(),
+                },
+            ),
+        ],
+        truncated: false,
+        end_sweeps: Vec::new(),
+        session_temps: Some(vec![SessionTempStorageView {
+            session: "s1".to_owned(),
+            path: "/state/tmp/s1".to_owned(),
+            measurement: TargetSizeView::Complete { apparent_bytes: 20 },
+        }]),
+        session_temps_truncated: false,
+        session_temps_unavailable: None,
+        areas: areas.map(Box::new),
+    }
+}
+
+#[tokio::test]
+async fn storage_totals_each_area_and_what_its_prune_would_retire() {
+    let (sent, code, stdout) =
+        against_scripted(&["storage"], composed_report(Some(complete_areas()))).await;
+
+    assert_eq!(sent, Command::StorageReport);
+    assert_eq!(code, Some(0), "{stdout}");
+    for row in [
+        "area\tbytes\tretires\tstatus\tfreed by",
+        "build folders\t150\t100\tcomplete\ttorlek storage prune CHECKOUT",
+        "session temp folders\t20\t0\tcomplete\tremoved when its session ends",
+        "check outputs\t1800\t1200\tcomplete\ttorlek storage outputs prune",
+        "database\t8192\t340\tcomplete\ttorlek storage database prune",
+        "backups\t12288\t0\tcomplete\trotation keeps the newest 7",
+        "logs\t80\t0\tcomplete\trotation by size and age",
+        "total\t22530\t1640\tcomplete\t-",
+    ] {
+        assert!(
+            stdout.lines().any(|line| line == row),
+            "{row:?} in {stdout}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn storage_from_a_daemon_without_the_composed_areas_is_incomplete() {
+    let (_, code, stdout) = against_scripted(&["storage"], composed_report(None)).await;
+
+    assert_eq!(code, Some(1), "{stdout}");
+    assert!(
+        stdout.contains(
+            "incomplete report: the daemon reported no check outputs, database, backups or logs"
+        ),
+        "{stdout}"
+    );
+    for row in [
+        "check outputs\t-\t-\tunavailable\t",
+        "database\t-\t-\tunavailable\t",
+        "backups\t-\t-\tunavailable\t",
+        "logs\t-\t-\tunavailable\t",
+        "total\t170\t100\tincomplete\t-",
+    ] {
+        assert!(stdout.contains(row), "{row:?} in {stdout}");
+    }
+}
+
+/// An area read only in part keeps the bytes it saw, says so, and makes the report fail.
+#[tokio::test]
+async fn an_area_read_in_part_marks_its_row_and_the_report_incomplete() {
+    type Change = fn(&mut StorageAreasView);
+    let cases: [(Change, &str, &str); 6] = [
+        (
+            |areas| areas.outputs.as_mut().unwrap()[0].unmeasured = 1,
+            "check outputs\t1800\t1200\tincomplete\t",
+            "incomplete report: 1 check outputs unmeasured",
+        ),
+        (
+            |areas| areas.outputs_truncated = true,
+            "check outputs\t1800\t1200\tincomplete\t",
+            "incomplete report: further check outputs left out by the pass bound",
+        ),
+        (
+            |areas| {
+                areas.outputs = None;
+                areas.outputs_unavailable = Some("no read slot".to_owned());
+            },
+            "check outputs\t-\t-\tunavailable\t",
+            "incomplete report: check outputs unavailable: no read slot",
+        ),
+        (
+            |areas| {
+                areas.database = None;
+                areas.database_unavailable = Some("database is locked".to_owned());
+            },
+            "backups\t-\t-\tunavailable\t",
+            "incomplete report: database unavailable: database is locked",
+        ),
+        (
+            |areas| {
+                areas.database.as_mut().unwrap().failures =
+                    vec!["backups: permission denied".to_owned()];
+            },
+            "backups\t12288\t0\tincomplete\t",
+            "incomplete report: backups: permission denied",
+        ),
+        (
+            |areas| {
+                areas.logs[1].measurement = TargetSizeView::Unavailable {
+                    reason: "permission denied".to_owned(),
+                };
+            },
+            "logs\t64\t0\tincomplete\t",
+            "incomplete report: log folder tui: permission denied",
+        ),
+    ];
+    for (change, row, explanation) in cases {
+        let mut areas = complete_areas();
+        change(&mut areas);
+
+        let (_, code, stdout) = against_scripted(&["storage"], composed_report(Some(areas))).await;
+
+        assert_eq!(code, Some(1), "{stdout}");
+        assert!(stdout.contains(row), "{row:?} in {stdout}");
+        assert!(stdout.contains(explanation), "{explanation:?} in {stdout}");
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.starts_with("total\t") && line.contains("\tincomplete\t")),
+            "{stdout}"
+        );
+    }
 }

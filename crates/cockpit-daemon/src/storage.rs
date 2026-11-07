@@ -4,9 +4,9 @@ use cockpit_projects::{
     CheckoutId, CloneStorage, PruneEvidence, PrunePolicy, PruneStatus, PruneVerdict, TargetSize,
 };
 use cockpit_protocol::{
-    CloneStorageView, Command, EndSweepView, ErrorCode, Outcome, ProtocolError, PruneVerdictView,
-    Reply, SessionTempStorageView, StoragePrunePlanView, StoragePrunePreviewView,
-    StoragePruneStatusView, TargetSizeView,
+    CloneStorageView, Command, EndSweepView, ErrorCode, LogFolderStorageView, Outcome,
+    ProtocolError, PruneVerdictView, Reply, SessionTempStorageView, StorageAreasView,
+    StoragePrunePlanView, StoragePrunePreviewView, StoragePruneStatusView, TargetSizeView,
 };
 use cockpit_turso::{Database, sql::Connection};
 use std::collections::HashMap;
@@ -25,6 +25,8 @@ pub(crate) struct Context {
     pub(crate) outputs: Arc<crate::output_retention::OutputPolicy>,
     /// The sessions' temporary folders, one per session, which the report measures (#766).
     pub(crate) session_temps: std::path::PathBuf,
+    /// Each process's log folder inside, which the report measures.
+    pub(crate) logs: std::path::PathBuf,
     /// Woken by the low-disk guard to run the automatic pass before its next interval.
     pub(crate) sweep_now: Arc<tokio::sync::Notify>,
     pub(crate) retention: Arc<crate::database_retention::DatabasePolicy>,
@@ -470,7 +472,48 @@ async fn report(context: &Context) -> Result<Reply, ProtocolError> {
         ),
         session_temps_truncated: temps.truncated,
         session_temps_unavailable: temps.unavailable,
+        areas: Some(Box::new(areas(context).await)),
     })
+}
+
+/// The check-output and database dry runs and the log folders, each read on its own so one
+/// that fails leaves the others. The dry runs retire nothing.
+async fn areas(context: &Context) -> StorageAreasView {
+    let (outputs, outputs_truncated, outputs_unavailable) =
+        match crate::output_retention::pass(context, false, None).await {
+            Ok(Reply::StorageOutputs {
+                projects,
+                truncated,
+                ..
+            }) => (Some(projects), truncated, None),
+            Ok(other) => (None, false, Some(format!("the pass answered {other:?}"))),
+            Err(error) => (None, false, Some(error.message)),
+        };
+    let (database, database_unavailable) =
+        match crate::database_retention::pass(context, false).await {
+            Ok(Reply::StorageDatabase { database, .. }) => (Some(*database), None),
+            Ok(other) => (None, Some(format!("the pass answered {other:?}"))),
+            Err(error) => (None, Some(error.message)),
+        };
+    let logs = cockpit_projects::folder_storage(context.logs.clone()).await;
+    StorageAreasView {
+        outputs,
+        outputs_truncated,
+        outputs_unavailable,
+        database,
+        database_unavailable,
+        logs: logs
+            .folders
+            .into_iter()
+            .map(|folder| LogFolderStorageView {
+                process: folder.name,
+                path: folder.path.to_string_lossy().into_owned(),
+                measurement: measurement(folder.measurement),
+            })
+            .collect(),
+        logs_truncated: logs.truncated,
+        logs_unavailable: logs.unavailable,
+    }
 }
 
 /// How many of the latest session-end sweeps the report lists.

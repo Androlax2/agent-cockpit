@@ -152,5 +152,10 @@ impl Drop for Diagnostics {
 /// long-lived process (`daemon`, `tui`): each gets its own `cockpit.log`.
 pub fn log_dir_in(state_dir: &Path, process: &str) -> Result<PathBuf, Error> {
     error::check_plain_name("process", process)?;
-    Ok(state_dir.join("logs").join(process))
+    Ok(logs_dir_in(state_dir).join(process))
+}
+
+/// `<state dir>/logs`, which holds each process's [`log_dir_in`].
+pub fn logs_dir_in(state_dir: &Path) -> PathBuf {
+    state_dir.join("logs")
 }

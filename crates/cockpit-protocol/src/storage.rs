@@ -55,6 +55,30 @@ pub struct SessionTempStorageView {
     pub measurement: TargetSizeView,
 }
 
+/// One process's log folder, `<state dir>/logs/<process>`; its files rotate by size and age.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogFolderStorageView {
+    pub process: String,
+    pub path: String,
+    pub measurement: TargetSizeView,
+}
+
+/// The report's areas beyond clones and session temp folders (#406): what the check-output and
+/// database dry runs select now, and the log folders. An area that could not be read says why
+/// in its `_unavailable` field instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageAreasView {
+    pub outputs: Option<Vec<OutputRetentionView>>,
+    /// The output pass's bound left outputs out; they are not counted.
+    pub outputs_truncated: bool,
+    pub outputs_unavailable: Option<String>,
+    pub database: Option<DatabaseStorageView>,
+    pub database_unavailable: Option<String>,
+    pub logs: Vec<LogFolderStorageView>,
+    pub logs_truncated: bool,
+    pub logs_unavailable: Option<String>,
+}
+
 /// Apparent bytes sum regular-file lengths per directory entry, including hardlinks.
 /// They do not measure allocated or reclaimable space. Concurrent writes may change them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

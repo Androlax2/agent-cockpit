@@ -12,7 +12,9 @@ use cockpit_approvals::{Output, RunAsk, RunResult};
 use cockpit_authorization::{Permission, Scope, SessionId};
 use cockpit_client::ClientError;
 use cockpit_processes::ExecutionId;
-use cockpit_protocol::{Command, DatabaseStorageView, ErrorCode, PayloadRetentionView, Reply};
+use cockpit_protocol::{
+    Command, DatabaseStorageView, ErrorCode, PayloadRetentionView, Reply, TargetSizeView,
+};
 use common::{GENEROUS, RunningDaemon, TestHome, unix_now};
 
 const SESSION: &str = "s000000000001";
@@ -145,6 +147,73 @@ async fn a_dry_run_selects_the_old_payloads_and_retires_nothing() {
     );
     assert!(report.failures.is_empty(), "{:?}", report.failures);
     assert_eq!(database_report(&home, false).await.0.sessions, OLD_SESSION);
+}
+
+#[tokio::test]
+async fn the_storage_report_counts_the_old_payloads_and_retires_nothing() {
+    let (home, _daemon) = started_with_old_history("").await;
+    let client = home.connect().await;
+
+    let areas = match client
+        .request(Command::StorageReport, GENEROUS)
+        .await
+        .unwrap()
+    {
+        Reply::Storage {
+            areas: Some(areas), ..
+        } => areas,
+        other => panic!("expected a storage report with its areas, got {other:?}"),
+    };
+
+    let database = areas.database.expect("the database area");
+    assert_eq!(
+        (database.sessions, database.run_outputs),
+        (OLD_SESSION, OLD_RUN)
+    );
+    assert_eq!(database_report(&home, false).await.0.sessions, OLD_SESSION);
+}
+
+#[tokio::test]
+async fn the_storage_report_measures_the_daemon_log_folder() {
+    let (home, _daemon) = started_with_old_history("").await;
+    let client = home.connect().await;
+    let deadline = std::time::Instant::now() + GENEROUS;
+    let logged = loop {
+        let length = std::fs::metadata(home.log_file()).map_or(0, |file| file.len());
+        if length > 0 {
+            break length;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the daemon logged nothing"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+
+    let areas = match client
+        .request(Command::StorageReport, GENEROUS)
+        .await
+        .unwrap()
+    {
+        Reply::Storage {
+            areas: Some(areas), ..
+        } => areas,
+        other => panic!("expected a storage report with its areas, got {other:?}"),
+    };
+
+    let daemon_logs = areas
+        .logs
+        .iter()
+        .find(|folder| folder.process == "daemon")
+        .unwrap_or_else(|| panic!("no daemon log folder in {:?}", areas.logs));
+    assert!(
+        matches!(
+            daemon_logs.measurement,
+            TargetSizeView::Complete { apparent_bytes } if apparent_bytes >= logged
+        ),
+        "{daemon_logs:?}"
+    );
+    assert_eq!(areas.logs_unavailable, None);
 }
 
 #[tokio::test]

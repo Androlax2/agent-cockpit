@@ -172,7 +172,10 @@ Unknown keys fail with the file and line. See the [current configuration guide](
 | Update choices and the last release check (`update.json`) | `~/.local/state/torlek/` |
 | Sockets and instance lock | `$XDG_RUNTIME_DIR/torlek/`, or the state directory's `run/` when unset |
 
-`torlek storage` lists each session's temporary folder and its size.
+`torlek storage` lists each session's temporary folder and its size, then one row per area
+(build folders, session temp folders, check outputs, database, backups, logs) with its apparent
+bytes, what its prune would retire now and the command that frees it, and a total. It deletes
+nothing; an area it could not read in full says why and makes it exit 1.
 
 To let a project's agents push and open pull requests without your own `gh` login, create a
 fine-grained token limited to that repository (contents and pull requests: read and write)
