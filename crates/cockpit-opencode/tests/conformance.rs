@@ -1,5 +1,5 @@
 //! Conformance against an installed OpenCode. Ignored by default because CI has no
-//! OpenCode; run it with the binary of `CONFORMANCE_VERSION`:
+//! OpenCode; run it with the OpenCode to check (the nightly job runs the latest, #732):
 //!
 //! ```text
 //! COCKPIT_OPENCODE_PROGRAM=~/.opencode/bin/opencode \
@@ -11,15 +11,15 @@ mod common;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use cockpit_opencode::{CONFORMANCE_VERSION, OpenCode, Server};
+use cockpit_opencode::{OpenCode, Server};
 use cockpit_provider_api::{Conversation, LaunchRequest, Provider};
 
 #[test]
 #[ignore = "needs an installed OpenCode (COCKPIT_OPENCODE_PROGRAM)"]
-fn the_installed_opencode_is_the_pinned_version() {
+fn the_installed_opencode_prints_a_version_the_adapter_reads() {
     let opencode = OpenCode::discover(&common::installed(), None).unwrap();
 
-    assert_eq!(opencode.version(), Some(CONFORMANCE_VERSION));
+    assert!(opencode.version().is_some());
 }
 
 #[test]
@@ -63,6 +63,7 @@ fn the_installed_opencode_reads_every_variable_the_adapter_sets() {
 fn a_launched_server_answers_its_password_and_lists_commands() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
+    let discovered = OpenCode::discover(&common::installed(), None).unwrap();
     let opencode = OpenCode::new(common::installed(), None, None);
     let launch = opencode
         .launch(&LaunchRequest {
@@ -99,7 +100,7 @@ fn a_launched_server_answers_its_password_and_lists_commands() {
         .unwrap_err();
     let commands = server.commands().unwrap();
 
-    assert_eq!(version, CONFORMANCE_VERSION);
+    assert_eq!(Some(version.as_str()), discovered.version());
     assert!(wrong.reason.contains("refused"), "{wrong}");
     assert!(!commands.is_empty());
 }

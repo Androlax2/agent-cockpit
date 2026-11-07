@@ -1,5 +1,5 @@
 //! Conformance against an installed Claude Code. Ignored by default because CI has no
-//! Claude Code; run it with the binary of `CONFORMANCE_VERSION`:
+//! Claude Code; run it with the Claude Code to check (the nightly job runs the latest, #732):
 //!
 //! ```text
 //! COCKPIT_CLAUDE_PROGRAM=~/.local/share/claude/versions/2.1.316 \
@@ -10,15 +10,15 @@ mod common;
 
 use std::process::Command;
 
-use cockpit_claude::{CONFORMANCE_VERSION, ClaudeCode};
+use cockpit_claude::ClaudeCode;
 use cockpit_provider_api::Provider;
 
 #[test]
 #[ignore = "needs an installed Claude Code (COCKPIT_CLAUDE_PROGRAM)"]
-fn the_installed_claude_code_is_the_pinned_version() {
+fn the_installed_claude_code_prints_a_version_the_adapter_reads() {
     let claude = ClaudeCode::discover(&common::installed(), Some(common::bridge())).unwrap();
 
-    assert_eq!(claude.version(), Some(CONFORMANCE_VERSION));
+    assert!(claude.version().is_some());
 }
 
 #[test]

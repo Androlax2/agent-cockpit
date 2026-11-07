@@ -14,8 +14,9 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 
 - **Capabilities with provenance.** Resume, submit, events, outcome, cancel, effort, model,
   compact, remote control and screen reading are `tested` only when the running Claude Code
-  is `CONFORMANCE_VERSION`; on any other or unknown version they are `discovered`
-  (unverified). `events`, `outcome` and `inbox` need the hook bridge: an adapter wired
+  is a version in `tested-versions.txt` (#732); on any other or unknown version they are
+  `discovered` (unverified). `CONFORMANCE_VERSION` is only the version the recorded
+  fixtures come from. `events`, `outcome` and `inbox` need the hook bridge: an adapter wired
   without it subscribes no hooks. Commands, evidence and billing are not reported until their contract
   methods exist.
 - **Launch.** A new conversation runs under a `--session-id` UUID the adapter mints, so it

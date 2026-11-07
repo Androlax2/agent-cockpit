@@ -17,8 +17,9 @@ provider and nothing above the contract sees an OpenCode type (#47).
   `tests/sign_in_conformance.rs` needs the pinned harness, which was unavailable for #443.
 
 - **Capabilities with provenance.** Every capability is `tested` only when the running
-  OpenCode is `CONFORMANCE_VERSION`; on any other or unknown version it is `discovered`
-  (unverified). Without the plugin bridge only resume is offered: no events means the
+  OpenCode is a version in `tested-versions.txt` (#732); on any other or unknown version it
+  is `discovered` (unverified). `CONFORMANCE_VERSION` is only the version the recorded
+  fixtures come from. Without the plugin bridge only resume is offered: no events means the
   activity is never known, so submit and cancel would always be refused. Effort is not
   reported: the TUI sends the variant it saved for the model with every prompt, so a
   launch cannot choose one; a variant goes with a message the server delivers instead. Compact and screen reading are not reported. Commands are
