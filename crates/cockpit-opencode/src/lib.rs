@@ -54,14 +54,16 @@ pub const OPENCODE_VARIABLES: [&str; 3] = [
     "OPENCODE_CONFIG_CONTENT",
 ];
 
-/// OpenCode's own compaction threshold, the `compaction.buffer` setting: the room kept free
+/// OpenCode's own compaction threshold, the `compaction.reserved` setting: the room kept free
 /// below the model's context window before compaction starts, as a token count (`20000`).
-/// The tested 1.19.5 takes a token count only; the `"15%"` form came on 2026-10-30
-/// (anomalyco/opencode#60647, after 2.0.0), and follows the tested version. Its dotted name is
-/// in the program (its config normaliser), so the probe finds a version that has the setting
-/// (#783). A launch with a [`LaunchRequest::compaction_threshold`] sets it in
+/// The tested 1.19.5 reads this name (its `session/overflow.ts`); `compaction.buffer` is the
+/// 2.x configuration's name for it, which 1.19.5 does not read, so it is never written
+/// (#1107). The `"15%"` form came on 2026-10-30 (anomalyco/opencode#60647, after
+/// 2.0.0) for `buffer`, and follows the tested version. The dotted name is in the program
+/// (its normaliser to the 2.x configuration), so the probe finds a version that has the
+/// setting (#783). A launch with a [`LaunchRequest::compaction_threshold`] sets it in
 /// `OPENCODE_CONFIG_CONTENT`.
-pub const COMPACTION_BUFFER_SETTING: &str = "compaction.buffer";
+pub const COMPACTION_RESERVED_SETTING: &str = "compaction.reserved";
 
 /// The variables the plugin reads: the bridge program, the `cockpit` program it reports
 /// through, and the port of the server the plugin must run in.
@@ -159,7 +161,7 @@ impl Bridge {
 /// the bridge, its plugin joins the owner's and `cockpit mcp` is registered as the
 /// [`MCP_SERVER_NAME`] MCP server (#419); with `instruction_skills`, that folder joins the
 /// owner's `skills.paths`, so OpenCode lists the bundle's `cockpit` skill (#419); with
-/// `compaction_threshold`, it is the session's [`COMPACTION_BUFFER_SETTING`], over the one in
+/// `compaction_threshold`, it is the session's [`COMPACTION_RESERVED_SETTING`], over the one in
 /// the owner's `compaction` table (#783); each of `hidden_skills` is denied in `permission.skill`
 /// (#787). `owner` is the value the owner already set, which this one replaces: its settings
 /// are kept. Refused when it is not a JSON object, a list or table Cockpit joins has another
@@ -237,24 +239,24 @@ fn inline_config(
         }
     }
     if let Some(threshold) = compaction_threshold {
-        let buffer = compaction_buffer(threshold)?;
+        let reserved = compaction_reserved(threshold)?;
         config_object
             .entry("compaction")
             .or_insert_with(|| serde_json::json!({}))
             .as_object_mut()
             .ok_or_else(|| refused("has a `compaction` that is not an object"))?
-            .insert("buffer".to_owned(), buffer);
+            .insert("reserved".to_owned(), reserved);
     }
     Ok(config.to_string())
 }
 
-/// `threshold` as the JSON value of [`COMPACTION_BUFFER_SETTING`], in OpenCode's own words: a
+/// `threshold` as the JSON value of [`COMPACTION_RESERVED_SETTING`], in OpenCode's own words: a
 /// token count as a number (`20000`), the form every version with the setting takes. Anything
 /// else is refused before the launch, since OpenCode would refuse its whole configuration.
-fn compaction_buffer(threshold: &str) -> Result<serde_json::Value, ProviderError> {
+fn compaction_reserved(threshold: &str) -> Result<serde_json::Value, ProviderError> {
     let refused = || ProviderError {
         reason: format!(
-            "compaction threshold {threshold:?} is not an OpenCode `{COMPACTION_BUFFER_SETTING}`: \
+            "compaction threshold {threshold:?} is not an OpenCode `{COMPACTION_RESERVED_SETTING}`: \
              a token count above zero"
         ),
     };

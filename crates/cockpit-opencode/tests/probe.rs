@@ -4,7 +4,7 @@
 mod common;
 
 use cockpit_opencode::{
-    COMPACTION_BUFFER_SETTING, LAUNCH_FLAGS, OPENCODE_VARIABLES, OpenCode, probe,
+    COMPACTION_RESERVED_SETTING, LAUNCH_FLAGS, OPENCODE_VARIABLES, OpenCode, probe,
 };
 use cockpit_provider_api::{Availability, Capability, Provider};
 
@@ -12,7 +12,7 @@ const NEW_VERSION: &str = "9.9.9";
 
 /// An `opencode` whose `--help` (on standard error, as OpenCode prints it) documents
 /// `LAUNCH_FLAGS` less `without_flags`, and whose file holds `OPENCODE_VARIABLES` and the
-/// compaction buffer setting's name less `without_variables`.
+/// compaction reserve setting's name less `without_variables`.
 fn fake_opencode(
     dir: &std::path::Path,
     without_flags: &[&str],
@@ -25,7 +25,7 @@ fn fake_opencode(
         .collect();
     let variables: Vec<&str> = OPENCODE_VARIABLES
         .into_iter()
-        .chain([COMPACTION_BUFFER_SETTING])
+        .chain([COMPACTION_RESERVED_SETTING])
         .filter(|name| !without_variables.contains(name))
         .collect();
     common::script(
@@ -94,9 +94,9 @@ fn a_variable_the_program_no_longer_reads_is_named() {
 }
 
 #[test]
-fn a_harness_without_the_compaction_buffer_setting_refuses_a_threshold_naming_it() {
+fn a_harness_without_the_compaction_reserved_setting_refuses_a_threshold_naming_it() {
     let dir = tempfile::tempdir().unwrap();
-    let program = fake_opencode(dir.path(), &[], &[COMPACTION_BUFFER_SETTING]);
+    let program = fake_opencode(dir.path(), &[], &[COMPACTION_RESERVED_SETTING]);
     let found = probe(&program, NEW_VERSION).unwrap();
     let opencode = adapter(program, found);
 
@@ -126,7 +126,7 @@ fn a_harness_without_the_compaction_buffer_setting_refuses_a_threshold_naming_it
     assert_eq!(
         refusal.reason,
         "it does not report the `compaction-threshold` capability: setting \
-         `compaction.buffer` in the opencode program is missing in 9.9.9"
+         `compaction.reserved` in the opencode program is missing in 9.9.9"
     );
 }
 

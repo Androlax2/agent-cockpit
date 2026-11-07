@@ -56,14 +56,14 @@ fn the_installed_opencode_reads_every_variable_the_adapter_sets() {
     }
 }
 
-/// #783: the probe tells a version with the `compaction.buffer` setting by its dotted name in
+/// #783: the probe tells a version with the `compaction.reserved` setting by its dotted name in
 /// the program; a build that lost it would make the threshold a silent no-op.
 #[test]
 #[ignore = "needs an installed OpenCode (COCKPIT_OPENCODE_PROGRAM)"]
-fn the_installed_opencode_has_the_compaction_buffer_setting() {
+fn the_installed_opencode_has_the_compaction_reserved_setting() {
     let missing = cockpit_provider_api::names_missing_from_file(
         &common::installed(),
-        &[cockpit_opencode::COMPACTION_BUFFER_SETTING],
+        &[cockpit_opencode::COMPACTION_RESERVED_SETTING],
     )
     .unwrap();
 
