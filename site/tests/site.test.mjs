@@ -32,10 +32,12 @@ test("real site exports the approved guide and generated references under its ve
   assert.match(html, /Edit.*GitHub/);
   assert.match(html, /rel="canonical"/);
   const install = readFileSync(`${site}dist/get-started/install-release/index.html`, "utf8");
-  assert.match(install, /sha256sum/);
-  const installSource = readFileSync(`${site}content/docs/get-started/install-release.mdx`, "utf8");
-  for (const command of ["sha256sum --check", "torlek daemon install", "torlek init"])
-    assert.ok(installSource.includes(command), `staged install steps must include: ${command}`);
+  const installCode = [...install.matchAll(/<pre[\s\S]*?<\/pre>/g)]
+    .map((block) => block[0].replace(/<[^>]+>/g, ""))
+    .join("\n");
+  for (const step of ["sha256sum --check", "torlek daemon install", "torlek init"])
+    assert.ok(installCode.includes(step), `the install page's code blocks must carry: ${step}`);
+  assert.match(install, /id="install-with-your-ai-agent"/);
   const installStatus = readFileSync(`${site}dist/get-started/install/index.html`, "utf8");
   assert.ok(
     installStatus.includes(`${env.TORLEK_DOCS_BASE}get-started/install-release`),

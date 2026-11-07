@@ -21,33 +21,56 @@ export function validateBase(value) {
   return value;
 }
 
-function outsideFences(markdown, transform) {
+const fenceMarker = (line) => line.match(/^ {0,3}(`{3,}|~{3,})/);
+const closesFence = (fence, line, marker) =>
+  marker &&
+  marker[1][0] === fence[0] &&
+  marker[1].length >= fence.length &&
+  /^[\t ]*\r?$/.test(line.slice(marker[0].length));
+
+/** Each line with its offset, marked as prose or as part of a code fence (openers and closers included). */
+function* fencedLines(markdown) {
   let fence = null;
+  let index = 0;
+  for (const line of markdown.split("\n")) {
+    const marker = fenceMarker(line);
+    let isCode = true;
+    if (fence) {
+      if (closesFence(fence, line, marker)) fence = null;
+    } else if (marker) fence = marker[1];
+    else isCode = false;
+    yield { line, index, isCode };
+    index += line.length + 1;
+  }
+}
+
+function outsideFences(markdown, transform) {
   let prose = [];
+  let wasCode = false;
   const result = [];
   const flush = () => {
     result.push(transform(prose.join("\n")));
     prose = [];
   };
-  for (const line of markdown.split("\n")) {
-    const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
-    if (fence) {
+  for (const { line, isCode } of fencedLines(markdown)) {
+    if (isCode) {
+      if (!wasCode) flush();
       result.push(line);
-      if (
-        marker &&
-        marker[1][0] === fence[0] &&
-        marker[1].length >= fence.length &&
-        /^[\t ]*\r?$/.test(line.slice(marker[0].length))
-      )
-        fence = null;
-    } else if (marker) {
-      flush();
-      result.push(line);
-      fence = marker[1];
     } else prose.push(line);
+    wasCode = isCode;
   }
   flush();
   return result.filter((part) => part !== "").join("\n");
+}
+
+/** Second-level headings outside code fences, with their offsets into the Markdown. */
+export function headings(markdown) {
+  const result = [];
+  for (const { line, index, isCode } of fencedLines(markdown)) {
+    const heading = isCode ? null : line.match(/^## (.+?)\r?$/);
+    if (heading) result.push({ title: heading[1], index, end: index + line.length });
+  }
+  return result;
 }
 
 export function toMdx(markdown) {
@@ -145,33 +168,31 @@ export function stage({
   const add = (source, route, title, body, extra = {}) =>
     entries.push({ source, route, title, body, sourceHash: digest(read(source)), ...extra });
   const sectionReader = (markdown, file) => {
-    const headings = [...markdown.matchAll(/^## (.+)$/gm)];
-    return (name) => {
-      const i = headings.findIndex((match) => match[1] === name);
+    const sections = headings(markdown);
+    const at = (name) => {
+      const i = sections.findIndex((heading) => heading.title === name);
       if (i < 0) throw new Error(`${file} section missing: ${name}`);
-      return markdown
-        .slice(headings[i].index + headings[i][0].length, headings[i + 1]?.index)
-        .trim();
+      return i;
+    };
+    return {
+      body: (name) => markdown.slice(sections[at(name)].end, sections[at(name) + 1]?.index).trim(),
+      before: (name) => markdown.slice(0, sections[at(name)].index),
     };
   };
-  const guide = read("docs/USER-GUIDE.md");
-  const sections = [...guide.matchAll(/^## (.+)$/gm)];
-  const section = sectionReader(guide, "docs/USER-GUIDE.md");
-  const readmeSection = sectionReader(read("README.md"), "README.md");
+  const guide = sectionReader(read("docs/USER-GUIDE.md"), "docs/USER-GUIDE.md");
+  const readme = sectionReader(read("README.md"), "README.md");
   const installSections = ["Install with your AI agent", "Install from the command line"];
   add(
     "README.md",
     "get-started/install-release",
     "Install Torlek",
-    installSections.map((name) => `## ${name}\n\n${readmeSection(name)}`).join("\n\n"),
+    installSections.map((name) => `## ${name}\n\n${readme.body(name)}`).join("\n\n"),
   );
   add(
     "docs/USER-GUIDE.md",
     "get-started/install",
     "Install status",
-    guide
-      .slice(0, sections.find((match) => match[1] === "First project and session").index)
-      .replace(/^# .+\n/, ""),
+    guide.before("First project and session").replace(/^# .+\n/, ""),
   );
   const quickstart = read("docs/QUICKSTART.md");
   const quickstartTitle = quickstart.match(/^# (.+)/m)?.[1];
@@ -191,7 +212,7 @@ export function stage({
     ["Phone status page", "guide/phone-status"],
     ["Help and support", "guide/support"],
   ])
-    add("docs/USER-GUIDE.md", route, name, section(name));
+    add("docs/USER-GUIDE.md", route, name, guide.body(name));
   const files = (dir) =>
     readdirSync(path.join(root, dir))
       .filter((name) => name.endsWith(".md"))
