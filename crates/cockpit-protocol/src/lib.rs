@@ -17,6 +17,7 @@ mod resources;
 mod sessions;
 mod storage;
 mod tasks;
+mod usage;
 mod verification;
 mod versions;
 mod workflows;
@@ -84,6 +85,7 @@ pub use tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskNextView,
     TaskStatusView, TaskView, TaskWaitView,
 };
+pub use usage::{QuotaAccountView, QuotaFailureView, QuotaWindowStateView, QuotaWindowView};
 pub use verification::{
     CheckArtifactView, CheckClaimView, CheckOutcomeView, CheckReceiptView, CheckStatusView,
     GateCheckView, GateOutcomeView, GateView, PendingCheckView, StaleReasonView,

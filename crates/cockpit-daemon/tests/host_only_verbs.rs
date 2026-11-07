@@ -29,9 +29,9 @@ use common::{GENEROUS, TestHome};
 /// after the group's own comment there so a failure names the file to look at.
 fn owner_only_groups() -> Vec<(&'static str, Command)> {
     vec![
-        ("agent-reports (routes.rs:247)", Command::AgentReports),
+        ("agent-reports (routes.rs:249)", Command::AgentReports),
         (
-            "bug-report (routes.rs:271)",
+            "bug-report (routes.rs:273)",
             Command::BugReportNew {
                 description: "redteam".to_owned(),
                 title: None,
@@ -40,18 +40,19 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
                 cli_version: None,
             },
         ),
-        ("version-report (routes.rs:283)", Command::VersionReport),
-        ("skill-pack (routes.rs:303)", Command::SkillPack),
-        ("storage (routes.rs:319)", Command::StorageReport),
+        ("version-report (routes.rs:285)", Command::VersionReport),
+        ("usage-quota (routes.rs:294)", Command::UsageQuota),
+        ("skill-pack (routes.rs:314)", Command::SkillPack),
+        ("storage (routes.rs:330)", Command::StorageReport),
         (
-            "project/checkout (routes.rs:336)",
+            "project/checkout (routes.rs:347)",
             Command::ProjectAdd {
                 path: "/nonexistent".to_owned(),
                 name: None,
             },
         ),
         (
-            "approval/guide (routes.rs:378)",
+            "approval/guide (routes.rs:389)",
             Command::ApprovalApprove {
                 request: 0,
                 revision: 0,
@@ -60,7 +61,7 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
             },
         ),
         (
-            "network (routes.rs:395)",
+            "network (routes.rs:406)",
             Command::NetworkAllow {
                 request: 0,
                 always: false,
@@ -68,7 +69,7 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
             },
         ),
         (
-            "session-grant (routes.rs:430)",
+            "session-grant (routes.rs:441)",
             Command::SessionGrant {
                 session: "s0".to_owned(),
                 permission: "change-state".to_owned(),
@@ -79,7 +80,7 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
             },
         ),
         (
-            "session lifecycle (routes.rs:454)",
+            "session lifecycle (routes.rs:465)",
             Command::SessionNew {
                 dir: "/nonexistent".to_owned(),
                 agent: None,
@@ -91,56 +92,56 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
             },
         ),
         (
-            "task decision (routes.rs:507)",
+            "task decision (routes.rs:518)",
             Command::TaskPriority {
                 item: 0,
                 priority: 1,
             },
         ),
         (
-            "workflow start/cancel (routes.rs:545)",
+            "workflow start/cancel (routes.rs:556)",
             Command::WorkflowStart {
                 item: 0,
                 preset: None,
             },
         ),
         (
-            "resources (routes.rs:560)",
+            "resources (routes.rs:571)",
             Command::ResourceProfile {
                 profile: ProfileView::Foreground,
             },
         ),
-        ("queue/handoff (routes.rs:571)", Command::QueueDispatch),
+        ("queue/handoff (routes.rs:582)", Command::QueueDispatch),
         (
-            "manager (routes.rs:586)",
+            "manager (routes.rs:597)",
             Command::ManagerFit {
                 session_open: false,
             },
         ),
-        ("provider-list (routes.rs:601)", Command::ProviderList),
+        ("provider-list (routes.rs:612)", Command::ProviderList),
         (
-            "readiness (routes.rs:611)",
+            "readiness (routes.rs:622)",
             Command::Readiness {
                 project: None,
                 is_one_sign_in_enough: false,
             },
         ),
         (
-            "desktop-session import (routes.rs:617)",
+            "desktop-session import (routes.rs:628)",
             Command::DesktopSessionImport {
                 variables: std::collections::BTreeMap::new(),
             },
         ),
         (
-            "check run/receipt (routes.rs:629)",
+            "check run/receipt (routes.rs:640)",
             Command::CheckRun {
                 project: "/nonexistent".to_owned(),
                 check: "redteam".to_owned(),
                 checkout: None,
             },
         ),
-        ("logs level (routes.rs:651)", Command::LogsLevelStatus),
-        ("config-reload (routes.rs:665)", Command::ConfigReload),
+        ("logs level (routes.rs:662)", Command::LogsLevelStatus),
+        ("config-reload (routes.rs:676)", Command::ConfigReload),
     ]
 }
 

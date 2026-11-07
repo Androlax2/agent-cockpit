@@ -157,7 +157,7 @@ mod tests {
         "resource_settings",
         "sandbox_launch_lines",
         "sandbox_launches",
-        // No request reads the plan windows until the usage request (#58, part 3).
+        // `usage-quota` reads the plan windows when the owner asks; no view polls them.
         "usage_quota_accounts",
         "usage_quota_alerts",
         "usage_quota_windows",

@@ -9,7 +9,7 @@ Quota windows and alerts are #58; the cost archive (#699) and time with agent an
 (rule `usage -> provider-api/database only` in `cockpit-workspace-rules/tests/crate_graph.rs`).
 Provider-specific readers stay in the adapters: this crate sees a `QuotaReading` only.
 **Used by:** the daemon, which runs its migrations and records each provider's readings at the
-owner's `[usage]` interval (#58); `torlek usage` comes next in #58.
+owner's `[usage]` interval (#58), and answers them to the owner's `torlek usage quota`.
 
 ## Accounts and readings
 

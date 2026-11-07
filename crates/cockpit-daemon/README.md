@@ -224,6 +224,10 @@ A supervised task (`src/usage.rs`) reads the plan windows of each provider that 
 are logged. A provider that fails waits twice as long as before each time, up to an hour, and
 the refresh returns with its next reading. `Wiring::quota` is `None` in tests not about quota.
 
+`usage-quota`, the owner's alone, answers every recorded account's windows judged at the
+time asked under the worker's own policy, so `torlek usage quota` and the alerts agree. A
+daemon whose wiring reads no quota refuses it rather than judge old readings by a default.
+
 ## Requests
 
 - Peers are served only when the kernel's peer credentials name the daemon's own user.
@@ -252,7 +256,8 @@ builds it only when asked and no release installs it.
 ## Tests
 
 - `tests/usage_quota.rs`: issue #58: a fake provider's readings recorded under the owner's
-  home, a failure recorded and retried twice as late each time, then the refresh again.
+  home, a failure recorded and retried twice as late each time, then the refresh again;
+  `usage-quota` answering the windows and the last failure, and refused when no quota is read.
 - `tests/startup.rs`: the binary on a clean home, the second daemon, private modes, the
   macOS layout, a stale socket after `kill -9`, reconcile before accept.
 - `tests/coordinator_kit.rs`: issue #410's acceptance with the fake provider: every

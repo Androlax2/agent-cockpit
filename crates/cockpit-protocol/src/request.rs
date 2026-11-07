@@ -870,6 +870,8 @@ pub enum Command {
     /// Owner only: the running daemon's release, schema and each live session's bundle, for
     /// `torlek version --all` (report 13, #64).
     VersionReport,
+    /// Owner only: each provider account's plan windows as last read, judged now (#58).
+    UsageQuota,
     /// Both sockets: the instruction bundle's topics, each with when to read it (#49).
     InstructionCatalog,
     /// Both sockets: one topic of the instruction bundle, or every topic at once (the one-read
@@ -1266,6 +1268,9 @@ pub enum Reply {
     },
     VersionReport {
         report: Box<crate::VersionReportView>,
+    },
+    UsageQuota {
+        accounts: Vec<crate::QuotaAccountView>,
     },
     /// The running release's instruction topics; `manifest` is its instruction-manifest id.
     InstructionCatalog {

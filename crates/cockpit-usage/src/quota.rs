@@ -130,31 +130,28 @@ pub async fn quotas(
             (),
         )
         .await?;
-    let mut quotas: Vec<(AccountQuota, bool)> = Vec::new();
+    let mut quotas: Vec<AccountQuota> = Vec::new();
     while let Some(row) = rows.next().await? {
-        let (account, is_blocked) = account_from(&row)?;
-        let is_same_account = quotas.last().is_some_and(|(last, _)| {
+        let account = account_from(&row)?;
+        let is_same_account = quotas.last().is_some_and(|last| {
             last.provider == account.provider && last.account == account.account
         });
         if !is_same_account {
             let is_current = is_current(&account, policy, now);
-            quotas.push((
-                AccountQuota {
-                    is_current,
-                    ..account
-                },
-                is_blocked,
-            ));
+            quotas.push(AccountQuota {
+                is_current,
+                ..account
+            });
         }
-        let Some((quota, is_blocked)) = quotas.last_mut() else {
+        let Some(quota) = quotas.last_mut() else {
             unreachable!("an account was pushed above");
         };
         if let Some(mut window) = window_from(&row)? {
-            window.state = window_state(&window, quota.is_current, *is_blocked, policy, now);
+            window.state = window_state(&window, quota.is_current, quota.is_blocked, policy, now);
             quota.windows.push(window);
         }
     }
-    Ok(quotas.into_iter().map(|(quota, _)| quota).collect())
+    Ok(quotas)
 }
 
 struct RecordedAccount {
@@ -381,7 +378,7 @@ fn window_state(
     }
 }
 
-fn account_from(row: &Row) -> Result<(AccountQuota, bool), Error> {
+fn account_from(row: &Row) -> Result<AccountQuota, Error> {
     let provider = row.get::<String>(0)?;
     let account = row.get::<String>(1)?;
     let failure = match (row.get::<Option<i64>>(5)?, row.get::<Option<String>>(6)?) {
@@ -395,13 +392,13 @@ fn account_from(row: &Row) -> Result<(AccountQuota, bool), Error> {
         account: AccountName::new(account)
             .map_err(|error| invalid_row(format!("account: {error}")))?,
         plan: row.get(2)?,
+        is_blocked: row.get::<Option<i64>>(3)? == Some(1),
         observed_at: row.get(4)?,
         is_current: false,
         failure,
         windows: Vec::new(),
     };
-    let is_blocked = row.get::<Option<i64>>(3)? == Some(1);
-    Ok((quota, is_blocked))
+    Ok(quota)
 }
 
 /// The window columns of a [`quotas`] row; `None` for an account without windows.
