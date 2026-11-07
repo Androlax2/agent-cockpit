@@ -232,7 +232,8 @@ skills = { tdd = false, pr = true }
 ```
 
 The daemon delivers them at its next start to Claude Code and OpenCode sessions, not Codex. A
-skill of yours, or of a project in `projects.trusted`, with the same name wins. `torlek skills`
+skill of yours, or of a project in `projects.trusted`, with the same name wins for each
+harness that reads its folder: Claude Code reads only `.claude/skills`. `torlek skills`
 lists the pack's skills and their state beside the skills you have, collisions marked; the
 pack never edits your skill folders. `torlek brief --measure` counts its bytes apart.
 

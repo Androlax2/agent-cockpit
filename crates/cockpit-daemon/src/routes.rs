@@ -112,7 +112,7 @@ pub struct Routes {
     coordination: coordination::Context,
     bug_reports: bug_reports::Context,
     /// The optional skill pack as the start delivered it (#786).
-    skill_pack: Arc<cockpit_agent_context::PackListing<'static>>,
+    skill_pack: Arc<crate::DeliveredSkillPack>,
     log_level: Option<cockpit_diagnostics::LevelControl>,
 }
 

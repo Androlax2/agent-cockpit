@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use cockpit_client::Connection;
 use cockpit_daemon::{Daemon, Instance, Limits, Options, Routes, StartError};
-use cockpit_protocol::{Command, PackSkillStateView, Reply};
+use cockpit_protocol::{Command, PackDeliveryView, PackSkillStateView, Reply};
 use cockpit_provider_api::{Conversation, LaunchCommand, LaunchRequest, Provider};
 use common::GENEROUS;
 
@@ -54,7 +54,12 @@ impl Home {
 
     /// A skill of the owner's in Claude Code's folder.
     fn owner_skill(&self, name: &str) -> PathBuf {
-        let dir = self.owner_home().join(".claude/skills").join(name);
+        self.owner_skill_in(".claude/skills", name)
+    }
+
+    /// A skill of the owner's in `folder`, relative to the home.
+    fn owner_skill_in(&self, folder: &str, name: &str) -> PathBuf {
+        let dir = self.owner_home().join(folder).join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\n---\n")).unwrap();
         dir
@@ -77,6 +82,22 @@ impl Home {
                 move |capabilities| Arc::new(Routes::new(capabilities, environment)),
             )
             .await
+    }
+
+    /// [`Home::start`] after a daemon was dropped: it releases its database once its aborted
+    /// tasks are gone, so the start is retried until then.
+    async fn restart(&self) -> Daemon {
+        let deadline = std::time::Instant::now() + GENEROUS;
+        loop {
+            match self.start().await {
+                Err(StartError::Database(cockpit_turso::Error::AlreadyOpen { .. }))
+                    if std::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                started => return started.unwrap(),
+            }
+        }
     }
 
     fn claude(&self) -> cockpit_claude::ClaudeCode {
@@ -256,6 +277,25 @@ async fn an_owners_skill_with_the_same_name_wins_over_the_packs() {
     );
 }
 
+/// Claude Code reads only `.claude/skills`; OpenCode also reads `.agents/skills`. A skill of
+/// the owner's there wins for OpenCode alone, so a Claude session still has the pack's.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owners_skill_wins_only_for_a_harness_that_reads_its_folder() {
+    let home = Home::new();
+    home.write_owner_config("[skill_pack]\nenabled = true\n");
+    home.owner_skill_in(".agents/skills", "tdd");
+    let _daemon = home.start().await.unwrap();
+
+    assert_eq!(
+        claude_skills(&launch(&home.claude())),
+        names(&["diagnosing-bugs", "tdd", "torlek", "writing-for-agents"])
+    );
+    assert_eq!(
+        opencode_skills(&launch(&home.opencode())),
+        names(&["diagnosing-bugs", "torlek", "writing-for-agents"])
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_trusted_projects_skill_with_the_same_name_wins_over_the_packs() {
     let home = Home::new();
@@ -282,7 +322,7 @@ async fn turning_the_pack_off_removes_its_skills_at_the_next_start() {
     drop(home.start().await.unwrap());
     home.write_owner_config("[skill_pack]\nenabled = false\n");
 
-    let _daemon = home.start().await.unwrap();
+    let _daemon = home.restart().await;
 
     assert_eq!(claude_skills(&launch(&home.claude())), names(&["torlek"]));
     assert!(!home.state_dir().join("agent-context/skill-pack").exists());
@@ -319,11 +359,21 @@ async fn the_owner_lists_the_pack_beside_the_installed_skills_with_collisions_ma
         .iter()
         .find(|skill| skill.name == "tdd")
         .unwrap();
+    let shadowed = PackSkillStateView::Shadowed {
+        by: owner_tdd.display().to_string(),
+    };
     assert_eq!(
-        tdd.state,
-        PackSkillStateView::Shadowed {
-            by: owner_tdd.display().to_string()
-        }
+        tdd.deliveries,
+        vec![
+            PackDeliveryView {
+                harness: "claude".to_owned(),
+                state: shadowed.clone()
+            },
+            PackDeliveryView {
+                harness: "opencode".to_owned(),
+                state: shadowed
+            },
+        ]
     );
     let collisions: BTreeSet<(String, bool)> = pack
         .installed

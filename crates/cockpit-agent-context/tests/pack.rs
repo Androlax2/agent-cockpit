@@ -48,7 +48,8 @@ fn installed(name: &str, scope: Scope) -> InstalledSkill {
     InstalledSkill {
         name: name.to_owned(),
         scope,
-        path: PathBuf::from(format!("/owner/skills/{name}")),
+        folder: ".claude/skills",
+        path: PathBuf::from(format!("/owner/.claude/skills/{name}")),
     }
 }
 
@@ -267,6 +268,18 @@ fn a_skill_that_grants_tools_is_refused_until_the_owner_confirms_the_pin() {
 }
 
 #[test]
+fn a_quoted_granting_key_is_refused_until_the_owner_confirms_the_pin() {
+    let mut pack = granting_pack();
+    pack.skills[0].files[0].text =
+        "---\nname: deploy\ndescription: Deploys.\n\"allowed-tools\": Bash(git push:*)\n---\n";
+
+    assert!(matches!(
+        select_pack(&pack, &turned_on(), Vec::new()),
+        Err(PackError::UnconfirmedGrants { .. })
+    ));
+}
+
+#[test]
 fn a_confirmation_of_another_pin_does_not_count() {
     let pack = granting_pack();
     let choice = PackChoice {
@@ -363,17 +376,23 @@ fn the_owners_and_the_projects_skills_are_found_in_every_harness_folder() {
         project_roots: &[project.path().to_path_buf()],
     });
 
-    let found: BTreeMap<String, (Scope, PathBuf)> = found
+    let found: BTreeMap<String, (Scope, &str, PathBuf)> = found
         .into_iter()
-        .map(|skill| (skill.name, (skill.scope, skill.path)))
+        .map(|skill| (skill.name, (skill.scope, skill.folder, skill.path)))
         .collect();
     assert_eq!(
         found,
         BTreeMap::from([
-            ("notes".to_owned(), (Scope::User, agents)),
-            ("repo-workflow".to_owned(), (Scope::Project, project_skill)),
-            ("review".to_owned(), (Scope::User, opencode)),
-            ("tdd".to_owned(), (Scope::User, claude)),
+            ("notes".to_owned(), (Scope::User, ".agents/skills", agents)),
+            (
+                "repo-workflow".to_owned(),
+                (Scope::Project, ".agents/skills", project_skill)
+            ),
+            (
+                "review".to_owned(),
+                (Scope::User, ".config/opencode/skills", opencode)
+            ),
+            ("tdd".to_owned(), (Scope::User, ".claude/skills", claude)),
         ])
     );
 }
@@ -518,6 +537,85 @@ fn a_file_an_earlier_pin_left_in_a_delivered_skill_is_removed() {
     .unwrap();
 
     assert!(!dir.path().join("tdd/old.md").exists());
+}
+
+#[test]
+fn a_folder_an_earlier_pin_left_in_a_delivered_skill_is_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("tdd/old")).unwrap();
+    std::fs::write(dir.path().join("tdd/old/script.sh"), "old\n").unwrap();
+
+    write_pack(
+        dir.path(),
+        &select_pack(skill_pack(), &turned_on(), Vec::new()).unwrap(),
+    )
+    .unwrap();
+
+    assert!(!dir.path().join("tdd/old").exists());
+}
+
+/// What an earlier release's `skill-pack/manifest.json` said it delivered.
+fn earlier_manifest(dir: &Path, names: &[&str]) {
+    let skills: Vec<serde_json::Value> = names
+        .iter()
+        .map(|name| serde_json::json!({ "name": name, "state": "delivered" }))
+        .collect();
+    std::fs::create_dir_all(dir.join(PACK_DIR)).unwrap();
+    std::fs::write(
+        dir.join(PACK_DIR).join("manifest.json"),
+        serde_json::json!({ "skills": skills }).to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_skill_an_earlier_pin_delivered_and_this_pin_dropped_is_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    skill_dir(dir.path(), "triage");
+    earlier_manifest(dir.path(), &["triage"]);
+
+    write_pack(
+        dir.path(),
+        &select_pack(skill_pack(), &turned_on(), Vec::new()).unwrap(),
+    )
+    .unwrap();
+
+    assert!(!dir.path().join("triage").exists());
+}
+
+#[test]
+fn a_skill_an_earlier_pin_delivered_is_removed_when_the_pack_is_turned_off() {
+    let dir = tempfile::tempdir().unwrap();
+    skill_dir(dir.path(), "triage");
+    earlier_manifest(dir.path(), &["triage"]);
+
+    write_pack(
+        dir.path(),
+        &select_pack(skill_pack(), &PackChoice::default(), Vec::new()).unwrap(),
+    )
+    .unwrap();
+
+    assert!(!dir.path().join("triage").exists());
+}
+
+/// The manifest is a file on disk: a name in it that is no skill directory of the pack's
+/// own, Torlek's skill among them, is never removed.
+#[test]
+fn an_earlier_manifest_never_removes_torleks_skill_or_a_path_outside_the_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("folder");
+    skill_dir(&dir, "torlek");
+    skill_dir(root.path(), "outside");
+    earlier_manifest(&dir, &["torlek", "../outside", "", "."]);
+
+    write_pack(
+        &dir,
+        &select_pack(skill_pack(), &turned_on(), Vec::new()).unwrap(),
+    )
+    .unwrap();
+
+    assert!(dir.join("torlek/SKILL.md").exists());
+    assert!(root.path().join("outside/SKILL.md").exists());
 }
 
 #[cfg(unix)]

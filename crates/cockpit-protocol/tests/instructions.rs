@@ -1,8 +1,8 @@
 //! The instruction bundle and launch brief on the wire (#49): topics are read by name, the
 //! brief names no session in its request.
 use cockpit_protocol::{
-    Command, ContextBudgetView, InstalledSkillView, InstructionTopicView, PackSkillStateView,
-    PackSkillView, Reply, SkillPackView, decode_request,
+    Command, ContextBudgetView, InstalledSkillView, InstructionTopicView, PackDeliveryView,
+    PackSkillStateView, PackSkillView, Reply, SkillPackView, decode_request,
 };
 use serde_json::json;
 
@@ -150,9 +150,18 @@ fn the_skill_pack_listing_names_the_pin_each_skill_and_the_installed_ones() {
             enabled: true,
             skills: vec![PackSkillView {
                 name: "tdd".to_owned(),
-                state: PackSkillStateView::Shadowed {
-                    by: "/home/o/.claude/skills/tdd".to_owned(),
-                },
+                deliveries: vec![
+                    PackDeliveryView {
+                        harness: "claude".to_owned(),
+                        state: PackSkillStateView::Shadowed {
+                            by: "/home/o/.claude/skills/tdd".to_owned(),
+                        },
+                    },
+                    PackDeliveryView {
+                        harness: "opencode".to_owned(),
+                        state: PackSkillStateView::Delivered,
+                    },
+                ],
                 is_starter: true,
                 is_user_invoked: false,
                 grants: Vec::new(),
@@ -178,7 +187,10 @@ fn the_skill_pack_listing_names_the_pin_each_skill_and_the_installed_ones() {
                 "enabled": true,
                 "skills": [{
                     "name": "tdd",
-                    "state": {"shadowed": {"by": "/home/o/.claude/skills/tdd"}},
+                    "deliveries": [
+                        {"harness": "claude", "state": {"shadowed": {"by": "/home/o/.claude/skills/tdd"}}},
+                        {"harness": "opencode", "state": "delivered"}
+                    ],
                     "is_starter": true,
                     "is_user_invoked": false,
                     "grants": []

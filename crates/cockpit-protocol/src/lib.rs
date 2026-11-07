@@ -49,7 +49,7 @@ pub use handshake::{
 };
 pub use instructions::{
     ContextBudgetView, InstalledSkillView, InstructionTopicView, MCP_INSTRUCTIONS,
-    PackSkillStateView, PackSkillView, SkillPackView,
+    PackDeliveryView, PackSkillStateView, PackSkillView, SkillPackView,
 };
 pub use network::{
     NetworkDecisionView, NetworkGrantView, NetworkRequestStateView, NetworkRequestView,

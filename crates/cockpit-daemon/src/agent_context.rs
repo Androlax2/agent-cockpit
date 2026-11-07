@@ -7,12 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cockpit_agent_context::{
-    Delivery, GithubTokenFact, Grants, LaunchFacts, PackChoice, PackListing, SkillSearch,
-    SkillState, WorkflowFacts,
+    Delivery, GithubTokenFact, Grants, InstalledSkill, LaunchFacts, PackChoice, PackListing,
+    SkillSearch, SkillState, WorkflowFacts,
 };
 use cockpit_protocol::{
     Command, ContextBudgetView, ErrorCode, InstalledSkillView, InstructionTopicView, Outcome,
-    PackSkillStateView, PackSkillView, ProtocolError, Reply, SkillPackView, Unblock, UnblockedBy,
+    PackDeliveryView, PackSkillStateView, PackSkillView, ProtocolError, Reply, SkillPackView,
+    Unblock, UnblockedBy,
 };
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
@@ -34,14 +35,28 @@ pub(crate) fn claude_skills_root(state_dir: &Path) -> PathBuf {
     state_dir.join("claude-skills")
 }
 
-/// Writes the optional skill pack (#786) as the owner's `[skill_pack]` chooses into each of
-/// `folders`, the ones the adapters list skills from, beside the bundle. The owner's skills
-/// and the trusted projects' are found now: one of the same name wins over the pack's, for
-/// every session until the next start. A setting the pack refuses fails the start.
+/// The optional skill pack as one start delivered it (#786). A harness sees only the
+/// installed skills in the folders it reads, so each folder has its own listing.
+#[derive(Debug)]
+pub struct DeliveredSkillPack {
+    /// In Claude Code's `claude-skills` folder.
+    pub claude: PackListing<'static>,
+    /// In the bundle folder OpenCode's `skills.paths` names.
+    pub opencode: PackListing<'static>,
+    /// Every skill the owner and the trusted projects have, for the owner's listing.
+    pub installed: Vec<InstalledSkill>,
+}
+
+/// Writes the optional skill pack (#786) as the owner's `[skill_pack]` chooses into Claude
+/// Code's folder and OpenCode's, beside the bundle. The owner's skills and the trusted
+/// projects' are found now: one of the same name wins over the pack's for each harness that
+/// reads its folder, for every session until the next start. A setting the pack refuses
+/// fails the start.
 pub(crate) fn deliver_skill_pack(
     environment: &cockpit_config::Environment,
-    folders: &[&Path],
-) -> Result<PackListing<'static>, crate::StartError> {
+    claude_skills: &Path,
+    opencode_skills: &Path,
+) -> Result<DeliveredSkillPack, crate::StartError> {
     let config = cockpit_config::load(environment, None, &[]).map_err(crate::StartError::Config)?;
     let settings = config.skill_pack;
     let choice = PackChoice {
@@ -54,56 +69,78 @@ pub(crate) fn deliver_skill_pack(
         home: home.as_deref(),
         project_roots: &config.trusted_projects.value,
     });
-    let listing =
-        cockpit_agent_context::select_pack(cockpit_agent_context::skill_pack(), &choice, installed)
-            .map_err(crate::StartError::SkillPack)?;
-    for folder in folders {
-        cockpit_agent_context::write_pack(folder, &listing)
+    let claude_reads: Vec<InstalledSkill> = installed
+        .iter()
+        .filter(|skill| cockpit_agent_context::CLAUDE_CODE_SKILL_FOLDERS.contains(&skill.folder))
+        .cloned()
+        .collect();
+    let pack = cockpit_agent_context::skill_pack();
+    let claude = cockpit_agent_context::select_pack(pack, &choice, claude_reads)
+        .map_err(crate::StartError::SkillPack)?;
+    let opencode = cockpit_agent_context::select_pack(pack, &choice, installed.clone())
+        .map_err(crate::StartError::SkillPack)?;
+    for (folder, listing) in [(claude_skills, &claude), (opencode_skills, &opencode)] {
+        cockpit_agent_context::write_pack(folder, listing)
             .map_err(crate::StartError::InstructionBundle)?;
     }
-    let delivered: Vec<&str> = listing.delivered().map(|skill| skill.name).collect();
+    let delivered = |listing: &PackListing<'static>| {
+        let names: Vec<&str> = listing.delivered().map(|skill| skill.name).collect();
+        names.join(",")
+    };
     tracing::info!(
-        commit = listing.pack.commit,
-        enabled = listing.enabled,
-        delivered = %delivered.join(","),
+        commit = pack.commit,
+        enabled = choice.enabled,
+        claude = %delivered(&claude),
+        opencode = %delivered(&opencode),
         "wrote the skill pack"
     );
-    Ok(listing)
+    Ok(DeliveredSkillPack {
+        claude,
+        opencode,
+        installed,
+    })
 }
 
-/// `skill-pack`: what the start delivered, beside the skills already installed.
-pub(crate) fn skill_pack_listing(listing: &PackListing<'static>) -> Outcome {
+/// `skill-pack`: what the start delivered to each harness, beside the skills already
+/// installed.
+pub(crate) fn skill_pack_listing(delivered: &DeliveredSkillPack) -> Outcome {
     let display = |path: &Path| path.display().to_string();
+    let state_view = |state: &SkillState| match state {
+        SkillState::Delivered => PackSkillStateView::Delivered,
+        SkillState::Off => PackSkillStateView::Off,
+        SkillState::Shadowed { by } => PackSkillStateView::Shadowed { by: display(by) },
+    };
+    let pack = delivered.claude.pack;
+    let harnesses = [
+        ("claude", &delivered.claude),
+        ("opencode", &delivered.opencode),
+    ];
     Outcome::Ok(Reply::SkillPack {
         pack: Box::new(SkillPackView {
-            source: listing.pack.source.to_owned(),
-            commit: listing.pack.commit.to_owned(),
-            tree: listing.pack.tree.to_owned(),
-            licence: listing.pack.licence.spdx.to_owned(),
-            enabled: listing.enabled,
-            skills: listing
+            source: pack.source.to_owned(),
+            commit: pack.commit.to_owned(),
+            tree: pack.tree.to_owned(),
+            licence: pack.licence.spdx.to_owned(),
+            enabled: delivered.claude.enabled,
+            skills: pack
                 .skills
                 .iter()
-                .map(|listed| PackSkillView {
-                    name: listed.skill.name.to_owned(),
-                    state: match &listed.state {
-                        SkillState::Delivered => PackSkillStateView::Delivered,
-                        SkillState::Off => PackSkillStateView::Off,
-                        SkillState::Shadowed { by } => {
-                            PackSkillStateView::Shadowed { by: display(by) }
-                        }
-                    },
-                    is_starter: listed.skill.is_starter,
-                    is_user_invoked: listed.skill.is_user_invoked(),
-                    grants: listed
-                        .skill
-                        .grants()
-                        .into_iter()
-                        .map(str::to_owned)
+                .enumerate()
+                .map(|(index, skill)| PackSkillView {
+                    name: skill.name.to_owned(),
+                    deliveries: harnesses
+                        .iter()
+                        .map(|(harness, listing)| PackDeliveryView {
+                            harness: (*harness).to_owned(),
+                            state: state_view(&listing.skills[index].state),
+                        })
                         .collect(),
+                    is_starter: skill.is_starter,
+                    is_user_invoked: skill.is_user_invoked(),
+                    grants: skill.grants().into_iter().map(str::to_owned).collect(),
                 })
                 .collect(),
-            installed: listing
+            installed: delivered
                 .installed
                 .iter()
                 .map(|skill| InstalledSkillView {
@@ -115,7 +152,7 @@ pub(crate) fn skill_pack_listing(listing: &PackListing<'static>) -> Outcome {
                     }
                     .to_owned(),
                     path: display(&skill.path),
-                    collides: listing.collides(&skill.name),
+                    collides: delivered.claude.collides(&skill.name),
                 })
                 .collect(),
         }),
@@ -182,7 +219,7 @@ pub(crate) async fn brief(
     connector: Result<ProcessIdentity, ProcessError>,
     database: Arc<Database>,
     sessions: Arc<cockpit_sessions::Sessions>,
-    skill_pack: Arc<PackListing<'static>>,
+    skill_pack: Arc<DeliveredSkillPack>,
 ) -> Answer {
     let sender = Sender::read(connector).await;
     let session = identify(&sender, &database, launch_token).await?;
@@ -242,11 +279,12 @@ fn harness_lists_skill(provider: &str) -> bool {
 /// catalog entries where the harness lists the folder they are in, without the user-invoked
 /// ones on Claude Code, which keeps their descriptions out of the model's context. OpenCode
 /// lists every skill it finds.
-fn pack_catalog_bytes(provider: &str, skill_pack: &PackListing<'static>) -> usize {
-    if !harness_lists_skill(provider) {
-        return 0;
+fn pack_catalog_bytes(provider: &str, skill_pack: &DeliveredSkillPack) -> usize {
+    match provider {
+        "claude" => skill_pack.claude.catalog_bytes(true),
+        "opencode" => skill_pack.opencode.catalog_bytes(false),
+        _ => 0,
     }
-    skill_pack.catalog_bytes(provider == "claude")
 }
 
 /// The packet of the step the session does, as `cockpit workflow packet` prints it but with
@@ -431,7 +469,7 @@ fn internal(error: &dyn std::fmt::Display) -> Failed {
 
 #[cfg(test)]
 mod tests {
-    use super::{harness_lists_skill, pack_catalog_bytes};
+    use super::{DeliveredSkillPack, harness_lists_skill, pack_catalog_bytes};
     use cockpit_agent_context::{PackChoice, select_pack, skill_pack};
 
     /// The starter skills and `wait-what`, the one only the user invokes.
@@ -444,15 +482,23 @@ mod tests {
         select_pack(skill_pack(), &choice, Vec::new()).unwrap()
     }
 
+    fn delivered() -> DeliveredSkillPack {
+        DeliveredSkillPack {
+            claude: listing(),
+            opencode: listing(),
+            installed: Vec::new(),
+        }
+    }
+
     #[test]
     fn claude_code_is_charged_for_the_packs_model_invoked_skills_alone() {
         let listing = listing();
 
         assert_eq!(
-            pack_catalog_bytes("claude", &listing),
+            pack_catalog_bytes("claude", &delivered()),
             listing.catalog_bytes(true)
         );
-        assert!(pack_catalog_bytes("claude", &listing) < listing.catalog_bytes(false));
+        assert!(pack_catalog_bytes("claude", &delivered()) < listing.catalog_bytes(false));
     }
 
     #[test]
@@ -460,14 +506,14 @@ mod tests {
         let listing = listing();
 
         assert_eq!(
-            pack_catalog_bytes("opencode", &listing),
+            pack_catalog_bytes("opencode", &delivered()),
             listing.catalog_bytes(false)
         );
     }
 
     #[test]
     fn codex_given_no_skill_folder_is_charged_nothing_for_the_pack() {
-        assert_eq!(pack_catalog_bytes("codex", &listing()), 0);
+        assert_eq!(pack_catalog_bytes("codex", &delivered()), 0);
     }
 
     #[test]

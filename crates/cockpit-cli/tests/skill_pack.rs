@@ -9,8 +9,8 @@ use std::process::Output;
 mod scripted;
 
 use cockpit_protocol::{
-    Command, ContextBudgetView, InstalledSkillView, Outcome, PackSkillStateView, PackSkillView,
-    Reply, SkillPackView,
+    Command, ContextBudgetView, InstalledSkillView, Outcome, PackDeliveryView, PackSkillStateView,
+    PackSkillView, Reply, SkillPackView,
 };
 use scripted::{scripted_daemon, text};
 
@@ -48,10 +48,16 @@ impl Home {
     }
 }
 
+/// A skill in the same state for Claude Code and OpenCode.
 fn pack_skill(name: &str, state: PackSkillStateView) -> PackSkillView {
     PackSkillView {
         name: name.to_owned(),
-        state,
+        deliveries: ["claude", "opencode"]
+            .map(|harness| PackDeliveryView {
+                harness: harness.to_owned(),
+                state: state.clone(),
+            })
+            .into(),
         is_starter: false,
         is_user_invoked: false,
         grants: Vec::new(),
@@ -72,12 +78,19 @@ fn listing() -> SkillPackView {
             },
             PackSkillView {
                 is_starter: true,
-                ..pack_skill(
-                    "tdd",
-                    PackSkillStateView::Shadowed {
-                        by: "/home/owner/.claude/skills/tdd".to_owned(),
+                deliveries: vec![
+                    PackDeliveryView {
+                        harness: "claude".to_owned(),
+                        state: PackSkillStateView::Delivered,
                     },
-                )
+                    PackDeliveryView {
+                        harness: "opencode".to_owned(),
+                        state: PackSkillStateView::Shadowed {
+                            by: "/home/owner/.agents/skills/tdd".to_owned(),
+                        },
+                    },
+                ],
+                ..pack_skill("tdd", PackSkillStateView::Off)
             },
             PackSkillView {
                 is_user_invoked: true,
@@ -95,7 +108,7 @@ fn listing() -> SkillPackView {
             InstalledSkillView {
                 name: "tdd".to_owned(),
                 scope: "user".to_owned(),
-                path: "/home/owner/.claude/skills/tdd".to_owned(),
+                path: "/home/owner/.agents/skills/tdd".to_owned(),
                 collides: true,
             },
         ],
@@ -118,12 +131,12 @@ async fn skills_lists_the_pack_beside_the_installed_skills_with_collisions_marke
     assert_eq!(
         text(&output.stdout),
         "skill pack: on, https://github.com/mattpocock/skills at 4ae2317 (tree a73b182), MIT\n\
-         diagnosing-bugs\tdelivered\tstarter\n\
-         tdd\tshadowed by /home/owner/.claude/skills/tdd\tstarter\n\
-         pr\toff\tuser-invoked\tgrants allowed-tools\n\
+         diagnosing-bugs\tclaude: delivered\topencode: delivered\tstarter\n\
+         tdd\tclaude: delivered\topencode: shadowed by /home/owner/.agents/skills/tdd\tstarter\n\
+         pr\tclaude: off\topencode: off\tuser-invoked\tgrants allowed-tools\n\
          installed:\n\
          notes\tuser\t/home/owner/.claude/skills/notes\n\
-         tdd\tuser\t/home/owner/.claude/skills/tdd\tsame name as a pack skill\n"
+         tdd\tuser\t/home/owner/.agents/skills/tdd\tsame name as a pack skill\n"
     );
     assert_eq!(daemon.await.unwrap(), Command::SkillPack);
 }

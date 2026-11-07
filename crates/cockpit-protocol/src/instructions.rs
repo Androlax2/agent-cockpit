@@ -34,6 +34,17 @@ pub struct ContextBudgetView {
     pub on_demand_bytes: u64,
 }
 
+impl ContextBudgetView {
+    /// What every conversation loads: all of it but the manual.
+    pub fn always_loaded_bytes(&self) -> u64 {
+        self.brief_bytes
+            + self.packet_bytes
+            + self.mcp_instructions_bytes
+            + self.catalog_bytes
+            + self.pack_catalog_bytes
+    }
+}
+
 /// The optional skill pack as the daemon delivered it at its start (#786), beside the skills
 /// the owner and the trusted projects already have.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,12 +62,21 @@ pub struct SkillPackView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackSkillView {
     pub name: String,
-    pub state: PackSkillStateView,
+    /// Its state in each harness's skill folder: a harness only sees the installed skills in
+    /// the folders it reads, so one name can shadow the pack's for one harness alone.
+    pub deliveries: Vec<PackDeliveryView>,
     pub is_starter: bool,
     /// Only the user invokes it; Claude Code keeps its description out of the model's context.
     pub is_user_invoked: bool,
     /// The frontmatter keys with which it grants a harness tools or hooks.
     pub grants: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackDeliveryView {
+    /// The provider name, `claude` or `opencode`: Codex gets no skill folder.
+    pub harness: String,
+    pub state: PackSkillStateView,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

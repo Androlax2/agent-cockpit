@@ -4,18 +4,18 @@
 //! adapters already list skills from. Prose grants nothing; a skill whose frontmatter grants
 //! tools or hooks to a harness is refused until the owner confirms that pin.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::manifest::{Scope, hex};
-use crate::write::{WriteError, ensure_dir, io, remove_strays, replace};
+use crate::write::{WriteError, ensure_dir, io, replace};
 
 /// Beside the delivered skills in each folder: the licence and the pack's manifest.
 pub const PACK_DIR: &str = "skill-pack";
@@ -101,7 +101,8 @@ impl PackSkill {
         self.frontmatter()
             .lines()
             .filter(|line| !line.starts_with([' ', '\t', '#']))
-            .filter_map(|line| line.split_once(':').map(|(key, _)| key.trim()))
+            .filter_map(|line| line.split_once(':'))
+            .map(|(key, _)| key.trim().trim_matches(['"', '\'']))
     }
 }
 
@@ -193,6 +194,9 @@ pub struct InstalledSkill {
     pub name: String,
     /// [`Scope::User`] for the owner's, [`Scope::Project`] for a project's.
     pub scope: Scope,
+    /// The skill folder it is in, relative to the home or the project: which harness reads
+    /// it.
+    pub folder: &'static str,
     /// Its directory.
     pub path: PathBuf,
 }
@@ -380,6 +384,11 @@ const USER_SKILL_FOLDERS: [&str; 3] = [
     ".config/opencode/skills",
 ];
 
+/// The folders above Claude Code lists skills from, under the home and under a project
+/// (code.claude.com/docs/en/skills); OpenCode lists every one (opencode.ai/docs/skills). An
+/// installed skill shadows the pack's only for a harness that reads its folder.
+pub const CLAUDE_CODE_SKILL_FOLDERS: [&str; 1] = [".claude/skills"];
+
 /// The same, under a project root.
 const PROJECT_SKILL_FOLDERS: [&str; 3] = [".claude/skills", ".agents/skills", ".opencode/skills"];
 
@@ -389,18 +398,17 @@ pub fn discover_skills(search: &SkillSearch<'_>) -> Vec<InstalledSkill> {
     let user = search
         .home
         .into_iter()
-        .flat_map(|home| USER_SKILL_FOLDERS.map(|folder| (Scope::User, home.join(folder))));
-    let projects = search
-        .project_roots
-        .iter()
-        .flat_map(|root| PROJECT_SKILL_FOLDERS.map(|folder| (Scope::Project, root.join(folder))));
+        .flat_map(|home| USER_SKILL_FOLDERS.map(|folder| (Scope::User, home, folder)));
+    let projects = search.project_roots.iter().flat_map(|root| {
+        PROJECT_SKILL_FOLDERS.map(|folder| (Scope::Project, root.as_path(), folder))
+    });
     user.chain(projects)
-        .flat_map(|(scope, folder)| skills_in(&folder, scope))
+        .flat_map(|(scope, base, folder)| skills_in(base, folder, scope))
         .collect()
 }
 
-fn skills_in(folder: &Path, scope: Scope) -> Vec<InstalledSkill> {
-    let Ok(entries) = fs::read_dir(folder) else {
+fn skills_in(base: &Path, folder: &'static str, scope: Scope) -> Vec<InstalledSkill> {
+    let Ok(entries) = fs::read_dir(base.join(folder)) else {
         return Vec::new();
     };
     let mut skills: Vec<InstalledSkill> = entries
@@ -409,7 +417,12 @@ fn skills_in(folder: &Path, scope: Scope) -> Vec<InstalledSkill> {
         .filter(|path| path.join("SKILL.md").is_file())
         .filter_map(|path| {
             let name = path.file_name()?.to_str()?.to_owned();
-            Some(InstalledSkill { name, scope, path })
+            Some(InstalledSkill {
+                name,
+                scope,
+                folder,
+                path,
+            })
         })
         .collect();
     skills.sort_by(|left, right| left.name.cmp(&right.name));
@@ -458,6 +471,9 @@ fn sha256(text: &str) -> String {
 /// whole of it when nothing is delivered. Nothing else under `dir` is touched: `dir` is a
 /// folder of Torlek's state the adapters list, never the owner's.
 pub fn write_pack(dir: &Path, listing: &PackListing<'_>) -> Result<(), WriteError> {
+    for dropped in dropped_since_last_write(dir, listing.pack) {
+        remove(&dir.join(dropped))?;
+    }
     for listed in &listing.skills {
         let skill_dir = dir.join(listed.skill.name);
         match listed.state {
@@ -518,13 +534,49 @@ fn manifest_of<'listing>(listing: &'listing PackListing<'_>) -> PackManifest<'li
     }
 }
 
-/// Writes every file of `skill` under `skill_dir`, then removes the files an earlier pin left
-/// in its directories. A link at `skill_dir` is removed first, never written through.
+/// The skills the manifest under `dir` says an earlier start delivered that `pack` no longer
+/// holds, so a pin that drops one does not leave it listed. Only a plain directory name that
+/// is not Torlek's own skill counts: the manifest is a file on disk, not an authority to
+/// remove anything else. No manifest, or one that does not read, names none.
+fn dropped_since_last_write(dir: &Path, pack: &Pack) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct Earlier {
+        skills: Vec<EarlierSkill>,
+    }
+    #[derive(Deserialize)]
+    struct EarlierSkill {
+        name: String,
+    }
+    let Ok(text) = fs::read_to_string(dir.join(PACK_DIR).join(PACK_MANIFEST_FILE)) else {
+        return Vec::new();
+    };
+    let Ok(earlier) = serde_json::from_str::<Earlier>(&text) else {
+        return Vec::new();
+    };
+    let bundle_dirs: BTreeSet<&str> = crate::documents()
+        .iter()
+        .filter_map(|document| document.path.split('/').next())
+        .collect();
+    earlier
+        .skills
+        .into_iter()
+        .map(|skill| skill.name)
+        .filter(|name| {
+            let mut components = Path::new(name).components();
+            matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
+        })
+        .filter(|name| name != PACK_DIR && !bundle_dirs.contains(name.as_str()))
+        .filter(|name| pack.skills.iter().all(|skill| skill.name != name))
+        .collect()
+}
+
+/// Writes every file of `skill` under `skill_dir`, then removes whatever else an earlier pin
+/// left there. A link at `skill_dir` is removed first, never written through.
 fn write_skill(root: &Path, skill_dir: &Path, skill: &PackSkill) -> Result<(), WriteError> {
     if fs::symlink_metadata(skill_dir).is_ok_and(|metadata| !metadata.is_dir()) {
         remove(skill_dir)?;
     }
-    let mut expected = std::collections::BTreeSet::new();
+    let mut expected = BTreeSet::new();
     for file in &skill.files {
         let path = skill_dir.join(file.path);
         let parent = path.parent().expect("a pack file path names a file");
@@ -532,12 +584,22 @@ fn write_skill(root: &Path, skill_dir: &Path, skill: &PackSkill) -> Result<(), W
         replace(&path, file.text.as_bytes())?;
         expected.insert(path);
     }
-    let directories: std::collections::BTreeSet<PathBuf> = expected
-        .iter()
-        .filter_map(|path| path.parent().map(Path::to_path_buf))
-        .collect();
-    for directory in directories {
-        remove_strays(&directory, &expected)?;
+    remove_unlisted(skill_dir, &expected)
+}
+
+/// Removes every entry under `directory` that is not an `expected` file or a directory
+/// holding one; a link is removed, never followed.
+fn remove_unlisted(directory: &Path, expected: &BTreeSet<PathBuf>) -> Result<(), WriteError> {
+    for entry in fs::read_dir(directory).map_err(io("read", directory))? {
+        let path = entry.map_err(io("read", directory))?.path();
+        let is_directory = fs::symlink_metadata(&path)
+            .map_err(io("inspect", &path))?
+            .is_dir();
+        if is_directory && expected.iter().any(|file| file.starts_with(&path)) {
+            remove_unlisted(&path, expected)?;
+        } else if !expected.contains(&path) {
+            remove(&path)?;
+        }
     }
     Ok(())
 }

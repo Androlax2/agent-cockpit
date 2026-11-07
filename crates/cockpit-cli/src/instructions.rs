@@ -62,11 +62,7 @@ pub(crate) fn brief(arguments: &[OsString]) -> Result<ExitCode, String> {
                     outln!(
                         "always loaded: {} bytes (brief {}, task packet {}, MCP instructions {}, \
                          skill catalog entry {}, skill pack {})",
-                        budget.brief_bytes
-                            + budget.packet_bytes
-                            + budget.mcp_instructions_bytes
-                            + budget.catalog_bytes
-                            + budget.pack_catalog_bytes,
+                        budget.always_loaded_bytes(),
                         budget.brief_bytes,
                         budget.packet_bytes,
                         budget.mcp_instructions_bytes,

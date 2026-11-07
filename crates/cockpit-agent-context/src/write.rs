@@ -146,10 +146,7 @@ pub(crate) fn replace(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
 
 /// Removes the files and links in `directory` this release does not ship. Directories are
 /// left alone: the bundle never had any but its own.
-pub(crate) fn remove_strays(
-    directory: &Path,
-    expected: &BTreeSet<PathBuf>,
-) -> Result<(), WriteError> {
+fn remove_strays(directory: &Path, expected: &BTreeSet<PathBuf>) -> Result<(), WriteError> {
     for entry in fs::read_dir(directory).map_err(io("read", directory))? {
         let entry = entry.map_err(io("read", directory))?;
         let path = entry.path();

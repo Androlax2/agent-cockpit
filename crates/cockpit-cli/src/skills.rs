@@ -43,14 +43,15 @@ fn listing(pack: &SkillPackView) -> String {
 }
 
 fn skill_line(skill: &PackSkillView) -> String {
-    let mut cells = vec![
-        skill.name.clone(),
-        match &skill.state {
+    let mut cells = vec![skill.name.clone()];
+    cells.extend(skill.deliveries.iter().map(|delivery| {
+        let state = match &delivery.state {
             PackSkillStateView::Delivered => "delivered".to_owned(),
             PackSkillStateView::Off => "off".to_owned(),
             PackSkillStateView::Shadowed { by } => format!("shadowed by {by}"),
-        },
-    ];
+        };
+        format!("{}: {state}", delivery.harness)
+    }));
     if skill.is_starter {
         cells.push("starter".to_owned());
     }

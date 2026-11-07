@@ -43,6 +43,7 @@ use std::time::Duration;
 
 use tokio::sync::Semaphore;
 
+pub use agent_context::DeliveredSkillPack;
 pub use approvals::{RUN_LEADER_FLAG, run_settings};
 pub use error::StartError;
 pub use instance::{Instance, Options};
@@ -186,7 +187,7 @@ pub struct Capabilities {
     /// `$XDG_STATE_HOME/cockpit`, where bug report bundles are written beside the logs.
     pub state_dir: PathBuf,
     /// The optional skill pack as this start delivered it (#786).
-    pub skill_pack: Arc<cockpit_agent_context::PackListing<'static>>,
+    pub skill_pack: Arc<DeliveredSkillPack>,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -251,7 +252,8 @@ impl Instance {
             .map_err(StartError::InstructionBundle)?;
         let skill_pack = Arc::new(agent_context::deliver_skill_pack(
             &wiring.environment,
-            &[&bundle_dir, &claude_skills],
+            &claude_skills,
+            &bundle_dir,
         )?);
         wiring
             .sessions
