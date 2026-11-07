@@ -1257,6 +1257,10 @@ pub enum Reply {
     },
     AgentBrief {
         brief: String,
+        /// The bounded task packet of the step the session is doing (#781), shown with the
+        /// brief at every context start; none when it does no step.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        packet: Option<String>,
         manifest: String,
         budget: ContextBudgetView,
     },

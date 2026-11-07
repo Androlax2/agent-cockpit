@@ -687,6 +687,12 @@ impl Home {
     /// Claude Code leaves running is not run. Returns what the hook printed, ending
     /// `exit=<code>`.
     pub async fn start_claude_context(&self, root: &Path) -> String {
+        self.start_claude_context_from(root, "startup").await
+    }
+
+    /// As [`Home::start_claude_context`], for a context started from `source`: `startup`,
+    /// `resume`, `clear` or `compact` (#781).
+    pub async fn start_claude_context_from(&self, root: &Path, source: &str) -> String {
         let arguments = self.launch_arguments(root).await;
         let settings: serde_json::Value =
             serde_json::from_str(launch_option(&arguments, "--settings")).unwrap();
@@ -706,7 +712,7 @@ impl Home {
             "transcript_path": root.join(".agent/transcript.jsonl"),
             "cwd": root,
             "hook_event_name": "SessionStart",
-            "source": "startup",
+            "source": source,
         });
         std::fs::write(root.join(".agent/session-start.json"), payload.to_string()).unwrap();
         // Claude Code reads the hook's standard output alone.

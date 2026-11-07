@@ -68,9 +68,11 @@ fn a_brief_request_carries_only_the_launch_token() {
 fn a_brief_reply_carries_its_context_budget() {
     let reply = Reply::AgentBrief {
         brief: "# Cockpit launch brief".to_owned(),
+        packet: Some("# Task packet".to_owned()),
         manifest: "m-0123456789abcdef".to_owned(),
         budget: ContextBudgetView {
             brief_bytes: 22,
+            packet_bytes: 13,
             catalog_bytes: 280,
             on_demand_bytes: 7478,
         },
@@ -81,8 +83,32 @@ fn a_brief_reply_carries_its_context_budget() {
         json!({
             "kind": "agent-brief",
             "brief": "# Cockpit launch brief",
+            "packet": "# Task packet",
             "manifest": "m-0123456789abcdef",
-            "budget": {"brief_bytes": 22, "catalog_bytes": 280, "on_demand_bytes": 7478}
+            "budget": {
+                "brief_bytes": 22,
+                "packet_bytes": 13,
+                "catalog_bytes": 280,
+                "on_demand_bytes": 7478
+            }
         })
     );
+}
+
+/// #781: a brief without a task packet, as a daemon before it answers, still reads.
+#[test]
+fn a_brief_reply_without_a_packet_reads_as_none() {
+    let wire = json!({
+        "kind": "agent-brief",
+        "brief": "# Cockpit launch brief",
+        "manifest": "m-0123456789abcdef",
+        "budget": {"brief_bytes": 22, "catalog_bytes": 280, "on_demand_bytes": 7478}
+    });
+
+    let reply: Reply = serde_json::from_value(wire).unwrap();
+
+    let Reply::AgentBrief { packet, budget, .. } = reply else {
+        panic!("{reply:?}");
+    };
+    assert_eq!((packet, budget.packet_bytes), (None, 0));
 }

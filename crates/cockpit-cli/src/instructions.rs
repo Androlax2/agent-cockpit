@@ -31,8 +31,8 @@ pub(crate) fn docs(arguments: &[OsString]) -> Result<ExitCode, String> {
     }
 }
 
-/// `cockpit brief [--measure]`: this session's launch brief, or with `--measure` how much
-/// context Cockpit adds.
+/// `cockpit brief [--measure]`: this session's launch brief and the packet of the step it
+/// does, or with `--measure` how much context Cockpit adds.
 pub(crate) fn brief(arguments: &[OsString]) -> Result<ExitCode, String> {
     let words = crate::daemon::utf8_words(arguments)?;
     let measures = match words[..] {
@@ -54,14 +54,16 @@ pub(crate) fn brief(arguments: &[OsString]) -> Result<ExitCode, String> {
         ) {
             Ok(Reply::AgentBrief {
                 brief,
+                packet,
                 manifest,
                 budget,
             }) => {
                 if measures {
                     outln!(
-                        "always loaded: {} bytes (brief {}, skill catalog entry {})",
-                        budget.brief_bytes + budget.catalog_bytes,
+                        "always loaded: {} bytes (brief {}, task packet {}, skill catalog entry {})",
+                        budget.brief_bytes + budget.packet_bytes + budget.catalog_bytes,
                         budget.brief_bytes,
+                        budget.packet_bytes,
                         budget.catalog_bytes
                     );
                     outln!(
@@ -70,7 +72,7 @@ pub(crate) fn brief(arguments: &[OsString]) -> Result<ExitCode, String> {
                     );
                     outln!("instructions manifest: {manifest}");
                 } else {
-                    out!("{brief}");
+                    out!("{}", with_packet(&brief, packet.as_deref()));
                 }
                 ExitCode::SUCCESS
             }
@@ -119,5 +121,14 @@ fn read(topic: Option<String>) -> ExitCode {
             ExitCode::SUCCESS
         }
         other => failed(&socket, other),
+    }
+}
+
+/// The brief, then the task packet when the session does a step (#781): what every context
+/// start shows the agent, since the hooks and the plugin print what `cockpit brief` prints.
+pub(crate) fn with_packet(brief: &str, packet: Option<&str>) -> String {
+    match packet {
+        Some(packet) => format!("{brief}\n{packet}"),
+        None => brief.to_owned(),
     }
 }

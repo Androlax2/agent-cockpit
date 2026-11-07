@@ -8,6 +8,9 @@ mod real_daemon;
 
 use std::time::{Duration, Instant};
 
+use cockpit_client::Connection;
+use cockpit_protocol::{Command, Reply, WorkflowHandoffView};
+
 use real_daemon::{
     COMMANDED_PROJECT, GENEROUS, Home, ONBOARD_PROJECT, added_context, cockpit_program,
     mcp_tool_text, new_session,
@@ -89,6 +92,100 @@ async fn a_claude_launch_adds_the_sessions_brief_as_its_context_starts() {
         context.contains(&format!("Session {}", session.id)),
         "{context}"
     );
+}
+
+/// #781: after a compaction (Claude Code's `SessionStart` with `source: "compact"`), the
+/// hook adds the brief and the step's task packet, the packet as `torlek workflow packet`
+/// prints it: the goal, the step and its requirements, the checkpoint and the last handoff.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_compacted_claude_context_gets_the_packet_torlek_workflow_packet_prints() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, project) = home.project(&client, COMMANDED_PROJECT).await;
+    let session = new_session(&client, &root).await;
+    let run = started_past_its_first_step(&client, &project).await;
+    let torlek = format!("'{}'", cockpit_program().display());
+    let begun = home.command_agent(
+        &root,
+        &format!(
+            "{torlek} workflow begin {run} && \
+             {torlek} workflow checkpoint {run} 'Branch greenfield/7-login at 0a1b2c3; review next'"
+        ),
+    );
+    let begun = home.agent_output(&root, begun).await;
+    assert!(begun.ends_with("exit=0\n"), "{begun}");
+
+    let printed = home.start_claude_context_from(&root, "compact").await;
+    let asked = home.command_agent(&root, &format!("{torlek} workflow packet {run}"));
+    let asked = home.agent_output(&root, asked).await;
+
+    let packet = asked
+        .strip_suffix("exit=0\n")
+        .unwrap_or_else(|| panic!("`torlek workflow packet` failed: {asked}"));
+    for part in [
+        "step 2 check (active",
+        "requires: checks, review",
+        "greenfield/7-login at 0a1b2c3",
+        "handoff from step 1 implement",
+    ] {
+        assert!(packet.contains(part), "no {part:?} in\n{packet}");
+    }
+    let context = added_context(&printed);
+    assert!(
+        context.contains(&format!("Session {}", session.id)),
+        "{context}"
+    );
+    assert!(
+        context.ends_with(&cockpit_agent_context::task_packet(run, packet)),
+        "the packet differs from `torlek workflow packet`'s:\n{context}\n---\n{packet}"
+    );
+}
+
+/// A `code-change` workflow in `project` whose first step the owner completed with a handoff,
+/// so its `check` step waits for a session.
+async fn started_past_its_first_step(client: &Connection, project: &str) -> i64 {
+    let request = |command| client.request(command, GENEROUS);
+    let added = request(Command::TaskAdd {
+        launch_token: None,
+        project: Some(project.to_owned()),
+        title: "Fix the login form".to_owned(),
+        notes: "Users on #7 cannot sign in.".to_owned(),
+        item_kind: None,
+        priority: None,
+        after: Vec::new(),
+    })
+    .await;
+    let Ok(Reply::Task { task }) = added else {
+        panic!("task-add: {added:?}");
+    };
+    let started = request(Command::WorkflowStart {
+        item: task.id,
+        preset: Some("code-change".to_owned()),
+    })
+    .await;
+    let Ok(Reply::Workflow { workflow }) = started else {
+        panic!("workflow-start: {started:?}");
+    };
+    let completed = request(Command::WorkflowComplete {
+        launch_token: None,
+        workflow: workflow.id,
+        expected_step: None,
+        expected_attempt: None,
+        handoff: WorkflowHandoffView {
+            changed: "Rewrote the form validation in PR #12".to_owned(),
+            checked: "cargo nextest run -p app: 14 passed".to_owned(),
+            outcome: "passed".to_owned(),
+            ..WorkflowHandoffView::default()
+        },
+        waive: Vec::new(),
+    })
+    .await;
+    assert!(
+        matches!(completed, Ok(Reply::Workflow { .. })),
+        "{completed:?}"
+    );
+    workflow.id
 }
 
 /// #419: the MCP server a Claude launch registers answers the agent with its own brief.

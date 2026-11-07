@@ -51,8 +51,12 @@ first (prose grants nothing, truthful evidence, the approval route), then those 
 the discovery and recovery entry points. [`BRIEF_TARGET_BYTES`] (2 KiB) bounds it with
 long fields; a typical brief is about 1 KiB.
 
+[`task_packet`] frames the step's packet the daemon gives with the brief at every context
+start (#781): `torlek workflow packet`'s text with the last handoff only, under the command
+that prints all of it, cut at [`TASK_PACKET_CAP_BYTES`] (2 KiB).
+
 [`context_budget`] measures what Torlek adds: always loaded (the brief and the skill's
-catalog entry) apart from read on demand (the manual). The harness's own instructions and
+catalog entry; the daemon adds the packet) apart from read on demand (the manual). The harness's own instructions and
 tool schemas are the provider's to measure.
 
 ## Channels
@@ -78,6 +82,7 @@ All served by the running daemon, so they match its release:
 - `tests/write.rs`: the layout, the stamp, overwriting, removing stale files, `supersedes`,
   symbolic links.
 - `tests/brief.rs`: invariants first, the dynamic fields, the size target, the budget.
+- `tests/packet.rs`: the packet's frame, its cap, cuts on character boundaries.
 - Through the sockets: `cockpit-daemon` `tests/agent_brief.rs` (the bundle at start,
   `TORLEK_INSTRUCTIONS`, a launched session's brief) and `tests/agent_onboarding.rs` (a
   clean-home agent finds its workflow, checks and approval route through `torlek`);

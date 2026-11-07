@@ -8,8 +8,8 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 use cockpit_protocol::{
-    Command, Reply, WorkflowBlockedActionView, WorkflowBlockedView, WorkflowHandoffView,
-    WorkflowNextView, WorkflowPacketView, WorkflowPresetView, WorkflowStepView, WorkflowView,
+    Command, Reply, WorkflowBlockedActionView, WorkflowHandoffView, WorkflowPresetView,
+    WorkflowView,
 };
 
 use crate::agent::{exchange, failed, launch_token};
@@ -182,12 +182,6 @@ fn handoff(flags: &mut Flags) -> Result<WorkflowHandoffView, String> {
     })
 }
 
-/// Free text a session or the owner wrote, its later lines indented so none reads as a
-/// field line of its own (`next:` in a checkpoint note).
-fn prose(text: &str) -> String {
-    text.replace('\n', "\n  ")
-}
-
 fn workflow_id(text: &str) -> Result<i64, String> {
     number(text, "a workflow id")
 }
@@ -197,7 +191,7 @@ fn render(reply: &Reply) -> Option<String> {
     Some(match reply {
         Reply::Workflow { workflow } => details(workflow),
         Reply::Workflows { workflows } => workflows.iter().map(line).collect(),
-        Reply::WorkflowPacket { packet } => packet_text(packet),
+        Reply::WorkflowPacket { packet } => packet.text(),
         Reply::WorkflowPresets { presets } => presets.iter().map(preset_text).collect(),
         _ => return None,
     })
@@ -212,7 +206,7 @@ fn line(workflow: &WorkflowView) -> String {
         workflow.item,
         workflow.preset,
         workflow.status.as_str(),
-        next(&workflow.next)
+        workflow.next.text()
     )
 }
 
@@ -228,112 +222,12 @@ fn details(workflow: &WorkflowView) -> String {
         workflow.status.as_str()
     );
     if let Some(blocked) = &workflow.blocked {
-        text.push_str(&blocked_line(blocked));
+        text.push_str(&blocked.line());
     }
     for step in &workflow.steps {
-        text.push_str(&step_line(step));
+        text.push_str(&step.line());
     }
-    text.push_str(&format!("next: {}\n", next(&workflow.next)));
-    text
-}
-
-fn blocked_line(blocked: &WorkflowBlockedView) -> String {
-    format!(
-        "blocked: {}: {}\n",
-        blocked.action.as_str(),
-        prose(&blocked.detail)
-    )
-}
-
-/// `step N name (status, session) checkpoint` on one line.
-fn step_line(step: &WorkflowStepView) -> String {
-    let mut text = format!(
-        "step {} {} ({}",
-        step.position,
-        step.name,
-        step.status.as_str()
-    );
-    if let Some(session) = &step.session {
-        text.push_str(&format!(", {session}"));
-    }
-    text.push(')');
-    text.push_str(&format!(
-        " [--step {} --attempt {}]",
-        step.position, step.attempts
-    ));
-    if let Some(checkpoint) = &step.checkpoint {
-        text.push_str(&format!(": {}", prose(&checkpoint.note)));
-    }
-    text.push('\n');
-    text
-}
-
-/// What a session needs to work its step: goal, scope, step, what came before, what is next.
-fn packet_text(packet: &WorkflowPacketView) -> String {
-    let mut text = format!(
-        "workflow {} ({} v{}, {})\nproject: {}\n",
-        packet.workflow,
-        packet.preset,
-        packet.preset_version,
-        packet.status.as_str(),
-        packet.project,
-    );
-    match &packet.goal {
-        Some(goal) => {
-            text.push_str(&format!(
-                "goal: item {} {} ({}, {})\n",
-                packet.item,
-                goal.title,
-                goal.kind.as_str(),
-                goal.item_status.as_str()
-            ));
-            if goal.intent_changed {
-                text.push_str(&format!(
-                    "intent changed: revision {} since the workflow started on {}\n",
-                    goal.intent_revision, goal.started_on_intent
-                ));
-            }
-        }
-        None => text.push_str(&format!("goal: item {} was deleted\n", packet.item)),
-    }
-    if let Some(step) = &packet.step {
-        text.push_str(&step_line(step));
-        text.push_str(&format!("purpose: {}\n", step.purpose));
-        if !step.requirements.is_empty() {
-            text.push_str(&format!("requires: {}\n", step.requirements.join(", ")));
-        }
-    }
-    if let Some(blocked) = &packet.blocked {
-        text.push_str(&blocked_line(blocked));
-    }
-    for decision in &packet.decisions {
-        text.push_str(&format!("decided: {} {}", decision.item, decision.title));
-        if let Some(summary) = &decision.summary {
-            text.push_str(&format!(": {}", prose(summary)));
-        }
-        text.push('\n');
-    }
-    for record in &packet.handoffs {
-        text.push_str(&format!(
-            "handoff from step {} {} ({}): changed: {}; checked: {}; outcome: {}\n",
-            record.position,
-            record.step,
-            record.kind,
-            prose(&record.handoff.changed),
-            prose(&record.handoff.checked),
-            prose(&record.handoff.outcome)
-        ));
-        if !record.handoff.needs_human.is_empty() {
-            text.push_str(&format!(
-                "needs the human: {}\n",
-                prose(&record.handoff.needs_human)
-            ));
-        }
-    }
-    text.push_str(&format!("next: {}\n", next(&packet.next)));
-    if let Some(goal) = packet.goal.as_ref().filter(|goal| !goal.notes.is_empty()) {
-        text.push_str(&format!("notes:\n{}\n", goal.notes));
-    }
+    text.push_str(&format!("next: {}\n", workflow.next.text()));
     text
 }
 
@@ -348,26 +242,4 @@ fn preset_text(preset: &WorkflowPresetView) -> String {
         text.push('\n');
     }
     text
-}
-
-fn next(next: &WorkflowNextView) -> String {
-    match next {
-        WorkflowNextView::Unblock { action } => format!("{} first", action.as_str()),
-        WorkflowNextView::AwaitPlacement { position } => {
-            format!("step {position} waits for a session to begin it")
-        }
-        WorkflowNextView::OwnerCompletes { position } => {
-            format!("the owner completes step {position}")
-        }
-        WorkflowNextView::InProgress {
-            position,
-            session: Some(session),
-        } => format!("session {session} works on step {position}"),
-        WorkflowNextView::InProgress {
-            position,
-            session: None,
-        } => format!("step {position} is in progress"),
-        WorkflowNextView::Nothing => "nothing: it is closed".to_owned(),
-        WorkflowNextView::Unknown => "unknown to this torlek version".to_owned(),
-    }
 }

@@ -71,3 +71,33 @@ environment, unsandboxed and in Torlek's sandbox: `cockpit-daemon`
 `sandbox::a_sandboxed_claude_gets_the_sessions_brief_as_its_context_starts`,
 `sandbox::a_sandboxed_claudes_mcp_server_answers_the_sessions_brief`,
 `sandbox::a_sandboxed_claude_reads_the_skill_its_launch_adds`.
+
+## Revisited 2026-11-07 (#781, task packet)
+
+Decided by the implementing session, applying follow-up 1 of the
+[#686 compaction research](../research/2026-11-04-686-compaction-research.md#proposed-follow-up-issues-not-filed):
+harness summaries kept about half of the issue numbers and branch names, so every context
+start now carries the step's packet beside the brief.
+
+- **The packet rides on `agent-brief`, as its own `packet` field.** `torlek brief` (and the
+  `torlek_brief` MCP tool) print the brief, then the packet; the hooks and the plugin print
+  what it prints, so no adapter reads anything new. The brief keeps its 2 KiB target; the
+  packet has its own, and `--measure` counts both as always loaded.
+- **It is `torlek workflow packet`'s text, trimmed.** The rendering moved from `cockpit-cli`
+  to `cockpit-protocol` (`WorkflowPacketView::text`) so the two cannot drift. The daemon
+  keeps the last handoff only and drops the decisions, frames it with the command that
+  prints all of it, and cuts it at `TASK_PACKET_CAP_BYTES` (2048) on a character boundary;
+  the notes come last, so they are cut first.
+- **OpenCode reads it again when a compaction ends** (`session.compaction.ended`), since
+  its plugin otherwise reads the brief once per process: that is OpenCode's context start.
+- **Rejected:** folding the packet into the brief text (the brief's size target and
+  `--measure` would lose their meaning), and a separate `cockpit brief --packet` call per
+  adapter (three adapters changed for what one daemon answer gives).
+
+Evidence: `cockpit-daemon`
+`agent_onboarding::a_compacted_claude_context_gets_the_packet_torlek_workflow_packet_prints`,
+`agent_brief::the_packet_with_the_brief_keeps_only_the_last_handoff_within_its_cap`;
+`cockpit-agent-context` `packet::a_long_packet_is_cut_at_the_cap_and_says_so`; the pinned
+compaction payloads: `cockpit-claude` and `cockpit-codex`
+`bridge::a_compactions_session_start_adds_the_brief_and_task_packet`, `cockpit-opencode`
+`plugin::a_compactions_end_reads_the_brief_and_task_packet_again`.
