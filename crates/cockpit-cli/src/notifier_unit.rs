@@ -123,10 +123,14 @@ impl Plan {
                 outln!("no notifier unit installed: [notify] autostart is false");
             }
             Existing::Ours => {
-                service_manager(
+                // A unit the owner already disabled or stopped makes `disable` fail; the
+                // opt-out must still remove the file.
+                if let Err(problem) = service_manager(
                     "systemctl",
                     &["--user", "disable", "--now", &self.unit_name],
-                )?;
+                ) {
+                    eprintln!("torlek: warning: {problem}; removing the unit anyway");
+                }
                 fs::remove_file(&self.unit)
                     .map_err(|error| format!("{}: {error}", self.unit.display()))?;
                 service_manager("systemctl", &["--user", "daemon-reload"])?;
@@ -182,8 +186,14 @@ fn runs_torlek_notify(unit: &str) -> bool {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or_default();
-            name == "torlek-notify"
-                || (name.starts_with("torlek") && words.any(|word| word == "notify"))
+            if name == "torlek-notify" {
+                return true;
+            }
+            let mut arguments: Vec<&str> = words.collect();
+            if arguments.first() == Some(&"--profile") && arguments.len() >= 2 {
+                arguments.drain(..2);
+            }
+            name.starts_with("torlek") && arguments == ["notify"]
         })
 }
 
@@ -231,6 +241,8 @@ fn is_active(program: &str, arguments: &[&str]) -> bool {
 pub(crate) enum State {
     /// Its status file was written within the last few seconds, by a unit or by hand.
     Running,
+    /// A hand-run `torlek notify`: nothing starts it at the next login.
+    RunningWithoutUnit,
     InstalledNotRunning,
     NotInstalled,
 }
@@ -239,7 +251,11 @@ pub(crate) enum State {
 /// whether it will start with the desktop session.
 pub(crate) fn state(unit: &Path, status_file: &Path) -> State {
     if is_fresh(status_file) {
-        State::Running
+        if unit.exists() {
+            State::Running
+        } else {
+            State::RunningWithoutUnit
+        }
     } else if unit.exists() {
         State::InstalledNotRunning
     } else {

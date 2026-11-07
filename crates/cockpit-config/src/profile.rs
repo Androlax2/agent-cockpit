@@ -63,6 +63,11 @@ impl Profile {
                  digits and inner hyphens, starting with a letter"
             ));
         }
+        if name.ends_with("-notify") {
+            return Err(format!(
+                "profile {name:?} would name its daemon unit like another profile's notifier unit"
+            ));
+        }
         if PROGRAM_SUFFIXES.contains(&name) {
             return Err(format!(
                 "profile {name:?} would be named like Torlek's program torlek-{name}"

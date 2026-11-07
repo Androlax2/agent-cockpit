@@ -822,3 +822,51 @@ fn doctor_names_each_state_of_the_notifier_and_the_command_that_fixes_it() {
         "notifier torlek-dev-notify.service: running"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_install_refuses_a_unit_that_only_mentions_notify_in_its_arguments() {
+    let home = Home::new();
+    fs::create_dir_all(home.unit_dir()).unwrap();
+    let other = "[Service]\nExecStart=/usr/bin/torlek-wrapper --flag notify\n";
+    let path = home.unit_dir().join("torlek-dev-notify.service");
+    fs::write(&path, other).unwrap();
+
+    let output = home.cockpit(&["daemon", "install"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(fs::read_to_string(&path).unwrap(), other);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_opt_out_still_removes_the_unit_when_systemctl_disable_fails() {
+    let home = Home::new();
+    succeeded(&home.cockpit(&["daemon", "install"]));
+    fs::write(
+        home.bin().join("systemctl"),
+        "#!/bin/sh\n[ \"$2\" = disable ] && exit 1\nexit 0\n",
+    )
+    .unwrap();
+    write_owner_config(&home, "[notify]\nautostart = false\n");
+
+    succeeded(&home.cockpit(&["daemon", "install"]));
+
+    assert!(!home.unit_dir().join("torlek-dev-notify.service").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn doctor_says_a_hand_run_notifier_without_a_unit_is_not_installed() {
+    let home = Home::new();
+    let status_file = home.path().join("run/torlek-dev/status.json");
+    fs::create_dir_all(status_file.parent().unwrap()).unwrap();
+    fs::write(&status_file, "{}").unwrap();
+
+    let printed = String::from_utf8(home.cockpit(&["doctor"]).stdout).unwrap();
+
+    assert!(
+        printed.contains("notifier torlek-dev-notify.service: running by hand, not installed"),
+        "{printed}"
+    );
+}

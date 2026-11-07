@@ -272,6 +272,11 @@ fn print_notifier(
     let status_file = socket.with_file_name(crate::notify::STATUS_FILE);
     match notifier_unit::state(&unit_dir.join(&unit_name), &status_file) {
         State::Running => outln!("notifier {unit_name}: running"),
+        State::RunningWithoutUnit => outln!(
+            "notifier {unit_name}: running by hand, not installed (it ends with its terminal; \
+             `{} daemon install` starts it with your desktop session)",
+            crate::profile::command()
+        ),
         State::InstalledNotRunning => outln!(
             "notifier {unit_name}: installed, not running (starts with your desktop session; \
              now: `systemctl --user start {unit_name}`)"
