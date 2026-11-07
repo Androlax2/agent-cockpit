@@ -538,6 +538,8 @@ impl Instance {
         ));
         let guard = disk_guard::DiskGuard {
             backend: Arc::clone(&admission),
+            database: Arc::clone(&database),
+            read_free_mib: cockpit_projects::free_space_mib,
             watched_path: options.state_dir.clone(),
             floor_mib: storage_settings.low_disk_floor_mib.value,
             queue_changed: Arc::clone(&queue_changed),
@@ -545,7 +547,7 @@ impl Instance {
             prune_automatic: storage.policy.automatic,
         };
         // Read once before any scheduling pass, so a restart on a full disk holds work at once.
-        guard.check(&mut None).await;
+        guard.check(&mut disk_guard::Memory::default()).await;
         let scheduled = scheduling::Context {
             database: Arc::clone(&database),
             sessions: Arc::clone(&sessions),

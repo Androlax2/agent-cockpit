@@ -111,6 +111,7 @@ fn every_known_entity_kind_has_its_published_name() {
         (EntityKind::Checkout, "checkout"),
         (EntityKind::BugReport, "bug-report"),
         (EntityKind::ViewStamp, "view-stamp"),
+        (EntityKind::Disk, "disk"),
     ];
 
     for (kind, name) in published {

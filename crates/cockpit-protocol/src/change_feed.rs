@@ -68,6 +68,10 @@ pub enum EntityKind {
     /// state a [`ViewStamp`]. A client re-asks for the area when the
     /// stamp moves instead of polling it.
     ViewStamp,
+    /// Free disk space below the owner's floor (#1143): one entity, in the state of a
+    /// [`DiskView`], on the feed while the low-disk guard finds the space low and retracted
+    /// when it is not (or the guard is off).
+    Disk,
     /// A kind this version does not know, kept as sent so a client can skip or show it.
     /// Never build one with a known name: it would read back as the known variant.
     #[serde(untagged)]
@@ -127,6 +131,15 @@ impl ViewArea {
 pub struct ViewStamp {
     /// The commit revision of the last commit that touched what the area shows.
     pub changed_at: u64,
+}
+
+/// The state of the [`EntityKind::Disk`] entity. Published once on entering low disk, so a
+/// reading that only changes `free_mib` while the space stays low is not published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiskView {
+    /// Free space when the guard found it low, in MiB.
+    pub free_mib: u64,
+    pub floor_mib: u64,
 }
 
 /// Deliberately closed: a client cannot apply a change it does not understand, and skipping

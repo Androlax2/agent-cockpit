@@ -168,6 +168,7 @@ fn headline(notice: &Notice) -> String {
         Event::Hold => "waits for your permission",
         Event::Question => "needs your answer",
         Event::Quota => "hit its usage limit",
+        Event::Disk => "is low",
         Event::Finished => "finished",
         Event::Turn => "completed a turn",
     };
@@ -277,6 +278,7 @@ pub fn sound_id(event: Event) -> &'static str {
         Event::Hold => "dialog-warning",
         Event::Question => "message-new-instant",
         Event::Quota => "alarm-clock-elapsed",
+        Event::Disk => "dialog-warning",
         Event::Finished => "complete",
         Event::Turn => "message",
     }

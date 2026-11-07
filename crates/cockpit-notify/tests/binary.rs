@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
-    AgentState, Capability, ChangeBatch, Command, EntityKind, Hello, Outcome, QuestionSource,
-    Reply, Request, Response, SUPPORTED_VERSIONS, ServerFrame, SessionReport, SessionStateView,
-    SessionView, negotiate,
+    AgentState, Capability, ChangeBatch, Command, DiskView, EntityKind, Hello, Outcome,
+    QuestionSource, Reply, Request, Response, SUPPORTED_VERSIONS, ServerFrame, SessionReport,
+    SessionStateView, SessionView, negotiate,
 };
 use common::{after_snapshot, report, session, snapshot, upsert};
 
@@ -124,6 +124,15 @@ fn finished() -> ChangeBatch {
         ..session(WORKER, 1, 1)
     };
     after_snapshot(vec![upsert(EntityKind::Session, WORKER, &view)])
+}
+
+/// What the guard publishes on free space falling below a floor of 2048 MiB.
+fn low_disk() -> ChangeBatch {
+    let reading = DiskView {
+        free_mib: 900,
+        floor_mib: 2048,
+    };
+    after_snapshot(vec![upsert(EntityKind::Disk, "state-dir", &reading)])
 }
 
 /// A program on the fake `PATH` that appends its name and arguments to `record`.
@@ -666,4 +675,77 @@ fn notify_test_fails_loudly_without_a_sound_player() {
     assert!(!status.success());
     let stderr = fs::read_to_string(setup.stderr_file()).unwrap();
     assert!(stderr.contains("cannot play the hold sound"), "{stderr}");
+}
+
+#[test]
+fn a_low_disk_shows_a_notification_and_plays_the_themes_warning() {
+    let setup = Setup::with_later(low_disk());
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+    let _notifier = setup.start(&[], true);
+
+    let mut calls = setup.calls(2);
+    calls.sort();
+
+    assert_eq!(
+        calls,
+        [
+            "canberra-gtk-play [--id=dialog-warning] [--description=Torlek: disk]".to_owned(),
+            "notify-send [--app-name=Torlek] [--urgency=normal] [--] \
+             [Free disk space is low] [900 MiB free, below the floor of 2048 MiB]"
+                .to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn a_low_disk_turned_off_for_the_desktop_still_plays_its_sound() {
+    let setup = Setup::with_later(low_disk());
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+    let _notifier = setup.start(&["--desktop", "failure,hold,question,quota,finished"], true);
+
+    let calls = setup.calls(1);
+    std::thread::sleep(Duration::from_millis(300));
+    let calls_after = setup.calls(calls.len());
+
+    assert_eq!(
+        calls_after,
+        ["canberra-gtk-play [--id=dialog-warning] [--description=Torlek: disk]"]
+    );
+}
+
+#[test]
+fn a_low_disk_is_logged_like_the_other_events() {
+    let setup = Setup::with_later(low_disk());
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+    let _notifier = setup.start(&[], true);
+
+    let stderr = setup.stderr_with("told disk");
+
+    assert!(
+        stderr.contains(
+            "torlek-notify: told disk session=host name=\"Free disk space\" desktop=told sound=told"
+        ),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_low_disk_turned_off_everywhere_is_logged_as_skipped_with_the_setting() {
+    let setup = Setup::with_later(low_disk());
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+    let _notifier = setup.start(&["--desktop", "none", "--sound", "failure"], true);
+
+    let stderr = setup.stderr_with("skipped disk");
+
+    assert!(
+        stderr.contains(
+            "torlek-notify: skipped disk session=host name=\"Free disk space\" \
+             desktop=off(setting) sound=off(setting)"
+        ),
+        "{stderr}"
+    );
 }

@@ -12,7 +12,9 @@ use toml::Spanned;
 pub const AWAY_HOLD: &str = "away";
 
 /// The events the notifier tells, in its names, most urgent first.
-pub const NOTIFY_EVENTS: [&str; 6] = ["failure", "hold", "question", "quota", "finished", "turn"];
+pub const NOTIFY_EVENTS: [&str; 7] = [
+    "failure", "hold", "question", "quota", "disk", "finished", "turn",
+];
 
 /// Whether each of [`NOTIFY_EVENTS`] is on, in that order. Every event is on by default but
 /// `turn`, which tells every completed turn (#1127).
@@ -22,6 +24,7 @@ pub struct NotifyEvents {
     pub hold: Sourced<bool>,
     pub question: Sourced<bool>,
     pub quota: Sourced<bool>,
+    pub disk: Sourced<bool>,
     pub finished: Sourced<bool>,
     pub turn: Sourced<bool>,
 }
@@ -34,20 +37,22 @@ impl NotifyEvents {
             hold: on(),
             question: on(),
             quota: on(),
+            disk: on(),
             finished: on(),
             turn: Sourced::new(false, Source::ProductDefault),
         }
     }
 
     /// Each event's name with its setting, in [`NOTIFY_EVENTS`] order.
-    pub fn by_name(&self) -> [(&'static str, &Sourced<bool>); 6] {
+    pub fn by_name(&self) -> [(&'static str, &Sourced<bool>); 7] {
         [
             (NOTIFY_EVENTS[0], &self.failure),
             (NOTIFY_EVENTS[1], &self.hold),
             (NOTIFY_EVENTS[2], &self.question),
             (NOTIFY_EVENTS[3], &self.quota),
-            (NOTIFY_EVENTS[4], &self.finished),
-            (NOTIFY_EVENTS[5], &self.turn),
+            (NOTIFY_EVENTS[4], &self.disk),
+            (NOTIFY_EVENTS[5], &self.finished),
+            (NOTIFY_EVENTS[6], &self.turn),
         ]
     }
 
@@ -101,6 +106,7 @@ struct NotifySoundTable {
     hold: Option<Spanned<bool>>,
     question: Option<Spanned<bool>>,
     quota: Option<Spanned<bool>>,
+    disk: Option<Spanned<bool>>,
     finished: Option<Spanned<bool>>,
     turn: Option<Spanned<bool>>,
     files: Option<BTreeMap<String, Spanned<String>>>,
@@ -113,6 +119,7 @@ struct NotifyEventsTable {
     hold: Option<Spanned<bool>>,
     question: Option<Spanned<bool>>,
     quota: Option<Spanned<bool>>,
+    disk: Option<Spanned<bool>>,
     finished: Option<Spanned<bool>>,
     turn: Option<Spanned<bool>>,
 }
@@ -200,6 +207,7 @@ impl NotifySoundTable {
             hold: self.hold.clone(),
             question: self.question.clone(),
             quota: self.quota.clone(),
+            disk: self.disk.clone(),
             finished: self.finished.clone(),
             turn: self.turn.clone(),
         }
@@ -252,6 +260,7 @@ fn apply(layer: &Layer, table: &NotifyEventsTable, events: &mut NotifyEvents) {
         (&table.hold, &mut events.hold),
         (&table.question, &mut events.question),
         (&table.quota, &mut events.quota),
+        (&table.disk, &mut events.disk),
         (&table.finished, &mut events.finished),
         (&table.turn, &mut events.turn),
     ];

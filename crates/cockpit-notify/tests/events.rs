@@ -5,12 +5,12 @@ mod common;
 
 use cockpit_notify::{Event, Notice, Notifier};
 use cockpit_protocol::{
-    AgentExitView, AgentState, Command, EntityKind, ExitStatusView, QuestionSource, SessionReport,
-    SessionStateView, SessionView, TurnOutcome,
+    AgentExitView, AgentState, Command, DiskView, EntityKind, ExitStatusView, QuestionSource,
+    SessionReport, SessionStateView, SessionView, TurnOutcome,
 };
 use common::{
     after_snapshot, change_session, guide, loaded, network_request, report, run, session,
-    set_network, set_queue, set_reports, tombstone, waiting_run,
+    set_network, set_queue, set_reports, snapshot, tombstone, upsert, waiting_run,
 };
 
 const WORKER: &str = "s00000000000a";
@@ -42,6 +42,99 @@ fn ended_turn(outcome: TurnOutcome) -> SessionReport {
         outcome: Some(outcome),
         ..report(WORKER)
     }
+}
+
+const STATE_DIR_DISK: &str = "state-dir";
+
+fn disk(free_mib: u64) -> DiskView {
+    DiskView {
+        free_mib,
+        floor_mib: 2048,
+    }
+}
+
+fn change_disk(notifier: &mut Notifier, reading: &DiskView) -> Vec<Notice> {
+    notifier
+        .apply_changes(&after_snapshot(vec![upsert(
+            EntityKind::Disk,
+            STATE_DIR_DISK,
+            reading,
+        )]))
+        .unwrap()
+}
+
+#[test]
+fn entering_low_disk_is_told_once_with_the_free_space() {
+    let mut notifier = running();
+
+    let told = change_disk(&mut notifier, &disk(900));
+
+    assert_eq!(events(&told), [Event::Disk]);
+    assert_eq!(told[0].name, "Free disk space");
+    assert_eq!(
+        told[0].detail.as_deref(),
+        Some("900 MiB free, below the floor of 2048 MiB")
+    );
+}
+
+#[test]
+fn staying_low_is_not_told_again() {
+    let mut notifier = running();
+    change_disk(&mut notifier, &disk(900));
+
+    let told = change_disk(&mut notifier, &disk(400));
+
+    assert_eq!(told, []);
+}
+
+fn retract_disk(notifier: &mut Notifier) -> Vec<Notice> {
+    notifier
+        .apply_changes(&after_snapshot(vec![tombstone(
+            EntityKind::Disk,
+            STATE_DIR_DISK,
+        )]))
+        .unwrap()
+}
+
+#[test]
+fn leaving_low_disk_tells_nothing_and_entering_it_again_tells_again() {
+    let mut notifier = running();
+    change_disk(&mut notifier, &disk(900));
+
+    let left = retract_disk(&mut notifier);
+    let entered_again = change_disk(&mut notifier, &disk(800));
+
+    assert_eq!(left, []);
+    assert_eq!(events(&entered_again), [Event::Disk]);
+}
+
+#[test]
+fn a_disk_already_low_when_the_notifier_starts_is_not_news() {
+    let mut notifier = Notifier::default();
+    let mut told = notifier
+        .apply_changes(&snapshot(vec![upsert(
+            EntityKind::Disk,
+            STATE_DIR_DISK,
+            &disk(900),
+        )]))
+        .unwrap();
+    told.extend(set_reports(&mut notifier, Vec::new()));
+    told.extend(set_queue(&mut notifier, Vec::new(), Vec::new()));
+    told.extend(set_network(&mut notifier, Vec::new()));
+
+    assert_eq!(told, []);
+    assert_eq!(change_disk(&mut notifier, &disk(400)), []);
+}
+
+#[test]
+fn the_low_disk_is_no_session_in_the_status_file() {
+    let mut notifier = running();
+    change_disk(&mut notifier, &disk(900));
+
+    let status = notifier.status(true, &Default::default());
+
+    assert_eq!(status.sessions.len(), 1);
+    assert_eq!(status.needs_you, 0);
 }
 
 #[test]
@@ -351,6 +444,15 @@ fn the_owner_settings_name_the_same_events_in_the_same_order() {
         names.len(),
         names.join(", ")
     );
+    // rustfmt wraps a long array over lines and ends it with a comma.
+    let without_layout = |text: &str| {
+        text.split_whitespace()
+            .collect::<String>()
+            .replace(",]", "]")
+    };
 
-    assert!(settings.contains(&declaration), "expected {declaration}");
+    assert!(
+        without_layout(settings).contains(&without_layout(&declaration)),
+        "expected {declaration}"
+    );
 }

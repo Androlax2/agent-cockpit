@@ -47,8 +47,8 @@ and `admit`, `hold` and `check` return `Hold::LowDisk` for agent turns and heavy
 Deliveries and approvals keep going. The hold shows in `queue explain` and the TUI queue
 (reason `low-disk`) and in `doctor` (requirement `disk`). Low space also wakes the
 target-pruning pass at once, which deletes only what `[storage]` allows; the guard deletes
-nothing itself. The owner is told through the daemon log and `doctor`; no push notifier exists
-yet (#62, #63).
+nothing itself. The owner is told through the daemon log, `doctor` and, once per entry into low
+disk, `torlek-notify`, which the guard reaches through a `disk` entity on the change feed (#1143).
 
 ## Three pause operations
 
