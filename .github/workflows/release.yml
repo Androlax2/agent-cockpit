@@ -31,6 +31,9 @@ on:
       - crates/cockpit-daemon/tests/restart_reattach.rs
       - crates/cockpit-daemon/tests/session_restore_crash.rs
       - crates/cockpit-turso/tests/migrations.rs
+      - crates/cockpit-claude/tested-versions.txt
+      - crates/cockpit-codex/tested-versions.txt
+      - crates/cockpit-opencode/tested-versions.txt
       - packaging/aur/ci-install.sh
       - packaging/aur/render.py
       - packaging/aur/torlek-bin/PKGBUILD.in

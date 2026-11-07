@@ -976,6 +976,26 @@ class VerifyInstallTests(PackagingTestCase):
         self.assertIn("no state dir", error)
 
 
+class StandInProviderTests(unittest.TestCase):
+    """The daemon probes a harness whose version is off its adapter's tested list (#732), and
+    a stand-in that answers only `--version` fails that probe: its provider then reports
+    neither resume nor events, and verify-install refuses the candidate (#1100)."""
+
+    def test_each_stand_in_reports_a_version_on_its_adapters_tested_list(self):
+        for provider, answer in release.STAND_IN_VERSIONS.items():
+            with self.subTest(provider=provider):
+                tested_versions = tested_versions_of(provider)
+                self.assertTrue(
+                    set(answer.split()) & set(tested_versions),
+                    f"{provider} stand-in answers {answer!r}; tested: {tested_versions}",
+                )
+
+
+def tested_versions_of(provider):
+    lines = (ROOT / f"crates/cockpit-{provider}/tested-versions.txt").read_text().splitlines()
+    return [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+
+
 class GateGapTests(unittest.TestCase):
     def test_future_native_intel_install_and_current_compatibility_keep_their_wiring(self):
         workflow = RELEASE_WORKFLOW.read_text()
@@ -1190,6 +1210,9 @@ class ReleaseTriggerTests(unittest.TestCase):
                 "crates/cockpit-daemon/tests/restart_reattach.rs",
                 "crates/cockpit-daemon/tests/session_restore_crash.rs",
                 "crates/cockpit-turso/tests/migrations.rs",
+                "crates/cockpit-claude/tested-versions.txt",
+                "crates/cockpit-codex/tested-versions.txt",
+                "crates/cockpit-opencode/tested-versions.txt",
                 "packaging/aur/ci-install.sh",
                 "packaging/aur/render.py",
                 "packaging/aur/torlek-bin/PKGBUILD.in",
