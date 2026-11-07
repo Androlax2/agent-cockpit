@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use cockpit_provider_api::{LimitKey, ProviderError, QuotaReading, QuotaWindow};
-use rustix::process::{Pid, Signal};
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions};
 use serde_json::{Value, json};
 
 pub(crate) const QUOTA_DEADLINE: Duration = Duration::from_secs(15);
@@ -22,6 +22,10 @@ const QUOTA_HOME: &str = ".local/share/codex-quota";
 const NOT_SIGNED_IN: &str = "Codex's quota sign-in in ~/.local/share/codex-quota is missing or \
                              not a subscription; sign in there with `codex-usage.sh --login`";
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+/// The share of the deadline the answers may take; one more share is the server's to exit
+/// by itself once its input ends, so a sign-in it is rewriting is not cut short.
+const ANSWER_SHARE: u32 = 4;
+const SHARES: u32 = 5;
 const ACCOUNT_REQUEST: u64 = 2;
 const RATE_LIMITS_REQUEST: u64 = 3;
 const FIVE_HOURS_MINUTES: u32 = 5 * 60;
@@ -38,7 +42,7 @@ impl crate::Codex {
         if !quota_home.is_dir() {
             return Err(refused(NOT_SIGNED_IN));
         }
-        let answers = self.ask_app_server(&quota_home, deadline)?;
+        let answers = self.ask_app_server(home, &quota_home, deadline)?;
         let account = result_of(&answers.account, "Codex could not read its quota sign-in")?;
         if account["account"]["type"] != "chatgpt" {
             return Err(refused(NOT_SIGNED_IN));
@@ -47,9 +51,12 @@ impl crate::Codex {
         reading_of(&account["account"], limits)
     }
 
-    /// Both answers, from an app-server in `quota_home` that is stopped once they arrive.
+    /// Both answers, from an app-server in `quota_home` whose input then ends. It gets
+    /// `PATH`, `HOME` and `CODEX_HOME` only: none of the daemon's other variables, which may
+    /// hold secrets or an API key Codex would prefer to the quota sign-in.
     fn ask_app_server(
         &self,
+        home: &Path,
         quota_home: &Path,
         deadline: Duration,
     ) -> Result<Answers, ProviderError> {
@@ -62,8 +69,14 @@ impl crate::Codex {
                 Ok((read, Stdio::from(OwnedFd::from(write))))
             })
             .map_err(|error| refused(format!("cannot create the app-server's pipe: {error}")))?;
-        let mut child = Command::new(&self.program)
+        let mut command = Command::new(&self.program);
+        command.env_clear();
+        if let Some(path) = std::env::var_os("PATH") {
+            command.env("PATH", path);
+        }
+        let mut child = command
             .args(["app-server", "-c", "cli_auth_credentials_store=\"file\""])
+            .env("HOME", home)
             .env("CODEX_HOME", quota_home)
             .current_dir(quota_home)
             .process_group(0)
@@ -72,8 +85,13 @@ impl crate::Codex {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|error| refused(format!("cannot run Codex's app-server: {error}")))?;
+        // The command keeps its copy of the output's writing end; without it the server's
+        // exit is seen as the end of its output.
+        drop(command);
         let pid = Pid::from_child(&child);
-        let ends_at = Instant::now() + deadline;
+        let started = Instant::now();
+        let answer_time = deadline * ANSWER_SHARE / SHARES;
+        let answers_by = started + answer_time;
         let mut stdin = child.stdin.take();
         let result = (|| {
             // Four short lines fit the pipe's buffer, so this write never waits on the server,
@@ -83,9 +101,10 @@ impl crate::Codex {
                     .map_err(|_| refused("cannot write to Codex's app-server"))?;
             }
             let mut output = Vec::new();
+            let mut written = 0;
             let mut answers = Answers::default();
             loop {
-                let has_ended = read_available(&mut stdout, &mut output)?;
+                let has_ended = read_available(&mut stdout, &mut output, &mut written)?;
                 answers.take_lines(&mut output)?;
                 if answers.is_complete() {
                     return Ok(answers);
@@ -93,17 +112,18 @@ impl crate::Codex {
                 if has_ended {
                     return Err(refused("Codex's app-server stopped before it answered"));
                 }
-                if Instant::now() >= ends_at {
+                if Instant::now() >= answers_by {
                     return Err(refused(format!(
                         "Codex's app-server did not answer within {} ms",
-                        deadline.as_millis()
+                        answer_time.as_millis()
                     )));
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
         })();
         drop(stdin);
-        // The server would run until its input ends; it and anything it started stop here.
+        wait_for_exit(pid, Instant::now() + deadline / SHARES);
+        // Whatever still runs of the server and what it started stops here.
         let cleanup = rustix::process::kill_process_group(pid, Signal::KILL);
         if cleanup.is_err() {
             let _ = child.kill();
@@ -116,6 +136,21 @@ impl crate::Codex {
             Err(_) => return Err(refused("cannot stop Codex's app-server's process group")),
         }
         result
+    }
+}
+
+/// Until the server exited, or `ends_at`; the leader stays waitable, so its pid is not
+/// reused before its group is stopped.
+fn wait_for_exit(pid: Pid, ends_at: Instant) {
+    while Instant::now() < ends_at {
+        let exited = rustix::process::waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+        );
+        if !matches!(exited, Ok(None)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -144,12 +179,16 @@ struct Answers {
 }
 
 impl Answers {
-    /// Takes every whole line out of `output`; notifications and other answers are skipped.
+    /// Takes every whole line out of `output`; notifications, other answers and the server's
+    /// own requests (which carry a `method` and ids of their own) are skipped.
     fn take_lines(&mut self, output: &mut Vec<u8>) -> Result<(), ProviderError> {
         while let Some(end) = output.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = output.drain(..=end).collect();
             let message: Value = serde_json::from_slice(&line)
                 .map_err(|_| refused("Codex's app-server wrote something other than JSON"))?;
+            if message.get("method").is_some() {
+                continue;
+            }
             match message["id"].as_u64() {
                 Some(ACCOUNT_REQUEST) => self.account = Some(message),
                 Some(RATE_LIMITS_REQUEST) => self.rate_limits = Some(message),
@@ -164,17 +203,19 @@ impl Answers {
     }
 }
 
-/// Whether the server closed its output.
+/// Whether the server closed its output. `written` counts all it wrote, lines taken or not.
 fn read_available(
     pipe: &mut impl std::io::Read,
     output: &mut Vec<u8>,
+    written: &mut usize,
 ) -> Result<bool, ProviderError> {
     let mut buffer = [0; 4096];
     loop {
         match pipe.read(&mut buffer) {
             Ok(0) => return Ok(true),
             Ok(count) => {
-                if output.len() + count > MAX_OUTPUT_BYTES {
+                *written += count;
+                if *written > MAX_OUTPUT_BYTES {
                     return Err(refused("Codex's app-server wrote more than 64 KiB"));
                 }
                 output.extend_from_slice(&buffer[..count]);

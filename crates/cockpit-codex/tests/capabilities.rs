@@ -100,7 +100,7 @@ fn with_an_unknown_version_each_capability_is_unverified() {
 /// The tested set (#48, #407, #783): effort, compact, billing, commands, evidence, remote
 /// control and screen reading are not.
 #[test]
-fn it_reports_nothing_beyond_resume_events_submit_cancel_outcome_and_compaction_threshold() {
+fn it_reports_nothing_beyond_resume_events_submit_cancel_outcome_compaction_threshold_and_quota() {
     let capabilities = common::codex().capabilities();
 
     for capability in Capability::ALL {

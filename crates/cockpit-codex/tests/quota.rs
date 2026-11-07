@@ -54,7 +54,7 @@ impl Home {
         let script = format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{record}/words'\n\
              printf '%s' \"$CODEX_HOME\" > '{record}/codex-home'\npwd > '{record}/folder'\n\
-             echo $$ > '{record}/pid'\n\
+             echo $$ > '{record}/pid'\nenv > '{record}/environment'\n\
              for request in 1 2 3 4; do IFS= read -r line; printf '%s\\n' \"$line\" >> '{record}/requests'; done\n\
              cat '{}'\n{after}\n",
             answers_file.display()
@@ -65,18 +65,20 @@ impl Home {
         Codex::new(program, Some(CONFORMANCE_VERSION.to_owned()), None)
     }
 
-    /// Answers as a signed-in 0.166.0 does: a notification first, the reads out of order.
+    /// Answers as a signed-in 0.166.0 does: a notification first, the reads out of order,
+    /// then it exits once its input ends.
     fn codex(&self, account: Value, rate_limits: Value) -> Codex {
-        self.codex_answering(
-            &[
-                json!({"id": 1, "result": {"userAgent": "torlek_quota/0.1.0"}}),
-                json!({"method": "remoteControl/status/changed", "params": {"status": "disabled"}}),
-                json!({"id": 3, "result": rate_limits}),
-                json!({"id": 2, "result": {"account": account, "requiresOpenaiAuth": true}}),
-            ],
-            "exec sleep 30",
-        )
+        self.codex_answering(&signed_in_answers(account, rate_limits), "cat > /dev/null")
     }
+}
+
+fn signed_in_answers(account: Value, rate_limits: Value) -> Vec<Value> {
+    vec![
+        json!({"id": 1, "result": {"userAgent": "torlek_quota/0.1.0"}}),
+        json!({"method": "remoteControl/status/changed", "params": {"status": "disabled"}}),
+        json!({"id": 3, "result": rate_limits}),
+        json!({"id": 2, "result": {"account": account, "requiresOpenaiAuth": true}}),
+    ]
 }
 
 fn subscription() -> Value {
@@ -279,7 +281,7 @@ fn it_asks_for_the_account_without_a_token_refresh_then_the_rate_limits() {
 }
 
 #[test]
-fn the_server_is_stopped_once_it_answered() {
+fn codex_gets_none_of_the_daemons_other_variables() {
     let home = Home::with_quota_home();
     let codex = home.codex(
         subscription(),
@@ -287,6 +289,57 @@ fn the_server_is_stopped_once_it_answered() {
             bucket(window(5.0, Some(300), None), Value::Null),
             json!(true),
         ),
+    );
+
+    read(&codex, &home);
+
+    let environment = home.record("environment").unwrap();
+    let names: Vec<&str> = environment
+        .lines()
+        .filter_map(|line| line.split_once('=').map(|(name, _)| name))
+        .collect();
+    // The shell adds its own working-directory and level variables.
+    for name in &names {
+        assert!(
+            ["PATH", "HOME", "CODEX_HOME", "PWD", "OLDPWD", "SHLVL", "_"].contains(name),
+            "{name} reached Codex: {names:?}"
+        );
+    }
+    assert!(
+        environment.contains(&format!("\nHOME={}\n", home.path().display()))
+            || environment.starts_with(&format!("HOME={}\n", home.path().display())),
+        "{environment}"
+    );
+}
+
+#[test]
+fn a_request_from_the_server_with_the_same_id_is_not_taken_for_an_answer() {
+    let home = Home::with_quota_home();
+    let mut answers = vec![json!({"id": 2, "method": "item/tool/requestUserInput", "params": {}})];
+    answers.extend(signed_in_answers(
+        subscription(),
+        by_limit_id(
+            bucket(window(5.0, Some(300), None), Value::Null),
+            json!(true),
+        ),
+    ));
+    let codex = home.codex_answering(&answers, "cat > /dev/null");
+
+    assert_eq!(read(&codex, &home).windows().len(), 1);
+}
+
+#[test]
+fn a_server_that_keeps_running_after_its_input_ends_is_stopped() {
+    let home = Home::with_quota_home();
+    let codex = home.codex_answering(
+        &signed_in_answers(
+            subscription(),
+            by_limit_id(
+                bucket(window(5.0, Some(300), None), Value::Null),
+                json!(true),
+            ),
+        ),
+        "exec sleep 30",
     );
 
     let started = std::time::Instant::now();
