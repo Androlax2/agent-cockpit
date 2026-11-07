@@ -71,7 +71,7 @@ jobs:
       # keeps its Node under the tool cache, outside that PATH.
       - name: Make node resolvable on the harness's isolated PATH
         run: |
-          sudo ln -s "$(command -v node)" /usr/bin/node
+          sudo ln -sf "$(command -v node)" /usr/bin/node
           env -i PATH=/usr/bin:/bin node --version
       - name: Test each adapter's latest harness
         id: test

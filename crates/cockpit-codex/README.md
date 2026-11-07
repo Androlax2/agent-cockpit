@@ -141,7 +141,7 @@ provider and nothing above the contract sees a Codex type (#48).
   leaves no fake process behind (#440).
 - `tests/discover.rs`: finding `codex` and its version.
 - `tests/conformance.rs` (native checks ignored by default; `-j 1`): the installed version
-  is exactly 0.166.0, its help documents every flag passed, it lists the `hooks` feature,
+  is a Codex (the nightly job runs the latest, #732, and checks the version it installed), its help documents every flag passed, it lists the `hooks` feature,
   Codex trusts every hook a launch subscribes, a delivered message's prompt reports through
   the bridge, a message joins a turn under way and a cancel interrupts it, a failed turn is
   followed to its outcome, and the launcher completes and resumes the same conversation
@@ -157,7 +157,7 @@ provider and nothing above the contract sees a Codex type (#48).
 `tests/approval_routing.rs` exercises `Provider::deliver`, a recording Unix-socket proxy,
 the installed app-server and its real TUI in a private tmux server. Its ordinary tests
 check framing, connection identity, disconnect observation and helper-process bounds.
-The ignored isolated tests pin **0.166.0**, the installed version observed on 2026-11-02.
+The ignored isolated tests of `tests/conformance.rs` run on any Codex version; the others pin **0.166.0**, the installed version observed on 2026-11-02.
 The separate capability suite now validates that same production pin; approval routing
 alone is not evidence for the other capabilities.
 
