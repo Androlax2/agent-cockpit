@@ -40,6 +40,7 @@ appears below as the first cell of a table row. A test in `cockpit-workspace-rul
 | `docs/PROVIDER_CONFORMANCE.md` | Checking a provider against the conformance suite |
 | `docs/packaging/` | Maintaining one distribution channel |
 | `docs/security/` | Maintaining the repository's forge settings |
+| `docs/redteam-vm.md` | Building and resetting the disposable red-team VM, and briefing the red-team |
 
 ### Agent-facing
 
