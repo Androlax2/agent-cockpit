@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -153,7 +154,25 @@ class DryRunTests(Harness):
         self.assertEqual(code, 0)
         self.assertIn("would open issue: codex 0.170.0 fails at conformance", out)
 
-    def test_a_dry_run_writes_nothing_and_makes_no_call(self):
+    def test_a_dry_run_says_what_a_real_run_would_do_with_an_open_issue(self):
+        body = conformance.failure_body("codex", "0.170.0", "conformance")
+        github = FakeGitHub(
+            issues=[
+                {"number": 5, "user": ACTIONS_USER, "body": body},
+                issue(6, "claude", "2.1.400 fails."),
+            ]
+        )
+        results = self.write_results(
+            result("codex", "0.170.0", False, "conformance"), result("claude", "2.1.401")
+        )
+
+        _, out, _ = self.run_tool(["report", "--results", results, "--dry-run"], github)
+
+        self.assertIn("codex 0.170.0 is already reported in #5", out)
+        self.assertIn("dry run: would close #6", out)
+        self.assertEqual(github.writes, [])
+
+    def test_a_dry_run_writes_nothing(self):
         github = FakeGitHub()
         results = self.write_results(
             result("claude", "2.1.400"), result("codex", "0.170.0", False, "install")
@@ -335,6 +354,21 @@ class ReportTests(Harness):
         self.assertIn("already reported in #5", out)
         self.assertEqual(github.writes, [])
 
+    def test_an_issue_edited_to_windows_line_endings_is_still_the_same_failure(self):
+        body = conformance.failure_body("codex", "0.170.0", "conformance").replace("\n", "\r\n")
+        github = FakeGitHub(issues=[{"number": 5, "user": ACTIONS_USER, "body": body}])
+
+        self.run_tool(
+            [
+                "report",
+                "--results",
+                self.write_results(result("codex", "0.170.0", False, "conformance")),
+            ],
+            github,
+        )
+
+        self.assertEqual(github.writes, [])
+
     def test_a_newer_failing_version_updates_the_open_issue_and_comments(self):
         body = conformance.failure_body("codex", "0.170.0", "conformance")
         github = FakeGitHub(issues=[{"number": 5, "user": ACTIONS_USER, "body": body}])
@@ -411,6 +445,9 @@ class ResultsTests(Harness):
     def test_a_version_that_is_not_a_version_is_refused(self):
         self.assertIn("not a version", self.refusal(result("claude", "1.0.0; rm -rf /")))
 
+    def test_a_stage_that_is_not_one_of_ours_is_refused(self):
+        self.assertIn("not a stage", self.refusal(result("claude", "2.1.400", False, "[x](y)")))
+
     def test_a_pass_without_a_version_is_refused(self):
         self.assertIn("needs its version", self.refusal(result("claude", None)))
 
@@ -445,7 +482,7 @@ class CheckTests(Harness):
             "if args[0] == 'view':\n"
             "    print(os.environ['FAKE_LATEST']); sys.exit(0)\n"
             "prefix = pathlib.Path(args[args.index('--prefix') + 1])\n"
-            "(prefix / 'node_modules/.bin').mkdir(parents=True)\n"
+            "(prefix / 'node_modules/.bin').mkdir(parents=True, exist_ok=True)\n"
             "program = prefix / 'node_modules/.bin' / os.environ['FAKE_EXECUTABLE']\n"
             "program.write_text('#!/bin/sh\\necho \"' + os.environ['FAKE_PRINTS'] + '\"\\n')\n"
             "program.chmod(0o755)\n",
@@ -513,6 +550,41 @@ class CheckTests(Harness):
             self.check("opencode", latest="1.20.0", FAKE_CARGO_EXIT="100"),
             [{"adapter": "opencode", "version": "1.20.0", "passed": False, "stage": "conformance"}],
         )
+
+    def test_a_build_failure_is_recorded_at_the_cargo_stage_not_blamed_on_the_harness(self):
+        self.assertEqual(
+            self.check("claude", latest="2.1.400", FAKE_CARGO_EXIT="101"),
+            [{"adapter": "claude", "version": "2.1.400", "passed": False, "stage": "cargo"}],
+        )
+
+    def test_a_printed_version_that_only_contains_the_installed_one_fails(self):
+        for installed, printed in (
+            ("2.1.31", "2.1.316 (Fixture)"),
+            ("1.2.0", "11.2.0"),
+            ("2.1.4", "v2.1.4-1"),
+        ):
+            with self.subTest(installed=installed, printed=printed):
+                found = self.check("claude", latest=installed, prints=printed)
+                self.assertEqual(found[0]["stage"], "version")
+
+    def test_a_printed_version_inside_other_words_passes(self):
+        for printed in ("2.1.400 (Fixture Code)", "claude v2.1.400", "Fixture 2.1.400."):
+            with self.subTest(printed=printed):
+                self.assertTrue(self.check("claude", latest="2.1.400", prints=printed)[0]["passed"])
+
+    def test_a_command_over_its_timeout_is_killed_with_what_it_started(self):
+        marker = self.parent / "grandchild-ran"
+        started = time.monotonic()
+
+        code, reason = conformance.command(
+            ["sh", "-c", f"(sleep 2; touch {marker}) & wait"], timeout=1
+        )
+        time.sleep(2.5)
+
+        self.assertEqual(code, 124)
+        self.assertIn("did not end within 1 seconds", reason)
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertFalse(marker.exists())
 
     def test_a_version_that_npm_cannot_install_is_recorded_at_the_install_stage(self):
         self.assertEqual(

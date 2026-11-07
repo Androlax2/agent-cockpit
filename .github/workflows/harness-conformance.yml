@@ -48,7 +48,7 @@ jobs:
     needs: check
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     outputs:
       results: ${{ steps.test.outputs.results }}
       untested: ${{ steps.test.outputs.untested }}
@@ -75,7 +75,8 @@ jobs:
               --prefix "$RUNNER_TEMP/harness-$adapter" --results "$results"
           done
           echo "results=$(cat "$results")" >> "$GITHUB_OUTPUT"
-          echo "untested=$(python3 tools/harness_conformance.py untested --results "$results")" >> "$GITHUB_OUTPUT"
+          untested=$(python3 tools/harness_conformance.py untested --results "$results")
+          echo "untested=$untested" >> "$GITHUB_OUTPUT"
 
   # The only job that writes issues, and the only write it has.
   report:

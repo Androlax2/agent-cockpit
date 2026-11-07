@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,8 @@ ISSUE_BOT = "github-actions[bot]"
 VERSION = re.compile(r"[0-9]+(?:\.[0-9]+){1,3}(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?")
 INSTALL_TIMEOUT_SECONDS = 600
 TEST_TIMEOUT_SECONDS = 1800
+NEXTEST_TEST_FAILURE = 100
+STAGES = ("install", "version", "conformance", "cargo")
 
 
 class Adapter(NamedTuple):
@@ -74,31 +77,43 @@ def read_results(path):
             raise Refusal(f"{version!r} is not a version")
         if not isinstance(result.get("passed"), bool):
             raise Refusal("each result needs passed: true or false")
+        if result.get("stage", "conformance") not in STAGES:
+            raise Refusal(f"{result['stage']!r} is not a stage")
         if result["passed"] and version is None:
             raise Refusal("a passing result needs its version")
     return results
 
 
-def command(arguments, *, env=None, timeout):
-    """Run a command, streaming its output to the log; (exit code, last output line)."""
+def command(arguments, *, env=None, timeout, capture=False):
+    """Run a command in its own process group; (exit code, its captured output or a reason).
+
+    Output that is not captured goes straight to the log, so a hang leaves what it printed. A
+    command over its timeout is killed with everything it started.
+    """
     try:
-        completed = subprocess.run(
-            arguments, env=env, timeout=timeout, check=False, stdout=subprocess.PIPE, text=True
+        process = subprocess.Popen(
+            arguments,
+            env=env,
+            stdout=subprocess.PIPE if capture else None,
+            text=True,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        return 124, f"{arguments[0]} did not end within {timeout} seconds"
     except OSError as cause:
         return 127, f"cannot run {arguments[0]}: {cause}"
-    sys.stdout.write(completed.stdout)
-    lines = completed.stdout.strip().splitlines()
-    return completed.returncode, lines[-1] if lines else ""
+    try:
+        output, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        return 124, f"{arguments[0]} did not end within {timeout} seconds"
+    return process.returncode, (output or "").strip()
 
 
 def check(adapter_name, prefix, results_path):
     """Install the latest harness, run the live tests and append the outcome to the results."""
     adapter = ADAPTERS[adapter_name]
     version, stage = None, "install"
-    code, output = command(["npm", "view", adapter.package, "version"], timeout=60)
+    code, output = command(["npm", "view", adapter.package, "version"], timeout=60, capture=True)
     if code == 0 and not VERSION.fullmatch(output):
         code, output = 1, f"npm answered {output!r}, not a version"
     if code == 0:
@@ -111,8 +126,8 @@ def check(adapter_name, prefix, results_path):
     if code == 0:
         program = Path(prefix) / "node_modules" / ".bin" / adapter.executable
         stage = "version"
-        code, output = command([str(program), "--version"], timeout=60)
-        if code == 0 and version not in output:
+        code, output = command([str(program), "--version"], timeout=60, capture=True)
+        if code == 0 and not prints_version(output, version):
             code, output = 1, f"`--version` printed {output!r}, not {version}"
     if code == 0:
         stage = "conformance"
@@ -122,14 +137,25 @@ def check(adapter_name, prefix, results_path):
             env={**os.environ, adapter.program_variable: str(program)},
             timeout=TEST_TIMEOUT_SECONDS,
         )  # fmt: skip
+        if code not in (0, NEXTEST_TEST_FAILURE):
+            # A build or toolchain failure says nothing about the harness.
+            stage = "cargo"
     result = {"adapter": adapter_name, "version": version, "passed": code == 0}
     if code != 0:
         result["stage"] = stage
+        print(f"{adapter_name} {version} failed at {stage}: {output}")
     path = Path(results_path)
     results = json.loads(path.read_text()) if path.exists() else []
     path.write_text(json.dumps([*results, result]))
     print(json.dumps(result))
     return result
+
+
+def prints_version(output, version):
+    """Whether `output` holds `version` as a whole token, not inside a longer version."""
+    return (
+        re.search(rf"(?<![0-9A-Za-z.-])v?{re.escape(version)}(?![0-9A-Za-z-])", output) is not None
+    )
 
 
 def issue_marker(adapter_name):
@@ -150,7 +176,7 @@ def open_issues():
 
 def report(results, dry_run):
     """Open or update an issue per failing adapter; close it when the adapter passes again."""
-    issues = [] if dry_run else open_issues()
+    issues = open_issues()
     for result in results:
         name, version = result["adapter"], result["version"] or "latest"
         marker = issue_marker(name)
@@ -178,7 +204,7 @@ def report(results, dry_run):
                 stage,
                 body,
             )
-        elif existing["body"].split("\n\n")[0] == body.split("\n\n")[0]:
+        elif existing["body"].replace("\r\n", "\n").split("\n\n")[0] == body.split("\n\n")[0]:
             print(f"{name} {version} is already reported in #{existing['number']}")
         else:
             act(

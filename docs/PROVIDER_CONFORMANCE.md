@@ -38,8 +38,8 @@ provider account.
 
 | Outcome | What the workflow does | Token |
 | --- | --- | --- |
-| A version passes and is not on the adapter's `tested-versions.txt` | Opens one pull request adding that line, from branch `harness-conformance/<adapter>-<version>`. Nothing merges it; its checks run like any pull request's. At most one such pull request per adapter is open, and an existing branch is never overwritten | The release proposal App (contents read, pull requests write) and deploy key, through the `release-proposal` environment, as the release proposal drafts |
-| A version fails | Opens an issue per adapter naming the version and the stage that failed (`install`, `version` or `conformance`), updates it when the failure changes, and closes it when the adapter passes again | The workflow's `GITHUB_TOKEN`, `issues: write` in the `report` job only |
+| A version passes and is not on the adapter's `tested-versions.txt` | Opens one pull request adding that line, from branch `harness-conformance/<adapter>-<version>`. Nothing merges it; its checks run like any pull request's. At most one such pull request per adapter is open, and an existing branch is never overwritten: delete the branch of a pull request closed without merging to let the next night open it again | The release proposal App (contents read, pull requests write) and deploy key, through the `release-proposal` environment, as the release proposal drafts |
+| A version fails | Opens an issue per adapter naming the version and the stage that failed (`install`, `version`, `conformance`, or `cargo` when the build or toolchain failed before the live checks could say anything about the harness), updates it when the failure changes, and closes it when the adapter passes again | The workflow's `GITHUB_TOKEN`, `issues: write` in the `report` job only |
 | A version passes and is listed | Nothing | None |
 
 The job that installs from npm has a read-only token and no secret. A manual dispatch defaults
