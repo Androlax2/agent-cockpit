@@ -1,5 +1,6 @@
 //! What `usage quota` asks the daemon for (report 18, #58): each provider account's plan
-//! windows as last read, judged when asked.
+//! windows as last read, judged when asked. And the alert a window fires as it fills, which
+//! the daemon puts on the change feed for `torlek-notify`.
 
 use serde::{Deserialize, Serialize};
 
@@ -68,4 +69,22 @@ impl QuotaWindowStateView {
             QuotaWindowStateView::Stale => "stale",
         }
     }
+}
+
+/// The state of a [`crate::EntityKind::QuotaAlert`] entity: the highest threshold a window
+/// passed in one reading, published once, when it fires.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuotaAlertView {
+    pub provider: String,
+    pub account: String,
+    pub limit: String,
+    pub scope: Option<String>,
+    /// The owner's alert threshold the window passed, in percent.
+    pub threshold: u8,
+    /// The share of the limit used when it fired, rounded down.
+    pub used_percent: u32,
+    /// Unix seconds.
+    pub resets_at: Option<i64>,
+    /// Unix seconds: when the reading that fired it was taken.
+    pub fired_at: i64,
 }

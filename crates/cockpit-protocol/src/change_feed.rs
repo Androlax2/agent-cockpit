@@ -72,6 +72,10 @@ pub enum EntityKind {
     /// [`DiskView`], on the feed while the low-disk guard finds the space low and retracted
     /// when it is not (or the guard is off).
     Disk,
+    /// The last alert threshold a plan window passed (#58): one entity per provider, account
+    /// and limit, id `provider/account/limit`, in the state of a [`crate::QuotaAlertView`].
+    /// Published when a threshold fires and kept after, so a new state is a new alert.
+    QuotaAlert,
     /// A kind this version does not know, kept as sent so a client can skip or show it.
     /// Never build one with a known name: it would read back as the known variant.
     #[serde(untagged)]

@@ -1,7 +1,8 @@
 //! What the notifier knows of the daemon's state: the sessions from the change feed, and the
 //! agents' reports, the approval queue and the network requests the daemon answers by request.
 //! From them it derives what each session needs the owner for now. The checkouts on the feed
-//! name each session's project for the status file.
+//! name each session's project for the status file. The host's own events come from the feed
+//! too: the low disk and the plan windows' quota alerts.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -9,14 +10,16 @@ use std::fmt;
 use cockpit_protocol::{
     Change, ChangeBatch, DiskView, EntityKind, FeedPosition, GuideStateView, GuideView,
     NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, QuestionSource,
-    RunRequestView, RunStateView, SessionReport, SessionStateView, SessionView, TurnOutcome,
-    ViewArea, ViewStamp,
+    QuotaAlertView, RunRequestView, RunStateView, SessionReport, SessionStateView, SessionView,
+    TurnOutcome, ViewArea, ViewStamp,
 };
 
 use crate::event::Event;
 
-/// The "session" of an event that is the host's, not a session's (the low disk). A session id
-/// is `s` and twelve hex digits, so no session can have it.
+/// The "session" of an event that is the host's, not a session's: the low disk, and with
+/// `host:` and the window's `quota-alert` id, a quota alert, so each window's alert is held
+/// and still raised apart. A session id is `s` and twelve hex digits, so no session can have
+/// either.
 pub(crate) const HOST: &str = "host";
 
 /// One reason a session needs the owner. A session raises it while its cause stands; the
@@ -41,6 +44,13 @@ pub enum Cause {
     Network(i64),
     /// The free disk space is below the floor.
     Disk,
+    /// A plan window's alert: the `quota-alert` entity id with what it last fired. Each firing
+    /// is a new cause, so a higher threshold or the next window's alert is news too.
+    Usage {
+        window: String,
+        threshold: u8,
+        fired_at: i64,
+    },
 }
 
 /// A change the notifier cannot read: the batch is refused whole, never applied in part.
@@ -71,6 +81,8 @@ pub(crate) struct Board {
     /// The guard's reading while it finds the disk low (#1143); none while the entity is not
     /// on the feed.
     disk: Option<DiskView>,
+    /// The last alert of each plan window, by `quota-alert` entity id (#58).
+    quota_alerts: BTreeMap<String, QuotaAlertView>,
     runs: Vec<RunRequestView>,
     guides: Vec<GuideView>,
     network: Vec<NetworkRequestView>,
@@ -87,11 +99,13 @@ enum Edit {
     PutStamp(ViewArea, ViewStamp),
     PutDisk(DiskView),
     RemoveDisk,
+    PutQuotaAlert(String, Box<QuotaAlertView>),
+    RemoveQuotaAlert(String),
 }
 
 impl Board {
-    /// Applies `batch` whole: sessions, checkouts, the disk and view stamps change, other kinds are
-    /// not read. A snapshot replaces the sessions and the checkouts.
+    /// Applies `batch` whole: sessions, checkouts, the disk, quota alerts and view stamps change,
+    /// other kinds are not read. A snapshot replaces all but the view stamps.
     pub(crate) fn apply(&mut self, batch: &ChangeBatch) -> Result<(), FeedError> {
         // Every change is decoded before any is applied: only decoding can fail.
         let mut edits = Vec::with_capacity(batch.changes.len());
@@ -122,6 +136,13 @@ impl Board {
                     Edit::PutDisk(decode(state).map_err(refused)?)
                 }
                 (EntityKind::Disk, Change::Tombstone) => Edit::RemoveDisk,
+                (EntityKind::QuotaAlert, Change::Upsert { state }) => Edit::PutQuotaAlert(
+                    event.entity.id.clone(),
+                    Box::new(decode(state).map_err(refused)?),
+                ),
+                (EntityKind::QuotaAlert, Change::Tombstone) => {
+                    Edit::RemoveQuotaAlert(event.entity.id.clone())
+                }
                 (EntityKind::ViewStamp, Change::Upsert { state }) => {
                     // An area this version does not know has no view here to ask for.
                     let Some(area) = ViewArea::from_id(&event.entity.id) else {
@@ -136,6 +157,7 @@ impl Board {
             self.sessions.clear();
             self.projects.clear();
             self.disk = None;
+            self.quota_alerts.clear();
         }
         for edit in edits {
             match edit {
@@ -153,6 +175,12 @@ impl Board {
                 }
                 Edit::PutDisk(disk) => self.disk = Some(disk),
                 Edit::RemoveDisk => self.disk = None,
+                Edit::PutQuotaAlert(id, alert) => {
+                    self.quota_alerts.insert(id, *alert);
+                }
+                Edit::RemoveQuotaAlert(id) => {
+                    self.quota_alerts.remove(&id);
+                }
                 Edit::PutStamp(area, stamp) => {
                     if self.stamps.insert(area, stamp) != Some(stamp) {
                         self.stale_areas.insert(area);
@@ -191,10 +219,20 @@ impl Board {
             event: Event::Disk,
             cause: Cause::Disk,
         });
+        let quota_alerts = self.quota_alerts.iter().map(|(window, alert)| Raised {
+            session: format!("{HOST}:{window}"),
+            event: Event::Usage,
+            cause: Cause::Usage {
+                window: window.clone(),
+                threshold: alert.threshold,
+                fired_at: alert.fired_at,
+            },
+        });
         self.sessions
             .values()
             .flat_map(|session| self.raised_by(session))
             .chain(low_disk)
+            .chain(quota_alerts)
             .collect()
     }
 
@@ -271,13 +309,23 @@ impl Board {
 
     /// The name the owner knows `session` by: the label its agent reported, else its id.
     pub(crate) fn name_of(&self, session: &str) -> String {
-        if session == HOST {
-            return "Free disk space".to_owned();
-        }
         self.reports
             .get(session)
             .and_then(|report| report.label.clone())
             .unwrap_or_else(|| session.to_owned())
+    }
+
+    /// The name a notice of `raised` gives: what a host event is about, else
+    /// [`Board::name_of`] its session.
+    pub(crate) fn notice_name(&self, raised: &Raised) -> String {
+        match &raised.cause {
+            Cause::Disk => "Free disk space".to_owned(),
+            Cause::Usage { window, .. } => self.quota_alerts.get(window).map_or_else(
+                || window.clone(),
+                |alert| format!("{} {} window", alert.provider, alert.limit),
+            ),
+            _ => self.name_of(&raised.session),
+        }
     }
 
     /// What `raised` is about, in a line for the owner, when there is more to say than its
@@ -305,6 +353,12 @@ impl Board {
                 format!(
                     "{} MiB free, below the floor of {} MiB",
                     disk.free_mib, disk.floor_mib
+                )
+            }),
+            Cause::Usage { window, .. } => self.quota_alerts.get(window).map(|alert| {
+                format!(
+                    "{}% used, alert at {}%, account {}",
+                    alert.used_percent, alert.threshold, alert.account
                 )
             }),
             Cause::State if raised.event == Event::Failure => {

@@ -169,6 +169,7 @@ fn headline(notice: &Notice) -> String {
         Event::Question => "needs your answer",
         Event::Quota => "hit its usage limit",
         Event::Disk => "is low",
+        Event::Usage => "is filling up",
         Event::Finished => "finished",
         Event::Turn => "completed a turn",
     };
@@ -271,7 +272,8 @@ impl Sound {
 }
 
 /// The theme sound an event with no file of its own plays, by its freedesktop sound-naming
-/// name. Every event but `turn` has a bundled file, or the owner's, ahead of it.
+/// name. Every event but `disk`, `usage` and `turn` has a bundled file, or the owner's, ahead
+/// of it.
 pub fn sound_id(event: Event) -> &'static str {
     match event {
         Event::Failure => "dialog-error",
@@ -279,6 +281,7 @@ pub fn sound_id(event: Event) -> &'static str {
         Event::Question => "message-new-instant",
         Event::Quota => "alarm-clock-elapsed",
         Event::Disk => "dialog-warning",
+        Event::Usage => "dialog-information",
         Event::Finished => "complete",
         Event::Turn => "message",
     }

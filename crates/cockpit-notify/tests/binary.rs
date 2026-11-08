@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
     AgentState, Capability, ChangeBatch, Command, DiskView, EntityKind, Hello, Outcome,
-    QuestionSource, Reply, Request, Response, SUPPORTED_VERSIONS, ServerFrame, SessionReport,
-    SessionStateView, SessionView, negotiate,
+    QuestionSource, QuotaAlertView, Reply, Request, Response, SUPPORTED_VERSIONS, ServerFrame,
+    SessionReport, SessionStateView, SessionView, negotiate,
 };
 use common::{after_snapshot, report, session, snapshot, upsert};
 
@@ -133,6 +133,25 @@ fn low_disk() -> ChangeBatch {
         floor_mib: 2048,
     };
     after_snapshot(vec![upsert(EntityKind::Disk, "state-dir", &reading)])
+}
+
+/// What the daemon publishes when Codex's five-hour window passes 80 %.
+fn quota_alert() -> ChangeBatch {
+    let alert = QuotaAlertView {
+        provider: "codex".to_owned(),
+        account: "default".to_owned(),
+        limit: "five-hour".to_owned(),
+        scope: None,
+        threshold: 80,
+        used_percent: 84,
+        resets_at: Some(1_800_018_000),
+        fired_at: 1_800_000_000,
+    };
+    after_snapshot(vec![upsert(
+        EntityKind::QuotaAlert,
+        "codex/default/five-hour",
+        &alert,
+    )])
 }
 
 /// A program on the fake `PATH` that appends its name and arguments to `record`.
@@ -744,6 +763,46 @@ fn a_low_disk_turned_off_everywhere_is_logged_as_skipped_with_the_setting() {
     assert!(
         stderr.contains(
             "torlek-notify: skipped disk session=host name=\"Free disk space\" \
+             desktop=off(setting) sound=off(setting)"
+        ),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_quota_alert_shows_a_notification_and_plays_the_themes_information_sound() {
+    let setup = Setup::with_later(quota_alert());
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+    let _notifier = setup.start(&[], true);
+
+    let mut calls = setup.calls(2);
+    calls.sort();
+
+    assert_eq!(
+        calls,
+        [
+            "canberra-gtk-play [--id=dialog-information] [--description=Torlek: usage]".to_owned(),
+            "notify-send [--app-name=Torlek] [--urgency=normal] [--] \
+             [codex five-hour window is filling up] [84% used, alert at 80%, account default]"
+                .to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn a_quota_alert_turned_off_everywhere_is_logged_as_skipped_with_the_setting() {
+    let setup = Setup::with_later(quota_alert());
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+    let _notifier = setup.start(&["--desktop", "none", "--sound", "failure"], true);
+
+    let stderr = setup.stderr_with("skipped usage");
+
+    assert!(
+        stderr.contains(
+            "torlek-notify: skipped usage session=host:codex/default/five-hour \
+             name=\"codex five-hour window\" \
              desktop=off(setting) sound=off(setting)"
         ),
         "{stderr}"

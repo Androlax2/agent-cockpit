@@ -6,7 +6,7 @@ mod common;
 use cockpit_notify::{Event, Notice, Notifier};
 use cockpit_protocol::{
     AgentExitView, AgentState, Command, DiskView, EntityKind, ExitStatusView, QuestionSource,
-    SessionReport, SessionStateView, SessionView, TurnOutcome,
+    QuotaAlertView, SessionReport, SessionStateView, SessionView, TurnOutcome,
 };
 use common::{
     after_snapshot, change_session, guide, loaded, network_request, report, run, session,
@@ -130,6 +130,148 @@ fn a_disk_already_low_when_the_notifier_starts_is_not_news() {
 fn the_low_disk_is_no_session_in_the_status_file() {
     let mut notifier = running();
     change_disk(&mut notifier, &disk(900));
+
+    let status = notifier.status(true, &Default::default());
+
+    assert_eq!(status.sessions.len(), 1);
+    assert_eq!(status.needs_you, 0);
+}
+
+const FIVE_HOUR: &str = "claude/default/five-hour";
+
+fn quota_alert(threshold: u8, used_percent: u32, fired_at: i64) -> QuotaAlertView {
+    QuotaAlertView {
+        provider: "claude".to_owned(),
+        account: "default".to_owned(),
+        limit: "five-hour".to_owned(),
+        scope: None,
+        threshold,
+        used_percent,
+        resets_at: Some(1_800_018_000),
+        fired_at,
+    }
+}
+
+fn change_quota_alert(notifier: &mut Notifier, alert: &QuotaAlertView) -> Vec<Notice> {
+    notifier
+        .apply_changes(&after_snapshot(vec![upsert(
+            EntityKind::QuotaAlert,
+            FIVE_HOUR,
+            alert,
+        )]))
+        .unwrap()
+}
+
+#[test]
+fn a_window_passing_a_threshold_is_told_with_the_window_and_its_use() {
+    let mut notifier = running();
+
+    let told = change_quota_alert(&mut notifier, &quota_alert(80, 83, 1_800_000_000));
+
+    assert_eq!(events(&told), [Event::Usage]);
+    assert_eq!(told[0].name, "claude five-hour window");
+    assert_eq!(
+        told[0].detail.as_deref(),
+        Some("83% used, alert at 80%, account default")
+    );
+}
+
+#[test]
+fn the_next_threshold_of_the_same_window_is_told_again() {
+    let mut notifier = running();
+    change_quota_alert(&mut notifier, &quota_alert(80, 83, 1_800_000_000));
+
+    let told = change_quota_alert(&mut notifier, &quota_alert(95, 96, 1_800_000_600));
+
+    assert_eq!(events(&told), [Event::Usage]);
+    assert_eq!(
+        told[0].detail.as_deref(),
+        Some("96% used, alert at 95%, account default")
+    );
+}
+
+#[test]
+fn the_same_threshold_in_the_next_window_is_told_again() {
+    let mut notifier = running();
+    change_quota_alert(&mut notifier, &quota_alert(80, 83, 1_800_000_000));
+
+    let next_window = QuotaAlertView {
+        resets_at: Some(1_800_036_000),
+        ..quota_alert(80, 81, 1_800_020_000)
+    };
+    let told = change_quota_alert(&mut notifier, &next_window);
+
+    assert_eq!(events(&told), [Event::Usage]);
+}
+
+#[test]
+fn two_windows_alerts_are_told_apart() {
+    let mut notifier = running();
+    let seven_day = QuotaAlertView {
+        limit: "seven-day".to_owned(),
+        ..quota_alert(95, 95, 1_800_000_000)
+    };
+
+    let told = notifier
+        .apply_changes(&after_snapshot(vec![
+            upsert(
+                EntityKind::QuotaAlert,
+                FIVE_HOUR,
+                &quota_alert(80, 83, 1_800_000_000),
+            ),
+            upsert(
+                EntityKind::QuotaAlert,
+                "claude/default/seven-day",
+                &seven_day,
+            ),
+        ]))
+        .unwrap();
+
+    let names: Vec<&str> = told.iter().map(|notice| notice.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["claude five-hour window", "claude seven-day window"]
+    );
+    assert_ne!(told[0].session, told[1].session);
+}
+
+#[test]
+fn a_window_whose_alert_is_retracted_no_longer_raises_its_notice() {
+    let mut notifier = running();
+    let told = change_quota_alert(&mut notifier, &quota_alert(80, 83, 1_800_000_000));
+
+    let retracted = notifier
+        .apply_changes(&after_snapshot(vec![tombstone(
+            EntityKind::QuotaAlert,
+            FIVE_HOUR,
+        )]))
+        .unwrap();
+
+    assert_eq!(retracted, []);
+    assert!(!notifier.still_raises(&told[0]));
+}
+
+#[test]
+fn a_quota_alert_already_on_the_feed_when_the_notifier_starts_is_not_news() {
+    let mut notifier = Notifier::default();
+    let mut told = notifier
+        .apply_changes(&snapshot(vec![upsert(
+            EntityKind::QuotaAlert,
+            FIVE_HOUR,
+            &quota_alert(80, 83, 1_800_000_000),
+        )]))
+        .unwrap();
+    told.extend(set_reports(&mut notifier, Vec::new()));
+    told.extend(set_queue(&mut notifier, Vec::new(), Vec::new()));
+    told.extend(set_network(&mut notifier, Vec::new()));
+
+    assert_eq!(told, []);
+}
+
+#[test]
+fn a_quota_alert_is_no_session_in_the_status_file() {
+    let mut notifier = running();
+    change_quota_alert(&mut notifier, &quota_alert(80, 83, 1_800_000_000));
 
     let status = notifier.status(true, &Default::default());
 

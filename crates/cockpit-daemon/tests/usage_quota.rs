@@ -1,19 +1,22 @@
 //! Issue #58 through the daemon: each provider reporting `quota` is read at the owner's
 //! interval in the owner's home, its windows recorded, and a provider that fails is asked
-//! again later and later. The owner reads what was recorded with `usage-quota`.
+//! again later and later. The owner reads what was recorded with `usage-quota`, and each alert
+//! a window fires reaches the change feed that `torlek-notify` follows.
 #![cfg(target_os = "linux")]
 
 mod candidate;
 mod common;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use cockpit_client::{ClientError, Connection};
+use cockpit_client::{ClientError, Connection, Subscription};
 use cockpit_daemon::{Daemon, Instance, Limits, Options, QuotaPolling, Routes};
 use cockpit_protocol::{
-    Command, ErrorCode, QuotaAccountView, QuotaWindowStateView, QuotaWindowView, Reply,
+    Change, Command, EntityKind, ErrorCode, QuotaAccountView, QuotaAlertView, QuotaWindowStateView,
+    QuotaWindowView, Reply,
 };
 use cockpit_provider_api::fake::FakeProvider;
 use cockpit_provider_api::{LimitKey, ProviderError, ProviderName, QuotaReading, QuotaWindow};
@@ -102,6 +105,48 @@ impl Polled {
             Reply::UsageQuota { accounts } => Ok(accounts),
             reply => panic!("{reply:?}"),
         }
+    }
+
+    /// The `quota-alert` entities the feed carries, applied batch by batch, until `is_done`
+    /// says so; panics when it never does.
+    async fn alerts_until(
+        &self,
+        daemon: &Daemon,
+        is_done: impl Fn(&BTreeMap<String, QuotaAlertView>) -> bool,
+    ) -> BTreeMap<String, QuotaAlertView> {
+        let mut feed = Subscription::new(daemon.socket_path().to_owned(), None, GENEROUS);
+        let mut alerts = BTreeMap::new();
+        let deadline = tokio::time::Instant::now() + GENEROUS;
+        while !is_done(&alerts) {
+            let pending = tokio::time::timeout_at(deadline, feed.next_batch())
+                .await
+                .unwrap_or_else(|_| panic!("the feed never got there: {alerts:#?}"))
+                .expect("the feed continues");
+            for event in &pending.batch().changes {
+                if event.entity.kind != EntityKind::QuotaAlert {
+                    continue;
+                }
+                match &event.change {
+                    Change::Upsert { state } => alerts.insert(
+                        event.entity.id.clone(),
+                        serde_json::from_value(state.clone().into()).unwrap(),
+                    ),
+                    Change::Tombstone => alerts.remove(&event.entity.id),
+                };
+            }
+            pending.applied();
+        }
+        alerts
+    }
+
+    /// The ids of the `quota-alert` entities the state database holds once the daemon
+    /// stopped.
+    async fn published_alerts(&self, daemon: Daemon) -> Vec<String> {
+        drop(daemon);
+        let read = self.database.read().await.unwrap();
+        cockpit_messaging::published_ids(&read, "quota-alert")
+            .await
+            .unwrap()
     }
 
     /// What the state database holds once the daemon stopped.
@@ -291,4 +336,64 @@ async fn a_daemon_that_reads_no_quota_refuses_the_request() {
             if error.code == ErrorCode::Refused && error.message == "this daemon reads no quota"),
         "{answer:?}"
     );
+}
+
+const FIVE_HOUR_ALERT: &str = "fake/default/five-hour";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_window_passing_a_threshold_reaches_the_change_feed_as_its_window() {
+    let (polled, daemon) = Polled::start(vec![Ok(five_hour(85.0))]).await;
+
+    let alerts = polled
+        .alerts_until(&daemon, |alerts| !alerts.is_empty())
+        .await;
+
+    assert_eq!(alerts.keys().collect::<Vec<_>>(), [FIVE_HOUR_ALERT]);
+    let alert = &alerts[FIVE_HOUR_ALERT];
+    assert_eq!(
+        (alert.provider.as_str(), alert.account.as_str()),
+        ("fake", "default")
+    );
+    assert_eq!((alert.threshold, alert.used_percent), (80, 85));
+    assert!(alert.resets_at.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_next_threshold_replaces_the_windows_alert_on_the_feed() {
+    let (polled, daemon) = Polled::start(vec![Ok(five_hour(85.0)), Ok(five_hour(97.0))]).await;
+
+    let alerts = polled
+        .alerts_until(&daemon, |alerts| {
+            alerts.values().any(|alert| alert.threshold == 95)
+        })
+        .await;
+
+    assert_eq!(alerts.keys().collect::<Vec<_>>(), [FIVE_HOUR_ALERT]);
+    assert_eq!(alerts[FIVE_HOUR_ALERT].used_percent, 97);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_window_read_below_every_threshold_again_takes_its_alert_off_the_feed() {
+    // Five readings past 80 % first, so the feed's snapshot is taken while the alert stands.
+    let mut answers = vec![Ok(five_hour(85.0)); 5];
+    answers.push(Ok(five_hour(3.0)));
+    let (polled, daemon) = Polled::start(answers).await;
+    polled
+        .alerts_until(&daemon, |alerts| !alerts.is_empty())
+        .await;
+
+    polled.asks_once(7).await;
+    let published = polled.published_alerts(daemon).await;
+
+    assert_eq!(published, Vec::<String>::new());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_window_below_every_threshold_puts_no_alert_on_the_feed() {
+    let (polled, daemon) = Polled::start(vec![Ok(five_hour(42.0))]).await;
+
+    polled.asks_once(2).await;
+    let published = polled.published_alerts(daemon).await;
+
+    assert_eq!(published, Vec::<String>::new());
 }
