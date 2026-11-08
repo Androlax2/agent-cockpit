@@ -61,7 +61,11 @@ async fn record(
     let write = database.write().await?;
     for (project, path) in store::occupied_paths(&write).await? {
         if root.starts_with(&path) || path.starts_with(root) {
-            return Err(Error::Overlaps { project, path });
+            return Err(Error::Overlaps {
+                root: root.to_path_buf(),
+                project,
+                path,
+            });
         }
     }
     let project = store::insert_project(&write, name, root).await?;
@@ -71,17 +75,28 @@ async fn record(
     Ok((project, main))
 }
 
-/// The canonical root, or why `requested` cannot be a project root.
+/// The canonical root, or why `requested` cannot be a project root. Every refusal says what
+/// is wrong and what to do next, in plain words; Git's own words appear only in a failure
+/// this crate does not recognise (#1183).
 fn validate_root(git: &Git, requested: &Path) -> Result<PathBuf, Error> {
     let invalid = |reason: String| Error::InvalidPath {
         path: requested.to_path_buf(),
         reason,
     };
-    let root = requested
-        .canonicalize()
-        .map_err(|error| invalid(format!("cannot be resolved: {error}")))?;
+    let root = requested.canonicalize().map_err(|error| {
+        invalid(match error.kind() {
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
+                "does not exist; check the path, then add the folder that holds the project"
+                    .to_owned()
+            }
+            // The kind alone: the OS error text and number say nothing more to the owner.
+            kind => format!("cannot be opened ({kind}); fix that, then add it again"),
+        })
+    })?;
     if !root.is_dir() {
-        return Err(invalid("is not a directory".to_owned()));
+        return Err(invalid(
+            "is not a folder; add the folder that holds the project instead".to_owned(),
+        ));
     }
     let answer = git
         .run(
@@ -92,22 +107,69 @@ fn validate_root(git: &Git, requested: &Path) -> Result<PathBuf, Error> {
                 arg("--absolute-git-dir"),
             ],
         )
-        .map_err(|error| invalid(format!("is not a Git work tree: {error}")))?;
+        .map_err(|error| invalid(repository_check_failure(git, &root, error)))?;
     let mut lines = answer.lines();
     let (Some(top_level), Some(git_dir)) = (lines.next(), lines.next()) else {
-        return Err(invalid(format!("git rev-parse answered {answer:?}")));
+        return Err(invalid(format!(
+            "Git described this repository in an unexpected way ({}); check that `git` is a \
+             standard Git, then add it again",
+            answer.trim()
+        )));
     };
     if Path::new(top_level) != root {
         return Err(invalid(format!(
-            "is inside the work tree {top_level}; register that directory instead"
+            "is a folder inside the Git repository at {top_level}; a project is a whole \
+             repository. Add {top_level} instead"
         )));
     }
     if Path::new(git_dir) != root.join(".git") {
         return Err(invalid(format!(
-            "its Git metadata is at {git_dir}, outside {}/.git (a worktree, submodule or \
-             separate git dir); use a plain clone",
-            root.display()
+            "keeps its Git metadata at {git_dir}, outside its own .git folder, as a worktree, a \
+             submodule or a repository with a separate git dir does. Torlek clones each agent's \
+             copy from a plain repository: add the repository that owns this folder, or clone it \
+             on its own and add the clone"
         )));
     }
     Ok(root)
+}
+
+/// Why `git rev-parse` could not describe the repository at `root`, for the owner. What Git
+/// found is decided without reading its message, which follows the daemon's locale: a bare
+/// repository answers `--is-bare-repository`, and a folder Git finds no repository at is plain
+/// when it has no `.git` entry of its own. Anything else keeps Git's cause without the command
+/// or exit code.
+fn repository_check_failure(git: &Git, root: &Path, error: Error) -> String {
+    const GIT_REPOSITORY_FAILURE: i32 = 128;
+    if let Error::Git {
+        status: Some(GIT_REPOSITORY_FAILURE),
+        ..
+    } = &error
+    {
+        match git.run(root, &[arg("rev-parse"), arg("--is-bare-repository")]) {
+            Ok(answer) if answer.trim() == "true" => {
+                return "is a bare repository, without files to work on. Clone it, then add \
+                        the clone"
+                    .to_owned();
+            }
+            Err(Error::Git {
+                status: Some(GIT_REPOSITORY_FAILURE),
+                ..
+            }) if root.join(".git").symlink_metadata().is_err() => {
+                return "is not a Git repository. Torlek gives each agent its own clone of the \
+                        project, which needs Git. Run `git init` in it, then add it again"
+                    .to_owned();
+            }
+            _ => {}
+        }
+    }
+    let cause = match &error {
+        Error::Git { stderr, status, .. } => match stderr.trim() {
+            "" => status.map_or("Git stopped on a signal".to_owned(), |code| {
+                format!("Git exited with {code} and said nothing")
+            }),
+            cause => cause.strip_prefix("fatal: ").unwrap_or(cause).to_owned(),
+        },
+        other => other.to_string(),
+    };
+    format!("could not be checked for a Git repository: {cause}. Fix that, then add it again")
 }
