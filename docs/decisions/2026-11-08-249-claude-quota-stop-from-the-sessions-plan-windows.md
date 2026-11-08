@@ -13,8 +13,10 @@ report alone moves it.
   credential (#968), else the credentials file a login account binds in its home (#59). That
   sign-in is the one the limit hit; the daemon's `cockpit-usage` readings are the owner's
   `default` account's, read at an interval, and may name another account or be minutes old.
-- **Spent means used at or past the whole limit, or blocked.** Any window, the scoped ones
-  included: a spent Opus window stops a turn on Opus as the five-hour one does.
+- **Spent means the `five-hour` or the `seven-day` window used at or past its whole limit.**
+  Not a window scoped to one model: the payload does not say which model the turn ran on, so
+  a spent Opus window would move a session running Sonnet on a transient 429. Not the
+  reading's blocked flag either: Claude Code's endpoint never sets it.
 - **Headroom, or windows that cannot be read, stay `failed` with reason `rate_limit`.** A
   quota stop moves the session to its next account (#59); a transient 429 must not. The
   reason is written on the hook's standard error, which Claude Code keeps in its debug log;

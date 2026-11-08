@@ -80,9 +80,10 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   own sign-in before reporting (#249): the usage request above, with the
   `CLAUDE_CODE_OAUTH_TOKEN` the session holds (the placeholder the session proxy swaps for
   the account's credential) or else the credentials file in its home, through the `curl` on
-  its `PATH`. A window used at or past its whole limit, or a blocked account, makes it
-  `quota-stopped`, which moves the session to its next account (#59); headroom in every
-  window, or windows that cannot be read, keep it `failed` with reason `rate_limit`, said on
+  its `PATH`. The `five-hour` or `seven-day` window used at or past its whole limit makes it
+  `quota-stopped`, which moves the session to its next account (#59); a window scoped to one
+  model is not read, since the payload does not say which model the turn ran on. Headroom in
+  both, or windows that cannot be read, keep it `failed` with reason `rate_limit`, said on
   the hook's standard error. A `SessionStart` after a compaction
   reports nothing: an automatic one happens in the middle of a turn.
 - **Inbox (#703).** On `SessionStart` and `Stop`, a second hook runs in the background

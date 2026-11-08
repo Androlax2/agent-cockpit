@@ -30,12 +30,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 
-use cockpit_claude::hooks;
-use cockpit_provider_api::ProviderEvent;
-
-/// The variable a bound credential travels in, `needs::CREDENTIAL_VARIABLES`' token one: a
-/// `claude setup-token` token, or the placeholder the session proxy swaps for it (#968).
-const BOUND_TOKEN_VARIABLE: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+use cockpit_claude::{hooks, needs};
+use cockpit_provider_api::{ProviderError, QuotaReading};
 
 fn main() -> ExitCode {
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -92,8 +88,18 @@ fn run(cockpit: &OsStr) -> Result<(), String> {
     std::io::stdin()
         .read_to_string(&mut payload)
         .map_err(|error| format!("cannot read the hook payload: {error}"))?;
-    let event = hooks::normalize(&payload).map_err(|error| error.to_string())?;
-    let event = judged_by_plan_windows(event);
+    let mut event = hooks::normalize(&payload).map_err(|error| error.to_string())?;
+    if hooks::needs_plan_windows(&event) {
+        // Unreadable windows leave the event as it is: the report still goes out, and the
+        // reason stays in Claude Code's debug log, where it keeps a hook's standard error.
+        match read_session_windows() {
+            Ok(reading) => event = hooks::judged_by_plan_windows(event, &reading),
+            Err(error) => eprintln!(
+                "torlek-claude-hook: the plan windows could not be read, so the rate limit stays \
+                 a failure: {error}"
+            ),
+        }
+    }
     let report = hooks::measured_arguments(&event).map(|report| {
         let started = start_report(cockpit, &report);
         (report, started)
@@ -116,31 +122,17 @@ fn run(cockpit: &OsStr) -> Result<(), String> {
     }
 }
 
-/// `event` judged by the session's plan windows when it needs them (#249). Windows that
-/// cannot be read leave the event as it is, said on standard error, which Claude Code keeps
-/// in its debug log: the report still goes out.
-fn judged_by_plan_windows(event: ProviderEvent) -> ProviderEvent {
-    if !hooks::needs_plan_windows(&event) {
-        return event;
-    }
+/// The plan windows of the session's own sign-in (#249): the bound token it holds, or the
+/// credentials file in its home, asked through the `curl` on `PATH`.
+fn read_session_windows() -> Result<QuotaReading, ProviderError> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let bound_token = std::env::var(BOUND_TOKEN_VARIABLE).ok();
-    let reading = cockpit_claude::session_quota(
+    let bound_token = std::env::var(needs::OAUTH_TOKEN_VARIABLE).ok();
+    cockpit_claude::session_quota(
         home.as_deref(),
         bound_token.as_deref(),
         Path::new(cockpit_claude::USAGE_CLIENT),
         cockpit_claude::QUOTA_DEADLINE,
-    );
-    match reading {
-        Ok(reading) => hooks::judged_by_plan_windows(event, &reading),
-        Err(error) => {
-            eprintln!(
-                "torlek-claude-hook: the plan windows could not be read, so the rate limit stays \
-                 a failure: {error}"
-            );
-            event
-        }
-    }
+    )
 }
 
 fn start_report(cockpit: &OsStr, report: &[String]) -> Result<Child, String> {

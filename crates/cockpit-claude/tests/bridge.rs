@@ -504,6 +504,34 @@ fn a_bound_credential_asks_for_the_windows_with_the_token_the_session_holds() {
 }
 
 #[test]
+fn an_empty_token_variable_leaves_the_homes_sign_in_to_ask() {
+    let home = SessionHome::signed_in();
+    let path = home.curl_answering("limits-spent");
+    let cockpit = FakeCockpit::exiting_with(0);
+
+    let output = run_hook_in(
+        &cockpit.program(),
+        &common::fixture("stop-failure-rate-limit-plan-window"),
+        Some("token-1"),
+        &[
+            ("HOME", home.path().to_str().unwrap()),
+            ("PATH", &path),
+            ("CLAUDE_CODE_OAUTH_TOKEN", ""),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        outcome_of(&cockpit.arguments().unwrap()),
+        ["--outcome", "quota-stopped"]
+    );
+    assert_eq!(
+        home.curl_input(),
+        "Authorization: Bearer sk-ant-oat01-session-token\n"
+    );
+}
+
+#[test]
 fn a_rate_limit_stop_whose_windows_cannot_be_read_stays_a_failure_and_says_why() {
     let home = SessionHome::empty();
     let cockpit = FakeCockpit::exiting_with(0);

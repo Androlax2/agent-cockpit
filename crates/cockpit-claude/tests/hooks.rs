@@ -485,10 +485,62 @@ fn a_rate_limit_failure_with_headroom_stays_failed_with_its_reason() {
 }
 
 #[test]
-fn a_rate_limit_failure_on_a_blocked_account_is_a_quota_stop() {
-    let blocked = QuotaReading::new(None, Vec::new(), true).unwrap();
+fn a_spent_window_scoped_to_one_model_does_not_make_a_quota_stop() {
+    let opus_spent = QuotaReading::new(
+        Some("max".to_owned()),
+        vec![
+            QuotaWindow::new(
+                LimitKey::new("five-hour").unwrap(),
+                None,
+                Some(18_000),
+                40.0,
+                None,
+            )
+            .unwrap(),
+            QuotaWindow::new(
+                LimitKey::new("seven-day:opus-4-5").unwrap(),
+                Some("Opus 4.5".to_owned()),
+                Some(604_800),
+                100.0,
+                None,
+            )
+            .unwrap(),
+        ],
+        false,
+    )
+    .unwrap();
 
-    let event = judged("stop-failure-rate-limit-transient", &blocked);
+    let event = judged("stop-failure-rate-limit-transient", &opus_spent);
+
+    assert_eq!(
+        event.kind,
+        EventKind::TurnEnded {
+            outcome: TurnOutcome::Failed {
+                reason: Some("rate_limit".to_owned()),
+            }
+        }
+    );
+}
+
+#[test]
+fn a_spent_seven_day_window_makes_a_quota_stop_too() {
+    let weekly_spent = QuotaReading::new(
+        None,
+        vec![
+            QuotaWindow::new(
+                LimitKey::new("seven-day").unwrap(),
+                None,
+                Some(604_800),
+                100.0,
+                None,
+            )
+            .unwrap(),
+        ],
+        false,
+    )
+    .unwrap();
+
+    let event = judged("stop-failure-rate-limit-plan-window", &weekly_spent);
 
     assert_eq!(
         event.kind,

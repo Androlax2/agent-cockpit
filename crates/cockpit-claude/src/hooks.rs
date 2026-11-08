@@ -140,20 +140,23 @@ pub fn needs_plan_windows(event: &ProviderEvent) -> bool {
     )
 }
 
-/// `event` judged by the session's plan windows (#249): a [`RATE_LIMIT`] failure while the
-/// provider blocks the account or a window is spent, used at or past its whole limit, is a
-/// quota stop, which moves the session to its next account (#59). With headroom in every
-/// window it stays a failure: a transient rate limit must never move a session. Any other
-/// event is kept as it is.
+/// The plan's own windows, the ones a turn on any model spends: the five-hour and the
+/// seven-day limit, as `quota` keys them. A window scoped to one model is not read: the
+/// payload does not say which model the turn ran on, and a spent Opus window must not move a
+/// session running Sonnet.
+const PLAN_WINDOWS: [&str; 2] = ["five-hour", "seven-day"];
+
+/// `event` judged by the session's plan windows (#249): a [`RATE_LIMIT`] failure while one
+/// of [`PLAN_WINDOWS`] is spent, used at or past its whole limit, is a quota stop, which
+/// moves the session to its next account (#59). With headroom in both it stays a failure: a
+/// transient rate limit must never move a session. Any other event is kept as it is.
 pub fn judged_by_plan_windows(event: ProviderEvent, reading: &QuotaReading) -> ProviderEvent {
     if !needs_plan_windows(&event) {
         return event;
     }
-    let is_spent = reading.is_blocked()
-        || reading
-            .windows()
-            .iter()
-            .any(|window| window.used_percent() >= 100.0);
+    let is_spent = reading.windows().iter().any(|window| {
+        PLAN_WINDOWS.contains(&window.limit().as_str()) && window.used_percent() >= 100.0
+    });
     if !is_spent {
         return event;
     }

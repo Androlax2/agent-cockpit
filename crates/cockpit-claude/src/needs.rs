@@ -37,11 +37,14 @@ pub const WRITE: [&str; 8] = [
 /// Where Claude Code stores its sign-in, MCP server logins included.
 pub const CREDENTIAL_FILES: [&str; 1] = ["~/.claude/.credentials.json"];
 
+/// The variable a `claude setup-token` token travels in; in a sandbox, the placeholder the
+/// session proxy swaps for the account's credential (#968). The hook bridge reads it back to
+/// ask for the session's plan windows (#249).
+pub const OAUTH_TOKEN_VARIABLE: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
 /// The variables that take a bound credential: an API key, or a `claude setup-token` token.
-pub const CREDENTIAL_VARIABLES: [&str; 2] = [
-    crate::first_run::API_KEY_VARIABLE,
-    "CLAUDE_CODE_OAUTH_TOKEN",
-];
+pub const CREDENTIAL_VARIABLES: [&str; 2] =
+    [crate::first_run::API_KEY_VARIABLE, OAUTH_TOKEN_VARIABLE];
 
 /// The host that carries a bound credential.
 pub const CREDENTIAL_HOSTS: [&str; 1] = ["api.anthropic.com"];

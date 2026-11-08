@@ -40,42 +40,64 @@ impl crate::ClaudeCode {
         deadline: Duration,
     ) -> Result<QuotaReading, ProviderError> {
         let sign_in = read_sign_in(home)?;
-        let body = fetch_usage(&self.usage_client, &sign_in.token, deadline)?;
+        let body = fetch_usage(
+            &self.usage_client,
+            &sign_in.token,
+            deadline,
+            OWNER_SIGN_IN_ADVICE,
+        )?;
         reading_of(&body, sign_in.plan)
     }
 }
 
+/// What the owner does when the usage endpoint refuses the owner's own sign-in.
+const OWNER_SIGN_IN_ADVICE: &str = "start `claude` so it signs in again";
+/// What the owner does when it refuses a session's bound credential, which no `claude` in
+/// the sandbox can renew.
+const BOUND_CREDENTIAL_ADVICE: &str =
+    "the account's bound credential is refused; replace it in the provider's credential folder";
+
 /// The plan windows of a sandboxed session's own sign-in (#249), read as Claude Code finds
-/// it: `bound_token` first, the `CLAUDE_CODE_OAUTH_TOKEN` the session holds (a placeholder
-/// the session proxy swaps for the account's credential on the usage host, #968), else the
-/// credentials file under `home`, a login account's bound there (#59). `usage_client` is the
-/// `curl` that asks; giving up after `deadline`.
+/// it: `bound_token` first, the [`crate::needs::OAUTH_TOKEN_VARIABLE`] the session holds (a
+/// placeholder the session proxy swaps for the account's credential on the usage host, #968),
+/// else the credentials file under `home`, a login account's bound there (#59). An empty
+/// variable is none, as Claude Code reads it. `usage_client` is the `curl` that asks; giving
+/// up after `deadline`.
 pub fn session_quota(
     home: Option<&Path>,
     bound_token: Option<&str>,
     usage_client: &Path,
     deadline: Duration,
 ) -> Result<QuotaReading, ProviderError> {
-    let sign_in = match (bound_token, home) {
-        (Some(token), _) => SignIn {
-            token: checked_token(token, "the token in CLAUDE_CODE_OAUTH_TOKEN")?,
-            plan: None,
-        },
-        (None, Some(home)) => read_sign_in(home)?,
+    let bound_token = bound_token.filter(|token| !token.is_empty());
+    let (sign_in, advice) = match (bound_token, home) {
+        (Some(token), _) => {
+            let what = format!("the token in {}", crate::needs::OAUTH_TOKEN_VARIABLE);
+            let sign_in = SignIn {
+                token: checked_token(token, &what)?,
+                plan: None,
+            };
+            (sign_in, BOUND_CREDENTIAL_ADVICE)
+        }
+        (None, Some(home)) => (read_sign_in(home)?, OWNER_SIGN_IN_ADVICE),
         (None, None) => {
-            return Err(refused(
-                "the session holds no CLAUDE_CODE_OAUTH_TOKEN and HOME is not set",
-            ));
+            return Err(refused(format!(
+                "the session holds no {} and HOME is not set",
+                crate::needs::OAUTH_TOKEN_VARIABLE
+            )));
         }
     };
-    let body = fetch_usage(usage_client, &sign_in.token, deadline)?;
+    let body = fetch_usage(usage_client, &sign_in.token, deadline, advice)?;
     reading_of(&body, sign_in.plan)
 }
 
+/// The usage endpoint's answer for `token`; `sign_in_advice` says what the owner does when
+/// it refuses the token.
 fn fetch_usage(
     usage_client: &Path,
     token: &Token,
     deadline: Duration,
+    sign_in_advice: &str,
 ) -> Result<Vec<u8>, ProviderError> {
     let max_time = deadline
         .saturating_sub(Duration::from_secs(1))
@@ -116,8 +138,7 @@ fn fetch_usage(
     match (output.status.code(), http_code) {
         (Some(0), Some(200)) => Ok(body.to_vec()),
         (Some(0), Some(code @ (401 | 403))) => Err(refused(format!(
-            "the usage endpoint refused Claude Code's sign-in (HTTP {code}); start `claude` \
-             so it signs in again"
+            "the usage endpoint refused Claude Code's sign-in (HTTP {code}); {sign_in_advice}"
         ))),
         (Some(0), Some(code)) => Err(refused(format!("the usage endpoint answered HTTP {code}"))),
         (Some(0), None) => Err(refused("the usage request printed no HTTP status")),
