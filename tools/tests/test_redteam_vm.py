@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -137,6 +138,58 @@ class RedTeamVmTests(unittest.TestCase):
         ssh_calls = (self.log_dir / "ssh-calls").read_text()
         self.assertIn("pacman -Syu", ssh_calls)
         self.assertIn("releases/download", ssh_calls)
+
+    def test_create_installs_the_pinned_claude_code_between_provisioning_and_torlek(self):
+        self.create_guest()
+        ssh_calls = (self.log_dir / "ssh-calls").read_text()
+        self.assertIn("CLAUDE_CODE_VERSION=2.1.319", ssh_calls)
+        self.assertIn(
+            "CLAUDE_CODE_URL=https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/"
+            "claude-code-linux-x64-2.1.319.tgz",
+            ssh_calls,
+        )
+        self.assertIn(
+            "CLAUDE_CODE_SHA256=9b7b53954b8ffb886fafeefe9ef1e0e9e5c15e8aaf2f54d65ba64d0cca795dc7",
+            ssh_calls,
+        )
+        self.assertLess(ssh_calls.index("pacman -Syu"), ssh_calls.index("CLAUDE_CODE_SHA256"))
+        self.assertLess(ssh_calls.index("CLAUDE_CODE_SHA256"), ssh_calls.index("releases/download"))
+
+    def test_create_installs_claude_code_as_root_and_not_through_npm(self):
+        self.create_guest()
+        install_call = next(
+            call for call in (self.log_dir / "ssh-calls").read_text().splitlines() if "CLAUDE_CODE_SHA256" in call
+        )
+        self.assertIn("arch@127.0.0.1", install_call)
+        self.assertIn("sudo env CLAUDE_CODE_VERSION", install_call)
+        self.assertNotIn("npm install", (self.log_dir / "ssh-calls").read_text())
+
+    def test_the_claude_code_pin_can_be_overridden(self):
+        self.assertEqual(self.run_script("fetch").returncode, 0)
+        result = self.run_script(
+            "create",
+            TORLEK_REDTEAM_CLAUDE_VERSION="2.1.316",
+            TORLEK_REDTEAM_CLAUDE_SHA256="a" * 64,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ssh_calls = (self.log_dir / "ssh-calls").read_text()
+        self.assertIn("CLAUDE_CODE_VERSION=2.1.316", ssh_calls)
+        self.assertIn("claude-code-linux-x64-2.1.316.tgz", ssh_calls)
+        self.assertIn(f"CLAUDE_CODE_SHA256={'a' * 64}", ssh_calls)
+
+    def test_a_claude_code_url_override_cannot_inject_into_the_guest_command(self):
+        self.assertEqual(self.run_script("fetch").returncode, 0)
+        result = self.run_script(
+            "create", TORLEK_REDTEAM_CLAUDE_URL="https://mirror.invalid/claude.tgz?a=b&c=d;echo pwned"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ssh_calls = (self.log_dir / "ssh-calls").read_text()
+        self.assertIn(r"CLAUDE_CODE_URL=https://mirror.invalid/claude.tgz\?a=b\&c=d\;echo\ pwned", ssh_calls)
+
+    def test_the_pinned_claude_code_is_a_version_the_adapter_is_tested_on(self):
+        tested_versions = (REPO / "crates/cockpit-claude/tested-versions.txt").read_text().split()
+        pinned_version = re.search(r"CLAUDE_CODE_VERSION=\$\{[^:]*:-([^}]+)\}", SCRIPT.read_text()).group(1)
+        self.assertIn(pinned_version, tested_versions)
 
     def test_the_seed_holds_only_the_throwaway_public_key(self):
         self.create_guest()

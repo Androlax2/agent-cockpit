@@ -195,7 +195,7 @@ def run_catalog(catalog, results_log: Path, guest, only_ids=None) -> list[dict]:
 def _require_section1_ready(guest) -> None:
     """Section 1 runs only inside the real sandbox as a model-driven session (#1158 option B):
     the sandbox must be `required` with a backend, and the owner must have dropped a provider
-    key for the guest. A missing one is a refusal that names itself, never a silent skip or a
+    credential for the guest. A missing one is a refusal that names itself, never a silent skip or a
     fall back to the owner shell."""
     status = guest.sandbox_status()
     if not status.required:
@@ -208,13 +208,20 @@ def _require_section1_ready(guest) -> None:
             "section 1 runs inside the guest's sandbox, but its backend is missing: "
             f"{status.detail}. Install it in the guest, then retry."
         )
+    agent = guest.agent_status()
+    if not agent.present:
+        raise Refusal(
+            "section 1 runs a real agent in the guest, but the daemon does not list "
+            f"{guest.provider} as usable there: {agent.detail}. Rebuild the guest with "
+            "`tools/redteam-vm.sh create`, which installs a pinned Claude Code, then retry."
+        )
     if not guest.section1_key_present():
         raise Refusal(
-            "section 1 runs a real sandboxed agent session, which needs the spend-capped "
-            "provider key you drop for the guest. None is present. Provide it with "
-            "`tools/redteam-vm.sh put-credential` (option B, docs/redteam-harness.md), then "
-            "retry. The key is copied into the guest only, never into this repo, the results "
-            "log, or your own machine."
+            "section 1 runs a real sandboxed agent session, which needs a provider credential "
+            "for the guest: a spend-capped API key or your subscription token. None is present. "
+            "Provide it with `tools/redteam-vm.sh put-credential` (option B, "
+            "docs/redteam-harness.md), then retry. The credential is copied into the guest "
+            "only, never into this repo, the results log, or your own machine."
         )
 
 
@@ -228,6 +235,15 @@ class SandboxStatus:
         self.required = required
         self.backend_present = backend_present
         self.backend = backend
+        self.detail = detail
+
+
+class AgentStatus:
+    """Whether the guest daemon lists the provider program as usable, kept apart from whether a
+    credential is present."""
+
+    def __init__(self, present: bool, detail: str):
+        self.present = present
         self.detail = detail
 
 
@@ -279,27 +295,46 @@ class VmGuest:
         result = self._ssh("~/.local/bin/torlek version")
         return result.stdout.strip() or f"unknown (exit {result.returncode}): {result.stderr.strip()}"
 
+    def _doctor_report(self) -> str:
+        """`torlek doctor` for the guest's project: the daemon's own readiness report, which
+        names the sandbox backend and each provider, with no key needed and nothing launched.
+        (`torlek sandbox show` is not used: its dry run refuses on `<agent>` in the released
+        alpha.6, whatever the backend.)"""
+        report = self._ssh(
+            "export PATH=$HOME/.local/bin:$PATH; "
+            f"torlek doctor --project {GUEST_PROJECT} 2>&1"
+        )
+        return report.stdout + report.stderr
+
     def sandbox_status(self) -> SandboxStatus:
         """Reads two independent signals, each from its own source, so the gate can name which
         one failed:
 
         - `required`: whether the owner's guest config sets `agents.sandbox = "required"`
           (`~/.config/torlek/config.toml`; there is no CLI verb to read it back).
-        - `backend_present`: whether `torlek sandbox show --agent <provider> <dir>` — a dry run
-          that launches nothing and needs no key — reports a real sandbox enforcing the session
-          (`sandbox: enforced by torlek-sandbox on ...`). If the sandbox is off, or the backend
-          cannot enforce, that line is absent."""
+        - `backend_present`: whether the doctor report's sandbox line says every agent runs in
+          a sandbox (`sandbox: sandboxed: every agent runs in torlek-sandbox with ...`)."""
         config = self._ssh("cat ~/.config/torlek/config.toml 2>/dev/null")
         required = re.search(r"""(?m)^\s*sandbox\s*=\s*['"]required['"]""", config.stdout) is not None
-        show = self._ssh(
-            "export PATH=$HOME/.local/bin:$PATH; "
-            f"torlek sandbox show {GUEST_PROJECT} --agent {self.provider} 2>&1"
-        )
-        output = show.stdout + show.stderr
-        match = re.search(r"sandbox: enforced by (?P<backend>\S+) on ", output)
+        report = self._doctor_report()
+        line = re.search(r"(?m)^\S+\s+sandbox: (?P<detail>.*)$", report)
+        match = re.search(r"(?m)^\S+\s+sandbox: sandboxed: every agent runs in (?P<backend>\S+)", report)
         backend = match.group("backend") if match else ""
-        first_line = next((line for line in output.splitlines() if line.strip()), "")
-        return SandboxStatus(required, match is not None, backend, first_line or output.strip())
+        detail = line.group("detail") if line else (report.strip() or "no sandbox line in torlek doctor")
+        return SandboxStatus(required, match is not None, backend, detail)
+
+    def agent_status(self) -> AgentStatus:
+        """Whether the guest daemon lists this provider as usable (the doctor report's
+        `provider <name>: <version> ...` line, not its `sign-in` lines, which are the credential
+        and are read separately)."""
+        line = re.search(
+            rf"(?m)^(?P<status>\S+)\s+provider {re.escape(self.provider)}: (?P<detail>.*)$",
+            self._doctor_report(),
+        )
+        if line is None:
+            return AgentStatus(False, f"torlek doctor has no `provider {self.provider}` line")
+        detail = line.group("detail")
+        return AgentStatus(line.group("status") == "available" and "not usable" not in detail, detail)
 
     def section1_key_present(self) -> bool:
         """Whether a provider credential file is in the guest for this provider — any non-empty

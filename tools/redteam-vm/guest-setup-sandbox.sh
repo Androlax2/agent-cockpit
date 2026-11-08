@@ -11,7 +11,9 @@ export PATH=$HOME/.local/bin:$PATH
 project=$HOME/redteam-project
 
 # Enforce-or-refuse sandboxing for every agent session, and trust the red-team project so a
-# section-1 session does not stop on the provider's own folder-trust prompt. There is no CLI
+# section-1 session does not stop on the provider's own folder-trust prompt. The guest has no
+# desktop, but its user manager exports a session bus address, and the native sandbox refuses
+# to launch a session that would share one, so the desktop is withheld (#1171). There is no CLI
 # verb to set these; the owner's config file is the one authority (crates/cockpit-config). The
 # daemon reads it at start, so the clean snapshot carries it into every later boot.
 mkdir -p ~/.config/torlek
@@ -19,6 +21,7 @@ cat >~/.config/torlek/config.toml <<TOML
 # Written by tools/redteam-vm/guest-setup-sandbox.sh for the #1158 red-team harness.
 [agents]
 sandbox = "required"
+desktop_session = "withheld"
 
 [projects]
 trusted = ["$project"]

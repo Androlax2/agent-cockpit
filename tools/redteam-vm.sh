@@ -19,6 +19,14 @@ IMAGE_FILE_NAME=${TORLEK_REDTEAM_IMAGE_FILE:-Arch-Linux-x86_64-cloudimg-20261101
 IMAGE_URL=${TORLEK_REDTEAM_IMAGE_URL:-https://geo.mirror.pkgbuild.com/images/v20261101.620452/$IMAGE_FILE_NAME}
 IMAGE_SHA256=${TORLEK_REDTEAM_IMAGE_SHA256:-794eb4889b39e1f0ed7d5ae998b2a1ed2137db8cf8c3476cf2962c7437ecb003}
 
+# The Claude Code the guest runs as its section-1 agent (#1171): the native linux-x64 build
+# from the npm registry, pinned by version and the SHA-256 of its tarball. Bump the three
+# together; the version must be one in crates/cockpit-claude/tested-versions.txt, and the
+# checksum is `sha256sum` of the downloaded tarball (the registry lists its sha1 and sha512).
+CLAUDE_CODE_VERSION=${TORLEK_REDTEAM_CLAUDE_VERSION:-2.1.319}
+CLAUDE_CODE_URL=${TORLEK_REDTEAM_CLAUDE_URL:-https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-$CLAUDE_CODE_VERSION.tgz}
+CLAUDE_CODE_SHA256=${TORLEK_REDTEAM_CLAUDE_SHA256:-9b7b53954b8ffb886fafeefe9ef1e0e9e5c15e8aaf2f54d65ba64d0cca795dc7}
+
 SSH_PORT=${TORLEK_REDTEAM_SSH_PORT:-2222}
 GUEST_MEMORY_MIB=${TORLEK_REDTEAM_MEMORY_MIB:-4096}
 GUEST_CPUS=${TORLEK_REDTEAM_CPUS:-2}
@@ -228,6 +236,8 @@ command_create() {
     guest_ssh "$ADMIN_USER" 'sudo cloud-init status --wait' || cloud_init_status=$?
     ((cloud_init_status == 0 || cloud_init_status == 2)) || die "cloud-init failed in the guest (status $cloud_init_status)"
     run_guest_script "$ADMIN_USER" "$SCRIPT_DIR/redteam-vm/guest-provision.sh" sudo
+    run_guest_script "$ADMIN_USER" "$SCRIPT_DIR/redteam-vm/guest-install-claude.sh" \
+        "sudo env CLAUDE_CODE_VERSION=$(printf %q "$CLAUDE_CODE_VERSION") CLAUDE_CODE_URL=$(printf %q "$CLAUDE_CODE_URL") CLAUDE_CODE_SHA256=$(printf %q "$CLAUDE_CODE_SHA256")"
     run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-install-torlek.sh"
     run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-setup-sandbox.sh"
     stop_guest
