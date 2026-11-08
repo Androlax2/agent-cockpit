@@ -7,7 +7,10 @@ use cockpit_provider_api::{
     LimitKey, ModelReply, ProviderName, QuotaReading, QuotaWindow, ReplyScan, ReplyTokens,
 };
 use cockpit_turso::Database;
-use cockpit_usage::{AccountName, AccountQuota, Alert, Day, DayCost, Error, QuotaPolicy, Recorded};
+use cockpit_usage::{
+    AccountName, AccountQuota, Alert, Approval, Day, DayCost, DayDigest, DayTime, Error, Incident,
+    QuotaPolicy, Recorded, Turn,
+};
 
 /// 2027-01-15 08:00 UTC.
 pub const NOW: i64 = 1_800_000_000 - 1_800_000_000 % 86_400 + 8 * 3600;
@@ -211,5 +214,66 @@ impl Fixture {
 
     pub async fn all_costs(&self) -> Vec<DayCost> {
         self.costs_between("2026-01-01", "2026-12-31").await
+    }
+}
+
+/// `hour:minute` of the `day_offset`th day after `MONDAY`, in Unix seconds.
+pub fn clock(day_offset: i64, hour: i64, minute: i64) -> i64 {
+    MONDAY + day_offset * DAY + hour * HOUR + minute * 60
+}
+
+impl Fixture {
+    pub async fn turn(&self, session: &str, project: &str, started_at: i64, ended_at: i64) -> bool {
+        let turn = Turn::new(session, project, started_at, ended_at).unwrap();
+        let write = self.database.write().await.unwrap();
+        let added = cockpit_usage::record_turn(&write, &turn).await.unwrap();
+        write.commit().await.unwrap();
+        added
+    }
+
+    pub async fn approval(&self, key: &str, project: &str, at: i64) -> bool {
+        let approval = Approval::new(key, project, at).unwrap();
+        let write = self.database.write().await.unwrap();
+        let added = cockpit_usage::record_approval(&write, &approval)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+        added
+    }
+
+    pub async fn incident(
+        &self,
+        provider: &str,
+        key: &str,
+        title: &str,
+        started_at: i64,
+        resolved_at: Option<i64>,
+    ) {
+        let incident = Incident::new(
+            ProviderName::new(provider).unwrap(),
+            key,
+            title,
+            started_at,
+            resolved_at,
+        )
+        .unwrap();
+        let write = self.database.write().await.unwrap();
+        cockpit_usage::record_incident(&write, &incident)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+    }
+
+    pub async fn time_between(&self, first: &str, last: &str) -> Result<Vec<DayTime>, Error> {
+        let read = self.database.read().await.unwrap();
+        cockpit_usage::time_with_agent(&read, Day::parse(first).unwrap(), Day::parse(last).unwrap())
+            .await
+    }
+
+    pub async fn digests_between(&self, first: &str, last: &str) -> Vec<DayDigest> {
+        let read = self.database.read().await.unwrap();
+        cockpit_usage::digests(&read, Day::parse(first).unwrap(), Day::parse(last).unwrap())
+            .await
+            .unwrap()
     }
 }

@@ -67,12 +67,7 @@ pub async fn record_replies(
     for reply in merged(&scan.replies) {
         // A project is attribution, not billing: a name that is not a plain one costs the reply
         // its project, never its place in the total.
-        let named = project_of(reply.working_dir());
-        let project = if is_plain_project(&named) {
-            named
-        } else {
-            UNKNOWN_PROJECT.to_owned()
-        };
+        let project = attributed_project(project_of(reply.working_dir()));
         if exceeds_limit(reply.tokens()) {
             recorded.rejected += 1;
             continue;
@@ -280,10 +275,17 @@ fn exceeds_limit(tokens: ReplyTokens) -> bool {
 
 const UNKNOWN_PROJECT: &str = "unknown";
 
-fn is_plain_project(project: &str) -> bool {
-    !project.is_empty()
-        && project.len() <= MAX_PROJECT_BYTES
-        && !project.chars().any(char::is_control)
+/// The project a record is archived under: a name that is not a plain one is attribution lost,
+/// never a record refused.
+pub(crate) fn attributed_project(named: String) -> String {
+    let is_plain = !named.is_empty()
+        && named.len() <= MAX_PROJECT_BYTES
+        && !named.chars().any(char::is_control);
+    if is_plain {
+        named
+    } else {
+        UNKNOWN_PROJECT.to_owned()
+    }
 }
 
 fn check_scope(home_scope: &str) -> Result<(), Error> {

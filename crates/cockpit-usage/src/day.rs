@@ -3,7 +3,9 @@ use std::fmt;
 use crate::Error;
 use crate::error::invalid;
 
-const SECONDS_PER_DAY: i64 = 86_400;
+pub(crate) const SECONDS_PER_DAY: i64 = 86_400;
+/// The most days one digest range holds: a year and a leap day.
+pub const MAX_RANGE_DAYS: i64 = 366;
 
 /// A calendar day in UTC, `2026-11-02`: the day providers bill by, so a day's cost here is the
 /// day's cost on the provider's own report, whatever time zone the owner lives in.
@@ -54,6 +56,21 @@ impl Day {
     /// Unix seconds at this day's midnight.
     pub fn first_second(self) -> i64 {
         days_from_civil(self.year, self.month, self.day) * SECONDS_PER_DAY
+    }
+
+    /// Every day from `first` to `last`, both included, oldest first; refuses a range that ends
+    /// before it starts or spans more than [`MAX_RANGE_DAYS`].
+    pub(crate) fn range(first: Day, last: Day) -> Result<Vec<Day>, Error> {
+        let count = (last.first_second() - first.first_second()).div_euclid(SECONDS_PER_DAY) + 1;
+        if !(1..=MAX_RANGE_DAYS).contains(&count) {
+            return Err(invalid(
+                "days",
+                format!("{first} to {last} is not 1 to {MAX_RANGE_DAYS} days"),
+            ));
+        }
+        Ok((0..count)
+            .map(|offset| Day::containing(first.first_second() + offset * SECONDS_PER_DAY))
+            .collect())
     }
 
     /// The day `days` before this one.

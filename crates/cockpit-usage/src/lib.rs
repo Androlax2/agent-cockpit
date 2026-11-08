@@ -1,7 +1,9 @@
 #![doc = include_str!("../README.md")]
 
+mod activity;
 mod cost;
 mod day;
+mod digest;
 mod error;
 mod model;
 mod prices;
@@ -9,8 +11,13 @@ mod quota;
 
 use cockpit_turso::{Migration, MigrationSet};
 
+pub use activity::{
+    Approval, DayTime, Incident, JOIN_GAP_SECONDS, ProjectTime, Turn, record_approval,
+    record_incident, record_turn, time_with_agent,
+};
 pub use cost::{DayCost, Recorded, costs, cursors, forget_home, price_unpriced, record_replies};
-pub use day::Day;
+pub use day::{Day, MAX_RANGE_DAYS};
+pub use digest::{DayDigest, ProjectDay, digests};
 pub use error::Error;
 pub use model::{
     AccountName, AccountQuota, Alert, DEFAULT_ALERT_THRESHOLDS, DEFAULT_FRESH_FOR_SECONDS, Failure,
@@ -90,6 +97,37 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             source TEXT NOT NULL CHECK (source <> ''),
             read_to INTEGER NOT NULL CHECK (read_to >= 0),
             PRIMARY KEY (provider, home_scope, source)
+        );",
+        },
+        // #700: what time with the agent and the daily digest are made of, recorded as it
+        // happens. A turn is its start and end; an approval and an incident are one row each
+        // under the key the caller names them by.
+        Migration {
+            version: 3,
+            sql: "CREATE TABLE usage_turns (
+            session TEXT NOT NULL CHECK (session <> ''),
+            project TEXT NOT NULL CHECK (project <> ''),
+            day TEXT NOT NULL CHECK (day <> ''),
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER NOT NULL CHECK (ended_at >= started_at),
+            PRIMARY KEY (session, started_at)
+        );
+        CREATE INDEX usage_turns_by_start ON usage_turns (started_at);
+        CREATE INDEX usage_turns_by_day ON usage_turns (day);
+        CREATE TABLE usage_approvals (
+            key TEXT PRIMARY KEY CHECK (key <> ''),
+            project TEXT NOT NULL CHECK (project <> ''),
+            day TEXT NOT NULL CHECK (day <> ''),
+            at INTEGER NOT NULL
+        );
+        CREATE INDEX usage_approvals_by_day ON usage_approvals (day);
+        CREATE TABLE usage_incidents (
+            provider TEXT NOT NULL CHECK (provider <> ''),
+            key TEXT NOT NULL CHECK (key <> ''),
+            title TEXT NOT NULL CHECK (title <> ''),
+            started_at INTEGER NOT NULL,
+            resolved_at INTEGER CHECK (resolved_at >= started_at),
+            PRIMARY KEY (provider, key)
         );",
         },
     ],
