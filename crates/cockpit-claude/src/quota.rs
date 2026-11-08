@@ -2,7 +2,9 @@
 //! endpoint the owner's `config/waybar/.config/waybar/scripts/claude-usage.sh` reads, with
 //! its beta header. The token is Claude Code's own: read from its credentials file at each
 //! request, given to `curl` on its standard input, never refreshed (a refresh from two
-//! places invalidates one of them), never in an error.
+//! places invalidates one of them), never in an error. The hook bridge reads the windows of
+//! the session's own sign-in the same way, to tell a quota stop from a transient rate limit
+//! (#249).
 
 use std::fmt;
 use std::io::Read;
@@ -15,11 +17,15 @@ use serde_json::Value;
 use crate::sign_in::bounded_output;
 
 pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+/// The `curl` on `PATH`, which asks for the plan windows unless the adapter is given another.
+pub const USAGE_CLIENT: &str = "curl";
 const USAGE_BETA: &str = "anthropic-beta: oauth-2025-04-20";
 /// Under the owner's home, as `needs::CREDENTIAL_FILES` declares it.
 const CREDENTIALS: &str = ".claude/.credentials.json";
 const MAX_CREDENTIALS_BYTES: u64 = 64 * 1024;
-pub(crate) const QUOTA_DEADLINE: Duration = Duration::from_secs(15);
+/// How long a usage request may take, the hook bridge's included: well within Claude Code's
+/// hook timeout.
+pub const QUOTA_DEADLINE: Duration = Duration::from_secs(15);
 const FIVE_HOURS: u32 = 5 * 3600;
 const SEVEN_DAYS: u32 = 7 * 86_400;
 
@@ -34,63 +40,113 @@ impl crate::ClaudeCode {
         deadline: Duration,
     ) -> Result<QuotaReading, ProviderError> {
         let sign_in = read_sign_in(home)?;
-        let body = self.fetch_usage(&sign_in.token, deadline)?;
+        let body = fetch_usage(
+            &self.usage_client,
+            &sign_in.token,
+            deadline,
+            OWNER_SIGN_IN_ADVICE,
+        )?;
         reading_of(&body, sign_in.plan)
     }
+}
 
-    fn fetch_usage(&self, token: &Token, deadline: Duration) -> Result<Vec<u8>, ProviderError> {
-        let max_time = deadline
-            .saturating_sub(Duration::from_secs(1))
-            .as_secs()
-            .max(1)
-            .to_string();
-        let header = format!("Authorization: Bearer {}\n", token.0);
-        let output = bounded_output(
-            &self.usage_client,
-            &[
-                "--silent",
-                "--proto",
-                "=https",
-                "--max-time",
-                &max_time,
-                "--header",
-                "@-",
-                "--header",
-                USAGE_BETA,
-                "--header",
-                "Accept: application/json",
-                "--write-out",
-                "\\n%{http_code}",
-                USAGE_URL,
-            ],
-            Some(header.as_bytes()),
-            deadline,
-            "usage request",
-        )
-        .map_err(refused)?;
-        let (body, status_line) = match output.stdout.iter().rposition(|byte| *byte == b'\n') {
-            Some(at) => (&output.stdout[..at], &output.stdout[at + 1..]),
-            None => (&[][..], &output.stdout[..]),
-        };
-        let http_code = std::str::from_utf8(status_line)
-            .ok()
-            .and_then(|code| code.parse::<u16>().ok());
-        match (output.status.code(), http_code) {
-            (Some(0), Some(200)) => Ok(body.to_vec()),
-            (Some(0), Some(code @ (401 | 403))) => Err(refused(format!(
-                "the usage endpoint refused Claude Code's sign-in (HTTP {code}); start `claude` \
-                 so it signs in again"
-            ))),
-            (Some(0), Some(code)) => {
-                Err(refused(format!("the usage endpoint answered HTTP {code}")))
-            }
-            (Some(0), None) => Err(refused("the usage request printed no HTTP status")),
-            (Some(exit), _) => Err(refused(format!(
-                "the usage request failed: curl exited with {exit}{}",
-                curl_failure(exit)
-            ))),
-            (None, _) => Err(refused("the usage request was stopped by a signal")),
+/// What the owner does when the usage endpoint refuses the owner's own sign-in.
+const OWNER_SIGN_IN_ADVICE: &str = "start `claude` so it signs in again";
+/// What the owner does when it refuses a session's bound credential, which no `claude` in
+/// the sandbox can renew.
+const BOUND_CREDENTIAL_ADVICE: &str =
+    "the account's bound credential is refused; replace it in the provider's credential folder";
+
+/// The plan windows of a sandboxed session's own sign-in (#249), read as Claude Code finds
+/// it: `bound_token` first, the [`crate::needs::OAUTH_TOKEN_VARIABLE`] the session holds (a
+/// placeholder the session proxy swaps for the account's credential on the usage host, #968),
+/// else the credentials file under `home`, a login account's bound there (#59). An empty
+/// variable is none, as Claude Code reads it. `usage_client` is the `curl` that asks; giving
+/// up after `deadline`.
+pub fn session_quota(
+    home: Option<&Path>,
+    bound_token: Option<&str>,
+    usage_client: &Path,
+    deadline: Duration,
+) -> Result<QuotaReading, ProviderError> {
+    let bound_token = bound_token.filter(|token| !token.is_empty());
+    let (sign_in, advice) = match (bound_token, home) {
+        (Some(token), _) => {
+            let what = format!("the token in {}", crate::needs::OAUTH_TOKEN_VARIABLE);
+            let sign_in = SignIn {
+                token: checked_token(token, &what)?,
+                plan: None,
+            };
+            (sign_in, BOUND_CREDENTIAL_ADVICE)
         }
+        (None, Some(home)) => (read_sign_in(home)?, OWNER_SIGN_IN_ADVICE),
+        (None, None) => {
+            return Err(refused(format!(
+                "the session holds no {} and HOME is not set",
+                crate::needs::OAUTH_TOKEN_VARIABLE
+            )));
+        }
+    };
+    let body = fetch_usage(usage_client, &sign_in.token, deadline, advice)?;
+    reading_of(&body, sign_in.plan)
+}
+
+/// The usage endpoint's answer for `token`; `sign_in_advice` says what the owner does when
+/// it refuses the token.
+fn fetch_usage(
+    usage_client: &Path,
+    token: &Token,
+    deadline: Duration,
+    sign_in_advice: &str,
+) -> Result<Vec<u8>, ProviderError> {
+    let max_time = deadline
+        .saturating_sub(Duration::from_secs(1))
+        .as_secs()
+        .max(1)
+        .to_string();
+    let header = format!("Authorization: Bearer {}\n", token.0);
+    let output = bounded_output(
+        usage_client,
+        &[
+            "--silent",
+            "--proto",
+            "=https",
+            "--max-time",
+            &max_time,
+            "--header",
+            "@-",
+            "--header",
+            USAGE_BETA,
+            "--header",
+            "Accept: application/json",
+            "--write-out",
+            "\\n%{http_code}",
+            USAGE_URL,
+        ],
+        Some(header.as_bytes()),
+        deadline,
+        "usage request",
+    )
+    .map_err(refused)?;
+    let (body, status_line) = match output.stdout.iter().rposition(|byte| *byte == b'\n') {
+        Some(at) => (&output.stdout[..at], &output.stdout[at + 1..]),
+        None => (&[][..], &output.stdout[..]),
+    };
+    let http_code = std::str::from_utf8(status_line)
+        .ok()
+        .and_then(|code| code.parse::<u16>().ok());
+    match (output.status.code(), http_code) {
+        (Some(0), Some(200)) => Ok(body.to_vec()),
+        (Some(0), Some(code @ (401 | 403))) => Err(refused(format!(
+            "the usage endpoint refused Claude Code's sign-in (HTTP {code}); {sign_in_advice}"
+        ))),
+        (Some(0), Some(code)) => Err(refused(format!("the usage endpoint answered HTTP {code}"))),
+        (Some(0), None) => Err(refused("the usage request printed no HTTP status")),
+        (Some(exit), _) => Err(refused(format!(
+            "the usage request failed: curl exited with {exit}{}",
+            curl_failure(exit)
+        ))),
+        (None, _) => Err(refused("the usage request was stopped by a signal")),
     }
 }
 
@@ -150,12 +206,7 @@ fn read_sign_in(home: &Path) -> Result<SignIn, ProviderError> {
              windows); run `claude` and sign in with a subscription",
         ));
     };
-    // The token goes into a header line: anything but visible ASCII could end it early.
-    if !token.bytes().all(|byte| byte.is_ascii_graphic()) {
-        return Err(refused(
-            "the token in ~/.claude/.credentials.json is malformed",
-        ));
-    }
+    let token = checked_token(token, "the token in ~/.claude/.credentials.json")?;
     match &oauth["expiresAt"] {
         // No expiry written: the endpoint decides, and a refusal says to sign in again.
         Value::Null => {}
@@ -174,9 +225,21 @@ fn read_sign_in(home: &Path) -> Result<SignIn, ProviderError> {
         }
     }
     Ok(SignIn {
-        token: Token(token.to_owned()),
+        token,
         plan: oauth["subscriptionType"].as_str().map(str::to_owned),
     })
+}
+
+/// `token` as a header line can carry it: non-empty, visible ASCII only, since anything else
+/// could end the line early. `what` names it in a refusal, never its value.
+fn checked_token(token: &str, what: &str) -> Result<Token, ProviderError> {
+    if token.is_empty() {
+        return Err(refused(format!("{what} is empty")));
+    }
+    if !token.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(refused(format!("{what} is malformed")));
+    }
+    Ok(Token(token.to_owned()))
 }
 
 fn now_ms() -> i64 {

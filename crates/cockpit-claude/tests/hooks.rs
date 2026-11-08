@@ -5,7 +5,8 @@ mod common;
 
 use cockpit_claude::hooks::{self, HOOK_EVENTS};
 use cockpit_provider_api::{
-    CompactionMoment, CompactionPhase, CompactionTrigger, ConversationId, EventKind, TurnOutcome,
+    CompactionMoment, CompactionPhase, CompactionTrigger, ConversationId, EventKind, LimitKey,
+    ProviderEvent, QuotaReading, QuotaWindow, TurnOutcome,
 };
 
 fn kind(fixture: &str) -> EventKind {
@@ -381,6 +382,207 @@ fn each_event_reports_its_state_through_the_agent_channel() {
     ] {
         assert_eq!(report(fixture), expected, "{fixture}");
     }
+}
+
+/// A reading with the five-hour window at `five_hour_percent` and the weekly one at 81.
+fn plan_windows(five_hour_percent: f64) -> QuotaReading {
+    let window = |key: &str, length: u32, used_percent: f64| {
+        QuotaWindow::new(
+            LimitKey::new(key).unwrap(),
+            None,
+            Some(length),
+            used_percent,
+            Some(1_800_007_200),
+        )
+        .unwrap()
+    };
+    QuotaReading::new(
+        Some("max".to_owned()),
+        vec![
+            window("five-hour", 18_000, five_hour_percent),
+            window("seven-day", 604_800, 81.0),
+        ],
+        false,
+    )
+    .unwrap()
+}
+
+fn judged(fixture: &str, reading: &QuotaReading) -> ProviderEvent {
+    let event = hooks::normalize(&common::fixture(fixture)).unwrap();
+    hooks::judged_by_plan_windows(event, reading)
+}
+
+#[test]
+fn only_a_rate_limit_failure_needs_the_plan_windows() {
+    for (fixture, expected) in [
+        ("stop-failure-rate-limit-plan-window", true),
+        ("stop-failure-rate-limit-transient", true),
+        ("stop", false),
+        ("session-start", false),
+    ] {
+        let event = hooks::normalize(&common::fixture(fixture)).unwrap();
+        assert_eq!(hooks::needs_plan_windows(&event), expected, "{fixture}");
+    }
+    let other_failure = r#"{"session_id":"0b7f3c1e-1f6a-4c55-a2a1-9e3c7c0d1a2b","hook_event_name":"StopFailure","error":"server_error"}"#;
+    assert!(!hooks::needs_plan_windows(
+        &hooks::normalize(other_failure).unwrap()
+    ));
+}
+
+#[test]
+fn a_rate_limit_failure_with_a_spent_window_is_a_quota_stop() {
+    let event = judged("stop-failure-rate-limit-plan-window", &plan_windows(100.0));
+
+    assert_eq!(
+        event.kind,
+        EventKind::TurnEnded {
+            outcome: TurnOutcome::QuotaStopped
+        }
+    );
+    assert_eq!(event.name, "StopFailure");
+    assert_eq!(
+        event.raw,
+        common::fixture("stop-failure-rate-limit-plan-window")
+    );
+    assert_eq!(
+        hooks::report_arguments(&event),
+        words(&[
+            "agent",
+            "report",
+            "--state",
+            "waiting",
+            "--outcome",
+            "quota-stopped",
+        ])
+    );
+}
+
+#[test]
+fn a_rate_limit_failure_with_headroom_stays_failed_with_its_reason() {
+    let event = judged("stop-failure-rate-limit-transient", &plan_windows(99.9));
+
+    assert_eq!(
+        event.kind,
+        EventKind::TurnEnded {
+            outcome: TurnOutcome::Failed {
+                reason: Some("rate_limit".to_owned()),
+            }
+        }
+    );
+    assert_eq!(
+        hooks::report_arguments(&event),
+        words(&[
+            "agent",
+            "report",
+            "--state",
+            "waiting",
+            "--outcome",
+            "failed",
+            "--outcome-reason",
+            "rate_limit",
+        ])
+    );
+}
+
+#[test]
+fn a_spent_window_scoped_to_one_model_does_not_make_a_quota_stop() {
+    let opus_spent = QuotaReading::new(
+        Some("max".to_owned()),
+        vec![
+            QuotaWindow::new(
+                LimitKey::new("five-hour").unwrap(),
+                None,
+                Some(18_000),
+                40.0,
+                None,
+            )
+            .unwrap(),
+            QuotaWindow::new(
+                LimitKey::new("seven-day:opus-4-5").unwrap(),
+                Some("Opus 4.5".to_owned()),
+                Some(604_800),
+                100.0,
+                None,
+            )
+            .unwrap(),
+        ],
+        false,
+    )
+    .unwrap();
+
+    let event = judged("stop-failure-rate-limit-transient", &opus_spent);
+
+    assert_eq!(
+        event.kind,
+        EventKind::TurnEnded {
+            outcome: TurnOutcome::Failed {
+                reason: Some("rate_limit".to_owned()),
+            }
+        }
+    );
+}
+
+#[test]
+fn a_spent_seven_day_window_makes_a_quota_stop_too() {
+    let weekly_spent = QuotaReading::new(
+        None,
+        vec![
+            QuotaWindow::new(
+                LimitKey::new("seven-day").unwrap(),
+                None,
+                Some(604_800),
+                100.0,
+                None,
+            )
+            .unwrap(),
+        ],
+        false,
+    )
+    .unwrap();
+
+    let event = judged("stop-failure-rate-limit-plan-window", &weekly_spent);
+
+    assert_eq!(
+        event.kind,
+        EventKind::TurnEnded {
+            outcome: TurnOutcome::QuotaStopped
+        }
+    );
+}
+
+#[test]
+fn a_rate_limit_failure_with_no_window_read_yet_stays_failed() {
+    let unused = QuotaReading::new(Some("max".to_owned()), Vec::new(), false).unwrap();
+
+    let event = judged("stop-failure-rate-limit-plan-window", &unused);
+
+    assert_eq!(
+        event.kind,
+        EventKind::TurnEnded {
+            outcome: TurnOutcome::Failed {
+                reason: Some("rate_limit".to_owned()),
+            }
+        }
+    );
+}
+
+#[test]
+fn a_failure_for_another_reason_is_not_judged_by_the_plan_windows() {
+    let payload = r#"{"session_id":"0b7f3c1e-1f6a-4c55-a2a1-9e3c7c0d1a2b","hook_event_name":"StopFailure","error":"server_error"}"#;
+    let event = hooks::normalize(payload).unwrap();
+
+    let judged = hooks::judged_by_plan_windows(event.clone(), &plan_windows(100.0));
+
+    assert_eq!(judged, event);
+}
+
+#[test]
+fn a_completed_turn_is_not_judged_by_the_plan_windows() {
+    let event = hooks::normalize(&common::fixture("stop")).unwrap();
+
+    let judged = hooks::judged_by_plan_windows(event.clone(), &plan_windows(100.0));
+
+    assert_eq!(judged, event);
 }
 
 #[test]

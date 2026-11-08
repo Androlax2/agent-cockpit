@@ -5,7 +5,7 @@ use std::fmt;
 
 use cockpit_provider_api::{
     Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ContextUsage, ConversationId,
-    EventKind, ProviderEvent, TurnOutcome,
+    EventKind, ProviderEvent, QuotaReading, TurnOutcome,
 };
 
 /// The hook events launches subscribe the bridge to. `SessionEnd` reports nothing: the
@@ -110,7 +110,8 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
             outcome: TurnOutcome::Completed,
         },
         // Not `QuotaStopped`, even for `rate_limit`: Claude Code sends that error both when
-        // the plan's window is spent and for a transient 429 (#212).
+        // the plan's window is spent and for a transient 429 (#212). The plan windows tell
+        // them apart afterwards ([`judged_by_plan_windows`], #249).
         "StopFailure" => EventKind::TurnEnded {
             outcome: TurnOutcome::Failed {
                 reason: text("error").map(str::to_owned),
@@ -124,6 +125,48 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
         name: name.to_owned(),
         raw: payload.to_owned(),
     })
+}
+
+/// The `StopFailure` error Claude Code sends both for a spent plan window and for a transient
+/// server-side 429 (#212).
+pub const RATE_LIMIT: &str = "rate_limit";
+
+/// Whether `event` is a failed turn only the session's plan windows can judge (#249): a
+/// [`RATE_LIMIT`] failure. Every other event is what it says.
+pub fn needs_plan_windows(event: &ProviderEvent) -> bool {
+    matches!(
+        &event.kind,
+        EventKind::TurnEnded { outcome } if outcome.failure_reason() == Some(RATE_LIMIT)
+    )
+}
+
+/// The plan's own windows, the ones a turn on any model spends: the five-hour and the
+/// seven-day limit, as `quota` keys them. A window scoped to one model is not read: the
+/// payload does not say which model the turn ran on, and a spent Opus window must not move a
+/// session running Sonnet.
+const PLAN_WINDOWS: [&str; 2] = ["five-hour", "seven-day"];
+
+/// `event` judged by the session's plan windows (#249): a [`RATE_LIMIT`] failure while one
+/// of the plan's own windows, `five-hour` or `seven-day`, is spent, used at or past its whole
+/// limit, is a quota stop, which moves the session to its next account (#59). With headroom
+/// in both it stays a failure: a transient rate limit must never move a session. Any other
+/// event is kept as it is.
+pub fn judged_by_plan_windows(event: ProviderEvent, reading: &QuotaReading) -> ProviderEvent {
+    if !needs_plan_windows(&event) {
+        return event;
+    }
+    let is_spent = reading.windows().iter().any(|window| {
+        PLAN_WINDOWS.contains(&window.limit().as_str()) && window.used_percent() >= 100.0
+    });
+    if !is_spent {
+        return event;
+    }
+    ProviderEvent {
+        kind: EventKind::TurnEnded {
+            outcome: TurnOutcome::QuotaStopped,
+        },
+        ..event
+    }
 }
 
 /// A compaction hook's moment; the trigger is `manual` or `auto`. Claude Code's payload

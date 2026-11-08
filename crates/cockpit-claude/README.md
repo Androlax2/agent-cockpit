@@ -30,7 +30,8 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   `seven-day` and `seven-day:<model>` (a limit scoped to a model on a surface names both;
   a model listed twice is one window). A window with no share used yet is left out. A failed
   or limited request is refused in the adapter's words, without the answer or curl's own
-  message. The host daemon alone calls it (#858).
+  message. The host daemon alone calls it (#858); the hook bridge reads a session's own
+  windows the same way at a `rate_limit` stop (#249, below).
 - **Runtime probe** (#732). On a version not in `tested-versions.txt`, the daemon runs
   `probe` once at its start: each launch flag in `claude --help`, each launch environment name
   and hook event in the program. A missing requirement is logged and shown by `torlek doctor`
@@ -74,8 +75,16 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   would refuse is replaced by a plain one; line breaks become spaces and a long one is cut
   to 300 characters. A turn's end reports its outcome (`--outcome completed` or `failed`);
   a failure's reason the channel would refuse is left out, a long one cut to 80 characters.
-  `StopFailure` `rate_limit` is `failed`, never `quota-stopped`: Claude Code sends it for a
-  spent plan window and a transient 429 alike (#212). A `SessionStart` after a compaction
+  `StopFailure` `rate_limit` is ambiguous: Claude Code sends it for a spent plan window and
+  a transient 429 alike (#212), so the bridge judges it by the plan windows of the session's
+  own sign-in before reporting (#249): the usage request above, with the
+  `CLAUDE_CODE_OAUTH_TOKEN` the session holds (the placeholder the session proxy swaps for
+  the account's credential) or else the credentials file in its home, through the `curl` on
+  its `PATH`. The `five-hour` or `seven-day` window used at or past its whole limit makes it
+  `quota-stopped`, which moves the session to its next account (#59); a window scoped to one
+  model is not read, since the payload does not say which model the turn ran on. Headroom in
+  both, or windows that cannot be read, keep it `failed` with reason `rate_limit`, said on
+  the hook's standard error. A `SessionStart` after a compaction
   reports nothing: an automatic one happens in the middle of a turn.
 - **Inbox (#703).** On `SessionStart` and `Stop`, a second hook runs in the background
   (`asyncRewake`): `torlek-claude-hook <torlek> --inbox` waits on `torlek agent inbox` for a
@@ -126,7 +135,8 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 - `tests/screen.rs`: the screen-reading fallback.
 - `tests/quota.rs`: plan windows from both answer shapes in `tests/fixtures/oauth-usage/`,
   against a fake `curl` and a scratch home: the token's path, expiry and refusals.
-- `tests/bridge.rs`: the hook bridge as a process against a fake `torlek`.
+- `tests/bridge.rs`: the hook bridge as a process against a fake `torlek`, and, for a
+  `rate_limit` stop, a fake `curl` answering with the saved usage answers.
 - `tests/bridge_check.rs`: `Bridge::check` passes the built bridge and refuses one that
   cannot run or is another program.
 - `tests/conversation.rs`: the conversation each report names, and the end a `/clear` or an
