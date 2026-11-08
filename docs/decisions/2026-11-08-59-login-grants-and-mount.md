@@ -2,9 +2,10 @@
 
 Status: accepted
 
-Issue #59, parts 3b and 3c. Passing over a login account the project holds no grant for,
-naming it and the missing grant, and refusing a restart kept on it was decided by Theo
-(2026-11-08, option C). The read-write login mount, the file or a folder holding only it,
+Issue #59, parts 3b, 3c and 4a. Passing over a login account the project holds no grant
+for, naming it and the missing grant, and refusing a restart kept on it was decided by Theo
+(2026-11-08, option C), as was one session at a time per login account (2026-11-08,
+choice A). The read-write login mount, the file or a folder holding only it,
 comes from #858. The rest are engineering defaults listed in the pull requests.
 
 - **A grant is the owner's, per project.** `torlek account grant PROJECT PROVIDER ACCOUNT`
@@ -27,9 +28,14 @@ comes from #858. The rest are engineering defaults listed in the pull requests.
   agent pointed it.
 - **An account with both a credential file and a login refuses the launch.** Which one to use
   is the owner's to say.
+- **One session at a time uses a login account.** Two holders of one rotating refresh token
+  sign each other out when they refresh in turn (#858 report, T5). A launch passes over a
+  login another live session (starting, running or stopping) uses, naming that session, and
+  refuses a kept one; the transaction that records the launch checks again, so two launches
+  choosing at once never both take it.
 - **Rejected:** copying the login into the session's home (a refresh would never reach the
   account, and a refresh in one copy leaves the other stale); binding Codex's file
-  (its rename fails on a mount point).
+  (its rename fails on a mount point); sessions sharing one login at once (the T5 race).
 
 Evidence: `crates/cockpit-daemon/tests/account_grants.rs`, the login tests in
 `crates/cockpit-daemon/tests/sandbox.rs`, `crates/cockpit-sandbox/tests/login_mount.rs`.

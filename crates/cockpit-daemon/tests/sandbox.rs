@@ -1864,6 +1864,43 @@ async fn a_sign_in_the_session_rewrites_in_place_reaches_the_account() {
     );
 }
 
+/// #59 acceptance: a refresh inside a session survives in the shared login, so the next
+/// session on the account starts with the refreshed sign-in.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_next_session_on_a_login_starts_with_the_sign_in_the_last_one_refreshed() {
+    let home = Home::new();
+    let agent = agent_with_logins(&home, WORK_LOGIN, &["work"], |home| {
+        write_claude_login(home, "work", "fixture-login-v1");
+    })
+    .await;
+    run_in_agent(
+        &home,
+        &agent.root,
+        "printf fixture-login-v2 > ~/.claude/.credentials.json",
+    )
+    .await;
+    let client = home.connect().await;
+    client
+        .request(
+            Command::SessionEnd {
+                session: agent.session.clone(),
+            },
+            GENEROUS,
+        )
+        .await
+        .unwrap();
+
+    let next = new_session(&client, &agent.root).await;
+    let printed = run_in_agent(&home, &agent.root, "cat ~/.claude/.credentials.json; echo").await;
+
+    assert_ne!(next.id, agent.session);
+    assert_eq!(
+        launch_account(&home, &next.id).await.as_deref(),
+        Some("work")
+    );
+    assert!(printed.starts_with("fixture-login-v2\n"), "{printed}");
+}
+
 const PASSED_OVER_WORK: &str = "work (project commanded holds no grant for its login: \
                                 `torlek account grant commanded claude work` lets it)";
 
@@ -1925,6 +1962,94 @@ async fn a_restart_after_a_quota_stop_names_the_login_it_passed_over() {
     assert_eq!(launch.kind, LaunchKindView::Restart);
     assert_eq!(launch.account.as_deref(), Some("spare"));
     assert_eq!(launch.passed_over, [PASSED_OVER_WORK]);
+}
+
+/// A sandboxed agent on the granted login `work`, `spare` holding a credential, and project
+/// `other` granted `work` too.
+async fn agent_on_work_login_with_other_project(home: &Home) -> (Sandboxed, PathBuf) {
+    let agent = agent_with_logins(home, TWO_ACCOUNTS, &["work"], |home| {
+        write_claude_login(home, "work", "fixture-login-v1");
+        home.write_account_credential(
+            "claude",
+            "spare",
+            "ANTHROPIC_API_KEY",
+            &format!("{SETUP_TOKEN}\n"),
+            0o600,
+        );
+    })
+    .await;
+    let client = home.connect().await;
+    let (other, _) = home.project(&client, "other").await;
+    let granted = home
+        .cockpit(&["account", "grant", "other", "claude", "work"], &[])
+        .await;
+    assert!(granted.status.success(), "{}", text(&granted.stderr));
+    (agent, other)
+}
+
+/// #59, Theo's choice A for #858: one session at a time uses a login account, so a second
+/// session passes it over for the next listed account, naming the session using it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_login_another_session_uses_is_passed_over_naming_that_session() {
+    let home = Home::new();
+    let (agent, other) = agent_on_work_login_with_other_project(&home).await;
+    let client = home.connect().await;
+
+    let second = new_session(&client, &other).await;
+
+    let launch = listed(&client, &second.id)
+        .await
+        .launch
+        .expect("the session launched");
+    assert_eq!(launch.account.as_deref(), Some("spare"));
+    assert_eq!(
+        launch.passed_over,
+        [format!(
+            "work (session {} uses its login: one session at a time uses a login account)",
+            agent.session
+        )]
+    );
+}
+
+/// #59, Theo's choice A for #858: a session asleep holds no login, and waking it on a login
+/// another session took meanwhile is refused, naming that session.
+#[tokio::test(flavor = "multi_thread")]
+async fn waking_a_session_on_a_login_another_session_took_is_refused_naming_it() {
+    let home = Home::new();
+    let (agent, other) = agent_on_work_login_with_other_project(&home).await;
+    let client = home.connect().await;
+    client
+        .request(
+            Command::SessionSleep {
+                session: agent.session.clone(),
+            },
+            GENEROUS,
+        )
+        .await
+        .unwrap();
+    let second = new_session(&client, &other).await;
+    let taken = listed(&client, &second.id).await.launch.unwrap();
+    assert_eq!(taken.account.as_deref(), Some("work"));
+
+    let woken = client
+        .request(
+            Command::SessionWake {
+                session: agent.session.clone(),
+            },
+            GENEROUS,
+        )
+        .await;
+
+    assert!(
+        matches!(&woken, Err(ClientError::Daemon(error))
+        if error.code == ErrorCode::Refused
+            && error.message.contains(&format!(
+                "account work, which has its login in use by session {} (one session at a \
+                 time uses a login account)",
+                second.id
+            ))),
+        "{woken:?}"
+    );
 }
 
 /// #59, owner decision C: `session new` says which login it passed over and the grant.

@@ -713,6 +713,37 @@ pub(crate) async fn accounts_stopped_since(
     Ok(accounts)
 }
 
+/// Each account of `provider` whose latest launch of a session other than `except` is live
+/// (starting, running or stopping), with that session, by account (#59): one session at a
+/// time uses a login account. A session asleep, failed or ended holds none.
+pub(crate) async fn accounts_in_use(
+    connection: &Connection,
+    provider: &str,
+    except: Option<&SessionId>,
+) -> Result<Vec<(String, SessionId)>, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT l.account, s.id
+             FROM sessions s
+             JOIN session_launches l ON l.id =
+                 (SELECT max(id) FROM session_launches WHERE session_id = s.id)
+             WHERE s.provider = ?1 AND l.account IS NOT NULL AND s.id IS NOT ?2
+               AND s.state IN ('launching', 'running', 'stopping')
+             ORDER BY l.account, s.created_at, s.id",
+            (provider, except.map(SessionId::as_str)),
+        )
+        .await?;
+    let mut in_use = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let id_text: String = row.get(1)?;
+        let id = SessionId::parse(&id_text).map_err(|error| Error::InvalidStoredRow {
+            reason: format!("session {id_text}: {error}"),
+        })?;
+        in_use.push((row.get(0)?, id));
+    }
+    Ok(in_use)
+}
+
 /// The bundle the latest launch of each session whose agent is starting, running or stopping
 /// ran with, by creation. A session asleep, failed or ended launches again with whatever
 /// bundle the daemon then holds, so it is not listed; nor is one whose first launch is not
