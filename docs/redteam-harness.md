@@ -79,7 +79,7 @@ owner shell. Who that is decides what the result proves, so the caller is part o
   starts a session (`torlek session new`) in a checkout it owns from outside the sandbox, tells
   the agent to run the command verbatim and write the command's combined output followed by a
   distinctive `__REDTEAM_EXIT__=<code>` trailer to a drop file in that checkout, then reads the
-  drop file back and classifies it. A model drives the session, so these need a provider key
+  drop file back and classifies it. A model drives the session, so these need a provider credential
   (below). The result records the
   session's sandbox evidence (`torlek session sandbox`): the backend that enforced it and the
   subject, so a reader can tell a real sandbox block from a Unix permission error.
@@ -89,22 +89,36 @@ owner shell. Who that is decides what the result proves, so the caller is part o
   path `crates/cockpit-daemon/tests/host_only_verbs.rs` proves. This is the fix for the earlier
   bug where the harness ran these on the owner shell (empty `TORLEK_SESSION`), which reaches the
   **owner** socket, so the daemon treated the attack as the owner and the "refusal" was really
-  the owner being allowed. These need no provider key.
+  the owner being allowed. These need no provider credential.
 
-## The provider key for section 1 (option B)
+## The provider credential for section 1 (option B)
 
-Section 1 runs a real model-driven session, which needs a provider credential. The owner
-creates a **separate, spend-capped** key for the guest only — never a real one — and drops it
-into the guest at run time:
+Section 1 runs a real model-driven session, which needs a provider credential. The guest has
+the `claude` program (pinned, [the red-team VM](redteam-vm.md)) but no credential. The owner
+creates a **separate** credential for the guest only and drops it into the guest at run time.
+Two routes, one file each:
 
 ```sh
-tools/redteam-vm.sh put-credential /path/to/keyfile   # one line, mode 0600; --provider/--var to override
+# A: a spend-capped API key (the default variable is ANTHROPIC_API_KEY)
+tools/redteam-vm.sh put-credential /path/to/keyfile
+
+# B: the owner's subscription token, made with `claude setup-token`
+tools/redteam-vm.sh put-credential /path/to/tokenfile --var CLAUDE_CODE_OAUTH_TOKEN
 ```
 
-The key is copied into the guest only; it never enters this repo, the results log, the host's
-own Torlek state, or any result line. The harness **refuses to run section 1, naming why**,
-when the guest's sandbox is not `required`, its backend is missing, or no key is present. Drop
-it again when done:
+The file holds the one-line value and nothing else. The trade-off: the API key has a spend cap
+you set; the subscription token spends the owner's plan and has no cap of its own, only the
+plan's usage limits, and lasts a year unless revoked. Either way, revoke it when the red-team
+is done. `put-credential` clears the provider's credential folder first, so the guest holds
+exactly one.
+
+The credential is copied into the guest only; it never enters this repo, the results log, the
+host's own Torlek state, or any result line. The harness **refuses to run section 1, naming
+why**, when the guest's sandbox is not `required` or has no backend, the daemon does not list the
+agent (`torlek doctor` in the guest: no `claude`, so a guest built before #1171 must be rebuilt
+with `create`), or no credential is present, and each case names itself. `tools/redteam-vm.sh
+check` reports the agent and the credential on separate lines. Drop the credential again when
+done:
 
 ```sh
 tools/redteam-vm.sh drop-credential
@@ -118,7 +132,7 @@ Section 2 needs none of this, so it runs even when section 1 is refused.
 tools/redteam-vm.sh start
 # section 2 only (no key needed):
 tools/redteam-harness.py --id 2.1-self-grant --results-log ~/.local/share/torlek-redteam/results.jsonl
-# everything automated (section 1 needs the key dropped first):
+# everything automated (section 1 needs the credential dropped first):
 tools/redteam-vm.sh put-credential /path/to/keyfile
 tools/redteam-harness.py --results-log ~/.local/share/torlek-redteam/results.jsonl
 tools/redteam-vm.sh drop-credential

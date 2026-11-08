@@ -31,7 +31,10 @@ class FakeGuest:
         key_present=True,
         agent_outputs=None,
         sandbox_runs=None,
+        agent_present=True,
     ):
+        self.provider = "claude"
+        self.agent_present = agent_present
         self.required = required
         self.backend_present = backend_present
         self.key_present = key_present
@@ -49,6 +52,10 @@ class FakeGuest:
         return redteam_harness.SandboxStatus(
             self.required, self.backend_present, "torlek-sandbox", detail
         )
+
+    def agent_status(self):
+        detail = "2.1.319 (tested)" if self.agent_present else "not usable: no `claude` on PATH"
+        return redteam_harness.AgentStatus(self.agent_present, detail)
 
     def section1_key_present(self):
         return self.key_present
@@ -328,8 +335,12 @@ class Section1RefusalTests(unittest.TestCase):
     def test_refuses_when_the_backend_is_missing(self):
         self.assert_refuses_naming(FakeGuest(backend_present=False), "backend is missing")
 
+    def test_refuses_naming_the_missing_agent_program_apart_from_the_credential(self):
+        guest = FakeGuest(agent_present=False, key_present=False)
+        self.assert_refuses_naming(guest, "does not list claude as usable")
+
     def test_refuses_when_no_provider_key_is_present(self):
-        self.assert_refuses_naming(FakeGuest(key_present=False), "provider key")
+        self.assert_refuses_naming(FakeGuest(key_present=False), "provider credential")
 
     def test_section2_still_runs_when_section1_is_refused(self):
         # A full run with no key: section 2 needs none, so it runs and is logged; section 1 is
@@ -387,6 +398,55 @@ class DropAndSessionParsingTests(unittest.TestCase):
 
     def test_no_session_id_returns_none(self):
         self.assertIsNone(self.guest._parse_session_id("torlek: error: could not start\n"))
+
+
+DOCTOR_REPORT = """\
+available             sandbox: sandboxed: every agent runs in torlek-sandbox with bubblewrap 0.13.1 and Landlock ABI 9
+available             provider claude: 2.1.319 (tested); reports resume, submit, events
+needs-authorization   provider claude sign-in: not signed in (tested on 2.1.319)
+needs-authorization   provider claude sandboxed sign-in: none: a sandboxed claude session never reads your own sign-in
+available             provider codex: not usable, optional: no `codex` on PATH
+"""
+
+
+class ReportedGuest(redteam_harness.VmGuest):
+    """The real guest's parsing of `torlek doctor`, fed a recorded report instead of ssh."""
+
+    def __init__(self, report, config='[agents]\nsandbox = "required"\n'):
+        super().__init__()
+        self.report = report
+        self.config = config
+
+    def _ssh(self, remote_command, timeout=60):
+        output = self.report if "torlek doctor" in remote_command else self.config
+        return subprocess.CompletedProcess(remote_command, 0, output, "")
+
+
+class VmGuestDoctorParsingTests(unittest.TestCase):
+    def test_reads_the_backend_from_the_sandbox_line(self):
+        status = ReportedGuest(DOCTOR_REPORT).sandbox_status()
+        self.assertTrue(status.required)
+        self.assertTrue(status.backend_present)
+        self.assertEqual(status.backend, "torlek-sandbox")
+
+    def test_reports_no_backend_when_the_sandbox_line_is_not_sandboxed(self):
+        report = "available             sandbox: off: agents run as you\n"
+        status = ReportedGuest(report, config="").sandbox_status()
+        self.assertFalse(status.required)
+        self.assertFalse(status.backend_present)
+
+    def test_lists_the_agent_from_its_provider_line_not_its_sign_in_lines(self):
+        agent = ReportedGuest(DOCTOR_REPORT).agent_status()
+        self.assertTrue(agent.present)
+        self.assertTrue(agent.detail.startswith("2.1.319"))
+
+    def test_an_agent_with_no_provider_line_is_absent(self):
+        agent = ReportedGuest("available             sandbox: sandboxed: every agent runs in x\n").agent_status()
+        self.assertFalse(agent.present)
+
+    def test_an_agent_not_usable_is_absent(self):
+        report = "available             provider claude: not usable: no `claude` on PATH\n"
+        self.assertFalse(ReportedGuest(report).agent_status().present)
 
 
 if __name__ == "__main__":

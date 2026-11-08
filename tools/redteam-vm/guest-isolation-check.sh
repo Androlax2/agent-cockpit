@@ -22,6 +22,24 @@ echo "ssh dir: $(find ~/.ssh -mindepth 1 -maxdepth 1 -printf '%f ' 2>/dev/null)"
 echo "torlek: $("$HOME/.local/bin/torlek" version 2>&1 | head -1)"
 echo "torlek daemon: $(systemctl --user is-active torlek 2>&1)"
 
+# Section 1 needs a provider program and, separately, a credential. Neither is a host-sharing
+# sign, so a missing one is reported (and the program's absence fails the check, as the guest
+# cannot run section 1), never mixed into the other. The daemon's own provider list is the
+# authority on whether the agent is usable; only whether a credential file exists is read,
+# never its content.
+provider_list=$(PATH=$HOME/.local/bin:$PATH torlek provider list 2>&1 </dev/null)
+if grep -qE '^claude\b' <<<"$provider_list"; then
+    echo "agent claude: listed by the daemon ($(claude --version 2>&1 </dev/null | head -1))"
+else
+    echo "agent claude: NOT listed by the daemon"
+    failed=1
+fi
+if [[ -n $(find ~/.config/torlek/provider-credentials/claude -maxdepth 1 -type f -size +0c 2>/dev/null) ]]; then
+    echo "credential claude: present"
+else
+    echo "credential claude: absent"
+fi
+
 shared_mounts=$(grep -E ' (9p|virtiofs|fuse\.sshfs|nfs[0-9]*|cifs) ' /proc/mounts || true)
 [[ -z $shared_mounts ]] || fail "shared mounts: $shared_mounts"
 for home_folder in $home_folders; do

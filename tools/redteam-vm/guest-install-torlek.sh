@@ -32,3 +32,11 @@ for _ in $(seq 30); do
     sleep 1
 done
 torlek daemon install </dev/null
+
+# The install returns before the daemon's socket exists, and the next provisioning step talks
+# to the daemon.
+for _ in $(seq 30); do
+    torlek project list </dev/null >/dev/null 2>&1 && break
+    sleep 1
+done
+torlek project list </dev/null >/dev/null
