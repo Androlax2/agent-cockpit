@@ -9,7 +9,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::token_file::{TokenFileError, TokenRule, read_token_file};
-use crate::{Environment, Layout};
+use crate::{DEFAULT_ACCOUNT, Environment, Layout};
 
 /// The folder of [`Layout::config_dir`] that holds one folder per provider, named as
 /// `session new --agent` takes it.
@@ -37,6 +37,21 @@ pub fn provider_credentials_dir(environment: &Environment, provider: &str) -> Op
             .join(PROVIDER_CREDENTIALS_DIR)
             .join(provider),
     )
+}
+
+/// Where `account` of `provider` keeps its credential files (#59): the provider's folder for
+/// [`DEFAULT_ACCOUNT`], so the single credential of #968 stays where it is, else a folder of
+/// the account's name inside it. `None` when `environment` names no home.
+pub fn account_credentials_dir(
+    environment: &Environment,
+    provider: &str,
+    account: &str,
+) -> Option<PathBuf> {
+    let provider_dir = provider_credentials_dir(environment, provider)?;
+    if account == DEFAULT_ACCOUNT {
+        return Some(provider_dir);
+    }
+    Some(provider_dir.join(account))
 }
 
 /// A credential read from its file. It has no `Display`, and its `Debug` is redacted, so a
@@ -144,6 +159,13 @@ pub enum ProviderCredentialState {
     Unusable {
         reason: String,
     },
+}
+
+/// One account's [`ProviderCredentialState`] (#59).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountCredentialState {
+    pub account: String,
+    pub state: ProviderCredentialState,
 }
 
 /// [`read_provider_credential`] as its state. Blocking.

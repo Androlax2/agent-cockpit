@@ -77,7 +77,7 @@ pub(crate) fn provider_found(provider: &dyn cockpit_provider_api::Provider) -> P
                 "run `torlek doctor`",
             )),
             // Read with each report, under the setting the daemon applies then.
-            sandbox_credential: None,
+            sandbox_credentials: Vec::new(),
         }),
     }
 }
@@ -195,13 +195,13 @@ async fn report(
     for fact in &mut host.providers {
         if let Ok(found) = fact.found.as_mut() {
             // A failure that is not the credential file's is no row about the file.
-            found.sandbox_credential = context
+            found.sandbox_credentials = context
                 .sessions
                 .sandbox_credential_state(&fact.name)
                 .await
                 .unwrap_or_else(|error| {
                     tracing::warn!(provider = %fact.name, %error, "the sandboxed sign-in is not checked");
-                    None
+                    Vec::new()
                 });
         }
     }

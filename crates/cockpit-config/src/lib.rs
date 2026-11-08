@@ -6,6 +6,7 @@
 //! A project file that sets an owner setting fails: repository configuration describes
 //! requirements, owner settings grant.
 
+mod accounts;
 mod github_token;
 mod layout;
 mod memory;
@@ -18,6 +19,7 @@ mod start_files;
 mod storage;
 mod token_file;
 mod usage;
+pub use accounts::{AccountSettings, DEFAULT_ACCOUNT};
 pub use memory::MemorySettings;
 pub use notify::{AWAY_HOLD, NOTIFY_EVENTS, NotifyEvents, NotifySettings};
 pub use skill_pack::SkillPackSettings;
@@ -43,8 +45,9 @@ pub use profile::{
     ProfileChoice, release_manifest, resolve_profile,
 };
 pub use provider_credential::{
-    PROVIDER_CREDENTIALS_DIR, ProviderCredential, ProviderCredentialError, ProviderCredentialState,
-    provider_credential_state, provider_credentials_dir, read_provider_credential,
+    AccountCredentialState, PROVIDER_CREDENTIALS_DIR, ProviderCredential, ProviderCredentialError,
+    ProviderCredentialState, account_credentials_dir, provider_credential_state,
+    provider_credentials_dir, read_provider_credential,
 };
 pub use show::{SessionSettings, render};
 pub use start_files::{FileState, KNOWN_PROVIDERS, RecordedFile, StartFile, StartFileSnapshot};
@@ -149,6 +152,8 @@ pub struct EffectiveConfig {
     pub notify: NotifySettings,
     /// How often the daemon reads plan windows and when they alert (#58).
     pub usage: UsageSettings,
+    /// Each provider's accounts, in the order a sandboxed launch tries them (#59).
+    pub accounts: AccountSettings,
     /// The optional skill pack and which of its skills agents get (#786).
     pub skill_pack: SkillPackSettings,
     pub layout: Layout,
@@ -370,6 +375,7 @@ struct SettingsFile {
     tui: Option<Spanned<TuiTable>>,
     notify: Option<Spanned<notify::NotifyTable>>,
     usage: Option<Spanned<usage::UsageTable>>,
+    accounts: Option<Spanned<accounts::AccountsTable>>,
     skill_pack: Option<Spanned<skill_pack::SkillPackTable>>,
     checks: Option<Spanned<Vec<Spanned<CheckEntry>>>>,
     execution: Option<Spanned<ExecutionTable>>,
@@ -535,6 +541,7 @@ pub fn load(
         memory: memory::settings(&layers)?,
         notify: notify::settings(&layers)?,
         usage: usage::settings(&layers)?,
+        accounts: accounts::settings(&layers)?,
         skill_pack: skill_pack::settings(&layers),
         layout,
         user_file,
@@ -610,6 +617,7 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         tui,
         notify,
         usage,
+        accounts,
         skill_pack,
         workflow: _,
         checks: _,
@@ -675,6 +683,12 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         return Err(ConfigError::OwnerOnly {
             key: "usage",
             source: layer.source_at(usage.span()),
+        });
+    }
+    if let Some(accounts) = accounts {
+        return Err(ConfigError::OwnerOnly {
+            key: "accounts",
+            source: layer.source_at(accounts.span()),
         });
     }
     if let Some(skill_pack) = skill_pack {

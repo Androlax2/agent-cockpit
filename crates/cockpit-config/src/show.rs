@@ -162,6 +162,14 @@ pub fn render(config: &EffectiveConfig) -> String {
         &format!("{:?}", usage.quota_alert_percents.value),
         &usage.quota_alert_percents.source,
     ));
+    for provider in crate::KNOWN_PROVIDERS {
+        let accounts = config.accounts.sourced(provider);
+        lines.push(line(
+            &format!("accounts.{provider}"),
+            &Value::Array(accounts.value.into_iter().map(Value::from).collect()).to_string(),
+            &accounts.source,
+        ));
+    }
     lines.push(line(
         "storage.low_disk_floor_mib",
         &storage.low_disk_floor_mib.value.to_string(),

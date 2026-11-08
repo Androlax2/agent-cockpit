@@ -140,6 +140,11 @@ pub struct LaunchView {
     pub kind: LaunchKindView,
     /// Seconds since the Unix epoch.
     pub launched_at: i64,
+    /// The provider account its agent runs on, as the daemon chose it at the launch (#59);
+    /// `None` for an agent on no account, such as an unsandboxed one on the owner's own
+    /// sign-in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

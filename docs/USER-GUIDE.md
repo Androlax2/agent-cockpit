@@ -172,7 +172,7 @@ Unknown keys fail with the file and line. See the [current configuration guide](
 | Owner settings | `~/.config/torlek/config.toml` |
 | A project's GitHub token, its unsandboxed sessions' `GH_TOKEN` | `~/.config/torlek/github-tokens/<project>` |
 | A project's GitHub API token, which the session proxy adds for sandboxed sessions | `~/.config/torlek/github-api-tokens/<project>` |
-| A provider's credential, which the session proxy adds for sandboxed sessions | `~/.config/torlek/provider-credentials/<provider>/<VARIABLE>` |
+| A provider's credential, which the session proxy adds for sandboxed sessions | `~/.config/torlek/provider-credentials/<provider>/<VARIABLE>`; another account's in `<provider>/<account>/<VARIABLE>` |
 | Database, session records and instruction bundle | `~/.local/state/torlek/` |
 | Torlek operational logs | `~/.local/state/torlek/logs/` |
 | Each session's temporary files (its `TMPDIR`), removed when the session ends | `~/.local/state/torlek/tmp/<session>/` |
@@ -232,6 +232,24 @@ placeholder. Two files for one provider, a mode other than `0600` or `0400`, or 
 credential in the file stop that provider's sandboxed sessions from launching. Without one,
 `torlek session new` prints a `sign-in:` line and `torlek doctor` a `sandboxed sign-in` row
 naming the files.
+
+To give a provider several accounts, list them in the order sandboxed launches try them:
+
+```toml
+[accounts]
+claude = ["work", "default"]
+```
+
+Each account other than `default` keeps its credential in a folder of its own,
+`~/.config/torlek/provider-credentials/claude/work/<VARIABLE>`, by the same rules; `default`
+is the file directly in the provider's folder, so a single credential keeps working without a
+list. A launch runs on the first listed account that holds a credential and passes over one
+that holds none; an unusable credential stops the launch, naming its account. The daemon
+records the account each launch runs on (`torlek session show` prints `account:`); an
+unsandboxed session signs in from your own home and runs on none. A restart, wake, resume
+or restore keeps the session's account, since its conversation belongs to it; one whose account
+is no longer listed or holds no credential is refused. `torlek doctor` has a
+`sandboxed sign-in` row per account. The list is read when the daemon starts.
 
 Each sandboxed session has its own home, which starts empty and goes when the session ends.
 For a project in `projects.trusted`, and its parallel clones, Torlek records the folder trust in

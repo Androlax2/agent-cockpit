@@ -2085,8 +2085,17 @@ impl Sessions {
         let output_project = checkout.project.as_str().to_owned();
         let setting = self.owner_settings().sandbox;
         let github = self.github_access(setting, &output_project).await?;
-        let provider_credential = self
-            .provider_credential(setting, session.provider.as_str())
+        // The first launch picks the account; every later one keeps it, since the conversation
+        // it reopens belongs to that account (report 18).
+        let kept_account = match kind {
+            LaunchKind::Start => None,
+            _ => session
+                .launch
+                .as_ref()
+                .and_then(|launch| launch.account.clone()),
+        };
+        let account = self
+            .launch_account(setting, session.provider.as_str(), kept_account)
             .await?;
         // Kept for the harness's trust of the checkout, recorded once the launch passed its
         // gates: a parallel clone's (#702), and under `"required"` the main checkout's too,
@@ -2129,7 +2138,7 @@ impl Sessions {
             temp_dir,
             environment,
             github,
-            provider_credential,
+            account.credential,
             needs,
             decisions,
             tools,
@@ -2195,6 +2204,7 @@ impl Sessions {
                 execution,
                 &start_files,
                 self.settings.bundle.as_ref(),
+                account.name.as_deref(),
             )
             .await?;
             cockpit_sandbox::record(&write, execution.0, id.as_str(), &prepared.evidence).await?;
@@ -2374,48 +2384,93 @@ impl Sessions {
         .await
     }
 
-    /// The credential the session proxy adds for `provider`'s harness on its hosts under
-    /// `"required"` (#858, #968), read now so a credential the owner replaced reaches the next
-    /// launch. None under `"off"`, whose agent signs in from the owner's home, and when the
-    /// owner keeps none: the harness then asks for a sign-in it cannot store.
-    async fn provider_credential(
+    /// The account a launch of `provider` runs on, with the credential the session proxy adds
+    /// for it on the provider's hosts under `"required"` (#858, #968, #59): the first of the
+    /// owner's accounts for `provider` that holds a credential, read now so a credential the
+    /// owner replaced reaches the next launch. No account under `"off"`, whose agent signs in
+    /// from the owner's home, nor when no account holds one: the harness then asks for a
+    /// sign-in it cannot store. An account whose credential is unusable refuses the launch
+    /// rather than pass it over. A `kept` account, the one a relaunched conversation runs on,
+    /// is the only one tried: it must still be listed and hold a credential.
+    async fn launch_account(
         &self,
         setting: cockpit_config::AgentSandbox,
         provider: &str,
-    ) -> Result<Option<cockpit_sandbox::BoundCredential>, Error> {
+        kept: Option<String>,
+    ) -> Result<LaunchAccount, Error> {
         if setting == cockpit_config::AgentSandbox::Off {
-            return Ok(None);
+            return Ok(LaunchAccount::default());
         }
         let provider = Arc::clone(self.provider(Some(provider))?);
+        let accounts = self.settings.accounts.of(provider.name().as_str());
         let environment = self.settings.owner_environment.clone();
         self.blocking("read the provider's credential", move || {
-            bound_provider_credential(provider.as_ref(), &environment)
+            if let Some(account) = kept {
+                let unavailable = |reason| Error::AccountUnavailable {
+                    provider: provider.name().as_str().to_owned(),
+                    account: account.clone(),
+                    reason,
+                };
+                if !accounts.contains(&account) {
+                    return Err(unavailable("the owner no longer lists"));
+                }
+                let Some(credential) =
+                    bound_provider_credential(provider.as_ref(), &environment, &account)?
+                else {
+                    return Err(unavailable("holds no credential any more"));
+                };
+                return Ok(LaunchAccount {
+                    name: Some(account),
+                    credential: Some(credential),
+                });
+            }
+            for account in accounts {
+                let credential =
+                    bound_provider_credential(provider.as_ref(), &environment, &account)?;
+                if credential.is_some() {
+                    return Ok(LaunchAccount {
+                        name: Some(account),
+                        credential,
+                    });
+                }
+            }
+            Ok(LaunchAccount::default())
         })
         .await
     }
 
-    /// What a sandboxed launch of `provider` would bind as its sign-in (#968), for `doctor`
-    /// and `session new` to name the file to write when there is none. None under `"off"`
-    /// and for a provider that declares no credential variable.
+    /// What each of `provider`'s accounts would bind as a sandboxed launch's sign-in (#968,
+    /// #59), in the order a launch tries them, for `doctor` and `session new` to name the
+    /// files to write when there is none. Empty under `"off"` and for a provider that declares
+    /// no credential variable.
     pub async fn sandbox_credential_state(
         &self,
         provider: &str,
-    ) -> Result<Option<cockpit_config::ProviderCredentialState>, Error> {
+    ) -> Result<Vec<cockpit_config::AccountCredentialState>, Error> {
         if self.owner_settings().sandbox == cockpit_config::AgentSandbox::Off {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let provider = Arc::clone(self.provider(Some(provider))?);
+        let accounts = self.settings.accounts.of(provider.name().as_str());
         let environment = self.settings.owner_environment.clone();
         self.blocking("read the provider's credential", move || {
             let variables = credential_variables(provider.as_ref())?;
             if variables.is_empty() {
-                return Ok(None);
+                return Ok(Vec::new());
             }
             let variables: Vec<&str> = variables.iter().map(String::as_str).collect();
-            Ok(
-                cockpit_config::provider_credentials_dir(&environment, provider.name().as_str())
-                    .map(|dir| cockpit_config::provider_credential_state(&dir, &variables)),
-            )
+            let name = provider.name().as_str();
+            Ok(accounts
+                .into_iter()
+                .filter_map(|account| {
+                    let dir =
+                        cockpit_config::account_credentials_dir(&environment, name, &account)?;
+                    Some(cockpit_config::AccountCredentialState {
+                        state: cockpit_config::provider_credential_state(&dir, &variables),
+                        account,
+                    })
+                })
+                .collect())
         })
         .await
     }
@@ -2587,7 +2642,7 @@ impl Sessions {
         let github = self
             .github_access(setting, checkout.project.as_str())
             .await?;
-        let provider_credential = self.provider_credential(setting, &provider).await?;
+        let account = self.launch_account(setting, &provider, None).await?;
         let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
         let tools = self
             .sandbox_tools(setting, &checkout.path, &checkout.path, &environment)
@@ -2612,7 +2667,7 @@ impl Sessions {
             self.dry_run_temp_dir(),
             environment,
             github,
-            provider_credential,
+            account.credential,
             needs,
             decisions,
             tools,
@@ -3203,6 +3258,14 @@ fn with_temp_dir(
     environment
 }
 
+/// The account a launch runs on and the credential bound for it (#59); both `None` for a
+/// launch on no account.
+#[derive(Debug, Default)]
+struct LaunchAccount {
+    name: Option<String>,
+    credential: Option<cockpit_sandbox::BoundCredential>,
+}
+
 /// A launch's bound credentials file (#832), removed if the launch returns before its agent is
 /// released, so a launch that fails before its launcher runs leaves none. Once released, the
 /// launcher runs and removes it as it starts: removing it then would race the launcher, which
@@ -3387,18 +3450,19 @@ fn declared_credentials(
     })
 }
 
-/// The owner's credential for `provider` (#968), bound to the hosts its adapter declares for
-/// the variable the file is named after, in the header the harness sends it in; the agent holds
-/// a placeholder in that variable. None when the owner keeps none, or `environment` names no
-/// home. The adapter's hosts are always in the launch's reach, so every one is bound.
-/// Blocking: it reads the files.
+/// The owner's credential for `account` of `provider` (#968, #59), bound to the hosts its
+/// adapter declares for the variable the file is named after, in the header the harness sends
+/// it in; the agent holds a placeholder in that variable. None when the account holds none, or
+/// `environment` names no home. The adapter's hosts are always in the launch's reach, so every
+/// one is bound. Blocking: it reads the files.
 fn bound_provider_credential(
     provider: &dyn Provider,
     environment: &cockpit_config::Environment,
+    account: &str,
 ) -> Result<Option<cockpit_sandbox::BoundCredential>, Error> {
     let name = provider.name().as_str();
     let declared = declared_credentials(provider)?;
-    let Some(dir) = cockpit_config::provider_credentials_dir(environment, name) else {
+    let Some(dir) = cockpit_config::account_credentials_dir(environment, name, account) else {
         return Ok(None);
     };
     let variables: Vec<&str> = declared
@@ -3410,6 +3474,7 @@ fn bound_provider_credential(
         cockpit_config::read_provider_credential(&dir, &variables).map_err(|error| {
             Error::ProviderCredential {
                 provider: name.to_owned(),
+                account: account.to_owned(),
                 error,
             }
         })?;
@@ -3430,7 +3495,10 @@ fn bound_provider_credential(
         }
     };
     Ok(Some(cockpit_sandbox::BoundCredential {
-        name: format!("the {name} provider's credential ({})", credential.variable),
+        name: format!(
+            "the {name} provider's credential of account {account} ({})",
+            credential.variable
+        ),
         placeholder_variable: Some(credential.variable.clone()),
         value: cockpit_sandbox::CredentialValue::new(credential.expose().to_owned()),
         hosts: binding

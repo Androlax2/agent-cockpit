@@ -1,7 +1,8 @@
 //! The requirements every host has, project or not.
 
 use cockpit_config::{
-    AgentSandbox, ConfigFile, EffectiveConfig, KNOWN_PROVIDERS, ProviderCredentialState, Sourced,
+    AccountCredentialState, AgentSandbox, ConfigFile, DEFAULT_ACCOUNT, EffectiveConfig,
+    KNOWN_PROVIDERS, ProviderCredentialState, Sourced,
 };
 
 use crate::{ControlFacts, Platform, ProviderFacts, ProviderUnusable, Requirement, Status};
@@ -287,21 +288,45 @@ fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
             ),
         },
     ];
+    let launches_on = launch_account(&found.sandbox_credentials);
     requirements.extend(
         found
-            .sandbox_credential
-            .as_ref()
-            .map(|state| sandbox_credential(&provider.name, state)),
+            .sandbox_credentials
+            .iter()
+            .map(|account| sandbox_credential(&provider.name, account, launches_on)),
     );
     requirements
 }
 
+/// The account a sandboxed launch runs on, as the daemon picks it (#59): the first that holds
+/// a credential, unless an unusable one comes before it and refuses the launch.
+fn launch_account(accounts: &[AccountCredentialState]) -> Option<&str> {
+    accounts
+        .iter()
+        .find(|account| !matches!(account.state, ProviderCredentialState::Missing { .. }))
+        .filter(|account| matches!(account.state, ProviderCredentialState::Configured { .. }))
+        .map(|account| account.account.as_str())
+}
+
 /// The sign-in a sandboxed session of `provider` gets: the owner's credential the session
 /// proxy adds on its hosts, or the file to write when there is none (#858, #968). Without one,
-/// the harness asks for a sign-in at every new session and cannot store it.
-fn sandbox_credential(provider: &str, state: &ProviderCredentialState) -> Requirement {
-    let name = format!("provider {provider} sandboxed sign-in");
-    match state {
+/// the harness asks for a sign-in at every new session and cannot store it. The `default`
+/// account keeps the row #968 named; another account is named in its row (#59). An account
+/// listed after the one launches run on, `launches_on`, blocks nothing, which its row says.
+fn sandbox_credential(
+    provider: &str,
+    account: &AccountCredentialState,
+    launches_on: Option<&str>,
+) -> Requirement {
+    let name = if account.account == DEFAULT_ACCOUNT {
+        format!("provider {provider} sandboxed sign-in")
+    } else {
+        format!(
+            "provider {provider} account {} sandboxed sign-in",
+            account.account
+        )
+    };
+    match &account.state {
         ProviderCredentialState::Configured { variable, path } => Requirement::available(
             name,
             format!(
@@ -313,10 +338,13 @@ fn sandbox_credential(provider: &str, state: &ProviderCredentialState) -> Requir
         ProviderCredentialState::Missing { files } => Requirement::needs(
             name,
             Status::NeedsAuthorization,
-            format!(
-                "none: a sandboxed {provider} session never reads your own sign-in, so it asks \
-                 for one at every new session"
-            ),
+            match launches_on {
+                Some(used) => format!("none: sandboxed launches run on account {used} instead"),
+                None => format!(
+                    "none: a sandboxed {provider} session never reads your own sign-in, so it \
+                     asks for one at every new session"
+                ),
+            },
             format!(
                 "write one credential, on one line, to one of {}, then `chmod 600` it; the \
                  file's name is the variable it stands for",
@@ -328,12 +356,20 @@ fn sandbox_credential(provider: &str, state: &ProviderCredentialState) -> Requir
                 )
             ),
         ),
-        ProviderCredentialState::Unusable { reason } => Requirement::needs(
-            name,
-            Status::MissingPrerequisite,
-            format!("unusable, so its sandboxed sessions do not launch: {reason}"),
-            "fix the file it names, or remove it",
-        ),
+        ProviderCredentialState::Unusable { reason } => match launches_on {
+            Some(used) => Requirement::needs(
+                name,
+                Status::NeedsAuthorization,
+                format!("unusable, so sandboxed launches run on account {used} instead: {reason}"),
+                "fix the file it names, or remove it",
+            ),
+            None => Requirement::needs(
+                name,
+                Status::MissingPrerequisite,
+                format!("unusable, so its sandboxed sessions do not launch: {reason}"),
+                "fix the file it names, or remove it",
+            ),
+        },
     }
 }
 

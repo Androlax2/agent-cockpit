@@ -92,7 +92,15 @@ pub enum Error {
     /// refused rather than run without it.
     ProviderCredential {
         provider: String,
+        account: String,
         error: cockpit_config::ProviderCredentialError,
+    },
+    /// A relaunch keeps the account its conversation runs on (#59), and that account can no
+    /// longer be used; the relaunch is refused rather than moved to another account.
+    AccountUnavailable {
+        provider: String,
+        account: String,
+        reason: &'static str,
     },
     Authorization(cockpit_authorization::Error),
     Io {
@@ -218,10 +226,24 @@ impl fmt::Display for Error {
                 "project {project}'s GitHub token cannot be used, so its sessions do not \
                  launch: {error}; fix the file, or remove it to launch without a token"
             ),
-            Error::ProviderCredential { provider, error } => write!(
+            Error::ProviderCredential {
+                provider,
+                account,
+                error,
+            } => write!(
                 formatter,
-                "the {provider} provider's credential cannot be used, so its sandboxed sessions \
-                 do not launch: {error}"
+                "the credential of the {provider} provider's account {account} cannot be used, \
+                 so its sandboxed sessions do not launch: {error}"
+            ),
+            Error::AccountUnavailable {
+                provider,
+                account,
+                reason,
+            } => write!(
+                formatter,
+                "the session runs on the {provider} provider's account {account}, which {reason}, \
+                 and a relaunch never moves it to another account: restore the account, or \
+                 start a new session"
             ),
             Error::Authorization(error) => write!(formatter, "authorization: {error}"),
             Error::Io {

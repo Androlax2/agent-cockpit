@@ -283,6 +283,14 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 CHECK (context_window IS NULL
                     OR (context_window > 0 AND context_tokens IS NOT NULL));",
         },
+        // #59: the account a launch's agent runs on, the daemon's own record: chosen at the
+        // launch, never read back from the session. `NULL` for a launch on no account (an
+        // unsandboxed agent signs in from the owner's home, or no account had a credential)
+        // and for launches recorded before.
+        Migration {
+            version: 17,
+            sql: "ALTER TABLE session_launches ADD COLUMN account TEXT CHECK (account <> '');",
+        },
     ],
 };
 
@@ -309,7 +317,8 @@ const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout
     s.changed_at, l.id, l.kind, l.execution_id, l.launched_at,
     EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id),
     (SELECT max(w.working_order) FROM session_launches w WHERE w.session_id = s.id),
-    e.ended_by, e.code, e.output, s.model, s.effort, s.started_by, s.compaction_threshold";
+    e.ended_by, e.code, e.output, s.model, s.effort, s.started_by, s.compaction_threshold,
+    l.account";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
     (SELECT max(id) FROM session_launches WHERE session_id = s.id)
     LEFT JOIN session_exits e ON e.launch_id = l.id";
@@ -572,6 +581,10 @@ pub(crate) async fn insert_exit(
 }
 
 /// Records a launch and the start files its agent reads, as they were just before it ran.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one launch's facts, each written into its rows"
+)]
 pub(crate) async fn insert_launch(
     write: &WriteTransaction<'_>,
     id: &SessionId,
@@ -580,6 +593,7 @@ pub(crate) async fn insert_launch(
     execution: ExecutionId,
     start_files: &StartFileSnapshot,
     bundle: Option<&LaunchBundle>,
+    account: Option<&str>,
 ) -> Result<(), Error> {
     let working_order = match purpose {
         LaunchPurpose::Work => Value::Integer(write.commit_order().await?),
@@ -588,14 +602,15 @@ pub(crate) async fn insert_launch(
     write
         .execute(
             "INSERT INTO session_launches
-                (session_id, kind, execution_id, launched_at, working_order)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+                (session_id, kind, execution_id, launched_at, working_order, account)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             (
                 id.as_str(),
                 kind.column(),
                 execution.0,
                 now(),
                 working_order,
+                optional_text(account),
             ),
         )
         .await?;
@@ -891,6 +906,7 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
                     .ok_or_else(|| invalid(format!("launch kind {kind_text:?}")))?,
                 execution: ExecutionId(row.get(15)?),
                 launched_at: row.get(16)?,
+                account: row.get(26)?,
             })
         }
     };
