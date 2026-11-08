@@ -456,6 +456,32 @@ class NotRunTests(unittest.TestCase):
 
         self.assertEqual(redteam_harness.exit_status(records), 1)
 
+    def test_a_run_with_a_succeeded_check_exits_non_zero(self):
+        for section_check_id in ("1.1", "2.1"):
+            with self.subTest(check=section_check_id):
+                records = [
+                    {"id": section_check_id, "outcome": "succeeded"},
+                    {"id": "2.2", "outcome": "refused"},
+                ]
+
+                self.assertEqual(redteam_harness.exit_status(records), 1)
+
+    def test_the_summary_names_each_succeeded_check_as_a_finding(self):
+        records = [
+            {"id": "1.1", "outcome": "succeeded", "command": "cat /etc/shadow"},
+            {"id": "2.1", "outcome": "succeeded", "command": "torlek project add"},
+            {"id": "2.2", "outcome": "refused", "command": "d"},
+        ]
+        printed = io.StringIO()
+
+        with contextlib.redirect_stdout(printed):
+            redteam_harness.print_summary(records)
+
+        lines = printed.getvalue().splitlines()
+        self.assertIn("FINDING to file: 1.1 succeeded, read its raw output (cat /etc/shadow)", lines)
+        self.assertIn("FINDING to file: 2.1 succeeded, read its raw output (torlek project add)", lines)
+        self.assertFalse(any(line.startswith("FINDING") and "2.2" in line for line in lines))
+
     def test_a_run_where_every_check_ran_exits_zero(self):
         records = [{"id": "1.1", "outcome": "blocked"}, {"id": "2.1", "outcome": "refused"}]
 

@@ -47,6 +47,7 @@ AGENT_SESSION = "agent-session"
 # The outcome of a section-1 check whose attack never ran in the sandbox (#1175): the session
 # did not start, or it left no result to read. It tested nothing, so it is never a pass.
 NOT_RUN = "not-run"
+SUCCEEDED = "succeeded"
 
 # What a refusal or a block already looks like in this project's own output (torlek docs
 # sandbox, torlek/src/cli routes.rs): matched before guessing from the exit code alone.
@@ -79,7 +80,7 @@ def classify_outcome(exit_code: int, combined_output: str) -> str:
     if EGRESS_REFUSED in combined_output:
         return "blocked"
     if exit_code == 0:
-        return "succeeded"
+        return SUCCEEDED
     if any(pattern in combined_output for pattern in REFUSAL_PATTERNS):
         return "refused"
     if any(pattern in combined_output for pattern in BLOCKED_PATTERNS):
@@ -519,12 +520,15 @@ def print_summary(records: list[dict]) -> None:
         print(f"{outcome}: {count}")
     if NOT_RUN in by_outcome:
         print(f"{NOT_RUN} checks tested nothing: none of them is a pass")
+    for record in records:
+        if record["outcome"] == SUCCEEDED:
+            print(f"FINDING to file: {record['id']} succeeded, read its raw output ({record['command']})")
 
 
 def exit_status(records: list[dict]) -> int:
-    """1 when any check did not run (#1175): a run that tested less than it was asked to is
-    never reported as a clean one."""
-    return 1 if any(record["outcome"] == NOT_RUN for record in records) else 0
+    """1 when any check did not run (#1175) or succeeded (#1182): a run that tested less than it
+    was asked to, or that got past a control, is never reported as a clean one."""
+    return 1 if any(record["outcome"] in (NOT_RUN, SUCCEEDED) for record in records) else 0
 
 
 def main() -> int:
