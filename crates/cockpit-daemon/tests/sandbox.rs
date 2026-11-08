@@ -2343,6 +2343,94 @@ async fn without_a_credential_session_new_and_doctor_name_the_files_to_write() {
     );
 }
 
+/// `doctor`'s report and its `sandboxed sign-in` row for the claude account `account`.
+async fn doctor_sign_in_row(home: &Home, account: &str) -> (String, String) {
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+    let report = text(&doctor.stdout);
+    let row = report
+        .lines()
+        .find(|line| {
+            line.contains(&format!(
+                "provider claude account {account} sandboxed sign-in"
+            ))
+        })
+        .unwrap_or_else(|| panic!("no sign-in row in:\n{report}"))
+        .trim_start()
+        .to_owned();
+    (report, row)
+}
+
+/// #59: `doctor` shows a granted login account as a sandboxed sign-in, naming its file and
+/// the projects granted it, never what it holds.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_shows_a_granted_login_account_as_its_sandboxed_sign_in() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{WORK_LOGIN}"));
+    let file = write_claude_login(&home, "work", "fixture-login-v1");
+    let _daemon = home.start();
+    let client = home.connect().await;
+    home.project(&client, COMMANDED_PROJECT).await;
+    let granted = home.cockpit(&grant("work"), &[]).await;
+    assert!(granted.status.success(), "{}", text(&granted.stderr));
+
+    let (report, row) = doctor_sign_in_row(&home, "work").await;
+
+    assert!(row.starts_with("available"), "{row}");
+    assert!(
+        report.contains(&format!(
+            "signed-in login {}: sessions of project {COMMANDED_PROJECT} use it",
+            file.display()
+        )),
+        "{report}"
+    );
+    assert!(!report.contains("fixture-login-v1"), "{report}");
+}
+
+/// #59: no session uses a login account no project holds a grant for, so `doctor` names the
+/// grant to give.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_names_the_grant_a_login_account_no_project_holds_needs() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{WORK_LOGIN}"));
+    write_claude_login(&home, "work", "fixture-login-v1");
+    let _daemon = home.start();
+
+    let (report, row) = doctor_sign_in_row(&home, "work").await;
+
+    assert!(row.starts_with("needs-authorization"), "{row}");
+    assert!(
+        report.contains("account grant PROJECT claude work`"),
+        "{report}"
+    );
+}
+
+/// #59: a login that is no plain file refuses its launches, so `doctor` blocks on its row
+/// and still reports the other accounts.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_blocks_on_a_login_that_is_no_plain_file_and_keeps_the_other_rows() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
+    let file = write_claude_login(&home, "work", "fixture-login-v1");
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    let _daemon = home.start();
+
+    let (report, row) = doctor_sign_in_row(&home, "work").await;
+
+    assert!(row.starts_with("missing-prerequisite"), "{row}");
+    assert!(
+        report.contains(&format!(
+            "keeps a login {} that is no plain file, so its sandboxed sessions do not launch",
+            file.display()
+        )),
+        "{report}"
+    );
+    assert!(
+        report.contains("provider claude account spare sandboxed sign-in"),
+        "{report}"
+    );
+}
+
 /// #59: with no account holding a credential, `session new` names the first listed account
 /// and its own folder's files.
 #[tokio::test(flavor = "multi_thread")]
@@ -2384,6 +2472,42 @@ async fn without_a_credential_session_new_names_the_first_account_and_its_files(
     );
     assert!(
         sign_in.contains(&work.join("CLAUDE_CODE_OAUTH_TOKEN").display().to_string()),
+        "{sign_in}"
+    );
+}
+
+/// #59: a credential file beside a signed-in login would refuse the launch, so `session new`
+/// asks for one for the next account and leaves the login to its grant.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_new_never_asks_a_signed_in_login_account_for_a_credential() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
+    write_claude_login(&home, "work", "fixture-login-v1");
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+
+    let started = home
+        .cockpit(
+            &[
+                "session",
+                "new",
+                root.to_str().unwrap(),
+                "--agent",
+                "claude",
+            ],
+            &[],
+        )
+        .await;
+
+    let told = text(&started.stderr);
+    assert!(started.status.success(), "{told}");
+    let sign_in = told
+        .lines()
+        .find_map(|line| line.strip_prefix("sign-in: "))
+        .unwrap_or_else(|| panic!("no sign-in line in:\n{told}"));
+    assert!(
+        sign_in.contains("credential for account spare,"),
         "{sign_in}"
     );
 }

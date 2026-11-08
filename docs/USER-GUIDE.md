@@ -272,7 +272,10 @@ A login account the project holds no grant for is passed over for the next liste
 and `session new` and `session show` print a `passed over:` line naming it and the
 `torlek account grant` that lets it. A restart kept on a login whose grant you revoked is
 refused, naming that grant. An account that holds both a credential file and a login refuses
-the launch until you remove one.
+the launch until you remove one. `torlek doctor` shows a signed-in login account's row as
+available, naming the login file (never its contents) and the projects granted it; with no
+grant it names the grant to give. It blocks on an account holding both, or on a login that is
+no plain file, and an account holding neither offers the sign-in beside the credential file.
 
 One session at a time uses a login account, so two sessions never refresh the same sign-in
 at once and sign each other out. A launch passes over a login another starting, running or

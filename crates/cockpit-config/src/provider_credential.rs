@@ -161,11 +161,29 @@ pub enum ProviderCredentialState {
     },
 }
 
-/// One account's [`ProviderCredentialState`] (#59).
+/// One account's [`ProviderCredentialState`] and signed-in login (#59).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountCredentialState {
     pub account: String,
     pub state: ProviderCredentialState,
+    pub login: AccountLoginState,
+}
+
+/// Whether an account holds the login `torlek account sign-in` keeps (#59), for what Torlek
+/// shows: the file's place, never its contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccountLoginState {
+    /// The provider's adapter keeps no login, so the account cannot hold one.
+    NotKept,
+    /// The owner has not signed the account in.
+    NotSignedIn,
+    SignedIn {
+        file: PathBuf,
+        /// The projects holding an active grant for it, the only ones whose sessions use it.
+        granted_to: Vec<String>,
+    },
+    /// What is kept is no plain file, or cannot be read: a launch reaching it is refused.
+    Unusable { reason: String },
 }
 
 /// [`read_provider_credential`] as its state. Blocking.

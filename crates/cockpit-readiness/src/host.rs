@@ -1,8 +1,8 @@
 //! The requirements every host has, project or not.
 
 use cockpit_config::{
-    AccountCredentialState, AgentSandbox, ConfigFile, DEFAULT_ACCOUNT, EffectiveConfig,
-    KNOWN_PROVIDERS, ProviderCredentialState, Sourced,
+    AccountCredentialState, AccountLoginState, AgentSandbox, ConfigFile, DEFAULT_ACCOUNT,
+    EffectiveConfig, KNOWN_PROVIDERS, ProviderCredentialState, Sourced,
 };
 
 use crate::{ControlFacts, Platform, ProviderFacts, ProviderUnusable, Requirement, Status};
@@ -298,21 +298,35 @@ fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
     requirements
 }
 
-/// The account a sandboxed launch runs on, as the daemon picks it (#59): the first that holds
-/// a credential, unless an unusable one comes before it and refuses the launch.
+/// The account a sandboxed launch runs on in a project holding no login grant, as the daemon
+/// picks it (#59): the first that holds a credential, passing over one holding nothing or a
+/// signed-in login, unless what it holds is unusable and refuses the launch. The rows judge
+/// blocking by this project, the strictest; a login's own row names the projects granted it.
 fn launch_account(accounts: &[AccountCredentialState]) -> Option<&str> {
-    accounts
-        .iter()
-        .find(|account| !matches!(account.state, ProviderCredentialState::Missing { .. }))
-        .filter(|account| matches!(account.state, ProviderCredentialState::Configured { .. }))
-        .map(|account| account.account.as_str())
+    for account in accounts {
+        match (&account.state, &account.login) {
+            (
+                ProviderCredentialState::Missing { .. },
+                AccountLoginState::NotKept
+                | AccountLoginState::NotSignedIn
+                | AccountLoginState::SignedIn { .. },
+            ) => {}
+            (
+                ProviderCredentialState::Configured { .. },
+                AccountLoginState::NotKept | AccountLoginState::NotSignedIn,
+            ) => return Some(account.account.as_str()),
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// The sign-in a sandboxed session of `provider` gets: the owner's credential the session
-/// proxy adds on its hosts, or the file to write when there is none (#858, #968). Without one,
-/// the harness asks for a sign-in at every new session and cannot store it. The `default`
-/// account keeps the row #968 named; another account is named in its row (#59). An account
-/// listed after the one launches run on, `launches_on`, blocks nothing, which its row says.
+/// proxy adds on its hosts, the login account's sign-in bound in its home, or what to write
+/// when there is neither (#858, #968, #59). Without one, the harness asks for a sign-in at
+/// every new session and cannot store it. The `default` account keeps the row #968 named;
+/// another account is named in its row (#59). An account listed after the one launches run
+/// on, `launches_on`, blocks nothing, which its row says.
 fn sandbox_credential(
     provider: &str,
     account: &AccountCredentialState,
@@ -326,8 +340,39 @@ fn sandbox_credential(
             account.account
         )
     };
-    match &account.state {
-        ProviderCredentialState::Configured { variable, path } => Requirement::available(
+    let refused = |detail: String, next: String| match launches_on {
+        Some(used) => Requirement::needs(
+            name.clone(),
+            Status::NeedsAuthorization,
+            format!("{detail}, so sandboxed launches run on account {used} instead"),
+            next,
+        ),
+        None => Requirement::needs(
+            name.clone(),
+            Status::MissingPrerequisite,
+            format!("{detail}, so its sandboxed sessions do not launch"),
+            next,
+        ),
+    };
+    match (&account.state, &account.login) {
+        (ProviderCredentialState::Unusable { reason }, _) => refused(
+            format!("unusable ({reason})"),
+            "fix the file it names, or remove it".to_owned(),
+        ),
+        (_, AccountLoginState::Unusable { reason }) => refused(
+            reason.clone(),
+            format!(
+                "run `torlek account sign-in {provider} {}` again",
+                account.account
+            ),
+        ),
+        (ProviderCredentialState::Configured { .. }, AccountLoginState::SignedIn { .. }) => {
+            refused(
+                "holds both a credential file and a signed-in login".to_owned(),
+                "remove the one it should not use".to_owned(),
+            )
+        }
+        (ProviderCredentialState::Configured { variable, path }, _) => Requirement::available(
             name,
             format!(
                 "{} ({variable}): the session proxy adds it on {provider}'s hosts; the agent \
@@ -335,17 +380,42 @@ fn sandbox_credential(
                 path.display()
             ),
         ),
-        ProviderCredentialState::Missing { files } => Requirement::needs(
-            name,
-            Status::NeedsAuthorization,
-            match launches_on {
-                Some(used) => format!("none: sandboxed launches run on account {used} instead"),
-                None => format!(
-                    "none: a sandboxed {provider} session never reads your own sign-in, so it \
-                     asks for one at every new session"
-                ),
-            },
-            format!(
+        (
+            ProviderCredentialState::Missing { .. },
+            AccountLoginState::SignedIn { file, granted_to },
+        ) => {
+            if granted_to.is_empty() {
+                Requirement::needs(
+                    name,
+                    Status::NeedsAuthorization,
+                    format!(
+                        "signed-in login {}, but no project holds a grant for it, so no session \
+                         uses it",
+                        file.display()
+                    ),
+                    format!(
+                        "let a project use it with `torlek account grant PROJECT {provider} {}`",
+                        account.account
+                    ),
+                )
+            } else {
+                Requirement::available(
+                    name,
+                    format!(
+                        "signed-in login {}: sessions of {} {} use it, one at a time",
+                        file.display(),
+                        if granted_to.len() == 1 {
+                            "project"
+                        } else {
+                            "projects"
+                        },
+                        granted_to.join(", ")
+                    ),
+                )
+            }
+        }
+        (ProviderCredentialState::Missing { files }, login) => {
+            let write_file = format!(
                 "write one credential, on one line, to one of {}, then `chmod 600` it; the \
                  file's name is the variable it stands for",
                 listed(
@@ -354,22 +424,32 @@ fn sandbox_credential(
                         .map(|file| file.display().to_string())
                         .collect::<Vec<_>>()
                 )
-            ),
-        ),
-        ProviderCredentialState::Unusable { reason } => match launches_on {
-            Some(used) => Requirement::needs(
+            );
+            let next = if *login == AccountLoginState::NotSignedIn {
+                format!(
+                    "{write_file}; or sign it in as a login account with `torlek account \
+                     sign-in {provider} {account}`, then grant it with `torlek account grant \
+                     PROJECT {provider} {account}`",
+                    account = account.account
+                )
+            } else {
+                write_file
+            };
+            Requirement::needs(
                 name,
                 Status::NeedsAuthorization,
-                format!("unusable, so sandboxed launches run on account {used} instead: {reason}"),
-                "fix the file it names, or remove it",
-            ),
-            None => Requirement::needs(
-                name,
-                Status::MissingPrerequisite,
-                format!("unusable, so its sandboxed sessions do not launch: {reason}"),
-                "fix the file it names, or remove it",
-            ),
-        },
+                match launches_on {
+                    Some(used) => {
+                        format!("none: sandboxed launches run on account {used} instead")
+                    }
+                    None => format!(
+                        "none: a sandboxed {provider} session never reads your own sign-in, so \
+                         it asks for one at every new session"
+                    ),
+                },
+                next,
+            )
+        }
     }
 }
 
