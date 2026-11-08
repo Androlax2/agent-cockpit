@@ -30,9 +30,9 @@ comes from #858. The rest are engineering defaults listed in the pull requests.
   is the owner's to say.
 - **One session at a time uses a login account.** Two holders of one rotating refresh token
   sign each other out when they refresh in turn (#858 report, T5). A launch passes over a
-  login another live session (starting, running or stopping) uses, naming that session, and
-  refuses a kept one; the transaction that records the launch checks again, so two launches
-  choosing at once never both take it.
+  login another live session (starting, running or stopping) bound, naming that session, and
+  refuses a kept one; the transaction that records the launch checks again, so of two
+  launches choosing at once the second is refused rather than both taking it.
 - **Rejected:** copying the login into the session's home (a refresh would never reach the
   account, and a refresh in one copy leaves the other stale); binding Codex's file
   (its rename fails on a mount point); sessions sharing one login at once (the T5 race).

@@ -311,6 +311,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE session_launches ADD COLUMN passed_over TEXT
                 CHECK (passed_over <> '');",
         },
+        // #59: whether a launch bound its account's signed-in login, which one session at a
+        // time uses; a launch on a credential shares nothing that refreshes.
+        Migration {
+            version: 20,
+            sql: "ALTER TABLE session_launches ADD COLUMN uses_login INTEGER NOT NULL DEFAULT 0
+                CHECK (uses_login IN (0, 1));",
+        },
     ],
 };
 
@@ -616,6 +623,7 @@ pub(crate) async fn insert_launch(
     account: Option<&str>,
     switched_from: Option<&str>,
     passed_over: &[String],
+    uses_login: bool,
 ) -> Result<(), Error> {
     let working_order = match purpose {
         LaunchPurpose::Work => Value::Integer(write.commit_order().await?),
@@ -625,8 +633,8 @@ pub(crate) async fn insert_launch(
         .execute(
             "INSERT INTO session_launches
                 (session_id, kind, execution_id, launched_at, working_order, account,
-                 switched_from, passed_over)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 switched_from, passed_over, uses_login)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             (
                 id.as_str(),
                 kind.column(),
@@ -640,6 +648,7 @@ pub(crate) async fn insert_launch(
                         .filter(|lines| !lines.is_empty())
                         .as_deref(),
                 ),
+                i64::from(uses_login),
             ),
         )
         .await?;
@@ -713,23 +722,28 @@ pub(crate) async fn accounts_stopped_since(
     Ok(accounts)
 }
 
-/// Each account of `provider` whose latest launch of a session other than `except` is live
-/// (starting, running or stopping), with that session, by account (#59): one session at a
-/// time uses a login account. A session asleep, failed or ended holds none.
-pub(crate) async fn accounts_in_use(
+/// Each session's latest launch, as `s` and `l`, kept to the sessions whose agent is starting,
+/// running or stopping by [`IS_LIVE`].
+const LATEST_LAUNCHES: &str = "sessions s JOIN session_launches l ON l.id =
+    (SELECT max(id) FROM session_launches WHERE session_id = s.id)";
+
+const IS_LIVE: &str = "s.state IN ('launching', 'running', 'stopping')";
+
+/// Each login account of `provider` whose latest launch of a session other than `except` is
+/// live and bound its login, with that session, by account (#59): one session at a time uses
+/// a login account. A session asleep, failed or ended holds none.
+pub(crate) async fn logins_in_use(
     connection: &Connection,
     provider: &str,
     except: Option<&SessionId>,
 ) -> Result<Vec<(String, SessionId)>, Error> {
     let mut rows = connection
         .query(
-            "SELECT l.account, s.id
-             FROM sessions s
-             JOIN session_launches l ON l.id =
-                 (SELECT max(id) FROM session_launches WHERE session_id = s.id)
-             WHERE s.provider = ?1 AND l.account IS NOT NULL AND s.id IS NOT ?2
-               AND s.state IN ('launching', 'running', 'stopping')
-             ORDER BY l.account, s.created_at, s.id",
+            &format!(
+                "SELECT l.account, s.id FROM {LATEST_LAUNCHES}
+                 WHERE s.provider = ?1 AND l.uses_login = 1 AND s.id IS NOT ?2 AND {IS_LIVE}
+                 ORDER BY l.account, s.created_at, s.id"
+            ),
             (provider, except.map(SessionId::as_str)),
         )
         .await?;
@@ -751,13 +765,13 @@ pub(crate) async fn accounts_in_use(
 pub async fn live_bundles(connection: &Connection) -> Result<Vec<SessionBundle>, Error> {
     let mut rows = connection
         .query(
-            "SELECT s.id, s.state, s.stopping_to, b.release, b.instruction_manifest
-             FROM sessions s
-             JOIN session_launches l ON l.id =
-                 (SELECT max(id) FROM session_launches WHERE session_id = s.id)
-             LEFT JOIN session_launch_bundles b ON b.launch_id = l.id
-             WHERE s.state IN ('launching', 'running', 'stopping')
-             ORDER BY s.created_at, s.id",
+            &format!(
+                "SELECT s.id, s.state, s.stopping_to, b.release, b.instruction_manifest
+                 FROM {LATEST_LAUNCHES}
+                 LEFT JOIN session_launch_bundles b ON b.launch_id = l.id
+                 WHERE {IS_LIVE}
+                 ORDER BY s.created_at, s.id"
+            ),
             (),
         )
         .await?;

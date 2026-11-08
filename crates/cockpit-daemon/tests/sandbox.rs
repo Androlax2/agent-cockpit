@@ -1873,12 +1873,18 @@ async fn the_next_session_on_a_login_starts_with_the_sign_in_the_last_one_refres
         write_claude_login(home, "work", "fixture-login-v1");
     })
     .await;
-    run_in_agent(
+    // The next session's agent replays every line from the first: only this one refreshes.
+    let refreshed = run_in_agent(
         &home,
         &agent.root,
-        "printf fixture-login-v2 > ~/.claude/.credentials.json",
+        &format!(
+            "if [ \"$TORLEK_SESSION\" = {} ]; then printf fixture-login-v2 > \
+             ~/.claude/.credentials.json; fi",
+            agent.session
+        ),
     )
     .await;
+    assert_eq!(refreshed, "exit=0\n");
     let client = home.connect().await;
     client
         .request(
@@ -2009,6 +2015,100 @@ async fn a_login_another_session_uses_is_passed_over_naming_that_session() {
             agent.session
         )]
     );
+}
+
+/// #59: a session on an account's credential shares no sign-in, so once the account is a
+/// login instead, a second session takes that login.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_on_an_accounts_credential_does_not_hold_its_login() {
+    let home = Home::new();
+    let agent = agent_with_logins(&home, WORK_LOGIN, &[], |home| {
+        home.write_account_credential(
+            "claude",
+            "work",
+            "ANTHROPIC_API_KEY",
+            &format!("{SETUP_TOKEN}\n"),
+            0o600,
+        );
+    })
+    .await;
+    assert_eq!(
+        launch_account(&home, &agent.session).await.as_deref(),
+        Some("work")
+    );
+    std::fs::remove_file(
+        home.path()
+            .join("config")
+            .join(BUILD_PROFILE_DIR)
+            .join(cockpit_config::PROVIDER_CREDENTIALS_DIR)
+            .join("claude/work/ANTHROPIC_API_KEY"),
+    )
+    .unwrap();
+    write_claude_login(&home, "work", "fixture-login-v1");
+    let client = home.connect().await;
+    let (other, _) = home.project(&client, "other").await;
+    let granted = home
+        .cockpit(&["account", "grant", "other", "claude", "work"], &[])
+        .await;
+    assert!(granted.status.success(), "{}", text(&granted.stderr));
+
+    let second = new_session(&client, &other).await;
+
+    let launch = listed(&client, &second.id).await.launch.unwrap();
+    assert_eq!(launch.account.as_deref(), Some("work"));
+    assert!(launch.passed_over.is_empty(), "{:?}", launch.passed_over);
+}
+
+/// #59, Theo's choice A for #858: two sessions launching at once in projects granted the same
+/// login never both take it; the launch recorded second passes it over or is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_sessions_launching_at_once_never_both_take_one_login() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
+    write_claude_login(&home, "work", "fixture-login-v1");
+    home.write_account_credential(
+        "claude",
+        "spare",
+        "ANTHROPIC_API_KEY",
+        &format!("{SETUP_TOKEN}\n"),
+        0o600,
+    );
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let mut roots = Vec::new();
+    for project in ["first", "second"] {
+        let (root, _) = home.project(&client, project).await;
+        let granted = home
+            .cockpit(&["account", "grant", project, "claude", "work"], &[])
+            .await;
+        assert!(granted.status.success(), "{}", text(&granted.stderr));
+        roots.push(root);
+    }
+    let (first, second) = (home.connect().await, home.connect().await);
+
+    let (started_first, started_second) = tokio::join!(
+        first.request(session_new_command(&roots[0]), Duration::from_secs(60)),
+        second.request(session_new_command(&roots[1]), Duration::from_secs(60)),
+    );
+
+    let mut on_work = 0;
+    for started in [started_first, started_second] {
+        match started {
+            Ok(cockpit_protocol::Reply::Session { session }) => {
+                if launch_account(&home, &session.id).await.as_deref() == Some("work") {
+                    on_work += 1;
+                }
+            }
+            Err(ClientError::Daemon(error)) => assert!(
+                error
+                    .message
+                    .contains("one session at a time uses a login account"),
+                "{error:?}"
+            ),
+            other => panic!("session-new answered {other:?}"),
+        }
+    }
+    assert_eq!(on_work, 1);
 }
 
 /// #59, Theo's choice A for #858: a session asleep holds no login, and waking it on a login

@@ -2210,16 +2210,15 @@ impl Sessions {
             if is_login
                 && let Some(name) = &account.name
                 && let Some((_, other)) =
-                    store::accounts_in_use(&write, session.provider.as_str(), Some(id))
+                    store::logins_in_use(&write, session.provider.as_str(), Some(id))
                         .await?
                         .into_iter()
                         .find(|(used, _)| used == name)
             {
-                return Err(Error::AccountUnusable {
+                return Err(Error::LoginInUse {
                     provider: session.provider.as_str().to_owned(),
                     account: name.clone(),
-                    reason: format!("has its login in use by session {other}"),
-                    remedy: "one session at a time uses a login account: launch again",
+                    session: other.to_string(),
                 });
             }
             let token = cockpit_agent_channel::mint(&write, &channel_session).await?;
@@ -2249,6 +2248,7 @@ impl Sessions {
                 account.name.as_deref(),
                 account.switched_from.as_deref(),
                 &account.passed_over,
+                is_login,
             )
             .await?;
             cockpit_sandbox::record(&write, execution.0, id.as_str(), &prepared.evidence).await?;
@@ -2531,22 +2531,27 @@ impl Sessions {
         let name = provider.name().as_str().to_owned();
         let accounts = self.settings.accounts.of(&name);
         let stopped = self.accounts_out_of_capacity(&name).await?;
-        let (grants, in_use) = {
+        let (granted, in_use) = {
             let read = self.database.read().await?;
-            (
-                cockpit_sandbox::login_grants(&read, Some(project)).await?,
-                store::accounts_in_use(&read, &name, session).await?,
-            )
+            let granted: Vec<String> = cockpit_sandbox::login_grants(&read, Some(project))
+                .await?
+                .into_iter()
+                .filter(|grant| grant.provider == name)
+                .map(|grant| grant.account)
+                .collect();
+            // Only a granted login is ever passed over for being in use.
+            let in_use = if granted.is_empty() {
+                Vec::new()
+            } else {
+                store::logins_in_use(&read, &name, session).await?
+            };
+            (granted, in_use)
         };
         let logins = ProjectLogins {
             project: project.to_owned(),
             login: provider.login()?,
             sandbox: self.settings.sandbox.clone(),
-            granted: grants
-                .into_iter()
-                .filter(|grant| grant.provider == name)
-                .map(|grant| grant.account)
-                .collect(),
+            granted,
             in_use,
         };
         let environment = self.settings.owner_environment.clone();

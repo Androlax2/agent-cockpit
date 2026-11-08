@@ -483,6 +483,7 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::ProviderCredential { .. }
         | Error::AccountUnavailable { .. }
         | Error::AccountUnusable { .. }
+        | Error::LoginInUse { .. }
         | Error::SignIn { .. }
         | Error::LoginGrantRefused { .. } => ErrorCode::Refused,
         Error::LoginGrantStore(cockpit_sandbox::LoginGrantError::Refused(

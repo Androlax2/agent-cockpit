@@ -277,8 +277,10 @@ the launch until you remove one.
 One session at a time uses a login account, so two sessions never refresh the same sign-in
 at once and sign each other out. A launch passes over a login another starting, running or
 stopping session uses, naming that session on its `passed over:` line; a session asleep,
-failed or ended holds none. Waking or restarting a session kept on a login another session
-took meanwhile is refused, naming that session.
+failed or ended holds none, nor does a session on the account's credential file. Waking or
+restarting a session kept on a login another session took meanwhile is refused, naming that
+session. Of two sessions launching on one login at the same moment, the second is refused:
+launch it again and it takes the next listed account.
 
 When a session reports that its plan's usage limit stopped its turn (Codex does), Torlek
 relaunches it at once on the next listed account that holds a credential and has not

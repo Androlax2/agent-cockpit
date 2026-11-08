@@ -111,6 +111,13 @@ pub enum Error {
         /// What the owner does so the account can be used.
         remedy: &'static str,
     },
+    /// Another launch took a login account between this launch choosing it and recording it
+    /// (#59): one session at a time uses a login account.
+    LoginInUse {
+        provider: String,
+        account: String,
+        session: String,
+    },
     /// `torlek account sign-in` cannot sign this account in, or kept nothing (#59).
     SignIn {
         provider: String,
@@ -278,6 +285,16 @@ impl fmt::Display for Error {
                 formatter,
                 "the {provider} provider's account {account} {reason}, so its sandboxed sessions \
                  do not launch: {remedy}"
+            ),
+            Error::LoginInUse {
+                provider,
+                account,
+                session,
+            } => write!(
+                formatter,
+                "session {session} started on the {provider} provider's login account {account} \
+                 while this launch prepared it, and one session at a time uses a login \
+                 account: launch again to use the next listed account"
             ),
             Error::Authorization(error) => write!(formatter, "authorization: {error}"),
             Error::SignIn {
