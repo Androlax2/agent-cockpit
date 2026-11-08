@@ -95,24 +95,28 @@ fn inside_a_session_each_network_verb_is_refused_on_the_agent_socket() {
     }
 }
 
-/// #59: a login account's sign-in is the owner's alone.
+/// #59: a login account's sign-in and grants are the owner's alone, so no agent grants its
+/// project a login.
 #[test]
-fn inside_a_session_account_sign_in_is_refused_on_the_agent_socket() {
+fn inside_a_session_the_account_verbs_are_refused_on_the_agent_socket() {
     let home = TestHome::new();
     let _daemon = home.start();
 
-    let output = torlek(
-        &home,
-        &["account", "sign-in", "codex", "default"],
-        &SESSION_ENVIRONMENT,
-    );
+    for verb in [
+        &["account", "sign-in", "codex", "default"][..],
+        &["account", "grant", "app", "codex", "default"],
+        &["account", "grants"],
+        &["account", "revoke", "1"],
+    ] {
+        let output = torlek(&home, verb, &SESSION_ENVIRONMENT);
 
-    let stderr = text(&output.stderr);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert!(
-        stderr.contains("refused: this command is the owner's alone"),
-        "{stderr}"
-    );
+        let stderr = text(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{verb:?}: {stderr}");
+        assert!(
+            stderr.contains("refused: this command is the owner's alone"),
+            "{verb:?}: {stderr}"
+        );
+    }
 }
 
 #[test]

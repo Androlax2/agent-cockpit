@@ -346,14 +346,14 @@ async fn live_sessions(connection: &Connection) -> Result<HashMap<String, String
         .collect())
 }
 
-fn owner_client(through: DecidedThroughView) -> OwnerClient {
+pub(crate) fn owner_client(through: DecidedThroughView) -> OwnerClient {
     match through {
         DecidedThroughView::Tui => OwnerClient::Tui,
         DecidedThroughView::Cli => OwnerClient::Cli,
     }
 }
 
-fn decision_view(decision: OwnerDecision) -> NetworkDecisionView {
+pub(crate) fn decision_view(decision: OwnerDecision) -> NetworkDecisionView {
     NetworkDecisionView {
         at: decision.at,
         through: decision.through.map(|through| match through {

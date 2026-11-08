@@ -108,6 +108,14 @@ pub enum Error {
         account: String,
         reason: String,
     },
+    /// `torlek account grant` cannot let the project use this login account (#59).
+    LoginGrant {
+        project: String,
+        provider: String,
+        account: String,
+        reason: String,
+    },
+    LoginGrants(cockpit_sandbox::LoginGrantError),
     Authorization(cockpit_authorization::Error),
     Io {
         action: &'static str,
@@ -260,6 +268,17 @@ impl fmt::Display for Error {
                 formatter,
                 "cannot sign in the {provider} provider's account {account}: {reason}"
             ),
+            Error::LoginGrant {
+                project,
+                provider,
+                account,
+                reason,
+            } => write!(
+                formatter,
+                "cannot let project {project} use the {provider} provider's login account \
+                 {account}: {reason}"
+            ),
+            Error::LoginGrants(error) => error.fmt(formatter),
             Error::Io {
                 action,
                 path,
@@ -335,6 +354,7 @@ impl std::error::Error for Error {
             Error::Database(source) => Some(source),
             Error::Sql(source) => Some(source),
             Error::SandboxObservations(source) => Some(source),
+            Error::LoginGrants(source) => Some(source),
             Error::GithubToken { error, .. } => Some(error),
             Error::ProviderCredential { error, .. } => Some(error),
             _ => None,
@@ -363,4 +383,5 @@ from_source! {
     cockpit_turso::Error => Database,
     cockpit_turso::sql::Error => Sql,
     cockpit_sandbox::ObservationError => SandboxObservations,
+    cockpit_sandbox::LoginGrantError => LoginGrants,
 }

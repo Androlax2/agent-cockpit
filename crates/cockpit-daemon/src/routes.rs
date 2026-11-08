@@ -415,15 +415,20 @@ impl Handler for Routes {
             (
                 command @ (Command::AccountSignIn { .. }
                 | Command::AccountSignedIn { .. }
-                | Command::AccountSignInDiscard { .. }),
+                | Command::AccountSignInDiscard { .. }
+                | Command::AccountGrant { .. }
+                | Command::AccountGrants { .. }
+                | Command::AccountRevoke { .. }),
                 peer,
-            ) => {
-                match peer {
-                    // A login account's sign-in is the owner's alone (#59).
-                    Peer::Agent { .. } => Route::Answer(owner_only()),
-                    Peer::Owner => accounts::route(command, Arc::clone(&self.sessions)),
-                }
-            }
+            ) => match peer {
+                // A login account's sign-in and grants are the owner's alone (#59).
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => accounts::route(
+                    command,
+                    Arc::clone(&self.sessions),
+                    Arc::clone(&self.database),
+                ),
+            },
             // The coordinator kit (#410): a session acts on others only through the owner's
             // grants, which `cockpit-authorization` evaluates per request. `agent-end` (#713)
             // reaches only a session the sender started, once its work is done.

@@ -2,6 +2,7 @@
 //! harness's own sign-in run in their terminal with a fresh folder of Torlek's as its home;
 //! the daemon then moves the one file the adapter names into the account's login folder. It
 //! never opens that file: it checks what kind of entry it is, renames it and sets its mode.
+//! `torlek account grant` then lets one project's sessions use that login.
 
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
@@ -9,9 +10,9 @@ use std::path::{Path, PathBuf};
 
 use cockpit_config::Source;
 use cockpit_provider_api::Login;
-use cockpit_sandbox::AccountLogin;
+use cockpit_sandbox::{AccountLogin, LoginGrant, OwnerClient};
 
-use super::{Sessions, create_session_dir, remove_tree};
+use super::{Sessions, create_session_dir, remove_tree, store};
 use crate::Error;
 
 /// Where a login waits in the login folder between leaving the sign-in's home and taking its
@@ -127,13 +128,58 @@ impl Sessions {
         .await
     }
 
+    /// The owner lets `project`'s sessions use `account` of `provider`, a login account the
+    /// owner lists, from the project's next launch. The account need not be signed in yet.
+    pub async fn grant_login(
+        &self,
+        project: &str,
+        provider: &str,
+        account: &str,
+        through: Option<OwnerClient>,
+    ) -> Result<LoginGrant, Error> {
+        let refused = move |reason| Error::LoginGrant {
+            project: project.to_owned(),
+            provider: provider.to_owned(),
+            account: account.to_owned(),
+            reason,
+        };
+        self.listed_login(provider, account, refused)?;
+        let write = self.database.write().await?;
+        cockpit_projects::project_named(&write, project).await?;
+        let grant =
+            cockpit_sandbox::grant_login(&write, project, provider, account, through, store::now())
+                .await?;
+        write.commit().await?;
+        Ok(grant)
+    }
+
     /// The adapter's login and the account's folders, once the owner lists the account.
     fn login_of(&self, provider: &str, account: &str) -> Result<(Login, AccountLogin), Error> {
         let refused = refusal(provider, account);
+        let login = self.listed_login(provider, account, &refused)?;
+        let folders = self
+            .settings
+            .sandbox
+            .account_login(provider, account)
+            .ok_or_else(|| refused("the daemon read no host paths to keep it in".to_owned()))?
+            .map_err(Error::Sandbox)?;
+        Ok((login, folders))
+    }
+}
+
+impl Sessions {
+    /// The adapter's login, once the owner lists `account` for `provider`; `refused` says why
+    /// it cannot be one.
+    fn listed_login(
+        &self,
+        provider: &str,
+        account: &str,
+        refused: impl Fn(String) -> Error,
+    ) -> Result<Login, Error> {
         let adapter = self.provider(Some(provider))?;
         let listed = self.settings.accounts.sourced(provider);
         if !listed.value.iter().any(|name| name == account) {
-            let reason = match listed.source {
+            return Err(refused(match listed.source {
                 Source::ProductDefault => format!(
                     "`accounts.{provider}` is not set, so the provider has the `{}` account alone",
                     cockpit_config::DEFAULT_ACCOUNT
@@ -142,21 +188,13 @@ impl Sessions {
                     "`accounts.{provider}` lists {}, not {account}",
                     listed.value.join(", ")
                 ),
-            };
-            return Err(refused(reason));
+            }));
         }
-        let login = adapter.login()?.ok_or_else(|| {
+        adapter.login()?.ok_or_else(|| {
             refused(format!(
                 "the {provider} adapter has no sign-in a login account can keep"
             ))
-        })?;
-        let folders = self
-            .settings
-            .sandbox
-            .account_login(provider, account)
-            .ok_or_else(|| refused("the daemon read no host paths to keep it in".to_owned()))?
-            .map_err(Error::Sandbox)?;
-        Ok((login, folders))
+        })
     }
 }
 

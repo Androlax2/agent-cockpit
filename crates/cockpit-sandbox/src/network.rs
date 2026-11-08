@@ -109,7 +109,7 @@ impl OwnerClient {
         }
     }
 
-    fn parse(text: &str) -> Option<OwnerClient> {
+    pub(crate) fn parse(text: &str) -> Option<OwnerClient> {
         OwnerClient::ALL
             .into_iter()
             .find(|client| client.as_str() == text)

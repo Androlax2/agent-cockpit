@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod accounts;
 mod agent;
 mod approvals;
 mod bug_reports;
@@ -22,6 +23,7 @@ mod verification;
 mod versions;
 mod workflows;
 
+pub use accounts::LoginGrantView;
 pub use agent::{
     AGENT_SOCKET_VARIABLE, AgentReport, AgentState, CompactionPhase, CompactionReport,
     CompactionStatus, CompactionTrigger, CompactionView, ContextUsage, LAUNCH_TOKEN_VARIABLE,

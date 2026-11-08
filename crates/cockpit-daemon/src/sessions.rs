@@ -475,7 +475,8 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::GithubToken { .. }
         | Error::ProviderCredential { .. }
         | Error::AccountUnavailable { .. }
-        | Error::SignIn { .. } => ErrorCode::Refused,
+        | Error::SignIn { .. }
+        | Error::LoginGrant { .. } => ErrorCode::Refused,
         Error::Projects(error) => crate::projects::error_code(error),
         _ => ErrorCode::Internal,
     }
