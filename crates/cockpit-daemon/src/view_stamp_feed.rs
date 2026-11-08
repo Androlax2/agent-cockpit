@@ -158,6 +158,8 @@ mod tests {
         "resource_reservations",
         "resource_settings",
         "sandbox_launch_lines",
+        // Login grants are listed by `torlek account grants`; no polled view shows them (#59).
+        "sandbox_login_grants",
         "sandbox_launches",
         // `usage-quota` reads the plan windows when the owner asks; no view polls them.
         "usage_quota_accounts",

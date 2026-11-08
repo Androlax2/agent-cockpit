@@ -279,10 +279,20 @@ async fn remove_project(database: &Database, project: &str) -> Result<Outcome, O
     let clones = cockpit_projects::remove_project(&write, &project)
         .await
         .map_err(project_refusal)?;
+    let revoked = cockpit_sandbox::revoke_project_login_grants(
+        &write,
+        project.name.as_str(),
+        crate::approvals::now(),
+    )
+    .await
+    .map_err(|error| internal("revoke the project's login grants", &error))?;
     write
         .commit()
         .await
         .map_err(|error| project_refusal(Error::from(error)))?;
+    if !revoked.is_empty() {
+        tracing::info!(project = %project.name, grants = revoked.len(), "removing the project revoked its login grants");
+    }
     Ok(Outcome::Ok(Reply::ProjectRemoved {
         project: project_view(&project),
         kept_on_disk: clones.iter().map(|clone| text(&clone.path)).collect(),

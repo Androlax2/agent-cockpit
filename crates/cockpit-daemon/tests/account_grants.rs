@@ -64,7 +64,15 @@ async fn a_revoked_grant_is_no_longer_listed() {
     let revoked = home.cockpit(&["account", "revoke", "1"], &[]).await;
 
     assert!(revoked.status.success(), "{}", text(&revoked.stderr));
-    assert!(text(&revoked.stdout).contains("revoked by the owner through the CLI at"));
+    let stdout = text(&revoked.stdout);
+    assert!(
+        stdout.contains("project cockpit no longer uses the codex provider's"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("revoked by the owner through the CLI at"),
+        "{stdout}"
+    );
     let listed = home.cockpit(&["account", "grants", "cockpit"], &[]).await;
     assert_eq!(text(&listed.stdout), "");
 }
@@ -126,4 +134,28 @@ async fn a_provider_with_no_login_to_keep_is_refused_naming_it() {
         stderr.contains("the opencode adapter has no sign-in a login account can keep"),
         "{stderr}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_the_project_revokes_its_grants() {
+    let (home, _daemon) = started().await;
+    home.cockpit(&["account", "grant", "cockpit", "codex", "work"], &[])
+        .await;
+
+    let removed = home.cockpit(&["project", "remove", "cockpit"], &[]).await;
+
+    assert!(removed.status.success(), "{}", text(&removed.stderr));
+    let listed = home.cockpit(&["account", "grants"], &[]).await;
+    assert_eq!(text(&listed.stdout), "");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn listing_the_grants_of_a_project_that_is_not_registered_is_refused() {
+    let (home, _daemon) = started().await;
+
+    let output = home.cockpit(&["account", "grants", "website"], &[]).await;
+
+    assert!(!output.status.success());
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("website"), "{stderr}");
 }

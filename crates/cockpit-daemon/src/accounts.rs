@@ -78,7 +78,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>, database: Arc<Dat
                     .grant_login(&project, &provider, &account, through.map(owner_client))
                     .await
                     .map_err(|error| match error {
-                        cockpit_sessions::Error::LoginGrants(error) => Failed::from(error),
+                        cockpit_sessions::Error::LoginGrantStore(error) => Failed::from(error),
                         other => Failed::from(other),
                     })?;
                 tracing::info!(grant = grant.id, %project, %provider, "the owner granted a login");
@@ -86,6 +86,11 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>, database: Arc<Dat
             }
             Command::AccountGrants { project } => {
                 let read = database.read().await?;
+                if let Some(name) = &project {
+                    cockpit_projects::project_named(&read, name)
+                        .await
+                        .map_err(cockpit_sessions::Error::from)?;
+                }
                 let grants = cockpit_sandbox::login_grants(&read, project.as_deref()).await?;
                 Ok(Reply::AccountGrants {
                     grants: grants.iter().map(grant_view).collect(),

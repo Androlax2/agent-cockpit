@@ -157,6 +157,32 @@ async fn revoking_a_grant_twice_is_refused() {
 }
 
 #[tokio::test]
+async fn removing_a_project_revokes_its_grants_without_a_client_and_keeps_the_others() {
+    let store = store().await;
+    store.grant("cockpit", "work").await.unwrap();
+    let other = store.grant("website", "work").await.unwrap();
+
+    let write = store.database.write().await.unwrap();
+    let revoked = cockpit_sandbox::revoke_project_login_grants(&write, "cockpit", REVOKED_AT)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let decisions = revoked
+        .iter()
+        .map(|grant| grant.revoked)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        decisions,
+        [Some(OwnerDecision {
+            at: REVOKED_AT,
+            through: None,
+        })]
+    );
+    assert_eq!(store.grants(None).await, [other]);
+}
+
+#[tokio::test]
 async fn revoking_an_unknown_grant_is_refused() {
     let store = store().await;
 

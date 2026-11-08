@@ -109,8 +109,12 @@ pub(crate) fn run_grants(command: Command) -> ExitCode {
 }
 
 fn grant_detail(grant: &LoginGrantView) -> String {
+    let uses = match grant.revoked {
+        Some(_) => "no longer uses",
+        None => "uses",
+    };
     let mut text = format!(
-        "login grant {}: project {} uses the {} provider's account {} from its next launch\n\
+        "login grant {}: project {} {uses} the {} provider's account {} from its next launch\n\
          granted: {}\n",
         grant.id,
         grant.project,
@@ -120,7 +124,7 @@ fn grant_detail(grant: &LoginGrantView) -> String {
     );
     match grant.revoked {
         Some(revoked) => text.push_str(&format!(
-            "revoked: {}; the project's next launch no longer uses it\n",
+            "revoked: {}\n",
             crate::network::decided("revoked", revoked)
         )),
         None => text.push_str(&format!(

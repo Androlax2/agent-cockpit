@@ -35,6 +35,7 @@ pub use launch::{AccountLogin, CheckRequest, HostPaths, LaunchRequest, Prepared,
 #[cfg(feature = "persistence")]
 pub use logins::{
     LoginGrant, LoginGrantError, LoginGrantRefusal, grant_login, login_grants, revoke_login_grant,
+    revoke_project_login_grants,
 };
 pub use native::{
     Backend, GitIdentity, NativeBackend, ProviderNeeds, Staged, ToolNeeds, ToolSetting,

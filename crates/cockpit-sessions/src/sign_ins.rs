@@ -137,7 +137,7 @@ impl Sessions {
         account: &str,
         through: Option<OwnerClient>,
     ) -> Result<LoginGrant, Error> {
-        let refused = move |reason| Error::LoginGrant {
+        let refused = move |reason| Error::LoginGrantRefused {
             project: project.to_owned(),
             provider: provider.to_owned(),
             account: account.to_owned(),

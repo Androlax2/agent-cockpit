@@ -1,15 +1,16 @@
 //! Login grants (#59, #858): the owner lets one project's sessions use a login account, the
 //! sign-in `torlek account sign-in` keeps. Like a network grant (#674), each records when and
 //! through which owner client it was granted and revoked, and applies from the project's next
-//! launch; only the owner decides, so who is the owner.
+//! launch.
 //!
-//! The caller owns the transaction and authorization; these functions keep the rules of the
-//! rows: one active grant per project, provider and account, rows never deleted.
+//! Only the owner decides: the caller owns the authorization and the transaction. These
+//! functions keep the rules of the rows: one active grant per project, provider and account,
+//! rows never deleted.
 
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row, Value};
 
-use crate::network::{OwnerClient, OwnerDecision};
+use crate::network::{OwnerClient, OwnerDecision, decision_from};
 
 /// The table, created by the `sandbox` migration set's version 3.
 pub(crate) const MIGRATION_SQL: &str = "CREATE TABLE sandbox_login_grants (
@@ -202,29 +203,37 @@ pub async fn revoke_login_grant(
     grant_from(&row)
 }
 
+/// Revokes `project`'s active grants when the owner removes the project, without a client:
+/// a project registered later under the same name starts with none.
+pub async fn revoke_project_login_grants(
+    write: &WriteTransaction<'_>,
+    project: &str,
+    now: i64,
+) -> Result<Vec<LoginGrant>, LoginGrantError> {
+    let mut rows = write
+        .query(
+            &format!(
+                "UPDATE sandbox_login_grants SET revoked_at = ?2
+                 WHERE project = ?1 AND revoked_at IS NULL RETURNING {COLUMNS}"
+            ),
+            (project, now),
+        )
+        .await?;
+    let mut revoked = Vec::new();
+    while let Some(row) = rows.next().await? {
+        revoked.push(grant_from(&row)?);
+    }
+    Ok(revoked)
+}
+
 fn grant_from(row: &Row) -> Result<LoginGrant, LoginGrantError> {
     Ok(LoginGrant {
         id: row.get(0)?,
         project: row.get(1)?,
         provider: row.get(2)?,
         account: row.get(3)?,
-        granted: decision_from(row, 4)?
+        granted: decision_from(row, 4, LoginGrantError::InvalidRow)?
             .ok_or_else(|| LoginGrantError::InvalidRow("a grant without its time".to_owned()))?,
-        revoked: decision_from(row, 6)?,
+        revoked: decision_from(row, 6, LoginGrantError::InvalidRow)?,
     })
-}
-
-/// The decision stored in `at, through` from `first`; `None` while `at` is null.
-fn decision_from(row: &Row, first: usize) -> Result<Option<OwnerDecision>, LoginGrantError> {
-    let Some(at) = row.get::<Option<i64>>(first)? else {
-        return Ok(None);
-    };
-    let through = match row.get::<Option<String>>(first + 1)? {
-        Some(text) => Some(
-            OwnerClient::parse(&text)
-                .ok_or_else(|| LoginGrantError::InvalidRow(format!("decided through {text:?}")))?,
-        ),
-        None => None,
-    };
-    Ok(Some(OwnerDecision { at, through }))
 }
