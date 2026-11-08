@@ -2690,6 +2690,10 @@ impl Sessions {
         let accounts = self.settings.accounts.of(provider.name().as_str());
         let environment = self.settings.owner_environment.clone();
         let sandbox = self.settings.sandbox.clone();
+        let grants = {
+            let read = self.database.read().await?;
+            cockpit_sandbox::login_grants(&read, None).await?
+        };
         self.blocking("read the provider's credential", move || {
             let variables = credential_variables(provider.as_ref())?;
             if variables.is_empty() {
@@ -2697,7 +2701,7 @@ impl Sessions {
             }
             let variables: Vec<&str> = variables.iter().map(String::as_str).collect();
             let name = provider.name().as_str();
-            let login = provider.login()?;
+            let login = provider.login().map_err(Error::from);
             let mut states = Vec::new();
             for account in accounts {
                 let Some(dir) =
@@ -2707,7 +2711,7 @@ impl Sessions {
                 };
                 states.push(cockpit_config::AccountCredentialState {
                     state: cockpit_config::provider_credential_state(&dir, &variables),
-                    login: login_state(login.as_ref(), &sandbox, name, &account)?,
+                    login: login_state(&login, &sandbox, &grants, name, &account),
                     account,
                 });
             }
@@ -3546,7 +3550,8 @@ impl ProjectLogins {
         let Some(login) = &self.login else {
             return Ok(None);
         };
-        signed_in_login(login, &self.sandbox, provider, account)
+        Ok(signed_in_login(login, &self.sandbox, provider, account)?
+            .map(|(session_login, _)| session_login))
     }
 
     /// The grant that lets the project use `account`, as the owner runs it.
@@ -3558,15 +3563,15 @@ impl ProjectLogins {
     }
 }
 
-/// `account`'s signed-in login, as a session sees it (#59): None when the daemon read no
-/// host paths or the owner has not signed the account in; refused when what is kept is no
-/// plain file. Blocking: it reads the account's folder.
+/// `account`'s signed-in login, as a session sees it, with the file it keeps (#59): None when
+/// the daemon read no host paths or the owner has not signed the account in; refused when
+/// what is kept is no plain file. Blocking: it reads the account's folder.
 fn signed_in_login(
     login: &cockpit_provider_api::Login,
     sandbox: &cockpit_sandbox::Sandbox,
     provider: &str,
     account: &str,
-) -> Result<Option<cockpit_sandbox::SessionLogin>, Error> {
+) -> Result<Option<(cockpit_sandbox::SessionLogin, PathBuf)>, Error> {
     let Some(folders) = sandbox.account_login(provider, account) else {
         return Ok(None);
     };
@@ -3594,7 +3599,7 @@ fn signed_in_login(
             });
         }
     }
-    Ok(Some(cockpit_sandbox::SessionLogin {
+    let session_login = cockpit_sandbox::SessionLogin {
         folder,
         file: login.file.as_str().to_owned(),
         mount: match login.rewrite {
@@ -3603,34 +3608,46 @@ fn signed_in_login(
                 cockpit_sandbox::LoginMount::FolderAndLink
             }
         },
-    }))
+    };
+    Ok(Some((session_login, file)))
 }
 
-/// `account`'s login as `doctor` shows it (#59): its file's place, never its contents.
-/// Blocking: it reads the account's folder.
+/// `account`'s login as `doctor` shows it (#59): its file's place, never its contents, and
+/// the projects of `grants` granted it. A login that cannot be read is unusable, as a launch
+/// reaching it is refused. Blocking: it reads the account's folder.
 fn login_state(
-    login: Option<&cockpit_provider_api::Login>,
+    login: &Result<Option<cockpit_provider_api::Login>, Error>,
     sandbox: &cockpit_sandbox::Sandbox,
+    grants: &[cockpit_sandbox::LoginGrant],
     provider: &str,
     account: &str,
-) -> Result<cockpit_config::AccountLoginState, Error> {
-    let Some(login) = login else {
-        return Ok(cockpit_config::AccountLoginState::NotKept);
+) -> cockpit_config::AccountLoginState {
+    let login = match login {
+        Ok(Some(login)) => login,
+        Ok(None) => return cockpit_config::AccountLoginState::NotKept,
+        Err(error) => {
+            return cockpit_config::AccountLoginState::Unusable {
+                reason: format!("has a login the provider's adapter cannot declare: {error}"),
+            };
+        }
     };
-    Ok(match signed_in_login(login, sandbox, provider, account) {
+    match signed_in_login(login, sandbox, provider, account) {
         Ok(None) => cockpit_config::AccountLoginState::NotSignedIn,
-        Ok(Some(signed_in)) => cockpit_config::AccountLoginState::SignedIn {
-            file: signed_in.folder.join(
-                Path::new(&signed_in.file)
-                    .file_name()
-                    .expect("a declared home path names a file"),
-            ),
+        Ok(Some((_, file))) => cockpit_config::AccountLoginState::SignedIn {
+            file,
+            granted_to: grants
+                .iter()
+                .filter(|grant| grant.provider == provider && grant.account == account)
+                .map(|grant| grant.project.clone())
+                .collect(),
         },
         Err(Error::AccountUnusable { reason, .. }) => {
             cockpit_config::AccountLoginState::Unusable { reason }
         }
-        Err(error) => return Err(error),
-    })
+        Err(error) => cockpit_config::AccountLoginState::Unusable {
+            reason: format!("has a login that cannot be read: {error}"),
+        },
+    }
 }
 
 /// Why a launch passes over or refuses a login account another session uses (#59).

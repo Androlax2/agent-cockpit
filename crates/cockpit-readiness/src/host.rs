@@ -298,37 +298,27 @@ fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
     requirements
 }
 
-/// The account a sandboxed launch runs on, as the daemon picks it (#59): the first that holds
-/// a credential or a signed-in login, unless what it holds is unusable and refuses the
-/// launch. A login is used only in the projects granted it, which this host-wide row cannot
-/// tell apart.
+/// The account a sandboxed launch runs on in a project holding no login grant, as the daemon
+/// picks it (#59): the first that holds a credential, passing over one holding nothing or a
+/// signed-in login, unless what it holds is unusable and refuses the launch. The rows judge
+/// blocking by this project, the strictest; a login's own row names the projects granted it.
 fn launch_account(accounts: &[AccountCredentialState]) -> Option<&str> {
-    accounts
-        .iter()
-        .find(|account| holds_anything(account))
-        .filter(|account| {
-            matches!(
-                (&account.state, &account.login),
-                (
-                    ProviderCredentialState::Configured { .. },
-                    AccountLoginState::NotKept | AccountLoginState::NotSignedIn
-                ) | (
-                    ProviderCredentialState::Missing { .. },
-                    AccountLoginState::SignedIn { .. }
-                )
-            )
-        })
-        .map(|account| account.account.as_str())
-}
-
-fn holds_anything(account: &AccountCredentialState) -> bool {
-    !matches!(
-        (&account.state, &account.login),
-        (
-            ProviderCredentialState::Missing { .. },
-            AccountLoginState::NotKept | AccountLoginState::NotSignedIn
-        )
-    )
+    for account in accounts {
+        match (&account.state, &account.login) {
+            (
+                ProviderCredentialState::Missing { .. },
+                AccountLoginState::NotKept
+                | AccountLoginState::NotSignedIn
+                | AccountLoginState::SignedIn { .. },
+            ) => {}
+            (
+                ProviderCredentialState::Configured { .. },
+                AccountLoginState::NotKept | AccountLoginState::NotSignedIn,
+            ) => return Some(account.account.as_str()),
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// The sign-in a sandboxed session of `provider` gets: the owner's credential the session
@@ -365,20 +355,10 @@ fn sandbox_credential(
         ),
     };
     match (&account.state, &account.login) {
-        (ProviderCredentialState::Unusable { reason }, _) => match launches_on {
-            Some(used) => Requirement::needs(
-                name,
-                Status::NeedsAuthorization,
-                format!("unusable, so sandboxed launches run on account {used} instead: {reason}"),
-                "fix the file it names, or remove it",
-            ),
-            None => Requirement::needs(
-                name,
-                Status::MissingPrerequisite,
-                format!("unusable, so its sandboxed sessions do not launch: {reason}"),
-                "fix the file it names, or remove it",
-            ),
-        },
+        (ProviderCredentialState::Unusable { reason }, _) => refused(
+            format!("unusable ({reason})"),
+            "fix the file it names, or remove it".to_owned(),
+        ),
         (_, AccountLoginState::Unusable { reason }) => refused(
             reason.clone(),
             format!(
@@ -400,15 +380,39 @@ fn sandbox_credential(
                 path.display()
             ),
         ),
-        (ProviderCredentialState::Missing { .. }, AccountLoginState::SignedIn { file }) => {
-            Requirement::available(
-                name,
-                format!(
-                    "signed-in login {}: sessions use it in the projects granted it \
-                     (`torlek account grants` lists them), one at a time",
-                    file.display()
-                ),
-            )
+        (
+            ProviderCredentialState::Missing { .. },
+            AccountLoginState::SignedIn { file, granted_to },
+        ) => {
+            if granted_to.is_empty() {
+                Requirement::needs(
+                    name,
+                    Status::NeedsAuthorization,
+                    format!(
+                        "signed-in login {}, but no project holds a grant for it, so no session \
+                         uses it",
+                        file.display()
+                    ),
+                    format!(
+                        "let a project use it with `torlek account grant PROJECT {provider} {}`",
+                        account.account
+                    ),
+                )
+            } else {
+                Requirement::available(
+                    name,
+                    format!(
+                        "signed-in login {}: sessions of {} {} use it, one at a time",
+                        file.display(),
+                        if granted_to.len() == 1 {
+                            "project"
+                        } else {
+                            "projects"
+                        },
+                        granted_to.join(", ")
+                    ),
+                )
+            }
         }
         (ProviderCredentialState::Missing { files }, login) => {
             let write_file = format!(

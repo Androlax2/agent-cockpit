@@ -1355,9 +1355,13 @@ fn no_credential() -> cockpit_config::ProviderCredentialState {
     }
 }
 
-fn signed_in() -> cockpit_config::AccountLoginState {
+fn signed_in(granted_to: &[&str]) -> cockpit_config::AccountLoginState {
     cockpit_config::AccountLoginState::SignedIn {
         file: PathBuf::from("/state/account-logins/claude/work/login/.credentials.json"),
+        granted_to: granted_to
+            .iter()
+            .map(|project| (*project).to_owned())
+            .collect(),
     }
 }
 
@@ -1374,21 +1378,39 @@ fn report_with_accounts(accounts: Vec<cockpit_config::AccountCredentialState>) -
     assess(&host, &fixture.config(), None)
 }
 
-/// #59: a signed-in login account is a sandboxed sign-in, used in the projects granted it.
+/// #59: a signed-in login account is a sandboxed sign-in of the projects granted it.
 #[test]
-fn a_signed_in_login_account_is_an_available_sandboxed_sign_in() {
-    let report = report_with_accounts(vec![account("work", no_credential(), signed_in())]);
+fn a_granted_login_account_is_an_available_sandboxed_sign_in_naming_its_projects() {
+    let report = report_with_accounts(vec![account(
+        "work",
+        no_credential(),
+        signed_in(&["alpha", "beta"]),
+    )]);
 
     let fact = requirement(&report, "provider claude account work sandboxed sign-in");
     assert_eq!(fact.status, Status::Available);
+    assert_eq!(
+        fact.detail,
+        "signed-in login /state/account-logins/claude/work/login/.credentials.json: sessions \
+         of projects alpha, beta use it, one at a time"
+    );
+}
+
+/// #59: no session uses a login no project holds a grant for, so `doctor` names the grant.
+#[test]
+fn a_login_account_no_project_is_granted_names_the_grant() {
+    let report = report_with_accounts(vec![account("work", no_credential(), signed_in(&[]))]);
+
+    let fact = requirement(&report, "provider claude account work sandboxed sign-in");
+    assert_eq!(fact.status, Status::NeedsAuthorization);
     assert!(
-        fact.detail.starts_with(
-            "signed-in login /state/account-logins/claude/work/login/.credentials.json: \
-             sessions use it in the projects granted it (`torlek account grants` lists them), \
-             one at a time"
-        ),
+        fact.detail.contains("no project holds a grant for it"),
         "{}",
         fact.detail
+    );
+    assert_eq!(
+        fact.next.as_deref(),
+        Some("let a project use it with `torlek account grant PROJECT claude work`")
     );
 }
 
@@ -1401,7 +1423,7 @@ fn an_account_with_both_a_credential_and_a_login_blocks() {
         path: PathBuf::from("/config/provider-credentials/claude/work/ANTHROPIC_API_KEY"),
     };
 
-    let report = report_with_accounts(vec![account("work", credential, signed_in())]);
+    let report = report_with_accounts(vec![account("work", credential, signed_in(&["alpha"]))]);
 
     let fact = requirement(&report, "provider claude account work sandboxed sign-in");
     assert_eq!(fact.status, Status::MissingPrerequisite);
@@ -1476,22 +1498,25 @@ fn an_empty_account_offers_no_sign_in_when_its_provider_keeps_none() {
     );
 }
 
-/// #59: a signed-in login counts as the account launches run on, so an empty account after
-/// it is passed over rather than asked for.
+/// #59: a launch in a project without the login's grant passes the login over, so an
+/// unusable credential after it still stops that launch and blocks.
 #[test]
-fn an_account_after_a_signed_in_login_says_launches_run_on_the_login() {
+fn an_unusable_credential_after_a_signed_in_login_blocks() {
     let report = report_with_accounts(vec![
-        account("work", no_credential(), signed_in()),
+        account("work", no_credential(), signed_in(&["alpha"])),
         account(
             "spare",
-            no_credential(),
+            cockpit_config::ProviderCredentialState::Unusable {
+                reason: "its mode is 644".to_owned(),
+            },
             cockpit_config::AccountLoginState::NotSignedIn,
         ),
     ]);
 
     let spare = requirement(&report, "provider claude account spare sandboxed sign-in");
-    assert!(
-        spare.detail.contains("run on account work instead"),
-        "{spare:?}"
+    assert_eq!(spare.status, Status::MissingPrerequisite);
+    assert_eq!(
+        spare.detail,
+        "unusable (its mode is 644), so its sandboxed sessions do not launch"
     );
 }

@@ -179,10 +179,11 @@ pub enum AccountLoginState {
     NotSignedIn,
     SignedIn {
         file: PathBuf,
+        /// The projects holding an active grant for it, the only ones whose sessions use it.
+        granted_to: Vec<String>,
     },
-    Unusable {
-        reason: String,
-    },
+    /// What is kept is no plain file, or cannot be read: a launch reaching it is refused.
+    Unusable { reason: String },
 }
 
 /// [`read_provider_credential`] as its state. Blocking.

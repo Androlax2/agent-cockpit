@@ -701,10 +701,12 @@ fn session_view(
 
 /// What `session new` tells the owner to set when the started session's provider has no
 /// account with a credential its sandbox can add (#968, #59): the first account's files, or
-/// the unusable credential a launch stops at. `None` when the launch found one, agents run
-/// unsandboxed or the state cannot be read.
+/// the unusable credential a launch stops at. A signed-in login account is not offered: a
+/// credential beside its login would refuse the launch, and the `passed over:` line already
+/// names its grant. `None` when the launch found one, agents run unsandboxed or the state
+/// cannot be read.
 async fn sign_in_needed(sessions: &Sessions, provider: &str) -> Option<String> {
-    use cockpit_config::ProviderCredentialState;
+    use cockpit_config::{AccountLoginState, ProviderCredentialState};
 
     // The session already started: a failed hint must not turn it into an error reply.
     let accounts = match sessions.sandbox_credential_state(provider).await {
@@ -727,7 +729,9 @@ async fn sign_in_needed(sessions: &Sessions, provider: &str) -> Option<String> {
                 ));
             }
             ProviderCredentialState::Missing { files } => {
-                first_missing.get_or_insert((&account.account, files));
+                if !matches!(account.login, AccountLoginState::SignedIn { .. }) {
+                    first_missing.get_or_insert((&account.account, files));
+                }
             }
         }
     }
