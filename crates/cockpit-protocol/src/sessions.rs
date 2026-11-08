@@ -148,6 +148,10 @@ pub struct LaunchView {
     /// The account this launch moved off, after the session quota-stopped on it (#59).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switched_from: Option<String>,
+    /// The login accounts this launch passed over for want of the project's grant, each
+    /// naming the account and the grant that lets it (#59).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passed_over: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

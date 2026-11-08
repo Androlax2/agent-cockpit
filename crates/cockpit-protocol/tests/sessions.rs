@@ -85,6 +85,7 @@ fn a_session_view_names_its_state_and_latest_launch_on_the_wire() {
             launched_at: 150,
             account: None,
             switched_from: None,
+            passed_over: Vec::new(),
         }),
         exit: None,
         changed_start_files: Vec::new(),

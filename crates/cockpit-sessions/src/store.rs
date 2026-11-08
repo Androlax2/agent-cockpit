@@ -304,6 +304,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             ALTER TABLE session_launches ADD COLUMN switched_from TEXT
                 CHECK (switched_from <> '');",
         },
+        // #59: the login accounts a launch passed over for want of the project's grant, one
+        // line each naming the account and the grant that lets it; `NULL` for none.
+        Migration {
+            version: 19,
+            sql: "ALTER TABLE session_launches ADD COLUMN passed_over TEXT
+                CHECK (passed_over <> '');",
+        },
     ],
 };
 
@@ -331,7 +338,7 @@ const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout
     EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id),
     (SELECT max(w.working_order) FROM session_launches w WHERE w.session_id = s.id),
     e.ended_by, e.code, e.output, s.model, s.effort, s.started_by, s.compaction_threshold,
-    l.account, l.switched_from";
+    l.account, l.switched_from, l.passed_over";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
     (SELECT max(id) FROM session_launches WHERE session_id = s.id)
     LEFT JOIN session_exits e ON e.launch_id = l.id";
@@ -608,6 +615,7 @@ pub(crate) async fn insert_launch(
     bundle: Option<&LaunchBundle>,
     account: Option<&str>,
     switched_from: Option<&str>,
+    passed_over: &[String],
 ) -> Result<(), Error> {
     let working_order = match purpose {
         LaunchPurpose::Work => Value::Integer(write.commit_order().await?),
@@ -617,8 +625,8 @@ pub(crate) async fn insert_launch(
         .execute(
             "INSERT INTO session_launches
                 (session_id, kind, execution_id, launched_at, working_order, account,
-                 switched_from)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 switched_from, passed_over)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             (
                 id.as_str(),
                 kind.column(),
@@ -627,6 +635,11 @@ pub(crate) async fn insert_launch(
                 working_order,
                 optional_text(account),
                 optional_text(switched_from),
+                optional_text(
+                    Some(passed_over.join("\n"))
+                        .filter(|lines| !lines.is_empty())
+                        .as_deref(),
+                ),
             ),
         )
         .await?;
@@ -974,6 +987,10 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
                 launched_at: row.get(16)?,
                 account: row.get(26)?,
                 switched_from: row.get(27)?,
+                passed_over: row
+                    .get::<Option<String>>(28)?
+                    .map(|lines| lines.lines().map(str::to_owned).collect())
+                    .unwrap_or_default(),
             })
         }
     };

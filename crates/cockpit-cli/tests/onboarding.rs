@@ -211,6 +211,7 @@ fn session() -> SessionView {
             launched_at: 1,
             account: None,
             switched_from: None,
+            passed_over: Vec::new(),
         }),
         exit: None,
         changed_start_files: Vec::new(),

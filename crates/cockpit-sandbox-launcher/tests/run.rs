@@ -85,6 +85,7 @@ impl Fixture {
             hidden: vec![checkout.join(".env")],
             needs_source: NeedsSource::Floor,
             forwards: Vec::new(),
+            login: None,
             egress: self.egress.clone(),
             interception: self.interception.clone(),
         }

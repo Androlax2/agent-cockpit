@@ -100,7 +100,13 @@ pub enum Error {
     AccountUnavailable {
         provider: String,
         account: String,
-        reason: &'static str,
+        reason: String,
+    },
+    /// An account holds both a credential file and a signed-in login (#59): which one a launch
+    /// should use is the owner's to say.
+    AccountAmbiguous {
+        provider: String,
+        account: String,
     },
     /// `torlek account sign-in` cannot sign this account in, or kept nothing (#59).
     SignIn {
@@ -259,6 +265,12 @@ impl fmt::Display for Error {
                 "the session runs on the {provider} provider's account {account}, which {reason}, \
                  and a relaunch never moves it to another account: restore the account, or \
                  start a new session"
+            ),
+            Error::AccountAmbiguous { provider, account } => write!(
+                formatter,
+                "the {provider} provider's account {account} holds both a credential file and a \
+                 signed-in login, so its sandboxed sessions do not launch: remove the one it \
+                 should not use"
             ),
             Error::Authorization(error) => write!(formatter, "authorization: {error}"),
             Error::SignIn {

@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use cockpit_claude::ClaudeCode;
-use cockpit_provider_api::{CredentialHeader, HomePath, Provider};
+use cockpit_provider_api::{CredentialHeader, HomePath, LoginRewrite, Provider};
 
 fn claude() -> ClaudeCode {
     ClaudeCode::new(PathBuf::from("/usr/bin/claude"), None, None)
@@ -117,4 +117,13 @@ fn its_login_is_a_credential_file_its_own_sign_in_saves() {
     assert!(adapter.credentials().unwrap().files.contains(&login.file));
     assert_eq!(login.program, PathBuf::from("/usr/bin/claude"));
     assert_eq!(login.arguments, [] as [&str; 0]);
+}
+
+/// Claude Code 2.1.319 truncates its credentials file in place and opens it with
+/// `O_NOFOLLOW`, so a session sees the login bound at that path, never a link (#858).
+#[test]
+fn its_login_is_rewritten_in_place() {
+    let login = claude().login().unwrap().unwrap();
+
+    assert_eq!(login.rewrite, LoginRewrite::InPlace);
 }

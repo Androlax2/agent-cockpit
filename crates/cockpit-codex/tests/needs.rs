@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use cockpit_codex::Codex;
-use cockpit_provider_api::{HomePath, Provider};
+use cockpit_provider_api::{HomePath, LoginRewrite, Provider};
 
 fn codex() -> Codex {
     Codex::new(PathBuf::from("/usr/bin/codex"), None, None)
@@ -82,4 +82,13 @@ fn its_login_is_a_credential_file_its_own_sign_in_saves() {
         login.arguments,
         ["login", "-c", "cli_auth_credentials_store=\"file\""]
     );
+}
+
+/// Codex writes a new `auth.json` beside the link's target and renames it over the target,
+/// which a bound file refuses: a session sees a folder holding only the login (#858).
+#[test]
+fn its_login_is_replaced_beside_the_link_target() {
+    let login = codex().login().unwrap().unwrap();
+
+    assert_eq!(login.rewrite, LoginRewrite::ReplacesLinkTarget);
 }

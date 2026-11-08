@@ -5,7 +5,9 @@
 
 use std::path::Path;
 
-use cockpit_provider_api::{CredentialHeader, Credentials, InvalidValue, Login, Needs};
+use cockpit_provider_api::{
+    CredentialHeader, Credentials, InvalidValue, Login, LoginRewrite, Needs,
+};
 
 /// The hosts Claude Code reaches: the API, claude.ai's connector proxy, its downloads and its
 /// sign-in console.
@@ -73,5 +75,6 @@ pub fn login(program: &Path) -> Result<Login, InvalidValue> {
         &[],
         "sign in through its first-run prompts or `/login` (both take a pasted code when no browser \
      opens), then type `/exit`",
+        LoginRewrite::InPlace,
     )
 }

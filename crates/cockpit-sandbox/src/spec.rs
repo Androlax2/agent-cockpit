@@ -14,7 +14,7 @@ use crate::egress::{Allowlist, EgressDecisions, TLS_PORT, Target, normalized_nam
 /// Bumped when a field changes meaning; the launcher refuses any other version, so a launcher
 /// left from an older install never half-reads a newer daemon's spec. 3: bound credentials
 /// (#832), which an older launcher would leave unadded.
-pub const SPEC_VERSION: u32 = 3;
+pub const SPEC_VERSION: u32 = 4;
 
 /// The file name of the spec in the session's mount folder.
 pub const SPEC_FILE: &str = "launch-spec.json";
@@ -107,6 +107,10 @@ pub struct LaunchSpec {
     /// Folders of the session's own, in the daemon's mount sources, bound read-write at
     /// another path: Codex's socket folder (#446).
     pub folders: Vec<Folder>,
+    /// A login account's sign-in, bound read-write inside [`LaunchSpec::home`] (#59, #858):
+    /// the account's login file at the harness's path, or the account's folder holding only
+    /// it, which a link at that path names. None for a launch on no login account.
+    pub login: Option<Folder>,
     /// Paths inside a [`LaunchSpec::read_write`] folder the program reads but never
     /// changes: Git hooks and configuration, the project's Torlek folder.
     pub protected: Vec<Protected>,
@@ -199,6 +203,7 @@ impl LaunchSpec {
         let folders = self
             .folders
             .iter()
+            .chain(&self.login)
             .flat_map(|folder| [&folder.source, &folder.destination]);
         for path in single
             .into_iter()
@@ -216,6 +221,15 @@ impl LaunchSpec {
             return Err(InvalidSpec(format!(
                 "the working directory {} is in no writable folder",
                 self.working_dir.display()
+            )));
+        }
+        if let Some(login) = &self.login
+            && (!login.destination.starts_with(&self.home) || login.destination == self.home)
+        {
+            return Err(InvalidSpec(format!(
+                "the login is bound at {}, outside the home {}",
+                login.destination.display(),
+                self.home.display()
             )));
         }
         for Protected { path, .. } in &self.protected {

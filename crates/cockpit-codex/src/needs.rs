@@ -4,7 +4,9 @@
 
 use std::path::Path;
 
-use cockpit_provider_api::{CredentialHeader, Credentials, InvalidValue, Login, Needs};
+use cockpit_provider_api::{
+    CredentialHeader, Credentials, InvalidValue, Login, LoginRewrite, Needs,
+};
 
 /// The hosts Codex reaches: the API, and for a ChatGPT sign-in ChatGPT's backend and
 /// experiments, and the sign-in host that refreshes its tokens (not in Greywall's profile).
@@ -47,5 +49,6 @@ pub fn login(program: &Path) -> Result<Login, InvalidValue> {
         program,
         &["login", "-c", "cli_auth_credentials_store=\"file\""],
         "finish the sign-in it opens in your browser",
+        LoginRewrite::ReplacesLinkTarget,
     )
 }

@@ -2104,7 +2104,7 @@ impl Sessions {
         let github = self.github_access(setting, &output_project).await?;
         let route = self.account_route(&session, kind).await?;
         let account = self
-            .launch_account(setting, session.provider.as_str(), route)
+            .launch_account(setting, session.provider.as_str(), &output_project, route)
             .await?;
         // Kept for the harness's trust of the checkout, recorded once the launch passed its
         // gates: a parallel clone's (#702), and under `"required"` the main checkout's too,
@@ -2156,6 +2156,7 @@ impl Sessions {
             environment,
             github,
             account.credential,
+            account.login,
             needs,
             decisions,
             tools,
@@ -2223,6 +2224,7 @@ impl Sessions {
                 self.settings.bundle.as_ref(),
                 account.name.as_deref(),
                 account.switched_from.as_deref(),
+                &account.passed_over,
             )
             .await?;
             cockpit_sandbox::record(&write, execution.0, id.as_str(), &prepared.evidence).await?;
@@ -2491,16 +2493,30 @@ impl Sessions {
         &self,
         setting: cockpit_config::AgentSandbox,
         provider: &str,
+        project: &str,
         route: AccountRoute,
     ) -> Result<LaunchAccount, Error> {
         if setting == cockpit_config::AgentSandbox::Off {
             return Ok(LaunchAccount::default());
         }
         let provider = Arc::clone(self.provider(Some(provider))?);
-        let accounts = self.settings.accounts.of(provider.name().as_str());
-        let stopped = self
-            .accounts_out_of_capacity(provider.name().as_str())
-            .await?;
+        let name = provider.name().as_str().to_owned();
+        let accounts = self.settings.accounts.of(&name);
+        let stopped = self.accounts_out_of_capacity(&name).await?;
+        let grants = {
+            let read = self.database.read().await?;
+            cockpit_sandbox::login_grants(&read, Some(project)).await?
+        };
+        let logins = ProjectLogins {
+            project: project.to_owned(),
+            login: provider.login()?,
+            sandbox: self.settings.sandbox.clone(),
+            granted: grants
+                .into_iter()
+                .filter(|grant| grant.provider == name)
+                .map(|grant| grant.account)
+                .collect(),
+        };
         let environment = self.settings.owner_environment.clone();
         self.blocking("read the provider's credential", move || {
             let provider = provider.as_ref();
@@ -2508,29 +2524,46 @@ impl Sessions {
                 .iter()
                 .cloned()
                 .partition(|account| !stopped.contains(account));
-            match route {
+            let mut passed_over = Vec::new();
+            let mut first = |accounts: &[String]| {
+                first_usable(provider, &environment, &logins, accounts, &mut passed_over)
+            };
+            let chosen = match route {
                 AccountRoute::Keep(account) => {
-                    kept_account(provider, &environment, &accounts, account)
+                    return kept_account(provider, &environment, &logins, &accounts, account);
                 }
-                AccountRoute::Pick => Ok(match first_bound(provider, &environment, &fresh)? {
+                AccountRoute::Pick => match first(&fresh)? {
                     Some(account) => account,
-                    None => first_bound(provider, &environment, &held)?.unwrap_or_default(),
-                }),
+                    None => first(&held)?.unwrap_or_default(),
+                },
                 AccountRoute::AfterQuotaStop(from) => {
                     // `from` is in `fresh` only once its hold is over: it has capacity again.
-                    if let Some(account) = first_bound(provider, &environment, &fresh)? {
-                        let switched_from = from.filter(|from| account.name.as_ref() != Some(from));
-                        return Ok(LaunchAccount {
-                            switched_from,
-                            ..account
-                        });
-                    }
-                    match from {
-                        Some(account) => kept_account(provider, &environment, &accounts, account),
-                        None => Ok(first_bound(provider, &environment, &held)?.unwrap_or_default()),
+                    match (first(&fresh)?, from) {
+                        (Some(account), from) => {
+                            let switched_from =
+                                from.filter(|from| account.name.as_ref() != Some(from));
+                            LaunchAccount {
+                                switched_from,
+                                ..account
+                            }
+                        }
+                        (None, Some(account)) => {
+                            return kept_account(
+                                provider,
+                                &environment,
+                                &logins,
+                                &accounts,
+                                account,
+                            );
+                        }
+                        (None, None) => first(&held)?.unwrap_or_default(),
                     }
                 }
-            }
+            };
+            Ok(LaunchAccount {
+                passed_over,
+                ..chosen
+            })
         })
         .await
     }
@@ -2550,16 +2583,22 @@ impl Sessions {
             .launch
             .as_ref()
             .and_then(|launch| launch.account.clone());
+        let (checkout, _) = self.checkout_containing(&session.working_dir).await?;
         let chosen = self
             .launch_account(
                 self.owner_settings().sandbox,
                 session.provider.as_str(),
+                checkout.project.as_str(),
                 AccountRoute::AfterQuotaStop(current.clone()),
             )
             .await;
         match chosen {
             Ok(account) => Ok(account.name.is_some() && account.name != current),
-            Err(Error::ProviderCredential { .. } | Error::AccountUnavailable { .. }) => Ok(false),
+            Err(
+                Error::ProviderCredential { .. }
+                | Error::AccountUnavailable { .. }
+                | Error::AccountAmbiguous { .. },
+            ) => Ok(false),
             Err(error) => Err(error),
         }
     }
@@ -2662,6 +2701,7 @@ impl Sessions {
         environment: Vec<(OsString, OsString)>,
         github: GithubAccess,
         provider_credential: Option<cockpit_sandbox::BoundCredential>,
+        login: Option<cockpit_sandbox::SessionLogin>,
         needs: cockpit_sandbox::ProviderNeeds,
         decisions: cockpit_sandbox::EgressDecisions,
         tools: cockpit_sandbox::ToolNeeds,
@@ -2725,6 +2765,7 @@ impl Sessions {
                         .chain(provider_credential)
                         .collect(),
                     decisions,
+                    login,
                 },
                 program,
                 arguments,
@@ -2808,7 +2849,12 @@ impl Sessions {
             .github_access(setting, checkout.project.as_str())
             .await?;
         let account = self
-            .launch_account(setting, &provider, AccountRoute::Pick)
+            .launch_account(
+                setting,
+                &provider,
+                checkout.project.as_str(),
+                AccountRoute::Pick,
+            )
             .await?;
         let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
         let tools = self
@@ -2835,6 +2881,7 @@ impl Sessions {
             environment,
             github,
             account.credential,
+            account.login,
             needs,
             decisions,
             tools,
@@ -3425,13 +3472,96 @@ fn with_temp_dir(
     environment
 }
 
-/// The account a launch runs on and the credential bound for it (#59); both `None` for a
-/// launch on no account. `switched_from` names the account a quota-stopped session moved off.
+/// The account a launch runs on, with the credential bound for it or the login it sees
+/// (#59); all `None` for a launch on no account. `switched_from` names the account a
+/// quota-stopped session moved off; `passed_over` says which login accounts the launch
+/// passed over for want of the project's grant, and the grant that lets each.
 #[derive(Debug, Default)]
 struct LaunchAccount {
     name: Option<String>,
     credential: Option<cockpit_sandbox::BoundCredential>,
+    login: Option<cockpit_sandbox::SessionLogin>,
     switched_from: Option<String>,
+    passed_over: Vec<String>,
+}
+
+/// What a launch in one project may use of a provider's login accounts (#59, #858): the
+/// adapter's login, where each account keeps it, and the accounts the project holds a grant
+/// for, read at the launch so a grant revoked since reaches it.
+struct ProjectLogins {
+    project: String,
+    login: Option<cockpit_provider_api::Login>,
+    sandbox: cockpit_sandbox::Sandbox,
+    granted: Vec<String>,
+}
+
+impl ProjectLogins {
+    /// `account`'s signed-in login, as a session sees it; None when the adapter keeps no
+    /// login, the daemon read no host paths, or the owner has not signed the account in.
+    /// Blocking: it reads the account's folder.
+    fn signed_in(
+        &self,
+        provider: &str,
+        account: &str,
+    ) -> Result<Option<cockpit_sandbox::SessionLogin>, Error> {
+        let Some(login) = &self.login else {
+            return Ok(None);
+        };
+        let Some(folders) = self.sandbox.account_login(provider, account) else {
+            return Ok(None);
+        };
+        let folder = folders.map_err(Error::Sandbox)?.login;
+        let name = Path::new(login.file.as_str())
+            .file_name()
+            .expect("a declared home path names a file");
+        let file = folder.join(name);
+        match std::fs::symlink_metadata(&file) {
+            Ok(entry) if entry.is_file() => {}
+            Ok(_) => {
+                return Err(Error::AccountUnavailable {
+                    provider: provider.to_owned(),
+                    account: account.to_owned(),
+                    reason: format!("keeps a login {} that is no plain file", file.display()),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(Error::Io {
+                    action: "read",
+                    path: file,
+                    source,
+                });
+            }
+        }
+        Ok(Some(cockpit_sandbox::SessionLogin {
+            folder,
+            file: login.file.as_str().to_owned(),
+            mount: match login.rewrite {
+                cockpit_provider_api::LoginRewrite::InPlace => cockpit_sandbox::LoginMount::File,
+                cockpit_provider_api::LoginRewrite::ReplacesLinkTarget => {
+                    cockpit_sandbox::LoginMount::FolderAndLink
+                }
+            },
+        }))
+    }
+
+    /// The grant that lets the project use `account`, as the owner runs it.
+    fn grant_command(&self, provider: &str, account: &str) -> String {
+        format!(
+            "`torlek account grant {} {provider} {account}`",
+            self.project
+        )
+    }
+}
+
+/// What a launch finds in one account (#59).
+enum Holding {
+    /// A credential bound for it, or a login the project holds a grant for.
+    Usable(LaunchAccount),
+    /// A signed-in login the project holds no grant for.
+    Ungranted,
+    /// Neither a credential nor a signed-in login.
+    Nothing,
 }
 
 /// How long an account that quota-stopped is passed over (#59): five hours, the shortest
@@ -3464,48 +3594,96 @@ fn is_quota_stopped(session: &Session, agent_report: Option<&SessionReport>) -> 
     })
 }
 
-/// The first of `accounts` holding a credential, bound; an unusable one refuses.
-fn first_bound(
+/// What `account` holds for a launch: its credential, bound, or its signed-in login if the
+/// project holds a grant for it. An unusable credential, or both a credential and a login,
+/// refuses.
+fn holding(
     provider: &dyn Provider,
     environment: &cockpit_config::Environment,
+    logins: &ProjectLogins,
+    account: &str,
+) -> Result<Holding, Error> {
+    let name = provider.name().as_str();
+    let credential = bound_provider_credential(provider, environment, account)?;
+    let login = logins.signed_in(name, account)?;
+    let found = |credential, login| {
+        Holding::Usable(LaunchAccount {
+            name: Some(account.to_owned()),
+            credential,
+            login,
+            ..LaunchAccount::default()
+        })
+    };
+    Ok(match (credential, login) {
+        (Some(_), Some(_)) => {
+            return Err(Error::AccountAmbiguous {
+                provider: name.to_owned(),
+                account: account.to_owned(),
+            });
+        }
+        (Some(credential), None) => found(Some(credential), None),
+        (None, Some(login)) if logins.granted.iter().any(|granted| granted == account) => {
+            found(None, Some(login))
+        }
+        (None, Some(_)) => Holding::Ungranted,
+        (None, None) => Holding::Nothing,
+    })
+}
+
+/// The first of `accounts` a launch can use; each login account before it that the project
+/// holds no grant for is added to `passed_over` with the grant that lets it.
+fn first_usable(
+    provider: &dyn Provider,
+    environment: &cockpit_config::Environment,
+    logins: &ProjectLogins,
     accounts: &[String],
+    passed_over: &mut Vec<String>,
 ) -> Result<Option<LaunchAccount>, Error> {
+    let name = provider.name().as_str();
     for account in accounts {
-        if let Some(credential) = bound_provider_credential(provider, environment, account)? {
-            return Ok(Some(LaunchAccount {
-                name: Some(account.clone()),
-                credential: Some(credential),
-                switched_from: None,
-            }));
+        match holding(provider, environment, logins, account)? {
+            Holding::Usable(found) => return Ok(Some(found)),
+            Holding::Ungranted => passed_over.push(format!(
+                "{account} (project {} holds no grant for its login: {} lets it)",
+                logins.project,
+                logins.grant_command(name, account)
+            )),
+            Holding::Nothing => {}
         }
     }
     Ok(None)
 }
 
-/// `account`, the one a relaunched conversation runs on, bound; refused when the owner no
-/// longer lists it or it holds no credential.
+/// `account`, the one a relaunched conversation runs on; refused when the owner no longer
+/// lists it, it holds nothing a launch can use, or it is a login account the project holds
+/// no grant for.
 fn kept_account(
     provider: &dyn Provider,
     environment: &cockpit_config::Environment,
+    logins: &ProjectLogins,
     listed: &[String],
     account: String,
 ) -> Result<LaunchAccount, Error> {
+    let name = provider.name().as_str();
     let unavailable = |reason| Error::AccountUnavailable {
-        provider: provider.name().as_str().to_owned(),
+        provider: name.to_owned(),
         account: account.clone(),
         reason,
     };
     if !listed.contains(&account) {
-        return Err(unavailable("the owner no longer lists"));
+        return Err(unavailable("the owner no longer lists".to_owned()));
     }
-    let Some(credential) = bound_provider_credential(provider, environment, &account)? else {
-        return Err(unavailable("holds no credential any more"));
-    };
-    Ok(LaunchAccount {
-        name: Some(account),
-        credential: Some(credential),
-        switched_from: None,
-    })
+    match holding(provider, environment, logins, &account)? {
+        Holding::Usable(found) => Ok(found),
+        Holding::Ungranted => Err(unavailable(format!(
+            "is a login account project {} holds no grant for ({} lets it)",
+            logins.project,
+            logins.grant_command(name, &account)
+        ))),
+        Holding::Nothing => Err(unavailable(
+            "holds no credential or login any more".to_owned(),
+        )),
+    }
 }
 
 /// A launch's bound credentials file (#832), removed if the launch returns before its agent is

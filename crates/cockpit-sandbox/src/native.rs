@@ -271,6 +271,28 @@ pub struct Staged {
     pub decisions: EgressDecisions,
     /// The bound credentials' values, in the order of the spec's interception (#832).
     pub credential_values: Vec<CredentialValue>,
+    /// What the session's home holds for its login before the launcher binds it (#59).
+    pub login: Option<LoginEntry>,
+}
+
+/// The folder inside a session's home that a [`crate::LoginMount::FolderAndLink`] login is
+/// bound at.
+const LOGIN_FOLDER: &str = ".torlek-login";
+
+/// What [`Staged::write`] puts in the session's own home folder, at the paths the launcher
+/// binds the login on (#59). The agent wrote that folder in its last launch, so a link or
+/// any other entry it left in the way is replaced, and a link among the folders above
+/// refuses the launch: the bind never lands where the agent pointed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoginEntry {
+    /// An empty file the login file is bound on.
+    File(PathBuf),
+    /// An empty folder the account's folder is bound on, and a link naming the login in it.
+    FolderAndLink {
+        folder: PathBuf,
+        link: PathBuf,
+        target: PathBuf,
+    },
 }
 
 impl Staged {
@@ -299,6 +321,30 @@ impl Staged {
             remove_entry(source)?;
             folders.create(source)?;
         }
+        match &self.login {
+            Some(LoginEntry::File(file)) => {
+                real_folders_above(&self.home_source, file)?;
+                if !std::fs::symlink_metadata(file).is_ok_and(|entry| entry.is_file()) {
+                    remove_entry(file)?;
+                    replace_owner_only(file, b"")?;
+                }
+            }
+            Some(LoginEntry::FolderAndLink {
+                folder,
+                link,
+                target,
+            }) => {
+                real_folders_above(&self.home_source, folder)?;
+                if !std::fs::symlink_metadata(folder).is_ok_and(|entry| entry.is_dir()) {
+                    remove_entry(folder)?;
+                    folders.create(folder)?;
+                }
+                real_folders_above(&self.home_source, link)?;
+                remove_entry(link)?;
+                std::os::unix::fs::symlink(target, link)?;
+            }
+            None => {}
+        }
         folders.create(&self.config_dir)?;
         for (name, contents) in &self.config_files {
             replace_owner_only(&self.config_dir.join(name), contents.as_bytes())?;
@@ -322,6 +368,35 @@ impl Staged {
         let text = serde_json::to_vec(&self.spec).map_err(std::io::Error::other)?;
         replace_owner_only(&self.spec_path(), &text)
     }
+}
+
+/// Creates the folders between `home` and `path`, owner-only; refuses one that is a link
+/// or no folder.
+fn real_folders_above(home: &Path, path: &Path) -> std::io::Result<()> {
+    let relative = path
+        .parent()
+        .and_then(|parent| parent.strip_prefix(home).ok())
+        .ok_or_else(|| {
+            std::io::Error::other(format!("{} is outside {}", path.display(), home.display()))
+        })?;
+    let mut current = home.to_path_buf();
+    for name in relative.components() {
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(entry) if entry.is_dir() => {}
+            Ok(_) => {
+                return Err(std::io::Error::other(format!(
+                    "{} is a link or a file, not a folder: the login is not bound through it",
+                    current.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::DirBuilder::new().mode(0o700).create(&current)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 /// Removes the folder, file or link at `path` and what is inside it, never following a link.
@@ -391,6 +466,8 @@ pub(crate) struct Launch {
     pub credentials: Vec<BoundCredential>,
     /// The owner's decisions when it launches (#674); a check's are none.
     pub decisions: EgressDecisions,
+    /// The login account's sign-in a session uses (#59); a check binds none.
+    pub login: Option<crate::SessionLogin>,
 }
 
 /// The launch of `program` with `arguments` for `launch` through `native`: the launcher in
@@ -483,6 +560,11 @@ pub(crate) fn prepare(
         (Vec::new(), Vec::new())
     };
     let interception = interception(launch, &config_dir)?;
+    let login = launch
+        .login
+        .as_ref()
+        .map(|login| login_bind(&home, &home_source, login))
+        .transpose()?;
     let spec = LaunchSpec {
         version: SPEC_VERSION,
         subject: launch.subject.clone(),
@@ -511,6 +593,7 @@ pub(crate) fn prepare(
                 destination: mount.sandbox.clone(),
             })
             .collect(),
+        login: login.as_ref().map(|(bind, _)| bind.clone()),
         protected,
         hidden,
         needs_source: launch.needs.source.clone(),
@@ -568,6 +651,7 @@ pub(crate) fn prepare(
             .iter()
             .map(|credential| credential.value.clone())
             .collect(),
+        login: login.map(|(_, entry)| entry),
     };
     let evidence = evidence(native, profile, launch, &staged);
     let reach = if folder_mounts.is_empty() {
@@ -737,6 +821,46 @@ fn home_folder(environment: &[(OsString, OsString)]) -> Result<PathBuf, Refusal>
 }
 
 /// `~/x` under `home`; a pattern or any other shape is refused rather than narrowed.
+/// Where `login` is bound in the program's `home`, and what the session's own `home_source`
+/// holds for it (#59, #858).
+fn login_bind(
+    home: &Path,
+    home_source: &Path,
+    login: &crate::SessionLogin,
+) -> Result<(crate::spec::Folder, LoginEntry), Refusal> {
+    let file = in_home(home, &login.file)?;
+    let in_source = |path: &Path| {
+        home_source.join(
+            path.strip_prefix(home)
+                .expect("in_home joins the declared path to the home"),
+        )
+    };
+    let name = file.file_name().expect("in_home refuses an empty path");
+    Ok(match login.mount {
+        crate::LoginMount::File => (
+            crate::spec::Folder {
+                source: login.folder.join(name),
+                destination: file.clone(),
+            },
+            LoginEntry::File(in_source(&file)),
+        ),
+        crate::LoginMount::FolderAndLink => {
+            let folder = home.join(LOGIN_FOLDER);
+            (
+                crate::spec::Folder {
+                    source: login.folder.clone(),
+                    destination: folder.clone(),
+                },
+                LoginEntry::FolderAndLink {
+                    folder: in_source(&folder),
+                    link: in_source(&file),
+                    target: folder.join(name),
+                },
+            )
+        }
+    })
+}
+
 fn in_home(home: &Path, declared: &str) -> Result<PathBuf, Refusal> {
     let relative = declared
         .strip_prefix("~/")
@@ -938,6 +1062,16 @@ fn evidence(
                 folder.source.display(),
                 folder.destination.display(),
                 profile.provider.as_deref().unwrap_or("the program")
+            ),
+            &mount_and_landlock,
+        ));
+    }
+    if let Some(login) = &spec.login {
+        rules.push(rule(
+            format!(
+                "login account's sign-in {} at {}, read-write: a refreshed sign-in reaches the account",
+                login.source.display(),
+                login.destination.display()
             ),
             &mount_and_landlock,
         ));

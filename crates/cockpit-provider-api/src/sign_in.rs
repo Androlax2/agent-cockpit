@@ -42,6 +42,21 @@ pub struct Login {
     pub arguments: Vec<String>,
     /// What the owner does in it, said before it starts.
     pub steps: String,
+    /// How the harness saves a refreshed sign-in, which decides how a session sees the
+    /// account's one shared login.
+    pub rewrite: LoginRewrite,
+}
+
+/// How a harness writes its refreshed sign-in over [`Login::file`] (#858).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginRewrite {
+    /// Truncates and rewrites the file itself, and refuses a link there (Claude Code opens
+    /// it with `O_NOFOLLOW`): the session sees the login file bound at that path.
+    InPlace,
+    /// Writes a new file in the folder of the file's target, after following a link, and
+    /// renames it over that target (Codex): a rename onto a bound file fails, so the session
+    /// sees a folder holding only the login, and a link to it at that path.
+    ReplacesLinkTarget,
 }
 
 impl Login {
@@ -51,6 +66,7 @@ impl Login {
         program: &Path,
         arguments: &[&str],
         steps: &str,
+        rewrite: LoginRewrite,
     ) -> Result<Login, InvalidValue> {
         Ok(Login {
             file: HomePath::new(file)?,
@@ -60,6 +76,7 @@ impl Login {
                 .map(|argument| (*argument).to_owned())
                 .collect(),
             steps: steps.to_owned(),
+            rewrite,
         })
     }
 }

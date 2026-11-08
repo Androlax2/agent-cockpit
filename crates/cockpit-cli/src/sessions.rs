@@ -218,11 +218,13 @@ pub fn run(command: Command) -> ExitCode {
         Reply::Session { session } if is_show => {
             out!("{}", session_line(session));
             out!("{}", choice_lines(session));
+            out!("{}", passed_over_lines(session));
             out!("{}", exit_lines(session));
             out!("{}", over_lines(session));
         }
         Reply::Session { session } => {
             out!("{}", session_line(session));
+            out!("{}", passed_over_lines(session));
             out!("{}", exit_lines(session));
             if let Some(needed) = &session.sign_in_needed {
                 eprintln!("sign-in: {needed}");
@@ -358,6 +360,19 @@ fn choice_lines(session: &SessionView) -> String {
         })
         .unwrap_or_default();
     threshold + &account
+}
+
+/// The login accounts the session's latest launch passed over for want of the project's
+/// grant (#59), one `passed over:` line each naming the grant that lets it.
+fn passed_over_lines(session: &SessionView) -> String {
+    let Some(launch) = &session.launch else {
+        return String::new();
+    };
+    launch
+        .passed_over
+        .iter()
+        .map(|line| format!("passed over: {line}\n"))
+        .collect()
 }
 
 /// How the session's latest agent exited by itself (#629): `exit:` and

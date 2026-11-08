@@ -201,10 +201,15 @@ pub fn plan(spec: &LaunchSpec, launcher: &Path, handoff: &Path) -> Result<Plan, 
         source: spec.home_source.clone(),
         destination: spec.home.clone(),
     }];
-    mounts.extend(spec.folders.iter().map(|folder| Mount::Elsewhere {
-        source: folder.source.clone(),
-        destination: folder.destination.clone(),
-    }));
+    mounts.extend(
+        spec.folders
+            .iter()
+            .chain(&spec.login)
+            .map(|folder| Mount::Elsewhere {
+                source: folder.source.clone(),
+                destination: folder.destination.clone(),
+            }),
+    );
     mounts.extend(spec.read_write.iter().cloned().map(Mount::ReadWrite));
     // A provider's declared read it did not install is not there to bind.
     let declared: Vec<PathBuf> = spec
@@ -247,7 +252,12 @@ pub fn plan(spec: &LaunchSpec, launcher: &Path, handoff: &Path) -> Result<Plan, 
     read.push(program.clone());
     read.push(launcher.to_path_buf());
     let mut write: Vec<PathBuf> = vec!["/dev".into(), "/tmp".into(), spec.home.clone()];
-    write.extend(spec.folders.iter().map(|folder| folder.destination.clone()));
+    write.extend(
+        spec.folders
+            .iter()
+            .chain(&spec.login)
+            .map(|folder| folder.destination.clone()),
+    );
     write.extend(spec.read_write.iter().cloned());
     Ok(Plan {
         bubblewrap_arguments: arguments,
