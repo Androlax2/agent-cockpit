@@ -37,6 +37,7 @@ fn app_after_launch(kind: LaunchKindView, reports: Vec<SessionReport>, now: Inst
         kind,
         launched_at: LAUNCHED_AT,
         account: None,
+        switched_from: None,
     });
     let mut app = app_with(&["app"], vec![launched], now);
     answer(

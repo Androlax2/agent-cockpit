@@ -232,6 +232,7 @@ impl Handler for Routes {
                 class: WorkClass::Bulk,
                 job: Box::pin(agent::report(
                     Arc::clone(&self.database),
+                    Arc::clone(&self.sessions),
                     connector,
                     launch_token,
                     report,

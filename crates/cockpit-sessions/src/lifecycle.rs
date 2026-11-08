@@ -1136,6 +1136,20 @@ impl Sessions {
                         }
                         continue;
                     }
+                    match self
+                        .relaunch_quota_stopped_locked(&operation, &session, agent_report)
+                        .await
+                    {
+                        Ok(Some(_)) => {
+                            report.switched.push(id);
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            report.errors.push((id, error.to_string()));
+                            continue;
+                        }
+                    }
                     match self.flag_if_unreported(&session, agent_report).await {
                         Ok(true) => {
                             report.unreported.push(id);
@@ -2085,17 +2099,9 @@ impl Sessions {
         let output_project = checkout.project.as_str().to_owned();
         let setting = self.owner_settings().sandbox;
         let github = self.github_access(setting, &output_project).await?;
-        // The first launch picks the account; every later one keeps it, since the conversation
-        // it reopens belongs to that account (report 18).
-        let kept_account = match kind {
-            LaunchKind::Start => None,
-            _ => session
-                .launch
-                .as_ref()
-                .and_then(|launch| launch.account.clone()),
-        };
+        let route = self.account_route(&session, kind).await?;
         let account = self
-            .launch_account(setting, session.provider.as_str(), kept_account)
+            .launch_account(setting, session.provider.as_str(), route)
             .await?;
         // Kept for the harness's trust of the checkout, recorded once the launch passed its
         // gates: a parallel clone's (#702), and under `"required"` the main checkout's too,
@@ -2205,6 +2211,7 @@ impl Sessions {
                 &start_files,
                 self.settings.bundle.as_ref(),
                 account.name.as_deref(),
+                account.switched_from.as_deref(),
             )
             .await?;
             cockpit_sandbox::record(&write, execution.0, id.as_str(), &prepared.evidence).await?;
@@ -2384,59 +2391,158 @@ impl Sessions {
         .await
     }
 
+    /// How `session`'s launch of `kind` chooses its account (report 18, #59): a first launch
+    /// picks; a relaunch keeps the account its conversation runs on, unless the agent's latest
+    /// report on the current launch is a quota stop, when it moves to an account with capacity.
+    async fn account_route(
+        &self,
+        session: &Session,
+        kind: LaunchKind,
+    ) -> Result<AccountRoute, Error> {
+        let current = session
+            .launch
+            .as_ref()
+            .and_then(|launch| launch.account.clone());
+        if kind == LaunchKind::Start {
+            return Ok(AccountRoute::Pick);
+        }
+        let agent_report = {
+            let read = self.database.read().await?;
+            crate::reports::latest_report(&read, &authorization_session(&session.id)?).await?
+        };
+        if is_quota_stopped(session, agent_report.as_ref()) {
+            return Ok(AccountRoute::AfterQuotaStop(current));
+        }
+        Ok(current.map_or(AccountRoute::Pick, AccountRoute::Keep))
+    }
+
     /// The account a launch of `provider` runs on, with the credential the session proxy adds
-    /// for it on the provider's hosts under `"required"` (#858, #968, #59): the first of the
-    /// owner's accounts for `provider` that holds a credential, read now so a credential the
-    /// owner replaced reaches the next launch. No account under `"off"`, whose agent signs in
-    /// from the owner's home, nor when no account holds one: the harness then asks for a
-    /// sign-in it cannot store. An account whose credential is unusable refuses the launch
-    /// rather than pass it over. A `kept` account, the one a relaunched conversation runs on,
-    /// is the only one tried: it must still be listed and hold a credential.
+    /// for it on the provider's hosts under `"required"` (#858, #968, #59), read now so a
+    /// credential the owner replaced reaches the next launch. No account under `"off"`, whose
+    /// agent signs in from the owner's home, nor when no account holds one: the harness then
+    /// asks for a sign-in it cannot store. See [`AccountRoute`] for which account each route
+    /// takes. An account whose credential is unusable refuses the launch rather than pass it
+    /// over.
     async fn launch_account(
         &self,
         setting: cockpit_config::AgentSandbox,
         provider: &str,
-        kept: Option<String>,
+        route: AccountRoute,
     ) -> Result<LaunchAccount, Error> {
         if setting == cockpit_config::AgentSandbox::Off {
             return Ok(LaunchAccount::default());
         }
         let provider = Arc::clone(self.provider(Some(provider))?);
         let accounts = self.settings.accounts.of(provider.name().as_str());
+        let stopped = self
+            .accounts_out_of_capacity(provider.name().as_str())
+            .await?;
         let environment = self.settings.owner_environment.clone();
         self.blocking("read the provider's credential", move || {
-            if let Some(account) = kept {
-                let unavailable = |reason| Error::AccountUnavailable {
-                    provider: provider.name().as_str().to_owned(),
-                    account: account.clone(),
-                    reason,
-                };
-                if !accounts.contains(&account) {
-                    return Err(unavailable("the owner no longer lists"));
+            let provider = provider.as_ref();
+            let (fresh, held): (Vec<String>, Vec<String>) = accounts
+                .iter()
+                .cloned()
+                .partition(|account| !stopped.contains(account));
+            match route {
+                AccountRoute::Keep(account) => {
+                    kept_account(provider, &environment, &accounts, account)
                 }
-                let Some(credential) =
-                    bound_provider_credential(provider.as_ref(), &environment, &account)?
-                else {
-                    return Err(unavailable("holds no credential any more"));
-                };
-                return Ok(LaunchAccount {
-                    name: Some(account),
-                    credential: Some(credential),
-                });
-            }
-            for account in accounts {
-                let credential =
-                    bound_provider_credential(provider.as_ref(), &environment, &account)?;
-                if credential.is_some() {
-                    return Ok(LaunchAccount {
-                        name: Some(account),
-                        credential,
-                    });
+                AccountRoute::Pick => Ok(match first_bound(provider, &environment, &fresh)? {
+                    Some(account) => account,
+                    None => first_bound(provider, &environment, &held)?.unwrap_or_default(),
+                }),
+                AccountRoute::AfterQuotaStop(from) => {
+                    let others: Vec<String> = fresh
+                        .into_iter()
+                        .filter(|account| Some(account) != from.as_ref())
+                        .collect();
+                    if let Some(account) = first_bound(provider, &environment, &others)? {
+                        return Ok(LaunchAccount {
+                            switched_from: from,
+                            ..account
+                        });
+                    }
+                    match from {
+                        Some(account) => kept_account(provider, &environment, &accounts, account),
+                        None => Ok(first_bound(provider, &environment, &held)?.unwrap_or_default()),
+                    }
                 }
             }
-            Ok(LaunchAccount::default())
         })
         .await
+    }
+
+    /// `provider`'s accounts that quota-stopped within [`QUOTA_STOP_HOLD_SECONDS`] (#59).
+    async fn accounts_out_of_capacity(&self, provider: &str) -> Result<Vec<String>, Error> {
+        let read = self.database.read().await?;
+        store::accounts_stopped_since(&read, provider, store::now() - QUOTA_STOP_HOLD_SECONDS).await
+    }
+
+    /// The account a quota-stopped `session` would move to (#59): the first listed account
+    /// other than its own that holds a credential and has not quota-stopped lately. `None`
+    /// when there is none, or when an unusable credential comes first, which would refuse the
+    /// launch and leave the session failed; the session then stays as it is.
+    async fn account_with_capacity(&self, session: &Session) -> Result<Option<String>, Error> {
+        let provider = session.provider.as_str();
+        let current = session
+            .launch
+            .as_ref()
+            .and_then(|launch| launch.account.as_deref());
+        let stopped = self.accounts_out_of_capacity(provider).await?;
+        for account in self.sandbox_credential_state(provider).await? {
+            if Some(account.account.as_str()) == current || stopped.contains(&account.account) {
+                continue;
+            }
+            match account.state {
+                cockpit_config::ProviderCredentialState::Missing { .. } => {}
+                cockpit_config::ProviderCredentialState::Unusable { .. } => return Ok(None),
+                cockpit_config::ProviderCredentialState::Configured { .. } => {
+                    return Ok(Some(account.account));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Relaunches a running session whose agent quota-stopped on its current launch on the
+    /// next account with capacity, resuming its conversation (report 18, #59): the daemon
+    /// calls it as the quota stop is recorded, and its periodic pass again. `None`, changing
+    /// nothing, for a session that is not quota-stopped or has no account to move to.
+    pub async fn relaunch_quota_stopped(&self, id: &SessionId) -> Result<Option<Session>, Error> {
+        self.tmux()?;
+        let operation = self.lock(id).await;
+        let Some((session, agent_report)) = self.running_with_report(id).await? else {
+            return Ok(None);
+        };
+        self.relaunch_quota_stopped_locked(&operation, &session, agent_report.as_ref())
+            .await
+    }
+
+    /// [`Self::relaunch_quota_stopped`] for a running session read under its lock.
+    async fn relaunch_quota_stopped_locked(
+        &self,
+        lock: &Operation,
+        session: &Session,
+        agent_report: Option<&SessionReport>,
+    ) -> Result<Option<Session>, Error> {
+        if !is_quota_stopped(session, agent_report) || turn_refusal(session, agent_report).is_some()
+        {
+            return Ok(None);
+        }
+        if self.account_with_capacity(session).await?.is_none() {
+            return Ok(None);
+        }
+        // Checked before the stop, as a deferred restart is: a refused relaunch keeps its agent.
+        self.restart_conversation(session).await?;
+        self.restart_from(
+            lock,
+            &session.id,
+            &[SessionState::Running],
+            LaunchPurpose::Upkeep,
+        )
+        .await
+        .map(Some)
     }
 
     /// What each of `provider`'s accounts would bind as a sandboxed launch's sign-in (#968,
@@ -2642,7 +2748,9 @@ impl Sessions {
         let github = self
             .github_access(setting, checkout.project.as_str())
             .await?;
-        let account = self.launch_account(setting, &provider, None).await?;
+        let account = self
+            .launch_account(setting, &provider, AccountRoute::Pick)
+            .await?;
         let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
         let tools = self
             .sandbox_tools(setting, &checkout.path, &checkout.path, &environment)
@@ -3259,11 +3367,86 @@ fn with_temp_dir(
 }
 
 /// The account a launch runs on and the credential bound for it (#59); both `None` for a
-/// launch on no account.
+/// launch on no account. `switched_from` names the account a quota-stopped session moved off.
 #[derive(Debug, Default)]
 struct LaunchAccount {
     name: Option<String>,
     credential: Option<cockpit_sandbox::BoundCredential>,
+    switched_from: Option<String>,
+}
+
+/// How long an account that quota-stopped is passed over (#59): five hours, the shortest
+/// plan window the providers reset. The stop names no reset time, so this is the daemon's
+/// own estimate; a launch with no other account still takes it.
+const QUOTA_STOP_HOLD_SECONDS: i64 = 5 * 60 * 60;
+
+/// Which account a launch takes (report 18, #59).
+#[derive(Debug)]
+enum AccountRoute {
+    /// A first launch: the first listed account holding a credential, passing over those
+    /// that quota-stopped lately while another holds one.
+    Pick,
+    /// A relaunch: the account its conversation runs on, which must still be listed and hold
+    /// a credential.
+    Keep(String),
+    /// A relaunch after a quota stop on the account named, if any: the first other account
+    /// holding a credential that has not quota-stopped lately; without one, as `Keep`.
+    AfterQuotaStop(Option<String>),
+}
+
+/// Whether the agent's latest report is a quota stop on `session`'s current launch, which a
+/// relaunch then answers (#59).
+fn is_quota_stopped(session: &Session, agent_report: Option<&SessionReport>) -> bool {
+    let current_launch = session.launch.as_ref().map(|launch| launch.number);
+    agent_report.is_some_and(|agent_report| {
+        current_launch.is_some()
+            && agent_report.launch == current_launch
+            && agent_report.outcome == Some(cockpit_provider_api::TurnOutcome::QuotaStopped)
+    })
+}
+
+/// The first of `accounts` holding a credential, bound; an unusable one refuses.
+fn first_bound(
+    provider: &dyn Provider,
+    environment: &cockpit_config::Environment,
+    accounts: &[String],
+) -> Result<Option<LaunchAccount>, Error> {
+    for account in accounts {
+        if let Some(credential) = bound_provider_credential(provider, environment, account)? {
+            return Ok(Some(LaunchAccount {
+                name: Some(account.clone()),
+                credential: Some(credential),
+                switched_from: None,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// `account`, the one a relaunched conversation runs on, bound; refused when the owner no
+/// longer lists it or it holds no credential.
+fn kept_account(
+    provider: &dyn Provider,
+    environment: &cockpit_config::Environment,
+    listed: &[String],
+    account: String,
+) -> Result<LaunchAccount, Error> {
+    let unavailable = |reason| Error::AccountUnavailable {
+        provider: provider.name().as_str().to_owned(),
+        account: account.clone(),
+        reason,
+    };
+    if !listed.contains(&account) {
+        return Err(unavailable("the owner no longer lists"));
+    }
+    let Some(credential) = bound_provider_credential(provider, environment, &account)? else {
+        return Err(unavailable("holds no credential any more"));
+    };
+    Ok(LaunchAccount {
+        name: Some(account),
+        credential: Some(credential),
+        switched_from: None,
+    })
 }
 
 /// A launch's bound credentials file (#832), removed if the launch returns before its agent is

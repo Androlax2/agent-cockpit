@@ -251,6 +251,14 @@ or restore keeps the session's account, since its conversation belongs to it; on
 is no longer listed or holds no credential is refused. `torlek doctor` has a
 `sandboxed sign-in` row per account. The list is read when the daemon starts.
 
+When a session reports that its plan's usage limit stopped its turn (Codex does), Torlek
+relaunches it at once on the next listed account that holds a credential and has not
+quota-stopped in the last five hours, resuming the same conversation; `torlek session show`
+then prints `account: spare (switched from work at a quota stop)`. The agent waits at its
+prompt there: send it a message to carry on. New launches pass over an account for five hours
+after it quota-stopped, unless no other account holds a credential. With no other account to
+move to, the session stays where it is.
+
 Each sandboxed session has its own home, which starts empty and goes when the session ends.
 For a project in `projects.trusted`, and its parallel clones, Torlek records the folder trust in
 that home's Claude configuration before the agent starts, so Claude does not ask again; a project

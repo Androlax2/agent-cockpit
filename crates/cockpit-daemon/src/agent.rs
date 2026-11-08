@@ -20,8 +20,10 @@ use crate::routes::refusal;
 
 /// Identifies the sender from its process tree, then records its report in one write
 /// transaction. A refusal changes nothing, so a token is spent only by a recorded report.
+/// A recorded quota stop relaunches the session on its next account once answered (#59).
 pub(crate) async fn report(
     database: Arc<Database>,
+    sessions: Arc<cockpit_sessions::Sessions>,
     connector: Result<ProcessIdentity, ProcessError>,
     launch_token: Option<String>,
     report: cockpit_protocol::AgentReport,
@@ -45,9 +47,14 @@ pub(crate) async fn report(
     };
     match recorded {
         Ok(recorded) => match write.commit().await {
-            Ok(()) => Outcome::Ok(Reply::AgentReported {
-                report: Box::new(recorded),
-            }),
+            Ok(()) => {
+                if recorded.outcome == Some(cockpit_protocol::TurnOutcome::QuotaStopped) {
+                    relaunch_quota_stopped(sessions, &recorded.session);
+                }
+                Outcome::Ok(Reply::AgentReported {
+                    report: Box::new(recorded),
+                })
+            }
             Err(error) => internal(&error),
         },
         Err(Error::AgentChannel(cockpit_agent_channel::Error::Refused(refused))) => {
@@ -95,6 +102,32 @@ async fn wire_report(
     let held_by = cockpit_sessions::question_holder(connection, &report, at).await?;
     let compaction = cockpit_sessions::latest_compaction(connection, &report.session).await?;
     Ok(to_wire(report, held_by.as_ref(), compaction))
+}
+
+/// Relaunches the quota-stopped session on its next account in the background: the relaunch
+/// stops the agent that sent the report, so the reply cannot wait for it. The sessions'
+/// periodic pass tries again if this one fails.
+fn relaunch_quota_stopped(sessions: Arc<cockpit_sessions::Sessions>, session: &str) {
+    let Ok(id) = cockpit_sessions::SessionId::parse(session) else {
+        tracing::warn!(
+            session,
+            "a quota-stopped session's id is not valid; not relaunched"
+        );
+        return;
+    };
+    tokio::spawn(async move {
+        match sessions.relaunch_quota_stopped(&id).await {
+            Ok(Some(_)) => {
+                tracing::info!(session = %id, "a quota-stopped session relaunched on its next account");
+            }
+            Ok(None) => {
+                tracing::info!(session = %id, "a quota-stopped session has no other account with capacity");
+            }
+            Err(error) => {
+                tracing::warn!(session = %id, %error, "a quota-stopped session's relaunch failed");
+            }
+        }
+    });
 }
 
 fn internal(error: &dyn std::fmt::Display) -> Outcome {

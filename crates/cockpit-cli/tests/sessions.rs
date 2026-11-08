@@ -85,6 +85,7 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
             kind: LaunchKindView::Start,
             launched_at: 1,
             account: None,
+            switched_from: None,
         }),
         exit: None,
         changed_start_files: Vec::new(),
@@ -239,6 +240,32 @@ async fn session_show_prints_the_account_its_launch_runs_on() {
     assert_eq!(
         text(&output.stdout),
         "s0123456789ab\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\naccount: work\n"
+    );
+}
+
+#[tokio::test]
+async fn session_show_prints_the_account_a_quota_stop_moved_its_launch_off() {
+    let home = Home::new();
+    let mut shown = view("s0123456789ab", SessionStateView::Running);
+    let launch = shown.launch.as_mut().unwrap();
+    launch.account = Some("spare".to_owned());
+    launch.switched_from = Some("work".to_owned());
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Session {
+            session: Box::new(shown),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "show", "s0123456789ab"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stdout).ends_with("account: spare (switched from work at a quota stop)\n"),
+        "{}",
+        text(&output.stdout)
     );
 }
 

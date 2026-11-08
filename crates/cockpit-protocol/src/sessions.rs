@@ -145,6 +145,9 @@ pub struct LaunchView {
     /// sign-in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// The account this launch moved off, after the session quota-stopped on it (#59).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switched_from: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

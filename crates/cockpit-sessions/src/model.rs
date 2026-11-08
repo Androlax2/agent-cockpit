@@ -203,6 +203,8 @@ pub struct Launch {
     /// The account its agent runs on, as the daemon chose it at the launch (#59); `None` for
     /// an agent on no account: unsandboxed, it signs in from the owner's home.
     pub account: Option<String>,
+    /// The account the launch moved off, after its session quota-stopped on it (#59).
+    pub switched_from: Option<String>,
 }
 
 /// The release whose helpers and instruction bundle a launch runs with (report 13, #64):
@@ -373,6 +375,8 @@ pub struct TickReport {
     pub expired: Vec<SessionId>,
     /// Sessions whose deferred restart ran once their agent waited at its prompt.
     pub restarted: Vec<SessionId>,
+    /// Quota-stopped sessions relaunched on another account with capacity (#59).
+    pub switched: Vec<SessionId>,
     /// Running sessions whose agent did not report by the launch deadline, now shown as
     /// waiting on the owner (#702).
     pub unreported: Vec<SessionId>,
