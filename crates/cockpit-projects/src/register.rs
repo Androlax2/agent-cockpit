@@ -76,18 +76,21 @@ async fn record(
 }
 
 /// The canonical root, or why `requested` cannot be a project root. Every refusal says what
-/// is wrong and what to do next; Git's own words appear only for a failure other than "not a
-/// repository" (#1183).
+/// is wrong and what to do next, in plain words; Git's own words appear only in a failure
+/// this crate does not recognise (#1183).
 fn validate_root(git: &Git, requested: &Path) -> Result<PathBuf, Error> {
     let invalid = |reason: String| Error::InvalidPath {
         path: requested.to_path_buf(),
         reason,
     };
     let root = requested.canonicalize().map_err(|error| {
-        invalid(if error.kind() == std::io::ErrorKind::NotFound {
-            "does not exist; check the path, then add the folder that holds the project".to_owned()
-        } else {
-            format!("cannot be opened ({error}); fix that, then add it again")
+        invalid(match error.kind() {
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
+                "does not exist; check the path, then add the folder that holds the project"
+                    .to_owned()
+            }
+            // The kind alone: the OS error text and number say nothing more to the owner.
+            kind => format!("cannot be opened ({kind}); fix that, then add it again"),
         })
     })?;
     if !root.is_dir() {
@@ -104,7 +107,7 @@ fn validate_root(git: &Git, requested: &Path) -> Result<PathBuf, Error> {
                 arg("--absolute-git-dir"),
             ],
         )
-        .map_err(|error| invalid(repository_check_failure(error)))?;
+        .map_err(|error| invalid(repository_check_failure(git, &root, error)))?;
     let mut lines = answer.lines();
     let (Some(top_level), Some(git_dir)) = (lines.next(), lines.next()) else {
         return Err(invalid(format!(
@@ -130,30 +133,43 @@ fn validate_root(git: &Git, requested: &Path) -> Result<PathBuf, Error> {
     Ok(root)
 }
 
-/// Why checking for a repository at the root failed, for the owner: a plain folder is told to
-/// run `git init`; any other failure keeps Git's cause without the command or exit code.
-fn repository_check_failure(error: Error) -> String {
-    match error {
-        Error::Git { stderr, status, .. } => {
-            let cause = stderr.trim();
-            if status == Some(128) && cause.contains("not a git repository") {
+/// Why `git rev-parse` could not describe the repository at `root`, for the owner. What Git
+/// found is decided without reading its message, which follows the daemon's locale: a bare
+/// repository answers `--is-bare-repository`, and a folder Git finds no repository at is plain
+/// when it has no `.git` entry of its own. Anything else keeps Git's cause without the command
+/// or exit code.
+fn repository_check_failure(git: &Git, root: &Path, error: Error) -> String {
+    const GIT_REPOSITORY_FAILURE: i32 = 128;
+    if let Error::Git {
+        status: Some(GIT_REPOSITORY_FAILURE),
+        ..
+    } = &error
+    {
+        match git.run(root, &[arg("rev-parse"), arg("--is-bare-repository")]) {
+            Ok(answer) if answer.trim() == "true" => {
+                return "is a bare repository, without files to work on. Clone it, then add \
+                        the clone"
+                    .to_owned();
+            }
+            Err(Error::Git {
+                status: Some(GIT_REPOSITORY_FAILURE),
+                ..
+            }) if root.join(".git").symlink_metadata().is_err() => {
                 return "is not a Git repository. Torlek gives each agent its own clone of the \
                         project, which needs Git. Run `git init` in it, then add it again"
                     .to_owned();
             }
-            let cause = if cause.is_empty() {
-                status.map_or("Git stopped on a signal".to_owned(), |code| {
-                    format!("Git exited with {code} and said nothing")
-                })
-            } else {
-                cause.strip_prefix("fatal: ").unwrap_or(cause).to_owned()
-            };
-            format!(
-                "could not be checked for a Git repository: {cause}. Fix that, then add it again"
-            )
+            _ => {}
         }
-        other => format!(
-            "could not be checked for a Git repository: {other}. Fix that, then add it again"
-        ),
     }
+    let cause = match &error {
+        Error::Git { stderr, status, .. } => match stderr.trim() {
+            "" => status.map_or("Git stopped on a signal".to_owned(), |code| {
+                format!("Git exited with {code} and said nothing")
+            }),
+            cause => cause.strip_prefix("fatal: ").unwrap_or(cause).to_owned(),
+        },
+        other => other.to_string(),
+    };
+    format!("could not be checked for a Git repository: {cause}. Fix that, then add it again")
 }

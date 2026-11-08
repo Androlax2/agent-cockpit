@@ -161,6 +161,13 @@ impl fmt::Display for Error {
                 project,
                 path,
             } => {
+                if root == path {
+                    return write!(
+                        formatter,
+                        "{}: is already project {project}'s checkout; a project is added once",
+                        root.display()
+                    );
+                }
                 let relation = if root.starts_with(path) {
                     "is inside"
                 } else {

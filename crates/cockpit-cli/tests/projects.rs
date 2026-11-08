@@ -233,6 +233,46 @@ fn a_folder_inside_a_registered_project_is_refused_naming_the_project() {
 }
 
 #[test]
+fn a_bare_repository_is_refused_with_cloning_as_the_next_step() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let bare = home.home().join("app.git");
+    std::fs::create_dir(&bare).unwrap();
+    real_git(&bare, &["init", "--quiet", "--bare"]);
+
+    let refused = home.cockpit_err(&["project", "add", bare.to_str().unwrap()]);
+
+    assert!(refused.contains("invalid-argument"), "{refused}");
+    assert!(
+        refused.contains(&format!(
+            "{}: is a bare repository, without files to work on. Clone it, then add the clone",
+            bare.display()
+        )),
+        "{refused}"
+    );
+    assert!(!refused.contains("work tree"), "{refused}");
+}
+
+#[test]
+fn a_registered_root_added_again_is_refused_as_already_registered() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+
+    let refused = home.cockpit_err(&["project", "add", root.to_str().unwrap()]);
+
+    assert!(refused.contains("conflict"), "{refused}");
+    assert!(
+        refused.contains(&format!(
+            "{}: is already project app's checkout; a project is added once",
+            root.display()
+        )),
+        "{refused}"
+    );
+}
+
+#[test]
 fn a_git_failure_other_than_a_missing_repository_keeps_its_cause_in_plain_words() {
     let mut home = TestHome::new();
     home.failing_git_argument = Some("rev-parse".to_owned());
