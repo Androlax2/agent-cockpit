@@ -18,8 +18,8 @@ pub struct Recorded {
     /// Replies already archived whose counts the scan raised: a harness writes a message once
     /// per content block, the later lines with the more complete counts.
     pub raised: usize,
-    /// Replies refused for a count past a trillion tokens or a project that is not a
-    /// plain name; the scan's records are the agent's to write.
+    /// Replies refused for a count past a trillion tokens: the scan's records are the agent's
+    /// to write, and no real reply is that large.
     pub rejected: usize,
     /// Replies added whose model has no known price: archived with tokens and no cost.
     pub unpriced: usize,
@@ -65,8 +65,15 @@ pub async fn record_replies(
     check_scope(home_scope)?;
     let mut recorded = Recorded::default();
     for reply in merged(&scan.replies) {
-        let project = project_of(reply.working_dir());
-        if !is_plain_project(&project) || exceeds_limit(reply.tokens()) {
+        // A project is attribution, not billing: a name that is not a plain one costs the reply
+        // its project, never its place in the total.
+        let named = project_of(reply.working_dir());
+        let project = if is_plain_project(&named) {
+            named
+        } else {
+            UNKNOWN_PROJECT.to_owned()
+        };
+        if exceeds_limit(reply.tokens()) {
             recorded.rejected += 1;
             continue;
         }
@@ -270,6 +277,8 @@ fn exceeds_limit(tokens: ReplyTokens) -> bool {
     .iter()
     .any(|count| *count > MAX_TOKENS_PER_COUNT)
 }
+
+const UNKNOWN_PROJECT: &str = "unknown";
 
 fn is_plain_project(project: &str) -> bool {
     !project.is_empty()

@@ -11,6 +11,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use cockpit_protocol::{CostArchiveView, CostRowView, ErrorCode, Outcome, ProtocolError, Reply};
@@ -22,6 +23,9 @@ use cockpit_usage::{AccountName, Day, DayCost, Recorded};
 const OWNER_HOME: &str = "owner";
 /// How long one home's scan may take before the pass moves on: the records are the agent's to
 /// write, and a scan that never returns must not stop the archive.
+/// How many scans may still be blocked before the worker stops starting new ones: each holds
+/// a thread of the runtime's blocking pool, which the rest of the daemon shares.
+const MOST_STUCK_SCANS: usize = 2;
 const SCAN_DEADLINE: Duration = Duration::from_secs(30);
 /// The most days `usage-cost` answers, and the most the protocol accepts.
 pub(crate) const MOST_DAYS: u32 = 366;
@@ -41,6 +45,9 @@ pub(crate) struct Archivist {
     providers: Vec<Arc<dyn Provider>>,
     owner_home: PathBuf,
     one_scan: tokio::sync::Mutex<()>,
+    /// Scans whose blocking thread has not returned, a timed-out one included: a thread cannot
+    /// be cancelled, so a home that hangs is not asked again past [`MOST_STUCK_SCANS`].
+    running_scans: Arc<AtomicUsize>,
 }
 
 /// One folder holding records: the owner's home, or a session's own.
@@ -75,6 +82,7 @@ impl Archivist {
                 .collect(),
             owner_home: scanning.home.clone(),
             one_scan: tokio::sync::Mutex::new(()),
+            running_scans: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -139,10 +147,16 @@ impl Archivist {
                 .iter()
                 .filter(|session| &session.provider == provider.name())
             {
-                let Some(home) = self.session_home(sessions, provider, session) else {
+                // The session is read again once the scan's turn comes: a relaunch on another
+                // account in the meantime must not leave this home under the account it left.
+                let _one_at_a_time = self.one_scan.lock().await;
+                let Ok(current) = sessions.get(&session.id).await else {
                     continue;
                 };
-                self.scan_logged(&home, After::Scan).await;
+                let Some(home) = self.session_home(sessions, provider, &current) else {
+                    continue;
+                };
+                self.scan_and_log(&home, After::Scan).await;
             }
         }
     }
@@ -178,7 +192,21 @@ impl Archivist {
 
     async fn scan_logged(&self, home: &Home, after: After) {
         let _one_at_a_time = self.one_scan.lock().await;
-        match self.scan(home, after).await {
+        self.scan_and_log(home, after).await;
+    }
+
+    /// Runs with the scan lock held. A removal's cursors go even when its last scan failed:
+    /// the replies it still held are lost (the failure is logged), but a home that is gone
+    /// leaves nothing behind in the archive's cursors.
+    async fn scan_and_log(&self, home: &Home, after: After) {
+        let result = self.scan(home, after).await;
+        if result.is_err()
+            && after == After::Removal
+            && let Err(error) = self.forget(home).await
+        {
+            tracing::error!(scope = %home.scope, error, "dropping a removed home's cost cursors failed");
+        }
+        match result {
             Ok(recorded) if recorded == Recorded::default() => {}
             Ok(recorded) => tracing::info!(
                 provider = %home.provider.name(),
@@ -199,6 +227,18 @@ impl Archivist {
         }
     }
 
+    async fn forget(&self, home: &Home) -> Result<(), String> {
+        let write = self
+            .database
+            .write()
+            .await
+            .map_err(|error| error.to_string())?;
+        cockpit_usage::forget_home(&write, home.provider.name(), &home.scope)
+            .await
+            .map_err(|error| error.to_string())?;
+        write.commit().await.map_err(|error| error.to_string())
+    }
+
     async fn scan(&self, home: &Home, after: After) -> Result<Recorded, String> {
         let name = home.provider.name();
         let cursors = {
@@ -211,7 +251,7 @@ impl Archivist {
                 .await
                 .map_err(|error| error.to_string())?
         };
-        let scan = read_home(home, cursors).await?;
+        let scan = read_home(home, cursors, &self.running_scans).await?;
         for problem in &scan.problems {
             tracing::warn!(provider = %name, scope = %home.scope, problem, "a record source could not be read");
         }
@@ -301,10 +341,33 @@ impl HomeObserver for Archivist {
     }
 }
 
-async fn read_home(home: &Home, cursors: Vec<SourceCursor>) -> Result<ReplyScan, String> {
+/// Counts a scan's blocking thread until it ends, however it ends.
+struct RunningScan(Arc<AtomicUsize>);
+
+impl Drop for RunningScan {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+async fn read_home(
+    home: &Home,
+    cursors: Vec<SourceCursor>,
+    running_scans: &Arc<AtomicUsize>,
+) -> Result<ReplyScan, String> {
+    if running_scans.load(Ordering::SeqCst) >= MOST_STUCK_SCANS {
+        return Err(format!(
+            "{MOST_STUCK_SCANS} earlier scans are still blocked; not starting another"
+        ));
+    }
+    running_scans.fetch_add(1, Ordering::SeqCst);
+    let running = RunningScan(Arc::clone(running_scans));
     let provider = Arc::clone(&home.provider);
     let path = home.path.clone();
-    let reading = tokio::task::spawn_blocking(move || provider.scan_replies(&path, &cursors));
+    let reading = tokio::task::spawn_blocking(move || {
+        let _running = running;
+        provider.scan_replies(&path, &cursors)
+    });
     match tokio::time::timeout(SCAN_DEADLINE, reading).await {
         Ok(Ok(Ok(scan))) => Ok(scan),
         Ok(Ok(Err(ProviderError { reason }))) => Err(reason),

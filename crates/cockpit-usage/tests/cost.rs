@@ -322,25 +322,44 @@ async fn a_later_scan_raises_an_archived_reply_to_its_fuller_counts_and_never_lo
 }
 
 #[tokio::test]
-async fn replies_with_an_impossible_count_or_no_project_are_refused_and_the_rest_kept() {
+async fn a_reply_with_an_impossible_count_is_refused_and_the_rest_kept() {
     let fixture = Fixture::new().await;
     let huge = reply("a:a", MONDAY, OPUS, tokens(u64::MAX / 2, 0));
     let sound = reply("b:b", MONDAY, OPUS, tokens(1, 0));
     let scan = scan_of(vec![huge, sound.clone()]);
     let recorded = fixture.archive_for("main", "owner", &scan).await.unwrap();
-    let nameless = fixture
-        .archive_in_project(
-            "main",
-            "owner",
-            &scan_of(vec![reply("c:c", MONDAY, OPUS, tokens(1, 0))]),
-            &|_| String::new(),
-        )
-        .await
-        .unwrap();
-
     assert_eq!((recorded.added, recorded.rejected), (1, 1));
-    assert_eq!((nameless.added, nameless.rejected), (0, 1));
     assert_eq!(fixture.all_costs().await[0].replies, 1);
+}
+
+#[tokio::test]
+async fn a_reply_whose_project_has_no_plain_name_is_archived_under_unknown() {
+    let fixture = Fixture::new().await;
+    let long_name = "x".repeat(300);
+
+    for (key, name) in [
+        ("a:a", String::new()),
+        ("b:b", long_name),
+        ("c:c", "bad\nname".to_owned()),
+    ] {
+        let recorded = fixture
+            .archive_in_project(
+                "main",
+                "owner",
+                &scan_of(vec![reply(key, MONDAY, OPUS, tokens(1, 0))]),
+                &|_| name.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!((recorded.added, recorded.rejected), (1, 0));
+    }
+
+    let costs = fixture.all_costs().await;
+    assert_eq!(costs.len(), 1);
+    assert_eq!(
+        (costs[0].project.as_str(), costs[0].replies),
+        ("unknown", 3)
+    );
 }
 
 #[tokio::test]

@@ -26,7 +26,9 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   a resumed conversation's replay adds nothing. Only complete lines count: a line still being
   written is read by the next scan. A file shorter than its cursor was replaced and is read
   from its start. Links are not followed (the `.claude` folder, a subfolder or a transcript),
-  at most 200 000 replies and six folder levels are read per scan, and a file that cannot be
+  at most 200 000 replies, 128 MiB of transcript and six folder levels are read per scan (a
+  large history comes over several, each from its cursors), a transcript replaced by a longer
+  one is not told from one that grew (Claude Code only appends), and a file that cannot be
   read is named in the scan's problems. A residual race remains between the length check and
   the open of a file replaced in between. The cache write split is read from
   `cache_creation` when present, else all of it counts as the five-minute rate; `speed:

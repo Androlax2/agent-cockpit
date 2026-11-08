@@ -239,7 +239,9 @@ them in one transaction per home with the cursors. One scan runs at a time, each
 deadline, so a home that hangs never stops the others. The sessions tell the worker before a
 session's home is removed or the session relaunches on another account (`HomeObserver`), so
 the replies the home still holds are archived under the account that paid for them; a
-removal also drops the home's cursors. At start the worker prices what an earlier release
+removal also drops the home's cursors, even when its last scan failed (those replies are
+then lost, and logged). A scan whose thread outlives its 30 s deadline cannot be cancelled,
+so no new scan starts while two such threads are still blocked. At start the worker prices what an earlier release
 could not. `usage-cost`, the owner's alone, answers the archive's totals for the last 1 to
 366 UTC days (`torlek usage cost`).
 

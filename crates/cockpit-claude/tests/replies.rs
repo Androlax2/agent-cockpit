@@ -275,3 +275,37 @@ fn a_transcript_that_cannot_be_read_is_a_problem_the_scan_names() {
     assert_eq!(scan.problems.len(), 1, "{:?}", scan.problems);
     assert!(scan.problems[0].contains(unreadable), "{:?}", scan.problems);
 }
+
+#[test]
+fn a_cache_split_that_falls_short_of_the_total_does_not_drop_tokens() {
+    let home = Home::new();
+    let usage = r#"{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":5000,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}"#;
+    home.append_lines(TRANSCRIPT, &[assistant_line("msg_1", "req_1", usage)]);
+
+    let tokens = home.scan(&[]).replies[0].tokens();
+
+    assert_eq!((tokens.cache_write_5m, tokens.cache_write_1h), (5000, 0));
+}
+
+#[test]
+fn a_line_without_ids_under_a_very_long_path_is_still_a_reply() {
+    let home = Home::new();
+    let long_folder = "x".repeat(240);
+    let transcript = format!(".claude/projects/{long_folder}/9f1c.jsonl");
+    home.append_lines(&transcript, &[assistant_line("", "", PLAIN_USAGE)]);
+
+    let scan = home.scan(&[]);
+
+    assert_eq!(scan.replies.len(), 1);
+    assert!(scan.replies[0].key().len() <= 256);
+}
+
+#[test]
+fn an_impossible_date_is_not_a_reply_time() {
+    let home = Home::new();
+    let line = assistant_line("msg_1", "req_1", PLAIN_USAGE)
+        .replace("2026-11-02T10:00:00.000Z", "2026-02-31T10:00:00.000Z");
+    home.append_lines(TRANSCRIPT, &[line]);
+
+    assert!(home.scan(&[]).replies.is_empty());
+}

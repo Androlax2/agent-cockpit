@@ -65,7 +65,7 @@ fn cost_text(cost: &CostArchiveView) -> String {
     let mut unpriced_replies = 0_u64;
     for row in &cost.rows {
         total_nanos = total_nanos.saturating_add(row.cost_nanos);
-        unpriced_replies += row.unpriced_replies;
+        unpriced_replies = unpriced_replies.saturating_add(row.unpriced_replies);
         text.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{} {}{}\n",
             printable(&row.day),

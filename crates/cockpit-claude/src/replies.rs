@@ -11,15 +11,28 @@ use std::path::{Path, PathBuf};
 
 use cockpit_provider_api::{ModelReply, ProviderError, ReplyScan, ReplyTokens, SourceCursor};
 
-/// Most replies one scan returns: the first scan of a long history comes in several, so the
-/// daemon never holds a whole archive in memory.
+/// Most replies and most transcript bytes one scan returns: the first scan of a long history
+/// comes in several, each resuming at its cursors, so the daemon never holds a whole archive
+/// in memory and no scan runs past its deadline on one large transcript.
 const MAX_REPLIES_PER_SCAN: usize = 200_000;
+const MAX_BYTES_PER_SCAN: u64 = 128 * 1024 * 1024;
+/// The longest a reply key built from a line's place may be before its path is hashed: a
+/// reply's key is at most 256 bytes.
+const MAX_PLACE_KEY_PATH: usize = 200;
 /// Deepest folder nesting below `projects`: a project folder, a session folder, its
 /// `subagents` folder, with room for what a later Claude Code adds.
 const MAX_DEPTH: usize = 6;
 const TRANSCRIPT_FOLDERS: [&str; 2] = [".claude", "projects"];
 
 pub(crate) fn scan(home: &Path, cursors: &[SourceCursor]) -> Result<ReplyScan, ProviderError> {
+    scan_within(home, cursors, MAX_BYTES_PER_SCAN)
+}
+
+fn scan_within(
+    home: &Path,
+    cursors: &[SourceCursor],
+    byte_budget: u64,
+) -> Result<ReplyScan, ProviderError> {
     let mut scan = ReplyScan::default();
     let Some(projects) = plain_folder(home, &TRANSCRIPT_FOLDERS)? else {
         return Ok(scan);
@@ -31,8 +44,9 @@ pub(crate) fn scan(home: &Path, cursors: &[SourceCursor]) -> Result<ReplyScan, P
     let mut transcripts = Vec::new();
     find_transcripts(&projects, 0, &mut transcripts, &mut scan.problems);
     transcripts.sort();
+    let mut bytes_left = byte_budget;
     for transcript in transcripts {
-        if scan.replies.len() >= MAX_REPLIES_PER_SCAN {
+        if scan.replies.len() >= MAX_REPLIES_PER_SCAN || bytes_left == 0 {
             break;
         }
         let Some(source) = transcript
@@ -48,8 +62,9 @@ pub(crate) fn scan(home: &Path, cursors: &[SourceCursor]) -> Result<ReplyScan, P
             continue;
         };
         let counted_to = counted.get(source.as_str()).copied().unwrap_or(0);
-        match read_from(&transcript, &source, counted_to) {
+        match read_from(&transcript, &source, counted_to, bytes_left) {
             Ok(Some(read)) => {
+                bytes_left = bytes_left.saturating_sub(read.bytes);
                 scan.replies.extend(read.replies);
                 scan.cursors.push(read.cursor);
             }
@@ -113,12 +128,21 @@ fn find_transcripts(
 struct Read {
     replies: Vec<ModelReply>,
     cursor: SourceCursor,
+    bytes: u64,
 }
 
 /// The replies of `transcript` from byte `counted_to`, or `None` when nothing came after it.
 /// A transcript shorter than the count was replaced, so it is read again from its start: the
-/// archive keeps one row per reply key, and a replayed reply changes nothing.
-fn read_from(transcript: &Path, source: &str, counted_to: u64) -> Result<Option<Read>, String> {
+/// archive keeps one row per reply key, and a replayed reply changes nothing. A transcript
+/// replaced by a longer one cannot be told from one that grew, so its replies before the old
+/// count are not read; Claude Code only appends. At most about `byte_limit` bytes are read:
+/// the cursor stops at the last line read, and the next scan goes on from it.
+fn read_from(
+    transcript: &Path,
+    source: &str,
+    counted_to: u64,
+    byte_limit: u64,
+) -> Result<Option<Read>, String> {
     let problem = |error: &dyn std::fmt::Display| format!("cannot read {source}: {error}");
     let length = fs::symlink_metadata(transcript)
         .map_err(|error| problem(&error))?
@@ -146,6 +170,9 @@ fn read_from(transcript: &Path, source: &str, counted_to: u64) -> Result<Option<
         if read == 0 || line.last() != Some(&b'\n') {
             break;
         }
+        if offset - start >= byte_limit {
+            break;
+        }
         replies.extend(reply_of(&line, source, offset));
         offset += read as u64;
     }
@@ -153,7 +180,11 @@ fn read_from(transcript: &Path, source: &str, counted_to: u64) -> Result<Option<
         return Ok(None);
     }
     let cursor = SourceCursor::new(source, offset).map_err(|error| problem(&error))?;
-    Ok(Some(Read { replies, cursor }))
+    Ok(Some(Read {
+        replies,
+        cursor,
+        bytes: offset - start,
+    }))
 }
 
 /// The reply a transcript line records, if it records one that cost tokens: an assistant
@@ -190,7 +221,7 @@ fn reply_of(line: &[u8], source: &str, offset: u64) -> Option<ModelReply> {
     };
     let (message_id, request_id) = (id(message.get("id")), id(record.get("requestId")));
     let key = if message_id.is_empty() && request_id.is_empty() {
-        format!("line:{source}:{offset}")
+        place_key(source, offset)
     } else {
         format!("{message_id}:{request_id}")
     };
@@ -202,6 +233,20 @@ fn reply_of(line: &[u8], source: &str, offset: u64) -> Option<ModelReply> {
     ModelReply::new(key, at, model, working_dir, tokens).ok()
 }
 
+/// The key of a line with no ids: its file and byte, the file hashed when its path would make
+/// the key too long.
+fn place_key(source: &str, offset: u64) -> String {
+    if source.len() <= MAX_PLACE_KEY_PATH {
+        return format!("line:{source}:{offset}");
+    }
+    let hash = source
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+    format!("line:{hash:016x}:{offset}")
+}
+
 fn tokens_of(usage: &serde_json::Value) -> ReplyTokens {
     let count =
         |value: Option<&serde_json::Value>| value.and_then(serde_json::Value::as_u64).unwrap_or(0);
@@ -209,11 +254,13 @@ fn tokens_of(usage: &serde_json::Value) -> ReplyTokens {
     let by_lifetime = usage.get("cache_creation");
     let written_1h =
         count(by_lifetime.and_then(|lifetimes| lifetimes.get("ephemeral_1h_input_tokens")));
-    let written_5m =
-        match by_lifetime.and_then(|lifetimes| lifetimes.get("ephemeral_5m_input_tokens")) {
-            Some(five_minutes) => five_minutes.as_u64().unwrap_or(0),
-            None => written.saturating_sub(written_1h),
-        };
+    let named_5m = by_lifetime
+        .and_then(|lifetimes| lifetimes.get("ephemeral_5m_input_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    // What the split does not account for is still a cache write, billed at the shorter
+    // lifetime's rate, so a split that falls short of the total never drops tokens.
+    let written_5m = named_5m.max(written.saturating_sub(written_1h));
     ReplyTokens {
         input: count(usage.get("input_tokens")),
         output: count(usage.get("output_tokens")),
@@ -254,7 +301,7 @@ fn parse_utc_seconds(text: &str) -> Option<i64> {
     let minute: i64 = clock_parts.next()?.parse().ok()?;
     let second: i64 = clock_parts.next()?.parse().ok()?;
     let is_valid = (1..=12).contains(&month)
-        && (1..=31).contains(&day)
+        && (1..=days_in_month(year, month)).contains(&day)
         && (0..24).contains(&hour)
         && (0..60).contains(&minute)
         && (0..=60).contains(&second);
@@ -265,6 +312,15 @@ fn parse_utc_seconds(text: &str) -> Option<i64> {
         days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second
             - offset_seconds,
     )
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
 }
 
 /// Days from 1970-01-01 to a proleptic Gregorian date (Howard Hinnant's algorithm).
@@ -303,8 +359,40 @@ mod tests {
     }
 
     #[test]
+    fn a_scan_stops_at_its_byte_budget_and_the_next_one_goes_on() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = home.path().join(".claude/projects/-app");
+        fs::create_dir_all(&folder).unwrap();
+        let line = |number: u32| {
+            format!(
+                "{{\"timestamp\":\"2026-11-02T10:00:00Z\",\"message\":{{\"id\":\"m{number}\",\"model\":\"claude-opus-5-5\",\"usage\":{{\"input_tokens\":1}}}}}}\n"
+            )
+        };
+        let text: String = (1..=4).map(line).collect();
+        fs::write(folder.join("a.jsonl"), &text).unwrap();
+        let budget = u64::try_from(line(1).len() * 2).unwrap();
+
+        let first = scan_within(home.path(), &[], budget).unwrap();
+        let second = scan_within(home.path(), &first.cursors, budget).unwrap();
+        let third = scan_within(home.path(), &second.cursors, budget).unwrap();
+
+        let keys = |scan: &ReplyScan| {
+            scan.replies
+                .iter()
+                .map(|reply| reply.key().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(keys(&first), ["m1:", "m2:"]);
+        assert_eq!(keys(&second), ["m3:", "m4:"]);
+        assert!(third.replies.is_empty());
+    }
+
+    #[test]
     fn a_timestamp_out_of_range_is_not_a_time() {
         assert_eq!(parse_utc_seconds("2026-13-02T10:00:00Z"), None);
+        assert_eq!(parse_utc_seconds("2026-02-31T10:00:00Z"), None);
+        assert_eq!(parse_utc_seconds("2027-02-29T10:00:00Z"), None);
+        assert!(parse_utc_seconds("2028-02-29T10:00:00Z").is_some());
         assert_eq!(parse_utc_seconds("yesterday"), None);
     }
 }

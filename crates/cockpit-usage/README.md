@@ -74,6 +74,8 @@ them and never reads a provider's file format.
   from where the last transaction ended. `forget_home` drops a removed home's.
 - **UTC days.** `Day` is a UTC date, the day providers bill by, whatever the owner's time
   zone.
+- **Project is attribution.** A reply whose project name is not a plain one is archived under
+  `unknown`; only a count past a trillion tokens refuses a reply.
 - **Limits.** The account of a reply is the account of the home it was read in (the owner's
   home is `default`; a session's own home is its launch's account). A session that runs
   unsandboxed writes to the owner's home and is attributed to `default`. Two accounts signed
