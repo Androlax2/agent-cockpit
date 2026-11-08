@@ -265,10 +265,14 @@ command_ssh() {
     guest_ssh "$RED_TEAM_USER" "$@"
 }
 
+# Both steps run, so one failing still shows the other's lines; either failing fails "check".
 command_check() {
     is_running || die "the guest is not running; run: $0 start"
+    local status=0
     run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-isolation-check.sh" \
-        "env TORLEK_REDTEAM_SSH_PORT=$SSH_PORT"
+        "env TORLEK_REDTEAM_SSH_PORT=$SSH_PORT" || status=$?
+    run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-session-check.sh" || status=$?
+    return "$status"
 }
 
 command_stop() {
@@ -332,6 +336,10 @@ command_put_credential() {
     [[ -f $key_file ]] || die "no such key file: $key_file"
     [[ $provider =~ ^[A-Za-z0-9_.-]+$ ]] || die "provider name has characters the daemon rejects: $provider"
     [[ $var =~ ^[A-Za-z0-9_.-]+$ ]] || die "credential var name has characters the daemon rejects: $var"
+    # The daemon's one-credential format, checked here so a wrong paste fails before any run
+    # (#1175). The key stays in the pipe, and the message never shows it.
+    tr -d '\r\n' <"$key_file" | grep -qxE '[A-Za-z0-9_.-]+' ||
+        die "$key_file is not one credential the daemon accepts: only letters, digits, '_', '-' and '.', on one line (value not shown)"
     local dir=.config/torlek/provider-credentials/$provider
     # tr runs in the guest on the piped key: it strips the line endings the daemon's one-line
     # format rejects, without the key ever being a shell value on this host.

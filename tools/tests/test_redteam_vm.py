@@ -273,20 +273,71 @@ class RedTeamVmTests(unittest.TestCase):
         result = self.run_script("start")
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def guest_script_call(self, needle):
+        """The one ssh call that sent the guest script holding `needle`."""
+        calls = (self.log_dir / "ssh-calls").read_text().splitlines()
+        matching = [call for call in calls if needle in call]
+        self.assertEqual(len(matching), 1, calls)
+        return matching[0]
+
     def test_check_tells_the_guest_the_forward_port(self):
         self.create_guest()
         self.run_script("start", TORLEK_REDTEAM_SSH_PORT="2300")
         self.run_script("check", TORLEK_REDTEAM_SSH_PORT="2300")
-        last_call = (self.log_dir / "ssh-calls").read_text().splitlines()[-1]
-        self.assertIn("TORLEK_REDTEAM_SSH_PORT=2300", last_call)
+        self.assertIn("TORLEK_REDTEAM_SSH_PORT=2300", self.guest_script_call("marker-after-clean"))
 
     def test_check_runs_the_isolation_script_as_the_throwaway_user(self):
         self.create_guest()
         self.run_script("start")
         self.assertEqual(self.run_script("check").returncode, 0)
+        self.assertIn("redteam@127.0.0.1", self.guest_script_call("marker-after-clean"))
+
+    def test_check_starts_a_sandboxed_session_as_the_throwaway_user(self):
+        self.create_guest()
+        self.run_script("start")
+
+        self.assertEqual(self.run_script("check").returncode, 0)
+
+        session_check = self.guest_script_call("torlek agent reports")
+        self.assertIn("redteam@127.0.0.1", session_check)
+        self.assertIn("dialog=", session_check)
+
+    def put_credential(self, key_bytes):
+        key_file = self.root / "key with spaces"
+        key_file.write_bytes(key_bytes)
+        return self.run_script("put-credential", str(key_file), "--var", "CLAUDE_CODE_OAUTH_TOKEN")
+
+    def test_put_credential_refuses_a_malformed_key_without_printing_it(self):
+        self.create_guest()
+        self.run_script("start")
+        calls_before = (self.log_dir / "ssh-calls").read_text()
+
+        result = self.put_credential(b"sk-ant-oat01-SECRETVALUE pasted twice\n")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is not one credential the daemon accepts", result.stderr)
+        self.assertNotIn("SECRETVALUE", result.stdout + result.stderr)
+        self.assertEqual((self.log_dir / "ssh-calls").read_text(), calls_before)
+
+    def test_put_credential_refuses_an_empty_key_file(self):
+        self.create_guest()
+        self.run_script("start")
+
+        result = self.put_credential(b"\r\n")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is not one credential the daemon accepts", result.stderr)
+
+    def test_put_credential_sends_a_key_with_a_windows_line_ending(self):
+        self.create_guest()
+        self.run_script("start")
+
+        result = self.put_credential(b"sk-ant-oat01-fixture_value\r\n")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
         last_call = (self.log_dir / "ssh-calls").read_text().splitlines()[-1]
-        self.assertIn("redteam@127.0.0.1", last_call)
-        self.assertIn("marker-after-clean", last_call)
+        self.assertIn("provider-credentials/claude", last_call)
+        self.assertNotIn("fixture_value", result.stdout + result.stderr + last_call)
 
     def test_reset_restores_the_clean_snapshot(self):
         self.create_guest()

@@ -87,6 +87,10 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   Cancel presses Escape; compact types `/compact` at the prompt only. The keys reach the
   terminal in their own write after the text: Claude Code drops an Enter that arrives in the
   same burst as the text it reads as a paste (#730).
+- **First-run screens (#1178).** Before each sandboxed launch, `prepare_session_home` writes
+  `hasCompletedOnboarding: true` into the session home's `.claude.json` and, with a bound
+  credential, approves the placeholder's last 20 characters in `customApiKeyResponses`
+  (`src/first_run.rs`, measured on 2.1.319). A recorded answer, a "no" included, is kept.
 - **Screen reading** is a fallback with recorded confidence (report 05): a permission dialog
   or a running spinner is `high`, a choice menu or the bare prompt `low`.
 - **Sandbox needs** (`needs`, #830, #858). Hosts: `api.anthropic.com`,

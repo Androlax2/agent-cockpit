@@ -44,6 +44,10 @@ DEFAULT_MODEL = "claude-haiku-5-5"
 SANDBOXED_SESSION = "sandboxed-session"
 AGENT_SESSION = "agent-session"
 
+# The outcome of a section-1 check whose attack never ran in the sandbox (#1175): the session
+# did not start, or it left no result to read. It tested nothing, so it is never a pass.
+NOT_RUN = "not-run"
+
 # What a refusal or a block already looks like in this project's own output (torlek docs
 # sandbox, torlek/src/cli routes.rs): matched before guessing from the exit code alone.
 # The CLI renders a refusal as `torlek: <error-code>: <reason>` with a kebab-case code; an
@@ -131,6 +135,10 @@ def _sandboxed_session_check(entry: dict, guest) -> dict:
     sandbox evidence (subject, backend) it ran under; the provider key is never part of it."""
     run = guest.run_in_sandboxed_session(entry["command"])
     combined_output = run.stdout + run.stderr
+    if run.not_run_reason is None:
+        outcome = classify_outcome(run.exit_code, combined_output)
+    else:
+        outcome = NOT_RUN
     return {
         "id": entry["id"],
         "category": entry["category"],
@@ -143,7 +151,8 @@ def _sandboxed_session_check(entry: dict, guest) -> dict:
         "exit_code": run.exit_code,
         "stdout": run.stdout,
         "stderr": run.stderr,
-        "outcome": classify_outcome(run.exit_code, combined_output),
+        "outcome": outcome,
+        "not_run_reason": run.not_run_reason,
     }
 
 
@@ -248,12 +257,16 @@ class AgentStatus:
 
 
 class SandboxRun:
-    def __init__(self, exit_code, stdout, stderr, session, sandbox):
+    """What a section-1 attempt produced. `not_run_reason` names why the attack never ran in
+    the sandbox (#1175); its output is then the harness's own, never the attack's."""
+
+    def __init__(self, exit_code, stdout, stderr, session, sandbox, not_run_reason=None):
         self.exit_code = exit_code
         self.stdout = stdout
         self.stderr = stderr
         self.session = session
         self.sandbox = sandbox
+        self.not_run_reason = not_run_reason
 
 
 # The project the owner's VM tooling adds so section-1 sessions have a checkout to run in; the
@@ -272,6 +285,21 @@ SESSION_DEADLINE_SECONDS = 600
 SESSION_POLL_SECONDS = 5
 # `session new` returns quickly (the turn runs async); this only guards a slow launch.
 SESSION_START_TIMEOUT = 120
+
+
+def exit_sentinel_match(line: str):
+    """The `{EXIT_SENTINEL}=<code>` status line's match, or None for any other line."""
+    return re.fullmatch(rf"{re.escape(EXIT_SENTINEL)}=(-?\d+)", line.strip())
+
+
+def drop_not_run_reason(drop_text: str):
+    """Why a drop file shows the attack never ran (#1175), or None when it carries a result:
+    the session wrote nothing, or nothing ending in the exit line it writes last."""
+    if not drop_text.strip():
+        return "the session wrote no result"
+    if not any(exit_sentinel_match(line) for line in drop_text.splitlines()):
+        return f"the session's result has no `{EXIT_SENTINEL}=<N>` exit line"
+    return None
 
 
 class VmGuest:
@@ -380,23 +408,25 @@ class VmGuest:
         )
         session = self._parse_session_id(started.stdout + started.stderr)
         if session is None:
+            start_output = (started.stdout + started.stderr).strip()
             return SandboxRun(
                 exit_code=125,
                 stdout="",
-                stderr="redteam-harness: could not start a sandboxed session: "
-                + (started.stdout + started.stderr).strip(),
+                stderr=f"redteam-harness: could not start a sandboxed session: {start_output}",
                 session=None,
                 sandbox=None,
+                not_run_reason=f"the sandboxed session did not start: {start_output}",
             )
         try:
             self._wait_for_turn(session, drop_path)
             drop = self._ssh(f"cat {drop_path} 2>/dev/null")
             exit_code, output = self._parse_drop(drop.stdout)
+            not_run_reason = drop_not_run_reason(drop.stdout)
             sandbox = self._sandbox_evidence(session)
         finally:
             # Always end the session, so a parse or timeout failure cannot leak a live session.
             self._ssh(f"export PATH=$HOME/.local/bin:$PATH; torlek session end {session}")
-        return SandboxRun(exit_code, output, "", session, sandbox)
+        return SandboxRun(exit_code, output, "", session, sandbox, not_run_reason)
 
     def _parse_session_id(self, text: str):
         """The session id is `s` + 12 hex, printed as the first tab-separated field of a line.
@@ -443,7 +473,7 @@ class VmGuest:
         exit_code = 125
         status_index = None
         for index in range(len(lines) - 1, -1, -1):
-            match = re.fullmatch(rf"{re.escape(EXIT_SENTINEL)}=(-?\d+)", lines[index].strip())
+            match = exit_sentinel_match(lines[index])
             if match:
                 exit_code = int(match.group(1))
                 status_index = index
@@ -477,13 +507,24 @@ class VmGuest:
 
 def print_summary(records: list[dict]) -> None:
     for record in records:
-        print(f"{record['id']}: {record['outcome']} ({record['command']})")
+        line = f"{record['id']}: {record['outcome']} ({record['command']})"
+        if record["outcome"] == NOT_RUN:
+            line += f": {record['not_run_reason']}"
+        print(line)
     by_outcome: dict[str, int] = {}
     for record in records:
         by_outcome[record["outcome"]] = by_outcome.get(record["outcome"], 0) + 1
     print("---")
     for outcome, count in sorted(by_outcome.items()):
         print(f"{outcome}: {count}")
+    if NOT_RUN in by_outcome:
+        print(f"{NOT_RUN} checks tested nothing: none of them is a pass")
+
+
+def exit_status(records: list[dict]) -> int:
+    """1 when any check did not run (#1175): a run that tested less than it was asked to is
+    never reported as a clean one."""
+    return 1 if any(record["outcome"] == NOT_RUN for record in records) else 0
 
 
 def main() -> int:
@@ -527,7 +568,7 @@ def main() -> int:
         print(
             f"---\n{len(manual_entries)} catalog entries need a human-run session (--list to see them)"
         )
-    return 0
+    return exit_status(records)
 
 
 if __name__ == "__main__":

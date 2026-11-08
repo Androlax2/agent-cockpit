@@ -343,6 +343,18 @@ pub trait Provider: Send + Sync + 'static {
         Ok(WorkspaceTrust::NotKept)
     }
 
+    /// Answers, in a sandboxed session's own home, the screens the harness shows on a first
+    /// start there and nobody is at the terminal to answer (#1178): a session's home starts
+    /// empty, so every sandboxed launch would stop on them. Never a decision the owner keeps
+    /// for a project, such as folder trust ([`Provider::trust_workspace`]). Torlek calls it
+    /// before each sandboxed launch; a refusal does not stop the launch: the screen then
+    /// shows, and the session waits on the owner. Reads and writes files: run it off the
+    /// async workers. The default writes nothing.
+    fn prepare_session_home(&self, request: &SessionHomeRequest<'_>) -> Result<(), ProviderError> {
+        let _ = request;
+        Ok(())
+    }
+
     /// The plan windows of the account the harness is signed in to under `home`, the
     /// owner's home folder, never a session's ([`Capability::Quota`], #58). Run by the host
     /// daemon only: the credential it reads to ask stays in the adapter, never in an error,
@@ -377,6 +389,19 @@ pub struct TrustRequest<'a> {
     /// (#858, #968): the harness's files under `HOME` are there, and the adapter may create
     /// them. `None` when the agent's home is the owner's.
     pub session_home: Option<&'a Path>,
+}
+
+/// A sandboxed session's home that [`Provider::prepare_session_home`] prepares.
+#[derive(Debug, Clone, Copy)]
+pub struct SessionHomeRequest<'a> {
+    /// The environment the agent launches with, which locates the harness's own files.
+    pub environment: &'a [(OsString, OsString)],
+    /// The folder that backs the agent's home, its session's own (#858, #968): the
+    /// harness's files under `HOME` are there, and the adapter may create them.
+    pub session_home: &'a Path,
+    /// What the agent holds in its provider's credential variable when the session proxy
+    /// adds the owner's credential (#968); `None` when no credential is bound.
+    pub credential_placeholder: Option<&'a str>,
 }
 
 /// What [`Provider::trust_workspace`] did.

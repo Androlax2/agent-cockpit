@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+pub mod first_run;
 mod quota;
 mod sign_in;
 
@@ -24,8 +25,8 @@ use std::time::{Duration, Instant};
 use cockpit_provider_api::{
     Action, Activity, Capabilities, Capability, Conversation, ConversationId, Credentials,
     InvalidValue, Key, LaunchCommand, LaunchRequest, Needs, Observation, Probe, Provenance,
-    Provider, ProviderError, ProviderName, QuotaReading, TerminalInput, TrustRequest,
-    WorkspaceTrust,
+    Provider, ProviderError, ProviderName, QuotaReading, SessionHomeRequest, TerminalInput,
+    TrustRequest, WorkspaceTrust,
 };
 
 /// The Claude Code versions the adapter's conformance tests pass against (`tested-versions.txt`,
@@ -599,6 +600,16 @@ impl Provider for ClaudeCode {
             trust::Recorded::Unchanged => Ok(WorkspaceTrust::AlreadyTrusted),
             trust::Recorded::Written => Ok(WorkspaceTrust::Recorded),
         }
+    }
+
+    /// Its onboarding, and with a bound credential its API key question, answered in the
+    /// session's `.claude.json` (#1178).
+    fn prepare_session_home(&self, request: &SessionHomeRequest<'_>) -> Result<(), ProviderError> {
+        let refused = |reason: String| ProviderError { reason };
+        let config = trust::session_config_file(request.environment, request.session_home)
+            .map_err(refused)?;
+        first_run::record(&config, request.credential_placeholder).map_err(refused)?;
+        Ok(())
     }
 }
 
