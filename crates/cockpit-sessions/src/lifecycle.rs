@@ -2104,7 +2104,13 @@ impl Sessions {
         let github = self.github_access(setting, &output_project).await?;
         let route = self.account_route(&session, kind).await?;
         let account = self
-            .launch_account(setting, session.provider.as_str(), &output_project, route)
+            .launch_account(
+                setting,
+                session.provider.as_str(),
+                &output_project,
+                Some(id),
+                route,
+            )
             .await?;
         // Kept for the harness's trust of the checkout, recorded once the launch passed its
         // gates: a parallel clone's (#702), and under `"required"` the main checkout's too,
@@ -2129,6 +2135,7 @@ impl Sessions {
             .credential
             .as_ref()
             .and_then(|bound| bound.placeholder_variable.clone());
+        let is_login = account.login.is_some();
         let tools = self
             .sandbox_tools(setting, &checkout.path, &session.working_dir, &environment)
             .await?;
@@ -2198,6 +2205,22 @@ impl Sessions {
             let write = self.database.write().await?;
             cockpit_projects::require_execution_start_allowed(&write).await?;
             cockpit_projects::require_checkout_available(&write, session.checkout).await?;
+            // Checked again where launches are recorded one at a time: another launch may
+            // have taken the login since this one chose it.
+            if is_login
+                && let Some(name) = &account.name
+                && let Some((_, other)) =
+                    store::logins_in_use(&write, session.provider.as_str(), Some(id))
+                        .await?
+                        .into_iter()
+                        .find(|(used, _)| used == name)
+            {
+                return Err(Error::LoginInUse {
+                    provider: session.provider.as_str().to_owned(),
+                    account: name.clone(),
+                    session: other.to_string(),
+                });
+            }
             let token = cockpit_agent_channel::mint(&write, &channel_session).await?;
             grant_self_permissions(&write, &channel_session).await?;
             let execution = self
@@ -2225,6 +2248,7 @@ impl Sessions {
                 account.name.as_deref(),
                 account.switched_from.as_deref(),
                 &account.passed_over,
+                is_login,
             )
             .await?;
             cockpit_sandbox::record(&write, execution.0, id.as_str(), &prepared.evidence).await?;
@@ -2488,14 +2512,16 @@ impl Sessions {
     /// are read now, so what the owner replaced reaches the next launch. No account under
     /// `"off"`, whose agent signs in from the owner's home, nor when no account holds either:
     /// the harness then asks for a sign-in it cannot store. See [`AccountRoute`] for which
-    /// account each route takes. A login account the project holds no grant for is passed
-    /// over and named in [`LaunchAccount::passed_over`]; an account whose credential or login
+    /// account each route takes. A login account the project holds no grant for, or that a
+    /// live session other than `session` uses, is passed over and named in
+    /// [`LaunchAccount::passed_over`]; an account whose credential or login
     /// is unusable, or that holds both, refuses the launch rather than pass it over.
     async fn launch_account(
         &self,
         setting: cockpit_config::AgentSandbox,
         provider: &str,
         project: &str,
+        session: Option<&SessionId>,
         route: AccountRoute,
     ) -> Result<LaunchAccount, Error> {
         if setting == cockpit_config::AgentSandbox::Off {
@@ -2505,19 +2531,28 @@ impl Sessions {
         let name = provider.name().as_str().to_owned();
         let accounts = self.settings.accounts.of(&name);
         let stopped = self.accounts_out_of_capacity(&name).await?;
-        let grants = {
+        let (granted, in_use) = {
             let read = self.database.read().await?;
-            cockpit_sandbox::login_grants(&read, Some(project)).await?
+            let granted: Vec<String> = cockpit_sandbox::login_grants(&read, Some(project))
+                .await?
+                .into_iter()
+                .filter(|grant| grant.provider == name)
+                .map(|grant| grant.account)
+                .collect();
+            // Only a granted login is ever passed over for being in use.
+            let in_use = if granted.is_empty() {
+                Vec::new()
+            } else {
+                store::logins_in_use(&read, &name, session).await?
+            };
+            (granted, in_use)
         };
         let logins = ProjectLogins {
             project: project.to_owned(),
             login: provider.login()?,
             sandbox: self.settings.sandbox.clone(),
-            granted: grants
-                .into_iter()
-                .filter(|grant| grant.provider == name)
-                .map(|grant| grant.account)
-                .collect(),
+            granted,
+            in_use,
         };
         let environment = self.settings.owner_environment.clone();
         self.blocking("read the provider's credential", move || {
@@ -2585,6 +2620,7 @@ impl Sessions {
                 self.owner_settings().sandbox,
                 session.provider.as_str(),
                 checkout.project.as_str(),
+                Some(&session.id),
                 AccountRoute::AfterQuotaStop(current.clone()),
             )
             .await;
@@ -2849,6 +2885,7 @@ impl Sessions {
                 setting,
                 &provider,
                 checkout.project.as_str(),
+                None,
                 AccountRoute::Pick,
             )
             .await?;
@@ -3482,13 +3519,16 @@ struct LaunchAccount {
 }
 
 /// What a launch in one project may use of a provider's login accounts (#59, #858): the
-/// adapter's login, where each account keeps it, and the accounts the project holds a grant
-/// for, read at the launch so a grant revoked since reaches it.
+/// adapter's login, where each account keeps it, the accounts the project holds a grant for
+/// and the accounts other live sessions run on, read at the launch so a grant revoked or a
+/// session stopped since reaches it.
 struct ProjectLogins {
     project: String,
     login: Option<cockpit_provider_api::Login>,
     sandbox: cockpit_sandbox::Sandbox,
     granted: Vec<String>,
+    /// Each account another live session runs on, with that session.
+    in_use: Vec<(String, SessionId)>,
 }
 
 impl ProjectLogins {
@@ -3551,12 +3591,18 @@ impl ProjectLogins {
     }
 }
 
+/// Why a launch passes over or refuses a login account another session uses (#59).
+const ONE_SESSION_PER_LOGIN: &str = "one session at a time uses a login account";
+
 /// What a launch finds in one account (#59).
 enum Holding {
     /// A credential bound for it, or a login the project holds a grant for.
     Usable(Box<LaunchAccount>),
     /// A signed-in login the project holds no grant for.
     Ungranted,
+    /// A granted login another live session uses: one session at a time uses a login
+    /// account (Theo's choice A, 2026-11-08).
+    InUse(SessionId),
     /// Neither a credential nor a signed-in login.
     Nothing,
 }
@@ -3622,7 +3668,10 @@ fn holding(
         }
         (Some(credential), None) => found(Some(credential), None),
         (None, Some(login)) if logins.granted.iter().any(|granted| granted == account) => {
-            found(None, Some(login))
+            match logins.in_use.iter().find(|(used, _)| used == account) {
+                Some((_, session)) => Holding::InUse(session.clone()),
+                None => found(None, Some(login)),
+            }
         }
         (None, Some(_)) => Holding::Ungranted,
         (None, None) => Holding::Nothing,
@@ -3646,6 +3695,9 @@ fn first_usable(
                 "{account} (project {} holds no grant for its login: {} lets it)",
                 logins.project,
                 logins.grant_command(name, account)
+            )),
+            Holding::InUse(session) => passed_over.push(format!(
+                "{account} (session {session} uses its login: {ONE_SESSION_PER_LOGIN})"
             )),
             Holding::Nothing => {}
         }
@@ -3678,6 +3730,9 @@ fn kept_account(
             "is a login account project {} holds no grant for ({} lets it)",
             logins.project,
             logins.grant_command(name, &account)
+        ))),
+        Holding::InUse(session) => Err(unavailable(format!(
+            "has its login in use by session {session} ({ONE_SESSION_PER_LOGIN})"
         ))),
         Holding::Nothing => Err(unavailable(
             "holds no credential or login any more".to_owned(),
