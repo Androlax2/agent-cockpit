@@ -65,15 +65,6 @@ fn no_declared_path_exposes_a_credential_of_the_owner_s() {
 }
 
 #[test]
-fn its_login_is_a_credential_file_its_own_sign_in_saves() {
-    let adapter = opencode();
-    let login = adapter
-        .login()
-        .unwrap()
-        .expect("a sign-in a login account keeps");
-
-    assert_eq!(login.file.as_str(), "~/.local/share/opencode/auth.json");
-    assert!(adapter.credentials().unwrap().files.contains(&login.file));
-    assert_eq!(login.program, PathBuf::from("/usr/bin/opencode"));
-    assert_eq!(login.arguments, ["auth", "login"]);
+fn it_has_no_login_an_account_can_keep() {
+    assert_eq!(opencode().login().unwrap(), None);
 }

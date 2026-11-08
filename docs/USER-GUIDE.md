@@ -252,8 +252,9 @@ or restore keeps the session's account, since its conversation belongs to it; on
 is no longer listed or holds no credential is refused. `torlek doctor` has a
 `sandboxed sign-in` row per account. The list is read when the daemon starts.
 
-A provider sign-in that refreshes itself, such as a Claude `/login`, Codex's ChatGPT plan or
-an OpenCode login, is kept as a login account. Sign a listed account in once with
+A provider sign-in that refreshes itself, a Claude `/login` or Codex's ChatGPT plan, is kept
+as a login account; OpenCode 2 keeps its sign-ins in its database, so it has none yet. Sign a
+listed account in once with
 `torlek account sign-in codex work`: Torlek runs the provider's own sign-in in your terminal,
 with a fresh folder of its own as its home and none of your provider variables, then moves only
 the login file into `~/.local/state/torlek/account-logins/codex/work/login/`, unread. No agent

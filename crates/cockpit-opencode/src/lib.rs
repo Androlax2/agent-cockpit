@@ -409,8 +409,10 @@ impl Provider for OpenCode {
         &self.name
     }
 
+    /// None: OpenCode 2 keeps its sign-ins in its database beside its sessions (its
+    /// `import_legacy_credentials` migration), so no file holds only a login (#59).
     fn login(&self) -> Result<Option<cockpit_provider_api::Login>, InvalidValue> {
-        needs::login(&self.program).map(Some)
+        Ok(None)
     }
 
     fn sign_in(&self) -> cockpit_provider_api::SignIn {
