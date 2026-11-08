@@ -475,7 +475,12 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::GithubToken { .. }
         | Error::ProviderCredential { .. }
         | Error::AccountUnavailable { .. }
-        | Error::SignIn { .. } => ErrorCode::Refused,
+        | Error::SignIn { .. }
+        | Error::LoginGrantRefused { .. } => ErrorCode::Refused,
+        Error::LoginGrantStore(cockpit_sandbox::LoginGrantError::Refused(
+            cockpit_sandbox::LoginGrantRefusal::NotFound { .. },
+        )) => ErrorCode::NotFound,
+        Error::LoginGrantStore(cockpit_sandbox::LoginGrantError::Refused(_)) => ErrorCode::Conflict,
         Error::Projects(error) => crate::projects::error_code(error),
         _ => ErrorCode::Internal,
     }

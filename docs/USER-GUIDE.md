@@ -259,8 +259,11 @@ listed account in once with
 with a fresh folder of its own as its home and none of your provider variables, then moves only
 the login file into `~/.local/state/torlek/account-logins/codex/work/login/`, unread. No agent
 reads that folder, and your own sign-in is never copied, so it keeps its own tokens. Signing in
-again replaces the login. Launches do not use a login account yet: they pass over an account
-that holds no credential.
+again replaces the login. A project's sessions may use a login account only through your grant:
+`torlek account grant cockpit codex work` records it with when and through which client,
+`torlek account grants [PROJECT]` lists the active ones and `torlek account revoke GRANT` takes
+one back. A grant can come before the sign-in. Launches do not use a login account yet, granted
+or not: they pass over an account that holds no credential.
 
 When a session reports that its plan's usage limit stopped its turn (Codex does), Torlek
 relaunches it at once on the next listed account that holds a credential and has not

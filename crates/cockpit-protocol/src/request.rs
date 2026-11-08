@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::accounts::LoginGrantView;
 use crate::agent::{AgentReport, SessionReport};
 use crate::approvals::{DecidedThroughView, GuideView, RunRequestView};
 use crate::bug_reports::{BugFiledView, BugKindView, BugReportView};
@@ -407,6 +408,26 @@ pub enum Command {
     AccountSignInDiscard {
         provider: String,
         account: String,
+    },
+    /// Owner only: let `project`'s sessions use `account` of `provider`, a login account
+    /// (#59), from the project's next launch. `through` names the client.
+    AccountGrant {
+        project: String,
+        provider: String,
+        account: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<DecidedThroughView>,
+    },
+    /// Owner only: the active login grants, of `project` or of every project.
+    AccountGrants {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
+    /// Owner only: revoke a login grant; the project's next launch no longer uses the login.
+    AccountRevoke {
+        grant: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<DecidedThroughView>,
     },
     /// Owner only: one guide, whatever its state.
     GuideShow {
@@ -1132,6 +1153,13 @@ pub enum Reply {
     AccountSignInDiscarded {
         provider: String,
         account: String,
+    },
+    /// The active login grants, oldest first (#59).
+    AccountGrants {
+        grants: Vec<LoginGrantView>,
+    },
+    AccountGrant {
+        grant: Box<LoginGrantView>,
     },
     /// An ask from the sender would reach the owner: it is identified and may ask.
     AskReady {

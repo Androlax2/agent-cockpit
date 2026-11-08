@@ -4,6 +4,8 @@ mod credentials;
 mod egress;
 mod evidence;
 mod launch;
+#[cfg(feature = "persistence")]
+mod logins;
 mod native;
 #[cfg(feature = "persistence")]
 mod network;
@@ -30,6 +32,11 @@ pub use evidence::{AppliedRule, Enforcement, Evidence};
 #[cfg(feature = "persistence")]
 pub use evidence::{MIGRATIONS, first_launch_was_sandboxed, latest_for_session, record};
 pub use launch::{AccountLogin, CheckRequest, HostPaths, LaunchRequest, Prepared, Sandbox};
+#[cfg(feature = "persistence")]
+pub use logins::{
+    LoginGrant, LoginGrantError, LoginGrantRefusal, grant_login, login_grants, revoke_login_grant,
+    revoke_project_login_grants,
+};
 pub use native::{
     Backend, GitIdentity, NativeBackend, ProviderNeeds, Staged, ToolNeeds, ToolSetting,
 };

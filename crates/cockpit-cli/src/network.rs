@@ -141,7 +141,7 @@ fn grant_detail(grant: &NetworkGrantView) -> String {
 }
 
 /// `<verdict> by the owner through the CLI at <local time>` (#657).
-fn decided(verdict: &str, decision: NetworkDecisionView) -> String {
+pub(crate) fn decided(verdict: &str, decision: NetworkDecisionView) -> String {
     let through = match decision.through {
         Some(DecidedThroughView::Tui) => " through the TUI",
         Some(DecidedThroughView::Cli) => " through the CLI",

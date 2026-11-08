@@ -594,7 +594,7 @@ fn request_from(row: &Row) -> Result<NetworkRequest, NetworkError> {
         port: port_from(row, 5)?,
         state,
         asked_at: row.get(7)?,
-        decision: decision_from(row, 8)?,
+        decision: decision_from(row, 8, NetworkError::InvalidRow)?,
         grant: row.get(10)?,
     })
 }
@@ -606,9 +606,9 @@ fn grant_from(row: &Row) -> Result<NetworkGrant, NetworkError> {
         host: row.get(2)?,
         port: port_from(row, 3)?,
         request: row.get(4)?,
-        granted: decision_from(row, 5)?
+        granted: decision_from(row, 5, NetworkError::InvalidRow)?
             .ok_or_else(|| NetworkError::InvalidRow("a grant without its time".to_owned()))?,
-        revoked: decision_from(row, 7)?,
+        revoked: decision_from(row, 7, NetworkError::InvalidRow)?,
     })
 }
 
@@ -617,16 +617,21 @@ fn port_from(row: &Row, column: usize) -> Result<u16, NetworkError> {
     u16::try_from(port).map_err(|_| NetworkError::InvalidRow(format!("port {port}")))
 }
 
-/// The decision stored in `at, through` from `first`; `None` while `at` is null.
-fn decision_from(row: &Row, first: usize) -> Result<Option<OwnerDecision>, NetworkError> {
+/// The decision stored in `at, through` from `first`; `None` while `at` is null. `invalid`
+/// makes the caller's error for a client no `OwnerClient` names.
+pub(crate) fn decision_from<E: From<cockpit_turso::sql::Error>>(
+    row: &Row,
+    first: usize,
+    invalid: impl FnOnce(String) -> E,
+) -> Result<Option<OwnerDecision>, E> {
     let Some(at) = row.get::<Option<i64>>(first)? else {
         return Ok(None);
     };
     let through = match row.get::<Option<String>>(first + 1)? {
-        Some(text) => Some(
-            OwnerClient::parse(&text)
-                .ok_or_else(|| NetworkError::InvalidRow(format!("decided through {text:?}")))?,
-        ),
+        Some(text) => match OwnerClient::parse(&text) {
+            Some(client) => Some(client),
+            None => return Err(invalid(format!("decided through {text:?}"))),
+        },
         None => None,
     };
     Ok(Some(OwnerDecision { at, through }))

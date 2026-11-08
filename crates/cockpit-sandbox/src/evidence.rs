@@ -49,6 +49,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 2,
             sql: crate::network::MIGRATION_SQL,
         },
+        // #59: the projects the owner lets use a login account.
+        Migration {
+            version: 3,
+            sql: crate::logins::MIGRATION_SQL,
+        },
     ],
 };
 
