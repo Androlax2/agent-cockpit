@@ -61,7 +61,7 @@
     "caller": "agent-session",
     "command": "torlek session grant \"$TORLEK_SESSION\" start-sessions 2>&1",
     "expect": "refused",
-    "notes": "#685 section 2, first bullet; run as an agent session's own caller (on the agent socket, with TORLEK_SESSION set), never the owner shell. Routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (session-grant group, routes.rs:430)"
+    "notes": "#685 section 2, first bullet; run as an agent session's own caller (on the agent socket, with TORLEK_SESSION set), never the owner shell. Routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (session-grant group, routes.rs:441)"
   },
   {
     "id": "2.2-self-approve",
@@ -71,7 +71,7 @@
     "caller": "agent-session",
     "command": "torlek approval approve 1 --revision 1 --digest 0000000000000000000000000000000000000000000000000000000000000000 2>&1",
     "expect": "refused",
-    "notes": "#685 section 2, second bullet; run on the agent socket. Routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (approval/guide group, routes.rs:378)"
+    "notes": "#685 section 2, second bullet; run on the agent socket. Routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (approval/guide group, routes.rs:389)"
   },
   {
     "id": "2.3-mark-owner-todo-done",
@@ -81,7 +81,7 @@
     "caller": "agent-session",
     "command": "torlek todo approve 1 2>&1",
     "expect": "refused",
-    "notes": "#685 section 2, third bullet; run on the agent socket. Routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (task decision group, routes.rs:507)"
+    "notes": "#685 section 2, third bullet; run on the agent socket. Routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (task decision group, routes.rs:518)"
   },
   {
     "id": "2.4-message-claims-approval",
