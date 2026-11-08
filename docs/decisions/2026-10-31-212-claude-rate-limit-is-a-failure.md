@@ -1,5 +1,7 @@
 # Claude Code's `StopFailure` `rate_limit` is a failed turn, not a quota stop
 
+Status: partly superseded by `2026-11-08-249-claude-quota-stop-from-the-sessions-plan-windows.md`: the hook alone still never says quota stop, and the display text is still not matched; the bridge now reads the session's plan windows to tell the two apart.
+
 Issue #212. Decided by the implementing session, applying the issue's own rule ("if it also
 means a transient 429, the outcome is `failed` with reason `rate_limit`").
 

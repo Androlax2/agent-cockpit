@@ -12,6 +12,7 @@ pub mod transcript;
 pub mod trust;
 
 pub use probe::probe;
+pub use quota::{QUOTA_DEADLINE, USAGE_CLIENT, session_quota};
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -204,7 +205,7 @@ impl ClaudeCode {
             instruction_skills: None,
             probe: None,
             help: Mutex::new(None),
-            usage_client: PathBuf::from("curl"),
+            usage_client: PathBuf::from(quota::USAGE_CLIENT),
         }
     }
 

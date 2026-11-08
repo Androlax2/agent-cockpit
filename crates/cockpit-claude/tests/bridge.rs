@@ -61,14 +61,31 @@ impl FakeCockpit {
 }
 
 fn run_hook(cockpit: &Path, payload: &str, token: Option<&str>) -> Output {
+    run_hook_in(cockpit, payload, token, &[])
+}
+
+/// Runs the bridge with `environment` set over an environment that holds no sign-in of its
+/// own, no `HOME` and no `CLAUDE_CODE_OAUTH_TOKEN`, so no test reaches the owner's sign-in;
+/// a test that gives a home puts its own `curl` first on `PATH`.
+fn run_hook_in(
+    cockpit: &Path,
+    payload: &str,
+    token: Option<&str>,
+    environment: &[(&str, &str)],
+) -> Output {
     let mut hook = Command::new(env!("CARGO_BIN_EXE_torlek-claude-hook"));
     hook.arg(cockpit)
         .env_remove("TORLEK_LAUNCH_TOKEN")
+        .env_remove("HOME")
+        .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(token) = token {
         hook.env("TORLEK_LAUNCH_TOKEN", token);
+    }
+    for (name, value) in environment {
+        hook.env(name, value);
     }
     let mut child = hook.spawn().unwrap();
     child
@@ -342,4 +359,193 @@ fn a_turns_end_is_reported_with_the_context_the_transcript_holds() {
             .any(|argument| argument == "--context-window"),
         "{arguments:?}"
     );
+}
+
+/// A session home with Claude Code's sign-in and, on its `PATH` folder, a `curl` that
+/// records its standard input and answers the usage endpoint with a saved answer.
+struct SessionHome {
+    dir: tempfile::TempDir,
+}
+
+impl SessionHome {
+    fn signed_in() -> SessionHome {
+        let home = SessionHome::empty();
+        let folder = home.path().join(".claude");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-session-token","expiresAt":4102444800000,"subscriptionType":"max"}}"#,
+        )
+        .unwrap();
+        home
+    }
+
+    fn empty() -> SessionHome {
+        SessionHome {
+            dir: tempfile::tempdir().unwrap(),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// A `PATH` whose first `curl` prints the usage answer `fixture` with HTTP 200.
+    fn curl_answering(&self, fixture: &str) -> String {
+        let bin = self.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let body = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/oauth-usage")
+            .join(format!("{fixture}.json"));
+        common::script(
+            &bin,
+            "curl",
+            &format!(
+                "cat > '{}/curl-input'\ncat '{}'; printf '\\n200'",
+                self.path().display(),
+                body.display()
+            ),
+        );
+        format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        )
+    }
+
+    fn curl_input(&self) -> String {
+        std::fs::read_to_string(self.path().join("curl-input")).unwrap()
+    }
+}
+
+fn outcome_of(arguments: &[String]) -> Vec<&str> {
+    let at = arguments
+        .iter()
+        .position(|argument| argument == "--outcome")
+        .unwrap_or_else(|| panic!("no outcome in {arguments:?}"));
+    arguments[at..]
+        .iter()
+        .take_while(|argument| *argument != "--conversation")
+        .map(String::as_str)
+        .collect()
+}
+
+#[test]
+fn a_rate_limit_stop_with_a_spent_window_is_reported_as_a_quota_stop() {
+    let home = SessionHome::signed_in();
+    let path = home.curl_answering("limits-spent");
+    let cockpit = FakeCockpit::exiting_with(0);
+
+    let output = run_hook_in(
+        &cockpit.program(),
+        &common::fixture("stop-failure-rate-limit-plan-window"),
+        Some("token-1"),
+        &[("HOME", home.path().to_str().unwrap()), ("PATH", &path)],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let arguments = cockpit.arguments().unwrap();
+    assert_eq!(outcome_of(&arguments), ["--outcome", "quota-stopped"]);
+    assert!(
+        home.curl_input()
+            .contains("Authorization: Bearer sk-ant-oat01-session-token"),
+        "{}",
+        home.curl_input()
+    );
+    assert!(output.stdout.is_empty(), "{output:?}");
+}
+
+#[test]
+fn a_rate_limit_stop_with_headroom_is_reported_as_a_failure() {
+    let home = SessionHome::signed_in();
+    let path = home.curl_answering("limits");
+    let cockpit = FakeCockpit::exiting_with(0);
+
+    let output = run_hook_in(
+        &cockpit.program(),
+        &common::fixture("stop-failure-rate-limit-transient"),
+        Some("token-1"),
+        &[("HOME", home.path().to_str().unwrap()), ("PATH", &path)],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        outcome_of(&cockpit.arguments().unwrap()),
+        ["--outcome", "failed", "--outcome-reason", "rate_limit"]
+    );
+}
+
+#[test]
+fn a_bound_credential_asks_for_the_windows_with_the_token_the_session_holds() {
+    let home = SessionHome::empty();
+    let path = home.curl_answering("limits-spent");
+    let cockpit = FakeCockpit::exiting_with(0);
+
+    let output = run_hook_in(
+        &cockpit.program(),
+        &common::fixture("stop-failure-rate-limit-plan-window"),
+        Some("token-1"),
+        &[
+            ("HOME", home.path().to_str().unwrap()),
+            ("PATH", &path),
+            ("CLAUDE_CODE_OAUTH_TOKEN", "torlek-placeholder"),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        outcome_of(&cockpit.arguments().unwrap()),
+        ["--outcome", "quota-stopped"]
+    );
+    assert_eq!(
+        home.curl_input(),
+        "Authorization: Bearer torlek-placeholder\n"
+    );
+}
+
+#[test]
+fn a_rate_limit_stop_whose_windows_cannot_be_read_stays_a_failure_and_says_why() {
+    let home = SessionHome::empty();
+    let cockpit = FakeCockpit::exiting_with(0);
+
+    let output = run_hook_in(
+        &cockpit.program(),
+        &common::fixture("stop-failure-rate-limit-plan-window"),
+        Some("token-1"),
+        &[("HOME", home.path().to_str().unwrap())],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        outcome_of(&cockpit.arguments().unwrap()),
+        ["--outcome", "failed", "--outcome-reason", "rate_limit"]
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the plan windows could not be read, so the rate limit stays a failure")
+            && stderr.contains("not signed in"),
+        "{stderr}"
+    );
+    assert!(output.stdout.is_empty(), "{output:?}");
+}
+
+#[test]
+fn a_completed_turn_never_asks_for_the_plan_windows() {
+    let home = SessionHome::signed_in();
+    let path = home.curl_answering("limits-spent");
+    let cockpit = FakeCockpit::exiting_with(0);
+
+    let output = run_hook_in(
+        &cockpit.program(),
+        &common::fixture("stop"),
+        Some("token-1"),
+        &[("HOME", home.path().to_str().unwrap()), ("PATH", &path)],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        outcome_of(&cockpit.arguments().unwrap()),
+        ["--outcome", "completed"]
+    );
+    assert!(!home.path().join("curl-input").exists());
 }

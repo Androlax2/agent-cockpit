@@ -8,6 +8,13 @@
 //! `additionalContext`, so the agent sees it without asking (#419). For every other event it
 //! prints nothing on standard output, which Claude Code adds to the model's context.
 //!
+//! A `StopFailure` of `rate_limit` is judged by the plan windows of the session's own sign-in
+//! before it is reported (#249): the usage endpoint is asked with the session's
+//! `CLAUDE_CODE_OAUTH_TOKEN`, or the credentials file in its home, through the host's `curl`
+//! on `PATH`. A spent window makes it `quota-stopped`; headroom, or windows that cannot be
+//! read, keep it `failed` with reason `rate_limit`, so a transient rate limit never moves the
+//! session to another account (#59).
+//!
 //! Reporting, it exits 1 on any failure and never 2, which would block Claude Code's stop or
 //! prompt. `cockpit-claude-hook --version` is the daemon's start check that the
 //! bridge runs on this machine (#203); Claude Code never passes it.
@@ -20,9 +27,15 @@
 
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 
 use cockpit_claude::hooks;
+use cockpit_provider_api::ProviderEvent;
+
+/// The variable a bound credential travels in, `needs::CREDENTIAL_VARIABLES`' token one: a
+/// `claude setup-token` token, or the placeholder the session proxy swaps for it (#968).
+const BOUND_TOKEN_VARIABLE: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
 fn main() -> ExitCode {
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -80,6 +93,7 @@ fn run(cockpit: &OsStr) -> Result<(), String> {
         .read_to_string(&mut payload)
         .map_err(|error| format!("cannot read the hook payload: {error}"))?;
     let event = hooks::normalize(&payload).map_err(|error| error.to_string())?;
+    let event = judged_by_plan_windows(event);
     let report = hooks::measured_arguments(&event).map(|report| {
         let started = start_report(cockpit, &report);
         (report, started)
@@ -99,6 +113,33 @@ fn run(cockpit: &OsStr) -> Result<(), String> {
         Ok(())
     } else {
         Err(failures.join("; "))
+    }
+}
+
+/// `event` judged by the session's plan windows when it needs them (#249). Windows that
+/// cannot be read leave the event as it is, said on standard error, which Claude Code keeps
+/// in its debug log: the report still goes out.
+fn judged_by_plan_windows(event: ProviderEvent) -> ProviderEvent {
+    if !hooks::needs_plan_windows(&event) {
+        return event;
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let bound_token = std::env::var(BOUND_TOKEN_VARIABLE).ok();
+    let reading = cockpit_claude::session_quota(
+        home.as_deref(),
+        bound_token.as_deref(),
+        Path::new(cockpit_claude::USAGE_CLIENT),
+        cockpit_claude::QUOTA_DEADLINE,
+    );
+    match reading {
+        Ok(reading) => hooks::judged_by_plan_windows(event, &reading),
+        Err(error) => {
+            eprintln!(
+                "torlek-claude-hook: the plan windows could not be read, so the rate limit stays \
+                 a failure: {error}"
+            );
+            event
+        }
     }
 }
 
