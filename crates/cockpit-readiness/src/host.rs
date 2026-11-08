@@ -1,8 +1,8 @@
 //! The requirements every host has, project or not.
 
 use cockpit_config::{
-    AccountCredentialState, AgentSandbox, ConfigFile, DEFAULT_ACCOUNT, EffectiveConfig,
-    KNOWN_PROVIDERS, ProviderCredentialState, Sourced,
+    AccountCredentialState, AccountLoginState, AgentSandbox, ConfigFile, DEFAULT_ACCOUNT,
+    EffectiveConfig, KNOWN_PROVIDERS, ProviderCredentialState, Sourced,
 };
 
 use crate::{ControlFacts, Platform, ProviderFacts, ProviderUnusable, Requirement, Status};
@@ -299,20 +299,44 @@ fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
 }
 
 /// The account a sandboxed launch runs on, as the daemon picks it (#59): the first that holds
-/// a credential, unless an unusable one comes before it and refuses the launch.
+/// a credential or a signed-in login, unless what it holds is unusable and refuses the
+/// launch. A login is used only in the projects granted it, which this host-wide row cannot
+/// tell apart.
 fn launch_account(accounts: &[AccountCredentialState]) -> Option<&str> {
     accounts
         .iter()
-        .find(|account| !matches!(account.state, ProviderCredentialState::Missing { .. }))
-        .filter(|account| matches!(account.state, ProviderCredentialState::Configured { .. }))
+        .find(|account| holds_anything(account))
+        .filter(|account| {
+            matches!(
+                (&account.state, &account.login),
+                (
+                    ProviderCredentialState::Configured { .. },
+                    AccountLoginState::NotKept | AccountLoginState::NotSignedIn
+                ) | (
+                    ProviderCredentialState::Missing { .. },
+                    AccountLoginState::SignedIn { .. }
+                )
+            )
+        })
         .map(|account| account.account.as_str())
 }
 
+fn holds_anything(account: &AccountCredentialState) -> bool {
+    !matches!(
+        (&account.state, &account.login),
+        (
+            ProviderCredentialState::Missing { .. },
+            AccountLoginState::NotKept | AccountLoginState::NotSignedIn
+        )
+    )
+}
+
 /// The sign-in a sandboxed session of `provider` gets: the owner's credential the session
-/// proxy adds on its hosts, or the file to write when there is none (#858, #968). Without one,
-/// the harness asks for a sign-in at every new session and cannot store it. The `default`
-/// account keeps the row #968 named; another account is named in its row (#59). An account
-/// listed after the one launches run on, `launches_on`, blocks nothing, which its row says.
+/// proxy adds on its hosts, the login account's sign-in bound in its home, or what to write
+/// when there is neither (#858, #968, #59). Without one, the harness asks for a sign-in at
+/// every new session and cannot store it. The `default` account keeps the row #968 named;
+/// another account is named in its row (#59). An account listed after the one launches run
+/// on, `launches_on`, blocks nothing, which its row says.
 fn sandbox_credential(
     provider: &str,
     account: &AccountCredentialState,
@@ -326,37 +350,22 @@ fn sandbox_credential(
             account.account
         )
     };
-    match &account.state {
-        ProviderCredentialState::Configured { variable, path } => Requirement::available(
-            name,
-            format!(
-                "{} ({variable}): the session proxy adds it on {provider}'s hosts; the agent \
-                 holds a placeholder",
-                path.display()
-            ),
-        ),
-        ProviderCredentialState::Missing { files } => Requirement::needs(
-            name,
+    let refused = |detail: String, next: String| match launches_on {
+        Some(used) => Requirement::needs(
+            name.clone(),
             Status::NeedsAuthorization,
-            match launches_on {
-                Some(used) => format!("none: sandboxed launches run on account {used} instead"),
-                None => format!(
-                    "none: a sandboxed {provider} session never reads your own sign-in, so it \
-                     asks for one at every new session"
-                ),
-            },
-            format!(
-                "write one credential, on one line, to one of {}, then `chmod 600` it; the \
-                 file's name is the variable it stands for",
-                listed(
-                    &files
-                        .iter()
-                        .map(|file| file.display().to_string())
-                        .collect::<Vec<_>>()
-                )
-            ),
+            format!("{detail}, so sandboxed launches run on account {used} instead"),
+            next,
         ),
-        ProviderCredentialState::Unusable { reason } => match launches_on {
+        None => Requirement::needs(
+            name.clone(),
+            Status::MissingPrerequisite,
+            format!("{detail}, so its sandboxed sessions do not launch"),
+            next,
+        ),
+    };
+    match (&account.state, &account.login) {
+        (ProviderCredentialState::Unusable { reason }, _) => match launches_on {
             Some(used) => Requirement::needs(
                 name,
                 Status::NeedsAuthorization,
@@ -370,6 +379,73 @@ fn sandbox_credential(
                 "fix the file it names, or remove it",
             ),
         },
+        (_, AccountLoginState::Unusable { reason }) => refused(
+            reason.clone(),
+            format!(
+                "run `torlek account sign-in {provider} {}` again",
+                account.account
+            ),
+        ),
+        (ProviderCredentialState::Configured { .. }, AccountLoginState::SignedIn { .. }) => {
+            refused(
+                "holds both a credential file and a signed-in login".to_owned(),
+                "remove the one it should not use".to_owned(),
+            )
+        }
+        (ProviderCredentialState::Configured { variable, path }, _) => Requirement::available(
+            name,
+            format!(
+                "{} ({variable}): the session proxy adds it on {provider}'s hosts; the agent \
+                 holds a placeholder",
+                path.display()
+            ),
+        ),
+        (ProviderCredentialState::Missing { .. }, AccountLoginState::SignedIn { file }) => {
+            Requirement::available(
+                name,
+                format!(
+                    "signed-in login {}: sessions use it in the projects granted it \
+                     (`torlek account grants` lists them), one at a time",
+                    file.display()
+                ),
+            )
+        }
+        (ProviderCredentialState::Missing { files }, login) => {
+            let write_file = format!(
+                "write one credential, on one line, to one of {}, then `chmod 600` it; the \
+                 file's name is the variable it stands for",
+                listed(
+                    &files
+                        .iter()
+                        .map(|file| file.display().to_string())
+                        .collect::<Vec<_>>()
+                )
+            );
+            let next = if *login == AccountLoginState::NotSignedIn {
+                format!(
+                    "{write_file}; or sign it in as a login account with `torlek account \
+                     sign-in {provider} {account}`, then grant it with `torlek account grant \
+                     PROJECT {provider} {account}`",
+                    account = account.account
+                )
+            } else {
+                write_file
+            };
+            Requirement::needs(
+                name,
+                Status::NeedsAuthorization,
+                match launches_on {
+                    Some(used) => {
+                        format!("none: sandboxed launches run on account {used} instead")
+                    }
+                    None => format!(
+                        "none: a sandboxed {provider} session never reads your own sign-in, so \
+                         it asks for one at every new session"
+                    ),
+                },
+                next,
+            )
+        }
     }
 }
 

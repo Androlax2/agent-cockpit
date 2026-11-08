@@ -1086,6 +1086,7 @@ fn a_sandboxed_provider_without_a_credential_names_the_files_to_write() {
     let mut host = ready_host();
     let found = host.providers[0].found.as_mut().unwrap();
     found.sandbox_credentials = vec![cockpit_config::AccountCredentialState {
+        login: cockpit_config::AccountLoginState::NotSignedIn,
         account: cockpit_config::DEFAULT_ACCOUNT.to_owned(),
         state: cockpit_config::ProviderCredentialState::Missing {
             files: vec![
@@ -1118,6 +1119,7 @@ fn an_unusable_sandboxed_credential_blocks_like_the_launch_it_refuses() {
     let mut host = ready_host();
     let found = host.providers[0].found.as_mut().unwrap();
     found.sandbox_credentials = vec![cockpit_config::AccountCredentialState {
+        login: cockpit_config::AccountLoginState::NotSignedIn,
         account: cockpit_config::DEFAULT_ACCOUNT.to_owned(),
         state: cockpit_config::ProviderCredentialState::Unusable {
             reason: "/config/provider-credentials/claude/ANTHROPIC_API_KEY is mode 644".to_owned(),
@@ -1138,6 +1140,7 @@ fn a_sandboxed_provider_with_a_credential_names_its_file_and_variable() {
     let mut host = ready_host();
     let found = host.providers[0].found.as_mut().unwrap();
     found.sandbox_credentials = vec![cockpit_config::AccountCredentialState {
+        login: cockpit_config::AccountLoginState::NotSignedIn,
         account: cockpit_config::DEFAULT_ACCOUNT.to_owned(),
         state: cockpit_config::ProviderCredentialState::Configured {
             variable: "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
@@ -1236,6 +1239,7 @@ fn each_listed_account_has_its_own_sandboxed_sign_in_row() {
     let found = host.providers[0].found.as_mut().unwrap();
     found.sandbox_credentials = vec![
         cockpit_config::AccountCredentialState {
+            login: cockpit_config::AccountLoginState::NotSignedIn,
             account: "work".to_owned(),
             state: cockpit_config::ProviderCredentialState::Configured {
                 variable: "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
@@ -1245,6 +1249,7 @@ fn each_listed_account_has_its_own_sandboxed_sign_in_row() {
             },
         },
         cockpit_config::AccountCredentialState {
+            login: cockpit_config::AccountLoginState::NotSignedIn,
             account: "spare".to_owned(),
             state: cockpit_config::ProviderCredentialState::Missing {
                 files: vec![PathBuf::from(
@@ -1281,6 +1286,7 @@ fn an_account_after_the_one_launches_run_on_says_it_is_passed_over() {
     let mut host = ready_host();
     let found = host.providers[0].found.as_mut().unwrap();
     let unusable = |account: &str| cockpit_config::AccountCredentialState {
+        login: cockpit_config::AccountLoginState::NotSignedIn,
         account: account.to_owned(),
         state: cockpit_config::ProviderCredentialState::Unusable {
             reason: "its mode is 644".to_owned(),
@@ -1288,6 +1294,7 @@ fn an_account_after_the_one_launches_run_on_says_it_is_passed_over() {
     };
     found.sandbox_credentials = vec![
         cockpit_config::AccountCredentialState {
+            login: cockpit_config::AccountLoginState::NotSignedIn,
             account: "work".to_owned(),
             state: cockpit_config::ProviderCredentialState::Configured {
                 variable: "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
@@ -1298,6 +1305,7 @@ fn an_account_after_the_one_launches_run_on_says_it_is_passed_over() {
         },
         unusable("spare"),
         cockpit_config::AccountCredentialState {
+            login: cockpit_config::AccountLoginState::NotSignedIn,
             account: "third".to_owned(),
             state: cockpit_config::ProviderCredentialState::Missing { files: Vec::new() },
         },
@@ -1324,5 +1332,166 @@ fn an_account_after_the_one_launches_run_on_says_it_is_passed_over() {
     assert_eq!(
         requirement(&report, "provider claude account spare sandboxed sign-in").status,
         Status::MissingPrerequisite
+    );
+}
+
+fn account(
+    name: &str,
+    state: cockpit_config::ProviderCredentialState,
+    login: cockpit_config::AccountLoginState,
+) -> cockpit_config::AccountCredentialState {
+    cockpit_config::AccountCredentialState {
+        account: name.to_owned(),
+        state,
+        login,
+    }
+}
+
+fn no_credential() -> cockpit_config::ProviderCredentialState {
+    cockpit_config::ProviderCredentialState::Missing {
+        files: vec![PathBuf::from(
+            "/config/provider-credentials/claude/work/ANTHROPIC_API_KEY",
+        )],
+    }
+}
+
+fn signed_in() -> cockpit_config::AccountLoginState {
+    cockpit_config::AccountLoginState::SignedIn {
+        file: PathBuf::from("/state/account-logins/claude/work/login/.credentials.json"),
+    }
+}
+
+/// The report for one provider whose sandboxed sign-in comes from `accounts`.
+fn report_with_accounts(accounts: Vec<cockpit_config::AccountCredentialState>) -> Report {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let mut host = ready_host();
+    host.providers[0]
+        .found
+        .as_mut()
+        .unwrap()
+        .sandbox_credentials = accounts;
+    assess(&host, &fixture.config(), None)
+}
+
+/// #59: a signed-in login account is a sandboxed sign-in, used in the projects granted it.
+#[test]
+fn a_signed_in_login_account_is_an_available_sandboxed_sign_in() {
+    let report = report_with_accounts(vec![account("work", no_credential(), signed_in())]);
+
+    let fact = requirement(&report, "provider claude account work sandboxed sign-in");
+    assert_eq!(fact.status, Status::Available);
+    assert!(
+        fact.detail.starts_with(
+            "signed-in login /state/account-logins/claude/work/login/.credentials.json: \
+             sessions use it in the projects granted it (`torlek account grants` lists them), \
+             one at a time"
+        ),
+        "{}",
+        fact.detail
+    );
+}
+
+/// #59: an account holding both a credential file and a login refuses its launches, so
+/// `doctor` blocks on it too.
+#[test]
+fn an_account_with_both_a_credential_and_a_login_blocks() {
+    let credential = cockpit_config::ProviderCredentialState::Configured {
+        variable: "ANTHROPIC_API_KEY".to_owned(),
+        path: PathBuf::from("/config/provider-credentials/claude/work/ANTHROPIC_API_KEY"),
+    };
+
+    let report = report_with_accounts(vec![account("work", credential, signed_in())]);
+
+    let fact = requirement(&report, "provider claude account work sandboxed sign-in");
+    assert_eq!(fact.status, Status::MissingPrerequisite);
+    assert!(
+        fact.detail
+            .contains("holds both a credential file and a signed-in login"),
+        "{}",
+        fact.detail
+    );
+    assert_eq!(
+        fact.next.as_deref(),
+        Some("remove the one it should not use")
+    );
+}
+
+/// #59: a login that is no plain file refuses its launches like an unusable credential.
+#[test]
+fn an_unusable_login_blocks_like_the_launch_it_refuses() {
+    let login = cockpit_config::AccountLoginState::Unusable {
+        reason: "keeps a login /state/x that is no plain file".to_owned(),
+    };
+
+    let report = report_with_accounts(vec![account("work", no_credential(), login)]);
+
+    let fact = requirement(&report, "provider claude account work sandboxed sign-in");
+    assert_eq!(fact.status, Status::MissingPrerequisite);
+    assert_eq!(
+        fact.next.as_deref(),
+        Some("run `torlek account sign-in claude work` again")
+    );
+}
+
+/// #59: an account holding nothing, of a provider that keeps a login, offers the sign-in
+/// beside the credential file.
+#[test]
+fn an_empty_account_offers_a_sign_in_when_its_provider_keeps_a_login() {
+    let report = report_with_accounts(vec![account(
+        "work",
+        no_credential(),
+        cockpit_config::AccountLoginState::NotSignedIn,
+    )]);
+
+    let fact = requirement(&report, "provider claude account work sandboxed sign-in");
+    let next = fact.next.as_deref().unwrap();
+    assert!(next.contains("chmod 600"), "{next}");
+    assert!(
+        next.contains(
+            "or sign it in as a login account with `torlek account sign-in claude work`, \
+             then grant it with `torlek account grant PROJECT claude work`"
+        ),
+        "{next}"
+    );
+}
+
+/// #59: a provider whose adapter keeps no login offers only the credential file.
+#[test]
+fn an_empty_account_offers_no_sign_in_when_its_provider_keeps_none() {
+    let report = report_with_accounts(vec![account(
+        "work",
+        no_credential(),
+        cockpit_config::AccountLoginState::NotKept,
+    )]);
+
+    let fact = requirement(&report, "provider claude account work sandboxed sign-in");
+    assert!(
+        !fact
+            .next
+            .as_deref()
+            .unwrap()
+            .contains("torlek account sign-in"),
+        "{fact:?}"
+    );
+}
+
+/// #59: a signed-in login counts as the account launches run on, so an empty account after
+/// it is passed over rather than asked for.
+#[test]
+fn an_account_after_a_signed_in_login_says_launches_run_on_the_login() {
+    let report = report_with_accounts(vec![
+        account("work", no_credential(), signed_in()),
+        account(
+            "spare",
+            no_credential(),
+            cockpit_config::AccountLoginState::NotSignedIn,
+        ),
+    ]);
+
+    let spare = requirement(&report, "provider claude account spare sandboxed sign-in");
+    assert!(
+        spare.detail.contains("run on account work instead"),
+        "{spare:?}"
     );
 }

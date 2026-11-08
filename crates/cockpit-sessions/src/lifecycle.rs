@@ -2689,6 +2689,7 @@ impl Sessions {
         let provider = Arc::clone(self.provider(Some(provider))?);
         let accounts = self.settings.accounts.of(provider.name().as_str());
         let environment = self.settings.owner_environment.clone();
+        let sandbox = self.settings.sandbox.clone();
         self.blocking("read the provider's credential", move || {
             let variables = credential_variables(provider.as_ref())?;
             if variables.is_empty() {
@@ -2696,17 +2697,21 @@ impl Sessions {
             }
             let variables: Vec<&str> = variables.iter().map(String::as_str).collect();
             let name = provider.name().as_str();
-            Ok(accounts
-                .into_iter()
-                .filter_map(|account| {
-                    let dir =
-                        cockpit_config::account_credentials_dir(&environment, name, &account)?;
-                    Some(cockpit_config::AccountCredentialState {
-                        state: cockpit_config::provider_credential_state(&dir, &variables),
-                        account,
-                    })
-                })
-                .collect())
+            let login = provider.login()?;
+            let mut states = Vec::new();
+            for account in accounts {
+                let Some(dir) =
+                    cockpit_config::account_credentials_dir(&environment, name, &account)
+                else {
+                    continue;
+                };
+                states.push(cockpit_config::AccountCredentialState {
+                    state: cockpit_config::provider_credential_state(&dir, &variables),
+                    login: login_state(login.as_ref(), &sandbox, name, &account)?,
+                    account,
+                });
+            }
+            Ok(states)
         })
         .await
     }
@@ -3532,9 +3537,7 @@ struct ProjectLogins {
 }
 
 impl ProjectLogins {
-    /// `account`'s signed-in login, as a session sees it; None when the adapter keeps no
-    /// login, the daemon read no host paths, or the owner has not signed the account in.
-    /// Blocking: it reads the account's folder.
+    /// `account`'s signed-in login, as a session sees it; see [`signed_in_login`].
     fn signed_in(
         &self,
         provider: &str,
@@ -3543,43 +3546,7 @@ impl ProjectLogins {
         let Some(login) = &self.login else {
             return Ok(None);
         };
-        let Some(folders) = self.sandbox.account_login(provider, account) else {
-            return Ok(None);
-        };
-        let folder = folders.map_err(Error::Sandbox)?.login;
-        let name = Path::new(login.file.as_str())
-            .file_name()
-            .expect("a declared home path names a file");
-        let file = folder.join(name);
-        match std::fs::symlink_metadata(&file) {
-            Ok(entry) if entry.is_file() => {}
-            Ok(_) => {
-                return Err(Error::AccountUnusable {
-                    provider: provider.to_owned(),
-                    account: account.to_owned(),
-                    reason: format!("keeps a login {} that is no plain file", file.display()),
-                    remedy: "sign it in again",
-                });
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(source) => {
-                return Err(Error::Io {
-                    action: "read",
-                    path: file,
-                    source,
-                });
-            }
-        }
-        Ok(Some(cockpit_sandbox::SessionLogin {
-            folder,
-            file: login.file.as_str().to_owned(),
-            mount: match login.rewrite {
-                cockpit_provider_api::LoginRewrite::InPlace => cockpit_sandbox::LoginMount::File,
-                cockpit_provider_api::LoginRewrite::ReplacesLinkTarget => {
-                    cockpit_sandbox::LoginMount::FolderAndLink
-                }
-            },
-        }))
+        signed_in_login(login, &self.sandbox, provider, account)
     }
 
     /// The grant that lets the project use `account`, as the owner runs it.
@@ -3589,6 +3556,81 @@ impl ProjectLogins {
             self.project
         )
     }
+}
+
+/// `account`'s signed-in login, as a session sees it (#59): None when the daemon read no
+/// host paths or the owner has not signed the account in; refused when what is kept is no
+/// plain file. Blocking: it reads the account's folder.
+fn signed_in_login(
+    login: &cockpit_provider_api::Login,
+    sandbox: &cockpit_sandbox::Sandbox,
+    provider: &str,
+    account: &str,
+) -> Result<Option<cockpit_sandbox::SessionLogin>, Error> {
+    let Some(folders) = sandbox.account_login(provider, account) else {
+        return Ok(None);
+    };
+    let folder = folders.map_err(Error::Sandbox)?.login;
+    let name = Path::new(login.file.as_str())
+        .file_name()
+        .expect("a declared home path names a file");
+    let file = folder.join(name);
+    match std::fs::symlink_metadata(&file) {
+        Ok(entry) if entry.is_file() => {}
+        Ok(_) => {
+            return Err(Error::AccountUnusable {
+                provider: provider.to_owned(),
+                account: account.to_owned(),
+                reason: format!("keeps a login {} that is no plain file", file.display()),
+                remedy: "sign it in again",
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(Error::Io {
+                action: "read",
+                path: file,
+                source,
+            });
+        }
+    }
+    Ok(Some(cockpit_sandbox::SessionLogin {
+        folder,
+        file: login.file.as_str().to_owned(),
+        mount: match login.rewrite {
+            cockpit_provider_api::LoginRewrite::InPlace => cockpit_sandbox::LoginMount::File,
+            cockpit_provider_api::LoginRewrite::ReplacesLinkTarget => {
+                cockpit_sandbox::LoginMount::FolderAndLink
+            }
+        },
+    }))
+}
+
+/// `account`'s login as `doctor` shows it (#59): its file's place, never its contents.
+/// Blocking: it reads the account's folder.
+fn login_state(
+    login: Option<&cockpit_provider_api::Login>,
+    sandbox: &cockpit_sandbox::Sandbox,
+    provider: &str,
+    account: &str,
+) -> Result<cockpit_config::AccountLoginState, Error> {
+    let Some(login) = login else {
+        return Ok(cockpit_config::AccountLoginState::NotKept);
+    };
+    Ok(match signed_in_login(login, sandbox, provider, account) {
+        Ok(None) => cockpit_config::AccountLoginState::NotSignedIn,
+        Ok(Some(signed_in)) => cockpit_config::AccountLoginState::SignedIn {
+            file: signed_in.folder.join(
+                Path::new(&signed_in.file)
+                    .file_name()
+                    .expect("a declared home path names a file"),
+            ),
+        },
+        Err(Error::AccountUnusable { reason, .. }) => {
+            cockpit_config::AccountLoginState::Unusable { reason }
+        }
+        Err(error) => return Err(error),
+    })
 }
 
 /// Why a launch passes over or refuses a login account another session uses (#59).

@@ -2343,6 +2343,29 @@ async fn without_a_credential_session_new_and_doctor_name_the_files_to_write() {
     );
 }
 
+/// #59: `doctor` shows a signed-in login account as a sandboxed sign-in, naming its file.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_shows_a_signed_in_login_account_as_its_sandboxed_sign_in() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{WORK_LOGIN}"));
+    let file = write_claude_login(&home, "work", "fixture-login-v1");
+    let _daemon = home.start();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    let row = report
+        .lines()
+        .find(|line| line.contains("provider claude account work sandboxed sign-in"))
+        .unwrap_or_else(|| panic!("no sign-in row in:\n{report}"));
+    assert!(row.trim_start().starts_with("available"), "{row}");
+    assert!(
+        report.contains(&format!("signed-in login {}", file.display())),
+        "{report}"
+    );
+    assert!(!report.contains("fixture-login-v1"), "{report}");
+}
+
 /// #59: with no account holding a credential, `session new` names the first listed account
 /// and its own folder's files.
 #[tokio::test(flavor = "multi_thread")]
