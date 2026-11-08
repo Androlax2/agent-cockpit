@@ -88,7 +88,8 @@ pub use tasks::{
     TaskStatusView, TaskView, TaskWaitView,
 };
 pub use usage::{
-    QuotaAccountView, QuotaAlertView, QuotaFailureView, QuotaWindowStateView, QuotaWindowView,
+    CostArchiveView, CostRowView, QuotaAccountView, QuotaAlertView, QuotaFailureView,
+    QuotaWindowStateView, QuotaWindowView,
 };
 pub use verification::{
     CheckArtifactView, CheckClaimView, CheckOutcomeView, CheckReceiptView, CheckStatusView,

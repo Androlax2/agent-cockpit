@@ -19,6 +19,20 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   fixtures come from. `events`, `outcome` and `inbox` need the hook bridge: an adapter wired
   without it subscribes no hooks. Commands, evidence and billing are not reported until their contract
   methods exist.
+- **Cost** (#699). `Provider::scan_replies` reads the assistant lines of
+  `<home>/.claude/projects/**/*.jsonl` past each file's byte offset. Claude Code appends one
+  line per content block with the whole reply's usage, so replies are keyed by message id and
+  request id (a line without ids by its place in its file); the archive counts a key once and
+  a resumed conversation's replay adds nothing. Only complete lines count: a line still being
+  written is read by the next scan. A file shorter than its cursor was replaced and is read
+  from its start. Links are not followed (the `.claude` folder, a subfolder or a transcript),
+  at most 200 000 replies, 128 MiB of transcript and six folder levels are read per scan (a
+  large history comes over several, each from its cursors), a transcript replaced by a longer
+  one is not told from one that grew (Claude Code only appends), and a file that cannot be
+  read is named in the scan's problems. A residual race remains between the length check and
+  the open of a file replaced in between. The cache write split is read from
+  `cache_creation` when present, else all of it counts as the five-minute rate; `speed:
+  "fast"` is kept.
 - **Quota** (#58). `Provider::quota` reads the plan windows of the account Claude Code is
   signed in to under the owner's home, from `https://api.anthropic.com/api/oauth/usage` with
   `anthropic-beta: oauth-2025-04-20`, the endpoint and header the owner's
@@ -133,6 +147,9 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 - `tests/hooks.rs`: conformance with the hook payloads pinned in
   `tests/fixtures/claude-code-2.1.316/`, and the reports they become.
 - `tests/screen.rs`: the screen-reading fallback.
+- `tests/replies.rs`: model replies from scratch homes holding transcripts shaped like Claude
+  Code's (no test reads the owner's): tokens, cache lifetimes, fast mode, lines that cost
+  nothing, cursors, partial lines, replaced files and links.
 - `tests/quota.rs`: plan windows from both answer shapes in `tests/fixtures/oauth-usage/`,
   against a fake `curl` and a scratch home: the token's path, expiry and refusals.
 - `tests/bridge.rs`: the hook bridge as a process against a fake `torlek`, and, for a

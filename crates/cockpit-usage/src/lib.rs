@@ -1,11 +1,16 @@
 #![doc = include_str!("../README.md")]
 
+mod cost;
+mod day;
 mod error;
 mod model;
+mod prices;
 mod quota;
 
 use cockpit_turso::{Migration, MigrationSet};
 
+pub use cost::{DayCost, Recorded, costs, cursors, forget_home, price_unpriced, record_replies};
+pub use day::Day;
 pub use error::Error;
 pub use model::{
     AccountName, AccountQuota, Alert, DEFAULT_ALERT_THRESHOLDS, DEFAULT_FRESH_FOR_SECONDS, Failure,
@@ -18,9 +23,10 @@ pub use quota::{quotas, record_failure, record_reading};
 /// window instance named by `window_reset`, so a restart never repeats it.
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "usage",
-    migrations: &[Migration {
-        version: 1,
-        sql: "CREATE TABLE usage_quota_accounts (
+    migrations: &[
+        Migration {
+            version: 1,
+            sql: "CREATE TABLE usage_quota_accounts (
             provider TEXT NOT NULL CHECK (provider <> ''),
             account TEXT NOT NULL CHECK (account <> ''),
             plan TEXT CHECK (plan <> ''),
@@ -54,5 +60,37 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             fired_at INTEGER NOT NULL,
             PRIMARY KEY (provider, account, limit_key, threshold)
         );",
-    }],
+        },
+        // #699: the cost archive. A reply is one row per provider and reply key, whichever
+        // account's home it was read in first; its cost is in nano-dollars, null for a model
+        // without a known price. A cursor says how far one home's record source was counted.
+        Migration {
+            version: 2,
+            sql: "CREATE TABLE usage_cost_replies (
+            provider TEXT NOT NULL CHECK (provider <> ''),
+            reply_key TEXT NOT NULL CHECK (reply_key <> ''),
+            account TEXT NOT NULL CHECK (account <> ''),
+            project TEXT NOT NULL CHECK (project <> ''),
+            day TEXT NOT NULL CHECK (day <> ''),
+            at INTEGER NOT NULL,
+            model TEXT NOT NULL CHECK (model <> ''),
+            input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
+            output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
+            cache_read_tokens INTEGER NOT NULL CHECK (cache_read_tokens >= 0),
+            cache_write_5m_tokens INTEGER NOT NULL CHECK (cache_write_5m_tokens >= 0),
+            cache_write_1h_tokens INTEGER NOT NULL CHECK (cache_write_1h_tokens >= 0),
+            is_fast INTEGER NOT NULL CHECK (is_fast IN (0, 1)),
+            cost_nanos INTEGER CHECK (cost_nanos >= 0),
+            PRIMARY KEY (provider, reply_key)
+        );
+        CREATE INDEX usage_cost_replies_by_day ON usage_cost_replies (day);
+        CREATE TABLE usage_cost_cursors (
+            provider TEXT NOT NULL,
+            home_scope TEXT NOT NULL CHECK (home_scope <> ''),
+            source TEXT NOT NULL CHECK (source <> ''),
+            read_to INTEGER NOT NULL CHECK (read_to >= 0),
+            PRIMARY KEY (provider, home_scope, source)
+        );",
+        },
+    ],
 };

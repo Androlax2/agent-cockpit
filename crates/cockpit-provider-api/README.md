@@ -73,6 +73,14 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   `cockpit-usage` stores and judges them and never reads a provider's format. No account
   identifier belongs in a reading. [`Provider::quota`] gives one under the owner's home, for
   the host daemon only; an adapter without [`Capability::Quota`] refuses.
+- **Reply facts** (#699, report 18). [`Provider::scan_replies`] reads the model replies a
+  harness recorded under a home, past the [`SourceCursor`]s of the last scan, into
+  [`ModelReply`] facts (reply key, time, model, working folder and a [`ReplyTokens`] split
+  into input, output, cache read, and cache writes of five minutes and an hour, and whether
+  fast mode billed it) and the cursors to resume from. It reads only; a record the adapter
+  could not read is a `problems` line, never a guess. The key is the harness's own where it
+  has one, so a reply written twice is one. `cockpit-usage` prices and stores them. An
+  adapter without [`Capability::Cost`] refuses.
 - **Screen reading** ([`Provider::read_screen`]) is a fallback for missing events and records
   its confidence (`observed-by: event|screen`, report 05); it never proves a task complete.
 - **Sandbox needs** (#830, #861). [`Provider::needs`] declares the [`Needs`] of its harness:

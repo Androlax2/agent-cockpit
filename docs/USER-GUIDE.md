@@ -195,6 +195,15 @@ Codex is read from its own sign-in in `~/.local/share/codex-quota`. When a windo
 `usage.quota_alert_percents` (80 and 95 by default), `torlek notify` tells you once (the
 `usage` event).
 
+`torlek usage cost [--days N]` shows what your replies cost at the provider's published API
+prices (a plan is flat, so this is what the same tokens would bill on API credits): one line
+per UTC day, provider, account and project over the last N days (7 by default, up to 366),
+then the exact total. Torlek reads the replies from each harness's own records, in your home
+and in each session's own home, about once a minute and counts each reply once. A reply of a
+model Torlek has no price for is counted and named, never priced by guess. Only Claude Code is
+read so far. A session that runs without the sandbox writes to your home, so its replies show
+under `default`.
+
 To let a project's agents push and open pull requests without your own `gh` login, create a
 fine-grained token limited to that repository (contents and pull requests: read and write)
 and save it alone in `~/.config/torlek/github-tokens/<project>` (`mkdir -p -m 700` the

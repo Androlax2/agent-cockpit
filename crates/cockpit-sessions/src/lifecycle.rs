@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cockpit_authorization::{Permission, Scope};
 use cockpit_config::StartFileSnapshot;
@@ -107,6 +107,9 @@ pub struct Sessions {
     /// [`Sessions::apply_owner_settings`] (#354). Read once per use, so one launch or one
     /// pass sees one value.
     owner_settings: Mutex<cockpit_config::SessionSettings>,
+    /// Told before a session's own home folder is removed or changes account (#699); set once
+    /// by the daemon, after it builds the cost archive's worker.
+    home_observer: OnceLock<Arc<dyn crate::HomeObserver>>,
 }
 
 /// A session's operation lock, and whether a launch holds it. A stop never
@@ -220,6 +223,28 @@ impl Sessions {
             session_temps,
             operations: Mutex::new(HashMap::new()),
             agentless: Mutex::new(HashMap::new()),
+            home_observer: OnceLock::new(),
+        }
+    }
+
+    /// Has `observer` told before a session's own home folder is removed, and before a
+    /// relaunch moves a session to another account ([`crate::HomeObserver`]). Once.
+    pub fn observe_homes(&self, observer: Arc<dyn crate::HomeObserver>) {
+        assert!(
+            self.home_observer.set(observer).is_ok(),
+            "the sessions' homes have one observer"
+        );
+    }
+
+    async fn tell_home_observer(&self, session: &Session, change: crate::HomeChange) {
+        let Some(observer) = self.home_observer.get() else {
+            return;
+        };
+        let Some(Ok(home)) = self.settings.sandbox.session_home(session.id.as_str()) else {
+            return;
+        };
+        if home.is_dir() {
+            observer.leaving(session, &home, change).await;
         }
     }
 
@@ -2112,6 +2137,12 @@ impl Sessions {
                 route,
             )
             .await?;
+        // The home keeps the replies the account it leaves paid for; they are read before the
+        // new account's launch writes its own (#699).
+        if account.switched_from.is_some() {
+            self.tell_home_observer(&session, crate::HomeChange::AccountSwitch)
+                .await;
+        }
         // Kept for the harness's trust of the checkout, recorded once the launch passed its
         // gates: a parallel clone's (#702), and under `"required"` the main checkout's too,
         // since the agent's home is then the session's own, which holds no earlier answer
@@ -3156,6 +3187,10 @@ impl Sessions {
         if *self.session_lock(id).terminal_steps.borrow() != 0 {
             tracing::debug!(session = %id, "directory cleanup deferred until outstanding steps return");
             return Ok(());
+        }
+        if let Ok(session) = self.get(id).await {
+            self.tell_home_observer(&session, crate::HomeChange::Removal)
+                .await;
         }
         let mut paths = vec![self.session_dir(id), self.session_temp_dir(id)];
         // A sandboxed session's own home, with its provider's conversations, outlives its

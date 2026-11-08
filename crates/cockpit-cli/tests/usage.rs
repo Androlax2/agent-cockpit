@@ -10,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod scripted;
 
 use cockpit_protocol::{
-    Command, ErrorCode, Outcome, ProtocolError, QuotaAccountView, QuotaFailureView,
-    QuotaWindowStateView, QuotaWindowView, Reply,
+    Command, CostArchiveView, CostRowView, ErrorCode, Outcome, ProtocolError, QuotaAccountView,
+    QuotaFailureView, QuotaWindowStateView, QuotaWindowView, Reply,
 };
 use scripted::{scripted_daemon, text};
 
@@ -268,4 +268,116 @@ async fn a_refusal_exits_1_with_the_daemons_message() {
         text(&output.stderr)
     );
     daemon.await.unwrap();
+}
+
+fn cost_row(day: &str, cost_nanos: u64, replies: u64, unpriced_replies: u64) -> CostRowView {
+    CostRowView {
+        day: day.to_owned(),
+        provider: "claude".to_owned(),
+        account: "default".to_owned(),
+        project: "app".to_owned(),
+        replies,
+        unpriced_replies,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        cost_nanos,
+    }
+}
+
+#[tokio::test]
+async fn usage_cost_prints_a_line_per_row_and_the_exact_total() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::UsageCost {
+            cost: CostArchiveView {
+                first_day: "2026-11-02".to_owned(),
+                last_day: "2026-11-08".to_owned(),
+                rows: vec![
+                    cost_row("2026-11-02", 122_000_000, 1, 0),
+                    cost_row("2026-11-04", 24_850_000, 3, 1),
+                ],
+            },
+        }),
+    );
+
+    let output = home.cockpit(&["usage", "cost"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "2026-11-02 to 2026-11-08 (UTC days, at API prices)\n\
+         2026-11-02\tclaude\tdefault\tapp\t$0.1220\t1 reply\n\
+         2026-11-04\tclaude\tdefault\tapp\t$0.0249\t3 replies, 1 with no known price, not in the cost\n\
+         total\t$0.1469, 1 with no known price, not in the cost\n"
+    );
+    assert_eq!(daemon.await.unwrap(), Command::UsageCost { days: 7 });
+}
+
+#[tokio::test]
+async fn usage_cost_asks_for_the_days_it_is_given() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::UsageCost {
+            cost: CostArchiveView {
+                first_day: "2026-10-10".to_owned(),
+                last_day: "2026-11-08".to_owned(),
+                rows: Vec::new(),
+            },
+        }),
+    );
+
+    let output = home.cockpit(&["usage", "cost", "--days", "30"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "2026-10-10 to 2026-11-08 (UTC days, at API prices)\nno replies archived\n"
+    );
+    assert_eq!(daemon.await.unwrap(), Command::UsageCost { days: 30 });
+}
+
+#[tokio::test]
+async fn usage_cost_rounds_to_four_decimals_half_up() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::UsageCost {
+            cost: CostArchiveView {
+                first_day: "2026-11-08".to_owned(),
+                last_day: "2026-11-08".to_owned(),
+                rows: vec![
+                    cost_row("2026-11-08", 12_049, 1, 0),
+                    cost_row("2026-11-08", 50_000, 1, 0),
+                ],
+            },
+        }),
+    );
+
+    let output = home.cockpit(&["usage", "cost", "--days", "1"]).await;
+
+    let lines: Vec<String> = text(&output.stdout).lines().map(str::to_owned).collect();
+    assert!(lines[1].contains("\t$0.0000\t"), "{lines:?}");
+    assert!(lines[2].contains("\t$0.0001\t"), "{lines:?}");
+    assert!(lines[3].starts_with("total\t$0.0001"), "{lines:?}");
+    drop(daemon);
+}
+
+#[tokio::test]
+async fn usage_cost_refuses_a_day_count_outside_one_to_366_without_asking_the_daemon() {
+    let home = Home::new();
+
+    for days in ["0", "367", "many", "-1"] {
+        let output = home.cockpit(&["usage", "cost", "--days", days]).await;
+
+        assert!(!output.status.success(), "{days}");
+        assert!(
+            text(&output.stderr).contains("--days is a number from 1 to 366"),
+            "{days}: {}",
+            text(&output.stderr)
+        );
+    }
 }

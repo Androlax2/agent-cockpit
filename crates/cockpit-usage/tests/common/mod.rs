@@ -3,9 +3,11 @@
 
 use std::path::PathBuf;
 
-use cockpit_provider_api::{LimitKey, ProviderName, QuotaReading, QuotaWindow};
+use cockpit_provider_api::{
+    LimitKey, ModelReply, ProviderName, QuotaReading, QuotaWindow, ReplyScan, ReplyTokens,
+};
 use cockpit_turso::Database;
-use cockpit_usage::{AccountName, AccountQuota, Alert, Error, QuotaPolicy};
+use cockpit_usage::{AccountName, AccountQuota, Alert, Day, DayCost, Error, QuotaPolicy, Recorded};
 
 /// 2027-01-15 08:00 UTC.
 pub const NOW: i64 = 1_800_000_000 - 1_800_000_000 % 86_400 + 8 * 3600;
@@ -133,4 +135,81 @@ pub fn thresholds(alerts: &[Alert]) -> Vec<(String, u8)> {
         .iter()
         .map(|alert| (alert.limit.as_str().to_owned(), alert.threshold))
         .collect()
+}
+
+/// 2026-11-02 00:00 UTC.
+pub const MONDAY: i64 = 1_793_577_600;
+pub const DAY: i64 = 86_400;
+
+pub fn reply(key: &str, at: i64, model: &str, tokens: ReplyTokens) -> ModelReply {
+    ModelReply::new(key, at, model, Some("/work/app".to_owned()), tokens).unwrap()
+}
+
+pub fn tokens(input: u64, output: u64) -> ReplyTokens {
+    ReplyTokens {
+        input,
+        output,
+        ..ReplyTokens::default()
+    }
+}
+
+pub fn scan_of(replies: Vec<ModelReply>) -> ReplyScan {
+    ReplyScan {
+        replies,
+        ..ReplyScan::default()
+    }
+}
+
+pub fn app_project(_working_dir: Option<&str>) -> String {
+    "app".to_owned()
+}
+
+impl Fixture {
+    pub async fn archive_for(
+        &self,
+        account: &str,
+        home_scope: &str,
+        scan: &ReplyScan,
+    ) -> Result<Recorded, Error> {
+        self.archive_in_project(account, home_scope, scan, &app_project)
+            .await
+    }
+
+    pub async fn archive_in_project(
+        &self,
+        account: &str,
+        home_scope: &str,
+        scan: &ReplyScan,
+        project_of: &(dyn Fn(Option<&str>) -> String + Sync),
+    ) -> Result<Recorded, Error> {
+        let write = self.database.write().await.unwrap();
+        let recorded = cockpit_usage::record_replies(
+            &write,
+            &ProviderName::new("claude").unwrap(),
+            &AccountName::new(account).unwrap(),
+            home_scope,
+            scan,
+            project_of,
+        )
+        .await;
+        write.commit().await.unwrap();
+        recorded
+    }
+
+    pub async fn archive(&self, replies: Vec<ModelReply>) -> Recorded {
+        self.archive_for("main", "owner", &scan_of(replies))
+            .await
+            .unwrap()
+    }
+
+    pub async fn costs_between(&self, first: &str, last: &str) -> Vec<DayCost> {
+        let read = self.database.read().await.unwrap();
+        cockpit_usage::costs(&read, Day::parse(first).unwrap(), Day::parse(last).unwrap())
+            .await
+            .unwrap()
+    }
+
+    pub async fn all_costs(&self) -> Vec<DayCost> {
+        self.costs_between("2026-01-01", "2026-12-31").await
+    }
 }

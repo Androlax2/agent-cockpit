@@ -42,6 +42,7 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
         ),
         ("version-report (routes.rs:285)", Command::VersionReport),
         ("usage-quota (routes.rs:294)", Command::UsageQuota),
+        ("usage-cost (routes.rs:296)", Command::UsageCost { days: 7 }),
         ("skill-pack (routes.rs:314)", Command::SkillPack),
         ("storage (routes.rs:330)", Command::StorageReport),
         (

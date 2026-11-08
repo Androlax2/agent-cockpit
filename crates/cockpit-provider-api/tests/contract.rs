@@ -174,6 +174,18 @@ fn a_provider_without_quota_reading_refuses_naming_its_capability() {
 }
 
 #[test]
+fn a_provider_without_reply_scanning_refuses_naming_its_capability() {
+    let provider = LaunchOnly(ProviderName::new("plain").unwrap());
+
+    assert_eq!(
+        provider
+            .scan_replies(Path::new("/unused"), &[])
+            .unwrap_err(),
+        ProviderError::unsupported(Capability::Cost)
+    );
+}
+
+#[test]
 fn a_provider_without_screen_reading_reads_nothing() {
     let provider = LaunchOnly(ProviderName::new("plain").unwrap());
 

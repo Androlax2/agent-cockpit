@@ -910,6 +910,11 @@ pub enum Command {
     VersionReport,
     /// Owner only: each provider account's plan windows as last read, judged now (#58).
     UsageQuota,
+    /// Owner only: the cost archive's totals per day, account and project over the last
+    /// `days` UTC days, today included (#699). 1 to 366.
+    UsageCost {
+        days: u32,
+    },
     /// Both sockets: the instruction bundle's topics, each with when to read it (#49).
     InstructionCatalog,
     /// Both sockets: one topic of the instruction bundle, or every topic at once (the one-read
@@ -1335,6 +1340,9 @@ pub enum Reply {
     },
     UsageQuota {
         accounts: Vec<crate::QuotaAccountView>,
+    },
+    UsageCost {
+        cost: crate::CostArchiveView,
     },
     /// The running release's instruction topics; `manifest` is its instruction-manifest id.
     InstructionCatalog {
