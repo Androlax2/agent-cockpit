@@ -66,7 +66,7 @@ async fn a_subdirectory_of_a_work_tree_is_refused_naming_the_top_level() {
 
     assert!(
         matches!(&refused, Err(Error::InvalidPath { reason, .. })
-            if reason.contains(&root.display().to_string())),
+            if reason.contains(&format!("Add {} instead", root.display()))),
         "{refused:?}"
     );
 }
@@ -84,8 +84,11 @@ async fn a_checkout_whose_git_metadata_lives_elsewhere_is_refused() {
 
     let refused = register_project(&database, &Git::from_path(), &worktree, None).await;
 
+    let metadata = format!("{}/.git/worktrees/app-worktree", root.display());
     assert!(
-        matches!(&refused, Err(Error::InvalidPath { reason, .. }) if reason.contains(".git")),
+        matches!(&refused, Err(Error::InvalidPath { reason, .. })
+            if reason.contains(&format!("keeps its Git metadata at {metadata}"))
+                && reason.contains("add the repository that owns this folder")),
         "{refused:?}"
     );
 }
@@ -100,7 +103,42 @@ async fn a_directory_that_is_not_a_repository_is_refused() {
     let refused = register_project(&database, &Git::from_path(), &plain, None).await;
 
     assert!(
-        matches!(&refused, Err(Error::InvalidPath { .. })),
+        matches!(&refused, Err(Error::InvalidPath { path, reason })
+            if path == &plain
+                && reason.starts_with("is not a Git repository.")
+                && reason.contains("Run `git init` in it")
+                && !reason.contains("fatal:")),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_missing_path_is_refused_as_missing() {
+    let scratch = Scratch::new();
+    let database = scratch.open().await;
+    let missing = scratch.path().join("missing");
+
+    let refused = register_project(&database, &Git::from_path(), &missing, None).await;
+
+    assert!(
+        matches!(&refused, Err(Error::InvalidPath { reason, .. })
+            if reason.starts_with("does not exist") && !reason.contains("os error")),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_file_is_refused_as_not_a_folder() {
+    let scratch = Scratch::new();
+    let database = scratch.open().await;
+    let file = scratch.path().join("notes.txt");
+    std::fs::write(&file, "fixture\n").unwrap();
+
+    let refused = register_project(&database, &Git::from_path(), &file, None).await;
+
+    assert!(
+        matches!(&refused, Err(Error::InvalidPath { reason, .. })
+            if reason.starts_with("is not a folder")),
         "{refused:?}"
     );
 }
@@ -120,6 +158,38 @@ async fn a_root_inside_a_registered_project_is_refused() {
     assert!(
         matches!(&refused, Err(Error::Overlaps { project, .. }) if project.as_str() == "app"),
         "{refused:?}"
+    );
+    let message = refused.unwrap_err().to_string();
+    assert_eq!(
+        message,
+        format!(
+            "{}: is inside project app's checkout {}; projects do not nest. Add a folder \
+             outside every registered project, or work in project app",
+            nested.display(),
+            root.display()
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_root_around_a_registered_project_is_refused_as_containing_it() {
+    let scratch = Scratch::new();
+    let database = scratch.open().await;
+    let inner = scratch.repository("outer/inner");
+    register(&database, &inner).await;
+    let outer = scratch.path().join("outer");
+    git(&outer, &["init", "--quiet"]);
+
+    let refused = register_project(&database, &Git::from_path(), &outer, None).await;
+
+    let message = refused.unwrap_err().to_string();
+    assert!(
+        message.starts_with(&format!(
+            "{}: contains project inner's checkout {}; projects do not nest",
+            outer.display(),
+            inner.display()
+        )),
+        "{message}"
     );
 }
 

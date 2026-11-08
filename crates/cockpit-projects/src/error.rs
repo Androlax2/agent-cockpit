@@ -30,6 +30,7 @@ pub enum Error {
     },
     /// The root is inside, or contains, a checkout of an existing project.
     Overlaps {
+        root: PathBuf,
         project: ProjectName,
         path: PathBuf,
     },
@@ -155,11 +156,24 @@ impl fmt::Display for Error {
             Error::NameTaken { name } => {
                 write!(formatter, "a project named {name} is already registered")
             }
-            Error::Overlaps { project, path } => write!(
-                formatter,
-                "overlaps project {project}'s checkout {}; projects do not nest",
-                path.display()
-            ),
+            Error::Overlaps {
+                root,
+                project,
+                path,
+            } => {
+                let relation = if root.starts_with(path) {
+                    "is inside"
+                } else {
+                    "contains"
+                };
+                write!(
+                    formatter,
+                    "{}: {relation} project {project}'s checkout {}; projects do not nest. Add \
+                     a folder outside every registered project, or work in project {project}",
+                    root.display(),
+                    path.display()
+                )
+            }
             Error::UnknownProject { name } => write!(formatter, "no project is named {name:?}"),
             Error::UnknownCheckout { checkout } => {
                 write!(formatter, "no checkout has id {checkout}")
