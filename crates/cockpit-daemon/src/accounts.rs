@@ -32,6 +32,10 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
                     login: utf8(&login)?,
                 })
             }
+            Command::AccountSignInDiscard { provider, account } => {
+                sessions.discard_sign_in(&provider, &account).await?;
+                Ok(Reply::AccountSignInDiscarded { provider, account })
+            }
             other => unreachable!("routes.rs sends only account verbs here, not {other:?}"),
         }
     });

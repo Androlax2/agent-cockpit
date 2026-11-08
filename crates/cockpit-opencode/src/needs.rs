@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use cockpit_provider_api::{CredentialHeader, Credentials, HomePath, InvalidValue, Login, Needs};
+use cockpit_provider_api::{CredentialHeader, Credentials, InvalidValue, Login, Needs};
 
 /// The hosts OpenCode reaches: the two model APIs Greywall's profile allowed, and the model
 /// catalog OpenCode fetches at start (not in Greywall's profile), since the session's cache
@@ -57,14 +57,10 @@ pub fn credentials() -> Result<Credentials, InvalidValue> {
 
 /// `opencode auth login`, which saves the sign-in to [`CREDENTIAL_FILES`]' first.
 pub fn login(program: &Path) -> Result<Login, InvalidValue> {
-    let arguments: &[&str] = &["auth", "login"];
-    Ok(Login {
-        file: HomePath::new(CREDENTIAL_FILES[0])?,
-        program: program.to_path_buf(),
-        arguments: arguments
-            .iter()
-            .map(|argument| (*argument).to_owned())
-            .collect(),
-        steps: "pick the provider and sign in".to_owned(),
-    })
+    Login::new(
+        CREDENTIAL_FILES[0],
+        program,
+        &["auth", "login"],
+        "pick the provider and sign in",
+    )
 }

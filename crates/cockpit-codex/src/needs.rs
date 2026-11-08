@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use cockpit_provider_api::{CredentialHeader, Credentials, HomePath, InvalidValue, Login, Needs};
+use cockpit_provider_api::{CredentialHeader, Credentials, InvalidValue, Login, Needs};
 
 /// The hosts Codex reaches: the API, and for a ChatGPT sign-in ChatGPT's backend and
 /// experiments, and the sign-in host that refreshes its tokens (not in Greywall's profile).
@@ -42,14 +42,10 @@ pub fn credentials() -> Result<Credentials, InvalidValue> {
 /// `codex login`, told to save the sign-in to [`CREDENTIAL_FILES`]' first rather than the
 /// system keyring, as the quota sign-in does.
 pub fn login(program: &Path) -> Result<Login, InvalidValue> {
-    let arguments: &[&str] = &["login", "-c", "cli_auth_credentials_store=\"file\""];
-    Ok(Login {
-        file: HomePath::new(CREDENTIAL_FILES[0])?,
-        program: program.to_path_buf(),
-        arguments: arguments
-            .iter()
-            .map(|argument| (*argument).to_owned())
-            .collect(),
-        steps: "finish the sign-in it opens in your browser".to_owned(),
-    })
+    Login::new(
+        CREDENTIAL_FILES[0],
+        program,
+        &["login", "-c", "cli_auth_credentials_store=\"file\""],
+        "finish the sign-in it opens in your browser",
+    )
 }

@@ -10,8 +10,9 @@ use std::process::ExitCode;
 use cockpit_protocol::{Command, Reply};
 
 /// The owner's variables a sign-in in their terminal keeps: finding programs, drawing the
-/// terminal, its language, and opening the browser.
-const KEPT_VARIABLES: [&str; 12] = [
+/// terminal, its language, opening the browser, and reaching the provider through the
+/// owner's proxy and trusted CAs.
+const KEPT_VARIABLES: [&str; 23] = [
     "PATH",
     "TERM",
     "COLORTERM",
@@ -24,6 +25,17 @@ const KEPT_VARIABLES: [&str; 12] = [
     "XDG_RUNTIME_DIR",
     "DBUS_SESSION_BUS_ADDRESS",
     "BROWSER",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
 ];
 
 /// The provider and account `account sign-in` names, or the usage problem that stops it.
@@ -76,11 +88,11 @@ pub(crate) fn sign_in(provider: String, account: String) -> ExitCode {
                 None => "was stopped by a signal".to_owned(),
             };
             eprintln!("torlek: the {provider} sign-in {ended}; nothing was kept: {again}");
-            return ExitCode::FAILURE;
+            return discard(&socket, provider, account);
         }
         Err(error) => {
             eprintln!("torlek: could not run {program}: {error}");
-            return ExitCode::FAILURE;
+            return discard(&socket, provider, account);
         }
     }
     let finish = Command::AccountSignedIn { provider, account };
@@ -98,5 +110,16 @@ pub(crate) fn sign_in(provider: String, account: String) -> ExitCode {
             ExitCode::SUCCESS
         }
         other => crate::agent::failed(&socket, other),
+    }
+}
+
+/// Removes the failed sign-in's home, which may hold a login it wrote before it failed.
+fn discard(socket: &std::path::Path, provider: String, account: String) -> ExitCode {
+    match crate::agent::exchange(socket, Command::AccountSignInDiscard { provider, account }) {
+        Ok(Reply::AccountSignInDiscarded { .. }) => ExitCode::FAILURE,
+        other => {
+            crate::agent::failed(socket, other);
+            ExitCode::FAILURE
+        }
     }
 }

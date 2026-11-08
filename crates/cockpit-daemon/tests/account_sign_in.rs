@@ -193,6 +193,42 @@ async fn a_sign_in_that_fails_moves_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_sign_in_that_fails_leaves_no_login_in_its_home() {
+    let home = Home::new();
+    home.write_owner_config(WORK);
+    codex_signing_in(&home, &format!("{}\n exit 3", writes_login()));
+    let _daemon = home.start();
+
+    let output = home
+        .cockpit(&["account", "sign-in", "codex", "work"], &[])
+        .await;
+
+    assert!(!output.status.success());
+    assert!(!logins_of(&home, "codex", "work").join("sign-in").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_login_swapped_for_a_link_is_refused_and_nothing_is_kept() {
+    let home = Home::new();
+    home.write_owner_config(WORK);
+    let outside = home.path().join("outside-secret");
+    std::fs::write(&outside, "not a login").unwrap();
+    codex_signing_in(
+        &home,
+        &format!("ln -s '{}' \"$HOME/.codex/auth.json\"", outside.display()),
+    );
+    let _daemon = home.start();
+
+    let output = home
+        .cockpit(&["account", "sign-in", "codex", "work"], &[])
+        .await;
+
+    assert!(!output.status.success());
+    assert!(text(&output.stderr).contains("other than a plain file"));
+    assert!(!logins_of(&home, "codex", "work").join("login").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn signing_in_again_replaces_the_login() {
     let home = Home::new();
     home.write_owner_config(WORK);

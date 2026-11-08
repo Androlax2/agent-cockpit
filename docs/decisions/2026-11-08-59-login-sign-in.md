@@ -12,9 +12,10 @@ are engineering defaults listed in the pull request.
   sign-in was declined: a browser sign-in that calls back to a local port fails from inside
   the sandbox.
 - **Only the login file is kept.** The adapter names the file (`Provider::login`, one of its
-  credential files). The daemon checks it is a plain file inside the sign-in's home, makes it
-  owner-only, renames it into `account-logins/<provider>/<account>/login/` and removes the
-  rest of the home. It never opens the file.
+  credential files). The daemon checks it is a plain file inside the sign-in's home, moves it
+  into `account-logins/<provider>/<account>/login/`, checks it again there where only the
+  daemon writes, makes it owner-only and removes the rest of the home. It never opens the
+  file. A sign-in that fails has its home removed, with any login it wrote.
 - **The sign-in gets none of the owner's provider variables.** The CLI clears its environment
   and keeps what a terminal and a browser sign-in need (`PATH`, `TERM`, the locale, the
   display and session bus, `BROWSER`), so `CODEX_HOME`, `OPENAI_API_KEY` and their kin cannot

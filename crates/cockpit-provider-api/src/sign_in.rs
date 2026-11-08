@@ -1,6 +1,6 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::{HomePath, Provenance};
+use crate::{HomePath, InvalidValue, Provenance};
 
 /// A harness's local sign-in fact, with the provenance of its probe independently of
 /// other capabilities. No credential contents or account identifiers belong here.
@@ -42,4 +42,24 @@ pub struct Login {
     pub arguments: Vec<String>,
     /// What the owner does in it, said before it starts.
     pub steps: String,
+}
+
+impl Login {
+    /// A declaration from its written form; `file` is a `~/` path.
+    pub fn new(
+        file: &str,
+        program: &Path,
+        arguments: &[&str],
+        steps: &str,
+    ) -> Result<Login, InvalidValue> {
+        Ok(Login {
+            file: HomePath::new(file)?,
+            program: program.to_path_buf(),
+            arguments: arguments
+                .iter()
+                .map(|argument| (*argument).to_owned())
+                .collect(),
+            steps: steps.to_owned(),
+        })
+    }
 }

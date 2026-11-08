@@ -412,7 +412,12 @@ impl Handler for Routes {
                     Arc::clone(&self.network_decided),
                 ),
             },
-            (command @ (Command::AccountSignIn { .. } | Command::AccountSignedIn { .. }), peer) => {
+            (
+                command @ (Command::AccountSignIn { .. }
+                | Command::AccountSignedIn { .. }
+                | Command::AccountSignInDiscard { .. }),
+                peer,
+            ) => {
                 match peer {
                     // A login account's sign-in is the owner's alone (#59).
                     Peer::Agent { .. } => Route::Answer(owner_only()),

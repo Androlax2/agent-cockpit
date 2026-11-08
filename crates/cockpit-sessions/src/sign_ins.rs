@@ -1,19 +1,22 @@
 //! `torlek account sign-in` (#59, #858): the owner signs a login account in once, through the
 //! harness's own sign-in run in their terminal with a fresh folder of Torlek's as its home;
 //! the daemon then moves the one file the adapter names into the account's login folder. It
-//! never opens that file: it checks what kind of entry it is, sets its mode and renames it.
+//! never opens that file: it checks what kind of entry it is, renames it and sets its mode.
 
-use std::fs::DirBuilder;
 use std::io::ErrorKind;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use cockpit_config::Source;
 use cockpit_provider_api::Login;
 use cockpit_sandbox::AccountLogin;
 
-use super::Sessions;
+use super::{Sessions, create_session_dir, remove_tree};
 use crate::Error;
+
+/// Where a login waits in the login folder between leaving the sign-in's home and taking its
+/// name, until it is known to be a plain file and owner-only.
+const INCOMING: &str = ".incoming";
 
 /// What the owner's terminal runs to sign an account in.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +37,7 @@ impl Sessions {
         let home = folders.sign_in.clone();
         self.blocking("prepare a sign-in home", move || {
             remove_folder(&home)?;
-            create_owner_folder(&home)
+            create_session_dir(&home)
         })
         .await?;
         Ok(SignInPlan {
@@ -53,47 +56,23 @@ impl Sessions {
         let refused = refusal(provider, account);
         let again = format!("run `torlek account sign-in {provider} {account}` again");
         self.blocking("keep a sign-in's login", move || {
-            let left = folders.sign_in.join(relative(&login));
+            let relative: PathBuf = login.file.components().collect();
+            let left = folders.sign_in.join(&relative);
             let missing = || {
                 refused(format!(
                     "the sign-in left no file at {}; {again}",
                     login.file
                 ))
             };
-            let Some(parent) = left.parent() else {
-                return Err(missing());
-            };
-            let home = folders.sign_in.canonicalize().map_err(|source| Error::Io {
-                action: "resolve",
-                path: folders.sign_in.clone(),
-                source,
-            })?;
-            // A link on the way would move a file from outside the sign-in's home.
-            match parent.canonicalize() {
-                Ok(real) if real.starts_with(&home) => {}
-                Ok(_) => {
-                    return Err(refused(format!(
-                        "the folder of {} the sign-in left is outside its home",
-                        login.file
-                    )));
-                }
-                Err(error) if error.kind() == ErrorKind::NotFound => return Err(missing()),
-                Err(source) => {
-                    return Err(Error::Io {
-                        action: "resolve",
-                        path: parent.to_path_buf(),
-                        source,
-                    });
-                }
+            if !is_inside(&left, &folders.sign_in)? {
+                return Err(refused(format!(
+                    "the folder of {} the sign-in left is outside its home",
+                    login.file
+                )));
             }
             match std::fs::symlink_metadata(&left) {
                 Ok(metadata) if metadata.file_type().is_file() => {}
-                Ok(_) => {
-                    return Err(refused(format!(
-                        "the sign-in left {} as something other than a plain file",
-                        login.file
-                    )));
-                }
+                Ok(_) => return Err(refused(not_a_plain_file(&login))),
                 Err(error) if error.kind() == ErrorKind::NotFound => return Err(missing()),
                 Err(source) => {
                     return Err(Error::Io {
@@ -103,24 +82,47 @@ impl Sessions {
                     });
                 }
             }
-            // Owner-only before it moves, so the login folder never holds it readable by others.
-            std::fs::set_permissions(&left, std::fs::Permissions::from_mode(0o600)).map_err(
+            create_session_dir(&folders.login)?;
+            // Checked again once moved, where only the daemon writes: whatever runs in the
+            // sign-in's home could swap the file for a link after the check above.
+            let incoming = folders.login.join(INCOMING);
+            rename(&left, &incoming)?;
+            let is_file = std::fs::symlink_metadata(&incoming)
+                .map(|metadata| metadata.file_type().is_file())
+                .unwrap_or(false);
+            if !is_file {
+                remove_entry(&incoming)?;
+                return Err(refused(not_a_plain_file(&login)));
+            }
+            std::fs::set_permissions(&incoming, std::fs::Permissions::from_mode(0o600)).map_err(
                 |source| Error::Io {
                     action: "make owner-only",
-                    path: left.clone(),
+                    path: incoming.clone(),
                     source,
                 },
             )?;
-            create_owner_folder(&folders.login)?;
-            let file_name = left.file_name().ok_or_else(missing)?;
-            let kept = folders.login.join(file_name);
-            std::fs::rename(&left, &kept).map_err(|source| Error::Io {
-                action: "move the login to",
-                path: kept,
-                source,
-            })?;
-            remove_folder(&folders.sign_in)?;
+            let file_name = relative
+                .file_name()
+                .expect("a home path names at least one entry");
+            rename(&incoming, &folders.login.join(file_name))?;
+            // The login is kept: what is left of its home is the harness's other files.
+            if let Err(error) = remove_tree(&folders.sign_in) {
+                tracing::warn!(
+                    path = %folders.sign_in.display(),
+                    %error,
+                    "a sign-in's home stayed after its login was kept"
+                );
+            }
             Ok(folders.login)
+        })
+        .await
+    }
+
+    /// Removes the home of a sign-in that failed, with whatever it wrote, a login included.
+    pub async fn discard_sign_in(&self, provider: &str, account: &str) -> Result<(), Error> {
+        let (_, folders) = self.login_of(provider, account)?;
+        self.blocking("remove a sign-in home", move || {
+            remove_folder(&folders.sign_in)
         })
         .await
     }
@@ -167,25 +169,62 @@ fn refusal(provider: &str, account: &str) -> impl Fn(String) -> Error + use<> {
     }
 }
 
-/// `login`'s file under a home, as a relative path.
-fn relative(login: &Login) -> PathBuf {
-    login.file.components().collect()
+fn not_a_plain_file(login: &Login) -> String {
+    format!(
+        "the sign-in left {} as something other than a plain file",
+        login.file
+    )
 }
 
-fn create_owner_folder(folder: &Path) -> Result<(), Error> {
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(folder)
-        .map_err(|source| Error::Io {
-            action: "create",
-            path: folder.to_path_buf(),
+/// Whether `entry`'s folder resolves inside `home`: a link on the way would move a file from
+/// outside it. An absent folder counts as inside, for the caller to find the entry absent.
+fn is_inside(entry: &Path, home: &Path) -> Result<bool, Error> {
+    let resolve = |path: &Path| {
+        path.canonicalize().map_err(|source| Error::Io {
+            action: "resolve",
+            path: path.to_path_buf(),
             source,
         })
+    };
+    let home = resolve(home)?;
+    let Some(folder) = entry.parent() else {
+        return Ok(false);
+    };
+    match folder.canonicalize() {
+        Ok(real) => Ok(real.starts_with(&home)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(true),
+        Err(source) => Err(Error::Io {
+            action: "resolve",
+            path: folder.to_path_buf(),
+            source,
+        }),
+    }
 }
 
+fn rename(from: &Path, to: &Path) -> Result<(), Error> {
+    std::fs::rename(from, to).map_err(|source| Error::Io {
+        action: "move the login to",
+        path: to.to_path_buf(),
+        source,
+    })
+}
+
+fn remove_entry(path: &Path) -> Result<(), Error> {
+    let removed = match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => remove_tree(path),
+        _ => std::fs::remove_file(path),
+    };
+    removed.map_err(|source| Error::Io {
+        action: "remove",
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Removes `folder` and everything in it, read-only folders a tool left included; an absent
+/// one is already gone.
 fn remove_folder(folder: &Path) -> Result<(), Error> {
-    match std::fs::remove_dir_all(folder) {
+    match remove_tree(folder) {
         Err(error) if error.kind() != ErrorKind::NotFound => Err(Error::Io {
             action: "remove",
             path: folder.to_path_buf(),

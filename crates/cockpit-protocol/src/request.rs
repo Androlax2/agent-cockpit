@@ -403,6 +403,11 @@ pub enum Command {
         provider: String,
         account: String,
     },
+    /// Owner only: remove the home of a sign-in that failed, with whatever it wrote.
+    AccountSignInDiscard {
+        provider: String,
+        account: String,
+    },
     /// Owner only: one guide, whatever its state.
     GuideShow {
         guide: i64,
@@ -1122,6 +1127,11 @@ pub enum Reply {
         provider: String,
         account: String,
         login: String,
+    },
+    /// The failed sign-in's home is gone.
+    AccountSignInDiscarded {
+        provider: String,
+        account: String,
     },
     /// An ask from the sender would reach the owner: it is identified and may ask.
     AskReady {

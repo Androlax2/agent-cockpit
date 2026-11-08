@@ -25,7 +25,7 @@ fields, decides the refusal, so every command in a group takes the identical cod
 | 347 | `ProjectAdd`, `ProjectList`, `ProjectRemove`, `CheckoutList`, `CheckoutClone`, `CheckoutReview`, `CheckoutClaim`, `CheckoutRelease`, `CheckoutSweep`, `CheckoutPush` | `project add\|list\|remove`, `checkout list\|clone\|review\|claim\|release\|sweep\|push` |
 | 389 | `ApprovalQueue`, `ApprovalShow`, `ApprovalApprove`, `ApprovalDecline`, `ApprovalEdit`, `ApprovalInput`, `GuideShow`, `GuideAnswer`, `GuideStuck`, `GuideClose` | `approval list\|show\|approve\|decline\|edit\|input`, `guide show\|answer\|stuck\|close` |
 | 406 | `NetworkList`, `NetworkAllow`, `NetworkDeny`, `NetworkGrants`, `NetworkRevoke` | `network list\|allow\|deny\|grants\|revoke` |
-| 415 | `AccountSignIn`, `AccountSignedIn` | `account sign-in` |
+| 415 | `AccountSignIn`, `AccountSignedIn`, `AccountSignInDiscard` | `account sign-in` |
 | 441 | `SessionGrant`, `SessionRevoke`, `SessionGrants` | `session grant\|revoke\|grants` |
 | 465 | `SessionNew`, `SessionList`, `SessionRestart`, `SessionRestartAll`, `SessionSleep`, `SessionWake`, `SessionResume`, `SessionSend`, `SessionCancel`, `SessionEnd`, `SessionEndFinished`, `SessionLink`, `SessionSandbox`, `SessionSandboxRecord`, `SandboxShow` | `session new\|list\|restart\|sleep\|wake\|resume\|send\|cancel\|end\|link\|sandbox\|sandbox-record`, `sandbox show` |
 | 518 | `TaskPriority`, `TaskQueue`, `TaskApprove`, `TaskDecline`, `TaskReopen`, `TaskWait`, `TaskUnwait`, `TaskImageAdd`, `TaskImage`, `TaskDraftSave`, `TaskDrafts`, `TaskDraftDiscard` | `todo priority\|queue\|approve\|decline\|reopen\|after\|unwait\|image add\|image get\|draft save\|drafts\|draft discard` |
