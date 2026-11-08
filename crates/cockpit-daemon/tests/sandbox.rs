@@ -1488,7 +1488,7 @@ async fn an_account_without_a_credential_is_passed_over_for_the_next() {
 }
 
 /// A session launched on `spare` alone, `work` holding no credential yet.
-async fn agent_on_the_spare_account(home: &Home) -> Sandboxed {
+async fn agent_launched_on_spare(home: &Home) -> Sandboxed {
     let agent = sandboxed_agent(home, |home| {
         home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
         home.write_account_credential(
@@ -1526,7 +1526,7 @@ async fn restart(home: &Home, session: &str) -> Result<(), ClientError> {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restart_keeps_the_account_its_conversation_runs_on() {
     let home = Home::new();
-    let agent = agent_on_the_spare_account(&home).await;
+    let agent = agent_launched_on_spare(&home).await;
     home.write_account_credential(
         "claude",
         "work",
@@ -1551,7 +1551,7 @@ async fn a_restart_keeps_the_account_its_conversation_runs_on() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restart_whose_account_lost_its_credential_is_refused_naming_it() {
     let home = Home::new();
-    let agent = agent_on_the_spare_account(&home).await;
+    let agent = agent_launched_on_spare(&home).await;
     home.write_account_credential(
         "claude",
         "work",
