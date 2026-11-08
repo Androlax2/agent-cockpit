@@ -120,6 +120,7 @@ async fn session_show_asks_the_daemon_to_show_the_session_and_prints_it() {
                     number: 2,
                     kind: LaunchKindView::Wake,
                     launched_at: 2,
+                    account: None,
                 }),
                 exit: None,
                 changed_start_files: Vec::new(),

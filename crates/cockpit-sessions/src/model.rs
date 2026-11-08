@@ -200,6 +200,9 @@ pub struct Launch {
     pub execution: ExecutionId,
     /// Seconds since the Unix epoch.
     pub launched_at: i64,
+    /// The account its agent runs on, as the daemon chose it at the launch (#59); `None` for
+    /// an agent on no account: unsandboxed, it signs in from the owner's home.
+    pub account: Option<String>,
 }
 
 /// The release whose helpers and instruction bundle a launch runs with (report 13, #64):
@@ -529,6 +532,8 @@ pub struct Settings {
     /// clone (#702). The default names no home, so no configuration is read and no trust is
     /// recorded.
     pub owner_environment: cockpit_config::Environment,
+    /// Each provider's accounts, in the order a sandboxed launch tries them (#59).
+    pub accounts: cockpit_config::AccountSettings,
     /// What every launch records it ran with. `None` records nothing, which `version --all`
     /// shows as not recorded.
     pub bundle: Option<LaunchBundle>,
@@ -566,6 +571,7 @@ impl Default for Settings {
             report_deadline: Duration::from_secs(30),
             agentless_after: Duration::from_secs(10 * 60),
             owner_environment: cockpit_config::Environment::default(),
+            accounts: cockpit_config::AccountSettings::default(),
             bundle: None,
         }
     }

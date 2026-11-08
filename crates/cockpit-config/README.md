@@ -18,7 +18,7 @@ grants: owner settings are inputs to `cockpit-authorization`, which decides.
 | Project config | `<project>/.torlek/config.toml` | describing settings only (`workflow.preset`, `[[checks]]`, `[execution]`, `[needs]`, `[results]`) |
 | Overrides | `--set key=value` (TOML value) | `projects.trusted`, `workflow.preset` |
 
-A project file that sets an owner setting (`projects`, `start_files`, `tasks`, `sessions`, `storage`, `memory`, `usage`, `tui`, `skill_pack`) fails with its file and
+A project file that sets an owner setting (`projects`, `start_files`, `tasks`, `sessions`, `storage`, `memory`, `usage`, `accounts`, `tui`, `skill_pack`) fails with its file and
 line: repository configuration describes requirements, owner settings grant. An owner file
 that declares `[[checks]]` fails the same way: a check describes a project (#313); each needs
 a `name` and a `command`, and a name declared twice fails at its second line. The project's
@@ -74,6 +74,21 @@ quota_alert_percents = [80, 95]    # 1 to 5 percents from 1 to 100, ascending
 
 A failed reading waits twice as long before the next, up to an hour, and the last good one
 goes stale.
+
+## Accounts
+
+Each provider's accounts, in the order a sandboxed launch tries them (#59). Owner settings,
+read at the daemon's start; a list outside its rules stops it.
+
+```toml
+[accounts]
+claude = ["work", "default"]   # 1 or more names: lower-case letters, digits and `-`, starting with a letter
+```
+
+A provider without a list has the account `default` alone. An account's credential files live
+in `provider-credentials/<provider>/<account>/`; `default`'s directly in
+`provider-credentials/<provider>/` (#968). A launch takes the first listed account that holds a
+credential.
 
 ## Memory
 

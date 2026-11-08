@@ -170,9 +170,10 @@ pub struct ProviderFound {
     pub capabilities: Vec<String>,
     pub sign_in: SignInFacts,
     /// Under `agents.sandbox = "required"`, the owner's credential the session proxy adds for
-    /// it (#968): a sandboxed agent never reads the owner's own sign-in. `None` when agents run
-    /// unsandboxed or the provider takes no bound credential.
-    pub sandbox_credential: Option<cockpit_config::ProviderCredentialState>,
+    /// it (#968), for each of its accounts in the order a launch tries them (#59): a sandboxed
+    /// agent never reads the owner's own sign-in. Empty when agents run unsandboxed or the
+    /// provider takes no bound credential.
+    pub sandbox_credentials: Vec<cockpit_config::AccountCredentialState>,
 }
 
 /// The adapter's current credential observation, mapped by the daemon. Unknown stays

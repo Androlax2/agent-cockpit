@@ -49,7 +49,7 @@ fn ready_host() -> HostFacts {
                 tested: true,
                 probe: None,
                 capabilities: vec!["resume".to_owned(), "events".to_owned()],
-                sandbox_credential: None,
+                sandbox_credentials: Vec::new(),
             }),
         }],
         controls: vec![ControlFacts {
@@ -783,7 +783,7 @@ fn a_preset_needs_a_provider_that_reports_its_steps_capabilities() {
                     tested: false,
                     probe: None,
                     capabilities: capabilities.iter().map(|name| name.to_string()).collect(),
-                    sandbox_credential: None,
+                    sandbox_credentials: Vec::new(),
                 }),
             }],
             ..ready_host()
@@ -1085,12 +1085,15 @@ fn a_sandboxed_provider_without_a_credential_names_the_files_to_write() {
     fixture.configure("", None);
     let mut host = ready_host();
     let found = host.providers[0].found.as_mut().unwrap();
-    found.sandbox_credential = Some(cockpit_config::ProviderCredentialState::Missing {
-        files: vec![
-            PathBuf::from("/config/provider-credentials/claude/ANTHROPIC_API_KEY"),
-            PathBuf::from("/config/provider-credentials/claude/CLAUDE_CODE_OAUTH_TOKEN"),
-        ],
-    });
+    found.sandbox_credentials = vec![cockpit_config::AccountCredentialState {
+        account: cockpit_config::DEFAULT_ACCOUNT.to_owned(),
+        state: cockpit_config::ProviderCredentialState::Missing {
+            files: vec![
+                PathBuf::from("/config/provider-credentials/claude/ANTHROPIC_API_KEY"),
+                PathBuf::from("/config/provider-credentials/claude/CLAUDE_CODE_OAUTH_TOKEN"),
+            ],
+        },
+    }];
 
     let report = assess(&host, &fixture.config(), None);
 
@@ -1114,9 +1117,12 @@ fn an_unusable_sandboxed_credential_blocks_like_the_launch_it_refuses() {
     fixture.configure("", None);
     let mut host = ready_host();
     let found = host.providers[0].found.as_mut().unwrap();
-    found.sandbox_credential = Some(cockpit_config::ProviderCredentialState::Unusable {
-        reason: "/config/provider-credentials/claude/ANTHROPIC_API_KEY is mode 644".to_owned(),
-    });
+    found.sandbox_credentials = vec![cockpit_config::AccountCredentialState {
+        account: cockpit_config::DEFAULT_ACCOUNT.to_owned(),
+        state: cockpit_config::ProviderCredentialState::Unusable {
+            reason: "/config/provider-credentials/claude/ANTHROPIC_API_KEY is mode 644".to_owned(),
+        },
+    }];
 
     let report = assess(&host, &fixture.config(), None);
 
@@ -1131,10 +1137,13 @@ fn a_sandboxed_provider_with_a_credential_names_its_file_and_variable() {
     fixture.configure("", None);
     let mut host = ready_host();
     let found = host.providers[0].found.as_mut().unwrap();
-    found.sandbox_credential = Some(cockpit_config::ProviderCredentialState::Configured {
-        variable: "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
-        path: PathBuf::from("/config/provider-credentials/claude/CLAUDE_CODE_OAUTH_TOKEN"),
-    });
+    found.sandbox_credentials = vec![cockpit_config::AccountCredentialState {
+        account: cockpit_config::DEFAULT_ACCOUNT.to_owned(),
+        state: cockpit_config::ProviderCredentialState::Configured {
+            variable: "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            path: PathBuf::from("/config/provider-credentials/claude/CLAUDE_CODE_OAUTH_TOKEN"),
+        },
+    }];
 
     let report = assess(&host, &fixture.config(), None);
 
@@ -1215,5 +1224,50 @@ fn a_failed_probe_names_what_is_missing_and_advises_without_blocking() {
             .as_deref()
             .is_some_and(|next| next.contains("update Torlek")),
         "{provider:#?}"
+    );
+}
+
+/// #59: each listed account has its own row, named after it, in the order a launch tries them.
+#[test]
+fn each_listed_account_has_its_own_sandboxed_sign_in_row() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let mut host = ready_host();
+    let found = host.providers[0].found.as_mut().unwrap();
+    found.sandbox_credentials = vec![
+        cockpit_config::AccountCredentialState {
+            account: "work".to_owned(),
+            state: cockpit_config::ProviderCredentialState::Configured {
+                variable: "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+                path: PathBuf::from(
+                    "/config/provider-credentials/claude/work/CLAUDE_CODE_OAUTH_TOKEN",
+                ),
+            },
+        },
+        cockpit_config::AccountCredentialState {
+            account: "spare".to_owned(),
+            state: cockpit_config::ProviderCredentialState::Missing {
+                files: vec![PathBuf::from(
+                    "/config/provider-credentials/claude/spare/ANTHROPIC_API_KEY",
+                )],
+            },
+        },
+    ];
+
+    let report = assess(&host, &fixture.config(), None);
+
+    assert_eq!(
+        requirement(&report, "provider claude account work sandboxed sign-in").status,
+        Status::Available
+    );
+    let spare = requirement(&report, "provider claude account spare sandboxed sign-in");
+    assert_eq!(spare.status, Status::NeedsAuthorization);
+    assert!(
+        spare
+            .next
+            .as_deref()
+            .unwrap()
+            .contains("/config/provider-credentials/claude/spare/ANTHROPIC_API_KEY"),
+        "{spare:?}"
     );
 }

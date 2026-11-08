@@ -1388,11 +1388,154 @@ async fn the_providers_credential_is_added_on_its_hosts_and_the_agent_holds_a_pl
     let evidence = text(&shown.stdout);
     assert!(
         evidence.contains(
-            "credential: the claude provider's credential (CLAUDE_CODE_OAUTH_TOKEN) added on \
-             api.anthropic.com:443"
+            "credential: the claude provider's credential of account default \
+             (CLAUDE_CODE_OAUTH_TOKEN) added on api.anthropic.com:443"
         ),
         "{evidence}"
     );
+}
+
+/// The owner's accounts for Claude, in the order a launch tries them (#59).
+const TWO_ACCOUNTS: &str = "[accounts]\nclaude = [\"work\", \"spare\"]\n";
+
+/// What `session sandbox` prints for `session`.
+async fn session_sandbox(home: &Home, session: &str) -> String {
+    text(
+        &home
+            .cockpit(&["session", "sandbox", session], &[])
+            .await
+            .stdout,
+    )
+}
+
+/// The account `session`'s latest launch runs on, as the daemon lists it.
+async fn launch_account(home: &Home, session: &str) -> Option<String> {
+    let client = home.connect().await;
+    listed(&client, session)
+        .await
+        .launch
+        .expect("the session launched")
+        .account
+}
+
+/// #59: a sandboxed launch runs on the first of the owner's accounts that holds a credential;
+/// the session proxy adds that account's credential, and the daemon records the account.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_launch_runs_on_the_first_listed_account_with_a_credential() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
+        for account in ["work", "spare"] {
+            home.write_account_credential(
+                "claude",
+                account,
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                &format!("{SETUP_TOKEN}_{account}\n"),
+                0o600,
+            );
+        }
+    })
+    .await;
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "echo \"${CLAUDE_CODE_OAUTH_TOKEN-unset}\"",
+    )
+    .await;
+    let evidence = session_sandbox(&home, &agent.session).await;
+    let account = launch_account(&home, &agent.session).await;
+
+    assert_eq!(
+        printed,
+        format!("{}\nexit=0\n", cockpit_sandbox::PLACEHOLDER)
+    );
+    assert!(
+        evidence.contains(
+            "credential: the claude provider's credential of account work \
+             (CLAUDE_CODE_OAUTH_TOKEN) added on api.anthropic.com:443"
+        ),
+        "{evidence}"
+    );
+    assert_eq!(account.as_deref(), Some("work"));
+}
+
+/// #59: an account without a credential is passed over for the next one in the owner's order.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_account_without_a_credential_is_passed_over_for_the_next() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
+        home.write_account_credential(
+            "claude",
+            "spare",
+            "ANTHROPIC_API_KEY",
+            &format!("{SETUP_TOKEN}\n"),
+            0o600,
+        );
+    })
+    .await;
+
+    run_in_agent(&home, &agent.root, "true").await;
+    let evidence = session_sandbox(&home, &agent.session).await;
+    let account = launch_account(&home, &agent.session).await;
+
+    assert!(
+        evidence.contains("the claude provider's credential of account spare (ANTHROPIC_API_KEY)"),
+        "{evidence}"
+    );
+    assert_eq!(account.as_deref(), Some("spare"));
+}
+
+/// #59: an unusable credential refuses the launch, naming the account, rather than being
+/// passed over for the next account.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unusable_credential_refuses_the_launch_naming_its_account() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
+    home.write_account_credential("claude", "work", "ANTHROPIC_API_KEY", SETUP_TOKEN, 0o644);
+    home.write_account_credential("claude", "spare", "ANTHROPIC_API_KEY", SETUP_TOKEN, 0o600);
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+
+    let started = home
+        .cockpit(
+            &[
+                "session",
+                "new",
+                root.to_str().unwrap(),
+                "--agent",
+                "claude",
+            ],
+            &[],
+        )
+        .await;
+
+    let told = text(&started.stderr);
+    assert!(!started.status.success(), "{told}");
+    assert!(
+        told.contains("the credential of the claude provider's account work cannot be used"),
+        "{told}"
+    );
+    assert!(!told.contains(SETUP_TOKEN), "{told}");
+}
+
+/// #59: an unsandboxed agent signs in from the owner's home, so its launch runs on no account.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unsandboxed_launch_runs_on_no_account() {
+    let home = Home::new();
+    home.write_owner_config(TWO_ACCOUNTS);
+    home.write_account_credential("claude", "work", "ANTHROPIC_API_KEY", SETUP_TOKEN, 0o600);
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+    let session = new_session(&client, &root).await;
+    home.wait_for_launches(&session.id, 1).await;
+
+    let account = launch_account(&home, &session.id).await;
+
+    assert_eq!(account, None);
 }
 
 /// #968: with no credential, `session new` and `doctor` name the files one may go in.

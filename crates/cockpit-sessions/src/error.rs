@@ -92,6 +92,7 @@ pub enum Error {
     /// refused rather than run without it.
     ProviderCredential {
         provider: String,
+        account: String,
         error: cockpit_config::ProviderCredentialError,
     },
     Authorization(cockpit_authorization::Error),
@@ -218,10 +219,14 @@ impl fmt::Display for Error {
                 "project {project}'s GitHub token cannot be used, so its sessions do not \
                  launch: {error}; fix the file, or remove it to launch without a token"
             ),
-            Error::ProviderCredential { provider, error } => write!(
+            Error::ProviderCredential {
+                provider,
+                account,
+                error,
+            } => write!(
                 formatter,
-                "the {provider} provider's credential cannot be used, so its sandboxed sessions \
-                 do not launch: {error}"
+                "the credential of the {provider} provider's account {account} cannot be used, \
+                 so its sandboxed sessions do not launch: {error}"
             ),
             Error::Authorization(error) => write!(formatter, "authorization: {error}"),
             Error::Io {

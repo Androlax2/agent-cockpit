@@ -112,6 +112,7 @@ fn handoff_keeps_the_displayed_task_and_session_launch_until_cancelled() {
         number: 4,
         kind: cockpit_protocol::LaunchKindView::Start,
         launched_at: 1,
+        account: None,
     });
     let mut app = app_with(&["app"], vec![session.clone()], now);
     app.key(Key::Char('T'), now);
@@ -309,6 +310,7 @@ fn the_session_picker_scrolls_to_keep_the_selected_target_visible() {
                 number: i,
                 kind: cockpit_protocol::LaunchKindView::Start,
                 launched_at: 1,
+                account: None,
             });
             session
         })
@@ -340,6 +342,7 @@ fn a_finished_session_folded_out_of_the_session_list_is_still_a_handoff_target()
         number: 4,
         kind: cockpit_protocol::LaunchKindView::Start,
         launched_at: 1,
+        account: None,
     });
     let mut app = app_with(&["app"], vec![session.clone()], now);
     app.key(Key::Char('T'), now);

@@ -263,6 +263,22 @@ impl Home {
         self.write_token_file(&folder, variable, contents, mode);
     }
 
+    /// [`Home::write_provider_credential`] for `account`, in its own folder (#59).
+    pub fn write_account_credential(
+        &self,
+        provider: &str,
+        account: &str,
+        variable: &str,
+        contents: &str,
+        mode: u32,
+    ) {
+        let folder = format!(
+            "{}/{provider}/{account}",
+            cockpit_config::PROVIDER_CREDENTIALS_DIR
+        );
+        self.write_token_file(&folder, variable, contents, mode);
+    }
+
     fn write_token_file(&self, folder: &str, project: &str, contents: &str, mode: u32) {
         let dir = self
             .path()

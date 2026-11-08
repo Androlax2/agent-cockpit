@@ -336,14 +336,21 @@ fn last_output(session: &SessionView) -> Option<&str> {
     session.exit.as_ref()?.output.last().map(String::as_str)
 }
 
-/// What `session show` adds for the settings chosen at the start (#783); nothing when the
-/// harness's own apply.
+/// What `session show` adds for the settings chosen at the start (#783), and the account its
+/// latest launch runs on (#59); nothing when the harness's own apply and it runs on none.
 fn choice_lines(session: &SessionView) -> String {
-    session
+    let threshold = session
         .compaction_threshold
         .as_deref()
         .map(|threshold| format!("compaction threshold: {threshold}\n"))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let account = session
+        .launch
+        .as_ref()
+        .and_then(|launch| launch.account.as_deref())
+        .map(|account| format!("account: {account}\n"))
+        .unwrap_or_default();
+    threshold + &account
 }
 
 /// How the session's latest agent exited by itself (#629): `exit:` and

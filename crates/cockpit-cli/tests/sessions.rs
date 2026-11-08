@@ -84,6 +84,7 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
             number: 1,
             kind: LaunchKindView::Start,
             launched_at: 1,
+            account: None,
         }),
         exit: None,
         changed_start_files: Vec::new(),
@@ -214,6 +215,30 @@ async fn session_new_sends_the_chosen_compaction_threshold_as_typed() {
             effort: None,
             compaction_threshold: Some("200k".to_owned()),
         }
+    );
+}
+
+/// #59: `session show` names the account the latest launch runs on.
+#[tokio::test]
+async fn session_show_prints_the_account_its_launch_runs_on() {
+    let home = Home::new();
+    let mut shown = view("s0123456789ab", SessionStateView::Running);
+    shown.launch.as_mut().unwrap().account = Some("work".to_owned());
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Session {
+            session: Box::new(shown),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "show", "s0123456789ab"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "s0123456789ab\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\naccount: work\n"
     );
 }
 

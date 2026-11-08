@@ -209,6 +209,7 @@ fn session() -> SessionView {
             number: 1,
             kind: LaunchKindView::Start,
             launched_at: 1,
+            account: None,
         }),
         exit: None,
         changed_start_files: Vec::new(),

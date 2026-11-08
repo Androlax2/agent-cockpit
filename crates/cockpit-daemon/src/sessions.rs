@@ -658,6 +658,7 @@ fn session_view(
                 LaunchKind::Restore => LaunchKindView::Restore,
             },
             launched_at: launch.launched_at,
+            account: launch.account.clone(),
         }),
         exit: session.exit.as_ref().map(|exit| AgentExitView {
             status: match exit.status {
@@ -678,35 +679,45 @@ fn session_view(
 }
 
 /// What `session new` tells the owner to set when the started session's provider has no
-/// credential its sandbox can add (#968); `None` when it has one, agents run unsandboxed or
-/// the state cannot be read.
+/// account with a credential its sandbox can add (#968, #59): the first account's files, or
+/// the unusable credential a launch stops at. `None` when the launch found one, agents run
+/// unsandboxed or the state cannot be read.
 async fn sign_in_needed(sessions: &Sessions, provider: &str) -> Option<String> {
     use cockpit_config::ProviderCredentialState;
 
     // The session already started: a failed hint must not turn it into an error reply.
-    let state = match sessions.sandbox_credential_state(provider).await {
-        Ok(state) => state,
+    let accounts = match sessions.sandbox_credential_state(provider).await {
+        Ok(accounts) => accounts,
         Err(error) => {
             tracing::warn!(%provider, %error, "the sandboxed sign-in hint is not shown");
             return None;
         }
     };
-    match state {
-        None | Some(ProviderCredentialState::Configured { .. }) => None,
-        Some(ProviderCredentialState::Missing { files }) => {
-            let files: Vec<String> = files
-                .iter()
-                .map(|file| file.display().to_string())
-                .collect();
-            Some(format!(
-                "a sandboxed {provider} session never reads your own sign-in, so this one asks \
-                 for one it cannot keep; write one credential, on one line, to one of {}, \
-                 `chmod 600` it, then start a new session",
-                files.join(", ")
-            ))
+    // A launch takes the first account with a credential and stops at an unusable one.
+    let mut first_missing = None;
+    for account in &accounts {
+        match &account.state {
+            ProviderCredentialState::Configured { .. } => return None,
+            ProviderCredentialState::Unusable { reason } => {
+                return Some(format!(
+                    "the credential of the {provider} provider's account {} is unusable: \
+                     {reason}",
+                    account.account
+                ));
+            }
+            ProviderCredentialState::Missing { files } => {
+                first_missing.get_or_insert(files);
+            }
         }
-        Some(ProviderCredentialState::Unusable { reason }) => Some(format!(
-            "the {provider} provider's credential is unusable: {reason}"
-        )),
     }
+    let files: Vec<String> = first_missing?
+        .iter()
+        .map(|file| file.display().to_string())
+        .collect();
+    Some(format!(
+        "a sandboxed {provider} session never reads your own sign-in, so this one asks for one \
+         it cannot keep; write one credential, on one line, to one of {}, `chmod 600` it, then \
+         start a new session",
+        files.join(", ")
+    ))
 }
