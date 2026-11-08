@@ -41,9 +41,9 @@ script installs nothing on the host: it needs `qemu-system-x86_64`, `qemu-img`, 
 | `tools/redteam-vm.sh fetch` | Downloads the image (about 550 MiB) and refuses it unless the checksum matches |
 | `tools/redteam-vm.sh create` | Generates the throwaway key, boots once with network, provisions, installs Torlek, powers off, takes snapshot `clean` (about 5 to 10 minutes) |
 | `tools/redteam-vm.sh start` | Boots the guest and waits for ssh |
-| `tools/redteam-vm.sh check` | Reports what the guest sees of the host (homes, mounts, sudo, network reach), whether the daemon lists the `claude` agent, and whether a credential is present (two separate lines); fails on a shared mount, a foreign home folder, passwordless sudo or no `claude` agent |
+| `tools/redteam-vm.sh check` | Reports what the guest sees of the host (homes, mounts, sudo, network reach), whether the daemon lists the `claude` agent, and whether a credential is present (two separate lines); fails on a shared mount, a foreign home folder, passwordless sudo or no `claude` agent. With a credential in the guest it also starts a sandboxed `claude` session without a prompt and fails if it waits on a screen or does not reach its first report within 90 s (#1178); without one that step prints `NOT RUN`: it tested nothing, and the credential line says why |
 | `tools/redteam-vm.sh ssh [COMMAND...]` | Opens a shell (or runs a command) as `redteam` |
-| `tools/redteam-vm.sh put-credential KEYFILE` | Copies a spend-capped provider key the owner names into the guest only (mode 0600), for a section-1 run; `--provider`/`--var` to override. The value never reaches this host's argv, logs or state |
+| `tools/redteam-vm.sh put-credential KEYFILE` | Copies a spend-capped provider key the owner names into the guest only (mode 0600), for a section-1 run; `--provider`/`--var` to override. Refuses a file that is not one line of letters, digits, `_`, `-` and `.` of at most 4096 bytes (the daemon's format) without printing it. The value never reaches this host's argv, logs or state |
 | `tools/redteam-vm.sh drop-credential` | Removes the provider credential from the guest |
 | `tools/redteam-vm.sh stop` | Powers the guest off |
 | `tools/redteam-vm.sh reset` | Stops the guest and restores snapshot `clean` |

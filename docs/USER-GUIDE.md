@@ -262,7 +262,10 @@ move to, the session stays where it is.
 Each sandboxed session has its own home, which starts empty and goes when the session ends.
 For a project in `projects.trusted`, and its parallel clones, Torlek records the folder trust in
 that home's Claude configuration before the agent starts, so Claude does not ask again; a project
-not in it asks at each session.
+not in it asks at each session. In every sandboxed session's home Torlek also marks Claude's
+first-run onboarding done and, when an API key is bound, says yes to the API key question for
+the placeholder the agent holds, so the session reaches its first turn with nobody at its
+terminal.
 
 ### Optional skill pack
 

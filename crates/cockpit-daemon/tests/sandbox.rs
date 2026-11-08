@@ -1924,6 +1924,41 @@ async fn a_project_not_in_projects_trusted_gets_no_folder_trust() {
     assert_eq!(claude_trust(&config, &agent.root), None, "{config:?}");
 }
 
+/// #1178: a sandboxed session's home starts past Claude Code's first-run screens, in a project
+/// the owner did not trust too: its onboarding is done, and the key the agent holds, the
+/// placeholder, is approved, so the agent reaches its first turn with nobody at its terminal.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_sessions_home_starts_past_claude_codes_first_run_screens() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        home.write_provider_credential(
+            "claude",
+            "ANTHROPIC_API_KEY",
+            "sk-ant-api03-fixture_value\n",
+            0o600,
+        );
+    })
+    .await;
+
+    run_in_agent(&home, &agent.root, "true").await;
+
+    let config = home
+        .state_dir()
+        .join("homes")
+        .join(&agent.session)
+        .join(".claude.json");
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(written["hasCompletedOnboarding"], true, "{config:?}");
+    assert_eq!(
+        written["customApiKeyResponses"]["approved"],
+        serde_json::json!([cockpit_claude::first_run::key_tail(
+            cockpit_sandbox::PLACEHOLDER
+        )]),
+        "{config:?}"
+    );
+}
+
 /// What the owner's `cockpit network VERB...` printed; it must succeed.
 async fn owner_network(home: &Home, arguments: &[&str]) -> String {
     let mut words = vec!["network"];

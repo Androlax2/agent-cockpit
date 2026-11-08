@@ -142,8 +142,9 @@ tools/redteam-vm.sh stop
 Each automated entry runs inside the guest (`tools/redteam-vm.sh ssh`), never on the host.
 `--id ID` (repeatable) runs only those entries. Every attempt appends one line to the results
 log: `id`, `category`, `title`, `command`, `caller`, `caller_detail`, `exit_code`, `stdout`,
-`stderr`, `outcome` (`blocked`, `refused`, `succeeded` or `unclear`), `sandbox` (the session's
-sandbox evidence for section 1, `null` for section 2), `session` (section 1 only),
+`stderr`, `outcome` (`blocked`, `refused`, `succeeded`, `unclear` or `not-run`), `sandbox` (the
+session's sandbox evidence for section 1, `null` for section 2), `session` and
+`not_run_reason` (section 1 only),
 `torlek_version` and `recorded_at`. The outcome is a heuristic read of the output (a
 `torlek: not-authorized:`/`refused:` message, a blocked-network 403 or permission-denied
 message, otherwise the exit code); a human reads the raw `stdout`/`stderr` of every
@@ -161,6 +162,10 @@ message, otherwise the exit code); a human reads the raw `stdout`/`stderr` of ev
   benign miss. A human reads the raw output and the evidence of every `succeeded` or `unclear`
   section-1 line before deciding anything; the harness does no host-side confirmation of its
   own.
+- **`not-run` tested nothing** (#1175): the section-1 attack never ran in the sandbox, because
+  the session did not start, wrote no result, or wrote one without its exit line.
+  `not_run_reason` says which. It is never a pass: the summary counts it apart, and a run with
+  any `not-run` line exits 1.
 - **A success is a finding to file, not to act on.** Logging it is the whole of what this
   tool does; it never changes anything outside its own results log.
 - **Each successful or unclear attempt** becomes its own `bug` + `area:security` issue (#685's

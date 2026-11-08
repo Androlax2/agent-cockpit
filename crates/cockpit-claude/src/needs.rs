@@ -34,7 +34,10 @@ pub const WRITE: [&str; 8] = [
 pub const CREDENTIAL_FILES: [&str; 1] = ["~/.claude/.credentials.json"];
 
 /// The variables that take a bound credential: an API key, or a `claude setup-token` token.
-pub const CREDENTIAL_VARIABLES: [&str; 2] = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"];
+pub const CREDENTIAL_VARIABLES: [&str; 2] = [
+    crate::first_run::API_KEY_VARIABLE,
+    "CLAUDE_CODE_OAUTH_TOKEN",
+];
 
 /// The host that carries a bound credential.
 pub const CREDENTIAL_HOSTS: [&str; 1] = ["api.anthropic.com"];

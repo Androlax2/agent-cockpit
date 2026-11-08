@@ -57,7 +57,7 @@ pub enum WhenMissing {
 }
 
 /// The mode of a config file [`record`] creates: Claude Code's own.
-const CREATED_MODE: u32 = 0o600;
+pub(crate) const CREATED_MODE: u32 = 0o600;
 
 /// Claude Code's global config file for a sandboxed agent launched with `environment`, whose
 /// home is backed by `session_home` (#858, #968): the file there that the agent reads as
@@ -235,7 +235,10 @@ pub fn record(
 
 /// `config`'s metadata, `None` when it is missing and `when_missing` creates it; refused when
 /// it is missing otherwise or is not a plain file.
-fn existing(config: &Path, when_missing: WhenMissing) -> Result<Option<fs::Metadata>, String> {
+pub(crate) fn existing(
+    config: &Path,
+    when_missing: WhenMissing,
+) -> Result<Option<fs::Metadata>, String> {
     match fs::symlink_metadata(config) {
         Ok(metadata) if metadata.is_file() => Ok(Some(metadata)),
         Ok(_) => Err(format!("{} is not a plain file", config.display())),
@@ -336,20 +339,20 @@ fn splice(text: &str, key: &str, trusted: bool) -> Result<String, String> {
     }
 }
 
-fn quoted(key: &str) -> Result<String, String> {
+pub(crate) fn quoted(key: &str) -> Result<String, String> {
     serde_json::to_string(key).map_err(|error| error.to_string())
 }
 
 /// One member of a JSON object: its decoded name and its value's byte range.
-struct Member {
-    name: String,
-    value: usize,
-    value_end: usize,
+pub(crate) struct Member {
+    pub(crate) name: String,
+    pub(crate) value: usize,
+    pub(crate) value_end: usize,
 }
 
 /// The member named `name`; a name given twice is refused, since readers disagree on which
 /// one counts.
-fn find<'a>(members: &'a [Member], name: &str) -> Result<Option<&'a Member>, String> {
+pub(crate) fn find<'a>(members: &'a [Member], name: &str) -> Result<Option<&'a Member>, String> {
     let mut found = members.iter().filter(|member| member.name == name);
     let first = found.next();
     if found.next().is_some() {
@@ -360,7 +363,7 @@ fn find<'a>(members: &'a [Member], name: &str) -> Result<Option<&'a Member>, Str
 
 /// The members of the object whose `{` is at `start`. The text is already known to be JSON,
 /// so the scan only needs to find boundaries.
-fn members(bytes: &[u8], start: usize) -> Result<Vec<Member>, String> {
+pub(crate) fn members(bytes: &[u8], start: usize) -> Result<Vec<Member>, String> {
     if bytes.get(start) != Some(&b'{') {
         return Err("expected an object".to_owned());
     }
@@ -393,7 +396,7 @@ fn members(bytes: &[u8], start: usize) -> Result<Vec<Member>, String> {
     }
 }
 
-fn skip_whitespace(bytes: &[u8], mut at: usize) -> usize {
+pub(crate) fn skip_whitespace(bytes: &[u8], mut at: usize) -> usize {
     while bytes.get(at).is_some_and(|byte| b" \t\r\n".contains(byte)) {
         at += 1;
     }
@@ -455,12 +458,12 @@ fn value_end(bytes: &[u8], start: usize) -> Result<usize, String> {
 
 /// Claude Code's config lock: the `<file>.lock` directory its lock library creates. Removed
 /// on drop.
-struct ConfigLock {
+pub(crate) struct ConfigLock {
     path: PathBuf,
 }
 
 impl ConfigLock {
-    fn acquire(config: &Path) -> Result<ConfigLock, String> {
+    pub(crate) fn acquire(config: &Path) -> Result<ConfigLock, String> {
         let mut name = OsString::from(config.as_os_str());
         name.push(OsStr::new(".lock"));
         let path = PathBuf::from(name);
@@ -494,7 +497,7 @@ impl Drop for ConfigLock {
 
 /// Replaces `config` with `text` by a rename from a file beside it with `mode`, so a reader
 /// sees the old file or the new one, never a part.
-fn replace(config: &Path, mode: u32, text: &str) -> Result<(), String> {
+pub(crate) fn replace(config: &Path, mode: u32, text: &str) -> Result<(), String> {
     let dir = config
         .parent()
         .ok_or_else(|| format!("{} has no directory", config.display()))?;

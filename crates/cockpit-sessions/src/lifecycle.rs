@@ -13,7 +13,8 @@ use cockpit_config::StartFileSnapshot;
 use cockpit_processes::{ExecutionId, LaunchSpec, Phase, Supervisor, Termination};
 use cockpit_projects::{Checkout, CheckoutKind, Git, Holder};
 use cockpit_provider_api::{
-    Capability, Conversation, LaunchRequest, Provider, ProviderError, TrustRequest, WorkspaceTrust,
+    Capability, Conversation, HeldCredential, LaunchRequest, Provider, ProviderError,
+    SessionHomeRequest, TrustRequest, WorkspaceTrust,
 };
 use cockpit_tmux::{PaneId, PaneInfo, PaneState, Server, SessionLaunch, SessionName};
 use cockpit_turso::Database;
@@ -2117,6 +2118,14 @@ impl Sessions {
                 with_github_token(environment.clone(), None),
             )
         });
+        // Kept for the harness's first-run screens, answered in a sandboxed session's own home
+        // once the launch passed its gates (#1178): the agent's environment, and the
+        // credential variable it finds the placeholder in.
+        let home_environment = with_github_token(environment.clone(), None);
+        let credential_variable = account
+            .credential
+            .as_ref()
+            .and_then(|bound| bound.placeholder_variable.clone());
         let tools = self
             .sandbox_tools(setting, &checkout.path, &session.working_dir, &environment)
             .await?;
@@ -2224,6 +2233,16 @@ impl Sessions {
             write.commit().await?;
             (token, execution)
         };
+        if let Some(staged) = &prepared.staged {
+            self.prepare_session_home(
+                id,
+                session.provider.as_str(),
+                home_environment,
+                staged.home_source.clone(),
+                credential_variable,
+            )
+            .await;
+        }
         if let Some((checkout, agent_environment)) = &harness_trust {
             self.trust_checkout(
                 id,
@@ -2356,6 +2375,49 @@ impl Sessions {
             Err(reason) => {
                 tracing::warn!(session = %id, %reason, "the harness's trust is not recorded");
             }
+        }
+    }
+
+    /// Asks the provider to answer, in a sandboxed session's own home, the screens its
+    /// harness shows on a first start there (#1178), so the agent reaches its first turn with
+    /// nobody at its terminal. Never fails the launch: a refusal leaves the screen to the
+    /// owner, and the periodic pass shows the session as waiting on them.
+    async fn prepare_session_home(
+        &self,
+        id: &SessionId,
+        provider: &str,
+        environment: Vec<(OsString, OsString)>,
+        session_home: PathBuf,
+        credential_variable: Option<String>,
+    ) {
+        let provider = match self.provider(Some(provider)) {
+            Ok(provider) => Arc::clone(provider),
+            Err(error) => {
+                tracing::warn!(session = %id, %error, "the session's home is not prepared");
+                return;
+            }
+        };
+        let counted = TerminalStep::start(&self.session_lock(id));
+        let prepared = self
+            .blocking("prepare the session's home for its harness", move || {
+                let _counted = counted;
+                Ok(provider
+                    .prepare_session_home(&SessionHomeRequest {
+                        environment: &environment,
+                        session_home: &session_home,
+                        credential: credential_variable
+                            .as_deref()
+                            .map(|variable| HeldCredential {
+                                variable,
+                                placeholder: cockpit_sandbox::PLACEHOLDER,
+                            }),
+                    })
+                    .map_err(|error| error.reason))
+            })
+            .await
+            .unwrap_or_else(|error| Err(error.to_string()));
+        if let Err(reason) = prepared {
+            tracing::warn!(session = %id, %reason, "the session's home is not prepared");
         }
     }
 

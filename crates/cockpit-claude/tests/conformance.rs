@@ -87,6 +87,27 @@ fn the_installed_claude_code_keeps_folder_trust_where_the_adapter_records_it() {
     }
 }
 
+/// The first-run answers a sandboxed session's home gets (#1178) are the ones this binary
+/// reads: the onboarding flag, the key answers, and the key tail it records them under.
+#[test]
+#[ignore = "needs an installed Claude Code (COCKPIT_CLAUDE_PROGRAM)"]
+fn the_installed_claude_code_reads_the_first_run_answers_where_the_adapter_records_them() {
+    let binary = std::fs::read(common::installed()).unwrap();
+    let contains = |text: &str| {
+        binary
+            .windows(text.len())
+            .any(|window| window == text.as_bytes())
+    };
+
+    for text in [
+        ".hasCompletedOnboarding&&",
+        ".customApiKeyResponses;return{approved:",
+        ".trim().slice(-20)}",
+    ] {
+        assert!(contains(text), "{text:?} is not in the binary");
+    }
+}
+
 /// What the daemon checks at its start on a version not on the tested list (#732); the
 /// nightly job runs it on the latest release.
 #[test]
