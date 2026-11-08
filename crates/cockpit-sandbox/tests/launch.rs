@@ -280,6 +280,7 @@ fn a_launch_empties_the_folders_it_mounts_without_following_a_link() {
     let paths = HostPaths {
         mount_sources: host.path().join("mounts"),
         homes: host.path().join("homes"),
+        logins: host.path().join("logins"),
         ..no_host_paths()
     };
     let (program, arguments) = agent_words();
@@ -367,6 +368,7 @@ fn a_hosts_denied_path_reaches_the_profile() {
             mount_sources: PathBuf::from(MOUNT_SOURCES),
             sockets: Vec::new(),
             homes: PathBuf::from(HOMES),
+            logins: PathBuf::from(HOMES).with_file_name("logins"),
         },
         missing_backend(),
     );
@@ -394,6 +396,7 @@ fn a_launch_requests_own_denied_path_reaches_its_profile_beside_the_hosts() {
             mount_sources: PathBuf::from(MOUNT_SOURCES),
             sockets: Vec::new(),
             homes: PathBuf::from(HOMES),
+            logins: PathBuf::from(HOMES).with_file_name("logins"),
         },
         missing_backend(),
     );
@@ -639,6 +642,7 @@ fn staging_a_launch_removes_the_egress_counters_of_the_last_launch() {
     let host_paths = HostPaths {
         mount_sources: state.path().join("mounts"),
         homes: state.path().join("homes"),
+        logins: state.path().join("logins"),
         ..no_host_paths()
     };
     let sandbox = Sandbox::new(Platform::Linux, host_paths, native_backend());
@@ -677,6 +681,7 @@ fn staging_a_launch_while_its_decisions_are_rewritten_succeeds() {
     let host_paths = HostPaths {
         mount_sources: state.path().join("mounts"),
         homes: state.path().join("homes"),
+        logins: state.path().join("logins"),
         ..no_host_paths()
     };
     let sandbox = Sandbox::new(Platform::Linux, host_paths, native_backend());

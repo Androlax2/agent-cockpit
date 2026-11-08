@@ -95,6 +95,26 @@ fn inside_a_session_each_network_verb_is_refused_on_the_agent_socket() {
     }
 }
 
+/// #59: a login account's sign-in is the owner's alone.
+#[test]
+fn inside_a_session_account_sign_in_is_refused_on_the_agent_socket() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+
+    let output = torlek(
+        &home,
+        &["account", "sign-in", "codex", "default"],
+        &SESSION_ENVIRONMENT,
+    );
+
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("refused: this command is the owner's alone"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn a_session_known_only_by_its_launch_token_is_refused_too() {
     let home = TestHome::new();

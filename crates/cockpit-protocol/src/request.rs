@@ -391,6 +391,18 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         through: Option<DecidedThroughView>,
     },
+    /// Owner only: prepare a fresh home to sign `account` of `provider` in (#59); the answer
+    /// is the harness's sign-in, which the owner's terminal runs with that home.
+    AccountSignIn {
+        provider: String,
+        account: String,
+    },
+    /// Owner only: keep the login the sign-in [`Command::AccountSignIn`] prepared left, in the
+    /// account's login folder.
+    AccountSignedIn {
+        provider: String,
+        account: String,
+    },
     /// Owner only: one guide, whatever its state.
     GuideShow {
         guide: i64,
@@ -1096,6 +1108,20 @@ pub enum Reply {
     },
     NetworkGrant {
         grant: Box<NetworkGrantView>,
+    },
+    /// What the owner's terminal runs to sign an account in (#59): `program` with
+    /// `arguments` and `home` as its `HOME`; `steps` says what the owner does in it.
+    AccountSignInPlan {
+        program: String,
+        arguments: Vec<String>,
+        home: String,
+        steps: String,
+    },
+    /// The account's login is kept in `login`, a folder no agent reads.
+    AccountSignedIn {
+        provider: String,
+        account: String,
+        login: String,
     },
     /// An ask from the sender would reach the owner: it is identified and may ask.
     AskReady {

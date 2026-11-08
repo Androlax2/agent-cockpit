@@ -15,6 +15,9 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   step. This is the harness's local credential status, not proof of model access, a valid
   token or host authorization. Probes are bounded, run off async workers, and never return
   raw credential or account output. The default is unknown; adapters own detection.
+  [`Provider::login`] names the harness's own sign-in command and the credential file it
+  saves, which `torlek account sign-in` runs in a fresh home and keeps for a login account
+  (#59); the default has none.
 
 - **Capabilities with provenance** (report 08). Each reported [`Capability`] is `tested`
   against the exact harness version running (a version on the adapter's

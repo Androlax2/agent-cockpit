@@ -63,6 +63,7 @@ impl Fixture {
                 owner_uid: 1000,
                 mount_sources: self.path("mounts"),
                 homes: self.path("homes"),
+                logins: self.path("logins"),
             },
             backend,
         )

@@ -55,6 +55,7 @@ pub fn no_host_paths() -> HostPaths {
         mount_sources: PathBuf::from(MOUNT_SOURCES),
         sockets: Vec::new(),
         homes: PathBuf::from(HOMES),
+        logins: PathBuf::from(HOMES).with_file_name("logins"),
     }
 }
 

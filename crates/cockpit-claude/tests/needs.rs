@@ -104,3 +104,17 @@ fn its_credential_file_lies_in_a_folder_the_session_owns() {
     );
     assert!(!needs.read.iter().any(|read| read.covers(&credential)));
 }
+
+#[test]
+fn its_login_is_a_credential_file_its_own_sign_in_saves() {
+    let adapter = claude();
+    let login = adapter
+        .login()
+        .unwrap()
+        .expect("a sign-in a login account keeps");
+
+    assert_eq!(login.file.as_str(), "~/.claude/.credentials.json");
+    assert!(adapter.credentials().unwrap().files.contains(&login.file));
+    assert_eq!(login.program, PathBuf::from("/usr/bin/claude"));
+    assert_eq!(login.arguments, [] as [&str; 0]);
+}

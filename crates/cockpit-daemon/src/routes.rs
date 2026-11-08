@@ -12,9 +12,9 @@ use tokio::sync::mpsc;
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::{
-    Capabilities, Manager, agent, agent_context, approvals, bug_reports, coordination, feed,
-    manager, network, projects, readiness, resources, scheduling, sessions, tasks, verification,
-    workflows,
+    Capabilities, Manager, accounts, agent, agent_context, approvals, bug_reports, coordination,
+    feed, manager, network, projects, readiness, resources, scheduling, sessions, tasks,
+    verification, workflows,
 };
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
@@ -412,6 +412,13 @@ impl Handler for Routes {
                     Arc::clone(&self.network_decided),
                 ),
             },
+            (command @ (Command::AccountSignIn { .. } | Command::AccountSignedIn { .. }), peer) => {
+                match peer {
+                    // A login account's sign-in is the owner's alone (#59).
+                    Peer::Agent { .. } => Route::Answer(owner_only()),
+                    Peer::Owner => accounts::route(command, Arc::clone(&self.sessions)),
+                }
+            }
             // The coordinator kit (#410): a session acts on others only through the owner's
             // grants, which `cockpit-authorization` evaluates per request. `agent-end` (#713)
             // reaches only a session the sender started, once its work is done.

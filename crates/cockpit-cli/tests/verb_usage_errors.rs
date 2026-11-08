@@ -20,6 +20,7 @@ const MISTAKES: &[(&[&str], &str)] = &[
     (&["ask", "run"], "ask"),
     (&["approval", "show"], "approval"),
     (&["guide", "show"], "guide"),
+    (&["account", "sign-in", "codex"], "account"),
     (&["network", "allow"], "network"),
     (&["session", "send"], "session"),
     (&["sandbox", "show"], "sandbox"),

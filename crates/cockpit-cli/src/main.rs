@@ -21,6 +21,7 @@ macro_rules! outln {
     };
 }
 
+mod account;
 mod agent;
 mod approvals;
 mod ask;
@@ -101,6 +102,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek approval approve ID --revision REVISION --digest DIGEST
        torlek approval edit ID --revision REVISION COMMAND
        torlek guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID
+       torlek account sign-in PROVIDER ACCOUNT
        torlek network list | allow ID [--always] | deny ID | grants [PROJECT] | revoke GRANT
        torlek session send ID MESSAGE | cancel ID
        torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL] [--compaction-threshold VALUE]
@@ -230,6 +232,10 @@ fn main() -> ExitCode {
                 Err(problem) => verb_usage_error(&verb_name, problem),
             }
         }
+        [Some("account"), ..] => match account::parse(&arguments[1..]) {
+            Ok((provider, account)) => account::sign_in(provider, account),
+            Err(problem) => verb_usage_error(&verb_name, problem),
+        },
         [Some("network"), ..] => match network::parse(&arguments[1..]) {
             Ok(command) => network::run(command),
             Err(problem) => verb_usage_error(&verb_name, problem),

@@ -66,3 +66,20 @@ fn its_credential_file_lies_in_a_folder_the_session_owns() {
             .any(|written| written.covers(&credential))
     );
 }
+
+#[test]
+fn its_login_is_a_credential_file_its_own_sign_in_saves() {
+    let adapter = codex();
+    let login = adapter
+        .login()
+        .unwrap()
+        .expect("a sign-in a login account keeps");
+
+    assert_eq!(login.file.as_str(), "~/.codex/auth.json");
+    assert!(adapter.credentials().unwrap().files.contains(&login.file));
+    assert_eq!(login.program, PathBuf::from("/usr/bin/codex"));
+    assert_eq!(
+        login.arguments,
+        ["login", "-c", "cli_auth_credentials_store=\"file\""]
+    );
+}

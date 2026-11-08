@@ -2,7 +2,9 @@
 //! (#858). Seeded from Greywall's `internal/profiles/agents/opencode.go` at `a9ccc58c`,
 //! Apache-2.0: see `crates/cockpit-provider-api/NOTICE-greywall`.
 
-use cockpit_provider_api::{CredentialHeader, Credentials, InvalidValue, Needs};
+use std::path::Path;
+
+use cockpit_provider_api::{CredentialHeader, Credentials, HomePath, InvalidValue, Login, Needs};
 
 /// The hosts OpenCode reaches: the two model APIs Greywall's profile allowed, and the model
 /// catalog OpenCode fetches at start (not in Greywall's profile), since the session's cache
@@ -51,4 +53,18 @@ pub fn needs() -> Result<Needs, InvalidValue> {
 
 pub fn credentials() -> Result<Credentials, InvalidValue> {
     Credentials::new(&CREDENTIAL_FILES, &CREDENTIAL_BINDINGS, &needs()?)
+}
+
+/// `opencode auth login`, which saves the sign-in to [`CREDENTIAL_FILES`]' first.
+pub fn login(program: &Path) -> Result<Login, InvalidValue> {
+    let arguments: &[&str] = &["auth", "login"];
+    Ok(Login {
+        file: HomePath::new(CREDENTIAL_FILES[0])?,
+        program: program.to_path_buf(),
+        arguments: arguments
+            .iter()
+            .map(|argument| (*argument).to_owned())
+            .collect(),
+        steps: "pick the provider and sign in".to_owned(),
+    })
 }

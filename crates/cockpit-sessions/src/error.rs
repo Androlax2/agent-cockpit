@@ -102,6 +102,12 @@ pub enum Error {
         account: String,
         reason: &'static str,
     },
+    /// `torlek account sign-in` cannot sign this account in, or kept nothing (#59).
+    SignIn {
+        provider: String,
+        account: String,
+        reason: String,
+    },
     Authorization(cockpit_authorization::Error),
     Io {
         action: &'static str,
@@ -246,6 +252,14 @@ impl fmt::Display for Error {
                  start a new session"
             ),
             Error::Authorization(error) => write!(formatter, "authorization: {error}"),
+            Error::SignIn {
+                provider,
+                account,
+                reason,
+            } => write!(
+                formatter,
+                "cannot sign in the {provider} provider's account {account}: {reason}"
+            ),
             Error::Io {
                 action,
                 path,

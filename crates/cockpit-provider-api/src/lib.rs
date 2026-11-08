@@ -31,7 +31,7 @@ pub use probe::{
     Missing, Probe, ProbeError, command_output, documents_flag, names_missing_from_file,
 };
 pub use quota::{LimitKey, MAX_WINDOWS, QuotaReading, QuotaWindow};
-pub use sign_in::{SignIn, SignInStatus};
+pub use sign_in::{Login, SignIn, SignInStatus};
 pub use terminal::{Action, Delivered, Key, TerminalInput};
 pub use tested_versions::parse_tested_versions;
 
@@ -247,6 +247,12 @@ pub trait Provider: Send + Sync + 'static {
             "this adapter cannot read sign-in status",
             format!("start {} in a terminal and check its sign-in", self.name()),
         )
+    }
+
+    /// The sign-in a login account keeps (#59), when the harness has one that refreshes
+    /// itself. The default has none.
+    fn login(&self) -> Result<Option<Login>, InvalidValue> {
+        Ok(None)
     }
 
     /// The command for `request`. Must not block: it builds words, it starts nothing. It

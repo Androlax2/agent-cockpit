@@ -409,6 +409,10 @@ impl Provider for OpenCode {
         &self.name
     }
 
+    fn login(&self) -> Result<Option<cockpit_provider_api::Login>, InvalidValue> {
+        needs::login(&self.program).map(Some)
+    }
+
     fn sign_in(&self) -> cockpit_provider_api::SignIn {
         self.sign_in_within(Duration::from_secs(10))
     }
