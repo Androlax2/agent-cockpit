@@ -111,5 +111,6 @@ pub fn launch_request(session: &str, working_dir: &str) -> LaunchRequest {
         tools: ToolNeeds::none(),
         credentials: Vec::new(),
         decisions: cockpit_sandbox::EgressDecisions::default(),
+        login: None,
     }
 }

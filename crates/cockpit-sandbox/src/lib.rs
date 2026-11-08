@@ -31,7 +31,10 @@ pub use egress::{
 pub use evidence::{AppliedRule, Enforcement, Evidence};
 #[cfg(feature = "persistence")]
 pub use evidence::{MIGRATIONS, first_launch_was_sandboxed, latest_for_session, record};
-pub use launch::{AccountLogin, CheckRequest, HostPaths, LaunchRequest, Prepared, Sandbox};
+pub use launch::{
+    AccountLogin, CheckRequest, HostPaths, LaunchRequest, LoginMount, Prepared, Sandbox,
+    SessionLogin,
+};
 #[cfg(feature = "persistence")]
 pub use logins::{
     LoginGrant, LoginGrantError, LoginGrantRefusal, grant_login, login_grants, revoke_login_grant,

@@ -205,6 +205,9 @@ pub struct Launch {
     pub account: Option<String>,
     /// The account the launch moved off, after its session quota-stopped on it (#59).
     pub switched_from: Option<String>,
+    /// The login accounts the launch passed over for want of the project's grant, each
+    /// naming the account and the grant that lets it (#59).
+    pub passed_over: Vec<String>,
 }
 
 /// The release whose helpers and instruction bundle a launch runs with (report 13, #64):

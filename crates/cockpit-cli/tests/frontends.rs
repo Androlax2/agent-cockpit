@@ -122,6 +122,7 @@ async fn session_show_asks_the_daemon_to_show_the_session_and_prints_it() {
                     launched_at: 2,
                     account: None,
                     switched_from: None,
+                    passed_over: Vec::new(),
                 }),
                 exit: None,
                 changed_start_files: Vec::new(),

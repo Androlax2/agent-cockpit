@@ -54,6 +54,27 @@ pub struct AccountLogin {
     pub sign_in: PathBuf,
 }
 
+/// A login account's sign-in a sandboxed session uses (#59, #858): the session sees the
+/// account's one login, and a sign-in the harness refreshes reaches the account's folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionLogin {
+    /// The account's folder holding its login file alone, [`AccountLogin::login`].
+    pub folder: PathBuf,
+    /// Where the harness keeps the file, the `~/` path its adapter declares.
+    pub file: String,
+    pub mount: LoginMount,
+}
+
+/// How a session sees its login, by how the harness rewrites it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginMount {
+    /// The login file bound at the harness's path: the harness rewrites it in place.
+    File,
+    /// The account's folder bound inside the home and a link at the harness's path naming
+    /// the login in it: the harness renames a new file over the link's target.
+    FolderAndLink,
+}
+
 /// The sandbox launches go through: the host's platform and the daemon's host paths.
 #[derive(Debug, Clone)]
 pub struct Sandbox {
@@ -98,6 +119,8 @@ pub struct LaunchRequest {
     /// proxy applies them from the first connection, and a host they let through counts as
     /// reached for a bound credential (#832).
     pub decisions: crate::EgressDecisions,
+    /// The login account's sign-in the session uses (#59); only a sandboxed launch binds one.
+    pub login: Option<SessionLogin>,
 }
 
 /// One check run's facts (#862): the project's check as the program, with no provider, agent
@@ -363,6 +386,7 @@ impl Sandbox {
             reaches_agent: false,
             credentials: Vec::new(),
             decisions: crate::EgressDecisions::default(),
+            login: None,
         };
         crate::native::prepare(
             native,
@@ -388,6 +412,13 @@ impl Sandbox {
         arguments: Vec<OsString>,
     ) -> Result<Prepared, Refusal> {
         if setting == AgentSandbox::Off {
+            if request.login.is_some() {
+                return Err(Refusal::new(
+                    "login account",
+                    "only a sandboxed launch binds a login account's sign-in in its own home; \
+                     an unsandboxed launch runs in the owner's",
+                ));
+            }
             if let Some(credential) = request.credentials.first() {
                 return Err(Refusal::new(
                     format!("credential {}", credential.name),
@@ -413,6 +444,7 @@ impl Sandbox {
             reaches_agent: true,
             credentials: request.credentials.clone(),
             decisions: request.decisions.clone(),
+            login: request.login.clone(),
         };
         crate::native::prepare(
             native,

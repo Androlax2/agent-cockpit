@@ -262,8 +262,17 @@ reads that folder, and your own sign-in is never copied, so it keeps its own tok
 again replaces the login. A project's sessions may use a login account only through your grant:
 `torlek account grant cockpit codex work` records it with when and through which client,
 `torlek account grants [PROJECT]` lists the active ones and `torlek account revoke GRANT` takes
-one back. A grant can come before the sign-in. Launches do not use a login account yet, granted
-or not: they pass over an account that holds no credential.
+one back. A grant can come before the sign-in, and applies from the project's next launch.
+Removing the project revokes its grants.
+
+A sandboxed launch uses a signed-in login account the project holds a grant for like an
+account with a credential, in the listed order. The session sees the login read-write where the
+harness keeps it, so a sign-in the harness refreshes is the account's for its next session.
+A login account the project holds no grant for is passed over for the next listed account,
+and `session new` and `session show` print a `passed over:` line naming it and the
+`torlek account grant` that lets it. A restart kept on a login whose grant you revoked is
+refused, naming that grant. An account that holds both a credential file and a login refuses
+the launch until you remove one.
 
 When a session reports that its plan's usage limit stopped its turn (Codex does), Torlek
 relaunches it at once on the next listed account that holds a credential and has not

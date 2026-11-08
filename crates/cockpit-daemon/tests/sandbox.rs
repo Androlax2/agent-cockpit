@@ -1574,7 +1574,7 @@ async fn a_restart_whose_account_lost_its_credential_is_refused_naming_it() {
     assert!(
         matches!(&restarted, Err(ClientError::Daemon(error))
             if error.code == ErrorCode::Refused
-                && error.message.contains("account spare, which holds no credential any more")),
+                && error.message.contains("account spare, which holds no credential or login any more")),
         "{restarted:?}"
     );
 }
@@ -1746,6 +1746,308 @@ async fn an_unusable_credential_refuses_the_launch_naming_its_account() {
         "{told}"
     );
     assert!(!told.contains(SETUP_TOKEN), "{told}");
+}
+
+/// The Claude login `torlek account sign-in claude NAME` keeps, where the daemon keeps it.
+fn write_claude_login(home: &Home, name: &str, contents: &str) -> PathBuf {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let folder = home
+        .state_dir()
+        .join("account-logins/claude")
+        .join(name)
+        .join("login");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&folder)
+        .unwrap();
+    let file = folder.join(".credentials.json");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&file)
+        .unwrap();
+    std::fs::write(&file, contents).unwrap();
+    file
+}
+
+fn grant(name: &str) -> [&str; 5] {
+    ["account", "grant", COMMANDED_PROJECT, "claude", name]
+}
+
+/// A sandboxed [`COMMANDED_PROJECT`] agent under `accounts`, after `prepare` set up the
+/// owner's home and the owner granted the project the logins `granted`.
+async fn agent_with_logins(
+    home: &Home,
+    accounts: &str,
+    granted: &[&str],
+    prepare: impl FnOnce(&Home),
+) -> Sandboxed {
+    home.write_owner_config(&format!("{REQUIRED}{accounts}"));
+    prepare(home);
+    let daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    for name in granted {
+        let output = home.cockpit(&grant(name), &[]).await;
+        assert!(output.status.success(), "{}", text(&output.stderr));
+    }
+    let session = new_session(&client, &root).await;
+    Sandboxed {
+        _daemon: daemon,
+        root,
+        session: session.id,
+    }
+}
+
+const WORK_LOGIN: &str = "[accounts]\nclaude = [\"work\"]\n";
+
+/// #59, #858: a login the project holds a grant for is the session's Claude sign-in, at the
+/// path Claude Code keeps it, and the daemon records the account.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_granted_login_is_the_sessions_claude_sign_in() {
+    let home = Home::new();
+    let agent = agent_with_logins(&home, WORK_LOGIN, &["work"], |home| {
+        write_claude_login(home, "work", "fixture-login-v1");
+    })
+    .await;
+
+    let printed = run_in_agent(&home, &agent.root, "cat ~/.claude/.credentials.json; echo").await;
+    let account = launch_account(&home, &agent.session).await;
+
+    assert_eq!(printed, "fixture-login-v1\nexit=0\n");
+    assert_eq!(account.as_deref(), Some("work"));
+}
+
+/// #59: a session that launched on a granted login is told of no sign-in to write.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_on_a_granted_login_needs_no_sign_in() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{WORK_LOGIN}"));
+    write_claude_login(&home, "work", "fixture-login-v1");
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    home.cockpit(&grant("work"), &[]).await;
+
+    let session = new_session(&client, &root).await;
+
+    assert_eq!(session.sign_in_needed, None);
+}
+
+/// #858: Claude Code rewrites its sign-in in place when it refreshes it; the refreshed one is
+/// the account's, for its next session.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sign_in_the_session_rewrites_in_place_reaches_the_account() {
+    let home = Home::new();
+    let file = home
+        .state_dir()
+        .join("account-logins/claude/work/login/.credentials.json");
+    let agent = agent_with_logins(&home, WORK_LOGIN, &["work"], |home| {
+        write_claude_login(home, "work", "fixture-login-v1");
+    })
+    .await;
+
+    let printed = run_in_agent(
+        &home,
+        &agent.root,
+        "printf fixture-login-v2 > ~/.claude/.credentials.json",
+    )
+    .await;
+
+    assert_eq!(printed, "exit=0\n");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "fixture-login-v2");
+    assert_eq!(
+        launch_account(&home, &agent.session).await.as_deref(),
+        Some("work")
+    );
+}
+
+const PASSED_OVER_WORK: &str = "work (project commanded holds no grant for its login: \
+                                `torlek account grant commanded claude work` lets it)";
+
+/// #59, owner decision C: a login the project holds no grant for is passed over for the next
+/// listed account, and the session's record names it and the grant that lets it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ungranted_login_is_passed_over_for_the_next_account_and_named() {
+    let home = Home::new();
+    let agent = agent_with_logins(&home, TWO_ACCOUNTS, &[], |home| {
+        write_claude_login(home, "work", "fixture-login-v1");
+        home.write_account_credential(
+            "claude",
+            "spare",
+            "ANTHROPIC_API_KEY",
+            &format!("{SETUP_TOKEN}\n"),
+            0o600,
+        );
+    })
+    .await;
+
+    let printed = run_in_agent(&home, &agent.root, "cat ~/.claude/.credentials.json").await;
+    let client = home.connect().await;
+    let launch = listed(&client, &agent.session)
+        .await
+        .launch
+        .expect("the session launched");
+
+    assert!(!printed.contains("fixture-login"), "{printed}");
+    assert_eq!(launch.account.as_deref(), Some("spare"));
+    assert_eq!(launch.passed_over, [PASSED_OVER_WORK]);
+}
+
+/// #59, owner decision C: a restart after a quota stop looks for another account, so when it
+/// stays on its account it still names the login it passed over.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_after_a_quota_stop_names_the_login_it_passed_over() {
+    let home = Home::new();
+    let agent = agent_with_logins(&home, TWO_ACCOUNTS, &[], |home| {
+        write_claude_login(home, "work", "fixture-login-v1");
+        home.write_account_credential(
+            "claude",
+            "spare",
+            "ANTHROPIC_API_KEY",
+            &format!("{SETUP_TOKEN}\n"),
+            0o600,
+        );
+    })
+    .await;
+    run_in_agent(&home, &agent.root, &quota_stop_line()).await;
+    tokio::time::sleep(SETTLE).await;
+
+    restart(&home, &agent.session).await.unwrap();
+
+    let client = home.connect().await;
+    let launch = listed(&client, &agent.session)
+        .await
+        .launch
+        .expect("the session relaunched");
+    assert_eq!(launch.kind, LaunchKindView::Restart);
+    assert_eq!(launch.account.as_deref(), Some("spare"));
+    assert_eq!(launch.passed_over, [PASSED_OVER_WORK]);
+}
+
+/// #59, owner decision C: `session new` says which login it passed over and the grant.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_new_names_the_login_it_passed_over_and_the_grant() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
+    write_claude_login(&home, "work", "fixture-login-v1");
+    home.write_account_credential("claude", "spare", "ANTHROPIC_API_KEY", SETUP_TOKEN, 0o600);
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+
+    let started = home
+        .cockpit(
+            &[
+                "session",
+                "new",
+                root.to_str().unwrap(),
+                "--agent",
+                "claude",
+            ],
+            &[],
+        )
+        .await;
+
+    let told = text(&started.stdout);
+    assert!(started.status.success(), "{}", text(&started.stderr));
+    assert!(
+        told.contains(&format!("passed over: {PASSED_OVER_WORK}\n")),
+        "{told}"
+    );
+}
+
+/// #59, owner decision C: once the owner revokes the grant, a restart kept on that login is
+/// refused naming the grant, never moved to another account.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_on_a_login_whose_grant_was_revoked_is_refused_naming_the_grant() {
+    let home = Home::new();
+    let agent = agent_with_logins(&home, TWO_ACCOUNTS, &["work"], |home| {
+        write_claude_login(home, "work", "fixture-login-v1");
+        home.write_account_credential(
+            "claude",
+            "spare",
+            "ANTHROPIC_API_KEY",
+            &format!("{SETUP_TOKEN}\n"),
+            0o600,
+        );
+    })
+    .await;
+    run_in_agent(&home, &agent.root, "true").await;
+    let revoked = home.cockpit(&["account", "revoke", "1"], &[]).await;
+    assert!(revoked.status.success(), "{}", text(&revoked.stderr));
+
+    let restarted = restart(&home, &agent.session).await;
+
+    assert!(
+        matches!(&restarted, Err(ClientError::Daemon(error))
+        if error.code == ErrorCode::Refused
+            && error.message.contains(
+                "is a login account project commanded holds no grant for \
+                 (`torlek account grant commanded claude work` lets it)"
+            )),
+        "{restarted:?}"
+    );
+}
+
+/// #59: an account holding both a credential file and a signed-in login refuses the launch,
+/// naming it: which one to use is the owner's to say.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_account_with_both_a_credential_and_a_login_refuses_the_launch_naming_it() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{WORK_LOGIN}"));
+    write_claude_login(&home, "work", "fixture-login-v1");
+    home.write_account_credential("claude", "work", "ANTHROPIC_API_KEY", SETUP_TOKEN, 0o600);
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    home.cockpit(&grant("work"), &[]).await;
+
+    let started = client
+        .request(session_new_command(&root), Duration::from_secs(60))
+        .await;
+
+    assert!(
+        matches!(&started, Err(ClientError::Daemon(error))
+        if error.code == ErrorCode::Refused
+            && error.message.contains(
+                "the claude provider's account work holds both a credential file and a \
+                 signed-in login"
+            )),
+        "{started:?}"
+    );
+}
+
+/// #59: a login account whose login is no plain file refuses a new launch, naming the file
+/// and the sign-in that replaces it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_login_that_is_no_plain_file_refuses_the_launch_naming_it() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{WORK_LOGIN}"));
+    let file = write_claude_login(&home, "work", "fixture-login-v1");
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    home.cockpit(&grant("work"), &[]).await;
+
+    let started = client
+        .request(session_new_command(&root), Duration::from_secs(60))
+        .await;
+
+    assert!(
+        matches!(&started, Err(ClientError::Daemon(error))
+        if error.code == ErrorCode::Refused
+            && error.message.contains(&format!(
+                "the claude provider's account work keeps a login {} that is no plain file, so \
+                 its sandboxed sessions do not launch: sign it in again",
+                file.display()
+            ))),
+        "{started:?}"
+    );
 }
 
 /// #59: an unsandboxed agent signs in from the owner's home, so its launch runs on no account.

@@ -31,7 +31,7 @@ pub use probe::{
     Missing, Probe, ProbeError, command_output, documents_flag, names_missing_from_file,
 };
 pub use quota::{LimitKey, MAX_WINDOWS, QuotaReading, QuotaWindow};
-pub use sign_in::{Login, SignIn, SignInStatus};
+pub use sign_in::{Login, LoginRewrite, SignIn, SignInStatus};
 pub use terminal::{Action, Delivered, Key, TerminalInput};
 pub use tested_versions::parse_tested_versions;
 

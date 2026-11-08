@@ -69,7 +69,14 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
                 })
                 .await?;
             let mut view = current_view(&sessions, &started, &inputs).await?;
-            view.sign_in_needed = sign_in_needed(&sessions, started.provider.as_str()).await;
+            // A launch on an account found its credential or its granted login (#59).
+            let runs_on_account = started
+                .launch
+                .as_ref()
+                .is_some_and(|launch| launch.account.is_some());
+            if !runs_on_account {
+                view.sign_in_needed = sign_in_needed(&sessions, started.provider.as_str()).await;
+            }
             Ok(Reply::Session {
                 session: Box::new(view),
             })
@@ -475,6 +482,7 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::GithubToken { .. }
         | Error::ProviderCredential { .. }
         | Error::AccountUnavailable { .. }
+        | Error::AccountUnusable { .. }
         | Error::SignIn { .. }
         | Error::LoginGrantRefused { .. } => ErrorCode::Refused,
         Error::LoginGrantStore(cockpit_sandbox::LoginGrantError::Refused(
@@ -670,6 +678,7 @@ fn session_view(
             launched_at: launch.launched_at,
             account: launch.account.clone(),
             switched_from: launch.switched_from.clone(),
+            passed_over: launch.passed_over.clone(),
         }),
         exit: session.exit.as_ref().map(|exit| AgentExitView {
             status: match exit.status {

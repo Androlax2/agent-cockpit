@@ -17,7 +17,8 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   raw credential or account output. The default is unknown; adapters own detection.
   [`Provider::login`] names the harness's own sign-in command and the credential file it
   saves, which `torlek account sign-in` runs in a fresh home and keeps for a login account
-  (#59); the default has none.
+  (#59), and how the harness rewrites that file ([`LoginRewrite`]), which decides how a
+  sandboxed session sees it; the default has none.
 
 - **Capabilities with provenance** (report 08). Each reported [`Capability`] is `tested`
   against the exact harness version running (a version on the adapter's

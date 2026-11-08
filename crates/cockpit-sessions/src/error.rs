@@ -100,7 +100,16 @@ pub enum Error {
     AccountUnavailable {
         provider: String,
         account: String,
-        reason: &'static str,
+        reason: String,
+    },
+    /// A launch cannot use an account (#59): it holds both a credential file and a signed-in
+    /// login, which one to use being the owner's to say, or its login is no plain file.
+    AccountUnusable {
+        provider: String,
+        account: String,
+        reason: String,
+        /// What the owner does so the account can be used.
+        remedy: &'static str,
     },
     /// `torlek account sign-in` cannot sign this account in, or kept nothing (#59).
     SignIn {
@@ -259,6 +268,16 @@ impl fmt::Display for Error {
                 "the session runs on the {provider} provider's account {account}, which {reason}, \
                  and a relaunch never moves it to another account: restore the account, or \
                  start a new session"
+            ),
+            Error::AccountUnusable {
+                provider,
+                account,
+                reason,
+                remedy,
+            } => write!(
+                formatter,
+                "the {provider} provider's account {account} {reason}, so its sandboxed sessions \
+                 do not launch: {remedy}"
             ),
             Error::Authorization(error) => write!(formatter, "authorization: {error}"),
             Error::SignIn {

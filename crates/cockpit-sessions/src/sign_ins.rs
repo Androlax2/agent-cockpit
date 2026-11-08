@@ -15,9 +15,10 @@ use cockpit_sandbox::{AccountLogin, LoginGrant, OwnerClient};
 use super::{Sessions, create_session_dir, remove_tree, store};
 use crate::Error;
 
-/// Where a login waits in the login folder between leaving the sign-in's home and taking its
-/// name, until it is known to be a plain file and owner-only.
-const INCOMING: &str = ".incoming";
+/// Where a login waits in the account's folder, beside its login folder, between leaving the
+/// sign-in's home and taking its name, until it is known to be a plain file and owner-only.
+/// Not in the login folder: sandboxed sessions see that one read-write (#59).
+const INCOMING: &str = "login.incoming";
 
 /// What the owner's terminal runs to sign an account in.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,10 +84,9 @@ impl Sessions {
                     });
                 }
             }
-            create_session_dir(&folders.login)?;
             // Checked again once moved, where only the daemon writes: whatever runs in the
             // sign-in's home could swap the file for a link after the check above.
-            let incoming = folders.login.join(INCOMING);
+            let incoming = folders.login.with_file_name(INCOMING);
             rename(&left, &incoming)?;
             let is_file = std::fs::symlink_metadata(&incoming)
                 .map(|metadata| metadata.file_type().is_file())
@@ -105,6 +105,7 @@ impl Sessions {
             let file_name = relative
                 .file_name()
                 .expect("a home path names at least one entry");
+            create_session_dir(&folders.login)?;
             rename(&incoming, &folders.login.join(file_name))?;
             // The login is kept: what is left of its home is the harness's other files.
             if let Err(error) = remove_tree(&folders.sign_in) {
