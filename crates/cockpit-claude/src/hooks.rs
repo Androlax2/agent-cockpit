@@ -147,9 +147,10 @@ pub fn needs_plan_windows(event: &ProviderEvent) -> bool {
 const PLAN_WINDOWS: [&str; 2] = ["five-hour", "seven-day"];
 
 /// `event` judged by the session's plan windows (#249): a [`RATE_LIMIT`] failure while one
-/// of [`PLAN_WINDOWS`] is spent, used at or past its whole limit, is a quota stop, which
-/// moves the session to its next account (#59). With headroom in both it stays a failure: a
-/// transient rate limit must never move a session. Any other event is kept as it is.
+/// of the plan's own windows, `five-hour` or `seven-day`, is spent, used at or past its whole
+/// limit, is a quota stop, which moves the session to its next account (#59). With headroom
+/// in both it stays a failure: a transient rate limit must never move a session. Any other
+/// event is kept as it is.
 pub fn judged_by_plan_windows(event: ProviderEvent, reading: &QuotaReading) -> ProviderEvent {
     if !needs_plan_windows(&event) {
         return event;
