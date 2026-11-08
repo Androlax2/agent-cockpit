@@ -22,7 +22,7 @@ are separate work under the same issue.
   version (`2.1.319`, one the adapter is tested on) and the SHA-256 of its tarball, and refused
   on any mismatch, like the image. It is installed as root in `/usr/local/bin` before the
   daemon is installed, so the guest daemon lists `claude` from its first start and `reset`
-  keeps it; `redteam` cannot replace it or update it. Bump the version and checksum together
+  keeps it; `redteam` cannot replace the file. Bump the version and checksum together
   (`TORLEK_REDTEAM_CLAUDE_VERSION`, `_URL`, `_SHA256` override them).
 - **A clean snapshot.** Taken after provisioning; `reset` returns the disk to it.
 - **No host material.** No shared folder, host device, or home, SSH, GitHub or provider

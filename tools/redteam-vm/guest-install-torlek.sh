@@ -35,8 +35,12 @@ torlek daemon install </dev/null
 
 # The install returns before the daemon's socket exists, and the next provisioning step talks
 # to the daemon.
-for _ in $(seq 30); do
-    torlek project list </dev/null >/dev/null 2>&1 && break
+attempts=0
+until torlek project list </dev/null >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if ((attempts > 30)); then
+        echo "the daemon did not answer within 30 seconds of its install" >&2
+        exit 1
+    fi
     sleep 1
 done
-torlek project list </dev/null >/dev/null

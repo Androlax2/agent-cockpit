@@ -237,7 +237,7 @@ command_create() {
     ((cloud_init_status == 0 || cloud_init_status == 2)) || die "cloud-init failed in the guest (status $cloud_init_status)"
     run_guest_script "$ADMIN_USER" "$SCRIPT_DIR/redteam-vm/guest-provision.sh" sudo
     run_guest_script "$ADMIN_USER" "$SCRIPT_DIR/redteam-vm/guest-install-claude.sh" \
-        "sudo env CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION CLAUDE_CODE_URL=$CLAUDE_CODE_URL CLAUDE_CODE_SHA256=$CLAUDE_CODE_SHA256"
+        "sudo env CLAUDE_CODE_VERSION=$(printf %q "$CLAUDE_CODE_VERSION") CLAUDE_CODE_URL=$(printf %q "$CLAUDE_CODE_URL") CLAUDE_CODE_SHA256=$(printf %q "$CLAUDE_CODE_SHA256")"
     run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-install-torlek.sh"
     run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-setup-sandbox.sh"
     stop_guest

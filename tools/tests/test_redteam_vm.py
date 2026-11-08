@@ -177,6 +177,15 @@ class RedTeamVmTests(unittest.TestCase):
         self.assertIn("claude-code-linux-x64-2.1.316.tgz", ssh_calls)
         self.assertIn(f"CLAUDE_CODE_SHA256={'a' * 64}", ssh_calls)
 
+    def test_a_claude_code_url_override_cannot_inject_into_the_guest_command(self):
+        self.assertEqual(self.run_script("fetch").returncode, 0)
+        result = self.run_script(
+            "create", TORLEK_REDTEAM_CLAUDE_URL="https://mirror.invalid/claude.tgz?a=b&c=d;echo pwned"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ssh_calls = (self.log_dir / "ssh-calls").read_text()
+        self.assertIn(r"CLAUDE_CODE_URL=https://mirror.invalid/claude.tgz\?a=b\&c=d\;echo\ pwned", ssh_calls)
+
     def test_the_pinned_claude_code_is_a_version_the_adapter_is_tested_on(self):
         tested_versions = (REPO / "crates/cockpit-claude/tested-versions.txt").read_text().split()
         pinned_version = re.search(r"CLAUDE_CODE_VERSION=\$\{[^:]*:-([^}]+)\}", SCRIPT.read_text()).group(1)

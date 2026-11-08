@@ -7,7 +7,7 @@
 # time. Sent as one argument: every command that could read stdin is given /dev/null.
 #
 # The program goes to a root-owned directory on the daemon's PATH, so the daemon lists it at
-# its first start and the throwaway user can neither replace it nor have it update itself.
+# its first start and the throwaway user cannot replace the file.
 set -euo pipefail
 
 : "${CLAUDE_CODE_VERSION:?the host names the version to install}"
@@ -32,7 +32,10 @@ extracted_program=$download_dir/package/claude
 
 # Refuse a build that is not the pinned version before installing it: the daemon's provider
 # probe would otherwise fail later, in a place that does not name the cause.
-extracted_version=$("$extracted_program" --version </dev/null | awk '{ print $1; exit }')
+extracted_version=$("$extracted_program" --version </dev/null | awk '{ print $1; exit }') || {
+    echo "downloaded claude does not run on this guest (--version failed); nothing installed" >&2
+    exit 1
+}
 if [[ $extracted_version != "$CLAUDE_CODE_VERSION" ]]; then
     echo "downloaded claude reports $extracted_version, not the pinned $CLAUDE_CODE_VERSION; nothing installed" >&2
     exit 1
