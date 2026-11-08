@@ -8,6 +8,7 @@ pub mod fake;
 mod needs;
 mod probe;
 mod quota;
+mod replies;
 mod sign_in;
 mod terminal;
 mod tested_versions;
@@ -31,6 +32,7 @@ pub use probe::{
     Missing, Probe, ProbeError, command_output, documents_flag, names_missing_from_file,
 };
 pub use quota::{LimitKey, MAX_WINDOWS, QuotaReading, QuotaWindow};
+pub use replies::{ModelReply, ReplyScan, ReplyTokens, SourceCursor};
 pub use sign_in::{Login, LoginRewrite, SignIn, SignInStatus};
 pub use terminal::{Action, Delivered, Key, TerminalInput};
 pub use tested_versions::parse_tested_versions;
@@ -369,6 +371,21 @@ pub trait Provider: Send + Sync + 'static {
     fn quota(&self, home: &Path) -> Result<QuotaReading, ProviderError> {
         let _ = home;
         Err(ProviderError::unsupported(Capability::Quota))
+    }
+
+    /// The model replies recorded under `home` past `cursors` ([`Capability::Cost`], #699):
+    /// the owner's home folder, or a session's own, where the harness keeps its records.
+    /// Reads only what the cursors have not counted. Run by the host daemon only: the
+    /// records are the agent's to write, so an adapter opens them without following links
+    /// and trusts nothing in them beyond the counts. May block while it reads; run off async
+    /// workers. The default refuses.
+    fn scan_replies(
+        &self,
+        home: &Path,
+        cursors: &[SourceCursor],
+    ) -> Result<ReplyScan, ProviderError> {
+        let _ = (home, cursors);
+        Err(ProviderError::unsupported(Capability::Cost))
     }
 
     /// The agent's activity read from the end of its terminal, for when no event says it

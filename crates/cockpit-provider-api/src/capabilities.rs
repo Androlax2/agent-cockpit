@@ -48,10 +48,13 @@ pub enum Capability {
     /// Read the signed-in account's plan windows from the harness's own source
     /// ([`crate::Provider::quota`], #58).
     Quota,
+    /// Read the model replies its harness recorded, for the cost archive
+    /// ([`crate::Provider::scan_replies`], #699).
+    Cost,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 16] = [
+    pub const ALL: [Capability; 17] = [
         Capability::Resume,
         Capability::Submit,
         Capability::Events,
@@ -68,6 +71,7 @@ impl Capability {
         Capability::Inbox,
         Capability::CompactionThreshold,
         Capability::Quota,
+        Capability::Cost,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -88,6 +92,7 @@ impl Capability {
             Capability::Inbox => "inbox",
             Capability::CompactionThreshold => "compaction-threshold",
             Capability::Quota => "quota",
+            Capability::Cost => "cost",
         }
     }
 }

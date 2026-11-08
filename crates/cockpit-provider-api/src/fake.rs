@@ -18,8 +18,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     Action, Activity, Capabilities, Capability, Conversation, ConversationId, Key, LaunchCommand,
-    LaunchRequest, Provenance, Provider, ProviderError, ProviderName, QuotaReading, TerminalInput,
-    TrustRequest, WorkspaceTrust,
+    LaunchRequest, ModelReply, Provenance, Provider, ProviderError, ProviderName, QuotaReading,
+    ReplyScan, SourceCursor, TerminalInput, TrustRequest, WorkspaceTrust,
 };
 
 /// The efforts the fake takes once it reports [`Capability::Effort`]; any other is refused.
@@ -36,6 +36,9 @@ exec sleep "${FAKE_AGENT_SLEEP:-600}""#;
 
 type QuotaAnswers = VecDeque<Result<QuotaReading, ProviderError>>;
 
+/// The replies a fake home holds: the home's folder and what a scan of it finds.
+pub type HomeReplies = (PathBuf, Vec<ModelReply>);
+
 pub struct FakeProvider {
     name: ProviderName,
     log: PathBuf,
@@ -51,6 +54,9 @@ pub struct FakeProvider {
     /// The answers [`Provider::quota`] gives in turn, the last one again once they run out,
     /// and the log each ask is appended to.
     quota: Option<(Mutex<QuotaAnswers>, PathBuf)>,
+    /// The replies each home holds, in the order its record source holds them, and the log
+    /// each scan is appended to.
+    replies: Option<(Vec<HomeReplies>, PathBuf)>,
     conversations: AtomicUsize,
 }
 
@@ -71,6 +77,7 @@ impl FakeProvider {
             reports_at_launch: false,
             trusted: None,
             quota: None,
+            replies: None,
             conversations: AtomicUsize::new(logged),
         }
     }
@@ -142,6 +149,26 @@ impl FakeProvider {
         assert!(!answers.is_empty(), "a fake reading quota needs an answer");
         self.quota = Some((Mutex::new(answers.into()), log));
         self.reporting(Capability::Quota)
+    }
+
+    /// Reports `cost`, as discovered: each [`Provider::scan_replies`] of one of `homes` gives
+    /// the replies past its cursor (one source, `fake`, counted in replies) and appends
+    /// `<home>\t<offset asked from>` to `log` ([`FakeProvider::reply_scans`]). A home not
+    /// listed holds none.
+    pub fn reading_replies(mut self, homes: Vec<HomeReplies>, log: PathBuf) -> FakeProvider {
+        self.replies = Some((homes, log));
+        self.reporting(Capability::Cost)
+    }
+
+    /// Every reply scan the fake recorded into `log`, as (home, offset asked from), oldest
+    /// first.
+    pub fn reply_scans(log: &Path) -> Vec<(PathBuf, u64)> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.split_once('\t'))
+            .map(|(home, offset)| (home.into(), offset.parse().expect("an offset")))
+            .collect()
     }
 
     /// Every quota ask the fake recorded into `log`, as (unix milliseconds, home), oldest
@@ -223,6 +250,41 @@ impl Provider for FakeProvider {
             return answers.pop_front().expect("more than one answer");
         }
         answers.front().cloned().expect("one answer left")
+    }
+
+    fn scan_replies(
+        &self,
+        home: &Path,
+        cursors: &[SourceCursor],
+    ) -> Result<ReplyScan, ProviderError> {
+        let Some((homes, log)) = &self.replies else {
+            return Err(ProviderError::unsupported(Capability::Cost));
+        };
+        let offset = cursors
+            .iter()
+            .find(|cursor| cursor.source() == "fake")
+            .map_or(0, SourceCursor::offset);
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+            .expect("the reply scan log opens");
+        writeln!(file, "{}\t{offset}", home.display()).expect("the reply scan log takes a line");
+        let held = homes
+            .iter()
+            .find(|(held_home, _)| held_home == home)
+            .map_or(&[][..], |(_, replies)| replies.as_slice());
+        let skipped = usize::try_from(offset).expect("an offset in range");
+        let replies: Vec<ModelReply> = held.iter().skip(skipped).cloned().collect();
+        if replies.is_empty() {
+            return Ok(ReplyScan::default());
+        }
+        let cursor = SourceCursor::new("fake", held.len() as u64).expect("a plain source");
+        Ok(ReplyScan {
+            replies,
+            cursors: vec![cursor],
+            problems: Vec::new(),
+        })
     }
 
     fn reports_at_launch(&self) -> bool {

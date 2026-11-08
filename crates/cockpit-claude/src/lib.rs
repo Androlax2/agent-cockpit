@@ -2,6 +2,7 @@
 
 pub mod first_run;
 mod quota;
+mod replies;
 mod sign_in;
 
 pub mod hooks;
@@ -26,8 +27,8 @@ use std::time::{Duration, Instant};
 use cockpit_provider_api::{
     Action, Activity, Capabilities, Capability, Conversation, ConversationId, Credentials,
     InvalidValue, Key, LaunchCommand, LaunchRequest, Needs, Observation, Probe, Provenance,
-    Provider, ProviderError, ProviderName, QuotaReading, SessionHomeRequest, TerminalInput,
-    TrustRequest, WorkspaceTrust,
+    Provider, ProviderError, ProviderName, QuotaReading, ReplyScan, SessionHomeRequest,
+    SourceCursor, TerminalInput, TrustRequest, WorkspaceTrust,
 };
 
 /// The Claude Code versions the adapter's conformance tests pass against (`tested-versions.txt`,
@@ -382,6 +383,14 @@ impl Provider for ClaudeCode {
         self.quota_within(home, quota::QUOTA_DEADLINE)
     }
 
+    fn scan_replies(
+        &self,
+        home: &Path,
+        cursors: &[SourceCursor],
+    ) -> Result<ReplyScan, ProviderError> {
+        replies::scan(home, cursors)
+    }
+
     fn version(&self) -> Option<&str> {
         self.version.as_deref()
     }
@@ -408,6 +417,7 @@ impl Provider for ClaudeCode {
                 Capability::ScreenReading,
                 Capability::CompactionThreshold,
                 Capability::Quota,
+                Capability::Cost,
             ]
             .into_iter()
             .chain(bridged.into_iter().flatten()),

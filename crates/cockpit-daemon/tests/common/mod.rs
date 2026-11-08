@@ -392,6 +392,7 @@ pub fn wiring_in(
         },
         feed_buffer_bytes: 1024 * 1024,
         quota: None,
+        cost: None,
     }
 }
 

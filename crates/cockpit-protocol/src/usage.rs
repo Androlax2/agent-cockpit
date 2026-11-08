@@ -1,4 +1,4 @@
-//! What `usage quota` asks the daemon for (report 18, #58): each provider account's plan
+//! What `usage quota` and `usage cost` ask the daemon for (report 18, #58): each provider account's plan
 //! windows as last read, judged when asked. And the alert a window fires as it fills, which
 //! the daemon puts on the change feed for `torlek-notify`.
 
@@ -87,4 +87,36 @@ pub struct QuotaAlertView {
     pub resets_at: Option<i64>,
     /// Unix seconds: when the reading that fired it was taken.
     pub fired_at: i64,
+}
+
+/// The cost archive's totals for the days `usage-cost` asked for (report 18, #699).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CostArchiveView {
+    /// `YYYY-MM-DD`, UTC: the first and the last day asked for, both included. Providers bill
+    /// by UTC day.
+    pub first_day: String,
+    pub last_day: String,
+    /// Oldest day first, then by provider, account and project. A day, account and project
+    /// with no replies has no row.
+    pub rows: Vec<CostRowView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CostRowView {
+    /// `YYYY-MM-DD`, UTC.
+    pub day: String,
+    pub provider: String,
+    pub account: String,
+    pub project: String,
+    pub replies: u64,
+    /// Replies of a model without a known price: in `replies` and the token counts, absent
+    /// from `cost_nanos`.
+    pub unpriced_replies: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    /// What the replies cost at the provider's API prices, in nano-dollars (a billionth of a
+    /// dollar): an integer, so totals add up exactly.
+    pub cost_nanos: u64,
 }

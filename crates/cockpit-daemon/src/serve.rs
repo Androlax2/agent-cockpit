@@ -11,7 +11,9 @@ use std::time::Duration;
 use cockpit_provider_api::{Provenance, Provider};
 use cockpit_readiness::ProviderUnusable;
 
-use crate::{Instance, Options, QuotaPolling, Routes, StartError, Wiring, session_settings};
+use crate::{
+    CostScanning, Instance, Options, QuotaPolling, Routes, StartError, Wiring, session_settings,
+};
 
 /// The folder under the state directory the OpenCode plugin is written to at every start;
 /// agents read it, so it holds nothing else.
@@ -22,6 +24,9 @@ pub const SESSION_TICK: Duration = Duration::from_secs(30);
 
 /// How often the exits alone are looked at between ticks (#632).
 pub const EXIT_SWEEP: Duration = Duration::from_secs(1);
+/// How often the cost archive reads the homes' new replies (#699): replies are summed per day,
+/// so a minute's delay is invisible, and a read of an unchanged home is a few directory reads.
+const COST_SCAN_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Variables of the daemon's own environment every agent starts with, where set, beside its
 /// XDG layout; the provider adds its own after them. The desktop session's
@@ -204,7 +209,14 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             environment: environment.clone(),
             scheduling: cockpit_scheduling::Settings::default(),
             feed_buffer_bytes: config.memory.feed_buffer_kib.value.saturating_mul(1024),
-            quota: Some(QuotaPolling::from_settings(&config.usage, owner_home)),
+            quota: Some(QuotaPolling::from_settings(
+                &config.usage,
+                owner_home.clone(),
+            )),
+            cost: Some(CostScanning {
+                home: owner_home,
+                interval: COST_SCAN_INTERVAL,
+            }),
         };
         let daemon = instance
             .start(wiring, |capabilities| {

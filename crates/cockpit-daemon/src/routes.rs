@@ -293,6 +293,12 @@ impl Handler for Routes {
                 )),
             },
             (Command::UsageQuota, Peer::Agent { .. }) => Route::Answer(owner_only()),
+            // What the owner's accounts cost is the owner's to read; no session asks for it.
+            (Command::UsageCost { days }, Peer::Owner) => Route::Run {
+                class: WorkClass::Control,
+                job: Box::pin(crate::cost::report(Arc::clone(&self.database), days)),
+            },
+            (Command::UsageCost { .. }, Peer::Agent { .. }) => Route::Answer(owner_only()),
             // The bundle is the product's own text: anyone the daemon serves may read it.
             (command @ (Command::InstructionCatalog | Command::InstructionsRead { .. }), _) => {
                 Route::Answer(agent_context::instructions(command))

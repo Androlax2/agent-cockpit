@@ -231,6 +231,18 @@ the refresh returns with its next reading. `Wiring::quota` is `None` in tests no
 time asked under the worker's own policy, so `torlek usage quota` and the alerts agree. A
 daemon whose wiring reads no quota refuses it rather than judge old readings by a default.
 
+The cost archive (#699, `cost.rs`) is a second supervised worker. Every `Wiring::cost`
+interval (a minute in the product; `None` in tests not about cost) it asks each provider
+reporting `cost` for the replies past its cursors, in the owner's home (account `default`)
+and in each live session's own home (the account of the session's launch), and archives
+them in one transaction per home with the cursors. One scan runs at a time, each under a
+deadline, so a home that hangs never stops the others. The sessions tell the worker before a
+session's home is removed or the session relaunches on another account (`HomeObserver`), so
+the replies the home still holds are archived under the account that paid for them; a
+removal also drops the home's cursors. At start the worker prices what an earlier release
+could not. `usage-cost`, the owner's alone, answers the archive's totals for the last 1 to
+366 UTC days (`torlek usage cost`).
+
 ## Requests
 
 - Peers are served only when the kernel's peer credentials name the daemon's own user.
@@ -261,6 +273,12 @@ builds it only when asked and no release installs it.
 - `tests/usage_quota.rs`: issue #58: a fake provider's readings recorded under the owner's
   home, a failure recorded and retried twice as late each time, then the refresh again;
   `usage-quota` answering the windows and the last failure, and refused when no quota is read.
+- `tests/cost_archive.rs`: issue #699: a synthetic week of Claude Code transcripts under the
+  owner's home (repeated content blocks, a resumed conversation's replay, the UTC midnight, a
+  fast-mode reply, a time-zone offset, a model with no price) archived to the nano-dollar
+  against bills worked out by hand, later replies added without recounting, a restart not
+  counting twice, a fake provider asked from its cursor, and a day count outside 1 to 366
+  refused.
 - `tests/startup.rs`: the binary on a clean home, the second daemon, private modes, the
   macOS layout, a stale socket after `kill -9`, reconcile before accept.
 - `tests/coordinator_kit.rs`: issue #410's acceptance with the fake provider: every

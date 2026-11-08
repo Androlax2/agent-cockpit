@@ -1,19 +1,31 @@
 //! `torlek usage quota`: each provider account's plan windows as the daemon last read them
-//! (#58, report 18).
+//! (#58, report 18). `torlek usage cost [--days N]`: what each account's replies cost at the
+//! provider's API prices, per UTC day and project (#699).
 
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cockpit_protocol::{Command, QuotaAccountView, QuotaWindowView, Reply};
+use cockpit_protocol::{Command, CostArchiveView, QuotaAccountView, QuotaWindowView, Reply};
 
 use crate::daemon::{CONTROL_DEADLINE, request, unexpected, utf8_words};
 use crate::status_page::age;
+
+const DEFAULT_COST_DAYS: u32 = 7;
+const MOST_COST_DAYS: u32 = 366;
+const NANOS_PER_TEN_THOUSANDTH: u64 = 100_000;
 
 /// A `usage` verb's command, or the usage problem that stops it.
 pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
     let words = utf8_words(arguments)?;
     match words.as_slice() {
         ["quota"] => Ok(Command::UsageQuota),
+        ["cost"] => Ok(Command::UsageCost {
+            days: DEFAULT_COST_DAYS,
+        }),
+        ["cost", "--days", days] => match days.parse::<u32>() {
+            Ok(days) if (1..=MOST_COST_DAYS).contains(&days) => Ok(Command::UsageCost { days }),
+            _ => Err(format!("--days is a number from 1 to {MOST_COST_DAYS}")),
+        },
         _ => Err("unknown usage arguments".to_owned()),
     }
 }
@@ -24,11 +36,72 @@ pub fn run(command: Command) -> ExitCode {
         Ok(reply) => reply,
         Err(code) => return code,
     };
-    let Reply::UsageQuota { accounts } = &reply else {
-        return unexpected(&reply);
-    };
-    out!("{}", quota_text(accounts, crate::update::now()));
-    ExitCode::SUCCESS
+    match &reply {
+        Reply::UsageQuota { accounts } => {
+            out!("{}", quota_text(accounts, crate::update::now()));
+            ExitCode::SUCCESS
+        }
+        Reply::UsageCost { cost } => {
+            out!("{}", cost_text(cost));
+            ExitCode::SUCCESS
+        }
+        _ => unexpected(&reply),
+    }
+}
+
+/// The archive's rows, one line each (`day  provider  account  project  cost  replies`), then
+/// the total of every row. A reply of a model with no price is counted and has no cost, so a
+/// row that holds one says how many, and a total that would be short says so.
+fn cost_text(cost: &CostArchiveView) -> String {
+    let mut text = format!(
+        "{} to {} (UTC days, at API prices)\n",
+        cost.first_day, cost.last_day
+    );
+    if cost.rows.is_empty() {
+        text.push_str("no replies archived\n");
+        return text;
+    }
+    let mut total_nanos = 0_u64;
+    let mut unpriced_replies = 0_u64;
+    for row in &cost.rows {
+        total_nanos = total_nanos.saturating_add(row.cost_nanos);
+        unpriced_replies += row.unpriced_replies;
+        text.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{} {}{}\n",
+            printable(&row.day),
+            printable(&row.provider),
+            printable(&row.account),
+            printable(&row.project),
+            dollars(row.cost_nanos),
+            row.replies,
+            if row.replies == 1 { "reply" } else { "replies" },
+            unpriced_note(row.unpriced_replies),
+        ));
+    }
+    text.push_str(&format!(
+        "total\t{}{}\n",
+        dollars(total_nanos),
+        unpriced_note(unpriced_replies)
+    ));
+    text
+}
+
+fn unpriced_note(unpriced_replies: u64) -> String {
+    match unpriced_replies {
+        0 => String::new(),
+        count => format!(", {count} with no known price, not in the cost"),
+    }
+}
+
+/// Nano-dollars as dollars to four decimals, the last one rounded half up.
+fn dollars(nanos: u64) -> String {
+    let ten_thousandths =
+        nanos.saturating_add(NANOS_PER_TEN_THOUSANDTH / 2) / NANOS_PER_TEN_THOUSANDTH;
+    format!(
+        "${}.{:04}",
+        ten_thousandths / 10_000,
+        ten_thousandths % 10_000
+    )
 }
 
 /// One line per account (`provider  account  plan  when read  current or stale`, then

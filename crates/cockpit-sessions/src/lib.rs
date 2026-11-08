@@ -6,6 +6,7 @@ mod declarations;
 mod delivery_context;
 mod error;
 mod exits;
+mod home_observer;
 mod lifecycle;
 mod model;
 mod questions;
@@ -18,6 +19,7 @@ pub use compactions::{Compaction, CompactionStatus, latest_compaction};
 pub use declarations::{RefusedDeclaration, refused_declarations};
 pub use delivery_context::{ConnectSessionSocket, DeliveryContext};
 pub use error::Error;
+pub use home_observer::{HomeChange, HomeObserver};
 pub use lifecycle::visible_line;
 pub use lifecycle::{Sessions, SignInPlan};
 pub use model::{

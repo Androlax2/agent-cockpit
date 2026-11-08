@@ -9,6 +9,7 @@ mod bug_reports;
 mod clipboard;
 mod coordination;
 mod coordinator_workers;
+mod cost;
 mod database_retention;
 mod disk_guard;
 mod end_sweep;
@@ -47,6 +48,7 @@ use tokio::sync::Semaphore;
 
 pub use agent_context::{DeliveredSkillPack, opencode_hidden_skills};
 pub use approvals::{RUN_LEADER_FLAG, run_settings};
+pub use cost::CostScanning;
 pub use error::StartError;
 pub use instance::{Instance, Options};
 pub use lanes::{LaneLimits, StallBudgets};
@@ -121,6 +123,9 @@ pub struct Wiring {
     /// How each provider reporting `quota` is read (#58); `None` reads none, as in tests that
     /// are not about quota.
     pub quota: Option<QuotaPolling>,
+    /// How each provider reporting `cost` is read for the cost archive (#699); `None` reads
+    /// none, as in tests that are not about cost.
+    pub cost: Option<CostScanning>,
 }
 
 /// The sessions' settings the owner configured: the idle window and the asleep expiry
@@ -222,6 +227,7 @@ pub struct Daemon {
     sweeping_ended: tokio::task::JoinHandle<()>,
     guarding_disk: tokio::task::JoinHandle<()>,
     polling_quota: Option<tokio::task::JoinHandle<()>>,
+    archiving_costs: Option<tokio::task::JoinHandle<()>>,
     prune_stop: Arc<std::sync::atomic::AtomicBool>,
     _database: Arc<cockpit_turso::Database>,
     _instance: Instance,
@@ -422,6 +428,7 @@ impl Instance {
         ));
         let sign_in_providers = wiring.providers.clone();
         let quota_providers = wiring.providers.clone();
+        let cost_providers = wiring.providers.clone();
         let sessions = Arc::new(cockpit_sessions::Sessions::new(
             Arc::clone(&database),
             processes,
@@ -606,6 +613,7 @@ impl Instance {
                 )
             },
         ));
+        let scanned_sessions = Arc::clone(&sessions);
         let ticking = tokio::spawn(supervisor::supervise(
             "sessions-tick",
             faults.clone(),
@@ -702,6 +710,22 @@ impl Instance {
                 },
             ))
         });
+        let archiving_costs = wiring.cost.map(|scanning| {
+            let archivist = Arc::new(cost::Archivist::new(
+                Arc::clone(&database),
+                cost_providers,
+                &scanning,
+            ));
+            scanned_sessions.observe_homes(archivist.clone());
+            tokio::spawn(supervisor::supervise(
+                "cost-archive",
+                faults.clone(),
+                move || {
+                    Arc::clone(&archivist)
+                        .scan_forever(Arc::clone(&scanned_sessions), scanning.clone())
+                },
+            ))
+        });
         let accepting_agents = accept(&agent_listener, &shared, server::Socket::Agent, &faults);
         tracing::info!(
             socket = %socket_path.display(),
@@ -729,6 +753,7 @@ impl Instance {
             sweeping_ended,
             guarding_disk,
             polling_quota,
+            archiving_costs,
             prune_stop,
             _database: database,
             _instance: self,
@@ -861,6 +886,9 @@ impl Drop for Daemon {
         self.guarding_disk.abort();
         if let Some(polling) = &self.polling_quota {
             polling.abort();
+        }
+        if let Some(archiving) = &self.archiving_costs {
+            archiving.abort();
         }
         bug_reports::mark_stopped(&self._instance.options.state_dir);
     }

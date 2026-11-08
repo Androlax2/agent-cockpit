@@ -147,6 +147,12 @@ stopped in the middle of one finishes or repairs it at its next start.
   and start-file snapshots of a session ended or failed before a cutoff. The session, its
   launches, transitions, reports and exits stay, so it can still be resumed
   (`../../docs/decisions/2026-11-04-406-database-retention.md`).
+- **Home observer** (#699). `Sessions::observe_homes` registers one [`HomeObserver`], told
+  with the session's operation lock held, before a sandboxed session's own home is removed
+  (`HomeChange::Removal`) and before a relaunch on another account (`HomeChange::AccountSwitch`),
+  so the cost archive reads what the home still holds under the account that paid for it.
+  The observer is best effort and bounds its own time; nothing it does refuses the end or
+  the relaunch.
 - Nothing is imported from the current cockpit's state.
 
 ## Dependency edges

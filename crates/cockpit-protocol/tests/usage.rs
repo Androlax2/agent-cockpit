@@ -1,8 +1,8 @@
 //! `usage-quota` (report 18, #58): the request names nothing, the reply carries each account's
 //! plan windows. A `quota-alert` entity on the change feed carries the alert a window fired.
 use cockpit_protocol::{
-    Command, QuotaAccountView, QuotaAlertView, QuotaFailureView, QuotaWindowStateView,
-    QuotaWindowView, Reply, decode_request,
+    Command, CostArchiveView, CostRowView, QuotaAccountView, QuotaAlertView, QuotaFailureView,
+    QuotaWindowStateView, QuotaWindowView, Reply, decode_request,
 };
 use serde_json::json;
 
@@ -94,5 +94,59 @@ fn a_quota_alert_names_its_window_and_the_threshold_it_passed() {
     assert_eq!(
         serde_json::from_value::<QuotaAlertView>(wire).unwrap(),
         alert
+    );
+}
+
+#[test]
+fn the_cost_request_names_how_many_days_and_round_trips() {
+    let wire = json!({"id": 1, "command": {"kind": "usage-cost", "days": 7}});
+
+    let request = decode_request(&wire.to_string()).unwrap();
+
+    assert_eq!(request.command, Command::UsageCost { days: 7 });
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+}
+
+#[test]
+fn the_cost_reply_carries_each_days_totals_in_whole_nano_dollars() {
+    let reply = Reply::UsageCost {
+        cost: CostArchiveView {
+            first_day: "2026-11-02".to_owned(),
+            last_day: "2026-11-02".to_owned(),
+            rows: vec![CostRowView {
+                day: "2026-11-02".to_owned(),
+                provider: "claude".to_owned(),
+                account: "work".to_owned(),
+                project: "app".to_owned(),
+                replies: 3,
+                unpriced_replies: 1,
+                input_tokens: 10,
+                output_tokens: 20,
+                cache_read_tokens: 300,
+                cache_write_tokens: 45,
+                cost_nanos: 740_000,
+            }],
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_value(&reply).unwrap(),
+        json!({"kind": "usage-cost", "cost": {
+            "first_day": "2026-11-02",
+            "last_day": "2026-11-02",
+            "rows": [{
+                "day": "2026-11-02",
+                "provider": "claude",
+                "account": "work",
+                "project": "app",
+                "replies": 3,
+                "unpriced_replies": 1,
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "cache_read_tokens": 300,
+                "cache_write_tokens": 45,
+                "cost_nanos": 740_000
+            }]
+        }})
     );
 }
