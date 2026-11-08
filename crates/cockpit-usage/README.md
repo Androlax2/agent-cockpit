@@ -87,7 +87,10 @@ What the Status panel (#85) and the digest (#87) show, as data: a client renders
 `DayDigest` without asking anything else. Time comes from turn records the caller hands in as
 each turn ends (`record_turn`), never from polling; approvals (`record_approval`) and provider
 incidents (`record_incident`) are recorded as they happen. Each is idempotent under its key,
-so a replay after a restart counts nothing twice. Which events feed them is the daemon's.
+so a replay after a restart counts nothing twice (a turn recorded again keeps the later end;
+an incident keeps its earliest start and first resolution). A time before the year 2000 or past
+9999, and a turn over `MAX_TURN_SECONDS` (a week), are refused: a wrong clock must not fill
+every later day with time. Which events feed them is the daemon's.
 
 - **Stretches.** A project's turns, with a gap under five minutes (`JOIN_GAP_SECONDS`) joined
   and the gap counted as time; a gap of exactly five minutes is not joined.

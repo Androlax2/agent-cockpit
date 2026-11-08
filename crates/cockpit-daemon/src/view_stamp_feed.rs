@@ -161,11 +161,11 @@ mod tests {
         // Login grants are listed by `torlek account grants`; no polled view shows them (#59).
         "sandbox_login_grants",
         "sandbox_launches",
+        // The digest reads these when the owner asks; no view polls them (#700).
+        "usage_approvals",
         // `usage-cost` reads the cost archive when the owner asks; no view polls it (#699).
         "usage_cost_cursors",
         "usage_cost_replies",
-        // The digest reads these when the owner asks; no view polls them (#700).
-        "usage_approvals",
         "usage_incidents",
         // `usage-quota` reads the plan windows when the owner asks; no view polls them.
         "usage_quota_accounts",

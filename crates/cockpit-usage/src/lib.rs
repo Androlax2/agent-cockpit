@@ -12,8 +12,8 @@ mod quota;
 use cockpit_turso::{Migration, MigrationSet};
 
 pub use activity::{
-    Approval, DayTime, Incident, JOIN_GAP_SECONDS, ProjectTime, Turn, record_approval,
-    record_incident, record_turn, time_with_agent,
+    Approval, DayTime, Incident, JOIN_GAP_SECONDS, MAX_TURN_SECONDS, ProjectTime, Turn,
+    record_approval, record_incident, record_turn, time_with_agent,
 };
 pub use cost::{DayCost, Recorded, costs, cursors, forget_home, price_unpriced, record_replies};
 pub use day::{Day, MAX_RANGE_DAYS};

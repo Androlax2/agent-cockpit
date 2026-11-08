@@ -4,6 +4,10 @@ use crate::Error;
 use crate::error::invalid;
 
 pub(crate) const SECONDS_PER_DAY: i64 = 86_400;
+/// 2000-01-01 00:00 UTC: the first moment a record may name, as [`Day::parse`] starts there.
+pub(crate) const FIRST_RECORDABLE_SECOND: i64 = 946_684_800;
+/// 10000-01-01 00:00 UTC: the first moment past the last year a day is written with four digits.
+pub(crate) const END_RECORDABLE_SECOND: i64 = 253_402_300_800;
 /// The most days one digest range holds: a year and a leap day.
 pub const MAX_RANGE_DAYS: i64 = 366;
 

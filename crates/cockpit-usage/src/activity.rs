@@ -5,7 +5,7 @@ use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, params};
 
 use crate::cost::attributed_project;
-use crate::day::SECONDS_PER_DAY;
+use crate::day::{END_RECORDABLE_SECOND, FIRST_RECORDABLE_SECOND, SECONDS_PER_DAY};
 use crate::error::{invalid, invalid_row};
 use crate::{Day, Error};
 
@@ -13,6 +13,9 @@ use crate::{Day, Error};
 /// or typing the next prompt is still time with it (report 18, as the legacy cockpit counted).
 /// A gap of exactly this long is not joined.
 pub const JOIN_GAP_SECONDS: i64 = 300;
+/// The longest turn a record may claim: a clock gone wrong must not fill every day after it
+/// with time with the agent.
+pub const MAX_TURN_SECONDS: i64 = 7 * SECONDS_PER_DAY;
 const MAX_KEY_BYTES: usize = 256;
 
 /// One turn of one session, recorded when it ends: the span the agent worked for a prompt.
@@ -29,7 +32,8 @@ impl Turn {
     /// `session` names the session in the caller's own words and is the same whenever the turn
     /// is recorded again; with `started_at` (Unix seconds) it names the turn. A `project` that
     /// is not a plain name is kept as `unknown`, as the cost archive does. Refuses a turn that
-    /// ends before it starts.
+    /// ends before it starts, lasts over [`MAX_TURN_SECONDS`], or names a time before the year
+    /// 2000 or past 9999.
     pub fn new(
         session: impl Into<String>,
         project: impl Into<String>,
@@ -38,10 +42,14 @@ impl Turn {
     ) -> Result<Turn, Error> {
         let session = session.into();
         check_key("session", &session)?;
-        if ended_at < started_at {
+        check_time("turn start", started_at)?;
+        check_time("turn end", ended_at)?;
+        if ended_at < started_at || ended_at - started_at > MAX_TURN_SECONDS {
             return Err(invalid(
                 "turn",
-                format!("ends at {ended_at}, before it starts at {started_at}"),
+                format!(
+                    "{started_at} to {ended_at} is not at most {MAX_TURN_SECONDS} seconds forward"
+                ),
             ));
         }
         Ok(Turn {
@@ -71,6 +79,7 @@ impl Approval {
     ) -> Result<Approval, Error> {
         let key = key.into();
         check_key("approval key", &key)?;
+        check_time("approval time", at)?;
         Ok(Approval {
             key,
             project: attributed_project(project.into()),
@@ -92,7 +101,8 @@ pub struct Incident {
 impl Incident {
     /// `key` names the incident within its provider and is the same whenever its status is
     /// recorded again, so a later record can resolve it. Refuses an empty or overlong key or
-    /// title, control characters in either, and a resolution before the start.
+    /// title, control characters in either, a resolution before the start, and a time before
+    /// the year 2000 or past 9999.
     pub fn new(
         provider: ProviderName,
         key: impl Into<String>,
@@ -104,6 +114,10 @@ impl Incident {
         let title = title.into();
         check_key("incident key", &key)?;
         check_key("incident title", &title)?;
+        check_time("incident start", started_at)?;
+        if let Some(resolved_at) = resolved_at {
+            check_time("incident resolution", resolved_at)?;
+        }
         if resolved_at.is_some_and(|resolved| resolved < started_at) {
             return Err(invalid(
                 "incident",
@@ -170,23 +184,50 @@ pub struct ProjectTime {
     pub seconds: u64,
 }
 
-/// Records a turn. A turn already recorded (same session and start) is kept as it was, so a
-/// replay after a restart counts nothing twice; returns whether this one was new.
+/// Records a turn. A turn already recorded (same session and start) is kept, its end raised to
+/// the later of the two, so a replay after a restart counts nothing twice and a turn recorded
+/// again with its real end gets it. Returns whether this turn was new.
 pub async fn record_turn(write: &WriteTransaction<'_>, turn: &Turn) -> Result<bool, Error> {
-    let added = write
-        .execute(
-            "INSERT INTO usage_turns (session, project, day, started_at, ended_at)
-             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (session, started_at) DO NOTHING",
-            params![
-                turn.session.as_str(),
-                turn.project.as_str(),
-                Day::containing(turn.started_at).to_string(),
-                turn.started_at,
-                turn.ended_at
-            ],
+    let mut rows = write
+        .query(
+            "SELECT ended_at FROM usage_turns WHERE session = ?1 AND started_at = ?2",
+            params![turn.session.as_str(), turn.started_at],
         )
         .await?;
-    Ok(added == 1)
+    let recorded_end: Option<i64> = match rows.next().await? {
+        Some(row) => Some(row.get(0)?),
+        None => None,
+    };
+    drop(rows);
+    match recorded_end {
+        None => {
+            write
+                .execute(
+                    "INSERT INTO usage_turns (session, project, day, started_at, ended_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        turn.session.as_str(),
+                        turn.project.as_str(),
+                        Day::containing(turn.started_at).to_string(),
+                        turn.started_at,
+                        turn.ended_at
+                    ],
+                )
+                .await?;
+            Ok(true)
+        }
+        Some(recorded_end) => {
+            if turn.ended_at > recorded_end {
+                write
+                    .execute(
+                        "UPDATE usage_turns SET ended_at = ?3 WHERE session = ?1 AND started_at = ?2",
+                        params![turn.session.as_str(), turn.started_at, turn.ended_at],
+                    )
+                    .await?;
+            }
+            Ok(false)
+        }
+    }
 }
 
 /// Records a decided approval; one already recorded under its key is kept as it was. Returns
@@ -210,8 +251,8 @@ pub async fn record_approval(
     Ok(added == 1)
 }
 
-/// Records an incident, or its newer status: the title is replaced, a resolution is kept once
-/// given, and the start stays the first one recorded.
+/// Records an incident, or its newer status: the title is replaced, the first resolution
+/// recorded is kept, and the start is the earliest recorded.
 pub async fn record_incident(
     write: &WriteTransaction<'_>,
     incident: &Incident,
@@ -221,7 +262,8 @@ pub async fn record_incident(
             "INSERT INTO usage_incidents (provider, key, title, started_at, resolved_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (provider, key) DO UPDATE SET title = excluded.title,
-                resolved_at = COALESCE(excluded.resolved_at, resolved_at)",
+                started_at = MIN(started_at, excluded.started_at),
+                resolved_at = COALESCE(resolved_at, excluded.resolved_at)",
             params![
                 incident.provider.as_str(),
                 incident.key.as_str(),
@@ -285,7 +327,7 @@ pub async fn time_with_agent(
     let mut rows = connection
         .query(
             "SELECT project, started_at, ended_at FROM usage_turns
-             WHERE started_at <= ?2 AND ended_at >= ?1 ORDER BY started_at, ended_at",
+             WHERE started_at <= ?2 AND ended_at >= ?1",
             params![
                 window_start - JOIN_GAP_SECONDS,
                 window_end + JOIN_GAP_SECONDS
@@ -372,6 +414,16 @@ fn check_key(field: &'static str, text: &str) -> Result<(), Error> {
         return Err(invalid(
             field,
             "1 to 256 bytes of text without control characters",
+        ));
+    }
+    Ok(())
+}
+
+fn check_time(field: &'static str, at: i64) -> Result<(), Error> {
+    if !(FIRST_RECORDABLE_SECOND..END_RECORDABLE_SECOND).contains(&at) {
+        return Err(invalid(
+            field,
+            format!("{at} is not from the year 2000 to 9999"),
         ));
     }
     Ok(())

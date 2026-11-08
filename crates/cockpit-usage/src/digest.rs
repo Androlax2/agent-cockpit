@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cockpit_turso::sql::{Connection, params};
 
@@ -80,9 +80,7 @@ pub async fn digests(
         }
     }
     for cost in costs(connection, first, last).await? {
-        let day = digests
-            .get_mut(&cost.day)
-            .expect("the archive answers the days asked");
+        let day = digest_of(&mut digests, cost.day)?;
         day.replies += cost.replies;
         day.unpriced_replies += cost.unpriced_replies;
         day.cost_nanos += cost.cost_nanos;
@@ -95,29 +93,23 @@ pub async fn digests(
     let (first_text, last_text) = (first.to_string(), last.to_string());
     let mut rows = connection
         .query(
-            "SELECT day, project, COUNT(*), COUNT(DISTINCT session) FROM usage_turns
-             WHERE day >= ?1 AND day <= ?2 GROUP BY day, project",
+            "SELECT day, project, session, COUNT(*) FROM usage_turns
+             WHERE day >= ?1 AND day <= ?2 GROUP BY day, project, session",
             params![first_text.as_str(), last_text.as_str()],
         )
         .await?;
+    let mut sessions_of_day: BTreeMap<Day, BTreeSet<String>> = BTreeMap::new();
     while let Some(row) = rows.next().await? {
         let day = stored_day(&row.get::<String>(0)?)?;
-        let (turns, sessions) = (count(row.get(2)?)?, count(row.get(3)?)?);
+        let (session, turns) = (row.get::<String>(2)?, count(row.get(3)?)?);
         let entry = project_day(&mut projects, day, row.get::<String>(1)?);
-        entry.turns = turns;
-        entry.sessions = sessions;
-        digests.get_mut(&day).expect("asked").turns += turns;
+        entry.turns += turns;
+        entry.sessions += 1;
+        digest_of(&mut digests, day)?.turns += turns;
+        sessions_of_day.entry(day).or_default().insert(session);
     }
-    let mut rows = connection
-        .query(
-            "SELECT day, COUNT(DISTINCT session) FROM usage_turns
-             WHERE day >= ?1 AND day <= ?2 GROUP BY day",
-            params![first_text.as_str(), last_text.as_str()],
-        )
-        .await?;
-    while let Some(row) = rows.next().await? {
-        let day = stored_day(&row.get::<String>(0)?)?;
-        digests.get_mut(&day).expect("asked").sessions = count(row.get(1)?)?;
+    for (day, sessions) in sessions_of_day {
+        digest_of(&mut digests, day)?.sessions = sessions.len() as u64;
     }
     let mut rows = connection
         .query(
@@ -130,7 +122,7 @@ pub async fn digests(
         let day = stored_day(&row.get::<String>(0)?)?;
         let approvals = count(row.get(2)?)?;
         project_day(&mut projects, day, row.get::<String>(1)?).approvals = approvals;
-        digests.get_mut(&day).expect("asked").approvals += approvals;
+        digest_of(&mut digests, day)?.approvals += approvals;
     }
 
     for incident in incidents(connection, first, last).await? {
@@ -142,9 +134,17 @@ pub async fn digests(
         }
     }
     for ((day, _), project) in projects {
-        digests.get_mut(&day).expect("asked").projects.push(project);
+        digest_of(&mut digests, day)?.projects.push(project);
     }
     Ok(digests.into_values().collect())
+}
+
+/// The digest of a day a stored row names; a row outside the range asked breaks the schema's
+/// rules (a day written another way than `YYYY-MM-DD`), so it is an error, not a panic.
+fn digest_of(digests: &mut BTreeMap<Day, DayDigest>, day: Day) -> Result<&mut DayDigest, Error> {
+    digests
+        .get_mut(&day)
+        .ok_or_else(|| invalid_row(format!("day {day} is outside the range asked")))
 }
 
 fn project_day(

@@ -207,3 +207,41 @@ async fn a_range_longer_than_a_leap_year_is_refused() {
 
     assert!(matches!(result, Err(Error::Invalid { field: "days", .. })));
 }
+
+#[tokio::test]
+async fn a_turn_recorded_again_with_a_later_end_takes_the_end() {
+    let fixture = Fixture::new().await;
+    fixture
+        .turn("s1", "app", clock(0, 10, 0), clock(0, 10, 0))
+        .await;
+
+    let replay = fixture
+        .turn("s1", "app", clock(0, 10, 0), clock(0, 10, 20))
+        .await;
+    let earlier_end = fixture
+        .turn("s1", "app", clock(0, 10, 0), clock(0, 10, 5))
+        .await;
+
+    assert!((replay, earlier_end) == (false, false));
+    assert_eq!(only_day(&fixture, "2026-11-02").await.seconds, 20 * 60);
+}
+
+#[tokio::test]
+async fn a_turn_longer_than_a_week_is_refused() {
+    let result = Turn::new("s1", "app", clock(0, 10, 0), clock(8, 10, 0));
+
+    assert!(matches!(result, Err(Error::Invalid { field: "turn", .. })));
+}
+
+#[tokio::test]
+async fn a_turn_before_the_year_2000_is_refused() {
+    let result = Turn::new("s1", "app", 0, 60);
+
+    assert!(matches!(
+        result,
+        Err(Error::Invalid {
+            field: "turn start",
+            ..
+        })
+    ));
+}

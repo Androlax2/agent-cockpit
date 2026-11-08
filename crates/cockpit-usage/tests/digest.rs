@@ -347,3 +347,60 @@ async fn the_digest_survives_a_restart() {
         before
     );
 }
+
+#[tokio::test]
+async fn an_incidents_first_resolution_is_kept() {
+    let fixture = Fixture::new().await;
+    fixture
+        .incident(
+            "claude",
+            "inc-1",
+            "Elevated errors",
+            clock(0, 8, 0),
+            Some(clock(0, 10, 0)),
+        )
+        .await;
+    fixture
+        .incident(
+            "claude",
+            "inc-1",
+            "Elevated errors",
+            clock(0, 8, 0),
+            Some(clock(0, 11, 0)),
+        )
+        .await;
+
+    let digests = fixture.digests_between("2026-11-02", "2026-11-02").await;
+
+    assert_eq!(digests[0].incidents[0].resolved_at(), Some(clock(0, 10, 0)));
+}
+
+#[tokio::test]
+async fn an_incident_whose_start_is_corrected_earlier_takes_the_earlier_start() {
+    let fixture = Fixture::new().await;
+    fixture
+        .incident("claude", "inc-1", "Investigating", clock(0, 10, 0), None)
+        .await;
+    fixture
+        .incident(
+            "claude",
+            "inc-1",
+            "Resolved",
+            clock(0, 8, 0),
+            Some(clock(0, 9, 0)),
+        )
+        .await;
+
+    let digests = fixture.digests_between("2026-11-02", "2026-11-02").await;
+
+    let incident = &digests[0].incidents[0];
+    assert_eq!(
+        (incident.started_at(), incident.resolved_at()),
+        (clock(0, 8, 0), Some(clock(0, 9, 0)))
+    );
+}
+
+#[tokio::test]
+async fn an_approval_before_the_year_2000_is_refused() {
+    assert!(cockpit_usage::Approval::new("a1", "app", 0).is_err());
+}
