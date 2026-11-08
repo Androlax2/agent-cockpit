@@ -29,6 +29,8 @@ pub(crate) async fn report(
     report: cockpit_protocol::AgentReport,
 ) -> Outcome {
     let peer_pid = connector.as_ref().ok().map(|process| process.pid);
+    // This report's own outcome: the recorded one carries an earlier quota stop forward.
+    let is_quota_stop = report.outcome == Some(cockpit_protocol::TurnOutcome::QuotaStopped);
     let sender = Sender::read(connector).await;
     let write = match database.write().await {
         Ok(write) => write,
@@ -48,7 +50,7 @@ pub(crate) async fn report(
     match recorded {
         Ok(recorded) => match write.commit().await {
             Ok(()) => {
-                if recorded.outcome == Some(cockpit_protocol::TurnOutcome::QuotaStopped) {
+                if is_quota_stop {
                     relaunch_quota_stopped(sessions, &recorded.session);
                 }
                 Outcome::Ok(Reply::AgentReported {

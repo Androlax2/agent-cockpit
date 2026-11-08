@@ -1145,10 +1145,9 @@ impl Sessions {
                             continue;
                         }
                         Ok(None) => {}
-                        Err(error) => {
-                            report.errors.push((id, error.to_string()));
-                            continue;
-                        }
+                        // Not `continue`: a relaunch that keeps failing must not keep the
+                        // session from its idle sleep.
+                        Err(error) => report.errors.push((id.clone(), error.to_string())),
                     }
                     match self.flag_if_unreported(&session, agent_report).await {
                         Ok(true) => {
@@ -2453,13 +2452,11 @@ impl Sessions {
                     None => first_bound(provider, &environment, &held)?.unwrap_or_default(),
                 }),
                 AccountRoute::AfterQuotaStop(from) => {
-                    let others: Vec<String> = fresh
-                        .into_iter()
-                        .filter(|account| Some(account) != from.as_ref())
-                        .collect();
-                    if let Some(account) = first_bound(provider, &environment, &others)? {
+                    // `from` is in `fresh` only once its hold is over: it has capacity again.
+                    if let Some(account) = first_bound(provider, &environment, &fresh)? {
+                        let switched_from = from.filter(|from| account.name.as_ref() != Some(from));
                         return Ok(LaunchAccount {
-                            switched_from: from,
+                            switched_from,
                             ..account
                         });
                     }
@@ -2479,30 +2476,27 @@ impl Sessions {
         store::accounts_stopped_since(&read, provider, store::now() - QUOTA_STOP_HOLD_SECONDS).await
     }
 
-    /// The account a quota-stopped `session` would move to (#59): the first listed account
-    /// other than its own that holds a credential and has not quota-stopped lately. `None`
-    /// when there is none, or when an unusable credential comes first, which would refuse the
-    /// launch and leave the session failed; the session then stays as it is.
-    async fn account_with_capacity(&self, session: &Session) -> Result<Option<String>, Error> {
-        let provider = session.provider.as_str();
+    /// Whether a quota-stopped `session` has another account to move to (#59), chosen as its
+    /// relaunch would choose it. `false` when there is none, or when an unusable credential
+    /// comes first, which would refuse the relaunch and leave the session failed; the session
+    /// then stays as it is.
+    async fn has_account_with_capacity(&self, session: &Session) -> Result<bool, Error> {
         let current = session
             .launch
             .as_ref()
-            .and_then(|launch| launch.account.as_deref());
-        let stopped = self.accounts_out_of_capacity(provider).await?;
-        for account in self.sandbox_credential_state(provider).await? {
-            if Some(account.account.as_str()) == current || stopped.contains(&account.account) {
-                continue;
-            }
-            match account.state {
-                cockpit_config::ProviderCredentialState::Missing { .. } => {}
-                cockpit_config::ProviderCredentialState::Unusable { .. } => return Ok(None),
-                cockpit_config::ProviderCredentialState::Configured { .. } => {
-                    return Ok(Some(account.account));
-                }
-            }
+            .and_then(|launch| launch.account.clone());
+        let chosen = self
+            .launch_account(
+                self.owner_settings().sandbox,
+                session.provider.as_str(),
+                AccountRoute::AfterQuotaStop(current.clone()),
+            )
+            .await;
+        match chosen {
+            Ok(account) => Ok(account.name.is_some() && account.name != current),
+            Err(Error::ProviderCredential { .. } | Error::AccountUnavailable { .. }) => Ok(false),
+            Err(error) => Err(error),
         }
-        Ok(None)
     }
 
     /// Relaunches a running session whose agent quota-stopped on its current launch on the
@@ -2530,7 +2524,7 @@ impl Sessions {
         {
             return Ok(None);
         }
-        if self.account_with_capacity(session).await?.is_none() {
+        if !self.has_account_with_capacity(session).await? {
             return Ok(None);
         }
         // Checked before the stop, as a deferred restart is: a refused relaunch keeps its agent.
@@ -3389,8 +3383,8 @@ enum AccountRoute {
     /// A relaunch: the account its conversation runs on, which must still be listed and hold
     /// a credential.
     Keep(String),
-    /// A relaunch after a quota stop on the account named, if any: the first other account
-    /// holding a credential that has not quota-stopped lately; without one, as `Keep`.
+    /// A relaunch after a quota stop on the account named, if any: the first account holding
+    /// a credential that has not quota-stopped lately; without one, as `Keep`.
     AfterQuotaStop(Option<String>),
 }
 

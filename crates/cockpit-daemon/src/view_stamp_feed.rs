@@ -134,6 +134,8 @@ mod tests {
     /// Tables no polled view reads. A table that is neither here nor in an area fails
     /// `every_table_is_in_an_area_or_shown_by_none`, so a new table is classified on purpose.
     const SHOWN_BY_NO_AREA: &[&str] = &[
+        // Launches read the quota stops to choose an account; no view shows them (#59).
+        "account_quota_stops",
         "agent_channel_launches",
         "authorization_audit",
         "authorization_revision",
