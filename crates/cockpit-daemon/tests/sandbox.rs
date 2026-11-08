@@ -12,13 +12,14 @@ mod candidate;
 mod real_daemon;
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{Command, ErrorCode, LaunchKindView, SessionStateView, SessionView};
 use real_daemon::{
-    BUILD_PROFILE_DIR, COMMANDED_PROJECT, Daemon, GENEROUS, Home, SETTLE, added_context, is_alive,
-    launch_option, listed, mcp_tool_text, new_session, session_new_command,
+    BUILD_PROFILE_DIR, COMMANDED_PROJECT, Daemon, GENEROUS, Home, SETTLE, added_context,
+    cockpit_program, is_alive, launch_option, listed, mcp_tool_text, new_session,
+    session_new_command,
 };
 
 const REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
@@ -1576,6 +1577,141 @@ async fn a_restart_whose_account_lost_its_credential_is_refused_naming_it() {
                 && error.message.contains("account spare, which holds no credential any more")),
         "{restarted:?}"
     );
+}
+
+/// A sandboxed session on `work`, `spare` holding a credential too.
+async fn agent_on_work_with_spare(home: &Home) -> Sandboxed {
+    let agent = sandboxed_agent(home, |home| {
+        home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
+        for name in ["work", "spare"] {
+            home.write_account_credential(
+                "claude",
+                name,
+                "ANTHROPIC_API_KEY",
+                &format!("{SETUP_TOKEN}\n"),
+                0o600,
+            );
+        }
+    })
+    .await;
+    run_in_agent(home, &agent.root, "true").await;
+    agent
+}
+
+/// The line the agent runs to report that the usage limit stopped its turn, as Codex's
+/// launcher does.
+fn quota_stop_line() -> String {
+    format!(
+        "'{}' agent report --state waiting --outcome quota-stopped",
+        cockpit_program().display()
+    )
+}
+
+/// #59 acceptance, report 18: a quota stop the session reports relaunches it on the next
+/// listed account within one minute, resuming the same conversation, and the launch records
+/// the account it moved off.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_quota_stop_resumes_the_conversation_on_the_next_account_within_a_minute() {
+    let home = Home::new();
+    let agent = agent_on_work_with_spare(&home).await;
+    let client = home.connect().await;
+    let before = listed(&client, &agent.session).await;
+    assert_eq!(
+        before.launch.as_ref().unwrap().account.as_deref(),
+        Some("work")
+    );
+
+    std::fs::remove_file(agent.root.join(".agent/launch.arguments")).unwrap();
+    let reported = Instant::now();
+    home.command_agent(&agent.root, &quota_stop_line());
+    let after = loop {
+        let session = listed(&client, &agent.session).await;
+        if session.launch.as_ref().unwrap().account.as_deref() == Some("spare")
+            && session.state == SessionStateView::Running
+        {
+            break session;
+        }
+        // The acceptance asks for a minute; half a 30-second pass proves the report itself
+        // starts the relaunch, the pass being only its fallback.
+        assert!(
+            reported.elapsed() < Duration::from_secs(15),
+            "not relaunched on spare within 15 seconds: {session:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    let launch = after.launch.unwrap();
+    assert_eq!(launch.kind, LaunchKindView::Restart);
+    assert_eq!(launch.switched_from.as_deref(), Some("work"));
+    assert!(before.conversation.is_some());
+    assert_eq!(after.conversation, before.conversation);
+    let arguments = home.launch_arguments(&agent.root).await.join(" ");
+    assert!(
+        arguments.contains(&format!("--resume {}", before.conversation.unwrap())),
+        "{arguments}"
+    );
+}
+
+/// #59: after an account quota-stops, a new session starts on the next account with
+/// capacity rather than on it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_session_passes_over_an_account_that_quota_stopped() {
+    let home = Home::new();
+    let agent = agent_on_work_with_spare(&home).await;
+    let client = home.connect().await;
+    home.command_agent(&agent.root, &quota_stop_line());
+    wait_for_launch_account(&home, &agent.session, "spare").await;
+
+    let (other, _) = home.project(&client, "other").await;
+    let started = new_session(&client, &other).await;
+
+    wait_for_launch_account(&home, &started.id, "spare").await;
+}
+
+/// Waits until `session`'s latest launch runs on `wanted`.
+async fn wait_for_launch_account(home: &Home, session: &str, wanted: &str) {
+    let client = home.connect().await;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let launch = listed(&client, session).await.launch;
+        if launch.as_ref().and_then(|launch| launch.account.as_deref()) == Some(wanted) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{session} never ran on {wanted}: {launch:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// #59: with no other account holding a credential, a quota stop leaves the session on its
+/// account and running.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_quota_stop_with_no_other_account_keeps_the_session_where_it_is() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |home| {
+        home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
+        home.write_account_credential(
+            "claude",
+            "work",
+            "ANTHROPIC_API_KEY",
+            &format!("{SETUP_TOKEN}\n"),
+            0o600,
+        );
+    })
+    .await;
+    run_in_agent(&home, &agent.root, "true").await;
+    let client = home.connect().await;
+    let before = listed(&client, &agent.session).await.launch.unwrap();
+
+    let reported = run_in_agent(&home, &agent.root, &quota_stop_line()).await;
+    tokio::time::sleep(SETTLE).await;
+
+    assert!(reported.ends_with("exit=0\n"), "{reported}");
+    let session = listed(&client, &agent.session).await;
+    assert_eq!(session.state, SessionStateView::Running);
+    assert_eq!(session.launch.unwrap(), before);
 }
 
 /// #59: an unusable credential refuses the launch, naming the account, rather than being

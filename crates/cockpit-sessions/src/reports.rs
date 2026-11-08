@@ -187,8 +187,14 @@ pub async fn report(
     if report.is_conversation_ending {
         return Ok(previous.unwrap_or_else(|| unreported(&session)));
     }
+    let is_quota_stop = report.outcome == Some(TurnOutcome::QuotaStopped);
     let merged = merge(&session, previous, report, launch, is_new_conversation);
     store_report(write, &merged).await?;
+    // The account's stop is the daemon's record from here: the next launches pass it over,
+    // and the session relaunches on another account (#59).
+    if is_quota_stop && let Some(launch) = launch {
+        crate::store::record_quota_stop(write, launch).await?;
+    }
     Ok(merged)
 }
 

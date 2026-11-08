@@ -347,8 +347,15 @@ fn choice_lines(session: &SessionView) -> String {
     let account = session
         .launch
         .as_ref()
-        .and_then(|launch| launch.account.as_deref())
-        .map(|account| format!("account: {account}\n"))
+        .and_then(|launch| {
+            let account = launch.account.as_deref()?;
+            Some(match &launch.switched_from {
+                Some(from) => {
+                    format!("account: {account} (switched from {from} at a quota stop)\n")
+                }
+                None => format!("account: {account}\n"),
+            })
+        })
         .unwrap_or_default();
     threshold + &account
 }

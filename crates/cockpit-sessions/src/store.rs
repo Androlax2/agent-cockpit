@@ -291,6 +291,19 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 17,
             sql: "ALTER TABLE session_launches ADD COLUMN account TEXT CHECK (account <> '');",
         },
+        // #59: when each account last quota-stopped, which the next launches pass over for a
+        // while, and the account a launch moved off after its session's quota stop.
+        Migration {
+            version: 18,
+            sql: "CREATE TABLE account_quota_stops (
+                provider TEXT NOT NULL CHECK (provider <> ''),
+                account TEXT NOT NULL CHECK (account <> ''),
+                stopped_at INTEGER NOT NULL,
+                PRIMARY KEY (provider, account)
+            );
+            ALTER TABLE session_launches ADD COLUMN switched_from TEXT
+                CHECK (switched_from <> '');",
+        },
     ],
 };
 
@@ -318,7 +331,7 @@ const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout
     EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id),
     (SELECT max(w.working_order) FROM session_launches w WHERE w.session_id = s.id),
     e.ended_by, e.code, e.output, s.model, s.effort, s.started_by, s.compaction_threshold,
-    l.account";
+    l.account, l.switched_from";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
     (SELECT max(id) FROM session_launches WHERE session_id = s.id)
     LEFT JOIN session_exits e ON e.launch_id = l.id";
@@ -594,6 +607,7 @@ pub(crate) async fn insert_launch(
     start_files: &StartFileSnapshot,
     bundle: Option<&LaunchBundle>,
     account: Option<&str>,
+    switched_from: Option<&str>,
 ) -> Result<(), Error> {
     let working_order = match purpose {
         LaunchPurpose::Work => Value::Integer(write.commit_order().await?),
@@ -602,8 +616,9 @@ pub(crate) async fn insert_launch(
     write
         .execute(
             "INSERT INTO session_launches
-                (session_id, kind, execution_id, launched_at, working_order, account)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (session_id, kind, execution_id, launched_at, working_order, account,
+                 switched_from)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             (
                 id.as_str(),
                 kind.column(),
@@ -611,6 +626,7 @@ pub(crate) async fn insert_launch(
                 now(),
                 working_order,
                 optional_text(account),
+                optional_text(switched_from),
             ),
         )
         .await?;
@@ -632,6 +648,56 @@ pub(crate) async fn insert_launch(
             .await?;
     }
     Ok(())
+}
+
+/// Records that `launch`'s account quota-stopped now (#59); nothing for a launch on no
+/// account.
+pub(crate) async fn record_quota_stop(
+    write: &WriteTransaction<'_>,
+    launch: i64,
+) -> Result<(), Error> {
+    let mut rows = write
+        .query(
+            "SELECT s.provider, l.account FROM session_launches l
+             JOIN sessions s ON s.id = l.session_id
+             WHERE l.id = ?1 AND l.account IS NOT NULL",
+            [launch],
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(());
+    };
+    let (provider, account): (String, String) = (row.get(0)?, row.get(1)?);
+    drop(rows);
+    write
+        .execute(
+            "INSERT INTO account_quota_stops (provider, account, stopped_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT (provider, account) DO UPDATE SET stopped_at = excluded.stopped_at",
+            (provider, account, now()),
+        )
+        .await?;
+    Ok(())
+}
+
+/// `provider`'s accounts that quota-stopped at or after `since`, seconds since 1970.
+pub(crate) async fn accounts_stopped_since(
+    connection: &Connection,
+    provider: &str,
+    since: i64,
+) -> Result<Vec<String>, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT account FROM account_quota_stops
+             WHERE provider = ?1 AND stopped_at >= ?2 ORDER BY account",
+            (provider, since),
+        )
+        .await?;
+    let mut accounts = Vec::new();
+    while let Some(row) = rows.next().await? {
+        accounts.push(row.get(0)?);
+    }
+    Ok(accounts)
 }
 
 /// The bundle the latest launch of each session whose agent is starting, running or stopping
@@ -907,6 +973,7 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
                 execution: ExecutionId(row.get(15)?),
                 launched_at: row.get(16)?,
                 account: row.get(26)?,
+                switched_from: row.get(27)?,
             })
         }
     };

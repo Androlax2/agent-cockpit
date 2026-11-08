@@ -579,6 +579,9 @@ fn log_tick(report: &cockpit_sessions::TickReport) {
     for id in &report.restarted {
         tracing::info!(session = %id, "a deferred restart ran at the end of a turn");
     }
+    for id in &report.switched {
+        tracing::info!(session = %id, "a quota-stopped session relaunched on its next account");
+    }
     for id in &report.unreported {
         tracing::warn!(session = %id, "a new agent never reported; it waits on the owner");
     }
@@ -660,6 +663,7 @@ fn session_view(
             },
             launched_at: launch.launched_at,
             account: launch.account.clone(),
+            switched_from: launch.switched_from.clone(),
         }),
         exit: session.exit.as_ref().map(|exit| AgentExitView {
             status: match exit.status {
