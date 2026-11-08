@@ -38,7 +38,7 @@ async fn a_reply_costs_each_kind_of_token_at_its_models_rate() {
 }
 
 #[tokio::test]
-async fn fast_mode_doubles_a_replys_cost() {
+async fn fast_mode_doubles_the_cost_of_a_reply() {
     let fixture = Fixture::new().await;
     let fast = ReplyTokens {
         is_fast: true,
