@@ -1668,18 +1668,18 @@ async fn a_new_session_passes_over_an_account_that_quota_stopped() {
     wait_for_launch_account(&home, &started.id, "spare").await;
 }
 
-/// Waits until `session`'s latest launch runs on `account`.
-async fn wait_for_launch_account(home: &Home, session: &str, account: &str) {
+/// Waits until `session`'s latest launch runs on `wanted`.
+async fn wait_for_launch_account(home: &Home, session: &str, wanted: &str) {
     let client = home.connect().await;
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let launch = listed(&client, session).await.launch;
-        if launch.as_ref().and_then(|launch| launch.account.as_deref()) == Some(account) {
+        if launch.as_ref().and_then(|launch| launch.account.as_deref()) == Some(wanted) {
             return;
         }
         assert!(
             Instant::now() < deadline,
-            "{session} never ran on {account}: {launch:?}"
+            "{session} never ran on {wanted}: {launch:?}"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
