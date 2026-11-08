@@ -522,7 +522,7 @@ def print_summary(records: list[dict]) -> None:
         print(f"{NOT_RUN} checks tested nothing: none of them is a pass")
     for record in records:
         if record["outcome"] == SUCCEEDED:
-            print(f"FINDING to file: {record['id']} succeeded, a breach ({record['command']})")
+            print(f"FINDING to file: {record['id']} succeeded, read its raw output ({record['command']})")
 
 
 def exit_status(records: list[dict]) -> int:

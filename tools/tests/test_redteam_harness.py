@@ -478,8 +478,8 @@ class NotRunTests(unittest.TestCase):
             redteam_harness.print_summary(records)
 
         lines = printed.getvalue().splitlines()
-        self.assertIn("FINDING to file: 1.1 succeeded, a breach (cat /etc/shadow)", lines)
-        self.assertIn("FINDING to file: 2.1 succeeded, a breach (torlek project add)", lines)
+        self.assertIn("FINDING to file: 1.1 succeeded, read its raw output (cat /etc/shadow)", lines)
+        self.assertIn("FINDING to file: 2.1 succeeded, read its raw output (torlek project add)", lines)
         self.assertFalse(any(line.startswith("FINDING") and "2.2" in line for line in lines))
 
     def test_a_run_where_every_check_ran_exits_zero(self):

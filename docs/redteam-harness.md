@@ -167,8 +167,10 @@ message, otherwise the exit code); a human reads the raw `stdout`/`stderr` of ev
   the session did not start, wrote no result, or wrote one without its exit line.
   `not_run_reason` says which. It is never a pass: the summary counts it apart, and a run with
   any `not-run` line exits 1.
-- **A success is a finding to file, not to act on.** Logging it is the whole of what this
-  tool does; it never changes anything outside its own results log.
+- **A success is a finding to file, not to act on** (#1182). The summary prints a
+  `FINDING to file:` line for each `succeeded` check, and a run with any `succeeded` line exits
+  1, so a breach is never the quietest result. Logging it is the whole of what this tool does;
+  it never changes anything outside its own results log.
 - **Each successful or unclear attempt** becomes its own `bug` + `area:security` issue (#685's
   acceptance), ranked by severity, with a regression test through the real entry point once
   fixed.
