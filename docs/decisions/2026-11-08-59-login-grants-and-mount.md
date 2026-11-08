@@ -4,8 +4,8 @@ Status: accepted
 
 Issue #59, parts 3b and 3c. Passing over a login account the project holds no grant for,
 naming it and the missing grant, and refusing a restart kept on it was decided by Theo
-(2026-11-08, option C). The read-write login mount, the file or a folder holding only it, is
-#858's. The rest are engineering defaults listed in the pull requests.
+(2026-11-08, option C). The read-write login mount, the file or a folder holding only it,
+comes from #858. The rest are engineering defaults listed in the pull requests.
 
 - **A grant is the owner's, per project.** `torlek account grant PROJECT PROVIDER ACCOUNT`
   records it in `sandbox_login_grants` like a network grant (#674): when and through which
