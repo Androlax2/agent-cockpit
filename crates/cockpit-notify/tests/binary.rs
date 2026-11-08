@@ -801,7 +801,8 @@ fn a_quota_alert_turned_off_everywhere_is_logged_as_skipped_with_the_setting() {
 
     assert!(
         stderr.contains(
-            "torlek-notify: skipped usage session=host name=\"codex five-hour window\" \
+            "torlek-notify: skipped usage session=host:codex/default/five-hour \
+             name=\"codex five-hour window\" \
              desktop=off(setting) sound=off(setting)"
         ),
         "{stderr}"

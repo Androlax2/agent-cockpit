@@ -16,8 +16,10 @@ use cockpit_protocol::{
 
 use crate::event::Event;
 
-/// The "session" of an event that is the host's, not a session's (the low disk, a quota alert). A session id
-/// is `s` and twelve hex digits, so no session can have it.
+/// The "session" of an event that is the host's, not a session's: the low disk, and with
+/// `host:` and the window's `quota-alert` id, a quota alert, so each window's alert is held
+/// and still raised apart. A session id is `s` and twelve hex digits, so no session can have
+/// either.
 pub(crate) const HOST: &str = "host";
 
 /// One reason a session needs the owner. A session raises it while its cause stands; the
@@ -218,7 +220,7 @@ impl Board {
             cause: Cause::Disk,
         });
         let quota_alerts = self.quota_alerts.iter().map(|(window, alert)| Raised {
-            session: HOST.to_owned(),
+            session: format!("{HOST}:{window}"),
             event: Event::Usage,
             cause: Cause::Usage {
                 window: window.clone(),
@@ -307,25 +309,23 @@ impl Board {
 
     /// The name the owner knows `session` by: the label its agent reported, else its id.
     pub(crate) fn name_of(&self, session: &str) -> String {
-        if session == HOST {
-            return "Free disk space".to_owned();
-        }
         self.reports
             .get(session)
             .and_then(|report| report.label.clone())
             .unwrap_or_else(|| session.to_owned())
     }
 
-    /// The name a notice of `raised` gives: the plan window for a quota alert, else
+    /// The name a notice of `raised` gives: what a host event is about, else
     /// [`Board::name_of`] its session.
     pub(crate) fn notice_name(&self, raised: &Raised) -> String {
-        let Cause::Usage { window, .. } = &raised.cause else {
-            return self.name_of(&raised.session);
-        };
-        self.quota_alerts.get(window).map_or_else(
-            || window.clone(),
-            |alert| format!("{} {} window", alert.provider, alert.limit),
-        )
+        match &raised.cause {
+            Cause::Disk => "Free disk space".to_owned(),
+            Cause::Usage { window, .. } => self.quota_alerts.get(window).map_or_else(
+                || window.clone(),
+                |alert| format!("{} {} window", alert.provider, alert.limit),
+            ),
+            _ => self.name_of(&raised.session),
+        }
     }
 
     /// What `raised` is about, in a line for the owner, when there is more to say than its

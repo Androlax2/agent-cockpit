@@ -3,7 +3,8 @@
 //! twice as long as before, up to an hour, so a refused sign-in or a rate limit is not asked
 //! again at every refresh. The alerts a reading fires are logged and put on the change feed,
 //! in the reading's own transaction, as one `quota-alert` entity per window: `torlek-notify`
-//! tells the owner each new state. `usage-quota` answers the recorded windows to the owner,
+//! tells the owner each new state. A reading that shows the window below every threshold
+//! retracts it. `usage-quota` answers the recorded windows to the owner,
 //! judged under the same policy.
 
 use std::path::PathBuf;
@@ -14,7 +15,9 @@ use cockpit_protocol::{
     ErrorCode, Outcome, ProtocolError, QuotaAccountView, QuotaAlertView, QuotaFailureView,
     QuotaWindowStateView, QuotaWindowView, Reply,
 };
-use cockpit_provider_api::{Capability, Provider, ProviderError, QuotaReading};
+use cockpit_provider_api::{
+    Capability, LimitKey, Provider, ProviderError, ProviderName, QuotaReading,
+};
 use cockpit_turso::Database;
 use cockpit_usage::{AccountName, AccountQuota, Alert, QuotaPolicy, WindowQuota, WindowState};
 
@@ -187,23 +190,55 @@ async fn record(
         cockpit_messaging::publish(
             &write,
             QUOTA_ALERT,
-            &alert_id(alert),
+            &alert_id(&alert.provider, &alert.account, &alert.limit),
             &crate::session_feed::state_of(&alert_view(alert)),
         )
         .await
         .map_err(|error| error.to_string())?;
     }
+    if let Ok(reading) = answer {
+        retract_cleared_alerts(&write, provider.name(), account, reading, polling, now).await?;
+    }
     write.commit().await.map_err(|error| error.to_string())?;
     Ok(alerts)
 }
 
+/// Takes the alert of each window `reading` shows below every threshold off the feed: a reset
+/// window, or one that fell back, has no alert standing. A window the reading leaves out, or
+/// reports with its reset already past, keeps it, as `cockpit-usage` keeps its fired
+/// thresholds.
+async fn retract_cleared_alerts(
+    write: &cockpit_turso::WriteTransaction<'_>,
+    provider: &ProviderName,
+    account: &AccountName,
+    reading: &QuotaReading,
+    polling: &QuotaPolling,
+    now: i64,
+) -> Result<(), String> {
+    let lowest_threshold = polling.policy.alert_thresholds()[0];
+    let cleared = reading.windows().iter().filter(|window| {
+        window.used_percent() < f64::from(lowest_threshold)
+            && !window.resets_at().is_some_and(|reset| reset <= now)
+    });
+    for window in cleared {
+        cockpit_messaging::retract(
+            write,
+            QUOTA_ALERT,
+            &alert_id(provider, account, window.limit()),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 /// One entity per window: a later alert of the window replaces the earlier one.
-fn alert_id(alert: &Alert) -> String {
+fn alert_id(provider: &ProviderName, account: &AccountName, limit: &LimitKey) -> String {
     format!(
         "{}/{}/{}",
-        alert.provider.as_str(),
-        alert.account.as_str(),
-        alert.limit.as_str()
+        provider.as_str(),
+        account.as_str(),
+        limit.as_str()
     )
 }
 

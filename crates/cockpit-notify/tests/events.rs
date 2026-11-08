@@ -205,6 +205,53 @@ fn the_same_threshold_in_the_next_window_is_told_again() {
 }
 
 #[test]
+fn two_windows_alerts_are_told_apart() {
+    let mut notifier = running();
+    let seven_day = QuotaAlertView {
+        limit: "seven-day".to_owned(),
+        ..quota_alert(95, 95, 1_800_000_000)
+    };
+
+    let told = notifier
+        .apply_changes(&after_snapshot(vec![
+            upsert(
+                EntityKind::QuotaAlert,
+                FIVE_HOUR,
+                &quota_alert(80, 83, 1_800_000_000),
+            ),
+            upsert(
+                EntityKind::QuotaAlert,
+                "claude/default/seven-day",
+                &seven_day,
+            ),
+        ]))
+        .unwrap();
+
+    let names: Vec<&str> = told.iter().map(|notice| notice.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["claude five-hour window", "claude seven-day window"]
+    );
+    assert_ne!(told[0].session, told[1].session);
+}
+
+#[test]
+fn a_window_whose_alert_is_retracted_no_longer_raises_its_notice() {
+    let mut notifier = running();
+    let told = change_quota_alert(&mut notifier, &quota_alert(80, 83, 1_800_000_000));
+
+    let retracted = notifier
+        .apply_changes(&after_snapshot(vec![tombstone(
+            EntityKind::QuotaAlert,
+            FIVE_HOUR,
+        )]))
+        .unwrap();
+
+    assert_eq!(retracted, []);
+    assert!(!notifier.still_raises(&told[0]));
+}
+
+#[test]
 fn a_quota_alert_already_on_the_feed_when_the_notifier_starts_is_not_news() {
     let mut notifier = Notifier::default();
     let mut told = notifier

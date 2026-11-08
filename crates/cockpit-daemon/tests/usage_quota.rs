@@ -7,6 +7,7 @@
 mod candidate;
 mod common;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -111,10 +112,10 @@ impl Polled {
     async fn alerts_until(
         &self,
         daemon: &Daemon,
-        is_done: impl Fn(&std::collections::BTreeMap<String, QuotaAlertView>) -> bool,
-    ) -> std::collections::BTreeMap<String, QuotaAlertView> {
+        is_done: impl Fn(&BTreeMap<String, QuotaAlertView>) -> bool,
+    ) -> BTreeMap<String, QuotaAlertView> {
         let mut feed = Subscription::new(daemon.socket_path().to_owned(), None, GENEROUS);
-        let mut alerts = std::collections::BTreeMap::new();
+        let mut alerts = BTreeMap::new();
         let deadline = tokio::time::Instant::now() + GENEROUS;
         while !is_done(&alerts) {
             let pending = tokio::time::timeout_at(deadline, feed.next_batch())
@@ -337,8 +338,28 @@ async fn a_daemon_that_reads_no_quota_refuses_the_request() {
     );
 }
 
+const FIVE_HOUR_ALERT: &str = "fake/default/five-hour";
+
 #[tokio::test(flavor = "multi_thread")]
-async fn each_threshold_a_window_passes_reaches_the_change_feed_as_its_window() {
+async fn a_window_passing_a_threshold_reaches_the_change_feed_as_its_window() {
+    let (polled, daemon) = Polled::start(vec![Ok(five_hour(85.0))]).await;
+
+    let alerts = polled
+        .alerts_until(&daemon, |alerts| !alerts.is_empty())
+        .await;
+
+    assert_eq!(alerts.keys().collect::<Vec<_>>(), [FIVE_HOUR_ALERT]);
+    let alert = &alerts[FIVE_HOUR_ALERT];
+    assert_eq!(
+        (alert.provider.as_str(), alert.account.as_str()),
+        ("fake", "default")
+    );
+    assert_eq!((alert.threshold, alert.used_percent), (80, 85));
+    assert!(alert.resets_at.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_next_threshold_replaces_the_windows_alert_on_the_feed() {
     let (polled, daemon) = Polled::start(vec![Ok(five_hour(85.0)), Ok(five_hour(97.0))]).await;
 
     let alerts = polled
@@ -347,17 +368,24 @@ async fn each_threshold_a_window_passes_reaches_the_change_feed_as_its_window() 
         })
         .await;
 
-    assert_eq!(
-        alerts.keys().collect::<Vec<_>>(),
-        ["fake/default/five-hour"]
-    );
-    let alert = &alerts["fake/default/five-hour"];
-    assert_eq!(
-        (alert.provider.as_str(), alert.account.as_str()),
-        ("fake", "default")
-    );
-    assert_eq!((alert.threshold, alert.used_percent), (95, 97));
-    assert!(alert.resets_at.is_some());
+    assert_eq!(alerts.keys().collect::<Vec<_>>(), [FIVE_HOUR_ALERT]);
+    assert_eq!(alerts[FIVE_HOUR_ALERT].used_percent, 97);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_window_read_below_every_threshold_again_takes_its_alert_off_the_feed() {
+    // Five readings past 80 % first, so the feed's snapshot is taken while the alert stands.
+    let mut answers = vec![Ok(five_hour(85.0)); 5];
+    answers.push(Ok(five_hour(3.0)));
+    let (polled, daemon) = Polled::start(answers).await;
+    polled
+        .alerts_until(&daemon, |alerts| !alerts.is_empty())
+        .await;
+
+    polled.asks_once(7).await;
+    let published = polled.published_alerts(daemon).await;
+
+    assert_eq!(published, Vec::<String>::new());
 }
 
 #[tokio::test(flavor = "multi_thread")]
