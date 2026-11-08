@@ -2399,7 +2399,7 @@ async fn doctor_names_the_grant_a_login_account_no_project_holds_needs() {
 
     assert!(row.starts_with("needs-authorization"), "{row}");
     assert!(
-        report.contains("torlek account grant PROJECT claude work"),
+        report.contains("account grant PROJECT claude work`"),
         "{report}"
     );
 }

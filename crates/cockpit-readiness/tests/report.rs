@@ -1365,8 +1365,8 @@ fn signed_in(granted_to: &[&str]) -> cockpit_config::AccountLoginState {
     }
 }
 
-/// The report for one provider whose sandboxed sign-in comes from `accounts`.
-fn report_with_accounts(accounts: Vec<cockpit_config::AccountCredentialState>) -> Report {
+/// The report for one provider whose sandboxed sign-ins are `listed`.
+fn report_listing(listed: Vec<cockpit_config::AccountCredentialState>) -> Report {
     let fixture = Fixture::new();
     fixture.configure("", None);
     let mut host = ready_host();
@@ -1374,14 +1374,14 @@ fn report_with_accounts(accounts: Vec<cockpit_config::AccountCredentialState>) -
         .found
         .as_mut()
         .unwrap()
-        .sandbox_credentials = accounts;
+        .sandbox_credentials = listed;
     assess(&host, &fixture.config(), None)
 }
 
 /// #59: a signed-in login account is a sandboxed sign-in of the projects granted it.
 #[test]
 fn a_granted_login_account_is_an_available_sandboxed_sign_in_naming_its_projects() {
-    let report = report_with_accounts(vec![account(
+    let report = report_listing(vec![account(
         "work",
         no_credential(),
         signed_in(&["alpha", "beta"]),
@@ -1399,7 +1399,7 @@ fn a_granted_login_account_is_an_available_sandboxed_sign_in_naming_its_projects
 /// #59: no session uses a login no project holds a grant for, so `doctor` names the grant.
 #[test]
 fn a_login_account_no_project_is_granted_names_the_grant() {
-    let report = report_with_accounts(vec![account("work", no_credential(), signed_in(&[]))]);
+    let report = report_listing(vec![account("work", no_credential(), signed_in(&[]))]);
 
     let fact = requirement(&report, "provider claude account work sandboxed sign-in");
     assert_eq!(fact.status, Status::NeedsAuthorization);
@@ -1423,7 +1423,7 @@ fn an_account_with_both_a_credential_and_a_login_blocks() {
         path: PathBuf::from("/config/provider-credentials/claude/work/ANTHROPIC_API_KEY"),
     };
 
-    let report = report_with_accounts(vec![account("work", credential, signed_in(&["alpha"]))]);
+    let report = report_listing(vec![account("work", credential, signed_in(&["alpha"]))]);
 
     let fact = requirement(&report, "provider claude account work sandboxed sign-in");
     assert_eq!(fact.status, Status::MissingPrerequisite);
@@ -1446,7 +1446,7 @@ fn an_unusable_login_blocks_like_the_launch_it_refuses() {
         reason: "keeps a login /state/x that is no plain file".to_owned(),
     };
 
-    let report = report_with_accounts(vec![account("work", no_credential(), login)]);
+    let report = report_listing(vec![account("work", no_credential(), login)]);
 
     let fact = requirement(&report, "provider claude account work sandboxed sign-in");
     assert_eq!(fact.status, Status::MissingPrerequisite);
@@ -1460,7 +1460,7 @@ fn an_unusable_login_blocks_like_the_launch_it_refuses() {
 /// beside the credential file.
 #[test]
 fn an_empty_account_offers_a_sign_in_when_its_provider_keeps_a_login() {
-    let report = report_with_accounts(vec![account(
+    let report = report_listing(vec![account(
         "work",
         no_credential(),
         cockpit_config::AccountLoginState::NotSignedIn,
@@ -1481,7 +1481,7 @@ fn an_empty_account_offers_a_sign_in_when_its_provider_keeps_a_login() {
 /// #59: a provider whose adapter keeps no login offers only the credential file.
 #[test]
 fn an_empty_account_offers_no_sign_in_when_its_provider_keeps_none() {
-    let report = report_with_accounts(vec![account(
+    let report = report_listing(vec![account(
         "work",
         no_credential(),
         cockpit_config::AccountLoginState::NotKept,
@@ -1502,7 +1502,7 @@ fn an_empty_account_offers_no_sign_in_when_its_provider_keeps_none() {
 /// unusable credential after it still stops that launch and blocks.
 #[test]
 fn an_unusable_credential_after_a_signed_in_login_blocks() {
-    let report = report_with_accounts(vec![
+    let report = report_listing(vec![
         account("work", no_credential(), signed_in(&["alpha"])),
         account(
             "spare",
