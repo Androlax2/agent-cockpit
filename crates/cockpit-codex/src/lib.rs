@@ -259,6 +259,10 @@ impl Provider for Codex {
         self.quota_within(home, quota::QUOTA_DEADLINE)
     }
 
+    fn login(&self) -> Result<Option<cockpit_provider_api::Login>, InvalidValue> {
+        needs::login(&self.program).map(Some)
+    }
+
     fn sign_in(&self) -> cockpit_provider_api::SignIn {
         self.sign_in_within(Duration::from_secs(10))
     }

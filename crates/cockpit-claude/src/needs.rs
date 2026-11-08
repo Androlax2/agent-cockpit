@@ -3,7 +3,9 @@
 //! `a9ccc58c`, Apache-2.0: see `crates/cockpit-provider-api/NOTICE-greywall`. Linux paths
 //! only; the README lists what was left out and why.
 
-use cockpit_provider_api::{CredentialHeader, Credentials, InvalidValue, Needs};
+use std::path::Path;
+
+use cockpit_provider_api::{CredentialHeader, Credentials, InvalidValue, Login, Needs};
 
 /// The hosts Claude Code reaches: the API, claude.ai's connector proxy, its downloads and its
 /// sign-in console.
@@ -60,4 +62,16 @@ pub fn credentials() -> Result<Credentials, InvalidValue> {
         .map(|(variable, header)| (variable, header, &CREDENTIAL_HOSTS[..]))
         .collect();
     Credentials::new(&CREDENTIAL_FILES, &bindings, &needs()?)
+}
+
+/// Claude Code's own sign-in: its first run in a fresh home, whose prompts and `/login`
+/// save the sign-in to [`CREDENTIAL_FILES`]' first.
+pub fn login(program: &Path) -> Result<Login, InvalidValue> {
+    Login::new(
+        CREDENTIAL_FILES[0],
+        program,
+        &[],
+        "sign in through its first-run prompts or `/login` (both take a pasted code when no browser \
+     opens), then type `/exit`",
+    )
 }

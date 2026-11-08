@@ -336,6 +336,7 @@ fn state_sandbox(state: &Path) -> Sandbox {
         HostPaths {
             mount_sources: state.join("mounts"),
             homes: state.join("homes"),
+            logins: state.join("logins"),
             ..no_host_paths()
         },
         native_backend(),

@@ -18,8 +18,8 @@ pub use compactions::{Compaction, CompactionStatus, latest_compaction};
 pub use declarations::{RefusedDeclaration, refused_declarations};
 pub use delivery_context::{ConnectSessionSocket, DeliveryContext};
 pub use error::Error;
-pub use lifecycle::Sessions;
 pub use lifecycle::visible_line;
+pub use lifecycle::{Sessions, SignInPlan};
 pub use model::{
     Addressed, AgentExit, Ender, ExitStatus, Launch, LaunchBundle, LaunchKind, RestartAll,
     Restored, Session, SessionBundle, SessionId, SessionState, Settings, SleepRefusal,

@@ -22,6 +22,9 @@ use cockpit_turso::Database;
 #[path = "messaging.rs"]
 mod messaging;
 pub use messaging::visible_line;
+#[path = "sign_ins.rs"]
+mod sign_ins;
+pub use sign_ins::SignInPlan;
 
 use crate::model::{LaunchPurpose, validate_link};
 use crate::store::{self, NewSession};

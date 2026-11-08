@@ -173,6 +173,7 @@ Unknown keys fail with the file and line. See the [current configuration guide](
 | A project's GitHub token, its unsandboxed sessions' `GH_TOKEN` | `~/.config/torlek/github-tokens/<project>` |
 | A project's GitHub API token, which the session proxy adds for sandboxed sessions | `~/.config/torlek/github-api-tokens/<project>` |
 | A provider's credential, which the session proxy adds for sandboxed sessions | `~/.config/torlek/provider-credentials/<provider>/<VARIABLE>`; another account's in `<provider>/<account>/<VARIABLE>` |
+| A login account's sign-in, which only `torlek account sign-in` writes | `~/.local/state/torlek/account-logins/<provider>/<account>/login/` |
 | Database, session records and instruction bundle | `~/.local/state/torlek/` |
 | Torlek operational logs | `~/.local/state/torlek/logs/` |
 | Each session's temporary files (its `TMPDIR`), removed when the session ends | `~/.local/state/torlek/tmp/<session>/` |
@@ -250,6 +251,16 @@ unsandboxed session signs in from your own home and runs on none. A restart, wak
 or restore keeps the session's account, since its conversation belongs to it; one whose account
 is no longer listed or holds no credential is refused. `torlek doctor` has a
 `sandboxed sign-in` row per account. The list is read when the daemon starts.
+
+A provider sign-in that refreshes itself, a Claude `/login` or Codex's ChatGPT plan, is kept
+as a login account; OpenCode 2 keeps its sign-ins in its database, so it has none yet. Sign a
+listed account in once with
+`torlek account sign-in codex work`: Torlek runs the provider's own sign-in in your terminal,
+with a fresh folder of its own as its home and none of your provider variables, then moves only
+the login file into `~/.local/state/torlek/account-logins/codex/work/login/`, unread. No agent
+reads that folder, and your own sign-in is never copied, so it keeps its own tokens. Signing in
+again replaces the login. Launches do not use a login account yet: they pass over an account
+that holds no credential.
 
 When a session reports that its plan's usage limit stopped its turn (Codex does), Torlek
 relaunches it at once on the next listed account that holds a credential and has not

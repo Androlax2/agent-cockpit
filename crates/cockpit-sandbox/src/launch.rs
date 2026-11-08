@@ -38,6 +38,20 @@ pub struct HostPaths {
     /// across a session's relaunches, removed at its end, never granted to any agent above
     /// its own (#858, #859).
     pub homes: PathBuf,
+    /// The daemon's folder of login accounts (#59), one folder per provider and account
+    /// inside: the login the owner signed in, and the fresh home a sign-in runs in. Never
+    /// granted to any agent above an account's login.
+    pub logins: PathBuf,
+}
+
+/// Where one login account's folders are, in [`HostPaths::logins`] (#59).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountLogin {
+    /// Holds the login file alone, under the name the harness gives it.
+    pub login: PathBuf,
+    /// The fresh home `torlek account sign-in` runs the harness's sign-in in, removed once its
+    /// login moved to [`AccountLogin::login`].
+    pub sign_in: PathBuf,
 }
 
 /// The sandbox launches go through: the host's platform and the daemon's host paths.
@@ -160,6 +174,21 @@ impl Sandbox {
     pub fn session_home(&self, session: &str) -> Option<Result<PathBuf, Refusal>> {
         let host = self.host.as_ref()?;
         Some(session_folder(&host.homes, session))
+    }
+
+    /// `account` of `provider`'s login folders; None when the daemon read no host paths.
+    pub fn account_login(
+        &self,
+        provider: &str,
+        account: &str,
+    ) -> Option<Result<AccountLogin, Refusal>> {
+        let host = self.host.as_ref()?;
+        Some(
+            account_folder(&host.logins, provider, account).map(|folder| AccountLogin {
+                login: folder.join("login"),
+                sign_in: folder.join("sign-in"),
+            }),
+        )
     }
 
     /// `session`'s own folder of the daemon's mount sources, which its end removes (#482): the
@@ -454,6 +483,22 @@ fn session_folder(parent: &std::path::Path, session: &str) -> Result<PathBuf, Re
         ));
     }
     Ok(parent.join(session))
+}
+
+fn account_folder(
+    parent: &std::path::Path,
+    provider: &str,
+    account: &str,
+) -> Result<PathBuf, Refusal> {
+    for (kind, name) in [("provider", provider), ("account", account)] {
+        if !is_plain_name(name) {
+            return Err(Refusal::new(
+                format!("{kind} {name}"),
+                format!("a {kind} name must be one plain name to name its folders"),
+            ));
+        }
+    }
+    Ok(parent.join(provider).join(account))
 }
 
 /// Check run `run`'s own folder in `parent`, beside sessions' folders: a session id is `s`

@@ -63,3 +63,8 @@ fn no_declared_path_exposes_a_credential_of_the_owner_s() {
     assert!(!needs.read.iter().any(|read| read.covers(&copilot)));
     assert!(!needs.write.iter().any(|written| written.covers(&copilot)));
 }
+
+#[test]
+fn it_has_no_login_an_account_can_keep() {
+    assert_eq!(opencode().login().unwrap(), None);
+}

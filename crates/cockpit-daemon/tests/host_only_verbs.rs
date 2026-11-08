@@ -69,6 +69,13 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
             },
         ),
         (
+            "account (routes.rs:415)",
+            Command::AccountSignIn {
+                provider: "codex".to_owned(),
+                account: "default".to_owned(),
+            },
+        ),
+        (
             "session-grant (routes.rs:441)",
             Command::SessionGrant {
                 session: "s0".to_owned(),

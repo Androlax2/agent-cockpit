@@ -279,6 +279,7 @@ fn sandbox(
         Some(database.clone()),
         Some(options.state_dir.join("logs")),
         Some(options.executions_dir()),
+        Some(options.account_logins()),
         layout_config_dir,
     ]
     .into_iter()
@@ -300,6 +301,7 @@ fn sandbox(
             owner_uid: instance.owner_uid,
             mount_sources: options.mount_sources(),
             homes: options.session_homes(),
+            logins: options.account_logins(),
         },
         backend,
     )
