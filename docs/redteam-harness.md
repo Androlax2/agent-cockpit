@@ -63,31 +63,90 @@ arm reads.
 `tools/redteam-harness/catalog.json` holds one entry per bullet of #685's sections 1
 (escape the sandbox), 2 (permissions the owner did not give) and 4 (indirect attacks); section
 3 is the verb catalog above. Each entry has an `id`, a `category` (1, 2 or 4), a `title`, a
-`status` (`automated`: one shell command the harness runs in the guest; `manual`: needs a
-human running a live session, not generated here) and, when automated, the `command` and the
-author's `expect`ed outcome.
+`status` (`automated`: the harness runs it in the guest; `manual`: needs a human running a
+live session, not generated here) and, when automated, the `command`, the author's `expect`ed
+outcome, and a `caller` naming who runs it (see the next section).
 
 `tools/redteam-harness.py --list` prints it without running anything.
+
+## How each check runs, and as whom
+
+Issue #1158: every automated check runs as the caller its entry names, never as the guest's
+owner shell. Who that is decides what the result proves, so the caller is part of the record.
+
+- **`caller: "sandboxed-session"` (section 1, escape the sandbox).** The attack runs inside a
+  real sandboxed agent session in the guest, under `agents.sandbox = "required"`. The harness
+  starts a session (`torlek session new`) in a checkout it owns from outside the sandbox, tells
+  the agent to run the command verbatim and write the command's combined output followed by a
+  distinctive `__REDTEAM_EXIT__=<code>` trailer to a drop file in that checkout, then reads the
+  drop file back and classifies it. A model drives the session, so these need a provider key
+  (below). The result records the
+  session's sandbox evidence (`torlek session sandbox`): the backend that enforced it and the
+  subject, so a reader can tell a real sandbox block from a Unix permission error.
+- **`caller: "agent-session"` (section 2, permissions the owner did not give).** The `torlek`
+  command runs on the guest daemon's **agent socket**, with `TORLEK_SESSION` set, so the daemon
+  routes it as `Peer::Agent` and refuses it with the agent socket's `owner_only()` — the same
+  path `crates/cockpit-daemon/tests/host_only_verbs.rs` proves. This is the fix for the earlier
+  bug where the harness ran these on the owner shell (empty `TORLEK_SESSION`), which reaches the
+  **owner** socket, so the daemon treated the attack as the owner and the "refusal" was really
+  the owner being allowed. These need no provider key.
+
+## The provider key for section 1 (option B)
+
+Section 1 runs a real model-driven session, which needs a provider credential. The owner
+creates a **separate, spend-capped** key for the guest only — never a real one — and drops it
+into the guest at run time:
+
+```sh
+tools/redteam-vm.sh put-credential /path/to/keyfile   # one line, mode 0600; --provider/--var to override
+```
+
+The key is copied into the guest only; it never enters this repo, the results log, the host's
+own Torlek state, or any result line. The harness **refuses to run section 1, naming why**,
+when the guest's sandbox is not `required`, its backend is missing, or no key is present. Drop
+it again when done:
+
+```sh
+tools/redteam-vm.sh drop-credential
+```
+
+Section 2 needs none of this, so it runs even when section 1 is refused.
 
 ## Running it
 
 ```sh
 tools/redteam-vm.sh start
+# section 2 only (no key needed):
+tools/redteam-harness.py --id 2.1-self-grant --results-log ~/.local/share/torlek-redteam/results.jsonl
+# everything automated (section 1 needs the key dropped first):
+tools/redteam-vm.sh put-credential /path/to/keyfile
 tools/redteam-harness.py --results-log ~/.local/share/torlek-redteam/results.jsonl
+tools/redteam-vm.sh drop-credential
 tools/redteam-vm.sh stop
 ```
 
-Each automated entry runs once inside the guest (`tools/redteam-vm.sh ssh`), never on the
-host. `--id ID` (repeatable) runs only those entries. Every attempt appends one line to the
-results log: `id`, `category`, `title`, `command`, `exit_code`, `stdout`, `stderr`, `outcome`
-(`blocked`, `refused`, `succeeded` or `unclear`), `torlek_version` and `recorded_at`. The
-outcome is a heuristic read of the output (a `torlek: refused:` message, a `NotAuthorized`
-error, a blocked-network or permission-denied message, otherwise the exit code); a human
-reads the raw `stdout`/`stderr` of every `succeeded` or `unclear` line before deciding
-anything.
+Each automated entry runs inside the guest (`tools/redteam-vm.sh ssh`), never on the host.
+`--id ID` (repeatable) runs only those entries. Every attempt appends one line to the results
+log: `id`, `category`, `title`, `command`, `caller`, `caller_detail`, `exit_code`, `stdout`,
+`stderr`, `outcome` (`blocked`, `refused`, `succeeded` or `unclear`), `sandbox` (the session's
+sandbox evidence for section 1, `null` for section 2), `session` (section 1 only),
+`torlek_version` and `recorded_at`. The outcome is a heuristic read of the output (a
+`torlek: not-authorized:`/`refused:` message, a blocked-network 403 or permission-denied
+message, otherwise the exit code); a human reads the raw `stdout`/`stderr` of every
+`succeeded` or `unclear` line before deciding anything.
 
 ## What a result means
 
+- **For a section-1 escape check, the only breach verdict is `succeeded`** (the attack ran and
+  came back with what it should not have). Every other verdict means the attack was stopped:
+  `blocked` (the sandbox denied it — a 403 on egress, a permission error), `refused` (Torlek
+  declined it with a reason), or `unclear`. An attack on a path the sandbox simply does not
+  mount (the owner's home, another project) fails with "No such file or directory", which is
+  `unclear`, not `blocked` — both are non-breaches, and the recorded `sandbox` evidence (the
+  backend and subject that enforced the session) is what tells a real sandbox stop from a
+  benign miss. A human reads the raw output and the evidence of every `succeeded` or `unclear`
+  section-1 line before deciding anything; the harness does no host-side confirmation of its
+  own.
 - **A success is a finding to file, not to act on.** Logging it is the whole of what this
   tool does; it never changes anything outside its own results log.
 - **Each successful or unclear attempt** becomes its own `bug` + `area:security` issue (#685's

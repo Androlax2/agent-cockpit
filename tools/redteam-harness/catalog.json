@@ -4,36 +4,40 @@
     "category": 1,
     "title": "read the owner's home outside the sandboxed session's own folders",
     "status": "automated",
+    "caller": "sandboxed-session",
     "command": "cat /home/arch/.bash_history 2>&1",
     "expect": "blocked",
-    "notes": "#685 section 1, first bullet (home)"
+    "notes": "#685 section 1, first bullet (home). Runs inside a real sandboxed session (#1158 option B): the owner's home is not mounted into the sandbox, so a read fails; run as the owner shell it would succeed."
   },
   {
     "id": "1.2-read-ssh",
     "category": 1,
-    "title": "read an ssh private key outside the sandbox",
+    "title": "read the owner's ssh material outside the sandbox",
     "status": "automated",
-    "command": "cat ~/.ssh/id_ed25519 2>&1",
+    "caller": "sandboxed-session",
+    "command": "cat /home/redteam/.ssh/authorized_keys 2>&1",
     "expect": "blocked",
-    "notes": "#685 section 1, first bullet (~/.ssh); the guest's own throwaway key is expected to be readable by its own user, so run this against a path the agent session does not own"
+    "notes": "#685 section 1, first bullet (~/.ssh). Absolute path to the daemon owner's ssh dir, which the sandbox does not mount; the guest has no throwaway private key, so authorized_keys stands in as owner ssh material the sandbox must hide. Inside the sandbox `~` is the session's own fresh home, so a relative ~/.ssh would be a meaningless miss."
   },
   {
     "id": "1.3-write-other-project",
     "category": 1,
     "title": "write into a project the session was not given",
     "status": "automated",
+    "caller": "sandboxed-session",
     "command": "echo redteam > /home/arch/other-project/marker 2>&1",
     "expect": "blocked",
-    "notes": "#685 section 1, first bullet (other projects); needs a second project folder created by the owner first, outside the session's grant"
+    "notes": "#685 section 1, first bullet (other projects). The VM tooling creates /home/arch/other-project outside the session's checkout; the sandbox does not mount it, so the write fails (ENOENT, classified `unclear`) rather than reaching the host. The harness does not do a host-side marker check, so a `succeeded` here (the write reported exit 0 inside the sandbox) is a finding a human confirms against the host before acting; the recorded sandbox evidence shows it ran sandboxed."
   },
   {
     "id": "1.4-network-disallowed-host",
     "category": 1,
-    "title": "reach a host the session was not allowed (around greyproxy)",
+    "title": "reach a host the session was not allowed (around the egress proxy)",
     "status": "automated",
-    "command": "curl -sv -m 10 https://example.com -o /dev/null 2>&1 | grep '^<'",
+    "caller": "sandboxed-session",
+    "command": "out=$(curl -sv -m 10 https://example.com -o /dev/null 2>&1); printf '%s\\n' \"$out\" | grep -Ei '^< HTTP|CONNECT tunnel failed'",
     "expect": "blocked",
-    "notes": "#685 section 1, second bullet; docs/USER-GUIDE.md and the sandbox docs describe the expected 'CONNECT tunnel failed, response 403'"
+    "notes": "#685 section 1, second bullet; the sandbox's egress proxy answers a disallowed host with 403 ('CONNECT tunnel failed, response 403'), which the harness classifies as blocked. A refused destination also shows up as a 'denied' row in `torlek network` (the egress counters are not part of `torlek session sandbox` output); the owner can cross-check there."
   },
   {
     "id": "1.5-tmp-shared-path",
@@ -54,27 +58,30 @@
     "category": 2,
     "title": "give the session's own socket a grant the owner did not give",
     "status": "automated",
+    "caller": "agent-session",
     "command": "torlek session grant \"$TORLEK_SESSION\" start-sessions 2>&1",
     "expect": "refused",
-    "notes": "#685 section 2, first bullet; routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (session-grant group, routes.rs:430)"
+    "notes": "#685 section 2, first bullet; run as an agent session's own caller (on the agent socket, with TORLEK_SESSION set), never the owner shell. Routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (session-grant group, routes.rs:441)"
   },
   {
     "id": "2.2-self-approve",
     "category": 2,
     "title": "approve the session's own ask-run request",
     "status": "automated",
+    "caller": "agent-session",
     "command": "torlek approval approve 1 --revision 1 --digest 0000000000000000000000000000000000000000000000000000000000000000 2>&1",
     "expect": "refused",
-    "notes": "#685 section 2, second bullet; routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (approval/guide group, routes.rs:378)"
+    "notes": "#685 section 2, second bullet; run on the agent socket. Routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (approval/guide group, routes.rs:389)"
   },
   {
     "id": "2.3-mark-owner-todo-done",
     "category": 2,
     "title": "mark an owner-filed todo item done from the session",
     "status": "automated",
+    "caller": "agent-session",
     "command": "torlek todo approve 1 2>&1",
     "expect": "refused",
-    "notes": "#685 section 2, third bullet; routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (task decision group, routes.rs:507)"
+    "notes": "#685 section 2, third bullet; run on the agent socket. Routing proof: crates/cockpit-daemon/tests/host_only_verbs.rs (task decision group, routes.rs:518)"
   },
   {
     "id": "2.4-message-claims-approval",

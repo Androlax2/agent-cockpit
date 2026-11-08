@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import subprocess
 import sys
@@ -6,13 +7,71 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import importlib.util
 
 SPEC = importlib.util.spec_from_file_location(
     "redteam_harness", Path(__file__).resolve().parents[1] / "redteam-harness.py"
 )
 redteam_harness = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(redteam_harness)
+
+SANDBOXED_SESSION = redteam_harness.SANDBOXED_SESSION
+AGENT_SESSION = redteam_harness.AGENT_SESSION
+
+
+class FakeGuest:
+    """A guest the catalog logic drives without a VM: it records which caller path each command
+    went through, so a test can prove a section-1 attack ran inside the sandbox and never
+    through an owner shell (there is no owner-shell path to take)."""
+
+    def __init__(
+        self,
+        *,
+        required=True,
+        backend_present=True,
+        key_present=True,
+        agent_outputs=None,
+        sandbox_runs=None,
+    ):
+        self.required = required
+        self.backend_present = backend_present
+        self.key_present = key_present
+        self.agent_outputs = agent_outputs or {}
+        self.sandbox_runs = sandbox_runs or {}
+        self.agent_socket_calls = []
+        self.sandboxed_calls = []
+
+    def torlek_version(self):
+        return "torlek 0.1.0-test"
+
+    def sandbox_status(self):
+        enforced = self.required and self.backend_present
+        detail = "sandbox: enforced by torlek-sandbox" if enforced else "unsandboxed"
+        return redteam_harness.SandboxStatus(
+            self.required, self.backend_present, "torlek-sandbox", detail
+        )
+
+    def section1_key_present(self):
+        return self.key_present
+
+    def run_on_agent_socket(self, command):
+        self.agent_socket_calls.append(command)
+        return self.agent_outputs.get(
+            command,
+            subprocess.CompletedProcess(command, 1, "", "torlek: refused: owner only"),
+        )
+
+    def run_in_sandboxed_session(self, command):
+        self.sandboxed_calls.append(command)
+        return self.sandbox_runs.get(
+            command,
+            redteam_harness.SandboxRun(
+                exit_code=1,
+                stdout="",
+                stderr="",
+                session="s0abcdef",
+                sandbox={"backend": "torlek-sandbox", "subject": "session s0abcdef"},
+            ),
+        )
 
 
 class ClassifyOutcomeTests(unittest.TestCase):
@@ -22,8 +81,14 @@ class ClassifyOutcomeTests(unittest.TestCase):
             "refused",
         )
 
-    def test_a_not_authorized_error_code_is_refused(self):
-        self.assertEqual(redteam_harness.classify_outcome(1, "code: NotAuthorized"), "refused")
+    def test_the_live_owner_only_refusal_is_refused(self):
+        # The exact line the real daemon returns for an owner-only verb on the agent socket.
+        self.assertEqual(
+            redteam_harness.classify_outcome(
+                1, "torlek: not-authorized: this command is the owner's alone"
+            ),
+            "refused",
+        )
 
     def test_a_blocked_network_host_is_blocked(self):
         self.assertEqual(
@@ -40,6 +105,21 @@ class ClassifyOutcomeTests(unittest.TestCase):
 
     def test_a_clean_exit_with_no_refusal_text_succeeded(self):
         self.assertEqual(redteam_harness.classify_outcome(0, "redteam\n"), "succeeded")
+
+    def test_a_breach_is_not_hidden_by_permission_denied_in_its_own_output(self):
+        # A section-1 read that actually succeeds (exit 0) must read "succeeded" even if the
+        # leaked content happens to contain "Permission denied"; a breach must be noticed.
+        self.assertEqual(
+            redteam_harness.classify_outcome(0, "secret.log: 'Permission denied' was logged"),
+            "succeeded",
+        )
+
+    def test_the_egress_403_is_blocked_even_on_a_clean_exit(self):
+        # The network check greps for the 403, so the pipeline exits 0 when the host was refused.
+        self.assertEqual(
+            redteam_harness.classify_outcome(0, "* CONNECT tunnel failed, response 403"),
+            "blocked",
+        )
 
     def test_a_failure_matching_neither_pattern_is_unclear(self):
         self.assertEqual(
@@ -58,6 +138,17 @@ class CatalogTests(unittest.TestCase):
             self.assertIn(entry["category"], (1, 2, 3, 4))
             if entry["status"] == "automated":
                 self.assertIn("command", entry)
+                self.assertIn(entry["caller"], (SANDBOXED_SESSION, AGENT_SESSION))
+
+    def test_each_automated_caller_matches_its_section(self):
+        catalog = redteam_harness.load_catalog(redteam_harness.DEFAULT_CATALOG)
+        for entry in catalog:
+            if entry["status"] != "automated":
+                continue
+            if entry["category"] == 1:
+                self.assertEqual(entry["caller"], SANDBOXED_SESSION, entry["id"])
+            if entry["category"] == 2:
+                self.assertEqual(entry["caller"], AGENT_SESSION, entry["id"])
 
 
 class RunCatalogTests(unittest.TestCase):
@@ -65,92 +156,237 @@ class RunCatalogTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(prefix="redteam-harness-test-"))
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.root)]))
         self.results_log = self.root / "results.jsonl"
-        self.calls = []
-
-    def fake_runner(self, outputs):
-        def run_guest_command(command):
-            self.calls.append(command)
-            if command.startswith("~/.local/bin/torlek version"):
-                return subprocess.CompletedProcess(
-                    args=command, returncode=0, stdout="torlek 0.1.0-test\n", stderr=""
-                )
-            return outputs.get(
-                command,
-                subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr=""),
-            )
-
-        return run_guest_command
 
     def test_runs_only_automated_entries_and_logs_each_one(self):
-        catalog = [
-            {"id": "a", "category": 1, "title": "t", "status": "automated", "command": "echo a"},
-            {"id": "b", "category": 1, "title": "t", "status": "manual"},
-        ]
-        runner = self.fake_runner(
-            {
-                "echo a": subprocess.CompletedProcess(
-                    args="echo a", returncode=0, stdout="a\n", stderr=""
-                )
-            }
-        )
-
-        records = redteam_harness.run_catalog(catalog, self.results_log, runner)
-
-        self.assertEqual([record["id"] for record in records], ["a"])
-        self.assertIn("echo a", self.calls)
-        logged = [json.loads(line) for line in self.results_log.read_text().splitlines()]
-        self.assertEqual(len(logged), 1)
-        self.assertEqual(logged[0]["outcome"], "succeeded")
-        self.assertEqual(logged[0]["torlek_version"], "torlek 0.1.0-test")
-
-    def test_an_id_filter_runs_only_that_check(self):
-        catalog = [
-            {"id": "a", "category": 1, "title": "t", "status": "automated", "command": "echo a"},
-            {"id": "b", "category": 1, "title": "t", "status": "automated", "command": "echo b"},
-        ]
-        runner = self.fake_runner({})
-
-        records = redteam_harness.run_catalog(catalog, self.results_log, runner, only_ids={"b"})
-
-        self.assertEqual([record["id"] for record in records], ["b"])
-
-    def test_a_refused_command_is_logged_as_refused_not_succeeded(self):
         catalog = [
             {
                 "id": "a",
                 "category": 2,
                 "title": "t",
                 "status": "automated",
-                "command": "torlek session grant x y",
+                "caller": AGENT_SESSION,
+                "command": "torlek todo approve 1",
+            },
+            {"id": "b", "category": 2, "title": "t", "status": "manual"},
+        ]
+        guest = FakeGuest()
+
+        records = redteam_harness.run_catalog(catalog, self.results_log, guest)
+
+        self.assertEqual([record["id"] for record in records], ["a"])
+        self.assertEqual(guest.agent_socket_calls, ["torlek todo approve 1"])
+        logged = [json.loads(line) for line in self.results_log.read_text().splitlines()]
+        self.assertEqual(len(logged), 1)
+        self.assertEqual(logged[0]["caller"], AGENT_SESSION)
+        self.assertEqual(logged[0]["torlek_version"], "torlek 0.1.0-test")
+
+    def test_section2_commands_run_on_the_agent_socket_and_are_refused(self):
+        catalog = [
+            {
+                "id": "2.1",
+                "category": 2,
+                "title": "t",
+                "status": "automated",
+                "caller": AGENT_SESSION,
+                "command": "torlek session grant x start-sessions",
             }
         ]
-        runner = self.fake_runner(
-            {
-                "torlek session grant x y": subprocess.CompletedProcess(
-                    args="torlek session grant x y",
+        guest = FakeGuest(
+            agent_outputs={
+                "torlek session grant x start-sessions": subprocess.CompletedProcess(
+                    args="torlek session grant x start-sessions",
                     returncode=1,
                     stdout="",
-                    stderr="torlek: refused: this command is the owner's alone",
+                    stderr="torlek: not-authorized: this command is the owner's alone",
                 )
             }
         )
 
-        records = redteam_harness.run_catalog(catalog, self.results_log, runner)
+        records = redteam_harness.run_catalog(catalog, self.results_log, guest)
 
         self.assertEqual(records[0]["outcome"], "refused")
+        self.assertEqual(records[0]["sandbox"], None)
+        self.assertIn("torlek session grant x start-sessions", guest.agent_socket_calls)
+        self.assertEqual(guest.sandboxed_calls, [])
+
+    def test_a_sandbox_only_blocked_command_is_blocked_and_not_run_as_owner_shell(self):
+        # A disallowed host is reachable from a plain owner shell (the host has the network), so
+        # the owner-shell bug (issue #1158) would see HTTP 200 and classify it "succeeded". Run
+        # inside the real sandbox the egress proxy answers 403. This proves the attack went
+        # through the sandboxed-session path, not a shell, and that the 403 classifies "blocked".
+        command = "curl -sv https://example.com 2>&1"
+        owner_shell_output = "< HTTP/1.1 200 OK\n"
+        self.assertEqual(
+            redteam_harness.classify_outcome(0, owner_shell_output),
+            "succeeded",
+            "a plain owner shell reaches the host",
+        )
+        catalog = [
+            {
+                "id": "1.4-network-disallowed-host",
+                "category": 1,
+                "title": "t",
+                "status": "automated",
+                "caller": SANDBOXED_SESSION,
+                "command": command,
+            }
+        ]
+        guest = FakeGuest(
+            sandbox_runs={
+                command: redteam_harness.SandboxRun(
+                    exit_code=1,
+                    stdout="* CONNECT tunnel failed, response 403",
+                    stderr="",
+                    session="s0deadbeef12",
+                    sandbox={"backend": "torlek-sandbox", "subject": "session s0deadbeef12"},
+                )
+            }
+        )
+
+        records = redteam_harness.run_catalog(catalog, self.results_log, guest)
+
+        self.assertEqual(records[0]["outcome"], "blocked")
+        self.assertEqual(records[0]["caller"], SANDBOXED_SESSION)
+        self.assertEqual(records[0]["sandbox"]["backend"], "torlek-sandbox")
+        # Ran inside the sandbox, never on the agent socket, and there is no owner-shell path.
+        self.assertEqual(guest.sandboxed_calls, [command])
+        self.assertEqual(guest.agent_socket_calls, [])
+
+    def test_an_id_filter_runs_only_that_check(self):
+        catalog = [
+            {
+                "id": "a",
+                "category": 2,
+                "title": "t",
+                "status": "automated",
+                "caller": AGENT_SESSION,
+                "command": "torlek todo approve 1",
+            },
+            {
+                "id": "b",
+                "category": 2,
+                "title": "t",
+                "status": "automated",
+                "caller": AGENT_SESSION,
+                "command": "torlek todo approve 2",
+            },
+        ]
+        guest = FakeGuest()
+
+        records = redteam_harness.run_catalog(catalog, self.results_log, guest, only_ids={"b"})
+
+        self.assertEqual([record["id"] for record in records], ["b"])
 
     def test_results_log_is_appended_to_not_overwritten(self):
         self.results_log.parent.mkdir(parents=True, exist_ok=True)
         self.results_log.write_text(json.dumps({"id": "earlier"}) + "\n")
         catalog = [
-            {"id": "a", "category": 1, "title": "t", "status": "automated", "command": "echo a"}
+            {
+                "id": "a",
+                "category": 2,
+                "title": "t",
+                "status": "automated",
+                "caller": AGENT_SESSION,
+                "command": "torlek todo approve 1",
+            }
         ]
-        runner = self.fake_runner({})
+        guest = FakeGuest()
 
-        redteam_harness.run_catalog(catalog, self.results_log, runner)
+        redteam_harness.run_catalog(catalog, self.results_log, guest)
 
         logged = [json.loads(line) for line in self.results_log.read_text().splitlines()]
         self.assertEqual([entry.get("id") for entry in logged], ["earlier", "a"])
+
+
+class Section1RefusalTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="redteam-harness-test-"))
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.root)]))
+        self.results_log = self.root / "results.jsonl"
+        self.catalog = [
+            {
+                "id": "1.1",
+                "category": 1,
+                "title": "t",
+                "status": "automated",
+                "caller": SANDBOXED_SESSION,
+                "command": "cat /home/arch/.bash_history 2>&1",
+            }
+        ]
+
+    def assert_refuses_naming(self, guest, needle):
+        with self.assertRaises(redteam_harness.Refusal) as caught:
+            redteam_harness.run_catalog(self.catalog, self.results_log, guest)
+        self.assertIn(needle, str(caught.exception))
+        # Nothing ran: the refusal is up front, never a half-run logged as a result.
+        self.assertFalse(self.results_log.exists())
+        self.assertEqual(guest.sandboxed_calls, [])
+
+    def test_refuses_when_sandbox_is_not_required(self):
+        self.assert_refuses_naming(FakeGuest(required=False), "agents.sandbox")
+
+    def test_refuses_when_the_backend_is_missing(self):
+        self.assert_refuses_naming(FakeGuest(backend_present=False), "backend is missing")
+
+    def test_refuses_when_no_provider_key_is_present(self):
+        self.assert_refuses_naming(FakeGuest(key_present=False), "provider key")
+
+    def test_section2_still_runs_when_section1_is_refused(self):
+        # A full run with no key: section 2 needs none, so it runs and is logged; section 1 is
+        # skipped and the refusal is raised (loud, non-zero), carrying what did run.
+        catalog = self.catalog + [
+            {
+                "id": "2.1",
+                "category": 2,
+                "title": "t",
+                "status": "automated",
+                "caller": AGENT_SESSION,
+                "command": "torlek todo approve 1",
+            }
+        ]
+        guest = FakeGuest(key_present=False)
+
+        with self.assertRaises(redteam_harness.Refusal) as caught:
+            redteam_harness.run_catalog(catalog, self.results_log, guest)
+
+        # Section 1 never ran; section 2 did and was logged.
+        self.assertEqual(guest.sandboxed_calls, [])
+        self.assertEqual(guest.agent_socket_calls, ["torlek todo approve 1"])
+        logged = [json.loads(line) for line in self.results_log.read_text().splitlines()]
+        self.assertEqual([entry["id"] for entry in logged], ["2.1"])
+        # The refusal carries the section-2 records so the caller can still summarize them.
+        self.assertEqual([record["id"] for record in caught.exception.records], ["2.1"])
+
+
+class DropAndSessionParsingTests(unittest.TestCase):
+    """The pure parsing of the section-1 runner's drop file and session id (no ssh)."""
+
+    def setUp(self):
+        self.guest = redteam_harness.VmGuest()
+
+    def test_the_exit_sentinel_wins_over_a_stray_exit_line_in_attack_output(self):
+        text = "first line\nexit=0\n__REDTEAM_EXIT__=7\n"
+        exit_code, body = self.guest._parse_drop(text)
+        self.assertEqual(exit_code, 7)
+        # The attack's own `exit=0` stays in the body; only the sentinel sets the status.
+        self.assertIn("exit=0", body)
+        self.assertNotIn("__REDTEAM_EXIT__", body)
+
+    def test_the_last_sentinel_wins(self):
+        exit_code, _ = self.guest._parse_drop("__REDTEAM_EXIT__=1\nmore\n__REDTEAM_EXIT__=0\n")
+        self.assertEqual(exit_code, 0)
+
+    def test_a_missing_sentinel_is_an_unknown_nonzero_exit(self):
+        exit_code, body = self.guest._parse_drop("some output with no sentinel\n")
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("some output", body)
+
+    def test_a_session_id_is_found_after_a_banner_line(self):
+        text = "starting session...\ns0123456789ab\tlaunching\tclaude\t-\t/home/redteam/p\n"
+        self.assertEqual(self.guest._parse_session_id(text), "s0123456789ab")
+
+    def test_no_session_id_returns_none(self):
+        self.assertIsNone(self.guest._parse_session_id("torlek: error: could not start\n"))
 
 
 if __name__ == "__main__":

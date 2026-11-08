@@ -229,6 +229,7 @@ command_create() {
     ((cloud_init_status == 0 || cloud_init_status == 2)) || die "cloud-init failed in the guest (status $cloud_init_status)"
     run_guest_script "$ADMIN_USER" "$SCRIPT_DIR/redteam-vm/guest-provision.sh" sudo
     run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-install-torlek.sh"
+    run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-setup-sandbox.sh"
     stop_guest
     qemu-img snapshot -c "$CLEAN_SNAPSHOT" "$DISK"
     echo "redteam-vm: guest created; snapshot '$CLEAN_SNAPSHOT' taken. Next: $0 start"
@@ -301,12 +302,58 @@ command_destroy() {
     echo "redteam-vm: guest destroyed (image kept unless --all)"
 }
 
+# Copies a spend-capped provider key the owner names into the guest only (issue #1158,
+# option B), so a section-1 red-team session can run a real sandboxed agent. The key is piped
+# over ssh stdin and written by the guest; it never reaches this script's argv, this host's
+# logs or state, or the repo. The provider dir is cleared first so exactly one credential file
+# remains, which is what the daemon requires.
+command_put_credential() {
+    is_running || die "the guest is not running; run: $0 start"
+    local provider=claude var=ANTHROPIC_API_KEY key_file=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+        --provider) provider=${2:?--provider needs a value}; shift 2 ;;
+        --var) var=${2:?--var needs a value}; shift 2 ;;
+        --*) die "unknown put-credential option: $1" ;;
+        *) [[ -z $key_file ]] || die "put-credential takes one key file"; key_file=$1; shift ;;
+        esac
+    done
+    [[ -n $key_file ]] || die "usage: $0 put-credential KEYFILE [--provider NAME] [--var ENVVAR]"
+    [[ -f $key_file ]] || die "no such key file: $key_file"
+    [[ $provider =~ ^[A-Za-z0-9_.-]+$ ]] || die "provider name has characters the daemon rejects: $provider"
+    [[ $var =~ ^[A-Za-z0-9_.-]+$ ]] || die "credential var name has characters the daemon rejects: $var"
+    local dir=.config/torlek/provider-credentials/$provider
+    # tr runs in the guest on the piped key: it strips the line endings the daemon's one-line
+    # format rejects, without the key ever being a shell value on this host.
+    guest_ssh "$RED_TEAM_USER" \
+        "umask 077 && mkdir -p ~/$dir && rm -f ~/$dir/* && tr -d '\r\n' > ~/$dir/$var && chmod 600 ~/$dir/$var" \
+        <"$key_file" || die "could not write the credential into the guest"
+    echo "redteam-vm: credential for '$provider' ($var) placed in the guest (value not shown, not kept on the host)"
+}
+
+# Removes the provider credential from the guest, so the key does not outlive the run.
+command_drop_credential() {
+    is_running || die "the guest is not running; run: $0 start"
+    local provider=claude
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+        --provider) provider=${2:?--provider needs a value}; shift 2 ;;
+        *) die "unknown drop-credential option: $1" ;;
+        esac
+    done
+    [[ $provider =~ ^[A-Za-z0-9_.-]+$ ]] || die "provider name has odd characters: $provider"
+    guest_ssh "$RED_TEAM_USER" "rm -rf ~/.config/torlek/provider-credentials/$provider"
+    echo "redteam-vm: credential for '$provider' removed from the guest"
+}
+
 main() {
     local command_name=${1:-}
-    [[ -n $command_name ]] || die "usage: $0 fetch | create | start | ssh [COMMAND...] | check | stop | reset | status | destroy [--all]"
+    [[ -n $command_name ]] || die "usage: $0 fetch | create | start | ssh [COMMAND...] | check | put-credential KEYFILE | drop-credential | stop | reset | status | destroy [--all]"
     shift
     case $command_name in
     fetch | create | start | ssh | check | stop | reset | status | destroy) "command_$command_name" "$@" ;;
+    put-credential) command_put_credential "$@" ;;
+    drop-credential) command_drop_credential "$@" ;;
     *) die "unknown command: $command_name" ;;
     esac
 }
