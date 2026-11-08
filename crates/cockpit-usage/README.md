@@ -2,8 +2,8 @@
 
 Owns usage facts and their aggregates (report 18): each provider account's plan windows from the adapters' quota readings, their state as they fill, and the alerts at the owner's thresholds.
 
-Quota windows and alerts are #58, the cost archive #699; time with agent and the digest
-(#700) are their own issue.
+Quota windows and alerts are #58, the cost archive #699, time with the agent and the daily
+digest data #700.
 
 **Depends on:** `cockpit-provider-api` for the typed facts adapters build, and `cockpit-turso`
 (rule `usage -> provider-api/database only` in `cockpit-workspace-rules/tests/crate_graph.rs`).
@@ -80,3 +80,31 @@ them and never reads a provider's file format.
   home is `default`; a session's own home is its launch's account). A session that runs
   unsandboxed writes to the owner's home and is attributed to `default`. Two accounts signed
   in to one unsandboxed harness cannot be told apart.
+
+## Time with the agent and the daily digest (#700)
+
+What the Status panel (#85) and the digest (#87) show, as data: a client renders a
+`DayDigest` without asking anything else. Time comes from turn records the caller hands in as
+each turn ends (`record_turn`), never from polling; approvals (`record_approval`) and provider
+incidents (`record_incident`) are recorded as they happen. Each is idempotent under its key,
+so a replay after a restart counts nothing twice (a turn recorded again keeps the later end;
+an incident keeps its earliest start and first resolution). A time before the year 2000 or past
+9999, and a turn over `MAX_TURN_SECONDS` (a week), are refused: a wrong clock must not fill
+every later day with time. Which events feed them is the daemon's.
+
+- **Stretches.** A project's turns, with a gap under five minutes (`JOIN_GAP_SECONDS`) joined
+  and the gap counted as time; a gap of exactly five minutes is not joined.
+- **Overlap is counted once.** Overlapping sessions of one project are one stretch. The day's
+  own figure joins every project's turns, so two projects worked at once are not summed: the
+  projects' figures can add up to more than the day's.
+- **UTC days**, as the cost archive: a stretch over midnight is split, each day has the
+  seconds that fell on it. A turn is counted (`turns`, `sessions`) on the day it began.
+- **Per day, always.** `digests(first, last)` answers every day of the range, up to a leap
+  year, a quiet day as zeros: sessions that began a turn, turns, approvals, time, replies and
+  cost (the cost archive's, with the replies of unpriced models counted apart), each project
+  with anything on the day, and the incidents under way on it.
+- **Incidents** are listed on each day they were under way, or began on. One never recorded
+  as resolved stays under way, so the owner sees a lost resolution rather than none.
+- **Limits.** A turn is recorded when it ends: one still running, or lost to a crash, has no
+  time yet. A turn's project is the project name the caller gives, and a name that is not a
+  plain one is `unknown`, as for cost.
