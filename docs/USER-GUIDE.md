@@ -246,7 +246,9 @@ is the file directly in the provider's folder, so a single credential keeps work
 list. A launch runs on the first listed account that holds a credential and passes over one
 that holds none; an unusable credential stops the launch, naming its account. The daemon
 records the account each launch runs on (`torlek session show` prints `account:`); an
-unsandboxed session signs in from your own home and runs on none. `torlek doctor` has a
+unsandboxed session signs in from your own home and runs on none. A restart, wake, resume
+or restore keeps the session's account, since its conversation belongs to it; one whose account
+is no longer listed or holds no credential is refused. `torlek doctor` has a
 `sandboxed sign-in` row per account. The list is read when the daemon starts.
 
 Each sandboxed session has its own home, which starts empty and goes when the session ends.

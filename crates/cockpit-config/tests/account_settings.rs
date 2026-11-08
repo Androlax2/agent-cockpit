@@ -106,6 +106,21 @@ fn a_list_outside_its_rules_is_refused_with_its_key() {
 }
 
 #[test]
+fn every_known_provider_can_list_its_accounts() {
+    let home = tempfile::tempdir().unwrap();
+    for provider in cockpit_config::KNOWN_PROVIDERS {
+        write_owner_config(
+            home.path(),
+            &format!("[accounts]\n{provider} = [\"work\"]\n"),
+        );
+
+        let config = cockpit_config::load(&environment(home.path()), None, &[]).unwrap();
+
+        assert_eq!(config.accounts.of(provider), ["work"], "{provider}");
+    }
+}
+
+#[test]
 fn an_unknown_provider_is_refused_with_its_line() {
     let home = tempfile::tempdir().unwrap();
     write_owner_config(home.path(), "[accounts]\nnobody = [\"work\"]\n");

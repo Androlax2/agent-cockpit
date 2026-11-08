@@ -2085,8 +2085,17 @@ impl Sessions {
         let output_project = checkout.project.as_str().to_owned();
         let setting = self.owner_settings().sandbox;
         let github = self.github_access(setting, &output_project).await?;
+        // The first launch picks the account; every later one keeps it, since the conversation
+        // it reopens belongs to that account (report 18).
+        let kept_account = match kind {
+            LaunchKind::Start => None,
+            _ => session
+                .launch
+                .as_ref()
+                .and_then(|launch| launch.account.clone()),
+        };
         let account = self
-            .launch_account(setting, session.provider.as_str())
+            .launch_account(setting, session.provider.as_str(), kept_account)
             .await?;
         // Kept for the harness's trust of the checkout, recorded once the launch passed its
         // gates: a parallel clone's (#702), and under `"required"` the main checkout's too,
@@ -2381,11 +2390,13 @@ impl Sessions {
     /// owner replaced reaches the next launch. No account under `"off"`, whose agent signs in
     /// from the owner's home, nor when no account holds one: the harness then asks for a
     /// sign-in it cannot store. An account whose credential is unusable refuses the launch
-    /// rather than pass it over.
+    /// rather than pass it over. A `kept` account, the one a relaunched conversation runs on,
+    /// is the only one tried: it must still be listed and hold a credential.
     async fn launch_account(
         &self,
         setting: cockpit_config::AgentSandbox,
         provider: &str,
+        kept: Option<String>,
     ) -> Result<LaunchAccount, Error> {
         if setting == cockpit_config::AgentSandbox::Off {
             return Ok(LaunchAccount::default());
@@ -2394,6 +2405,25 @@ impl Sessions {
         let accounts = self.settings.accounts.of(provider.name().as_str());
         let environment = self.settings.owner_environment.clone();
         self.blocking("read the provider's credential", move || {
+            if let Some(account) = kept {
+                let unavailable = |reason| Error::AccountUnavailable {
+                    provider: provider.name().as_str().to_owned(),
+                    account: account.clone(),
+                    reason,
+                };
+                if !accounts.contains(&account) {
+                    return Err(unavailable("the owner no longer lists"));
+                }
+                let Some(credential) =
+                    bound_provider_credential(provider.as_ref(), &environment, &account)?
+                else {
+                    return Err(unavailable("holds no credential any more"));
+                };
+                return Ok(LaunchAccount {
+                    name: Some(account),
+                    credential: Some(credential),
+                });
+            }
             for account in accounts {
                 let credential =
                     bound_provider_credential(provider.as_ref(), &environment, &account)?;
@@ -2612,7 +2642,7 @@ impl Sessions {
         let github = self
             .github_access(setting, checkout.project.as_str())
             .await?;
-        let account = self.launch_account(setting, &provider).await?;
+        let account = self.launch_account(setting, &provider, None).await?;
         let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
         let tools = self
             .sandbox_tools(setting, &checkout.path, &checkout.path, &environment)

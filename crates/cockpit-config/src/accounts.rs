@@ -26,10 +26,7 @@ pub struct AccountSettings {
 impl AccountSettings {
     /// `provider`'s accounts in the order a launch tries them.
     pub fn of(&self, provider: &str) -> Vec<String> {
-        self.listed
-            .get(provider)
-            .map(|accounts| accounts.value.clone())
-            .unwrap_or_else(|| vec![DEFAULT_ACCOUNT.to_owned()])
+        self.sourced(provider).value
     }
 
     /// `provider`'s list with where it was set; the product default when the owner set none.

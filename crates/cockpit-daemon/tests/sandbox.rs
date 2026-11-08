@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cockpit_client::{ClientError, Connection};
-use cockpit_protocol::{Command, ErrorCode, SessionStateView, SessionView};
+use cockpit_protocol::{Command, ErrorCode, LaunchKindView, SessionStateView, SessionView};
 use real_daemon::{
     BUILD_PROFILE_DIR, COMMANDED_PROJECT, Daemon, GENEROUS, Home, SETTLE, added_context, is_alive,
     launch_option, listed, mcp_tool_text, new_session, session_new_command,
@@ -1487,6 +1487,97 @@ async fn an_account_without_a_credential_is_passed_over_for_the_next() {
     assert_eq!(account.as_deref(), Some("spare"));
 }
 
+/// A session launched on `spare` alone, `work` holding no credential yet.
+async fn agent_on_the_spare_account(home: &Home) -> Sandboxed {
+    let agent = sandboxed_agent(home, |home| {
+        home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
+        home.write_account_credential(
+            "claude",
+            "spare",
+            "ANTHROPIC_API_KEY",
+            &format!("{SETUP_TOKEN}\n"),
+            0o600,
+        );
+    })
+    .await;
+    run_in_agent(home, &agent.root, "true").await;
+    assert_eq!(
+        launch_account(home, &agent.session).await.as_deref(),
+        Some("spare")
+    );
+    agent
+}
+
+async fn restart(home: &Home, session: &str) -> Result<(), ClientError> {
+    home.connect()
+        .await
+        .request(
+            Command::SessionRestart {
+                session: session.to_owned(),
+            },
+            GENEROUS,
+        )
+        .await
+        .map(drop)
+}
+
+/// #59, report 18: a restart keeps the account its conversation runs on, even when an earlier
+/// listed account now holds a credential; only a first launch picks.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_keeps_the_account_its_conversation_runs_on() {
+    let home = Home::new();
+    let agent = agent_on_the_spare_account(&home).await;
+    home.write_account_credential(
+        "claude",
+        "work",
+        "ANTHROPIC_API_KEY",
+        &format!("{SETUP_TOKEN}\n"),
+        0o600,
+    );
+
+    restart(&home, &agent.session).await.unwrap();
+
+    let client = home.connect().await;
+    let launch = listed(&client, &agent.session)
+        .await
+        .launch
+        .expect("the restart launched");
+    assert_eq!(launch.kind, LaunchKindView::Restart);
+    assert_eq!(launch.account.as_deref(), Some("spare"));
+}
+
+/// #59: a restart whose account lost its credential is refused, naming the account, rather
+/// than moved to another account.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_whose_account_lost_its_credential_is_refused_naming_it() {
+    let home = Home::new();
+    let agent = agent_on_the_spare_account(&home).await;
+    home.write_account_credential(
+        "claude",
+        "work",
+        "ANTHROPIC_API_KEY",
+        &format!("{SETUP_TOKEN}\n"),
+        0o600,
+    );
+    std::fs::remove_file(
+        home.path()
+            .join("config")
+            .join(BUILD_PROFILE_DIR)
+            .join(cockpit_config::PROVIDER_CREDENTIALS_DIR)
+            .join("claude/spare/ANTHROPIC_API_KEY"),
+    )
+    .unwrap();
+
+    let restarted = restart(&home, &agent.session).await;
+
+    assert!(
+        matches!(&restarted, Err(ClientError::Daemon(error))
+            if error.code == ErrorCode::Refused
+                && error.message.contains("account spare, which holds no credential any more")),
+        "{restarted:?}"
+    );
+}
+
 /// #59: an unusable credential refuses the launch, naming the account, rather than being
 /// passed over for the next account.
 #[tokio::test(flavor = "multi_thread")]
@@ -1586,6 +1677,51 @@ async fn without_a_credential_session_new_and_doctor_name_the_files_to_write() {
     assert!(
         report.contains(&files.join("ANTHROPIC_API_KEY").display().to_string()),
         "{report}"
+    );
+}
+
+/// #59: with no account holding a credential, `session new` names the first listed account
+/// and its own folder's files.
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_credential_session_new_names_the_first_account_and_its_files() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    let work = home
+        .path()
+        .join("config")
+        .join(BUILD_PROFILE_DIR)
+        .join(cockpit_config::PROVIDER_CREDENTIALS_DIR)
+        .join("claude/work");
+
+    let started = home
+        .cockpit(
+            &[
+                "session",
+                "new",
+                root.to_str().unwrap(),
+                "--agent",
+                "claude",
+            ],
+            &[],
+        )
+        .await;
+
+    let told = text(&started.stderr);
+    assert!(started.status.success(), "{told}");
+    let sign_in = told
+        .lines()
+        .find_map(|line| line.strip_prefix("sign-in: "))
+        .unwrap_or_else(|| panic!("no sign-in line in:\n{told}"));
+    assert!(
+        sign_in.contains("credential for account work,"),
+        "{sign_in}"
+    );
+    assert!(
+        sign_in.contains(&work.join("CLAUDE_CODE_OAUTH_TOKEN").display().to_string()),
+        "{sign_in}"
     );
 }
 

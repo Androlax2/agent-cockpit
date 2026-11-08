@@ -473,7 +473,8 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::TmuxUnavailable { .. }
         | Error::Sandbox(_)
         | Error::GithubToken { .. }
-        | Error::ProviderCredential { .. } => ErrorCode::Refused,
+        | Error::ProviderCredential { .. }
+        | Error::AccountUnavailable { .. } => ErrorCode::Refused,
         Error::Projects(error) => crate::projects::error_code(error),
         _ => ErrorCode::Internal,
     }
@@ -706,18 +707,24 @@ async fn sign_in_needed(sessions: &Sessions, provider: &str) -> Option<String> {
                 ));
             }
             ProviderCredentialState::Missing { files } => {
-                first_missing.get_or_insert(files);
+                first_missing.get_or_insert((&account.account, files));
             }
         }
     }
-    let files: Vec<String> = first_missing?
+    let (account, files) = first_missing?;
+    let files: Vec<String> = files
         .iter()
         .map(|file| file.display().to_string())
         .collect();
+    let for_account = if account == cockpit_config::DEFAULT_ACCOUNT {
+        String::new()
+    } else {
+        format!(" for account {account}")
+    };
     Some(format!(
         "a sandboxed {provider} session never reads your own sign-in, so this one asks for one \
-         it cannot keep; write one credential, on one line, to one of {}, `chmod 600` it, then \
-         start a new session",
+         it cannot keep; write one credential{for_account}, on one line, to one of {}, `chmod \
+         600` it, then start a new session",
         files.join(", ")
     ))
 }

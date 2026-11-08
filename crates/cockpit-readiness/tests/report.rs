@@ -1271,3 +1271,58 @@ fn each_listed_account_has_its_own_sandboxed_sign_in_row() {
         "{spare:?}"
     );
 }
+
+/// #59: an account listed after the one launches run on blocks nothing, so its row never says
+/// sessions do not launch or ask for a sign-in; one before it still does.
+#[test]
+fn an_account_after_the_one_launches_run_on_says_it_is_passed_over() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let mut host = ready_host();
+    let found = host.providers[0].found.as_mut().unwrap();
+    let unusable = |account: &str| cockpit_config::AccountCredentialState {
+        account: account.to_owned(),
+        state: cockpit_config::ProviderCredentialState::Unusable {
+            reason: "its mode is 644".to_owned(),
+        },
+    };
+    found.sandbox_credentials = vec![
+        cockpit_config::AccountCredentialState {
+            account: "work".to_owned(),
+            state: cockpit_config::ProviderCredentialState::Configured {
+                variable: "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+                path: PathBuf::from(
+                    "/config/provider-credentials/claude/work/CLAUDE_CODE_OAUTH_TOKEN",
+                ),
+            },
+        },
+        unusable("spare"),
+        cockpit_config::AccountCredentialState {
+            account: "third".to_owned(),
+            state: cockpit_config::ProviderCredentialState::Missing { files: Vec::new() },
+        },
+    ];
+
+    let report = assess(&host, &fixture.config(), None);
+
+    let spare = requirement(&report, "provider claude account spare sandboxed sign-in");
+    assert_eq!(spare.status, Status::NeedsAuthorization);
+    assert!(
+        spare.detail.contains("run on account work instead"),
+        "{spare:?}"
+    );
+    let third = requirement(&report, "provider claude account third sandboxed sign-in");
+    assert!(
+        third.detail.contains("run on account work instead"),
+        "{third:?}"
+    );
+
+    let found = host.providers[0].found.as_mut().unwrap();
+    found.sandbox_credentials.swap(0, 1);
+    let report = assess(&host, &fixture.config(), None);
+
+    assert_eq!(
+        requirement(&report, "provider claude account spare sandboxed sign-in").status,
+        Status::MissingPrerequisite
+    );
+}
