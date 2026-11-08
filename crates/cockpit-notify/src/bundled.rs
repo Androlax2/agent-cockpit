@@ -12,7 +12,8 @@ use crate::event::Event;
 /// The sound folder inside the notifier's state directory.
 const SOUNDS_DIR: &str = "sounds";
 
-/// The embedded Ogg Vorbis file for `event`; `disk` and `turn` have none and keep their theme sound.
+/// The embedded Ogg Vorbis file for `event`; `disk`, `usage` and `turn` have none and keep their
+/// theme sound.
 fn bytes(event: Event) -> Option<&'static [u8]> {
     match event {
         Event::Failure => Some(include_bytes!("../assets/sounds/failure.oga")),
@@ -20,7 +21,7 @@ fn bytes(event: Event) -> Option<&'static [u8]> {
         Event::Question => Some(include_bytes!("../assets/sounds/question.oga")),
         Event::Quota => Some(include_bytes!("../assets/sounds/quota.oga")),
         Event::Finished => Some(include_bytes!("../assets/sounds/finished.oga")),
-        Event::Disk | Event::Turn => None,
+        Event::Disk | Event::Usage | Event::Turn => None,
     }
 }
 
@@ -68,13 +69,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_event_but_disk_and_turn_gets_an_ogg_file_in_the_state_directory() {
+    fn every_event_but_disk_usage_and_turn_gets_an_ogg_file_in_the_state_directory() {
         let state_dir = tempfile::tempdir().unwrap();
 
         let files = install(state_dir.path());
 
-        assert_eq!(files.len(), Event::ALL.len() - 2);
+        assert_eq!(files.len(), Event::ALL.len() - 3);
         assert!(!files.contains_key(&Event::Disk));
+        assert!(!files.contains_key(&Event::Usage));
         assert!(!files.contains_key(&Event::Turn));
         for (event, path) in &files {
             assert!(path.starts_with(state_dir.path().join("sounds")), "{event}");

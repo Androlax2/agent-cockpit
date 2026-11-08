@@ -17,13 +17,17 @@ sound:
 | `question` | the agent asks a question, a guide waits on its step, or a command waits for a line of input | marimba, D5 then A5 |
 | `quota` | the plan's usage limit stopped its turn | soft sine, G5 E5 C5 falling |
 | `disk` | free disk space fell below `storage.low_disk_floor_mib` (#1143); the host's, not a session's | `dialog-warning` (theme) |
+| `usage` | a plan window passed one of `usage.quota_alert_percents` (#58); the host's, not a session's | `dialog-information` (theme) |
 | `finished` | the task item is marked done (the task list says it finished) | kalimba, E5 then C6 |
 | `turn` | its agent completed a turn, done or not; off by default for both outlets (#1127) | `message` (theme) |
 
 An event is told when it is raised, never while it stays. `disk` follows the low-disk guard's
 `disk` entity on the change feed: one notice per entry into low disk, none while it stays low,
 another when it rises above the floor and falls below it again. It names the host (`session=host`
-in the log) and is no session in the status file. A session that exits by itself
+in the log) and is no session in the status file. `usage` follows the daemon's `quota-alert`
+entities, one per provider, account and window: each new state is one notice (the window, the
+share used, the threshold), a higher threshold or the next window instance another. It names the
+host too. A session that exits by itself
 raises `failure`, not `finished`. Events that land together make one
 notification, the most urgent first, and one sound, the most urgent event's. Nothing is told
 for the state the notifier started on, for a session the owner ended, or for a question a
@@ -33,12 +37,12 @@ coordinator holds (#710).
 
 - **Desktop:** `notify-send`, over the session bus (`DBUS_SESSION_BUS_ADDRESS` or
   `$XDG_RUNTIME_DIR/bus`). A failure is critical, everything else normal.
-- **Sound:** each event but `disk` and `turn` has Torlek's own Ogg Vorbis sound (#1130), rendered by the
+- **Sound:** each event but `disk`, `usage` and `turn` has Torlek's own Ogg Vorbis sound (#1130), rendered by the
   owner from synthesized partials, no sample, and embedded in the binary; the notifier writes
   them under `DIR/sounds/` at start. `--sound-file EVENT=PATH` (the owner's
   `[notify.sound.files]`) replaces one. `canberra-gtk-play --file=PATH` plays the file when
   there is a display (`DISPLAY` or `WAYLAND_DISPLAY`); otherwise `pw-play` or `paplay` does.
-  `disk` and `turn` have no file: they play the owner's sound theme (`canberra-gtk-play --id=message`, or
+  `disk`, `usage` and `turn` have no file: they play the owner's sound theme (`canberra-gtk-play --id=message`, or
   `message.oga` from `XDG_DATA_DIRS`). `--test EVENT` plays one event's sound and exits.
 - **Text:** the agent writes the names and details, so each shows on one line, cut short, its
   markup escaped (notification servers read the body as markup).

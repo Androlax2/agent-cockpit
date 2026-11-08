@@ -14,7 +14,8 @@ use crate::status::{SessionState, SessionStatus, Status};
 pub struct Notice {
     pub event: Event,
     pub session: String,
-    /// The name the owner knows the session by: its label, else its id.
+    /// The name the owner knows the session by: its label, else its id. For the host's events,
+    /// what it is about: the free disk space, a plan window.
     pub name: String,
     /// The question, command, host or reason, when there is more to say than the event.
     pub detail: Option<String>,
@@ -198,7 +199,7 @@ impl Notifier {
         Notice {
             event: raised.event,
             session: raised.session.clone(),
-            name: self.board.name_of(&raised.session),
+            name: self.board.notice_name(raised),
             detail: self.board.detail_of(raised),
         }
     }

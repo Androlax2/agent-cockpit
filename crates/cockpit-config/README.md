@@ -140,9 +140,11 @@ failure = true    # failed, or its agent exited by itself
 hold = true       # held on the owner's permission
 question = true   # asks a question or waits for input
 quota = true      # stopped at the plan's usage limit
+disk = true       # free disk space fell below the floor (#1143)
+usage = true      # a plan window passed a quota alert threshold (#58)
 finished = true   # its task item is marked done
 turn = false      # completed a turn; off unless set (#1127)
-[notify.sound]    # the same six events
+[notify.sound]    # the same eight events
 ```
 
 `[notify.hold]` names the owner's hold programs: while one exits 0 the notifier keeps quiet

@@ -220,8 +220,10 @@ the pass, and with `apply` runs it (`docs/decisions/2026-11-04-406-database-rete
 A supervised task (`src/usage.rs`) reads the plan windows of each provider that reports
 `quota`, first at the start, then every `usage.quota_refresh_minutes`, in the owner's home
 (never a session's), off the async workers, each provider in a task of its own. Each reading, or why it failed, is recorded in
-`cockpit-usage` under the account `default` until accounts arrive (#59); the alerts it fires
-are logged. A provider that fails waits twice as long as before each time, up to an hour, and
+`cockpit-usage` under the account `default` until accounts arrive (#59). The alerts it fires
+are logged and published in the reading's own transaction as `quota-alert` entities on the
+change feed, id `provider/account/limit`, so `torlek-notify` tells each one and an alert is never
+recorded as fired without reaching the feed. Each window's entity holds its last alert and stays. A provider that fails waits twice as long as before each time, up to an hour, and
 the refresh returns with its next reading. `Wiring::quota` is `None` in tests not about quota.
 
 `usage-quota`, the owner's alone, answers every recorded account's windows judged at the

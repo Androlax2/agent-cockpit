@@ -1,16 +1,18 @@
 //! Reads each provider's plan windows at the owner's interval (#58) and records them, or why
 //! they could not be read, through `cockpit-usage`. A provider whose reading fails waits
 //! twice as long as before, up to an hour, so a refused sign-in or a rate limit is not asked
-//! again at every refresh. The alerts a reading fires are logged. `usage-quota` answers the
-//! recorded windows to the owner, judged under the same policy.
+//! again at every refresh. The alerts a reading fires are logged and put on the change feed,
+//! in the reading's own transaction, as one `quota-alert` entity per window: `torlek-notify`
+//! tells the owner each new state. `usage-quota` answers the recorded windows to the owner,
+//! judged under the same policy.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    ErrorCode, Outcome, ProtocolError, QuotaAccountView, QuotaFailureView, QuotaWindowStateView,
-    QuotaWindowView, Reply,
+    ErrorCode, Outcome, ProtocolError, QuotaAccountView, QuotaAlertView, QuotaFailureView,
+    QuotaWindowStateView, QuotaWindowView, Reply,
 };
 use cockpit_provider_api::{Capability, Provider, ProviderError, QuotaReading};
 use cockpit_turso::Database;
@@ -18,6 +20,7 @@ use cockpit_usage::{AccountName, AccountQuota, Alert, QuotaPolicy, WindowQuota, 
 
 /// Until accounts arrive (#59), each provider has one: the one its harness is signed in to.
 const ACCOUNT: &str = "default";
+const QUOTA_ALERT: &str = "quota-alert";
 const LONGEST_FAILURE_WAIT: Duration = Duration::from_secs(60 * 60);
 
 /// How the daemon reads plan windows: the owner's `[usage]` settings, and the owner's home,
@@ -180,8 +183,41 @@ async fn record(
             Vec::new()
         }
     };
+    for alert in &alerts {
+        cockpit_messaging::publish(
+            &write,
+            QUOTA_ALERT,
+            &alert_id(alert),
+            &crate::session_feed::state_of(&alert_view(alert)),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
     write.commit().await.map_err(|error| error.to_string())?;
     Ok(alerts)
+}
+
+/// One entity per window: a later alert of the window replaces the earlier one.
+fn alert_id(alert: &Alert) -> String {
+    format!(
+        "{}/{}/{}",
+        alert.provider.as_str(),
+        alert.account.as_str(),
+        alert.limit.as_str()
+    )
+}
+
+fn alert_view(alert: &Alert) -> QuotaAlertView {
+    QuotaAlertView {
+        provider: alert.provider.as_str().to_owned(),
+        account: alert.account.as_str().to_owned(),
+        limit: alert.limit.as_str().to_owned(),
+        scope: alert.scope.clone(),
+        threshold: alert.threshold,
+        used_percent: whole_percent(alert.used_percent),
+        resets_at: alert.resets_at,
+        fired_at: alert.fired_at,
+    }
 }
 
 /// `usage-quota`: every account's windows as last recorded, judged now under `policy`, the
@@ -241,9 +277,7 @@ fn window_view(window: WindowQuota) -> QuotaWindowView {
         limit: window.limit.as_str().to_owned(),
         scope: window.scope,
         length_seconds: window.length_seconds,
-        // Rounded down, so 100 is shown only once the whole limit is used. A float cast
-        // saturates; readings are finite and never negative.
-        used_percent: window.used_percent.floor() as u32,
+        used_percent: whole_percent(window.used_percent),
         resets_at: window.resets_at,
         state: match window.state {
             WindowState::Available => QuotaWindowStateView::Available,
@@ -253,4 +287,10 @@ fn window_view(window: WindowQuota) -> QuotaWindowView {
             WindowState::Stale => QuotaWindowStateView::Stale,
         },
     }
+}
+
+/// Rounded down, so 100 is shown only once the whole limit is used. A float cast saturates;
+/// readings are finite and never negative.
+fn whole_percent(used_percent: f64) -> u32 {
+    used_percent.floor() as u32
 }

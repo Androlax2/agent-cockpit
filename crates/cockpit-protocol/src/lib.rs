@@ -85,7 +85,9 @@ pub use tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskNextView,
     TaskStatusView, TaskView, TaskWaitView,
 };
-pub use usage::{QuotaAccountView, QuotaFailureView, QuotaWindowStateView, QuotaWindowView};
+pub use usage::{
+    QuotaAccountView, QuotaAlertView, QuotaFailureView, QuotaWindowStateView, QuotaWindowView,
+};
 pub use verification::{
     CheckArtifactView, CheckClaimView, CheckOutcomeView, CheckReceiptView, CheckStatusView,
     GateCheckView, GateOutcomeView, GateView, PendingCheckView, StaleReasonView,

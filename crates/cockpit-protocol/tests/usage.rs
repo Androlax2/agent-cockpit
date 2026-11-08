@@ -1,8 +1,8 @@
 //! `usage-quota` (report 18, #58): the request names nothing, the reply carries each account's
-//! plan windows.
+//! plan windows. A `quota-alert` entity on the change feed carries the alert a window fired.
 use cockpit_protocol::{
-    Command, QuotaAccountView, QuotaFailureView, QuotaWindowStateView, QuotaWindowView, Reply,
-    decode_request,
+    Command, QuotaAccountView, QuotaAlertView, QuotaFailureView, QuotaWindowStateView,
+    QuotaWindowView, Reply, decode_request,
 };
 use serde_json::json;
 
@@ -60,5 +60,39 @@ fn the_reply_names_each_accounts_windows_and_its_last_failure() {
                 "state": "stale",
             }],
         }]})
+    );
+}
+
+#[test]
+fn a_quota_alert_names_its_window_and_the_threshold_it_passed() {
+    let alert = QuotaAlertView {
+        provider: "codex".to_owned(),
+        account: "default".to_owned(),
+        limit: "five-hour".to_owned(),
+        scope: None,
+        threshold: 95,
+        used_percent: 97,
+        resets_at: Some(1_800_010_000),
+        fired_at: 1_800_000_000,
+    };
+
+    let wire = serde_json::to_value(&alert).unwrap();
+
+    assert_eq!(
+        wire,
+        json!({
+            "provider": "codex",
+            "account": "default",
+            "limit": "five-hour",
+            "scope": null,
+            "threshold": 95,
+            "used_percent": 97,
+            "resets_at": 1_800_010_000,
+            "fired_at": 1_800_000_000,
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<QuotaAlertView>(wire).unwrap(),
+        alert
     );
 }

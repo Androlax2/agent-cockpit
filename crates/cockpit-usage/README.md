@@ -46,4 +46,5 @@ several thresholds fires the highest only, and a threshold the owner adds below 
 fired stays silent. A window a reading leaves out, or reports with its reset already past,
 keeps its fired thresholds. A window without a reset time re-arms a threshold once a reading
 shows it below. `record_reading` returns the alerts that fired; delivering them is
-the caller's.
+the caller's: the daemon publishes them on the change feed, in the same transaction, for
+`torlek-notify`.
