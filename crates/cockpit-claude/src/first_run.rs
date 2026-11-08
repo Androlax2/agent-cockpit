@@ -10,7 +10,8 @@
 //! question too: the key it asks about is the placeholder the session proxy completes.
 //!
 //! The write takes Claude Code's lock as [`crate::trust::record`] does and keeps every other
-//! byte of the file. An answer already recorded is kept, a "no" to the key included.
+//! byte of the file; a yes added beside answers about other keys rewrites that one member.
+//! An answer already recorded is kept, a "no" to the key included.
 
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -22,6 +23,9 @@ use crate::trust::{
     skip_whitespace,
 };
 
+/// The variable whose value Claude Code asks about.
+pub const API_KEY_VARIABLE: &str = "ANTHROPIC_API_KEY";
+
 /// The flag Claude Code sets when its onboarding is done.
 const ONBOARDED_KEY: &str = "hasCompletedOnboarding";
 
@@ -32,11 +36,10 @@ const KEY_RESPONSES: &str = "customApiKeyResponses";
 const KEY_TAIL_LENGTH: usize = 20;
 
 /// Records in `config`, created owner-only when missing, that Claude Code's onboarding is
-/// done and, given `bound_key`, the value the agent holds in its credential variable, a yes
-/// to using it as `ANTHROPIC_API_KEY`. Refuses, writing nothing, when the file is a link, cannot be
-/// parsed, has an unexpected shape, stays locked, or holds answers to the key question
-/// without one for `bound_key`.
-pub fn record(config: &Path, bound_key: Option<&str>) -> Result<Recorded, String> {
+/// done and, given `api_key`, the value the agent holds in `ANTHROPIC_API_KEY`, a yes to
+/// using it unless the key was already answered. Refuses, writing nothing, when the file is
+/// a link, cannot be parsed, has an unexpected shape or stays locked.
+pub fn record(config: &Path, api_key: Option<&str>) -> Result<Recorded, String> {
     // Checked before the lock too, so a file that can never be written takes no lock.
     existing(config, WhenMissing::Create)?;
     let _lock = ConfigLock::acquire(config)?;
@@ -48,7 +51,7 @@ pub fn record(config: &Path, bound_key: Option<&str>) -> Result<Recorded, String
         ),
         None => ("{}".to_owned(), CREATED_MODE),
     };
-    let approved_tail = bound_key.map(key_tail);
+    let approved_tail = api_key.map(key_tail);
     let Some(edited) = answered(&text, approved_tail.as_deref())? else {
         return Ok(Recorded::Unchanged);
     };
@@ -77,22 +80,11 @@ pub fn answered(text: &str, approved_tail: Option<&str>) -> Result<Option<String
         edited = with_member(&edited, ONBOARDED_KEY, "true")?;
         top.insert(ONBOARDED_KEY.to_owned(), Value::Bool(true));
     }
-    if let Some(tail) = approved_tail {
-        match top.get(KEY_RESPONSES) {
-            Some(responses) => {
-                if !is_answered(responses, tail)? {
-                    return Err(format!(
-                        "the config's `{KEY_RESPONSES}` has no answer for the key the agent \
-                         holds; the question is left to the owner"
-                    ));
-                }
-            }
-            None => {
-                let responses = json!({ "approved": [tail], "rejected": [] });
-                edited = with_member(&edited, KEY_RESPONSES, &responses.to_string())?;
-                top.insert(KEY_RESPONSES.to_owned(), responses);
-            }
-        }
+    if let Some(tail) = approved_tail
+        && let Some(responses) = with_approved(top.get(KEY_RESPONSES), tail)?
+    {
+        edited = with_member(&edited, KEY_RESPONSES, &responses.to_string())?;
+        top.insert(KEY_RESPONSES.to_owned(), responses);
     }
     if edited == text {
         return Ok(None);
@@ -104,24 +96,38 @@ pub fn answered(text: &str, approved_tail: Option<&str>) -> Result<Option<String
     Ok(Some(edited))
 }
 
-/// Whether `responses` holds a yes or a no for `tail`. Claude Code reads a missing list as
-/// empty.
-fn is_answered(responses: &Value, tail: &str) -> Result<bool, String> {
-    let responses = responses
-        .as_object()
-        .ok_or_else(|| format!("the config's `{KEY_RESPONSES}` is not an object"))?;
-    for list in ["approved", "rejected"] {
-        let Some(answers) = responses.get(list) else {
-            continue;
+/// The answers `responses` with a yes for `tail` added, every other answer kept; `None` when
+/// they already hold a yes or a no for it. Claude Code reads a missing or null value as no
+/// answers.
+fn with_approved(responses: Option<&Value>, tail: &str) -> Result<Option<Value>, String> {
+    let mut responses = match responses {
+        None | Some(Value::Null) => serde_json::Map::new(),
+        Some(Value::Object(responses)) => responses.clone(),
+        Some(_) => return Err(format!("the config's `{KEY_RESPONSES}` is not an object")),
+    };
+    let mut lists = Vec::new();
+    for name in ["approved", "rejected"] {
+        let answers = match responses.get(name) {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(answers)) => answers.clone(),
+            Some(_) => {
+                return Err(format!(
+                    "the config's `{KEY_RESPONSES}.{name}` is not a list"
+                ));
+            }
         };
-        let answers = answers
-            .as_array()
-            .ok_or_else(|| format!("the config's `{KEY_RESPONSES}.{list}` is not a list"))?;
         if answers.iter().any(|answer| answer.as_str() == Some(tail)) {
-            return Ok(true);
+            return Ok(None);
         }
+        lists.push((name, answers));
     }
-    Ok(false)
+    for (name, mut answers) in lists {
+        if name == "approved" {
+            answers.push(json!(tail));
+        }
+        responses.insert(name.to_owned(), Value::Array(answers));
+    }
+    Ok(Some(Value::Object(responses)))
 }
 
 /// `text` with the top-level member `name` holding `value`: its value replaced, or the member

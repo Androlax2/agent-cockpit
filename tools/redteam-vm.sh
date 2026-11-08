@@ -337,9 +337,15 @@ command_put_credential() {
     [[ $provider =~ ^[A-Za-z0-9_.-]+$ ]] || die "provider name has characters the daemon rejects: $provider"
     [[ $var =~ ^[A-Za-z0-9_.-]+$ ]] || die "credential var name has characters the daemon rejects: $var"
     # The daemon's one-credential format, checked here so a wrong paste fails before any run
-    # (#1175). The key stays in the pipe, and the message never shows it.
-    tr -d '\r\n' <"$key_file" | grep -qxE '[A-Za-z0-9_.-]+' ||
-        die "$key_file is not one credential the daemon accepts: only letters, digits, '_', '-' and '.', on one line (value not shown)"
+    # (#1175): at most 4096 bytes, one token, then nothing but line breaks. The key stays in
+    # the pipe, and the message never shows it.
+    if (($(wc -c <"$key_file") > 4096)) ||
+        ! tr '\r' '\n' <"$key_file" | LC_ALL=C awk '
+            NR == 1 { is_token = /^[A-Za-z0-9_.-]+$/ }
+            NR > 1 && length { is_token = 0 }
+            END { exit !is_token }'; then
+        die "$key_file is not one credential the daemon accepts: only letters, digits, '_', '-' and '.', on one line, at most 4096 bytes (value not shown)"
+    fi
     local dir=.config/torlek/provider-credentials/$provider
     # tr runs in the guest on the piped key: it strips the line endings the daemon's one-line
     # format rejects, without the key ever being a shell value on this host.

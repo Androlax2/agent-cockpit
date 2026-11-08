@@ -399,9 +399,18 @@ pub struct SessionHomeRequest<'a> {
     /// The folder that backs the agent's home, its session's own (#858, #968): the
     /// harness's files under `HOME` are there, and the adapter may create them.
     pub session_home: &'a Path,
-    /// What the agent holds in its provider's credential variable when the session proxy
-    /// adds the owner's credential (#968); `None` when no credential is bound.
-    pub credential_placeholder: Option<&'a str>,
+    /// The credential variable the agent finds a placeholder in when the session proxy adds
+    /// the owner's credential (#968); `None` when no credential is bound.
+    pub credential: Option<HeldCredential<'a>>,
+}
+
+/// What an agent holds in place of the owner's credential: the session proxy adds the value.
+#[derive(Debug, Clone, Copy)]
+pub struct HeldCredential<'a> {
+    /// The variable the harness reads its credential from, such as `ANTHROPIC_API_KEY`.
+    pub variable: &'a str,
+    /// The value the agent finds there, never the owner's credential.
+    pub placeholder: &'a str,
 }
 
 /// What [`Provider::trust_workspace`] did.

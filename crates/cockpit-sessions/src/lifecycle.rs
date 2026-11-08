@@ -13,8 +13,8 @@ use cockpit_config::StartFileSnapshot;
 use cockpit_processes::{ExecutionId, LaunchSpec, Phase, Supervisor, Termination};
 use cockpit_projects::{Checkout, CheckoutKind, Git, Holder};
 use cockpit_provider_api::{
-    Capability, Conversation, LaunchRequest, Provider, ProviderError, SessionHomeRequest,
-    TrustRequest, WorkspaceTrust,
+    Capability, Conversation, HeldCredential, LaunchRequest, Provider, ProviderError,
+    SessionHomeRequest, TrustRequest, WorkspaceTrust,
 };
 use cockpit_tmux::{PaneId, PaneInfo, PaneState, Server, SessionLaunch, SessionName};
 use cockpit_turso::Database;
@@ -2119,13 +2119,13 @@ impl Sessions {
             )
         });
         // Kept for the harness's first-run screens, answered in a sandboxed session's own home
-        // once the launch passed its gates (#1178): the agent's environment, and what it
-        // holds in its provider's credential variable.
+        // once the launch passed its gates (#1178): the agent's environment, and the
+        // credential variable it finds the placeholder in.
         let home_environment = with_github_token(environment.clone(), None);
-        let credential_placeholder = provider_credential
+        let credential_variable = account
+            .credential
             .as_ref()
-            .and_then(|bound| bound.placeholder_variable.as_ref())
-            .map(|_| cockpit_sandbox::PLACEHOLDER);
+            .and_then(|bound| bound.placeholder_variable.clone());
         let tools = self
             .sandbox_tools(setting, &checkout.path, &session.working_dir, &environment)
             .await?;
@@ -2239,7 +2239,7 @@ impl Sessions {
                 session.provider.as_str(),
                 home_environment,
                 staged.home_source.clone(),
-                credential_placeholder,
+                credential_variable,
             )
             .await;
         }
@@ -2388,7 +2388,7 @@ impl Sessions {
         provider: &str,
         environment: Vec<(OsString, OsString)>,
         session_home: PathBuf,
-        credential_placeholder: Option<&'static str>,
+        credential_variable: Option<String>,
     ) {
         let provider = match self.provider(Some(provider)) {
             Ok(provider) => Arc::clone(provider),
@@ -2405,7 +2405,12 @@ impl Sessions {
                     .prepare_session_home(&SessionHomeRequest {
                         environment: &environment,
                         session_home: &session_home,
-                        credential_placeholder,
+                        credential: credential_variable
+                            .as_deref()
+                            .map(|variable| HeldCredential {
+                                variable,
+                                placeholder: cockpit_sandbox::PLACEHOLDER,
+                            }),
                     })
                     .map_err(|error| error.reason))
             })

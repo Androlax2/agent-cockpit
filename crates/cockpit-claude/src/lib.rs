@@ -602,13 +602,17 @@ impl Provider for ClaudeCode {
         }
     }
 
-    /// Its onboarding, and with a bound credential its API key question, answered in the
+    /// Its onboarding, and with an API key bound its API key question, answered in the
     /// session's `.claude.json` (#1178).
     fn prepare_session_home(&self, request: &SessionHomeRequest<'_>) -> Result<(), ProviderError> {
         let refused = |reason: String| ProviderError { reason };
         let config = trust::session_config_file(request.environment, request.session_home)
             .map_err(refused)?;
-        first_run::record(&config, request.credential_placeholder).map_err(refused)?;
+        let api_key = request
+            .credential
+            .filter(|held| held.variable == first_run::API_KEY_VARIABLE)
+            .map(|held| held.placeholder);
+        first_run::record(&config, api_key).map_err(refused)?;
         Ok(())
     }
 }

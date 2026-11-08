@@ -311,13 +311,22 @@ class RedTeamVmTests(unittest.TestCase):
         self.create_guest()
         self.run_script("start")
         calls_before = (self.log_dir / "ssh-calls").read_text()
+        malformed_keys = {
+            "a space": b"sk-ant-oat01-SECRETVALUE pasted twice\n",
+            "two lines": b"sk-ant-oat01-SECRETVALUE\nsk-ant-oat01-SECRETVALUE\n",
+            "a carriage return inside": b"sk-ant-oat01-SECRET\rVALUE\n",
+            "a blank first line": b"\nsk-ant-oat01-SECRETVALUE\n",
+            "more than 4096 bytes": b"sk-ant-oat01-SECRETVALUE" + b"x" * 4096,
+        }
 
-        result = self.put_credential(b"sk-ant-oat01-SECRETVALUE pasted twice\n")
+        for shape, key_bytes in malformed_keys.items():
+            with self.subTest(shape=shape):
+                result = self.put_credential(key_bytes)
 
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("is not one credential the daemon accepts", result.stderr)
-        self.assertNotIn("SECRETVALUE", result.stdout + result.stderr)
-        self.assertEqual((self.log_dir / "ssh-calls").read_text(), calls_before)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("is not one credential the daemon accepts", result.stderr)
+                self.assertNotIn("SECRETVALUE", result.stdout + result.stderr)
+                self.assertEqual((self.log_dir / "ssh-calls").read_text(), calls_before)
 
     def test_put_credential_refuses_an_empty_key_file(self):
         self.create_guest()

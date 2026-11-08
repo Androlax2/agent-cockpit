@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use cockpit_claude::ClaudeCode;
 use cockpit_claude::first_run::{self, key_tail};
 use cockpit_claude::trust::Recorded;
-use cockpit_provider_api::{Provider, SessionHomeRequest, TrustRequest, WorkspaceTrust};
+use cockpit_provider_api::{
+    HeldCredential, Provider, SessionHomeRequest, TrustRequest, WorkspaceTrust,
+};
 use serde_json::{Value, json};
 
 /// What the sandbox gives the agent in its credential variable; a fixture, never a key.
@@ -62,15 +64,20 @@ impl SessionHome {
         serde_json::from_str(&self.read()).unwrap()
     }
 
-    /// The adapter's `prepare_session_home`, as the daemon calls it before a sandboxed launch.
-    fn prepare(&self, credential_placeholder: Option<&str>) -> Result<(), String> {
-        self.prepare_with(&[], credential_placeholder)
+    /// The adapter's `prepare_session_home`, as the daemon calls it before a sandboxed launch,
+    /// with `api_key_placeholder` held in `ANTHROPIC_API_KEY` when given.
+    fn prepare(&self, api_key_placeholder: Option<&str>) -> Result<(), String> {
+        let credential = api_key_placeholder.map(|placeholder| HeldCredential {
+            variable: "ANTHROPIC_API_KEY",
+            placeholder,
+        });
+        self.prepare_with(&[], credential)
     }
 
     fn prepare_with(
         &self,
         extra: &[(&str, &Path)],
-        credential_placeholder: Option<&str>,
+        credential: Option<HeldCredential<'_>>,
     ) -> Result<(), String> {
         let owner_home = self.path().join("owner");
         let mut environment = vec![(OsString::from("HOME"), owner_home.into_os_string())];
@@ -83,7 +90,7 @@ impl SessionHome {
             .prepare_session_home(&SessionHomeRequest {
                 environment: &environment,
                 session_home: self.path(),
-                credential_placeholder,
+                credential,
             })
             .map_err(|error| error.reason)
     }
@@ -177,8 +184,57 @@ fn a_no_to_the_key_is_kept() {
 }
 
 #[test]
-fn answers_for_another_key_leave_the_question_to_the_owner_writing_nothing() {
-    let config = "{\"customApiKeyResponses\":{\"approved\":[\"another-key-tail-xyz\"]}}";
+fn answers_about_another_key_gain_a_yes_for_the_key_the_agent_holds() {
+    let home = SessionHome::with_config(
+        "{\"customApiKeyResponses\":{\"approved\":[\"another-key-tail-xyz\"],\"rejected\":[\"a-third-key-tail-xyz\"]}}",
+    );
+
+    home.prepare(Some(PLACEHOLDER)).unwrap();
+
+    let config = home.parsed();
+    assert_eq!(config["hasCompletedOnboarding"], true);
+    assert_eq!(
+        config["customApiKeyResponses"],
+        json!({
+            "approved": ["another-key-tail-xyz", key_tail(PLACEHOLDER)],
+            "rejected": ["a-third-key-tail-xyz"],
+        })
+    );
+}
+
+/// Claude Code reads a null where answers go as no answers, and asks.
+#[test]
+fn null_answers_gain_a_yes_for_the_key_the_agent_holds() {
+    let home = SessionHome::with_config("{\"customApiKeyResponses\":{\"approved\":null}}");
+
+    home.prepare(Some(PLACEHOLDER)).unwrap();
+
+    assert_eq!(
+        home.parsed()["customApiKeyResponses"],
+        json!({ "approved": [key_tail(PLACEHOLDER)], "rejected": [] })
+    );
+}
+
+/// Claude Code asks about `ANTHROPIC_API_KEY` alone; a `setup-token` token gets no answer.
+#[test]
+fn an_oauth_token_records_no_answer_about_an_api_key() {
+    let home = SessionHome::new();
+
+    home.prepare_with(
+        &[],
+        Some(HeldCredential {
+            variable: "CLAUDE_CODE_OAUTH_TOKEN",
+            placeholder: PLACEHOLDER,
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(home.parsed(), json!({ "hasCompletedOnboarding": true }));
+}
+
+#[test]
+fn answers_that_are_not_an_object_are_refused_writing_nothing() {
+    let config = "{\"customApiKeyResponses\":[\"not-answers\"]}";
     let home = SessionHome::with_config(config);
 
     let refused = home.prepare(Some(PLACEHOLDER)).unwrap_err();
