@@ -2482,13 +2482,15 @@ impl Sessions {
         Ok(current.map_or(AccountRoute::Pick, AccountRoute::Keep))
     }
 
-    /// The account a launch of `provider` runs on, with the credential the session proxy adds
-    /// for it on the provider's hosts under `"required"` (#858, #968, #59), read now so a
-    /// credential the owner replaced reaches the next launch. No account under `"off"`, whose
-    /// agent signs in from the owner's home, nor when no account holds one: the harness then
-    /// asks for a sign-in it cannot store. See [`AccountRoute`] for which account each route
-    /// takes. An account whose credential is unusable refuses the launch rather than pass it
-    /// over.
+    /// The account a launch of `provider` in `project` runs on under `"required"` (#858, #968,
+    /// #59): with the credential the session proxy adds for it on the provider's hosts, or the
+    /// signed-in login bound in the session's home when `project` holds a grant for it. Both
+    /// are read now, so what the owner replaced reaches the next launch. No account under
+    /// `"off"`, whose agent signs in from the owner's home, nor when no account holds either:
+    /// the harness then asks for a sign-in it cannot store. See [`AccountRoute`] for which
+    /// account each route takes. A login account the project holds no grant for is passed
+    /// over and named in [`LaunchAccount::passed_over`]; an account whose credential or login
+    /// is unusable, or that holds both, refuses the launch rather than pass it over.
     async fn launch_account(
         &self,
         setting: cockpit_config::AgentSandbox,
@@ -2548,13 +2550,7 @@ impl Sessions {
                             }
                         }
                         (None, Some(account)) => {
-                            return kept_account(
-                                provider,
-                                &environment,
-                                &logins,
-                                &accounts,
-                                account,
-                            );
+                            kept_account(provider, &environment, &logins, &accounts, account)?
                         }
                         (None, None) => first(&held)?.unwrap_or_default(),
                     }
@@ -2597,7 +2593,7 @@ impl Sessions {
             Err(
                 Error::ProviderCredential { .. }
                 | Error::AccountUnavailable { .. }
-                | Error::AccountAmbiguous { .. },
+                | Error::AccountUnusable { .. },
             ) => Ok(false),
             Err(error) => Err(error),
         }
@@ -3518,10 +3514,11 @@ impl ProjectLogins {
         match std::fs::symlink_metadata(&file) {
             Ok(entry) if entry.is_file() => {}
             Ok(_) => {
-                return Err(Error::AccountUnavailable {
+                return Err(Error::AccountUnusable {
                     provider: provider.to_owned(),
                     account: account.to_owned(),
                     reason: format!("keeps a login {} that is no plain file", file.display()),
+                    remedy: "sign it in again",
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -3557,7 +3554,7 @@ impl ProjectLogins {
 /// What a launch finds in one account (#59).
 enum Holding {
     /// A credential bound for it, or a login the project holds a grant for.
-    Usable(LaunchAccount),
+    Usable(Box<LaunchAccount>),
     /// A signed-in login the project holds no grant for.
     Ungranted,
     /// Neither a credential nor a signed-in login.
@@ -3607,18 +3604,20 @@ fn holding(
     let credential = bound_provider_credential(provider, environment, account)?;
     let login = logins.signed_in(name, account)?;
     let found = |credential, login| {
-        Holding::Usable(LaunchAccount {
+        Holding::Usable(Box::new(LaunchAccount {
             name: Some(account.to_owned()),
             credential,
             login,
             ..LaunchAccount::default()
-        })
+        }))
     };
     Ok(match (credential, login) {
         (Some(_), Some(_)) => {
-            return Err(Error::AccountAmbiguous {
+            return Err(Error::AccountUnusable {
                 provider: name.to_owned(),
                 account: account.to_owned(),
+                reason: "holds both a credential file and a signed-in login".to_owned(),
+                remedy: "remove the one it should not use",
             });
         }
         (Some(credential), None) => found(Some(credential), None),
@@ -3642,7 +3641,7 @@ fn first_usable(
     let name = provider.name().as_str();
     for account in accounts {
         match holding(provider, environment, logins, account)? {
-            Holding::Usable(found) => return Ok(Some(found)),
+            Holding::Usable(found) => return Ok(Some(*found)),
             Holding::Ungranted => passed_over.push(format!(
                 "{account} (project {} holds no grant for its login: {} lets it)",
                 logins.project,
@@ -3674,7 +3673,7 @@ fn kept_account(
         return Err(unavailable("the owner no longer lists".to_owned()));
     }
     match holding(provider, environment, logins, &account)? {
-        Holding::Usable(found) => Ok(found),
+        Holding::Usable(found) => Ok(*found),
         Holding::Ungranted => Err(unavailable(format!(
             "is a login account project {} holds no grant for ({} lets it)",
             logins.project,

@@ -820,7 +820,6 @@ fn home_folder(environment: &[(OsString, OsString)]) -> Result<PathBuf, Refusal>
     Ok(home)
 }
 
-/// `~/x` under `home`; a pattern or any other shape is refused rather than narrowed.
 /// Where `login` is bound in the program's `home`, and what the session's own `home_source`
 /// holds for it (#59, #858).
 fn login_bind(
@@ -861,6 +860,7 @@ fn login_bind(
     })
 }
 
+/// `~/x` under `home`; a pattern or any other shape is refused rather than narrowed.
 fn in_home(home: &Path, declared: &str) -> Result<PathBuf, Refusal> {
     let relative = declared
         .strip_prefix("~/")

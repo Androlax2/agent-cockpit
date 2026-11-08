@@ -248,3 +248,28 @@ async fn signing_in_again_replaces_the_login() {
     let login = logins_of(&home, "codex", "work").join("login/auth.json");
     assert_eq!(std::fs::read_to_string(login).unwrap(), FAKE_LOGIN);
 }
+
+/// A sandboxed session sees a Codex account's login folder read-write (#59), so the daemon
+/// stages a login outside it: what a session leaves there neither stops a sign-in nor
+/// receives the owner-only mode meant for the login.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_a_session_leaves_in_the_login_folder_does_not_stop_a_sign_in() {
+    let home = Home::new();
+    home.write_owner_config(WORK);
+    codex_signing_in(&home, &writes_login());
+    let _daemon = home.start();
+    let first = home
+        .cockpit(&["account", "sign-in", "codex", "work"], &[])
+        .await;
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    let planted = logins_of(&home, "codex", "work").join("login/.incoming");
+    std::fs::create_dir_all(planted.join("inside")).unwrap();
+
+    let output = home
+        .cockpit(&["account", "sign-in", "codex", "work"], &[])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let login = logins_of(&home, "codex", "work").join("login/auth.json");
+    assert_eq!(std::fs::read_to_string(login).unwrap(), FAKE_LOGIN);
+}

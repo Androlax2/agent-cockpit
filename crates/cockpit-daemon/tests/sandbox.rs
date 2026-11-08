@@ -1896,6 +1896,37 @@ async fn an_ungranted_login_is_passed_over_for_the_next_account_and_named() {
     assert_eq!(launch.passed_over, [PASSED_OVER_WORK]);
 }
 
+/// #59, owner decision C: a restart after a quota stop looks for another account, so when it
+/// stays on its account it still names the login it passed over.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_after_a_quota_stop_names_the_login_it_passed_over() {
+    let home = Home::new();
+    let agent = agent_with_logins(&home, TWO_ACCOUNTS, &[], |home| {
+        write_claude_login(home, "work", "fixture-login-v1");
+        home.write_account_credential(
+            "claude",
+            "spare",
+            "ANTHROPIC_API_KEY",
+            &format!("{SETUP_TOKEN}\n"),
+            0o600,
+        );
+    })
+    .await;
+    run_in_agent(&home, &agent.root, &quota_stop_line()).await;
+    tokio::time::sleep(SETTLE).await;
+
+    restart(&home, &agent.session).await.unwrap();
+
+    let client = home.connect().await;
+    let launch = listed(&client, &agent.session)
+        .await
+        .launch
+        .expect("the session relaunched");
+    assert_eq!(launch.kind, LaunchKindView::Restart);
+    assert_eq!(launch.account.as_deref(), Some("spare"));
+    assert_eq!(launch.passed_over, [PASSED_OVER_WORK]);
+}
+
 /// #59, owner decision C: `session new` says which login it passed over and the grant.
 #[tokio::test(flavor = "multi_thread")]
 async fn session_new_names_the_login_it_passed_over_and_the_grant() {
@@ -1985,6 +2016,36 @@ async fn an_account_with_both_a_credential_and_a_login_refuses_the_launch_naming
                 "the claude provider's account work holds both a credential file and a \
                  signed-in login"
             )),
+        "{started:?}"
+    );
+}
+
+/// #59: a login account whose login is no plain file refuses a new launch, naming the file
+/// and the sign-in that replaces it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_login_that_is_no_plain_file_refuses_the_launch_naming_it() {
+    let home = Home::new();
+    home.write_owner_config(&format!("{REQUIRED}{WORK_LOGIN}"));
+    let file = write_claude_login(&home, "work", "fixture-login-v1");
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    home.cockpit(&grant("work"), &[]).await;
+
+    let started = client
+        .request(session_new_command(&root), Duration::from_secs(60))
+        .await;
+
+    assert!(
+        matches!(&started, Err(ClientError::Daemon(error))
+        if error.code == ErrorCode::Refused
+            && error.message.contains(&format!(
+                "the claude provider's account work keeps a login {} that is no plain file, so \
+                 its sandboxed sessions do not launch: sign it in again",
+                file.display()
+            ))),
         "{started:?}"
     );
 }

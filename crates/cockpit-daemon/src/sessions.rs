@@ -482,7 +482,7 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::GithubToken { .. }
         | Error::ProviderCredential { .. }
         | Error::AccountUnavailable { .. }
-        | Error::AccountAmbiguous { .. }
+        | Error::AccountUnusable { .. }
         | Error::SignIn { .. }
         | Error::LoginGrantRefused { .. } => ErrorCode::Refused,
         Error::LoginGrantStore(cockpit_sandbox::LoginGrantError::Refused(

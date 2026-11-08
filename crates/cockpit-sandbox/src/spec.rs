@@ -13,7 +13,8 @@ use crate::egress::{Allowlist, EgressDecisions, TLS_PORT, Target, normalized_nam
 
 /// Bumped when a field changes meaning; the launcher refuses any other version, so a launcher
 /// left from an older install never half-reads a newer daemon's spec. 3: bound credentials
-/// (#832), which an older launcher would leave unadded.
+/// (#832), which an older launcher would leave unadded. 4: a login account's sign-in bound
+/// in the session's home (#59).
 pub const SPEC_VERSION: u32 = 4;
 
 /// The file name of the spec in the session's mount folder.
