@@ -31,6 +31,33 @@ fn named_secrets_keep_their_name() {
 }
 
 #[test]
+fn sudos_password_prompt_is_not_a_secret() {
+    let prompt = "[sudo] password for theo: ";
+
+    assert_eq!(redact_secrets(prompt), (prompt.to_owned(), 0));
+}
+
+#[test]
+fn a_password_shown_after_sudos_prompt_is_redacted() {
+    let (text, count) = redact_secrets("[sudo] password for theo: hunter22\nok");
+
+    assert_eq!(
+        (text.as_str(), count),
+        ("[sudo] password for theo: [redacted]\nok", 1)
+    );
+}
+
+#[test]
+fn a_netrc_password_is_still_redacted() {
+    let (text, count) = redact_secrets("machine example.com login theo password hunter22");
+
+    assert_eq!(
+        (text.as_str(), count),
+        ("machine example.com login theo password [redacted]", 1)
+    );
+}
+
+#[test]
 fn credentials_in_urls_and_headers_are_redacted() {
     let (text, count) =
         redact_secrets("https://owner:s3cret@example.com/x\nAuthorization: Bearer abc.def.ghi");

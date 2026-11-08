@@ -97,6 +97,14 @@ An edit requires another review; stale approval details are refused.
 Use `torlek approval decline ID` to decline. Approval runs that command once with the daemon's host rights.
 Provider-native permission dialogs are separate and remain in the provider terminal.
 
+A running command that waits at a prompt shows in the queue. Type into it with `torlek approval input ID`, which reads one line from standard input, or `i` in the TUI pane.
+The line is typed only while the command's terminal hides what is typed, as at a `sudo`, `ssh` or `gpg` password prompt (echo off, the line read whole); otherwise it is refused, because an echoed line lands in the output the agent reads and Torlek stores.
+To answer a visible prompt (`y`, `[Y/n]`, `read`) on purpose, use `torlek approval input ID --shown`, or Tab in the TUI to show the line before Enter; that answer appears in the output.
+
+To remove a finished run's stored output, run `torlek approval purge-output ID`; database retention does the same after `[storage] database_retention_days`.
+The daily database backups still hold it until they age out (`[storage] database_backups_kept`, 7 by default, in the state directory's `backups` folder); delete the copies taken after the run to remove it sooner.
+The cleared text can stay in the database file's unused pages until SQLite reuses them, and what the agent already received stays in its own conversation.
+
 ### Network requests
 
 Under `agents.sandbox = "required"`, a host no entry allows is refused at once (`403`) and becomes a request for you (#674).
@@ -176,6 +184,13 @@ Unknown keys fail with the file and line. See the [current configuration guide](
 (build folders, session temp folders, check outputs, database, backups, logs) with its apparent
 bytes, what its prune would retire now and the command that frees it, and a total. It deletes
 nothing; an area it could not read in full says why and makes it exit 1.
+
+`torlek usage quota` shows each provider account's plan windows as the daemon last read
+them: the share used, the state (`available`, `low` from your lowest alert threshold,
+`exhausted`, `blocked`, or `stale` when the reading is old, a refresh failed after it or
+its reset has passed), when each resets,
+and the last refresh that failed. The daemon reads them every `usage.quota_refresh_minutes`;
+Codex is read from its own sign-in in `~/.local/share/codex-quota`.
 
 To let a project's agents push and open pull requests without your own `gh` login, create a
 fine-grained token limited to that repository (contents and pull requests: read and write)

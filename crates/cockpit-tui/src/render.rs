@@ -589,12 +589,13 @@ pub(crate) fn typing_line(typing: Typing, typed: &str, is_input_revealed: bool) 
     format!("{prompt}: {shown}_   (Enter sends{reveal}, Esc cancels)")
 }
 
-/// What Tab does to the line typed for a command.
+/// What Tab does to the line typed for a command. A revealed line is sent as a visible answer,
+/// which the command's terminal may echo into the output (#1160).
 pub(crate) fn reveal_hint(is_input_revealed: bool) -> &'static str {
     if is_input_revealed {
-        "Tab hides it"
+        "sent shown, echo and all; Tab hides it"
     } else {
-        "Tab shows it"
+        "Tab shows it, for a visible answer"
     }
 }
 

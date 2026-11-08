@@ -157,6 +157,8 @@ pub struct AccountQuota {
     pub account: AccountName,
     /// The plan as the last reading named it.
     pub plan: Option<String>,
+    /// Whether the last reading said the provider refuses ordinary use on the account.
+    pub is_blocked: bool,
     /// When the last reading was taken; `None` when every refresh so far failed.
     pub observed_at: Option<i64>,
     /// Whether the last reading is younger than the policy allows and no refresh failed

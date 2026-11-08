@@ -114,6 +114,7 @@ pub struct Routes {
     /// The optional skill pack as the start delivered it (#786).
     skill_pack: Arc<crate::DeliveredSkillPack>,
     log_level: Option<cockpit_diagnostics::LevelControl>,
+    quota_policy: Option<cockpit_usage::QuotaPolicy>,
 }
 
 impl Routes {
@@ -177,6 +178,7 @@ impl Routes {
                 readiness: readiness.clone(),
             },
             skill_pack: capabilities.skill_pack,
+            quota_policy: capabilities.quota_policy,
             readiness,
             resources: resources::Resources {
                 database: Arc::clone(&capabilities.database),
@@ -281,6 +283,15 @@ impl Handler for Routes {
                 )),
             },
             (Command::VersionReport, Peer::Agent { .. }) => Route::Answer(owner_only()),
+            // Quota informs the owner and scheduling (report 18); no session asks for it.
+            (Command::UsageQuota, Peer::Owner) => Route::Run {
+                class: WorkClass::Control,
+                job: Box::pin(crate::usage::report(
+                    Arc::clone(&self.database),
+                    self.quota_policy.clone(),
+                )),
+            },
+            (Command::UsageQuota, Peer::Agent { .. }) => Route::Answer(owner_only()),
             // The bundle is the product's own text: anyone the daemon serves may read it.
             (command @ (Command::InstructionCatalog | Command::InstructionsRead { .. }), _) => {
                 Route::Answer(agent_context::instructions(command))
@@ -368,6 +379,7 @@ impl Handler for Routes {
                 | Command::ApprovalDecline { .. }
                 | Command::ApprovalEdit { .. }
                 | Command::ApprovalInput { .. }
+                | Command::ApprovalPurgeOutput { .. }
                 | Command::GuideShow { .. }
                 | Command::GuideAnswer { .. }
                 | Command::GuideStuck { .. }

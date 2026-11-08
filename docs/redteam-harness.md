@@ -16,27 +16,28 @@ fields, decides the refusal, so every command in a group takes the identical cod
 
 | Group (routes.rs line) | Commands | CLI verbs |
 | --- | --- | --- |
-| 247 | `AgentReports` | `agent reports` |
-| 271 | `BugReportNew`, `BugReportBundlePlan`, `BugReportList`, `BugReportShow`, `BugReportEdit`, `BugReportOpened`, `BugReportSent`, `BugReportDiscard` | `bug-report new\|list\|show\|edit\|send\|discard` |
-| 283 | `VersionReport` | `version --all` |
-| 303 | `SkillPack` | the owner's own skill listing |
-| 319 | `StorageReport`, `StoragePrunePreview`, `StoragePruneApply`, `StoragePruneAbandon`, `StoragePruneStatus`, `StorageOutputs`, `StorageDatabase` | `storage`, `storage outputs [prune]`, `storage database [prune]`, `storage prune` |
-| 336 | `ProjectAdd`, `ProjectList`, `ProjectRemove`, `CheckoutList`, `CheckoutClone`, `CheckoutReview`, `CheckoutClaim`, `CheckoutRelease`, `CheckoutSweep`, `CheckoutPush` | `project add\|list\|remove`, `checkout list\|clone\|review\|claim\|release\|sweep\|push` |
-| 378 | `ApprovalQueue`, `ApprovalShow`, `ApprovalApprove`, `ApprovalDecline`, `ApprovalEdit`, `ApprovalInput`, `GuideShow`, `GuideAnswer`, `GuideStuck`, `GuideClose` | `approval list\|show\|approve\|decline\|edit\|input`, `guide show\|answer\|stuck\|close` |
-| 395 | `NetworkList`, `NetworkAllow`, `NetworkDeny`, `NetworkGrants`, `NetworkRevoke` | `network list\|allow\|deny\|grants\|revoke` |
-| 430 | `SessionGrant`, `SessionRevoke`, `SessionGrants` | `session grant\|revoke\|grants` |
-| 454 | `SessionNew`, `SessionList`, `SessionRestart`, `SessionRestartAll`, `SessionSleep`, `SessionWake`, `SessionResume`, `SessionSend`, `SessionCancel`, `SessionEnd`, `SessionEndFinished`, `SessionLink`, `SessionSandbox`, `SessionSandboxRecord`, `SandboxShow` | `session new\|list\|restart\|sleep\|wake\|resume\|send\|cancel\|end\|link\|sandbox\|sandbox-record`, `sandbox show` |
-| 507 | `TaskPriority`, `TaskQueue`, `TaskApprove`, `TaskDecline`, `TaskReopen`, `TaskWait`, `TaskUnwait`, `TaskImageAdd`, `TaskImage`, `TaskDraftSave`, `TaskDrafts`, `TaskDraftDiscard` | `todo priority\|queue\|approve\|decline\|reopen\|after\|unwait\|image add\|image get\|draft save\|drafts\|draft discard` |
-| 545 | `WorkflowStart`, `WorkflowCancel` | `workflow start\|cancel` |
-| 560 | `ResourceStatus`, `ResourceProfile`, `ResourceQueue`, `ResourceCheck`, `ResourceCheckpoint`, `ResourceStop` | `resources status\|profile\|pause-queue\|resume-queue\|check\|checkpoint\|stop` |
-| 571 | `QueueExplain`, `QueueDispatch`, `TaskHandoff` | `queue explain\|dispatch`, `todo handoff` |
-| 586 | `ManagerOpen`, `ManagerFocus`, `ManagerFit`, `SessionShow`, `SessionType`, `SessionPasteImage` | the manager/TUI protocol behind `tui` |
-| 601 | `ProviderList` | `provider list` |
-| 611 | `Readiness` | the readiness report behind `init`/`doctor` |
-| 617 | `DesktopSessionImport` | `desktop-session import` |
-| 629 | `CheckRun`, `CheckReceipt`, `CheckPending`, `CheckResolvePending` | `check run`, `check pending`, `check resolve-pending` |
-| 651 | `LogsLevelStatus`, `LogsLevelSet`, `LogsLevelRevert` | `logs level` |
-| 665 | `ConfigReload` | `config reload` |
+| 249 | `AgentReports` | `agent reports` |
+| 273 | `BugReportNew`, `BugReportBundlePlan`, `BugReportList`, `BugReportShow`, `BugReportEdit`, `BugReportOpened`, `BugReportSent`, `BugReportDiscard` | `bug-report new\|list\|show\|edit\|send\|discard` |
+| 285 | `VersionReport` | `version --all` |
+| 294 | `UsageQuota` | `usage quota` |
+| 314 | `SkillPack` | the owner's own skill listing |
+| 330 | `StorageReport`, `StoragePrunePreview`, `StoragePruneApply`, `StoragePruneAbandon`, `StoragePruneStatus`, `StorageOutputs`, `StorageDatabase` | `storage`, `storage outputs [prune]`, `storage database [prune]`, `storage prune` |
+| 347 | `ProjectAdd`, `ProjectList`, `ProjectRemove`, `CheckoutList`, `CheckoutClone`, `CheckoutReview`, `CheckoutClaim`, `CheckoutRelease`, `CheckoutSweep`, `CheckoutPush` | `project add\|list\|remove`, `checkout list\|clone\|review\|claim\|release\|sweep\|push` |
+| 389 | `ApprovalQueue`, `ApprovalShow`, `ApprovalApprove`, `ApprovalDecline`, `ApprovalEdit`, `ApprovalInput`, `GuideShow`, `GuideAnswer`, `GuideStuck`, `GuideClose` | `approval list\|show\|approve\|decline\|edit\|input`, `guide show\|answer\|stuck\|close` |
+| 406 | `NetworkList`, `NetworkAllow`, `NetworkDeny`, `NetworkGrants`, `NetworkRevoke` | `network list\|allow\|deny\|grants\|revoke` |
+| 441 | `SessionGrant`, `SessionRevoke`, `SessionGrants` | `session grant\|revoke\|grants` |
+| 465 | `SessionNew`, `SessionList`, `SessionRestart`, `SessionRestartAll`, `SessionSleep`, `SessionWake`, `SessionResume`, `SessionSend`, `SessionCancel`, `SessionEnd`, `SessionEndFinished`, `SessionLink`, `SessionSandbox`, `SessionSandboxRecord`, `SandboxShow` | `session new\|list\|restart\|sleep\|wake\|resume\|send\|cancel\|end\|link\|sandbox\|sandbox-record`, `sandbox show` |
+| 518 | `TaskPriority`, `TaskQueue`, `TaskApprove`, `TaskDecline`, `TaskReopen`, `TaskWait`, `TaskUnwait`, `TaskImageAdd`, `TaskImage`, `TaskDraftSave`, `TaskDrafts`, `TaskDraftDiscard` | `todo priority\|queue\|approve\|decline\|reopen\|after\|unwait\|image add\|image get\|draft save\|drafts\|draft discard` |
+| 556 | `WorkflowStart`, `WorkflowCancel` | `workflow start\|cancel` |
+| 571 | `ResourceStatus`, `ResourceProfile`, `ResourceQueue`, `ResourceCheck`, `ResourceCheckpoint`, `ResourceStop` | `resources status\|profile\|pause-queue\|resume-queue\|check\|checkpoint\|stop` |
+| 582 | `QueueExplain`, `QueueDispatch`, `TaskHandoff` | `queue explain\|dispatch`, `todo handoff` |
+| 597 | `ManagerOpen`, `ManagerFocus`, `ManagerFit`, `SessionShow`, `SessionType`, `SessionPasteImage` | the manager/TUI protocol behind `tui` |
+| 612 | `ProviderList` | `provider list` |
+| 622 | `Readiness` | the readiness report behind `init`/`doctor` |
+| 628 | `DesktopSessionImport` | `desktop-session import` |
+| 640 | `CheckRun`, `CheckReceipt`, `CheckPending`, `CheckResolvePending` | `check run`, `check pending`, `check resolve-pending` |
+| 662 | `LogsLevelStatus`, `LogsLevelSet`, `LogsLevelRevert` | `logs level` |
+| 676 | `ConfigReload` | `config reload` |
 
 Also owner-only, but not an agent-reachable verb at all (`daemon install`, `daemon-install`
 and the native launcher checks): see

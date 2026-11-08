@@ -1,16 +1,20 @@
 //! Reads each provider's plan windows at the owner's interval (#58) and records them, or why
 //! they could not be read, through `cockpit-usage`. A provider whose reading fails waits
 //! twice as long as before, up to an hour, so a refused sign-in or a rate limit is not asked
-//! again at every refresh. The alerts a reading fires are logged; clients read them with the
-//! usage request (#58, part 3).
+//! again at every refresh. The alerts a reading fires are logged. `usage-quota` answers the
+//! recorded windows to the owner, judged under the same policy.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cockpit_protocol::{
+    ErrorCode, Outcome, ProtocolError, QuotaAccountView, QuotaFailureView, QuotaWindowStateView,
+    QuotaWindowView, Reply,
+};
 use cockpit_provider_api::{Capability, Provider, ProviderError, QuotaReading};
 use cockpit_turso::Database;
-use cockpit_usage::{AccountName, Alert, QuotaPolicy};
+use cockpit_usage::{AccountName, AccountQuota, Alert, QuotaPolicy, WindowQuota, WindowState};
 
 /// Until accounts arrive (#59), each provider has one: the one its harness is signed in to.
 const ACCOUNT: &str = "default";
@@ -178,4 +182,75 @@ async fn record(
     };
     write.commit().await.map_err(|error| error.to_string())?;
     Ok(alerts)
+}
+
+/// `usage-quota`: every account's windows as last recorded, judged now under `policy`, the
+/// worker's own. `None` when this daemon reads no quota: its answer would judge readings an
+/// earlier start recorded under a policy nobody set.
+pub(crate) async fn report(database: Arc<Database>, policy: Option<QuotaPolicy>) -> Outcome {
+    let Some(policy) = policy else {
+        return Outcome::Error(ProtocolError {
+            code: ErrorCode::Refused,
+            message: "this daemon reads no quota".to_owned(),
+            unblock: None,
+        });
+    };
+    match recorded_quotas(&database, &policy).await {
+        Ok(accounts) => Outcome::Ok(Reply::UsageQuota {
+            accounts: accounts.into_iter().map(account_view).collect(),
+        }),
+        Err(error) => {
+            tracing::error!(%error, "reading the recorded quota failed");
+            Outcome::Error(ProtocolError {
+                code: ErrorCode::Internal,
+                message: "the daemon failed; no quota was read".to_owned(),
+                unblock: None,
+            })
+        }
+    }
+}
+
+async fn recorded_quotas(
+    database: &Database,
+    policy: &QuotaPolicy,
+) -> Result<Vec<AccountQuota>, String> {
+    let read = database.read().await.map_err(|error| error.to_string())?;
+    cockpit_usage::quotas(&read, policy, crate::approvals::now())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn account_view(quota: AccountQuota) -> QuotaAccountView {
+    QuotaAccountView {
+        provider: quota.provider.as_str().to_owned(),
+        account: quota.account.as_str().to_owned(),
+        plan: quota.plan,
+        is_blocked: quota.is_blocked,
+        observed_at: quota.observed_at,
+        is_current: quota.is_current,
+        failure: quota.failure.map(|failure| QuotaFailureView {
+            at: failure.at,
+            reason: failure.reason,
+        }),
+        windows: quota.windows.into_iter().map(window_view).collect(),
+    }
+}
+
+fn window_view(window: WindowQuota) -> QuotaWindowView {
+    QuotaWindowView {
+        limit: window.limit.as_str().to_owned(),
+        scope: window.scope,
+        length_seconds: window.length_seconds,
+        // Rounded down, so 100 is shown only once the whole limit is used. A float cast
+        // saturates; readings are finite and never negative.
+        used_percent: window.used_percent.floor() as u32,
+        resets_at: window.resets_at,
+        state: match window.state {
+            WindowState::Available => QuotaWindowStateView::Available,
+            WindowState::Low => QuotaWindowStateView::Low,
+            WindowState::Exhausted => QuotaWindowStateView::Exhausted,
+            WindowState::Blocked => QuotaWindowStateView::Blocked,
+            WindowState::Stale => QuotaWindowStateView::Stale,
+        },
+    }
 }

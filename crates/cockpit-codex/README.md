@@ -13,8 +13,24 @@ provider and nothing above the contract sees a Codex type (#48).
   masked key, is discarded. The probe has a ten-second deadline and a 64 KiB output limit
   per stream. `tests/sign_in_conformance.rs` proved signed-out and placeholder API-key states
   on `SIGN_IN_CONFORMANCE_VERSION` (0.166.0), independently of the delivery capability pin.
+- **Quota** (#58, `quota`). `Provider::quota` reads the plan windows of Codex's quota
+  sign-in, a sign-in of its own under the owner's `~/.local/share/codex-quota` where
+  `config/waybar/.config/waybar/scripts/codex-quota.py` (`codex-usage.sh --login`) signs in,
+  never the sessions' `~/.codex` (owner's decision, 2026-11-07). It runs `codex app-server -c
+  cli_auth_credentials_store="file"` there on its standard streams, with `CODEX_HOME` and its
+  folder set to that home, sends `initialize`, `account/read` (`refreshToken: false`) and
+  `account/rateLimits/read`. Once both answer, within four fifths of 15 s, its input ends and
+  it has a fifth of 15 s more to exit by itself, so a sign-in it rewrites is not cut short; then its
+  process group is stopped. It gets `PATH`, `HOME` and `CODEX_HOME` only, none of the daemon's
+  other variables. Codex alone reads its sign-in; no token passes through the adapter. A missing home or a
+  sign-in that is not a subscription is refused with the command that signs in. The `codex`
+  bucket (`rateLimitsByLimitId.codex`, or the older `rateLimits`) gives up to two windows keyed
+  by length: `five-hour`, `seven-day`, `window-<minutes>-minutes`, or the slot's name without a
+  length. `ordinaryUsageAllowed: false` is a blocked reading. Codex's error text is not
+  repeated. The fields are those of `codex app-server generate-ts` on 0.166.0. The host daemon
+  alone calls it (#858). `XDG_DATA_HOME` is not followed: the home is under `~/.local/share`.
 
-- **Capabilities with provenance.** Resume, compaction threshold and, with the bridge, events, submit, cancel and
+- **Capabilities with provenance.** Resume, compaction threshold, quota and, with the bridge, events, submit, cancel and
   outcome are `tested` only when the running Codex is a version in `tested-versions.txt`
   (#732); on any other or unknown version they are `discovered` (unverified).
   `CONFORMANCE_VERSION` (0.166.0) is only the version the recorded fixtures come from. Effort, compact, billing, commands,
@@ -39,8 +55,8 @@ provider and nothing above the contract sees a Codex type (#48).
   the socket. A private server per session, never Codex's shared one: the shared server
   runs hooks with whichever launch's token started it (as #184 for Claude Code).
 - **Launch without the bridge.** `codex [resume] --no-daemon`, with the thread id and the
-  first message after `--`, where neither can be read as a flag; only resume and the
-  compaction threshold are reported.
+  first message after `--`, where neither can be read as a flag; only resume, the
+  compaction threshold and quota are reported.
 - **Compaction threshold** (#783). A chosen threshold is passed as `--config
   model_post_turn_compact_threshold_percent=<percent>`, Codex's own setting in its own words
   (a whole percent of the usable context window, `0` off), to the app-server with the bridge
@@ -117,7 +133,8 @@ provider and nothing above the contract sees a Codex type (#48).
 
 - Depends on: `cockpit-provider-api` only (crate-graph rule
   `provider adapters -> provider-api only`), `serde_json` for hook payloads and JSON-RPC,
-  `sha2` for the hook trust hash, `rustix` for the launcher's `SIGTERM`.
+  `sha2` for the hook trust hash, `rustix` for the launcher's `SIGTERM` and the quota
+  reader's process group.
 - Used by: the daemon's wiring only (`capabilities -> provider adapters`), which comes with
   #411 together with shipping `torlek-codex-hook` and `torlek-codex-session` in the release.
 
@@ -143,6 +160,10 @@ provider and nothing above the contract sees a Codex type (#48).
   words, failed-turn reports, the server stopped with the TUI; a stopped test launcher
   leaves no fake process behind (#440).
 - `tests/discover.rs`: finding `codex` and its version.
+- `tests/quota.rs`: plan windows against a fake app-server in a scratch home: both answer
+  shapes, keys by length, the quota home and its words, the requests, the server stopped,
+  and each refusal; ignored, against the installed harness in an empty isolated quota home
+  (`COCKPIT_CODEX_PROGRAM`): both reads answer and the home is not signed in.
 - `tests/conformance.rs` (native checks ignored by default; `-j 1`): the installed version
   is a Codex (the nightly job runs the latest, #732, and checks the version it installed), its help documents every flag passed, it lists the `hooks` feature,
   Codex trusts every hook a launch subscribes, a delivered message's prompt reports through

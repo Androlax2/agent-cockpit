@@ -23,7 +23,7 @@ use cockpit_turso::Database;
 use rustix::fs::{Mode, OFlags};
 use rustix::io::FdFlags;
 use rustix::pty::OpenptFlags;
-use rustix::termios::Winsize;
+use rustix::termios::{LocalModes, Winsize};
 use tokio::sync::oneshot;
 
 use crate::error::invalid;
@@ -404,8 +404,11 @@ impl Runner {
         }
     }
 
-    /// Types `text` and Enter into the running command.
-    pub fn send_input(&self, id: RunId, text: &str) -> Result<(), Refusal> {
+    /// Types `text` and Enter into the running command, only while its terminal does not echo
+    /// what is typed: an echo lands in the output the agent reads and the daemon stores, and
+    /// the text may be a password (#1160). `is_shown` is the owner's opt-out for a visible
+    /// answer, typed whatever the echo.
+    pub fn send_input(&self, id: RunId, text: &str, is_shown: bool) -> Result<(), Refusal> {
         let live = self
             .live
             .lock()
@@ -414,6 +417,9 @@ impl Runner {
             .cloned()
             .ok_or(Refusal::NotRunning)?;
         let mut input = live.input.lock().expect("the input lock is never poisoned");
+        if !is_shown && let Some(why) = input_would_show(&input) {
+            return Err(Refusal::InputWouldShow { why });
+        }
         input
             .write_all(text.as_bytes())
             .and_then(|()| input.write_all(b"\r"))
@@ -516,6 +522,25 @@ fn with_terminal_output(reason: String, live: &LiveRun) -> String {
     } else {
         format!("{reason}; the terminal showed: {shown}")
     }
+}
+
+/// How the terminal may show what is typed, or `None` when it hides it as a password prompt
+/// does: echo off and lines read whole. A program reading keys one at a time (readline, most
+/// REPLs) may echo each one itself. Read on the master side, which on Linux reads the terminal
+/// side's settings. A program could change them between this read and the write that follows;
+/// a password prompt turns echo on only after it read its line.
+fn input_would_show(master: &File) -> Option<String> {
+    let settings = match rustix::termios::tcgetattr(master) {
+        Ok(settings) => settings,
+        Err(error) => return Some(format!("settings could not be read ({error})")),
+    };
+    if settings.local_modes.contains(LocalModes::ECHO) {
+        return Some("has echo on".to_owned());
+    }
+    if !settings.local_modes.contains(LocalModes::ICANON) {
+        return Some("reads keys one at a time, which a program may echo itself".to_owned());
+    }
+    None
 }
 
 /// A new pseudo-terminal: the master side for the daemon, the terminal side for the run.

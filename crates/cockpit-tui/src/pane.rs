@@ -90,7 +90,8 @@ pub struct Pane {
     keys_on_their_way: usize,
     typing: Option<Typing>,
     typed: String,
-    /// The line typed for a command drawn in clear: only after the owner's Tab.
+    /// The line typed for a command drawn in clear: only after the owner's Tab. A line sent
+    /// revealed is a visible answer, typed even while the command's terminal echoes (#1160).
     is_input_revealed: bool,
     /// The whole command instead of its folded start.
     expanded: bool,
@@ -293,7 +294,11 @@ impl Pane {
                 let (used, send) = match (shown, typing) {
                     (Shown::Run { id, .. }, Typing::Input) => (
                         "approval-input",
-                        Command::ApprovalInput { request: *id, text },
+                        Command::ApprovalInput {
+                            request: *id,
+                            text,
+                            shown: self.is_input_revealed,
+                        },
                     ),
                     (Shown::Guide { id, step, .. }, Typing::Answer) => (
                         "guide-answer",

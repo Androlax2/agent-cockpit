@@ -349,10 +349,19 @@ pub enum Command {
         revision: i64,
         command: String,
     },
-    /// Owner only: type `text` and Enter into the running command's terminal.
+    /// Owner only: type `text` and Enter into the running command's terminal, only while it
+    /// does not echo what is typed (#1160). `shown` types it while it echoes too: the owner
+    /// answers a visible prompt on purpose, and the text shows in the output.
     ApprovalInput {
         request: i64,
         text: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        shown: bool,
+    },
+    /// Owner only: clear a finished command run's stored output now, as database retention
+    /// does once it is old (#1160).
+    ApprovalPurgeOutput {
+        request: i64,
     },
     /// Owner only: the network requests still asking, oldest first (#674).
     NetworkList,
@@ -861,6 +870,8 @@ pub enum Command {
     /// Owner only: the running daemon's release, schema and each live session's bundle, for
     /// `torlek version --all` (report 13, #64).
     VersionReport,
+    /// Owner only: each provider account's plan windows as last read, judged now (#58).
+    UsageQuota,
     /// Both sockets: the instruction bundle's topics, each with when to read it (#49).
     InstructionCatalog,
     /// Both sockets: one topic of the instruction bundle, or every topic at once (the one-read
@@ -1257,6 +1268,9 @@ pub enum Reply {
     },
     VersionReport {
         report: Box<crate::VersionReportView>,
+    },
+    UsageQuota {
+        accounts: Vec<crate::QuotaAccountView>,
     },
     /// The running release's instruction topics; `manifest` is its instruction-manifest id.
     InstructionCatalog {

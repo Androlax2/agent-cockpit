@@ -344,6 +344,7 @@ fn while_the_owner_types_into_a_waiting_command_a_new_request_never_takes_its_pl
         [Command::ApprovalInput {
             request: 5,
             text: "yes".to_owned(),
+            shown: false,
         }]
     );
 }
@@ -760,6 +761,25 @@ fn a_masked_line_is_sent_as_typed() {
         [Command::ApprovalInput {
             request: 5,
             text: PASSWORD.to_owned(),
+            shown: false,
+        }]
+    );
+}
+
+#[test]
+fn a_revealed_line_is_sent_as_a_visible_answer() {
+    let now = Instant::now();
+    let (mut app, ready) = typed_password(now);
+    app.key(Key::Tab, ready);
+
+    let sent_line = app.key(Key::Enter, ready);
+
+    assert_eq!(
+        sent_line.send,
+        [Command::ApprovalInput {
+            request: 5,
+            text: PASSWORD.to_owned(),
+            shown: true,
         }]
     );
 }

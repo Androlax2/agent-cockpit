@@ -780,7 +780,7 @@ fn readiness_section(readiness: &Result<Readiness, String>, now: i64) -> String 
     section
 }
 
-fn age(seconds: i64) -> String {
+pub(crate) fn age(seconds: i64) -> String {
     match seconds {
         ..10 => "just now".to_owned(),
         10..120 => format!("{seconds} s ago"),

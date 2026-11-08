@@ -99,6 +99,7 @@ async fn a_blocked_account_has_no_room_whatever_its_windows_say() {
 
     let quota = fixture.only_account_at(NOW).await;
 
+    assert!(quota.is_blocked);
     assert_eq!(states(&quota), [("five-hour", WindowState::Blocked)]);
 }
 
