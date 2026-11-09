@@ -279,8 +279,12 @@ running is not in the figure yet.
 
 To let a project's agents push and open pull requests without your own `gh` login, create a
 fine-grained token limited to that repository (contents and pull requests: read and write)
-and save it alone in `~/.config/torlek/github-tokens/<project>` (`mkdir -p -m 700` the
-folder, then `chmod 600` the file).
+and save it with `torlek project token set PROJECT`: it asks for the token without showing it
+(or reads it from standard input), and writes it alone to
+`~/.config/torlek/github-tokens/<project>` with mode `0600`, in a folder it creates with mode
+`0700`. `torlek project token show PROJECT` prints the file and its mode, never the token, and
+`torlek project token clear PROJECT` removes it. These verbs work from your own terminal only;
+a session is refused.
 Its next sessions get it as `GH_TOKEN`; a sandbox would hide your `~/.config/gh` login from them, but this release runs agents unsandboxed, so they can read it.
 A project without one gets no `GH_TOKEN`. `torlek project show PROJECT` says which, never the
 token. A file whose mode is not `0600` or `0400`, or one that holds anything but the token, stops the
@@ -288,9 +292,10 @@ project's sessions from launching until you fix it.
 
 Under `agents.sandbox = "required"` no session gets that token: it can push. A sandboxed
 push is refused with a pointer to ask you (`torlek ask run`, `torlek todo blocked`) until
-`torlek push` ships (#155). Save a second token for the project in
-`~/.config/torlek/github-api-tokens/<project>`, same rules, with pull requests and issues
-read and write and contents read only. The session proxy adds it on `api.github.com`, and on
+`torlek push` ships (#155). Save a second token for the project with
+`torlek project token set PROJECT --api`, in `~/.config/torlek/github-api-tokens/<project>` by
+the same rules, with pull requests and issues read and write and contents read only. The session
+proxy adds it on `api.github.com`, and on
 `github.com` for fetches; the agent holds a placeholder `GH_TOKEN` and trusts a per-session
 CA through `SSL_CERT_FILE` and its siblings. It is added only on the GitHub hosts the session
 reaches at launch, including one you allowed for the project (`torlek network allow ID
@@ -307,11 +312,16 @@ Use the paths printed by your binary; keep private state and provider credential
 Where no sandbox backend exists, `sandbox = "required"` under `[agents]` refuses every agent launch and names the missing backend. It never runs an agent unsandboxed.
 
 A sandboxed session never reads your own provider sign-in, such as `~/.claude/.credentials.json`.
-Give each provider one account for its sandboxed sessions instead: save one credential alone in
-`~/.config/torlek/provider-credentials/<provider>/<VARIABLE>`, the file named after the variable
-the provider reads it from (`mkdir -p -m 700` the folder, then `chmod 600` the file). For Claude
-that is an API key in `ANTHROPIC_API_KEY` or a `claude setup-token` token in
-`CLAUDE_CODE_OAUTH_TOKEN`. The session proxy adds it on the provider's hosts; the agent holds a
+Give each provider one account for its sandboxed sessions instead: `torlek provider credential
+set PROVIDER --variable VARIABLE` asks for one credential without showing it (or reads it from
+standard input) and saves it alone in
+`~/.config/torlek/provider-credentials/<provider>/<VARIABLE>` with mode `0600`, the file named
+after the variable the provider reads it from. For Claude that is an API key in
+`ANTHROPIC_API_KEY` or a `claude setup-token` token in `CLAUDE_CODE_OAUTH_TOKEN`. Once one is
+saved, `set` without `--variable` replaces it; it refuses a second variable while the first
+holds the account. `torlek provider credential show PROVIDER` prints each file and its mode,
+never the value, and `clear` removes it; like the token verbs, they work from your own terminal
+only. The session proxy adds it on the provider's hosts; the agent holds a
 placeholder. Two files for one provider, a mode other than `0600` or `0400`, or anything but the
 credential in the file stop that provider's sandboxed sessions from launching. Without one,
 `torlek session new` prints a `sign-in:` line and `torlek doctor` a `sandboxed sign-in` row

@@ -787,10 +787,25 @@ async fn sign_in_needed(sessions: &Sessions, provider: &str) -> Option<String> {
         }
     }
     let (account, files) = first_missing?;
+    let variables: Vec<String> = files
+        .iter()
+        .filter_map(|file| file.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect();
     let files: Vec<String> = files
         .iter()
         .map(|file| file.display().to_string())
         .collect();
+    // The credential verbs save the default account's (#1251).
+    if account == cockpit_config::DEFAULT_ACCOUNT {
+        return Some(format!(
+            "a sandboxed {provider} session never reads your own sign-in, so this one asks for \
+             one it cannot keep; save one with `torlek provider credential set {provider} \
+             --variable NAME`, NAME being {}, which writes one of {}, then start a new session",
+            variables.join(" or "),
+            files.join(", ")
+        ));
+    }
     let for_account = if account == cockpit_config::DEFAULT_ACCOUNT {
         String::new()
     } else {

@@ -415,16 +415,25 @@ fn sandbox_credential(
             }
         }
         (ProviderCredentialState::Missing { files }, login) => {
-            let write_file = format!(
-                "write one credential, on one line, to one of {}, then `chmod 600` it; the \
-                 file's name is the variable it stands for",
-                listed(
-                    &files
-                        .iter()
-                        .map(|file| file.display().to_string())
-                        .collect::<Vec<_>>()
-                )
+            let listed_files = listed(
+                &files
+                    .iter()
+                    .map(|file| file.display().to_string())
+                    .collect::<Vec<_>>(),
             );
+            // The credential verbs save the default account's (#1251).
+            let write_file = if account.account == DEFAULT_ACCOUNT {
+                format!(
+                    "save one with `torlek provider credential set {provider} --variable NAME`, \
+                     NAME being {}; it writes one of {listed_files} with mode 0600",
+                    variable_names(files).join(" or ")
+                )
+            } else {
+                format!(
+                    "write one credential, on one line, to one of {listed_files}, then `chmod \
+                     600` it; the file's name is the variable it stands for"
+                )
+            };
             let next = if *login == AccountLoginState::NotSignedIn {
                 format!(
                     "{write_file}; or sign it in as a login account with `torlek account \
@@ -451,6 +460,15 @@ fn sandbox_credential(
             )
         }
     }
+}
+
+/// The variables `files` stand for: each file is named after its variable.
+fn variable_names(files: &[std::path::PathBuf]) -> Vec<String> {
+    files
+        .iter()
+        .filter_map(|file| file.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Admission works on every host; the controls it cannot enforce are requested only, which

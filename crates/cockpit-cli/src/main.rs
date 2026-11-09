@@ -28,6 +28,7 @@ mod ask;
 mod bug_report;
 mod check;
 mod coordination;
+mod credentials;
 mod daemon;
 mod daemon_install;
 mod desktop_import_unit;
@@ -50,6 +51,7 @@ mod sessions;
 mod skills;
 mod status_page;
 mod storage;
+mod terminal;
 mod todo;
 mod tui;
 mod update;
@@ -83,6 +85,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek project add DIR [--name NAME]
        torlek project list
        torlek project show PROJECT
+       torlek project token set|show|clear PROJECT [--api]
        torlek project remove PROJECT
        torlek checkout list [PROJECT]
        torlek checkout clone PROJECT BRANCH
@@ -121,6 +124,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek session sandbox-record SESSION --client CLIENT --observed TEXT...
        torlek sandbox show DIR [--agent NAME]
        torlek provider list
+       torlek provider credential set|show|clear PROVIDER [--variable NAME]
        torlek skills
        torlek desktop-session import
        torlek init
@@ -244,6 +248,8 @@ fn main() -> ExitCode {
             Ok(command) => network::run(command),
             Err(problem) => verb_usage_error(&verb_name, problem),
         },
+        [Some("project"), Some("token")] => credentials::project_token(&arguments[2..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("project"), Some("show"), ..] => projects::show(&arguments[2..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some(verb @ ("project" | "checkout")), ..] => {
@@ -295,6 +301,8 @@ fn main() -> ExitCode {
             Ok(command) => queue::run(command),
             Err(problem) => verb_usage_error(&verb_name, problem),
         },
+        [Some("provider"), Some("credential")] => credentials::provider(&arguments[2..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("provider"), ..] => match sessions::parse_provider(&arguments[1..]) {
             Ok(command) => sessions::run(command),
             Err(problem) => verb_usage_error(&verb_name, problem),

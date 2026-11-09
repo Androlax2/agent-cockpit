@@ -11,6 +11,7 @@ mod clipboard;
 mod coordination;
 mod coordinator_workers;
 mod cost;
+mod credentials;
 mod database_retention;
 mod digest;
 mod disk_guard;

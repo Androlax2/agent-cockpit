@@ -13,8 +13,8 @@ use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::{
     Capabilities, Manager, accounts, agent, agent_context, approvals, bug_reports, coordination,
-    feed, manager, network, projects, readiness, resources, scheduling, sessions, tasks,
-    verification, workflows,
+    credentials, feed, manager, network, projects, readiness, resources, scheduling, sessions,
+    tasks, verification, workflows,
 };
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
@@ -648,6 +648,24 @@ impl Handler for Routes {
                 }
             }
             (Command::ProviderList, Peer::Agent { .. }) => Route::Answer(owner_only()),
+            // The owner's secrets: an agent neither reads where they are nor replaces them
+            // with its own (#1251).
+            (
+                command @ (Command::CredentialSet { .. }
+                | Command::CredentialShow { .. }
+                | Command::CredentialClear { .. }),
+                peer,
+            ) => match peer {
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => credentials::route(
+                    command,
+                    credentials::Context {
+                        sessions: Arc::clone(&self.sessions),
+                        database: Arc::clone(&self.database),
+                        environment: self.environment.clone(),
+                    },
+                ),
+            },
             // What the host has, the owner's settings and the owner's projects are the
             // owner's to see (report 11).
             (

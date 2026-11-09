@@ -6,6 +6,7 @@ mod approvals;
 mod bug_reports;
 mod change_feed;
 mod coordination;
+mod credentials;
 mod error;
 mod handshake;
 mod instructions;
@@ -44,6 +45,9 @@ pub use change_feed::{
 pub use coordination::{
     CoordinatorAuditView, CoordinatorGrantView, HeldMessageView, InboundMessageView, InboxView,
     ObservedSessionView,
+};
+pub use credentials::{
+    CredentialFileView, CredentialStateView, CredentialTarget, CredentialView, SecretText,
 };
 pub use error::{ErrorCode, ProtocolError, Unblock, UnblockedBy};
 pub use handshake::{

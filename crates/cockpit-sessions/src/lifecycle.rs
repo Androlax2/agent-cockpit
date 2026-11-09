@@ -2835,6 +2835,13 @@ impl Sessions {
         self.has_account_with_capacity(&session).await
     }
 
+    /// The variables provider `provider`'s harness takes a bound credential from (#968), its
+    /// alternatives in order, for the owner's credential verbs (#1251); empty when it
+    /// declares none.
+    pub fn provider_credential_variables(&self, provider: &str) -> Result<Vec<String>, Error> {
+        credential_variables(self.provider(Some(provider))?.as_ref())
+    }
+
     /// What each of `provider`'s accounts would bind as a sandboxed launch's sign-in (#968,
     /// #59), in the order a launch tries them, for `doctor` and `session new` to name the
     /// files to write when there is none. Empty under `"off"` and for a provider that declares

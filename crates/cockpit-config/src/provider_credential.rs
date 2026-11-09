@@ -8,7 +8,9 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::token_file::{TokenFileError, TokenRule, read_token_file};
+use crate::token_file::{
+    TokenFileError, TokenRule, TokenWriteError, read_token_file, save_token_file,
+};
 use crate::{DEFAULT_ACCOUNT, Environment, Layout};
 
 /// The folder of [`Layout::config_dir`] that holds one folder per provider, named as
@@ -143,6 +145,72 @@ pub fn read_provider_credential(
         });
     }
     Ok(found.pop())
+}
+
+/// Saves `value` in `dir`'s file named after `variable` as the user guide says to by hand
+/// (#1251): alone, mode `0600`, the folder `0700` when created. Blocking. A value
+/// [`read_provider_credential`] would refuse is refused here; which variable, and whether
+/// another file already holds the provider's account, is the caller's to decide.
+pub fn save_provider_credential(
+    dir: &Path,
+    variable: &str,
+    value: &str,
+) -> Result<PathBuf, TokenWriteError> {
+    let path = dir.join(variable);
+    save_token_file(&path, value, &PROVIDER_CREDENTIAL_RULE)?;
+    Ok(path)
+}
+
+/// Which of `variables`, the provider's alternatives, a new credential in `dir` is saved
+/// under (#1251): `wanted` when given, else the one whose file exists, else the only one.
+/// Blocking: it looks for the files. Refused, with what to do, when that would leave two files
+/// holding the provider's one account, or when the choice is the owner's to make.
+pub fn credential_variable_to_save<'variable>(
+    dir: &Path,
+    provider: &str,
+    variables: &[&'variable str],
+    wanted: Option<&str>,
+) -> Result<&'variable str, String> {
+    let present: Vec<&str> = variables
+        .iter()
+        .copied()
+        .filter(|variable| std::fs::symlink_metadata(dir.join(variable)).is_ok())
+        .collect();
+    let chosen = match wanted {
+        Some(wanted) => variables
+            .iter()
+            .copied()
+            .find(|variable| *variable == wanted)
+            .ok_or_else(|| {
+                format!(
+                    "{provider} reads no credential from {wanted}; --variable takes {}",
+                    variables.join(" or ")
+                )
+            })?,
+        None => match (present.as_slice(), variables) {
+            ([one], _) | ([], [one]) => one,
+            ([], _) => {
+                return Err(format!(
+                    "{provider} takes its credential from {}: name one with --variable",
+                    variables.join(" or ")
+                ));
+            }
+            _ => {
+                return Err(ProviderCredentialError::MoreThanOne {
+                    paths: present.iter().map(|variable| dir.join(variable)).collect(),
+                }
+                .to_string());
+            }
+        },
+    };
+    if let Some(other) = present.iter().find(|variable| **variable != chosen) {
+        return Err(format!(
+            "{} already holds {provider}'s credential, and a provider binds one account: \
+             clear it first with `torlek provider credential clear {provider}`",
+            dir.join(other).display()
+        ));
+    }
+    Ok(chosen)
 }
 
 /// Whether a provider has a usable credential, for what Torlek shows: never the value.
