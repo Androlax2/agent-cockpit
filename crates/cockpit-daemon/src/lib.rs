@@ -11,6 +11,7 @@ mod coordination;
 mod coordinator_workers;
 mod cost;
 mod database_retention;
+mod digest;
 mod disk_guard;
 mod end_sweep;
 mod error;
@@ -34,6 +35,7 @@ mod sessions;
 mod storage;
 mod supervisor;
 mod tasks;
+mod turns;
 mod usage;
 mod verification;
 mod versions;
@@ -213,6 +215,7 @@ pub struct Daemon {
     accepting_agents: tokio::task::JoinHandle<()>,
     ticking: tokio::task::JoinHandle<()>,
     publishing: tokio::task::JoinHandle<()>,
+    recording_turns: tokio::task::JoinHandle<()>,
     publishing_drafts: tokio::task::JoinHandle<()>,
     publishing_view_stamps: tokio::task::JoinHandle<()>,
     keeping_network: tokio::task::JoinHandle<()>,
@@ -588,6 +591,13 @@ impl Instance {
                 )
             },
         ));
+        let turns_database = Arc::clone(&database);
+        let turns_sessions = Arc::clone(&sessions);
+        let recording_turns = tokio::spawn(supervisor::supervise(
+            "turn-time",
+            faults.clone(),
+            move || turns::track_forever(Arc::clone(&turns_database), Arc::clone(&turns_sessions)),
+        ));
         let drafts_database = Arc::clone(&database);
         let publishing_drafts = tokio::spawn(supervisor::supervise(
             "bug-report-feed",
@@ -739,6 +749,7 @@ impl Instance {
             accepting_agents,
             ticking,
             publishing,
+            recording_turns,
             publishing_drafts,
             publishing_view_stamps,
             keeping_network,
@@ -871,6 +882,7 @@ impl Drop for Daemon {
         self.accepting_agents.abort();
         self.ticking.abort();
         self.publishing.abort();
+        self.recording_turns.abort();
         self.publishing_drafts.abort();
         self.publishing_view_stamps.abort();
         self.keeping_network.abort();

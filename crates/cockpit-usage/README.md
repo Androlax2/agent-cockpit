@@ -10,7 +10,8 @@ digest data #700.
 Provider-specific readers stay in the adapters: this crate sees a `QuotaReading` only.
 **Used by:** the daemon, which runs its migrations and records each provider's readings at the
 owner's `[usage]` interval (#58), and answers them to the owner's `torlek usage quota`; it also
-archives the adapters' model replies here and answers `torlek usage cost` (#699).
+archives the adapters' model replies here and answers `torlek usage cost` (#699); it records
+the sessions' turns and the owner's approvals here and answers `torlek usage digest` (#700).
 
 ## Accounts and readings
 
@@ -90,7 +91,7 @@ incidents (`record_incident`) are recorded as they happen. Each is idempotent un
 so a replay after a restart counts nothing twice (a turn recorded again keeps the later end;
 an incident keeps its earliest start and first resolution). A time before the year 2000 or past
 9999, and a turn over `MAX_TURN_SECONDS` (a week), are refused: a wrong clock must not fill
-every later day with time. Which events feed them is the daemon's.
+every later day with time. Which events feed them is the daemon's (see below).
 
 - **Stretches.** A project's turns, with a gap under five minutes (`JOIN_GAP_SECONDS`) joined
   and the gap counted as time; a gap of exactly five minutes is not joined.
@@ -105,6 +106,30 @@ every later day with time. Which events feed them is the daemon's.
   with anything on the day, and the incidents under way on it.
 - **Incidents** are listed on each day they were under way, or began on. One never recorded
   as resolved stays under way, so the owner sees a lost resolution rather than none.
+- **Open turns.** A caller that sees a turn begin and, later, end (the daemon) uses
+  `turn_began` and `turn_ended` instead of `record_turn`: the open turn is stored
+  (`usage_open_turns`, one per session, `open_turns` lists them), so a restart between the two
+  loses nothing, and `turn_ended` records the finished turn and drops the open one in the same
+  transaction. A turn begun twice keeps its first start; ended with nothing open, it records
+  nothing and says so; ended before it began, it lasts no time. A turn the archive refuses is
+  dropped with its open row, so one bad turn is not retried forever.
 - **Limits.** A turn is recorded when it ends: one still running, or lost to a crash, has no
   time yet. A turn's project is the project name the caller gives, and a name that is not a
   plain one is `unknown`, as for cost.
+
+### What feeds it, in the daemon
+
+- **Turns** (`cockpit-daemon/src/turns.rs`): after each commit a pass compares the sessions'
+  latest agent reports with the open turns. A session that runs and whose agent's latest report
+  for its current launch says `working` opens a turn at that report's time; any other report, or
+  the session no longer running, ends it (at the report's time while the session runs, at the
+  session's last change when it stopped, restarted, failed or ended). A pass that has nothing to
+  record takes no write, so it does not wake itself. The project is the checkout's, resolved as
+  for cost; a working folder in no project is `unknown`.
+- **Approvals** (`approvals.rs`): the owner's approval of a run is counted in the approval's own
+  transaction, keyed `run-<request>`, under the request's project. A declined request is not an
+  approval, and is not counted.
+- **Incidents** have no source yet: `record_incident` is the shape a provider status feed will
+  fill.
+- **Limits.** A turn that begins and ends between two passes is missed, and a turn still
+  running shows no time until it ends, so today's figure lags a running agent.

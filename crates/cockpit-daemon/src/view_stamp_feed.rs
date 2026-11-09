@@ -167,6 +167,7 @@ mod tests {
         "usage_cost_cursors",
         "usage_cost_replies",
         "usage_incidents",
+        "usage_open_turns",
         // `usage-quota` reads the plan windows when the owner asks; no view polls them.
         "usage_quota_accounts",
         "usage_quota_alerts",

@@ -230,6 +230,87 @@ pub async fn record_turn(write: &WriteTransaction<'_>, turn: &Turn) -> Result<bo
     }
 }
 
+/// A turn under way: a session working since `started_at`, not yet ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenTurn {
+    pub session: String,
+    pub project: String,
+    pub started_at: i64,
+}
+
+/// Notes that `session` began working on `project` at `at`. A turn already open for the session
+/// is kept as it is (a session reports working again while its turn runs); returns whether this
+/// one opened it.
+pub async fn turn_began(
+    write: &WriteTransaction<'_>,
+    session: &str,
+    project: &str,
+    at: i64,
+) -> Result<bool, Error> {
+    check_key("session", session)?;
+    check_time("turn start", at)?;
+    let opened = write
+        .execute(
+            "INSERT INTO usage_open_turns (session, project, started_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT (session) DO NOTHING",
+            params![session, attributed_project(project.to_owned()), at],
+        )
+        .await?;
+    Ok(opened == 1)
+}
+
+/// Ends the turn open for `session` at `at` and records it as [`record_turn`] does. Returns
+/// `false`, changing nothing, when none is open. An end before the start is taken as the start.
+/// The open turn is dropped even when its span is refused (a turn over [`MAX_TURN_SECONDS`]),
+/// so one bad record is not retried forever; the refusal is returned.
+pub async fn turn_ended(
+    write: &WriteTransaction<'_>,
+    session: &str,
+    at: i64,
+) -> Result<bool, Error> {
+    check_key("session", session)?;
+    let mut rows = write
+        .query(
+            "SELECT project, started_at FROM usage_open_turns WHERE session = ?1",
+            params![session],
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(false);
+    };
+    let (project, started_at): (String, i64) = (row.get(0)?, row.get(1)?);
+    drop(rows);
+    write
+        .execute(
+            "DELETE FROM usage_open_turns WHERE session = ?1",
+            params![session],
+        )
+        .await?;
+    let turn = Turn::new(session, project, started_at, at.max(started_at))?;
+    record_turn(write, &turn).await?;
+    Ok(true)
+}
+
+/// The turns under way, by start.
+pub async fn open_turns(connection: &Connection) -> Result<Vec<OpenTurn>, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT session, project, started_at FROM usage_open_turns
+             ORDER BY started_at, session",
+            (),
+        )
+        .await?;
+    let mut turns = Vec::new();
+    while let Some(row) = rows.next().await? {
+        turns.push(OpenTurn {
+            session: row.get(0)?,
+            project: row.get(1)?,
+            started_at: row.get(2)?,
+        });
+    }
+    Ok(turns)
+}
+
 /// Records a decided approval; one already recorded under its key is kept as it was. Returns
 /// whether this one was new.
 pub async fn record_approval(

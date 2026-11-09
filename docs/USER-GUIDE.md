@@ -204,6 +204,13 @@ model Torlek has no price for is counted and named, never priced by guess. Only 
 read so far. A session that runs without the sandbox writes to your home, so its replies show
 under `default`.
 
+`torlek usage digest [--days N]` shows how your days went, one block per UTC day over the last N
+days (7 by default, up to 366): the time your agents worked (sessions working at once count
+once, and a gap under five minutes between turns counts as time), the sessions, turns and
+approvals you granted, the cost above, one indented line per project, and the provider incidents
+under way. A day with nothing says so. Torlek records a turn when it ends, so a turn still
+running is not in the figure yet.
+
 To let a project's agents push and open pull requests without your own `gh` login, create a
 fine-grained token limited to that repository (contents and pull requests: read and write)
 and save it alone in `~/.config/torlek/github-tokens/<project>` (`mkdir -p -m 700` the

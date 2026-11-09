@@ -21,6 +21,7 @@ fields, decides the refusal, so every command in a group takes the identical cod
 | 285 | `VersionReport` | `version --all` |
 | 294 | `UsageQuota` | `usage quota` |
 | 296 | `UsageCost` | `usage cost` |
+| 302 | `UsageDigest` | `usage digest` |
 | 314 | `SkillPack` | the owner's own skill listing |
 | 330 | `StorageReport`, `StoragePrunePreview`, `StoragePruneApply`, `StoragePruneAbandon`, `StoragePruneStatus`, `StorageOutputs`, `StorageDatabase` | `storage`, `storage outputs [prune]`, `storage database [prune]`, `storage prune` |
 | 347 | `ProjectAdd`, `ProjectList`, `ProjectRemove`, `CheckoutList`, `CheckoutClone`, `CheckoutReview`, `CheckoutClaim`, `CheckoutRelease`, `CheckoutSweep`, `CheckoutPush` | `project add\|list\|remove`, `checkout list\|clone\|review\|claim\|release\|sweep\|push` |

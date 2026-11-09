@@ -277,3 +277,26 @@ impl Fixture {
             .unwrap()
     }
 }
+
+impl Fixture {
+    pub async fn began(&self, session: &str, project: &str, at: i64) -> bool {
+        let write = self.database.write().await.unwrap();
+        let opened = cockpit_usage::turn_began(&write, session, project, at)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+        opened
+    }
+
+    pub async fn ended(&self, session: &str, at: i64) -> Result<bool, Error> {
+        let write = self.database.write().await.unwrap();
+        let ended = cockpit_usage::turn_ended(&write, session, at).await;
+        write.commit().await.unwrap();
+        ended
+    }
+
+    pub async fn open_turns(&self) -> Vec<cockpit_usage::OpenTurn> {
+        let read = self.database.read().await.unwrap();
+        cockpit_usage::open_turns(&read).await.unwrap()
+    }
+}

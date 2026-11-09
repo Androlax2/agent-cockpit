@@ -18,6 +18,7 @@ const MISTAKES: &[(&[&str], &str)] = &[
     (&["storage", "prune"], "storage"),
     (&["usage", "bogus"], "usage"),
     (&["usage", "cost", "--days", "0"], "usage"),
+    (&["usage", "digest", "--days", "367"], "usage"),
     (&["ask", "run"], "ask"),
     (&["approval", "show"], "approval"),
     (&["guide", "show"], "guide"),

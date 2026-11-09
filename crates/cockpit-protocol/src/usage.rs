@@ -120,3 +120,59 @@ pub struct CostRowView {
     /// dollar): an integer, so totals add up exactly.
     pub cost_nanos: u64,
 }
+
+/// The daily digest's data for the days `usage-digest` asked for (report 18, #700): a client
+/// renders it without asking anything else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DigestView {
+    /// `YYYY-MM-DD`, UTC: the first and the last day asked for, both included.
+    pub first_day: String,
+    pub last_day: String,
+    /// Oldest day first; a day with nothing is there with zeros.
+    pub days: Vec<DayDigestView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DayDigestView {
+    /// `YYYY-MM-DD`, UTC.
+    pub day: String,
+    /// Distinct sessions that began a turn on the day.
+    pub sessions: u64,
+    /// Turns that began on the day.
+    pub turns: u64,
+    /// Approvals the owner granted on the day.
+    pub approvals: u64,
+    /// Time with the agent, projects together: overlapping stretches are counted once.
+    pub seconds_with_agent: u64,
+    pub replies: u64,
+    /// Replies of a model without a known price: in `replies`, absent from `cost_nanos`.
+    pub unpriced_replies: u64,
+    /// At the provider's API prices, in nano-dollars: an integer, so totals add up exactly.
+    pub cost_nanos: u64,
+    /// Each project with anything on the day, by name.
+    pub projects: Vec<ProjectDayView>,
+    /// The provider incidents under way at some moment of the day, or begun on it.
+    pub incidents: Vec<IncidentView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectDayView {
+    pub project: String,
+    pub sessions: u64,
+    pub turns: u64,
+    pub approvals: u64,
+    pub seconds_with_agent: u64,
+    pub replies: u64,
+    pub unpriced_replies: u64,
+    pub cost_nanos: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncidentView {
+    pub provider: String,
+    pub title: String,
+    /// Unix seconds.
+    pub started_at: i64,
+    /// Unix seconds; `None` while the incident was never recorded as resolved.
+    pub resolved_at: Option<i64>,
+}

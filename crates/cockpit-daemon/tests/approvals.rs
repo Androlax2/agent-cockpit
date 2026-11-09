@@ -345,6 +345,64 @@ async fn a_declined_request_never_runs_and_the_agent_learns_it() {
     assert!(!marker.exists());
 }
 
+/// What the owner's digest says of the last two UTC days, so a test that runs across midnight
+/// still adds up: `(approvals, project names with an approval)`.
+async fn approvals_in_the_digest(asking: &Asking) -> (u64, Vec<String>) {
+    let reply = asking
+        .owner
+        .request(Command::UsageDigest { days: 2 }, GENEROUS)
+        .await;
+    let Ok(Reply::UsageDigest { digest }) = reply else {
+        panic!("usage-digest: {reply:?}");
+    };
+    let mut approvals = 0;
+    let mut projects = Vec::new();
+    for day in &digest.days {
+        approvals += day.approvals;
+        projects.extend(
+            day.projects
+                .iter()
+                .filter(|project| project.approvals > 0)
+                .map(|project| project.project.clone()),
+        );
+    }
+    (approvals, projects)
+}
+
+#[tokio::test]
+async fn an_approval_the_owner_grants_is_counted_in_the_digest_under_its_project() {
+    let asking = started(true).await;
+    in_a_registered_project(&asking).await;
+    assert_eq!(approvals_in_the_digest(&asking).await, (0, Vec::new()));
+
+    asking.ran("true").await;
+
+    assert_eq!(
+        approvals_in_the_digest(&asking).await,
+        (1, vec!["app".to_owned()])
+    );
+}
+
+#[tokio::test]
+async fn a_declined_request_is_not_counted_in_the_digest() {
+    let asking = started(true).await;
+    in_a_registered_project(&asking).await;
+    let request = asking.asked("true").await;
+
+    run(asking
+        .owner
+        .request(
+            Command::ApprovalDecline {
+                request: request.id,
+                through: None,
+            },
+            GENEROUS,
+        )
+        .await);
+
+    assert_eq!(approvals_in_the_digest(&asking).await, (0, Vec::new()));
+}
+
 /// A visible prompt reads its answer with echo on; `shown` types it on purpose (#1160).
 #[tokio::test]
 async fn the_owner_answers_a_visible_prompt_with_shown_input() {

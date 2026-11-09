@@ -1,17 +1,23 @@
 //! `torlek usage quota`: each provider account's plan windows as the daemon last read them
 //! (#58, report 18). `torlek usage cost [--days N]`: what each account's replies cost at the
-//! provider's API prices, per UTC day and project (#699).
+//! provider's API prices, per UTC day and project (#699). `torlek usage digest [--days N]`: each
+//! UTC day's time with the agent, turns, approvals, cost and provider incidents (#700).
 
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cockpit_protocol::{Command, CostArchiveView, QuotaAccountView, QuotaWindowView, Reply};
+use cockpit_protocol::{
+    Command, CostArchiveView, DayDigestView, DigestView, IncidentView, ProjectDayView,
+    QuotaAccountView, QuotaWindowView, Reply,
+};
 
 use crate::daemon::{CONTROL_DEADLINE, request, unexpected, utf8_words};
 use crate::status_page::age;
 
 const DEFAULT_COST_DAYS: u32 = 7;
 const MOST_COST_DAYS: u32 = 366;
+const DEFAULT_DIGEST_DAYS: u32 = 7;
+const MOST_DIGEST_DAYS: u32 = 366;
 const NANOS_PER_TEN_THOUSANDTH: u64 = 100_000;
 
 /// A `usage` verb's command, or the usage problem that stops it.
@@ -25,6 +31,13 @@ pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
         ["cost", "--days", days] => match days.parse::<u32>() {
             Ok(days) if (1..=MOST_COST_DAYS).contains(&days) => Ok(Command::UsageCost { days }),
             _ => Err(format!("--days is a number from 1 to {MOST_COST_DAYS}")),
+        },
+        ["digest"] => Ok(Command::UsageDigest {
+            days: DEFAULT_DIGEST_DAYS,
+        }),
+        ["digest", "--days", days] => match days.parse::<u32>() {
+            Ok(days) if (1..=MOST_DIGEST_DAYS).contains(&days) => Ok(Command::UsageDigest { days }),
+            _ => Err(format!("--days is a number from 1 to {MOST_DIGEST_DAYS}")),
         },
         _ => Err("unknown usage arguments".to_owned()),
     }
@@ -45,8 +58,95 @@ pub fn run(command: Command) -> ExitCode {
             out!("{}", cost_text(cost));
             ExitCode::SUCCESS
         }
+        Reply::UsageDigest { digest } => {
+            out!("{}", digest_text(digest));
+            ExitCode::SUCCESS
+        }
         _ => unexpected(&reply),
     }
+}
+
+/// One block per UTC day, oldest first: the day's figures on one line, one indented line per
+/// project, then the provider incidents of the day. A day with nothing says so.
+fn digest_text(digest: &DigestView) -> String {
+    let mut text = format!("{} to {} (UTC days)\n", digest.first_day, digest.last_day);
+    for day in &digest.days {
+        text.push_str(&day_text(day));
+    }
+    text
+}
+
+fn day_text(day: &DayDigestView) -> String {
+    let is_quiet = day.turns == 0 && day.approvals == 0 && day.replies == 0;
+    let mut text = if is_quiet {
+        format!("{}\tnothing recorded\n", printable(&day.day))
+    } else {
+        format!(
+            "{}\t{} with the agent\t{}\t{}\t{}\t{}{}\n",
+            printable(&day.day),
+            duration(day.seconds_with_agent),
+            counted(day.sessions, "session", "sessions"),
+            counted(day.turns, "turn", "turns"),
+            counted(day.approvals, "approval", "approvals"),
+            dollars(day.cost_nanos),
+            unpriced_note(day.unpriced_replies),
+        )
+    };
+    for project in &day.projects {
+        text.push_str(&project_text(project));
+    }
+    for incident in &day.incidents {
+        text.push_str(&incident_text(incident));
+    }
+    text
+}
+
+fn project_text(project: &ProjectDayView) -> String {
+    format!(
+        "  {}\t{}\t{}\t{}\t{}\t{}{}\n",
+        printable(&project.project),
+        duration(project.seconds_with_agent),
+        counted(project.sessions, "session", "sessions"),
+        counted(project.turns, "turn", "turns"),
+        counted(project.approvals, "approval", "approvals"),
+        dollars(project.cost_nanos),
+        unpriced_note(project.unpriced_replies),
+    )
+}
+
+fn incident_text(incident: &IncidentView) -> String {
+    let resolution = match incident.resolved_at {
+        Some(resolved_at) => format!("resolved {}", utc_time(resolved_at)),
+        None => "not resolved".to_owned(),
+    };
+    format!(
+        "  incident\t{}\t{}\tfrom {}, {resolution}\n",
+        printable(&incident.provider),
+        printable(&incident.title),
+        utc_time(incident.started_at),
+    )
+}
+
+fn counted(count: u64, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
+/// Seconds as hours and minutes, rounded down: `1 h 05 min`, `12 min`, `45 s` under a minute.
+fn duration(seconds: u64) -> String {
+    match seconds {
+        ..60 => format!("{seconds} s"),
+        60..3600 => format!("{} min", seconds / 60),
+        _ => format!("{} h {:02} min", seconds / 3600, seconds % 3600 / 60),
+    }
+}
+
+/// A moment as the UTC date and time the digest's days are made of; the seconds count when it
+/// is outside the calendar's range.
+fn utc_time(timestamp: i64) -> String {
+    chrono::DateTime::from_timestamp(timestamp, 0).map_or_else(
+        || timestamp.to_string(),
+        |at| at.format("%Y-%m-%d %H:%M UTC").to_string(),
+    )
 }
 
 /// The archive's rows, one line each (`day  provider  account  project  cost  replies`), then
