@@ -32,6 +32,7 @@ defaults:
     shell: bash
 
 jobs:
+  # Only real dispatches run this job; its dry-run guards stay as a second check (#192).
   tag:
     if: ${{ !inputs.dry_run }}
     environment: release

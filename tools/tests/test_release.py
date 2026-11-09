@@ -1212,7 +1212,7 @@ class KnownGapsTests(unittest.TestCase):
     def test_the_repository_s_gaps_name_no_release_and_link_issues(self):
         self.assertTrue(release.known_gaps("0.1.0-alpha.7", None, ROOT))
 
-    def test_issue_states_are_read_before_a_tag_and_in_dry_runs_but_not_for_a_tag(self):
+    def test_release_notes_read_issue_states_in_dry_runs_but_not_for_a_tag(self):
         notes = RELEASE_WORKFLOW.read_text().split("\n  notes:\n", 1)[1].split("\n  build:\n", 1)[0]
         self.assertIn('if [ "$CHANNEL" = alpha ]; then issues=(); fi', notes)
         self.assertIn('tools/release.py known-gaps --version "$VERSION" "${issues[@]}"', notes)
@@ -1355,10 +1355,12 @@ class DispatchPreconditionTests(unittest.TestCase):
         prerelease = (ROOT / ".github/workflows/prerelease.yml").read_text()
         proposal = (ROOT / ".github/workflows/release-plz.yml").read_text()
         commands = command.findall(prerelease) + command.findall(proposal)
-        self.assertEqual(len(commands), 3)
-        self.assertIn('--open-issues-of "$GITHUB_REPOSITORY"', commands[0])
-        for found in commands[1:]:
-            self.assertEqual(" ".join(found.split()), " ".join(commands[0].split()))
+        expected = (
+            "python3 tools/release.py next-prerelease --main origin/main \\ "
+            '--alpha-checklist "$ALPHA_CHECKLIST" --beta-checklist "$BETA_CHECKLIST" \\ '
+            '--open-issues-of "$GITHUB_REPOSITORY"'
+        )
+        self.assertEqual([" ".join(found.split()) for found in commands], [expected] * 3)
 
 
 class ChangelogConfigTests(unittest.TestCase):

@@ -108,10 +108,10 @@ PR runs test only with read permissions. The main-only `proposal` job references
 `release-proposal`, restricted to branch `main`. It prepares files before creating any
 App token, then uses `PROPOSAL_APP_CLIENT_ID` and `PROPOSAL_APP_PRIVATE_KEY` to mint a
 contents/read + pull_requests/write token for this repository only. Its `GITHUB_TOKEN`
-reads, plus statuses/write for one step: after publishing, the job runs the dispatch's own
-check, `tools/release.py next-prerelease`, against the draft and posts the result as the
+reads, and in this job also has statuses/write: after publishing, the job runs the dispatch's
+own check, `tools/release.py next-prerelease`, against the draft and posts the result as the
 draft's `dispatch preconditions` status, so a refusal shows before anyone dispatches (#1260).
-A red status names the first refusal; the run's log has the rest. `PROPOSAL_GIT_SSH_KEY` is
+A refusal turns only that status red; it names the refusal and the run's log has the rest. `PROPOSAL_GIT_SSH_KEY` is
 injected only into the publication step for the fixed-repository SSH branch push, with a
 pinned GitHub host key, strict checking, no agent forwarding and temporary-file cleanup.
 
