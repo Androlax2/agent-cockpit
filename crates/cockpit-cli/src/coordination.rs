@@ -285,8 +285,9 @@ fn changes(shown: &[(String, String)], listed: &[(String, String)]) -> String {
 
 /// `id  state  agent  agent-state  working-dir` then the report's `label=… doing=…
 /// needs-input=…` (or `dialog=…`), `held-by=…`, the coordinator its question waits on before
-/// the owner (#710), and the latest message this session queued to it, `message-from=…
-/// message=<delivery> message-note=…` (#703), tab-separated.
+/// the owner (#710), the latest launch's `harness-trust=…` note (#1279), and the latest message
+/// this session queued to it, `message-from=… message=<delivery> message-note=…` (#703),
+/// tab-separated.
 fn session_line(session: &ObservedSessionView) -> String {
     let report = session.report.as_ref();
     let agent_state = report
@@ -311,6 +312,9 @@ fn session_line(session: &ObservedSessionView) -> String {
                 line.push_str(&format!("\t{key}={value:?}"));
             }
         }
+    }
+    if let Some(note) = &session.harness_trust {
+        line.push_str(&format!("\tharness-trust={note:?}"));
     }
     if let Some(message) = &session.inbound_message {
         line.push_str(&format!(

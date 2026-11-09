@@ -74,6 +74,7 @@ fn the_native_plugin_captures_tool_permission_and_aborted_turns() {
             model: None,
             remote_control: false,
             compaction_threshold: None,
+            inherited_trust: None,
         })
         .unwrap();
     let config = root.join("launch.json");

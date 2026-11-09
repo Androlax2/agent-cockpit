@@ -28,16 +28,50 @@ worker measured in Claude Code 2.1.317.
   a main checkout) of a project in `projects.trusted`, whose `origin` is the main checkout's
   (`cockpit_projects::harness_trust_source`), and whose harness settings (`.claude/`,
   `.mcp.json`, in every directory from where the agent starts up to the clone's root) each
-  exist with the same bytes at the same place in the main checkout
-  (`cockpit_claude::trust::unexpected_settings`). Files only the main checkout has, such as the
+  exist with the same bytes at the same place in the main checkout's working tree
+  (`cockpit_claude::trust::vetted_settings`). Files only the main checkout has, such as the
   owner's untracked `.claude/settings.local.json`, are allowed: the clone applies fewer settings,
   never other ones. A branch that changes them gets the dialog: clones are reused, so a launch
   whose settings differ, or cannot be compared, also turns a trust recorded earlier for that
-  clone back to `false` (only an existing `true`; no entry is added). Each launch in a parallel
-  clone reads `projects.trusted` from the owner's configuration as it is then, and records the
-  trust off the async workers once the launch passed its gates (sandbox, checkout, execution
-  reserved), before the agent runs; any refusal is logged and the launch goes on
-  (`crates/cockpit-sessions/src/lifecycle.rs` `trust_clone`).
+  clone back to `false` (only an existing `true`; no entry is added). Each launch in a parallel clone reads `projects.trusted` from the
+  owner's configuration as it is then, and records the trust off the async workers once the
+  launch passed its gates (sandbox, checkout, execution reserved), before the agent runs; any
+  refusal is logged and the launch goes on (`crates/cockpit-sessions/src/lifecycle.rs`
+  `trust_checkout`).
+- **Only the owner's pull accepts settings, even merged ones (#1279).** Decided by Theo on
+  2026-11-09 (option B, relayed by the coordinator session), after a main checkout that had
+  not been pulled made every clone of the up-to-date branch "differ". Settings that reached
+  the default branch are not trusted until the owner's checkout holds them: agents can
+  auto-merge a settings change with green checks that no human read, and the owner's pull is
+  the acceptance. So the refusal helps instead: when every differing file matches the commit
+  the main checkout last fetched as `refs/remotes/origin/HEAD`, its reason says the checkout
+  is behind, names the files and gives the command, `git -C <checkout> pull --ff-only`. That
+  commit is read from the main checkout's own Git (`Git::default_branch_commit`,
+  `Git::file_at_commit`), never from the clone, whose refs the agent writes; only regular
+  files count, and a commit that cannot be read leaves the plain reason, naming why.
+  Rejected: option A, trusting the settings of the fetched `origin/HEAD` as a whole, which
+  would let an auto-merged change through without the owner.
+- **The owner's project MCP approvals carry over, in the launch only (#1279).** Decided by
+  Theo on 2026-11-09 (option A, relayed by the coordinator session), after the owner's
+  machine showed where Claude Code 2.1.321 keeps them: the folder's
+  `.claude/settings.local.json` (every `.claude.json` project entry held an empty list, and
+  Claude Code moves the keys it finds there into that file). A parallel clone's launch gets,
+  in its `--settings`, the `enabledMcpjsonServers` the owner approved in the main checkout
+  (its `.claude/settings.local.json`, then its `.claude.json` entry; for
+  `enableAllProjectMcpServers`, each server the checkout defines), but only when the clone's
+  harness settings match the checkout's working tree, and only for each server whose
+  definition in every `.mcp.json` from the start up to the root is the same in both; the
+  checkout's `disabledMcpjsonServers` carry too. Any other server keeps Claude Code's prompt,
+  and the launch's note names it. Nothing is written into the clone or into its
+  `.claude.json` entry, so a reused clone keeps no approval from an earlier launch.
+  Rejected: writing the clone's `.claude/settings.local.json`, a file the clone's checkout
+  must not bring (above), and a settings file in the session's folder, which its agent
+  writes and could use to drop Torlek's hooks.
+- **Why trust is withheld is shown (#1279).** A refusal's reason, naming the settings files
+  that differ, is kept with the launch (`session_launches.harness_trust`), shown by
+  `session new`, `session show` and `agent sessions` (`harness-trust=`), and appended to the
+  dialog of a launch that never reports (cut to the question's 300 characters; control and
+  invisible characters from file names shown as `?`).
 - **Accepted:** the settings are compared moments before the agent reads them, so a process
   writing into the clone in between is not caught; a stale `<file>.lock` a crashed Claude Code
   left makes each clone launch wait 2 s and show the dialog until Claude Code reclaims it.

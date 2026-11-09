@@ -677,6 +677,7 @@ fn thread_started_with_session_settings(model: Option<&str>, effort: Option<&str
         model,
         remote_control: false,
         compaction_threshold: None,
+        inherited_trust: None,
     })
     .unwrap();
     let _server = Server {
@@ -871,6 +872,7 @@ impl TerminalSession {
                 model: None,
                 remote_control: false,
                 compaction_threshold: None,
+                inherited_trust: None,
             })
             .unwrap();
         session.launch(work, &command.program, &command.arguments);

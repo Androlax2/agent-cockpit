@@ -11,6 +11,14 @@
 //! keeps every other byte of the file and replaces it by an atomic rename. Anything it cannot
 //! do safely is refused, writing nothing: the dialog then shows and the session waits on the
 //! owner.
+//!
+//! A clone's settings are accepted only when they match the trusted checkout's working tree;
+//! when they match its fetched default branch instead, the refusal says the checkout is
+//! behind and how to fast-forward it (#1279). The owner's own approvals of the project's
+//! `.mcp.json` servers in the trusted checkout ([`carried_approvals`]) reach the clone's
+//! launch through its `--settings`, never through a file: measured on 2.1.321, Claude Code
+//! keeps them in the folder's `.claude/settings.local.json`, and moves those it finds in
+//! `.claude.json` there.
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -19,6 +27,9 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use std::collections::BTreeMap;
+
+use cockpit_provider_api::{DefaultBranch, ReadFile};
 use serde_json::Value;
 
 /// The workspace files a launch there reads as harness settings; trusting the folder is what
@@ -27,6 +38,18 @@ pub const PROJECT_SETTINGS: [&str; 2] = [".claude", ".mcp.json"];
 
 /// The key Claude Code reads.
 const TRUST_KEY: &str = "hasTrustDialogAccepted";
+
+/// The project's `.mcp.json` servers the owner approved, rejected, or all approved at once,
+/// as Claude Code names them in its settings and in a project's entry of its config.
+pub const ENABLED_SERVERS_KEY: &str = "enabledMcpjsonServers";
+pub const DISABLED_SERVERS_KEY: &str = "disabledMcpjsonServers";
+const ALL_SERVERS_KEY: &str = "enableAllProjectMcpServers";
+
+/// The project MCP server file Claude Code reads in each directory it compares settings in.
+const MCP_FILE: &str = ".mcp.json";
+
+/// Where Claude Code saves the owner's answers in a folder, MCP approvals among them.
+const LOCAL_SETTINGS_FILE: &str = ".claude/settings.local.json";
 
 /// A new project entry as Claude Code 2.1.317 writes one when the owner accepts the dialog:
 /// its defaults, with the trust key set.
@@ -134,6 +157,77 @@ pub fn unexpected_settings(
     trusted_checkout: &Path,
     start: &Path,
 ) -> Result<Vec<PathBuf>, String> {
+    unexpected_against(clone, start, &|relative| {
+        working_tree_file(trusted_checkout, relative)
+    })
+}
+
+/// Whether `clone`'s harness settings, read from `start` up to its root, match the trusted
+/// checkout's working tree, the only reference the owner accepted (#702). Why not, naming
+/// each file that differs, when they do not; when they match `default_branch` instead, the
+/// checkout is behind what the owner merged, and the reason gives the command that accepts
+/// it (#1279): the owner's own pull is the acceptance, since agents can merge too.
+pub fn vetted_settings(
+    clone: &Path,
+    trusted_checkout: &Path,
+    start: &Path,
+    default_branch: Option<&DefaultBranch<'_>>,
+) -> Result<(), String> {
+    let against_working_tree = unexpected_settings(clone, trusted_checkout, start)?;
+    if against_working_tree.is_empty() {
+        return Ok(());
+    }
+    let differing = against_working_tree
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let differ = format!(
+        "its harness settings differ from the trusted checkout's working tree ({differing})"
+    );
+    let Some(default_branch) = default_branch else {
+        return Err(differ);
+    };
+    match unexpected_against(clone, start, default_branch.file) {
+        Ok(against_default_branch) if against_default_branch.is_empty() => Err(format!(
+            "run `git -C {} pull --ff-only`: the trusted checkout is behind its origin/HEAD \
+             at {}, which holds this clone's settings ({differing})",
+            shell_word(trusted_checkout),
+            short_commit(default_branch.commit)
+        )),
+        Ok(_) => Err(differ),
+        Err(error) => Err(format!(
+            "{differ}; its origin/HEAD cannot be compared: {error}"
+        )),
+    }
+}
+
+/// `path` as one POSIX shell word, quoted only when it needs to be.
+fn shell_word(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let is_plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "/._-+@%:,".contains(character));
+    if is_plain {
+        text.into_owned()
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
+    }
+}
+
+/// The first twelve characters of a commit id, as the owner reads it.
+pub fn short_commit(commit: &str) -> &str {
+    commit.get(..12).unwrap_or(commit)
+}
+
+/// The harness settings files in `clone`, from `start` up to its root, that `reference` does
+/// not hold with the same bytes; see [`unexpected_settings`].
+fn unexpected_against(
+    clone: &Path,
+    start: &Path,
+    reference: &ReadFile<'_>,
+) -> Result<Vec<PathBuf>, String> {
     let below = start.strip_prefix(clone).map_err(|_| {
         format!(
             "the agent starts in {}, outside the clone {}",
@@ -144,12 +238,7 @@ pub fn unexpected_settings(
     let mut unexpected = Vec::new();
     for directory in below.ancestors() {
         for name in PROJECT_SETTINGS {
-            compare(
-                clone,
-                trusted_checkout,
-                &directory.join(name),
-                &mut unexpected,
-            )?;
+            compare(clone, reference, &directory.join(name), &mut unexpected)?;
         }
     }
     unexpected.sort();
@@ -158,7 +247,7 @@ pub fn unexpected_settings(
 
 fn compare(
     clone: &Path,
-    trusted_checkout: &Path,
+    reference: &ReadFile<'_>,
     relative: &Path,
     unexpected: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
@@ -175,7 +264,7 @@ fn compare(
             let entry = entry.map_err(|error| format!("read {}: {error}", path.display()))?;
             compare(
                 clone,
-                trusted_checkout,
+                reference,
                 &relative.join(entry.file_name()),
                 unexpected,
             )?;
@@ -187,15 +276,202 @@ fn compare(
         unexpected.push(relative.to_owned());
         return Ok(());
     }
-    let trusted = trusted_checkout.join(relative);
-    let is_same = fs::symlink_metadata(&trusted).is_ok_and(|metadata| metadata.is_file())
-        && fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?
-            == fs::read(&trusted)
-                .map_err(|error| format!("read {}: {error}", trusted.display()))?;
-    if !is_same {
+    let Some(accepted) = reference(relative)? else {
+        unexpected.push(relative.to_owned());
+        return Ok(());
+    };
+    let brought = fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    if brought != accepted {
         unexpected.push(relative.to_owned());
     }
     Ok(())
+}
+
+/// The bytes of the plain file at `relative` in `checkout`; `None` when there is none there.
+fn working_tree_file(checkout: &Path, relative: &Path) -> Result<Option<Vec<u8>>, String> {
+    let path = checkout.join(relative);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() => fs::read(&path)
+            .map(Some)
+            .map_err(|error| format!("read {}: {error}", path.display())),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("read {}: {error}", path.display())),
+    }
+}
+
+/// The project MCP approvals a clone's launch gets: the owner's in the trusted checkout, for
+/// the servers the clone defines exactly as the checkout does.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpApprovals {
+    /// The servers Claude Code starts without asking.
+    pub enabled: Vec<String>,
+    /// The servers the owner rejected, which Claude Code neither starts nor asks about.
+    pub disabled: Vec<String>,
+}
+
+/// [`McpApprovals`] carried from the trusted checkout, and the clone's servers left to
+/// Claude Code's prompt.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CarriedApprovals {
+    pub approvals: McpApprovals,
+    /// Servers the owner never approved in the trusted checkout, or approved as the
+    /// checkout defines them while the clone defines them otherwise. Sorted. The second
+    /// kind cannot follow [`vetted_settings`], which refuses a clone whose `.mcp.json`
+    /// differs; it is kept so that an approval never outlives its definition, whoever calls.
+    pub waiting: Vec<String>,
+}
+
+/// The owner's project MCP approvals for `trusted_checkout`, carried to `clone` (#1279): read
+/// from the checkout's `.claude/settings.local.json`, where Claude Code saves them, and its
+/// entry in `owner_config`, where older releases did. A server is approved in the clone only
+/// when the owner approved it in the checkout (one by one or all at once) and each `.mcp.json`
+/// from `start` up to the root defines it with the same value in both: a guard of its own,
+/// beside the byte comparison [`vetted_settings`] makes first. Rejections carry as they are.
+pub fn carried_approvals(
+    owner_config: &Path,
+    clone: &Path,
+    trusted_checkout: &Path,
+    start: &Path,
+) -> Result<CarriedApprovals, String> {
+    let below = start.strip_prefix(clone).map_err(|_| {
+        format!(
+            "the agent starts in {}, outside the clone {}",
+            start.display(),
+            clone.display()
+        )
+    })?;
+    let brought = mcp_servers(clone, below)?;
+    let accepted = mcp_servers(trusted_checkout, below)?;
+    let owner = owner_approvals(owner_config, trusted_checkout)?;
+    let mut carried = CarriedApprovals {
+        approvals: McpApprovals {
+            enabled: Vec::new(),
+            disabled: owner.disabled.clone(),
+        },
+        waiting: Vec::new(),
+    };
+    for (name, definitions) in &brought {
+        if owner.disabled.contains(name) {
+            continue;
+        }
+        let is_approved = owner.all || owner.enabled.contains(name);
+        if is_approved && accepted.get(name) == Some(definitions) {
+            carried.approvals.enabled.push(name.clone());
+        } else {
+            carried.waiting.push(name.clone());
+        }
+    }
+    Ok(carried)
+}
+
+/// Each server the `.mcp.json` files in `root`, from `below` up to `root` itself, define:
+/// its name, then the file and value of each definition.
+fn mcp_servers(
+    root: &Path,
+    below: &Path,
+) -> Result<BTreeMap<String, Vec<(PathBuf, Value)>>, String> {
+    let mut servers: BTreeMap<String, Vec<(PathBuf, Value)>> = BTreeMap::new();
+    for directory in below.ancestors() {
+        let relative = directory.join(MCP_FILE);
+        let Some(bytes) = working_tree_file(root, &relative)? else {
+            continue;
+        };
+        let path = root.join(&relative);
+        let file: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("{} is not JSON: {error}", path.display()))?;
+        let Some(defined) = file.get("mcpServers") else {
+            continue;
+        };
+        let defined = defined
+            .as_object()
+            .ok_or_else(|| format!("{}'s `mcpServers` is not an object", path.display()))?;
+        for (name, definition) in defined {
+            servers
+                .entry(name.clone())
+                .or_default()
+                .push((relative.clone(), definition.clone()));
+        }
+    }
+    Ok(servers)
+}
+
+/// The owner's approvals of `checkout`'s project MCP servers, from every place Claude Code
+/// keeps them.
+#[derive(Default)]
+struct OwnerApprovals {
+    enabled: Vec<String>,
+    disabled: Vec<String>,
+    all: bool,
+}
+
+impl OwnerApprovals {
+    /// Adds the approvals `settings` holds, an object of Claude Code's settings or a project
+    /// entry of its config, which `place` names in a refusal.
+    fn add(&mut self, settings: &Value, place: &str) -> Result<(), String> {
+        let names = |member: &str| -> Result<Vec<String>, String> {
+            match settings.get(member) {
+                None => Ok(Vec::new()),
+                Some(Value::Array(names)) => names
+                    .iter()
+                    .map(|name| {
+                        name.as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| format!("{place}'s `{member}` holds a non-string"))
+                    })
+                    .collect(),
+                Some(_) => Err(format!("{place}'s `{member}` is not a list")),
+            }
+        };
+        for (member, approved) in [
+            (ENABLED_SERVERS_KEY, &mut self.enabled),
+            (DISABLED_SERVERS_KEY, &mut self.disabled),
+        ] {
+            for name in names(member)? {
+                if !approved.contains(&name) {
+                    approved.push(name);
+                }
+            }
+        }
+        self.all |= settings.get(ALL_SERVERS_KEY) == Some(&Value::Bool(true));
+        Ok(())
+    }
+}
+
+fn owner_approvals(config: &Path, checkout: &Path) -> Result<OwnerApprovals, String> {
+    let mut approvals = OwnerApprovals::default();
+    let local_settings = checkout.join(LOCAL_SETTINGS_FILE);
+    if let Some(settings) = json_file(&local_settings)? {
+        approvals.add(&settings, &local_settings.display().to_string())?;
+    }
+    let checkout = checkout
+        .canonicalize()
+        .map_err(|error| format!("resolve {}: {error}", checkout.display()))?;
+    let key = checkout
+        .to_str()
+        .ok_or_else(|| format!("{} is not UTF-8", checkout.display()))?;
+    // Read without Claude Code's lock: it replaces the file whole, and a file read while
+    // it is written fails to parse, which carries nothing.
+    if let Some(config_text) = json_file(config)? {
+        approvals.add(
+            &config_text["projects"][key],
+            &format!("the checkout's entry in {}", config.display()),
+        )?;
+    }
+    Ok(approvals)
+}
+
+/// The JSON in `path`; `None` when there is no such file, as for an owner who never ran
+/// Claude Code or approved nothing in the checkout.
+fn json_file(path: &Path) -> Result<Option<Value>, String> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|error| format!("{} is not JSON: {error}", path.display()))
 }
 
 /// Records Claude Code's trust of `workspace` in `config` as `trusted`: under Claude Code's

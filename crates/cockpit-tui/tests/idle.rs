@@ -39,6 +39,7 @@ fn app_after_launch(kind: LaunchKindView, reports: Vec<SessionReport>, now: Inst
         account: None,
         switched_from: None,
         passed_over: Vec::new(),
+        harness_trust: None,
     });
     let mut app = app_with(&["app"], vec![launched], now);
     answer(

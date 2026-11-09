@@ -212,6 +212,10 @@ pub struct LaunchView {
     /// naming the account and the grant that lets it (#59).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub passed_over: Vec<String>,
+    /// What the owner should read about the harness's folder trust Torlek recorded for the
+    /// launch, or why it did not (#1279).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_trust: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

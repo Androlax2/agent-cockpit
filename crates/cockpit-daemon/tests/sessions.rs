@@ -2234,3 +2234,6 @@ mod lost_terminal;
 
 #[path = "sessions/version_report.rs"]
 mod version_report;
+
+#[path = "sessions/claude_trust.rs"]
+mod claude_trust;

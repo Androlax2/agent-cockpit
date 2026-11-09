@@ -150,6 +150,7 @@ fn launch(provider: &dyn Provider) -> LaunchCommand {
             model: None,
             remote_control: false,
             compaction_threshold: None,
+            inherited_trust: None,
         })
         .unwrap()
 }

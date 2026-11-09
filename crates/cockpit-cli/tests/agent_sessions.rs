@@ -72,6 +72,7 @@ fn observed(id: &str, doing: &str) -> ObservedSessionView {
             reported_at: 1,
         }),
         inbound_message: None,
+        harness_trust: None,
     }
 }
 
@@ -140,5 +141,21 @@ async fn without_watch_every_session_is_listed_once() {
         text(&output.stdout),
         "s1\trunning\tclaude\tworking\t/work/s1\tdoing=\"tests\"\n\
          s2\trunning\tclaude\tworking\t/work/s2\tdoing=\"review\"\n"
+    );
+}
+
+#[tokio::test]
+async fn the_latest_launch_harness_trust_note_is_listed_with_its_session() {
+    let home = Home::new();
+    let mut withheld = observed("s1", "tests");
+    withheld.harness_trust = Some("not recorded: its settings differ".to_owned());
+    let _daemon = scripted_conversation(&home.agent_socket(), vec![listing(vec![withheld])]);
+
+    let output = home.cockpit(&["agent", "sessions"]).await;
+
+    assert_eq!(
+        text(&output.stdout),
+        "s1\trunning\tclaude\tworking\t/work/s1\tdoing=\"tests\"\
+         \tharness-trust=\"not recorded: its settings differ\"\n"
     );
 }

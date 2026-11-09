@@ -20,6 +20,9 @@ pub struct ObservedSessionView {
     /// The latest message a coordinator queued to it, and how its delivery stands (#703).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound_message: Option<InboundMessageView>,
+    /// Its latest launch's note about the harness's folder trust (#1279).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_trust: Option<String>,
 }
 
 /// What one `agent-inbox` request found.

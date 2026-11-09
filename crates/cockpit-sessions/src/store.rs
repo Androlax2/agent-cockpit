@@ -416,6 +416,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE sessions ADD COLUMN is_budget_spent INTEGER NOT NULL DEFAULT 0
                 CHECK (is_budget_spent IN (0, 1));",
         },
+        // #1279: what the owner should read about the harness's folder trust Torlek recorded
+        // for the launch, or why it did not; `NULL` when there is nothing to say.
+        Migration {
+            version: 27,
+            sql: "ALTER TABLE session_launches ADD COLUMN harness_trust TEXT
+                CHECK (harness_trust <> '');",
+        },
     ],
 };
 
@@ -443,7 +450,8 @@ const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout
     EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id),
     (SELECT max(w.working_order) FROM session_launches w WHERE w.session_id = s.id),
     e.ended_by, e.code, e.output, s.model, s.effort, s.started_by, s.compaction_threshold,
-    l.account, l.switched_from, l.passed_over, s.budget_minutes, s.is_budget_spent";
+    l.account, l.switched_from, l.passed_over, s.budget_minutes, s.is_budget_spent,
+    l.harness_trust";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
     (SELECT max(id) FROM session_launches WHERE session_id = s.id)
     LEFT JOIN session_exits e ON e.launch_id = l.id";
@@ -700,6 +708,21 @@ pub(crate) async fn insert_exit(
         .execute(
             "INSERT INTO session_exits (launch_id, ended_by, code, output) VALUES (?1, ?2, ?3, ?4)",
             (launch.number, ended_by, code, exit.output.join("\n")),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Keeps `note` about the harness's trust with the launch of `execution` (#1279).
+pub(crate) async fn note_harness_trust(
+    write: &WriteTransaction<'_>,
+    execution: ExecutionId,
+    note: &str,
+) -> Result<(), Error> {
+    write
+        .execute(
+            "UPDATE session_launches SET harness_trust = ?1 WHERE execution_id = ?2",
+            (note, execution.0),
         )
         .await?;
     Ok(())
@@ -1165,6 +1188,7 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
                     .get::<Option<String>>(28)?
                     .map(|lines| lines.lines().map(str::to_owned).collect())
                     .unwrap_or_default(),
+                harness_trust: row.get(31)?,
             })
         }
     };

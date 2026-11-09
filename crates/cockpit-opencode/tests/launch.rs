@@ -19,6 +19,7 @@ fn request(conversation: &Conversation) -> LaunchRequest<'_> {
         model: None,
         remote_control: false,
         compaction_threshold: None,
+        inherited_trust: None,
     }
 }
 

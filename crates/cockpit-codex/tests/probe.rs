@@ -167,6 +167,7 @@ fn a_harness_that_does_not_know_the_compaction_threshold_key_refuses_a_threshold
             model: None,
             remote_control: false,
             compaction_threshold: Some("75"),
+            inherited_trust: None,
         })
         .unwrap_err();
     assert_eq!(
