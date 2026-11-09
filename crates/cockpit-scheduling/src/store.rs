@@ -545,7 +545,12 @@ struct Spent {
 
 impl Spent {
     fn outside(self, item: &Item, unit: Unit) -> Outside<'_> {
-        let raised = self.budget_minutes.saturating_add(BUDGET_STEP_MINUTES);
+        // Placed work runs on past the budget, so the offer starts from what it took.
+        let spent = u32::try_from(self.minutes).unwrap_or(u32::MAX);
+        let raised = self
+            .budget_minutes
+            .max(spent)
+            .saturating_add(BUDGET_STEP_MINUTES);
         Outside {
             item,
             unit,

@@ -53,12 +53,32 @@ async fn an_item_at_its_budget_asks_the_owner_for_more_time() {
     assert_eq!(
         explanation.action,
         format!(
-            "give it 30 min more to go on: `torlek todo budget {} 90`",
+            "give it 30 min more to go on: `torlek todo budget {} 97`",
             item.id.0
         )
     );
     assert_eq!(explanation.action_by, ActionBy::Owner);
     assert!(!explanation.reason.is_queued());
+}
+
+#[tokio::test]
+async fn the_offer_of_more_time_starts_from_the_time_worked_past_the_budget() {
+    let fixture = Fixture::with_budget(4).await;
+    let session = fixture.session("a-1", "a").await;
+    let item = fixture.queued("a", "task", Priority::NORMAL).await;
+    fixture.budget(item.id, 60).await;
+
+    let dispatched = fixture
+        .dispatch_after(NOW, &[session], BTreeMap::from([(item.id, 200 * 60)]))
+        .await;
+
+    assert_eq!(
+        explanation_of(&dispatched.explanations, item.id).action,
+        format!(
+            "give it 30 min more to go on: `torlek todo budget {} 230`",
+            item.id.0
+        )
+    );
 }
 
 #[tokio::test]

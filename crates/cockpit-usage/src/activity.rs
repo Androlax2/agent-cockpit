@@ -313,7 +313,9 @@ pub async fn open_turns(connection: &Connection) -> Result<Vec<OpenTurn>, Error>
 
 /// The seconds `session`'s agent worked between `from` and `until`: its ended turns and the
 /// one under way, each cut to the span, with no joining of gaps (#412: an item's budget
-/// counts the agent's turns while the item was placed on the session).
+/// counts the agent's turns while the item was placed on the session). The turn under way
+/// counts its last [`MAX_TURN_SECONDS`] at most, as a recorded turn does, so an open row an
+/// agent lost does not grow without end.
 pub async fn turn_seconds(
     connection: &Connection,
     session: &str,
@@ -329,9 +331,9 @@ pub async fn turn_seconds(
             "SELECT started_at, ended_at FROM usage_turns
              WHERE session = ?1 AND ended_at > ?2 AND started_at < ?3
              UNION ALL
-             SELECT started_at, ?3 FROM usage_open_turns
+             SELECT MAX(started_at, ?3 - ?4), ?3 FROM usage_open_turns
              WHERE session = ?1 AND started_at < ?3",
-            params![session, from, until],
+            params![session, from, until, MAX_TURN_SECONDS],
         )
         .await?;
     let mut seconds: u64 = 0;

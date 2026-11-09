@@ -226,12 +226,14 @@ projects' shares. Your own interactive sessions are never capped: only queue sta
 To stop one task from running on and on, give it a budget of agent minutes:
 `torlek todo budget ID 90` (`none` lifts it; `torlek todo show` shows it). Torlek counts the
 time the agents worked it through the queue: the turns of each session it placed the item on,
-while the item was there. Once that reaches the budget, the queue places none of it again,
+while the item was there, whoever prompted them. A reopened item keeps its budget and the
+time already worked, so it waits for more time if it used its budget. Once that reaches the budget, the queue places none of it again,
 neither the item after a session gave it back nor its workflow's next step, and `torlek queue
 explain` shows `over-budget` with the command that gives it 30 minutes more. A turn under way
 is never cut and the agent is not told: it may finish the item past its budget. Handing the
 item to a session yourself (`torlek todo handoff`) goes on whatever its budget. Work an agent
-started on its own (`torlek todo start`) and your interactive sessions count nothing.
+started on its own (`torlek todo start`) counts nothing, nor do sessions the queue did not
+place the item on.
 
 `torlek usage cost [--days N]` shows what your replies cost at the provider's published API
 prices (a plan is flat, so this is what the same tokens would bill on API credits): one line

@@ -369,3 +369,13 @@ async fn an_empty_span_has_no_turn_seconds() {
 
     assert_eq!(seconds, 0);
 }
+
+#[tokio::test]
+async fn a_turn_left_open_counts_a_weeks_time_at_most() {
+    let fixture = Fixture::new().await;
+    fixture.began("s1", "app", clock(0, 10, 0)).await;
+
+    let seconds = turn_seconds(&fixture, "s1", clock(0, 9, 0), clock(30, 10, 0)).await;
+
+    assert_eq!(seconds, cockpit_usage::MAX_TURN_SECONDS as u64);
+}
