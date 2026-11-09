@@ -532,6 +532,8 @@ esac
             self.session("greenfield-9-y", "working", "editing"),
         )
 
+        seen_sessions = json.loads(self.state_file.read_text())["sessions"]
+        self.assertEqual(seen_sessions["s-greenfield-9-y"]["doing"], "editing")
         self.assertNotIn("SUMMARY", result.stdout)
         self.assertNotIn("editing", result.stdout)
 
@@ -540,6 +542,8 @@ esac
 
         result = self.watch(self.session("greenfield-9-y", "working", "coding"))
 
+        seen_pull_requests = json.loads(self.state_file.read_text())["prs"]
+        self.assertEqual(seen_pull_requests["greenfield/9-y"]["number"], 9)
         self.assertNotIn("SUMMARY", result.stdout)
         self.assertNotIn("opened", result.stdout)
 
