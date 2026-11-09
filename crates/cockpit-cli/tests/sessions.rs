@@ -77,6 +77,7 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
         model: None,
         effort: None,
         budget_minutes: None,
+        budget_spent: false,
         design_link: None,
         state,
         reason: None,

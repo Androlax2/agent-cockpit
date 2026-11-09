@@ -142,6 +142,7 @@ async fn pass(database: &Database, sessions: &Sessions) -> Result<(), String> {
         if let Err(problem) = crate::budgets::publish_spent(&write, &ended, now).await {
             tracing::warn!(problem, "telling the items' spent budgets failed");
         }
+        crate::budgets::mark_sessions_spent(&write, &ended, now).await;
     }
     for (session, working_dir, began_at) in &difference.begins {
         let project =

@@ -4,7 +4,8 @@
 //! own transaction, and `torlek-notify` tells it. Nothing is typed to the agent, and a running
 //! turn is never cut. Publishing the same state again changes nothing, so later turns past the
 //! same budget tell nothing new; the owner's next decision on the item (a new budget, done,
-//! deleted) retracts it, so the next spent budget is news again.
+//! deleted) retracts it, so the next spent budget is news again. A session's budget (#412)
+//! is told the same way, through a mark on the session's own view.
 
 use std::collections::BTreeMap;
 
@@ -96,6 +97,69 @@ pub(crate) async fn publish_spent(
         .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+/// `session`'s budget against the agent seconds its turns have had since it started (#412),
+/// for the queue's hold and the owner's notice alike; `None` without a budget.
+pub(crate) async fn session_budget(
+    connection: &Connection,
+    session: &cockpit_sessions::Session,
+    now: i64,
+) -> Result<Option<cockpit_scheduling::SessionBudget>, String> {
+    let Some(minutes) = session.budget_minutes else {
+        return Ok(None);
+    };
+    let worked_seconds =
+        cockpit_usage::turn_seconds(connection, session.id.as_str(), session.created_at, now)
+            .await
+            .map_err(|error| error.to_string())?;
+    Ok(Some(cockpit_scheduling::SessionBudget {
+        minutes,
+        worked_seconds,
+    }))
+}
+
+/// Marks each open session of `ended` whose turns since its start reached its budget (#412).
+/// The mark is on the session's view, which the session feed publishes after the commit, and
+/// `torlek-notify` tells it once; the owner's next budget for the session clears it. A
+/// session that cannot be checked is logged and the others still are.
+pub(crate) async fn mark_sessions_spent(
+    write: &WriteTransaction<'_>,
+    ended: &BTreeMap<&str, EndedTurn>,
+    now: i64,
+) {
+    for session in ended.keys() {
+        if let Err(problem) = mark_if_spent(write, session, now).await {
+            tracing::warn!(session, problem, "telling a session's spent budget failed");
+        }
+    }
+}
+
+async fn mark_if_spent(
+    write: &WriteTransaction<'_>,
+    session: &str,
+    now: i64,
+) -> Result<(), String> {
+    let id = cockpit_sessions::SessionId::parse(session).map_err(|error| error.to_string())?;
+    let session = cockpit_sessions::session(write, &id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let is_over = matches!(
+        session.state,
+        cockpit_sessions::SessionState::Ended | cockpit_sessions::SessionState::Failed
+    );
+    if session.is_budget_spent || is_over {
+        return Ok(());
+    }
+    let Some(budget) = session_budget(write, &session, now).await? else {
+        return Ok(());
+    };
+    if budget.worked_seconds < u64::from(budget.minutes) * 60 {
+        return Ok(());
+    }
+    cockpit_sessions::mark_budget_spent(write, &id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Takes `item`'s spent budget off the feed: the owner decided on it.

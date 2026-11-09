@@ -102,3 +102,66 @@ async fn queue_explain_asks_the_owner_for_more_time_once_the_session_spent_its_b
         explanations[0].why
     );
 }
+
+/// Whether the session's view says a turn ended past its budget.
+async fn is_spent(client: &Connection, session: &SessionView) -> bool {
+    let listed = request(client, Command::SessionList { ended: false }).await;
+    let Ok(Reply::Sessions { sessions }) = listed else {
+        panic!("session-list: {listed:?}");
+    };
+    sessions
+        .iter()
+        .find(|listed| listed.id == session.id)
+        .unwrap()
+        .budget_spent
+}
+
+/// A daemon with one waiting session started ten minutes ago and given `minutes`, after a
+/// five-minute turn of it ended.
+async fn turn_ended_with_budget(minutes: u32) -> (Home, Daemon, Connection, SessionView) {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let session = home
+        .session_reporting(&client, &root, AgentState::Waiting)
+        .await;
+    let database = home.database();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "UPDATE sessions SET created_at = created_at - 600 WHERE id = ?1",
+            [session.id.as_str()],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    budget(&client, &session, minutes).await;
+
+    home.turn_ends(&session.id, common::unix_now() - 300).await;
+
+    (home, daemon, client, session)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_that_ends_past_the_sessions_budget_marks_it_spent() {
+    let (_home, _daemon, client, session) = turn_ended_with_budget(1).await;
+
+    assert!(is_spent(&client, &session).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_that_ends_within_the_sessions_budget_marks_nothing() {
+    let (_home, _daemon, client, session) = turn_ended_with_budget(60).await;
+
+    assert!(!is_spent(&client, &session).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_budget_clears_the_spent_mark() {
+    let (_home, _daemon, client, session) = turn_ended_with_budget(1).await;
+
+    budget(&client, &session, 90).await;
+
+    assert!(!is_spent(&client, &session).await);
+}

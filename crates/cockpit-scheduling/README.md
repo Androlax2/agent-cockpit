@@ -32,7 +32,8 @@ A session's budget (`budget_minutes` in `cockpit-sessions`, #412) comes in
 `Candidate::budget` with the agent seconds the daemon counted from the session's turns since it
 started. A session at its budget takes no new work (step 6) and is noted; when the only sessions
 of a project that could take the unit are at their budgets, it waits `session-over-budget` with
-the owner's action to give one 30 minutes more. The owner's handoff ignores it.
+the owner's action to give one 30 minutes more. The owner's handoff ignores it. The daemon
+tells the owner once, when a turn ends past it (`budget_spent` on the session's view).
 
 ## One pass
 

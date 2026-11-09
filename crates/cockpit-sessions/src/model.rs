@@ -311,6 +311,8 @@ pub struct Session {
     /// The agent minutes the owner gave it (#412): once its turns since its start reach them,
     /// the queue places nothing more on it. `None`: no limit.
     pub budget_minutes: Option<u32>,
+    /// A turn ended past its budget since the owner last set it: the owner is told once.
+    pub is_budget_spent: bool,
 }
 
 /// Who ends a session, for the reason its card shows (#713).

@@ -242,7 +242,9 @@ To stop one session from taking more and more work, give it a budget of agent mi
 counts every turn of the session since it started, whoever prompted it. Once that reaches the
 budget, the queue places nothing more on it: another session of the project takes the work, or,
 with none free, `torlek queue explain` shows `session-over-budget` with the command that gives
-the session 30 minutes more. A turn under way is never cut. Handing work to the session yourself
+the session 30 minutes more. A turn under way is never cut. The first turn that ends past the
+budget tells you once (the `budget` event of `torlek notify`); setting the session's budget
+again makes the next one news again. Handing work to the session yourself
 (`torlek todo handoff`) goes on whatever its budget.
 
 To run some tasks cheaper, name a project's economy model or effort in the owner's config:
@@ -508,7 +510,7 @@ exits with an error when it cannot. An agent's own terminal bell (Claude Code `t
 Codex `bel`) is a second sound the notifier does not control.
 
 The events are `failure`, `hold`, `question`, `quota`, `disk`, `usage`, `budget`, `finished` and
-`turn`. `budget` is told once when a turn ends past a task's budget of agent minutes. `disk`
+`turn`. `budget` is told once when a turn ends past a task's or a session's budget of agent minutes. `disk`
 is told when free space falls below the floor, once per fall: not again while it stays low, but
 again when it rises above the floor and falls below it again. `usage` is told once per threshold
 and window: when the five-hour window passes 80 %, again at 95 %, and again after it resets. `quota`

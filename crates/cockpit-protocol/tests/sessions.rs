@@ -110,6 +110,7 @@ fn a_session_view_names_its_state_and_latest_launch_on_the_wire() {
         model: None,
         effort: None,
         budget_minutes: None,
+        budget_spent: false,
         design_link: None,
         state: SessionStateView::Stopping {
             to: StopTargetView::Restart,

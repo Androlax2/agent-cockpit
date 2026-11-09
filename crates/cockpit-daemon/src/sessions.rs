@@ -681,6 +681,7 @@ fn session_view(
         model: session.model.clone(),
         effort: session.effort.clone(),
         budget_minutes: session.budget_minutes,
+        budget_spent: session.is_budget_spent,
         design_link: session.design_link.clone(),
         state: state_view(session.state),
         reason: session.reason.clone(),

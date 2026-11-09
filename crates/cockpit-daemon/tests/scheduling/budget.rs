@@ -31,7 +31,7 @@ impl Home {
 
     /// A turn of `session` opened at `started_at` that the daemon ends from the agent's last
     /// report, which is not `working`.
-    async fn turn_ends(&self, session: &str, started_at: i64) {
+    pub(super) async fn turn_ends(&self, session: &str, started_at: i64) {
         let database = self.database();
         let write = database.write().await.unwrap();
         cockpit_usage::turn_began(&write, session, "app", started_at)

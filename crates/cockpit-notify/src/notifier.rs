@@ -152,7 +152,8 @@ impl Notifier {
             let report = self.board.report(&session.id);
             let state = if needs
                 .iter()
-                .any(|event| !matches!(event, Event::Finished | Event::Turn))
+                // A spent budget is the queue's, not the session's: it may work on (#412).
+                .any(|event| !matches!(event, Event::Finished | Event::Turn | Event::Budget))
             {
                 SessionState::NeedsYou
             } else {

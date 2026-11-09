@@ -113,6 +113,7 @@ async fn session_show_asks_the_daemon_to_show_the_session_and_prints_it() {
                 model: None,
                 effort: None,
                 budget_minutes: None,
+                budget_spent: false,
                 design_link: None,
                 state: SessionStateView::Running,
                 reason: None,
