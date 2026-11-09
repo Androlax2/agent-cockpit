@@ -401,6 +401,17 @@ pub trait Provider: Send + Sync + 'static {
         let _ = screen;
         None
     }
+
+    /// Whether `screen`, the agent's visible terminal, shows its harness suspended by job
+    /// control ([`Capability::ScreenReading`], #1271): Ctrl+Z, after which the harness has
+    /// released its terminal and reads nothing typed until a `SIGCONT`. Under Torlek's tmux
+    /// that signal never comes by itself: the harness leads its own session, so its process
+    /// group is orphaned and the kernel discards the `SIGTSTP` it sends itself. Untrusted
+    /// display data: read only what the harness prints, never the conversation it shows.
+    fn is_suspended(&self, screen: &str) -> bool {
+        let _ = screen;
+        false
+    }
 }
 
 /// A workspace whose harness trust [`Provider::trust_workspace`] records.

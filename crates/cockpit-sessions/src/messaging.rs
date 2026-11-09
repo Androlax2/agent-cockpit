@@ -180,7 +180,7 @@ impl Sessions {
         let tmux = self.tmux.clone();
         let name = terminal_name(id)?;
         let session_id = id.clone();
-        self.blocking("deliver an action to the agent", move || {
+        let delivered = self.blocking("deliver an action to the agent", move || {
             // Held until the blocking call returns, even when its caller times out.
             let _guard = guard;
             let action = message.as_deref().map_or(Action::Cancel, Action::Submit);
@@ -202,6 +202,14 @@ impl Sessions {
             let input = provider.input(&action, activity)?;
             let tmux = tmux.map_err(|reason| Error::TmuxUnavailable { reason })?;
             let pane = agent_pane(&tmux, &name)?;
+            // Typed into a released terminal, the text would sit at a prompt nobody reads,
+            // or reach the harness as one stale burst once it resumes (#1271).
+            if shows_suspended(&tmux, &pane, provider.as_ref())? {
+                return Err(Error::AgentSuspended {
+                    session: session_id,
+                    is_resumed: false,
+                });
+            }
             let keys: Vec<Keystroke> = input
                 .iter()
                 .map(|step| match step {
@@ -220,15 +228,36 @@ impl Sessions {
                     reason: format!("tmux: {other}"),
                 },
             })
-        })
-        .await
-        .map_err(|error| match error {
-            Error::StepTimedOut { .. } | Error::Blocking(_) => Error::DeliveryUnconfirmed {
-                session: id.clone(),
-                reason: error.to_string(),
-            },
+        });
+        match delivered.await {
+            Err(Error::AgentSuspended { session, .. }) => Err(Error::AgentSuspended {
+                is_resumed: self.continue_suspended(&session, launch.execution).await,
+                session,
+            }),
+            Err(error @ (Error::StepTimedOut { .. } | Error::Blocking(_))) => {
+                Err(Error::DeliveryUnconfirmed {
+                    session: id.clone(),
+                    reason: error.to_string(),
+                })
+            }
             other => other,
-        })
+        }
+    }
+
+    /// Sends `SIGCONT` to a suspended agent found by a delivery, which is refused all the
+    /// same: whether it was sent. A failure is logged, the delivery's refusal says it.
+    async fn continue_suspended(&self, id: &SessionId, execution: ExecutionId) -> bool {
+        match self
+            .processes
+            .send_continue(&self.database, execution)
+            .await
+        {
+            Ok(sent) => sent.is_some(),
+            Err(error) => {
+                tracing::warn!(session = %id, %error, "a suspended agent could not be resumed");
+                false
+            }
+        }
     }
 }
 

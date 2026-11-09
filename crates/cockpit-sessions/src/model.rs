@@ -391,6 +391,8 @@ pub struct TickReport {
     /// Running sessions with no agent in their terminal while processes they started still
     /// run, now shown as waiting on the owner (#406).
     pub agentless: Vec<SessionId>,
+    /// Running sessions whose agent showed itself suspended (Ctrl+Z), sent `SIGCONT` (#1271).
+    pub resumed: Vec<SessionId>,
     /// Sessions a step failed for, with the reason; the next tick looks again.
     pub errors: Vec<(SessionId, String)>,
 }

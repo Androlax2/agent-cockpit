@@ -1170,6 +1170,11 @@ impl Sessions {
             match self.end_if_exited(&session).await {
                 Ok(Some(over)) => report.record_exit(&over),
                 Ok(None) => {
+                    match self.resume_if_suspended(&session).await {
+                        Ok(true) => report.resumed.push(id.clone()),
+                        Ok(false) => {}
+                        Err(error) => report.errors.push((id.clone(), error.to_string())),
+                    }
                     let agent_report = agent_report.as_ref();
                     if session.restart_pending && turn_refusal(&session, agent_report).is_none() {
                         match self.restart_locked(&operation, &id).await {
@@ -1432,6 +1437,32 @@ impl Sessions {
             write.rollback().await?;
         }
         Ok(is_flagged)
+    }
+
+    /// Sends `SIGCONT` to a running session's agent when its terminal shows it suspended
+    /// (Ctrl+Z, #1271): nothing else ever resumes it, and no shell is there to `fg` from.
+    /// Whether it was sent.
+    async fn resume_if_suspended(&self, session: &Session) -> Result<bool, Error> {
+        let Some(launch) = &session.launch else {
+            return Ok(false);
+        };
+        let provider = Arc::clone(self.provider(Some(session.provider.as_str()))?);
+        let tmux = self.tmux.clone();
+        let name = terminal_name(&session.id)?;
+        let is_suspended = self
+            .blocking("read the agent's screen", move || {
+                let tmux = tmux.map_err(|reason| Error::TmuxUnavailable { reason })?;
+                shows_suspended(&tmux, &agent_pane(&tmux, &name)?, provider.as_ref())
+            })
+            .await?;
+        if !is_suspended {
+            return Ok(false);
+        }
+        let sent = self
+            .processes
+            .send_continue(&self.database, launch.execution)
+            .await?;
+        Ok(sent.is_some())
     }
 
     /// The session, when it runs, with its agent's latest report.
@@ -3240,7 +3271,8 @@ impl Sessions {
         self.blocking("open the terminal", move || {
             let _counted = counted;
             close_if_open(&tmux, &terminal.name)?;
-            tmux.new_session(&terminal).map(drop).map_err(Error::from)
+            let pane = tmux.new_session(&terminal)?;
+            tmux.drop_suspend_key(&pane).map_err(Error::from)
         })
         .await
     }
@@ -3604,6 +3636,16 @@ fn canonical_dir(dir: PathBuf) -> Result<PathBuf, Error> {
 /// Not the active one: a pane the owner split off and left focused is not the agent.
 fn agent_pane(tmux: &Server, name: &SessionName) -> Result<PaneId, Error> {
     agent_pane_info(tmux, name).map(|pane| pane.id)
+}
+
+/// Whether `pane`'s visible screen shows its harness suspended ([`Provider::is_suspended`]),
+/// for a provider that reads its screen at all.
+fn shows_suspended(tmux: &Server, pane: &PaneId, provider: &dyn Provider) -> Result<bool, Error> {
+    if !provider.capabilities().supports(Capability::ScreenReading) {
+        return Ok(false);
+    }
+    let screen = tmux.capture_text(pane, 0)?;
+    Ok(provider.is_suspended(&screen))
 }
 
 /// [`agent_pane`] with its process's state.

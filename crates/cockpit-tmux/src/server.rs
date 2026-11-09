@@ -47,6 +47,9 @@ set-option -s set-clipboard on
 # detection. Indexed, so applying the file again replaces these entries instead of adding more.
 set-option -s terminal-features[10] 'tmux*:clipboard'
 set-option -s terminal-features[11] 'screen*:clipboard'
+# Ctrl+Z (CMD+Z on the owner's keyboard) never reaches an agent's pane (#1271): a harness
+# that suspends itself on it releases its terminal and waits for a `fg` no shell can give.
+bind-key -n C-z if-shell -F '#{{?{AGENT_OPTION},0,1}}' 'send-keys C-z'
 "
     )
 }
@@ -56,6 +59,9 @@ set-option -s terminal-features[11] 'screen*:clipboard'
 const IMAGE_PASTE_KEY: &str = "C-v";
 /// Set on the viewer pane only: the key binding's test for where the key was pressed.
 const VIEWER_OPTION: &str = "@torlek-viewer";
+/// Set on an agent's pane only ([`Server::drop_suspend_key`]): [`config`]'s Ctrl+Z binding
+/// drops the key there.
+const AGENT_OPTION: &str = "@torlek-agent";
 /// [`Server::bind_image_paste`]'s script, beside the config.
 const IMAGE_PASTE_SCRIPT: &str = "image-paste";
 
@@ -733,6 +739,24 @@ impl Server {
             &is_viewer,
             &run_script,
             &pass_key_on,
+        ]))
+        .map(drop)
+    }
+
+    /// Drops Ctrl+Z typed into `pane` by any client, the viewer's nested one included, so
+    /// its program never suspends itself (#1271). A suspend cannot work here: the program
+    /// leads its own session, its process group is orphaned and the kernel discards the
+    /// `SIGTSTP` it sends itself, so it waits with its terminal released for a `SIGCONT`
+    /// nothing sends. Keys Cockpit types ([`Server::send_keys`]) are not bound keys and still
+    /// arrive. The binding is in [`config`].
+    pub fn drop_suspend_key(&self, pane: &PaneId) -> Result<(), Error> {
+        self.run(&words(&[
+            "set-option",
+            "-p",
+            "-t",
+            pane.as_str(),
+            AGENT_OPTION,
+            "1",
         ]))
         .map(drop)
     }

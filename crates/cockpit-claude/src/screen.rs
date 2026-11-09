@@ -30,6 +30,22 @@ pub(crate) fn read(screen: &str) -> Option<Observation> {
     })
 }
 
+/// What Claude Code prints, from the first column, once it released its terminal on Ctrl+Z
+/// (2.1.319).
+const SUSPENDED_NOTICE: &str =
+    "Claude Code has been suspended. Run `fg` to bring Claude Code back.";
+
+/// The suspend notice on a line of its own, with no prompt drawn below it: a conversation
+/// quoting the notice shows it indented, and above the prompt. Claude Code redraws its whole
+/// screen when it resumes.
+pub(crate) fn is_suspended(screen: &str) -> bool {
+    let lines: Vec<&str> = screen.lines().collect();
+    lines
+        .iter()
+        .rposition(|line| line.trim_end() == SUSPENDED_NOTICE)
+        .is_some_and(|notice| !lines[notice..].iter().any(|line| is_prompt_line(line)))
+}
+
 /// The line's text inside a box: without leading and trailing spaces and `│`.
 fn boxed_text(line: &str) -> &str {
     line.trim_matches(|c: char| c.is_whitespace() || c == '│')

@@ -155,6 +155,19 @@ pub(crate) fn signal_group(process_group: i32, signal: Signal) -> Result<SignalO
         Signal::Term => OsSignal::TERM,
         Signal::Kill => OsSignal::KILL,
     };
+    send_to_group(pid, os_signal)
+}
+
+/// `SIGCONT` to the process group `process_group` (#1271).
+pub(crate) fn continue_group(process_group: i32) -> Result<SignalOutcome, Error> {
+    let Some(pid) = Pid::from_raw(process_group) else {
+        return Ok(SignalOutcome::InvalidGroup);
+    };
+    send_to_group(pid, OsSignal::CONT)
+}
+
+fn send_to_group(pid: Pid, os_signal: OsSignal) -> Result<SignalOutcome, Error> {
+    let process_group = pid.as_raw_nonzero();
     match rustix::process::kill_process_group(pid, os_signal) {
         Ok(()) => Ok(SignalOutcome::Sent),
         Err(Errno::SRCH) => Ok(SignalOutcome::NoSuchGroup),
