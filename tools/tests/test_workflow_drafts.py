@@ -100,6 +100,7 @@ class DraftWorkflowTests(unittest.TestCase):
             "ci.yml": {
                 "changes",
                 "greenfield-lint",
+                "greenfield-build",
                 "greenfield-test",
                 "greenfield-sandbox",
                 "greenfield",
@@ -141,6 +142,7 @@ class DraftWorkflowTests(unittest.TestCase):
                 {
                     "changes",
                     "greenfield-lint",
+                    "greenfield-build",
                     "greenfield-test",
                     "greenfield-sandbox",
                     "greenfield",

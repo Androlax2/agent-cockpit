@@ -1,6 +1,9 @@
 # Built by `make build`
 apps/target/
 
+# The nextest archive CI's build job makes (make crates-test-archive)
+/greenfield-tests.tar.zst
+
 # Commits a session exports for cockpit apply (in its work clone)
 .outgoing/
 
