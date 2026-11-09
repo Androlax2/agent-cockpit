@@ -30,13 +30,13 @@ provider and nothing above the contract sees a Codex type (#48).
   repeated. The fields are those of `codex app-server generate-ts` on 0.166.0. The host daemon
   alone calls it (#858). `XDG_DATA_HOME` is not followed: the home is under `~/.local/share`.
 
-- **Capabilities with provenance.** Resume, compaction threshold, quota and, with the bridge, events, submit, cancel and
+- **Capabilities with provenance.** Resume, model, effort, compaction threshold, quota and, with the bridge, events, submit, cancel and
   outcome are `tested` only when the running Codex is a version in `tested-versions.txt`
   (#732); on any other or unknown version they are `discovered` (unverified).
-  `CONFORMANCE_VERSION` (0.166.0) is only the version the recorded fixtures come from. Effort, compact, billing, commands,
+  `CONFORMANCE_VERSION` (0.166.0) is only the version the recorded fixtures come from. Compact, billing, commands,
   evidence, remote control and screen reading are untested and not reported.
 - **Runtime probe** (#732). On a version not in `tested-versions.txt`, the daemon runs
-  `probe` once at its start: the launch flags in `codex --help` and `codex resume --help`, the
+  `probe` once at its start: the launch flags, `--config` among them, in `codex --help` and `codex resume --help`, the
   server flags in `codex app-server --help`, the hooks feature in `codex features list`, and
   the compaction threshold key: `codex --config model_post_turn_compact_threshold_percent=torlek-probe
   features list` names the key in its refusal when Codex knows it, and says nothing when it
@@ -47,7 +47,8 @@ provider and nothing above the contract sees a Codex type (#48).
 - **Launch with the bridge** (#407). The session runs `torlek-codex-session`, which starts
   the session's private app-server, `codex app-server --listen unix://<session dir>/codex.sock
   --enable hooks --config <hook>…` (`server_arguments`), then the TUI against it, `codex
-  [resume] --remote unix://<socket> [-- [<thread id>] [<first message>]]` (`tui_arguments`).
+  [resume] --remote unix://<socket> [--config <value>]… [-- [<thread id>] [<first message>]]`
+  (`tui_arguments`).
   Both run in the session's terminal with the launch's environment, so hooks keep the launch
   token; the server's working directory is the conversation's. When the TUI exits, the
   launcher stops the server (`SIGTERM`, which Codex's npm wrapper passes on, then `SIGKILL`
@@ -57,6 +58,18 @@ provider and nothing above the contract sees a Codex type (#48).
 - **Launch without the bridge.** `codex [resume] --no-daemon`, with the thread id and the
   first message after `--`, where neither can be read as a flag; only resume, the
   compaction threshold and quota are reported.
+- **Model and effort** (#1281). A chosen model and effort are passed as `--config
+  model="<model>"` and `--config model_reasoning_effort="<effort>"` (`session_configs`), to both
+  the app-server and the TUI with the bridge (the TUI through the launcher's `--tui-config`), so
+  neither falls back to the owner's `~/.codex/config.toml`; to the TUI without the bridge. On
+  0.166.0, `thread/start` answers with them over the home's own `model`. Only their shapes are
+  checked: Codex takes any model id and accepts any effort word at `thread/start`, refusing one
+  its model lacks only when a turn runs. Without them, nothing is passed.
+- **Update screen** (#1281). Every launch gives the TUI `--config
+  check_for_update_on_startup=false` (`UPDATE_CHECK_CONFIG`): Codex's "Update available" screen
+  held a restarted session until the owner answered it in the terminal. On 0.166.0 the screen
+  appears only for a launch without a first message (a restart or a resume); a first message
+  skips it by itself. The app-server shows no screen and does not get it.
 - **Compaction threshold** (#783). A chosen threshold is passed as `--config
   model_post_turn_compact_threshold_percent=<percent>`, Codex's own setting in its own words
   (a whole percent of the usable context window, `0` off), to the app-server with the bridge
@@ -168,8 +181,9 @@ provider and nothing above the contract sees a Codex type (#48).
   is a Codex (the nightly job runs the latest, #732, and checks the version it installed), its help documents every flag passed, it lists the `hooks` feature,
   Codex trusts every hook a launch subscribes, a delivered message's prompt reports through
   the bridge, a message joins a turn under way and a cancel interrupts it, a failed turn is
-  followed to its outcome, and the launcher completes and resumes the same conversation
-  in private tmux. Children have cleared environments and scratch homes; successful and
+  followed to its outcome, a thread runs the model and effort a launch chooses, and the
+  launcher completes and resumes the same conversation and skips the update screen in private
+  tmux. Children have cleared environments and scratch homes; successful and
   gated-error responses come from a loopback fixture without credentials or account use.
   Ordinary tests check environment isolation and the local response scenarios.
   Native terminal checks require Linux `/proc` for verified pane-group cleanup;

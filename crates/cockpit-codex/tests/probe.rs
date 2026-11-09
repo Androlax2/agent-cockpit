@@ -22,14 +22,7 @@ fn fake_codex(dir: &std::path::Path, without: &[&str], hooks: bool) -> std::path
             .map(|flag| format!("  {flag} <value>  x\\n"))
             .collect()
     };
-    let launch = documented(
-        LAUNCH_FLAGS
-            .into_iter()
-            .chain(TUI_FLAGS)
-            .chain([CONFIG_FLAG])
-            .collect(),
-        without,
-    );
+    let launch = documented(LAUNCH_FLAGS.into_iter().chain(TUI_FLAGS).collect(), without);
     let server_without: Vec<&str> = without
         .iter()
         .copied()
@@ -185,7 +178,8 @@ fn a_harness_that_does_not_know_the_compaction_threshold_key_refuses_a_threshold
 }
 
 #[test]
-fn a_harness_whose_tui_lacks_the_config_flag_loses_only_the_compaction_threshold() {
+/// Every launch passes the TUI `--config` values, the update check at least (#1281).
+fn a_harness_whose_tui_lacks_the_config_flag_loses_every_capability() {
     let dir = tempfile::tempdir().unwrap();
     let program = fake_codex(dir.path(), &[CONFIG_FLAG], true);
 
@@ -197,8 +191,9 @@ fn a_harness_whose_tui_lacks_the_config_flag_loses_only_the_compaction_threshold
         found.summary()
     );
     let capabilities = adapter(program, found).capabilities();
-    assert!(capabilities.supports(Capability::Resume));
-    assert!(!capabilities.supports(Capability::CompactionThreshold));
+    for capability in Capability::ALL {
+        assert!(!capabilities.supports(capability), "{capability:?}");
+    }
 }
 
 #[test]

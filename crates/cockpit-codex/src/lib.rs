@@ -45,8 +45,9 @@ pub const CONFORMANCE_VERSION: &str = "0.166.0";
 pub const LAUNCH_FLAGS: [&str; 1] = ["--no-daemon"];
 
 /// Every flag the session launcher passes the TUI ([`tui_arguments`]); found in
-/// `codex --help` and `codex resume --help`.
-pub const TUI_FLAGS: [&str; 1] = ["--remote"];
+/// `codex --help` and `codex resume --help`. A launch without the bridge passes
+/// [`CONFIG_FLAG`] too: every launch turns the update screen off ([`UPDATE_CHECK_CONFIG`]).
+pub const TUI_FLAGS: [&str; 2] = ["--remote", CONFIG_FLAG];
 
 /// Every flag the session launcher passes the app-server ([`server_arguments`]); found in
 /// `codex app-server --help`.
@@ -72,6 +73,24 @@ pub const COMPACTION_THRESHOLD_KEY: &str = "model_post_turn_compact_threshold_pe
 /// The value the probe gives [`COMPACTION_THRESHOLD_KEY`]: a Codex that knows the key refuses
 /// it as not a number, naming the key; one that does not know it says nothing.
 pub const COMPACTION_THRESHOLD_PROBE_VALUE: &str = "torlek-probe";
+
+/// The TUI's `--config` value that skips Codex's "Update available" screen, which would hold a
+/// launch until the owner answers it in the terminal (#1281). Measured on 0.166.0, for the TUI
+/// alone and against an app-server: with it, the TUI goes straight to its own screen.
+pub const UPDATE_CHECK_CONFIG: &str = "check_for_update_on_startup=false";
+
+/// Codex's model setting; a launch with a [`LaunchRequest::model`] sets it for the session.
+pub const MODEL_KEY: &str = "model";
+
+/// Codex's reasoning effort setting; a launch with a [`LaunchRequest::effort`] sets it for the
+/// session.
+pub const EFFORT_KEY: &str = "model_reasoning_effort";
+
+/// Longest model Torlek hands over: an id such as `gpt-6.1-terra`.
+const MAX_MODEL_BYTES: usize = 200;
+
+/// Longest effort Torlek hands over; Codex's own levels are single words (`low` to `ultra`).
+const MAX_EFFORT_BYTES: usize = 64;
 
 /// How long `codex --version` may take at discovery.
 const VERSION_DEADLINE: Duration = Duration::from_secs(10);
@@ -271,9 +290,9 @@ impl Provider for Codex {
         self.version.as_deref()
     }
 
-    /// Resume, compaction threshold and quota; with the bridge, also events, submit, cancel
-    /// and outcome, which its session launcher and app-server provide (#407). Not effort, model,
-    /// compact, billing, commands, evidence, remote control or screen reading: untested.
+    /// Resume, model, effort, compaction threshold and quota; with the bridge, also events,
+    /// submit, cancel and outcome, which its session launcher and app-server provide (#407).
+    /// Not compact, billing, commands, evidence, remote control or screen reading: untested.
     fn capabilities(&self) -> Capabilities {
         let bridged = if self.bridge.is_some() {
             BRIDGED_CAPABILITIES.as_slice()
@@ -286,6 +305,8 @@ impl Provider for Codex {
             self.probe.as_ref(),
             [
                 Capability::Resume,
+                Capability::Model,
+                Capability::Effort,
                 Capability::CompactionThreshold,
                 Capability::Quota,
             ]
@@ -308,11 +329,16 @@ impl Provider for Codex {
 
     /// With the bridge, the session launcher: `cockpit-codex-session --cockpit <cockpit>
     /// --codex <codex> --socket <session dir>/codex.sock --config <hook>… --config <mcp>…
-    /// [--resume <thread id>] [--message <first message>]`. It runs Codex's app-server with the hooks and the
-    /// TUI against it ([`server_arguments`], [`tui_arguments`]). Without the bridge, the TUI
-    /// alone: `codex [resume] --no-daemon [--config <threshold>] [-- [<thread id>]
+    /// [--config <threshold>] --config <session>… --tui-config <session>… --tui-config
+    /// <update check> [--resume <thread id>] [--message <first message>]`. It runs Codex's
+    /// app-server with the hooks and the TUI against it ([`server_arguments`],
+    /// [`tui_arguments`]). Without the bridge, the TUI alone: `codex [resume] --no-daemon
+    /// [--config <threshold>] --config <session>… --config <update check> [-- [<thread id>]
     /// [<first message>]]`. A chosen compaction threshold is one more `--config` value
     /// ([`COMPACTION_THRESHOLD_KEY`]), for the app-server with the bridge and the TUI without.
+    /// The session's own settings ([`session_configs`]: a chosen model and effort) go to both
+    /// the app-server and the TUI, so neither falls back to the owner's `~/.codex/config.toml`
+    /// for them; the TUI's update screen is always off ([`UPDATE_CHECK_CONFIG`]).
     /// A new conversation's thread id is Codex's own and unknown at launch: the first report
     /// names it.
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
@@ -325,14 +351,22 @@ impl Provider for Codex {
             .compaction_threshold
             .map(compaction_threshold_config)
             .transpose()?;
+        let session = session_configs(request)?;
         let (program, arguments) = match &self.bridge {
             Some(bridge) => (
                 bridge.session_program.clone(),
-                session_arguments(&self.program, bridge, request, resumed, threshold_config),
+                session_arguments(
+                    &self.program,
+                    bridge,
+                    request,
+                    resumed,
+                    threshold_config,
+                    &session,
+                ),
             ),
             None => (
                 self.program.clone(),
-                direct_arguments(resumed, request.first_message, threshold_config),
+                direct_arguments(resumed, request.first_message, threshold_config, &session),
             ),
         };
         Ok(LaunchCommand {
@@ -392,14 +426,68 @@ fn compaction_threshold_config(threshold: &str) -> Result<String, ProviderError>
     }
 }
 
+/// The `--config` values of the session's own settings, for both the app-server and the TUI:
+/// the chosen model and effort, as TOML strings. Codex takes any model id and refuses one the
+/// account cannot use itself, so only the shapes are checked here.
+pub fn session_configs(request: &LaunchRequest<'_>) -> Result<Vec<String>, ProviderError> {
+    let mut configs = Vec::new();
+    if let Some(model) = request.model {
+        check_model(model)?;
+        configs.push(format!("{MODEL_KEY}={}", hooks::toml_string(model)));
+    }
+    if let Some(effort) = request.effort {
+        check_effort(effort)?;
+        configs.push(format!("{EFFORT_KEY}={}", hooks::toml_string(effort)));
+    }
+    Ok(configs)
+}
+
+/// One word that cannot read as a flag.
+fn check_model(model: &str) -> Result<(), ProviderError> {
+    let is_plain = model.len() <= MAX_MODEL_BYTES
+        && model.starts_with(|first: char| first.is_ascii_alphanumeric())
+        && model
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-._:/@".contains(character));
+    if is_plain {
+        return Ok(());
+    }
+    Err(ProviderError {
+        reason: format!(
+            "model {model:?} is not a Codex model name: 1 to {MAX_MODEL_BYTES} ASCII letters, \
+             digits and `-._:/@`, starting with a letter or digit"
+        ),
+    })
+}
+
+/// One plain word, such as `high`.
+fn check_effort(effort: &str) -> Result<(), ProviderError> {
+    let is_plain = effort.len() <= MAX_EFFORT_BYTES
+        && effort.starts_with(|first: char| first.is_ascii_alphanumeric())
+        && effort
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_".contains(character));
+    if is_plain {
+        return Ok(());
+    }
+    Err(ProviderError {
+        reason: format!(
+            "effort {effort:?} is not a Codex reasoning effort: 1 to {MAX_EFFORT_BYTES} ASCII \
+             letters, digits and `-_`, starting with a letter or digit"
+        ),
+    })
+}
+
 /// The session launcher's arguments for `request`; `threshold_config` is the compaction
-/// threshold's `--config` value, after the hooks and the MCP server.
+/// threshold's `--config` value, after the hooks and the MCP server, and `session` the
+/// session's own settings, last for the app-server and first for the TUI.
 fn session_arguments(
     codex: &Path,
     bridge: &Bridge,
     request: &LaunchRequest<'_>,
     resumed: Option<&ConversationId>,
     threshold_config: Option<String>,
+    session: &[String],
 ) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = vec![
         "--torlek".into(),
@@ -413,8 +501,12 @@ fn session_arguments(
         .into_iter()
         .chain(mcp_configs(&bridge.cockpit_program))
         .chain(threshold_config)
+        .chain(session.iter().cloned())
     {
         arguments.extend([CONFIG_FLAG.into(), value.into()]);
+    }
+    for value in tui_configs(session) {
+        arguments.extend([TUI_CONFIG_OPTION.into(), value.into()]);
     }
     if let Some(id) = resumed {
         arguments.extend(["--resume".into(), id.as_str().into()]);
@@ -459,19 +551,32 @@ const MCP_ENVIRONMENT: [&str; 8] = [
     "XDG_CACHE_HOME",
 ];
 
-/// `[resume] --no-daemon [--config <threshold>] [-- [<thread id>] [<first message>]]`: every
-/// word after `--` is positional, so neither can be read as a flag.
+/// The session launcher's option whose values it passes the TUI as `--config` values.
+pub const TUI_CONFIG_OPTION: &str = "--tui-config";
+
+/// The TUI's `--config` values: the session's own settings, then the update check.
+fn tui_configs(session: &[String]) -> impl Iterator<Item = String> + '_ {
+    session
+        .iter()
+        .cloned()
+        .chain([UPDATE_CHECK_CONFIG.to_owned()])
+}
+
+/// `[resume] --no-daemon [--config <threshold>] --config <session>… --config <update check>
+/// [-- [<thread id>] [<first message>]]`: every word after `--` is positional, so neither can
+/// be read as a flag.
 fn direct_arguments(
     resumed: Option<&ConversationId>,
     first_message: Option<&str>,
     threshold_config: Option<String>,
+    session: &[String],
 ) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = Vec::new();
     if resumed.is_some() {
         arguments.push("resume".into());
     }
     arguments.push("--no-daemon".into());
-    if let Some(value) = threshold_config {
+    for value in threshold_config.into_iter().chain(tui_configs(session)) {
         arguments.extend([CONFIG_FLAG.into(), value.into()]);
     }
     arguments.extend(positional(resumed, first_message));
@@ -507,10 +612,11 @@ pub fn server_arguments(socket: &Path, configs: &[String]) -> Vec<OsString> {
 }
 
 /// The TUI's arguments against the app-server on `socket`: `[resume] --remote unix://<socket>
-/// [-- [<thread id>] [<first message>]]`. A remote TUI's conversation runs in the
-/// app-server's working directory.
+/// [--config <value>]… [-- [<thread id>] [<first message>]]`. A remote TUI's conversation
+/// runs in the app-server's working directory.
 pub fn tui_arguments(
     socket: &Path,
+    configs: &[String],
     resumed: Option<&ConversationId>,
     first_message: Option<&str>,
 ) -> Vec<OsString> {
@@ -519,6 +625,9 @@ pub fn tui_arguments(
         arguments.push("resume".into());
     }
     arguments.extend(["--remote".into(), unix_address(socket)]);
+    for value in configs {
+        arguments.extend([CONFIG_FLAG.into(), value.into()]);
+    }
     arguments.extend(positional(resumed, first_message));
     arguments
 }

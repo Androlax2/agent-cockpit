@@ -271,8 +271,42 @@ fn the_tui_resumes_its_thread_against_the_app_server() {
         launcher.lines("tui.args"),
         words(&cockpit_codex::tui_arguments(
             &launcher.path("codex.sock"),
+            &[],
             Some(&thread),
             Some("-x hi")
+        ))
+    );
+}
+
+/// #1281: the TUI's own settings (the session's model, the update screen off) reach the TUI,
+/// and only the TUI.
+#[test]
+fn tui_config_values_reach_the_tui_alone() {
+    let launcher = Launcher::start(
+        FAKE_CODEX,
+        &[
+            "--config",
+            "hooks.Stop=[]",
+            "--tui-config",
+            "check_for_update_on_startup=false",
+        ],
+    );
+    let _server = launcher.serve(|_, _| Ok(json!({})));
+
+    assert_eq!(
+        launcher.lines("tui.args"),
+        words(&cockpit_codex::tui_arguments(
+            &launcher.path("codex.sock"),
+            &["check_for_update_on_startup=false".to_owned()],
+            None,
+            None
+        ))
+    );
+    assert_eq!(
+        launcher.lines("server.args"),
+        words(&cockpit_codex::server_arguments(
+            &launcher.path("codex.sock"),
+            &["hooks.Stop=[]".to_owned()]
         ))
     );
 }

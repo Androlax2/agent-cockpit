@@ -185,13 +185,21 @@ fn the_app_server_listens_on_the_socket_with_hooks_enabled_and_the_hooks_of_the_
 fn the_tui_of_a_new_conversation_joins_the_app_server_with_its_first_message_last() {
     let words = common::words(&cockpit_codex::tui_arguments(
         Path::new(SOCKET),
+        &["model=\"gpt-6-astra\"".to_owned()],
         None,
         Some("--help me"),
     ));
 
     assert_eq!(
         words,
-        ["--remote", &format!("unix://{SOCKET}"), "--", "--help me"]
+        [
+            "--remote",
+            &format!("unix://{SOCKET}"),
+            "--config",
+            "model=\"gpt-6-astra\"",
+            "--",
+            "--help me"
+        ]
     );
 }
 
@@ -199,6 +207,7 @@ fn the_tui_of_a_new_conversation_joins_the_app_server_with_its_first_message_las
 fn the_tui_of_a_resumed_conversation_resumes_its_thread_after_the_separator() {
     let words = common::words(&cockpit_codex::tui_arguments(
         Path::new(SOCKET),
+        &[],
         Some(&thread()),
         None,
     ));
@@ -222,7 +231,14 @@ fn without_the_bridge_a_new_conversation_runs_codex_out_of_the_shared_daemon() {
         .unwrap();
 
     assert_eq!(command.program, Path::new("/usr/bin/codex"));
-    assert_eq!(common::words(&command.arguments), ["--no-daemon"]);
+    assert_eq!(
+        common::words(&command.arguments),
+        [
+            "--no-daemon",
+            "--config",
+            "check_for_update_on_startup=false"
+        ]
+    );
     assert_eq!(command.conversation, None);
 }
 
@@ -232,7 +248,8 @@ fn without_the_bridge_a_thread_id_that_looks_like_a_flag_stays_positional() {
     let command = without_bridge().launch(&request(&conversation)).unwrap();
     let words = common::words(&command.arguments);
 
-    assert_eq!(words, ["resume", "--no-daemon", "--", "--last"]);
+    assert_eq!(after_separator(&words), ["--last"]);
+    assert_eq!(words[..2], ["resume", "--no-daemon"]);
 }
 
 #[test]
@@ -294,6 +311,8 @@ fn without_the_bridge_a_compaction_threshold_is_a_config_value_before_the_separa
             "--no-daemon",
             "--config",
             "model_post_turn_compact_threshold_percent=0",
+            "--config",
+            "check_for_update_on_startup=false",
             "--",
             thread().as_str(),
             "go"
@@ -336,28 +355,133 @@ fn a_compaction_threshold_that_is_not_a_whole_percent_is_refused_before_the_laun
     }
 }
 
+/// #1281: a coordinator picks the model and effort per session, without the owner's
+/// `~/.codex/config.toml`; the TUI gets them too, so a thread it starts asks for the same.
 #[test]
-fn an_effort_level_is_refused_naming_the_capability() {
-    let refused = common::codex()
+fn with_the_bridge_a_model_and_effort_reach_both_the_app_server_and_the_tui() {
+    let command = common::codex()
         .launch(&LaunchRequest {
-            effort: Some("high"),
+            model: Some("gpt-6.1-terra"),
+            effort: Some("xhigh"),
             ..request(&Conversation::New)
         })
-        .unwrap_err();
+        .unwrap();
+    let words = common::words(&command.arguments);
+    let chosen = [
+        "model=\"gpt-6.1-terra\"".to_owned(),
+        "model_reasoning_effort=\"xhigh\"".to_owned(),
+    ];
 
-    assert_eq!(refused.reason, "it does not report the `effort` capability");
+    let server = values_of(&words, "--config");
+    assert_eq!(server[server.len() - 2..], chosen);
+    assert_eq!(values_of(&words, "--tui-config")[..2], chosen);
 }
 
 #[test]
-fn a_model_is_refused_naming_the_capability() {
-    let refused = common::codex()
+fn without_the_bridge_a_model_and_effort_are_config_values_before_the_separator() {
+    let command = without_bridge()
         .launch(&LaunchRequest {
-            model: Some("gpt-5"),
+            model: Some("gpt-6-astra"),
+            effort: Some("max"),
+            first_message: Some("go"),
             ..request(&Conversation::New)
         })
-        .unwrap_err();
+        .unwrap();
 
-    assert_eq!(refused.reason, "it does not report the `model` capability");
+    assert_eq!(
+        common::words(&command.arguments),
+        [
+            "--no-daemon",
+            "--config",
+            "model=\"gpt-6-astra\"",
+            "--config",
+            "model_reasoning_effort=\"max\"",
+            "--config",
+            "check_for_update_on_startup=false",
+            "--",
+            "go"
+        ]
+    );
+}
+
+/// #1281: Codex's "Update available" screen held a restarted session until the owner answered.
+#[test]
+fn with_the_bridge_the_tui_skips_the_update_screen() {
+    let command = common::codex()
+        .launch(&request(&Conversation::New))
+        .unwrap();
+    let words = common::words(&command.arguments);
+
+    assert_eq!(
+        values_of(&words, "--tui-config"),
+        ["check_for_update_on_startup=false"]
+    );
+    assert!(
+        !values_of(&words, "--config").contains(&"check_for_update_on_startup=false".to_owned()),
+        "the app-server shows no screen: {words:?}"
+    );
+}
+
+#[test]
+fn without_a_model_or_effort_no_launch_names_their_keys() {
+    for codex in [common::codex(), without_bridge()] {
+        let command = codex.launch(&request(&Conversation::New)).unwrap();
+
+        let words = common::words(&command.arguments);
+        assert!(
+            !words
+                .iter()
+                .any(|word| word.starts_with("model=") || word.starts_with("model_reasoning")),
+            "{words:?}"
+        );
+    }
+}
+
+#[test]
+fn a_model_that_could_read_as_a_flag_or_breaks_its_shape_is_refused_before_the_launch() {
+    for model in ["-m", "", "gpt 6", "gpt\"6", "gpt=6", &"g".repeat(201)] {
+        let refused = common::codex()
+            .launch(&LaunchRequest {
+                model: Some(model),
+                ..request(&Conversation::New)
+            })
+            .unwrap_err();
+
+        assert!(
+            refused
+                .reason
+                .starts_with(&format!("model {model:?} is not a Codex model name")),
+            "{}",
+            refused.reason
+        );
+    }
+}
+
+#[test]
+fn an_effort_that_is_not_one_plain_word_is_refused_before_the_launch() {
+    for effort in [
+        "--high",
+        "",
+        "very high",
+        "high\"",
+        "x.high",
+        &"h".repeat(65),
+    ] {
+        let refused = without_bridge()
+            .launch(&LaunchRequest {
+                effort: Some(effort),
+                ..request(&Conversation::New)
+            })
+            .unwrap_err();
+
+        assert!(
+            refused.reason.starts_with(&format!(
+                "effort {effort:?} is not a Codex reasoning effort"
+            )),
+            "{}",
+            refused.reason
+        );
+    }
 }
 
 #[test]

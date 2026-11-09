@@ -1,6 +1,7 @@
 //! `cockpit-codex-session`: what a Codex session runs in its terminal (#407). It starts the
 //! session's private app-server (`codex app-server --listen unix://<session dir>/codex.sock`,
-//! with the launch's hooks), then the TUI against it (`codex --remote`), both with the
+//! with the launch's hooks and `--config` values), then the TUI against it (`codex --remote`,
+//! with the launch's `--tui-config` values as its own `--config` values), both with the
 //! launch's environment, so hooks keep the launch token and Cockpit delivers messages
 //! through the socket. It reports each failed turn, which sends no hook, with
 //! `cockpit agent report`, stops the app-server when the TUI exits, and exits with the TUI's
@@ -56,6 +57,7 @@ struct Options {
     codex: PathBuf,
     socket: PathBuf,
     configs: Vec<String>,
+    tui_configs: Vec<String>,
     resume: Option<ConversationId>,
     message: Option<String>,
 }
@@ -68,10 +70,11 @@ enum Parsed {
 impl Options {
     fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Parsed, String> {
         let usage = "usage: torlek-codex-session --torlek <program> --codex <program> \
-                     --socket <path> [--config <value>]… [--resume <thread id>] \
+                     --socket <path> [--config <value>]… [--tui-config <value>]… \
+                     [--resume <thread id>] \
                      [--message <text>] | --version";
         let (mut cockpit, mut codex, mut socket) = (None, None, None);
-        let mut configs = Vec::new();
+        let (mut configs, mut tui_configs) = (Vec::new(), Vec::new());
         let (mut resume, mut message) = (None, None);
         while let Some(flag) = arguments.next() {
             if flag == cockpit_codex::HOOK_VERSION_FLAG {
@@ -91,6 +94,7 @@ impl Options {
                 Some("--codex") => codex = Some(PathBuf::from(&value)),
                 Some("--socket") => socket = Some(PathBuf::from(&value)),
                 Some("--config") => configs.push(text()?),
+                Some(cockpit_codex::TUI_CONFIG_OPTION) => tui_configs.push(text()?),
                 Some("--resume") => {
                     resume = Some(ConversationId::new(text()?).map_err(|error| error.to_string())?);
                 }
@@ -111,6 +115,7 @@ impl Options {
             codex,
             socket,
             configs,
+            tui_configs,
             resume,
             message,
         }))
@@ -136,6 +141,7 @@ fn run(options: &Options) -> Result<ExitCode, String> {
     let tui = Command::new(&options.codex)
         .args(cockpit_codex::tui_arguments(
             &options.socket,
+            &options.tui_configs,
             options.resume.as_ref(),
             options.message.as_deref(),
         ))
