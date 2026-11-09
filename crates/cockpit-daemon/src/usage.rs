@@ -310,14 +310,13 @@ fn account_view(
     let windows = quota
         .windows
         .iter()
-        .cloned()
         .map(|window| {
             let pace = cockpit_scheduling::window_pace(
                 pacing,
-                &crate::scheduling::usage_window(&quota, window.clone()),
+                &crate::scheduling::usage_window(&quota, window),
                 now,
             );
-            window_view(window, pace)
+            window_view(window.clone(), pace)
         })
         .collect();
     QuotaAccountView {

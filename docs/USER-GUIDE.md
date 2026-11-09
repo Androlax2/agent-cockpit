@@ -203,8 +203,9 @@ the 15 % (`usage.pacing_burst_percent`) lets work start as a window opens. Low-p
 items get no burst, so they wait first; high-priority items ignore the line and stop only at
 the reserve. Work already running is never paused. A held item shows `usage-paced` in
 `torlek queue explain` with the window and about when it starts. `torlek usage quota` shows
-each window's line now (`queue pace 51%`) and, while the window holds normal-priority work,
-how long it waits (`queue waits 12 min (pace 60%)`). A stale reading, a window
+each window's line for normal-priority items now (`queue pace 51%`; low-priority items wait
+from the burst below it) and, while the window holds them, how long they wait (`queue waits
+12 min (pace 60%)`). A stale reading, a window
 scoped to one model and a session on an account Torlek reads no windows for pace nothing.
 `usage.pacing = "off"` starts queued work at full speed.
 

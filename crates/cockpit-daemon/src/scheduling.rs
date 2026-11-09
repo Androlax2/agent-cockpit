@@ -390,20 +390,21 @@ async fn usage(
     Ok(quotas.into_iter().flat_map(usage_windows).collect())
 }
 
-fn usage_windows(mut quota: AccountQuota) -> impl Iterator<Item = UsageWindow> {
-    let windows = std::mem::take(&mut quota.windows);
-    windows
-        .into_iter()
-        .map(move |window| usage_window(&quota, window))
+fn usage_windows(quota: AccountQuota) -> Vec<UsageWindow> {
+    quota
+        .windows
+        .iter()
+        .map(|window| usage_window(&quota, window))
+        .collect()
 }
 
 /// `window` of `quota`'s account as scheduling paces it.
-pub(crate) fn usage_window(quota: &AccountQuota, window: WindowQuota) -> UsageWindow {
+pub(crate) fn usage_window(quota: &AccountQuota, window: &WindowQuota) -> UsageWindow {
     UsageWindow {
         provider: quota.provider.as_str().to_owned(),
         account: quota.account.as_str().to_owned(),
         limit: window.limit.as_str().to_owned(),
-        scope: window.scope,
+        scope: window.scope.clone(),
         used_percent: window.used_percent,
         length_seconds: window.length_seconds,
         resets_at: window.resets_at,

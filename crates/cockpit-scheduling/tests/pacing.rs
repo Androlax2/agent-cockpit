@@ -436,6 +436,18 @@ fn a_blocked_window_holds_the_queue_with_no_line() {
 }
 
 #[test]
+fn a_window_at_the_reserve_past_its_reset_resumes_now_not_in_the_past() {
+    let past_reset = UsageWindow {
+        resets_at: Some(NOW - 300),
+        ..window(95.0, 150)
+    };
+
+    let pace = window_pace(Pacing::DEFAULT, &past_reset, NOW).unwrap();
+
+    assert_eq!((pace.is_holding, pace.resumes_at), (true, Some(NOW)));
+}
+
+#[test]
 fn a_window_that_paces_nothing_has_no_pace() {
     let cases = [
         ("pacing off", Pacing::Off, window(70.0, 150)),

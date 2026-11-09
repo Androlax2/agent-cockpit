@@ -113,7 +113,8 @@ pub(crate) fn paced(
 }
 
 /// Where normal-priority queued work stands against one window under the pacing (#412), as
-/// `torlek usage quota` shows it.
+/// `torlek usage quota` shows it. Low-priority work gets no burst, so it waits while a window
+/// is within the burst below this line; high-priority work waits only at the reserve.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowPace {
     /// The share the queue may have used by now; `None` for a window without a length and a
@@ -141,7 +142,7 @@ pub fn window_pace(pacing: Pacing, window: &UsageWindow, now: i64) -> Option<Win
         Standing::Blocked => None,
         Standing::Current => {
             let usable = 100.0 - f64::from(reserve_percent);
-            even_line(window, usable, f64::from(burst_percent), now)
+            opening(window).map(|opening| even_line(opening, usable, f64::from(burst_percent), now))
         }
     };
     let held = paced(
@@ -159,12 +160,11 @@ pub fn window_pace(pacing: Pacing, window: &UsageWindow, now: i64) -> Option<Win
     })
 }
 
-/// The share `window` may be used at `now`: `elapsed share × usable + burst`, capped at
-/// `usable`; `None` without a length and a reset.
-fn even_line(window: &UsageWindow, usable: f64, burst: f64, now: i64) -> Option<f64> {
-    let (length, opened_at) = opening(window)?;
+/// The share a window of `length` seconds opened at `opened_at` may be used at `now`:
+/// `elapsed share × usable + burst`, capped at `usable`.
+fn even_line((length, opened_at): (f64, f64), usable: f64, burst: f64, now: i64) -> f64 {
     let elapsed = ((now as f64 - opened_at) / length).clamp(0.0, 1.0);
-    Some((elapsed * usable + burst).min(usable))
+    (elapsed * usable + burst).min(usable)
 }
 
 /// The window's length and when it opened, in seconds.
@@ -193,14 +193,14 @@ fn held(
                  is kept for your own sessions"
             ),
             limited_by: name,
-            resumes_at: window.resets_at,
+            resumes_at: window.resets_at.map(|resets_at| resets_at.max(now)),
         });
     }
     if priority >= Priority::HIGH.level() {
         return None;
     }
-    let line = even_line(window, usable, burst, now)?;
     let (length, opened_at) = opening(window)?;
+    let line = even_line((length, opened_at), usable, burst, now);
     if used < line {
         return None;
     }
