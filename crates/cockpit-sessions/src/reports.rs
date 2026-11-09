@@ -231,21 +231,20 @@ pub async fn report_counting_limits(
     // and the session relaunches on another account (#59) or resumes at the reset (#158).
     if is_quota_stop && let Some(launch) = launch {
         crate::store::record_quota_stop(write, launch).await?;
-        let cause = StopCause::Quota;
         quota_stops::record(
             write,
             session.as_str(),
             launch,
-            cause,
+            StopCause::Quota,
             inferred_from.as_deref(),
         )
         .await?;
     } else if is_network_lost && let Some(launch) = launch {
         // The account is not spent: no relaunch moves the session, the same pass resumes it
         // once the provider answers again (#718).
-        quota_stops::record(write, session.as_str(), launch, StopCause::Network, None).await?;
+        quota_stops::record_network(write, session.as_str(), launch).await?;
     } else if ends_turn || merged.state == Some(AgentState::Working) {
-        let reason = "the agent worked again before the reset";
+        let reason = "the agent worked again before Torlek resumed it";
         quota_stops::drop_open(write, session.as_str(), reason, now()).await?;
     }
     Ok(Recorded {

@@ -112,6 +112,35 @@ pub(crate) async fn record(
     Ok(())
 }
 
+/// How soon after a network stop's resume another one goes to the owner instead (#718): the
+/// provider answers the daemon's readings but not the agent, so resuming again would loop.
+pub const NETWORK_STOP_REPEAT_SECONDS: i64 = 30 * 60;
+
+/// Records that the network ended `launch`'s turn now, as [`record`] does. A second one within
+/// [`NETWORK_STOP_REPEAT_SECONDS`] of the session's last network resume goes to the owner.
+pub(crate) async fn record_network(
+    write: &WriteTransaction<'_>,
+    session: &str,
+    launch: i64,
+) -> Result<(), Error> {
+    let mut rows = write
+        .query(
+            "SELECT 1 FROM session_quota_stops
+             WHERE session_id = ?1 AND cause = 'network' AND resumed_at >= ?2 LIMIT 1",
+            (session, now() - NETWORK_STOP_REPEAT_SECONDS),
+        )
+        .await?;
+    let is_repeat = rows.next().await?.is_some();
+    drop(rows);
+    record(write, session, launch, StopCause::Network, None).await?;
+    if is_repeat {
+        let reason = "the network ended its turn again soon after Torlek resumed it, though its \
+                      provider answers Torlek: continue the session yourself";
+        hand_open_to_owner(write, &SessionId::parse(session)?, reason).await?;
+    }
+    Ok(())
+}
+
 /// How many failed turns of [`TransientLimits`] within [`TRANSIENT_LIMIT_WINDOW_SECONDS`] make
 /// a quota stop (#158, owner decision 2026-11-09).
 pub const TRANSIENT_LIMIT_FAILURES: i64 = 3;

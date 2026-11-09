@@ -32,7 +32,10 @@ daemon notices the network is back (A, 2026-11-09).
 - **The network is back once a plan-window reading of the stop's provider succeeds after
   it** (owner choice A): the reading already reaches the provider's API host, so no new host
   or traffic. While such a stop is open, a failed reading is retried at the refresh instead
-  of backing off. A provider whose windows are not read hands the session to the owner.
+  of backing off, and a backoff under way ends within a refresh. A provider whose windows are
+  not read hands the session to the owner, as does a second network stop within 30 minutes
+  of the last resume, so a session whose own path is broken while the daemon's works is not
+  resumed in a loop.
 - **One resume pass for both stops.** A `network-lost` turn is a row of
   `session_quota_stops` with `cause = 'network'`, claimed, dropped, ordered (coordinators
   first) and shown as a quota stop is. It never marks the account spent, so no relaunch

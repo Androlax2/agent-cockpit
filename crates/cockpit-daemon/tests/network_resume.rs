@@ -391,3 +391,57 @@ async fn a_failed_reading_is_retried_at_each_refresh_while_the_network_stopped_a
         "{waited:?}"
     );
 }
+
+fn millis_now() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_the_network_ended_during_a_long_backoff_is_read_for_within_a_refresh() {
+    let refresh = Duration::from_millis(500);
+    let home = Home::new();
+    let _daemon = start(&home, refresh).await;
+    let client = home.connect().await;
+    home.project(&client).await;
+    let (_, launch) = waiting_session(&home, &client, 0).await;
+    // After three failed readings the next one waits four refreshes.
+    let asked = common::once_logged(3, || FakeProvider::quota_asks(&quota_asks(&home)))
+        .await
+        .len();
+
+    report_as(&home, &launch, network_lost()).await;
+    let stopped_at = millis_now();
+
+    let asks =
+        common::once_logged(asked + 1, || FakeProvider::quota_asks(&quota_asks(&home))).await;
+    let waited = asks[asked].0.saturating_sub(stopped_at);
+    assert!(waited < 2 * refresh.as_millis(), "{waited} ms");
+}
+
+#[tokio::test]
+async fn a_turn_the_network_ends_again_soon_after_its_resume_goes_to_the_owner() {
+    let home = Home::new();
+    let _daemon = start(&home, Duration::from_secs(3600)).await;
+    let client = home.connect().await;
+    home.project(&client).await;
+    let (session, launch) = waiting_session(&home, &client, 0).await;
+    report_as(&home, &launch, network_lost()).await;
+    record_reading(&home).await;
+    common::once_logged(1, || messages(&home)).await;
+
+    report_as(&home, &launch, network_lost()).await;
+
+    let stop = stop_once(&client, &session.id, |stop| {
+        matches!(stop.status, QuotaStopStatusView::Dropped { .. })
+    })
+    .await;
+    let QuotaStopStatusView::Dropped { reason, .. } = stop.status else {
+        unreachable!()
+    };
+    assert!(reason.contains("again soon after"), "{reason}");
+    record_reading(&home).await;
+    common::still_logged(1, || messages(&home)).await;
+}

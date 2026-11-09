@@ -125,7 +125,7 @@ pub(crate) async fn resume_due(
                 is_coordinator_pending |= is_coordinator && resumed == Some(Resumed::Pending);
             }
             Err(error) => {
-                tracing::error!(session = %stop.session, error, "a quota stop's pass failed");
+                tracing::error!(session = %stop.session, cause = ?stop.cause, error, "a stop's pass failed");
             }
         }
     }
@@ -169,7 +169,7 @@ impl Pass<'_> {
                     .to_owned(),
             }),
             Step::Wait if stop.cause == StopCause::Network => {
-                if is_provider_read(stop, self.quotas, self.readings) {
+                if is_provider_read(stop, self.readings) {
                     Step::Wait
                 } else {
                     Step::HandToOwner(format!(
@@ -343,16 +343,10 @@ fn is_answered_since(stop: &QuotaStop, quotas: &[AccountQuota]) -> bool {
     })
 }
 
-/// Whether the daemon reads plan windows of `stop`'s provider, or has read some.
-fn is_provider_read(
-    stop: &QuotaStop,
-    quotas: &[AccountQuota],
-    readings: Option<&Readings>,
-) -> bool {
+/// Whether the daemon reads plan windows of `stop`'s provider. A reading recorded otherwise,
+/// such as one left from an earlier configuration, is never refreshed.
+fn is_provider_read(stop: &QuotaStop, readings: Option<&Readings>) -> bool {
     readings.is_some_and(|readings| readings.providers.contains(&stop.provider))
-        || quotas
-            .iter()
-            .any(|quota| quota.provider.as_str() == stop.provider)
 }
 
 /// The readings of the account `stop` ran on: its launch's, or the owner's own sign-in,
@@ -452,10 +446,10 @@ async fn resume(
             error @ (cockpit_sessions::Error::TypingUnconfirmed { .. }
             | cockpit_sessions::Error::DeliveryUnconfirmed { .. }),
         ) => {
-            tracing::warn!(session = %stop.session, %error, "a quota stop's continue message may not have arrived; not sent again");
+            tracing::warn!(session = %stop.session, cause = ?stop.cause, %error, "a stop's continue message may not have arrived; not sent again");
         }
         Err(error) => {
-            tracing::warn!(session = %stop.session, %error, "a quota stop's continue message was not sent; a later pass tries again");
+            tracing::warn!(session = %stop.session, cause = ?stop.cause, %error, "a stop's continue message was not sent; a later pass tries again");
             let write = database.write().await.map_err(|error| error.to_string())?;
             cockpit_sessions::release_quota_resume(&write, stop.id)
                 .await
@@ -507,7 +501,7 @@ async fn hand_to_owner(database: &Database, stop: &QuotaStop, reason: &str) -> R
         .await
         .map_err(|error| error.to_string())?;
     write.commit().await.map_err(|error| error.to_string())?;
-    tracing::warn!(session = %stop.session, reason, "a quota stop waits on the owner");
+    tracing::warn!(session = %stop.session, cause = ?stop.cause, reason, "a stop waits on the owner");
     Ok(())
 }
 
@@ -517,7 +511,7 @@ async fn write_drop(database: &Database, stop: &QuotaStop, reason: &str) -> Resu
         .await
         .map_err(|error| error.to_string())?;
     write.commit().await.map_err(|error| error.to_string())?;
-    tracing::info!(session = %stop.session, reason, "a quota stop was dropped");
+    tracing::info!(session = %stop.session, cause = ?stop.cause, reason, "a stop was dropped");
     Ok(())
 }
 

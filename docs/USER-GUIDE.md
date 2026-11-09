@@ -380,8 +380,10 @@ takes every `quota_refresh_minutes` (five by default); while such a session wait
 reading is retried at that interval instead of waiting longer each time, and no other host is
 asked. A session asleep by then is woken first, coordinators go first, and `torlek session
 show` prints `network lost: 2026-11-09 14:00:00 +00:00; resumes once its provider answers
-again`. The stop is dropped as a quota stop is; with no plan windows read for the provider, or
-still waiting five hours on, Torlek asks you to continue the session yourself. Codex waits for
+again`. The stop is dropped as a quota stop is. Torlek asks you to continue the session
+yourself when it reads no plan windows for the provider, when the stop still waits five hours
+on, and when the network ends the session's turn again within 30 minutes of its last resume:
+the provider then answers Torlek but not the agent. Codex waits for
 the network by itself and goes on; OpenCode names no lost network apart from other transport
 errors, so its turn stays failed.
 

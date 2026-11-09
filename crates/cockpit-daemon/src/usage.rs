@@ -110,7 +110,24 @@ async fn poll_one(
         let is_read = read_once(&database, &provider, &account, &polling).await;
         let is_awaited = !is_read && is_network_stopped(&database, provider.name()).await;
         wait = polling.wait_after(wait, is_read || is_awaited);
-        tokio::time::sleep(wait).await;
+        back_off(&database, provider.name(), wait, polling.refresh).await;
+    }
+}
+
+/// Sleeps `wait` in slices of `refresh`, and stops early once a turn the network ended on
+/// `provider` waits for a reading, so a stop recorded during a long backoff is read for
+/// within a refresh.
+async fn back_off(database: &Database, provider: &ProviderName, wait: Duration, refresh: Duration) {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        tokio::time::sleep(left.min(refresh)).await;
+        if tokio::time::Instant::now() < deadline && is_network_stopped(database, provider).await {
+            return;
+        }
     }
 }
 
