@@ -45,3 +45,24 @@ agent; agents never read the clipboard themselves.
 - **Rejected:** an image-only clipboard bridge any session can query (agents read the
   clipboard without the owner's action), and passing the display into sessions
   (`agents.desktop_session`, which gives the agent all clipboard text at any time).
+
+## Revisited 2026-11-09 (#1236)
+
+Decided by Theo, option B of the issue: on a default install the daemon starts at login,
+before the compositor, so no display was ever imported and CMD+V silently passed `C-v` on to
+a session that has no display either.
+
+- **No imported Wayland display fails the key,** in every case: the viewer shows `no Wayland
+  display imported: run torlek desktop-session import ...`, nothing is sent to the session.
+  This replaces "No PNG read ... no Wayland display imported: the daemon sends `C-v`" above;
+  an empty clipboard, text only and a missing `wl-paste` still pass the key on. Proof:
+  `crates/cockpit-daemon/tests/manager.rs`
+  `without_the_owners_wayland_display_the_paste_fails_naming_the_import`.
+- **`torlek daemon install` also writes `torlek[-NAME]-desktop-import.service`** (systemd
+  only), bound to `graphical-session.target` and part of the daemon's unit, running `torlek
+  desktop-session import`. A daemon restart restarts it, so the import the daemon forgets
+  (#307) is handed over again. The daemon still never reads the user manager's environment or
+  invents a value (decision 2026-11-01-303). A profile named `desktop-import` or ending in
+  `-desktop-import` is refused, as for `-notify`. Proof: `crates/cockpit-cli/tests/profiles.rs`.
+- **Rejected:** the daemon reading `systemctl --user show-environment` (option A) and keeping
+  the import manual (option C).

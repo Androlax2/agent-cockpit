@@ -1463,10 +1463,10 @@ async fn without_an_image_on_the_clipboard_the_key_goes_on_to_the_session_on_scr
     }
 }
 
-/// Without the owner's display the daemon cannot read the clipboard: the key goes on, as before
-/// #848, for an agent that reads it itself (`agents.desktop_session`); `torlek doctor` says why.
+/// Without the owner's display the daemon cannot read the clipboard, and passing C-v on left
+/// the owner with a key that did nothing (#1236): the viewer shows what to run instead.
 #[tokio::test(flavor = "multi_thread")]
-async fn without_the_owners_wayland_display_the_key_goes_on_to_the_session_on_screen() {
+async fn without_the_owners_wayland_display_the_paste_fails_naming_the_import() {
     let home = Home::new();
     let daemon = home.start_with_clipboard(Clipboard::Image(PNG), &[]).await;
     let client = Connection::open(daemon.socket_path(), GENEROUS)
@@ -1474,18 +1474,16 @@ async fn without_the_owners_wayland_display_the_key_goes_on_to_the_session_on_sc
         .unwrap();
     let started = shown_agent(&home, &client, DESKTOP_COLUMNS, "keys").await;
 
-    let reply = paste_image(&client).await.unwrap();
+    let error = refusal(paste_image(&client).await);
 
-    assert_eq!(
-        reply,
-        Reply::ClipboardImage {
-            session: started.id.clone(),
-            path: None,
-        }
+    assert_eq!(error.code, ErrorCode::Refused, "{error:?}");
+    assert!(
+        error.message.contains("no Wayland display imported")
+            && error.message.contains("torlek desktop-session import"),
+        "{}",
+        error.message
     );
-    eventually("Ctrl-V reaches the agent", || {
-        home.first_key() == Some(vec![0x16])
-    });
+    assert!(!agent_screen(&home, &started.id).contains(".png"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

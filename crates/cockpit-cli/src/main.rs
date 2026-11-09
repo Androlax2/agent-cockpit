@@ -30,6 +30,7 @@ mod check;
 mod coordination;
 mod daemon;
 mod daemon_install;
+mod desktop_import_unit;
 mod desktop_session;
 mod doctor;
 mod installations;

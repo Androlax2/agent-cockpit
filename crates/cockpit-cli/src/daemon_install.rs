@@ -15,6 +15,7 @@ use std::process::{Command, ExitCode};
 use cockpit_config::Profile;
 
 use crate::daemon::fail;
+use crate::desktop_import_unit;
 use crate::installations::{Legacy, ServiceManager, profile_of_unit};
 use crate::notifier_unit;
 
@@ -65,12 +66,11 @@ fn install() -> Result<ExitCode, String> {
     }
     let unit = unit_dir.join(manager.unit_file_name(profile));
     refuse_a_foreign_unit(&unit, profile)?;
-    let notifier = match manager {
-        ServiceManager::Systemd => Some(notifier_unit::Plan::new(
-            &unit_dir,
-            profile,
-            notify_autostart()?,
-        )?),
+    let graphical_units = match manager {
+        ServiceManager::Systemd => Some((
+            notifier_unit::Plan::new(&unit_dir, profile, notify_autostart()?)?,
+            desktop_import_unit::Plan::new(&unit_dir, profile)?,
+        )),
         // macOS has no graphical-session target to bind to (#568).
         ServiceManager::Launchd => None,
     };
@@ -91,8 +91,9 @@ fn install() -> Result<ExitCode, String> {
             service_manager("systemctl", &["--user", "enable", &unit_name])?;
             // `restart`, not `enable --now`: a reinstall must replace a running daemon.
             service_manager("systemctl", &["--user", "restart", &unit_name])?;
-            if let Some(notifier) = &notifier {
+            if let Some((notifier, desktop_import)) = &graphical_units {
                 notifier.apply(profile, &program)?;
+                desktop_import.apply(profile, &program)?;
             }
         }
         ServiceManager::Launchd => {

@@ -301,7 +301,11 @@ fn daemon_install_writes_the_profiles_unit_and_starts_it() {
              systemctl --user daemon-reload\n\
              systemctl --user enable torlek-dev-notify.service\n\
              systemctl --user is-active --quiet graphical-session.target\n\
-             systemctl --user restart torlek-dev-notify.service\n"
+             systemctl --user restart torlek-dev-notify.service\n\
+             systemctl --user daemon-reload\n\
+             systemctl --user enable torlek-dev-desktop-import.service\n\
+             systemctl --user is-active --quiet graphical-session.target\n\
+             systemctl --user restart --no-block torlek-dev-desktop-import.service\n"
         );
     }
     assert!(
@@ -821,6 +825,127 @@ fn doctor_names_each_state_of_the_notifier_and_the_command_that_fixes_it() {
         notifier_line(&home),
         "notifier torlek-dev-notify.service: running"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_install_writes_a_unit_that_imports_the_desktop_session_at_login_and_enables_it() {
+    let home = Home::new();
+
+    succeeded(&home.cockpit(&["daemon", "install"]));
+
+    let unit =
+        fs::read_to_string(home.unit_dir().join("torlek-dev-desktop-import.service")).unwrap();
+    assert!(
+        unit.contains("PartOf=graphical-session.target torlek-dev.service\n"),
+        "{unit}"
+    );
+    assert!(
+        unit.contains("After=graphical-session.target torlek-dev.service\n"),
+        "{unit}"
+    );
+    assert!(
+        unit.contains("WantedBy=graphical-session.target\n"),
+        "{unit}"
+    );
+    assert!(
+        unit.contains(&format!(
+            "ExecStart=\"{}\" --profile dev desktop-session import\n",
+            home.bin().join("torlek").display()
+        )),
+        "{unit}"
+    );
+    assert!(
+        unit.contains("Restart=on-failure\n") && unit.contains("StartLimitBurst=5\n"),
+        "a failed import is retried, but not forever: {unit}"
+    );
+    assert!(
+        !unit.contains("X-Torlek-Profile="),
+        "an import unit is not a daemon unit: {unit}"
+    );
+    let log = home.service_manager_log();
+    assert!(
+        log.contains("systemctl --user enable torlek-dev-desktop-import.service\n"),
+        "{log}"
+    );
+    assert!(
+        log.contains("systemctl --user restart --no-block torlek-dev-desktop-import.service\n"),
+        "{log}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_install_on_a_host_without_a_graphical_session_leaves_the_import_for_the_next_login() {
+    let home = Home::new();
+    fs::write(home.bin().join("systemctl"), HEADLESS_SERVICE_MANAGER).unwrap();
+
+    let printed = succeeded(&home.cockpit(&["daemon", "install"]));
+
+    assert!(
+        home.unit_dir()
+            .join("torlek-dev-desktop-import.service")
+            .is_file()
+    );
+    let log = home.service_manager_log();
+    assert!(!log.contains("restart --no-block"), "{log}");
+    assert!(
+        printed.contains("torlek-dev-desktop-import.service imports it at the next login"),
+        "{printed}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_notifier_opt_out_keeps_the_desktop_import_unit() {
+    let home = Home::new();
+    write_owner_config(&home, "[notify]\nautostart = false\n");
+
+    succeeded(&home.cockpit(&["daemon", "install"]));
+
+    assert!(
+        home.unit_dir()
+            .join("torlek-dev-desktop-import.service")
+            .is_file()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_install_again_replaces_its_own_desktop_import_unit() {
+    let home = Home::new();
+    succeeded(&home.cockpit(&["daemon", "install"]));
+
+    succeeded(&home.cockpit(&["daemon", "install"]));
+
+    assert!(
+        home.unit_dir()
+            .join("torlek-dev-desktop-import.service")
+            .is_file()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_install_refuses_a_desktop_import_unit_name_another_file_holds_and_writes_nothing() {
+    let home = Home::new();
+    fs::create_dir_all(home.unit_dir()).unwrap();
+    let other = "[Service]\nExecStart=/usr/bin/something-else\n";
+    let path = home.unit_dir().join("torlek-dev-desktop-import.service");
+    fs::write(&path, other).unwrap();
+
+    let output = home.cockpit(&["daemon", "install"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("torlek-dev-desktop-import.service exists"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), other);
+    assert!(!home.unit_of("torlek-dev").exists());
+    assert_eq!(home.service_manager_log(), "");
 }
 
 #[cfg(target_os = "linux")]

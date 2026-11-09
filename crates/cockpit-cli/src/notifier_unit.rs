@@ -229,7 +229,7 @@ fn unit_text(profile: &Profile, program: &Path) -> Result<String, String> {
     ))
 }
 
-fn is_active(program: &str, arguments: &[&str]) -> bool {
+pub(crate) fn is_active(program: &str, arguments: &[&str]) -> bool {
     Command::new(program)
         .args(arguments)
         .status()
