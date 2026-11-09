@@ -887,7 +887,8 @@ impl Sessions {
     }
 
     /// Reboot restore, run once at daemon start after the processes reconciled and before
-    /// requests are accepted. A session that was active and whose agent is gone is reopened
+    /// new work is accepted. Startup reports and context reads must already be served.
+    /// A session that was active and whose agent is gone is reopened
     /// with its conversation, without a key press; a reopen that fails leaves the session
     /// `failed` with the reason and is not retried. Stops under way are finished. Only a
     /// state-database error stops the start: one finishing a stop (#251), or one that kept
@@ -912,7 +913,7 @@ impl Sessions {
     }
 
     /// Terminates the running agents of the sessions left `stopping`, all at once: an agent
-    /// that ignores SIGTERM waits out the stop's grace, and nothing is accepted until every
+    /// that ignores SIGTERM waits out the stop's grace, and no new work is accepted until every
     /// stop is finished (#254). Only the waits overlap; the sessions are then restored one
     /// by one, so their terminals never race on the tmux server, and a stop this pass could
     /// not confirm is retried, and reported, there.
@@ -959,7 +960,7 @@ impl Sessions {
 
     async fn restore_session(&self, session: &Session) -> Result<Restored, Error> {
         let id = session.id.clone();
-        // Uncontended: restore runs before the daemon accepts requests. A relaunch needs it.
+        // Uncontended: restore runs before lifecycle requests are accepted. A relaunch needs it.
         let operation = self.lock(&id).await;
         let SessionState::Stopping { to } = session.state else {
             return match self.restore_one(&operation, session).await {

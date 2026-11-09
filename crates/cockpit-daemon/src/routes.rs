@@ -85,6 +85,7 @@ pub trait Handler: Send + Sync + 'static {
 
 /// The daemon's commands, over the state database the daemon opened.
 pub struct Routes {
+    restoring: Arc<std::sync::atomic::AtomicBool>,
     storage: crate::storage::Context,
     database: Arc<cockpit_turso::Database>,
     /// What one change-feed subscriber may have waiting to be written.
@@ -139,6 +140,7 @@ impl Routes {
             early_answer: readiness::Context::early_answer(),
         };
         Routes {
+            restoring: capabilities.restoring,
             storage: capabilities.storage,
             coordination: coordination::Context {
                 database: Arc::clone(&capabilities.database),
@@ -234,6 +236,7 @@ impl Handler for Routes {
             ) => Route::Run {
                 class: WorkClass::Bulk,
                 job: Box::pin(agent::report(
+                    Arc::clone(&self.restoring),
                     Arc::clone(&self.database),
                     Arc::clone(&self.sessions),
                     connector,

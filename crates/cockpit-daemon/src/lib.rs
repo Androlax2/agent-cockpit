@@ -174,6 +174,8 @@ fn owner_session_settings(
 /// The capabilities a started daemon serves, for the [`Handler`] its caller builds.
 #[derive(Clone)]
 pub struct Capabilities {
+    /// Suppresses report-triggered relaunches until restore has finished.
+    pub(crate) restoring: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) storage: storage::Context,
     pub database: Arc<cockpit_turso::Database>,
     pub git: cockpit_projects::Git,
@@ -230,7 +232,7 @@ pub struct Daemon {
     socket_path: PathBuf,
     agent_socket_path: PathBuf,
     accepting: tokio::task::JoinHandle<()>,
-    accepting_agents: tokio::task::JoinHandle<()>,
+    accepting_agents: supervisor::AbortOnDrop,
     ticking: tokio::task::JoinHandle<()>,
     publishing: tokio::task::JoinHandle<()>,
     recording_turns: tokio::task::JoinHandle<()>,
@@ -258,8 +260,8 @@ pub struct Daemon {
 impl Instance {
     /// Runs the restart contract, then serves the handler `routes` builds over the
     /// capabilities: open the database (durable state loads with it), reconcile executions,
-    /// restore the sessions that were active, and only then bind and accept (report 03).
-    /// Nothing is dispatched before reconciliation and restore have finished.
+    /// serve agent startup reports while restoring active sessions, then accept owner
+    /// commands and new dispatch (report 03).
     ///
     /// Two sockets share the handler and the lanes: the host-only socket, whose peers are
     /// the owner, and the agent socket the sandboxes reach, whose peers are only ever agents
@@ -466,9 +468,6 @@ impl Instance {
             session_sockets::connect,
         ));
         sessions.import_desktop_environment(wiring.desktop_environment);
-        sessions::restore(&sessions)
-            .await
-            .map_err(StartError::Restore)?;
         let bug_report_facts = Arc::new(bug_reports::facts(
             sandbox.platform().name(),
             &tmux_readiness,
@@ -479,16 +478,6 @@ impl Instance {
         let agent_socket_path = options.agent_socket_path();
         let listener = Arc::new(server::bind(&socket_path)?);
         let agent_listener = Arc::new(server::bind(&agent_socket_path)?);
-        // Marked after the last step that can fail, so a refused start is not taken for a
-        // crash at the next one: from here on only a `Daemon`, whose drop clears it, exists.
-        let crashed = bug_reports::mark_running(&options.state_dir).map_err(StartError::io(
-            "mark the daemon running in",
-            &options.state_dir,
-        ))?;
-        if crashed {
-            tracing::warn!("the last run did not stop cleanly; opening a bug report draft");
-            faults.report(bug_reports::Fault::Crash);
-        }
         let limits = options.limits;
         let messages_queued = Arc::new(tokio::sync::Notify::new());
         let queue_changed = Arc::new(tokio::sync::Notify::new());
@@ -503,11 +492,6 @@ impl Instance {
             // Nor starts a session.
             launching: Arc::default(),
         };
-        let delivering = tokio::spawn(supervisor::supervise(
-            "coordinator-messages",
-            faults.clone(),
-            move || coordination::deliver_forever(delivered.clone()),
-        ));
         let detected_readiness = readiness::Context {
             database: Arc::clone(&database),
             sessions: Arc::clone(&sessions),
@@ -520,7 +504,9 @@ impl Instance {
             manager: Arc::clone(&manager),
             early_answer: readiness::Context::early_answer(),
         };
+        let restoring = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let shared = Arc::new(server::Shared {
+            restoring: Arc::clone(&restoring),
             owner_uid: self.owner_uid,
             limits,
             lanes: lanes::Lanes::new(
@@ -531,6 +517,7 @@ impl Instance {
                 faults.clone(),
             ),
             handler: routes(Capabilities {
+                restoring,
                 storage: storage.clone(),
                 database: Arc::clone(&database),
                 git: wiring.git,
@@ -559,6 +546,34 @@ impl Instance {
                 economy: wiring.economy.clone(),
             }),
         });
+        // Cancel the early listener if restore fails or startup is cancelled.
+        let accepting_agents = supervisor::AbortOnDrop(accept(
+            &agent_listener,
+            &shared,
+            server::Socket::Agent,
+            &faults,
+        ));
+        sessions::restore(&sessions)
+            .await
+            .map_err(StartError::Restore)?;
+        // Marked after the last step that can fail, so a refused start is not taken for a
+        // crash at the next one: from here on only a `Daemon`, whose drop clears it, exists.
+        let crashed = bug_reports::mark_running(&options.state_dir).map_err(StartError::io(
+            "mark the daemon running in",
+            &options.state_dir,
+        ))?;
+        if crashed {
+            tracing::warn!("the last run did not stop cleanly; opening a bug report draft");
+            faults.report(bug_reports::Fault::Crash);
+        }
+        shared
+            .restoring
+            .store(false, std::sync::atomic::Ordering::Release);
+        let delivering = tokio::spawn(supervisor::supervise(
+            "coordinator-messages",
+            faults.clone(),
+            move || coordination::deliver_forever(delivered.clone()),
+        ));
         let detected = bug_reports::Context {
             database: Arc::clone(&database),
             state_dir: options.state_dir.clone(),
@@ -786,7 +801,6 @@ impl Instance {
                 },
             ))
         });
-        let accepting_agents = accept(&agent_listener, &shared, server::Socket::Agent, &faults);
         tracing::info!(
             socket = %socket_path.display(),
             agent_socket = %agent_socket_path.display(),
@@ -920,7 +934,7 @@ impl Daemon {
     pub async fn wait(mut self) {
         tokio::select! {
             _ = &mut self.accepting => {}
-            _ = &mut self.accepting_agents => {}
+            _ = &mut self.accepting_agents.0 => {}
         }
     }
 }
@@ -930,7 +944,7 @@ impl Drop for Daemon {
         self.prune_stop
             .store(true, std::sync::atomic::Ordering::Release);
         self.accepting.abort();
-        self.accepting_agents.abort();
+        self.accepting_agents.0.abort();
         self.ticking.abort();
         self.publishing.abort();
         self.recording_turns.abort();
