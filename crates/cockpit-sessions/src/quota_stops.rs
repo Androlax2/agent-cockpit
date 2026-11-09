@@ -5,6 +5,9 @@
 //! both; it is dropped when the agent works again before that, when it stops again, when its
 //! session ends, or when nothing can tell the daemon its reset, or its move to another account
 //! is refused, and the owner is asked instead.
+//!
+//! A turn the network ended (#718) is recorded as a stop too, with its own [`StopCause`]: the
+//! same pass resumes it once its provider answers again.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,6 +24,7 @@ use crate::{Error, SessionId};
 pub struct QuotaStop {
     pub id: i64,
     pub session: SessionId,
+    pub cause: StopCause,
     /// The launch whose turn the limit stopped.
     pub launch: i64,
     pub provider: String,
@@ -41,6 +45,34 @@ pub struct QuotaStop {
     pub resolution: Option<QuotaStopResolution>,
 }
 
+/// What ended the stopped turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopCause {
+    /// A plan's usage limit.
+    Quota,
+    /// The network: the harness could not reach its provider (#718).
+    Network,
+}
+
+impl StopCause {
+    fn as_str(self) -> &'static str {
+        match self {
+            StopCause::Quota => "quota",
+            StopCause::Network => "network",
+        }
+    }
+
+    fn parse(stored: &str) -> Result<StopCause, Error> {
+        match stored {
+            "quota" => Ok(StopCause::Quota),
+            "network" => Ok(StopCause::Network),
+            other => Err(Error::InvalidStoredRow {
+                reason: format!("unknown stop cause {other:?}"),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuotaStopResolution {
     /// The daemon claimed the stop's one continue message at `at`.
@@ -50,32 +82,62 @@ pub enum QuotaStopResolution {
 }
 
 const SELECT_STOP: &str = "SELECT id, session_id, launch_id, provider, account, stopped_at,
-    confirmed_at, resets_at, switched_at, resumed_at, dropped_at, dropped_reason, inferred_from
-    FROM session_quota_stops AS q";
+    confirmed_at, resets_at, switched_at, resumed_at, dropped_at, dropped_reason, inferred_from,
+    cause FROM session_quota_stops AS q";
 
 const IS_OPEN: &str = "resumed_at IS NULL AND dropped_at IS NULL";
 
-/// Records that `launch`'s turn quota-stopped now, `inferred_from` failed turns when the
+/// Records that `cause` stopped `launch`'s turn now, `inferred_from` failed turns when the
 /// agent did not say so, dropping an earlier stop of the session still open: only the latest
 /// stop is resumed.
 pub(crate) async fn record(
     write: &WriteTransaction<'_>,
     session: &str,
     launch: i64,
+    cause: StopCause,
     inferred_from: Option<&str>,
 ) -> Result<(), Error> {
     let at = now();
-    drop_open(write, session, "the agent quota-stopped again", at).await?;
+    drop_open(write, session, "another turn of the agent stopped", at).await?;
     write
         .execute(
             "INSERT INTO session_quota_stops
-                 (session_id, launch_id, provider, account, stopped_at, inferred_from)
-             SELECT s.id, l.id, s.provider, l.account, ?3, ?4 FROM session_launches l
+                 (session_id, launch_id, provider, account, stopped_at, inferred_from, cause)
+             SELECT s.id, l.id, s.provider, l.account, ?3, ?4, ?5 FROM session_launches l
              JOIN sessions s ON s.id = l.session_id
              WHERE s.id = ?1 AND l.id = ?2",
-            (session, launch, at, inferred_from),
+            (session, launch, at, inferred_from, cause.as_str()),
         )
         .await?;
+    Ok(())
+}
+
+/// How soon after a network stop's resume another one goes to the owner instead (#718): the
+/// provider answers the daemon's readings but not the agent, so resuming again would loop.
+pub const NETWORK_STOP_REPEAT_SECONDS: i64 = 30 * 60;
+
+/// Records that the network ended `launch`'s turn now, as [`record`] does. A second one within
+/// [`NETWORK_STOP_REPEAT_SECONDS`] of the session's last network resume goes to the owner.
+pub(crate) async fn record_network(
+    write: &WriteTransaction<'_>,
+    session: &str,
+    launch: i64,
+) -> Result<(), Error> {
+    let mut rows = write
+        .query(
+            "SELECT 1 FROM session_quota_stops
+             WHERE session_id = ?1 AND cause = 'network' AND resumed_at >= ?2 LIMIT 1",
+            (session, now() - NETWORK_STOP_REPEAT_SECONDS),
+        )
+        .await?;
+    let is_repeat = rows.next().await?.is_some();
+    drop(rows);
+    record(write, session, launch, StopCause::Network, None).await?;
+    if is_repeat {
+        let reason = "the network ended its turn again soon after Torlek resumed it, though its \
+                      provider answers Torlek: continue the session yourself";
+        hand_open_to_owner(write, &SessionId::parse(session)?, reason).await?;
+    }
     Ok(())
 }
 
@@ -250,6 +312,20 @@ pub async fn open_quota_stops(connection: &Connection) -> Result<Vec<QuotaStop>,
     Ok(stops)
 }
 
+/// Whether a turn the network ended on `provider` still waits for its resume.
+pub async fn is_network_stopped(connection: &Connection, provider: &str) -> Result<bool, Error> {
+    let mut rows = connection
+        .query(
+            &format!(
+                "SELECT 1 FROM session_quota_stops
+                 WHERE provider = ?1 AND cause = 'network' AND {IS_OPEN} LIMIT 1"
+            ),
+            [provider],
+        )
+        .await?;
+    Ok(rows.next().await?.is_some())
+}
+
 /// Each session's latest stop, open or resolved, for its card.
 pub async fn latest_quota_stops(connection: &Connection) -> Result<Vec<QuotaStop>, Error> {
     let mut rows = connection
@@ -379,6 +455,7 @@ fn stop_from(row: &Row) -> Result<QuotaStop, Error> {
     Ok(QuotaStop {
         id: row.get(0)?,
         session: SessionId::parse(&session)?,
+        cause: StopCause::parse(&row.get::<String>(13)?)?,
         launch: row.get(2)?,
         provider: row.get(3)?,
         account: row.get(4)?,

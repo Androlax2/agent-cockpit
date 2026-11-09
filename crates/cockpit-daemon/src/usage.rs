@@ -1,7 +1,9 @@
 //! Reads each provider's plan windows at the owner's interval (#58) and records them, or why
 //! they could not be read, through `cockpit-usage`. A provider whose reading fails waits
 //! twice as long as before, up to an hour, so a refused sign-in or a rate limit is not asked
-//! again at every refresh. The alerts a reading fires are logged and put on the change feed,
+//! again at every refresh, except while a turn the network ended on the provider waits for a
+//! reading to resume it (#718): its readings keep the refresh, so the session resumes soon
+//! after the network is back. The alerts a reading fires are logged and put on the change feed,
 //! in the reading's own transaction, as one `quota-alert` entity per window: `torlek-notify`
 //! tells the owner each new state. A reading that shows the window below every threshold
 //! retracts it. `usage-quota` answers the recorded windows to the owner,
@@ -60,8 +62,8 @@ impl QuotaPolling {
         }
     }
 
-    fn wait_after(&self, last_wait: Duration, is_read: bool) -> Duration {
-        if is_read {
+    fn wait_after(&self, last_wait: Duration, keeps_refresh: bool) -> Duration {
+        if keeps_refresh {
             return self.refresh;
         }
         (last_wait * 2).min(LONGEST_FAILURE_WAIT.max(self.refresh))
@@ -106,9 +108,42 @@ async fn poll_one(
     let mut wait = polling.refresh;
     loop {
         let is_read = read_once(&database, &provider, &account, &polling).await;
-        wait = polling.wait_after(wait, is_read);
-        tokio::time::sleep(wait).await;
+        let is_awaited = !is_read && is_network_stopped(&database, provider.name()).await;
+        wait = polling.wait_after(wait, is_read || is_awaited);
+        back_off(&database, provider.name(), wait, polling.refresh).await;
     }
+}
+
+/// Sleeps `wait` in slices of `refresh`, and stops early once a turn the network ended on
+/// `provider` waits for a reading, so a stop recorded during a long backoff is read for
+/// within a refresh.
+async fn back_off(database: &Database, provider: &ProviderName, wait: Duration, refresh: Duration) {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        tokio::time::sleep(left.min(refresh)).await;
+        if tokio::time::Instant::now() < deadline && is_network_stopped(database, provider).await {
+            return;
+        }
+    }
+}
+
+/// Whether a turn the network ended on `provider` waits for a reading to resume it. A check
+/// that fails is logged, and the readings back off as usual.
+async fn is_network_stopped(database: &Database, provider: &ProviderName) -> bool {
+    let checked = match database.read().await {
+        Ok(read) => cockpit_sessions::is_network_stopped(&read, provider.as_str())
+            .await
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    checked.unwrap_or_else(|error| {
+        tracing::error!(%provider, error, "checking for turns the network ended failed");
+        false
+    })
 }
 
 /// Whether `provider` gave a reading.

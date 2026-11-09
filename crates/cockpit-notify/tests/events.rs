@@ -425,12 +425,6 @@ fn each_turn_outcome_is_its_own_event() {
         (TurnOutcome::Completed, Event::Turn),
         (TurnOutcome::Failed { reason: None }, Event::Failure),
         (TurnOutcome::QuotaStopped, Event::Quota),
-        (
-            TurnOutcome::NetworkLost {
-                reason: "connection_failed".to_owned(),
-            },
-            Event::Failure,
-        ),
     ] {
         let mut notifier = running();
 
@@ -440,9 +434,10 @@ fn each_turn_outcome_is_its_own_event() {
     }
 }
 
-/// #718: a turn the network ended says so, with the harness's own word for it.
+/// #718: Torlek resumes a turn the network ended by itself, and asks the owner only when it
+/// cannot, as a question.
 #[test]
-fn a_turn_the_network_ended_names_the_lost_network() {
+fn a_turn_the_network_ended_tells_nothing() {
     let mut notifier = running();
 
     let told = set_reports(
@@ -452,10 +447,7 @@ fn a_turn_the_network_ended_names_the_lost_network() {
         })],
     );
 
-    assert_eq!(
-        told[0].detail.as_deref(),
-        Some("the network was lost (connection_failed)")
-    );
+    assert_eq!(told, []);
 }
 
 #[test]

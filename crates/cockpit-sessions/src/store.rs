@@ -395,6 +395,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             DROP TABLE session_reports;
             ALTER TABLE session_reports_with_network_lost RENAME TO session_reports;",
         },
+        // #718: a turn the network ended is resumed by the quota stops' pass once the
+        // provider answers again.
+        Migration {
+            version: 24,
+            sql: "ALTER TABLE session_quota_stops ADD COLUMN cause TEXT NOT NULL DEFAULT 'quota'
+                CHECK (cause IN ('quota', 'network'));",
+        },
     ],
 };
 

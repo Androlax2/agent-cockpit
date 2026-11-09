@@ -440,6 +440,8 @@ pub enum WakeCause {
     Phone,
     /// Its plan's usage window refilled after a quota stop (#158).
     QuotaReset,
+    /// Its provider answered again after the network ended its turn (#718).
+    NetworkBack,
 }
 
 impl WakeCause {
@@ -451,6 +453,7 @@ impl WakeCause {
             WakeCause::Todo => "woken by a todo",
             WakeCause::Phone => "woken from the phone",
             WakeCause::QuotaReset => "woken at its plan's reset",
+            WakeCause::NetworkBack => "woken once its network was back",
         }
     }
 }

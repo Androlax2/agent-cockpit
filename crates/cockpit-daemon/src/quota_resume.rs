@@ -11,13 +11,18 @@
 //! due its resume is still starting or busy, though not while it asks the owner something.
 //! An asleep session is woken, then resumed once its agent waits at its prompt. Each resume
 //! is claimed in the database before the message is sent, so none is sent twice.
+//!
+//! A turn the network ended (#718) is a stop of its own cause, resumed the same way once a
+//! plan-window reading of its provider succeeds after it: the reading reaches the provider's
+//! API host, so the network is back (owner decision 2026-11-09, no other probe). A provider
+//! whose windows the daemon does not read cannot tell, and goes to the owner at once.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_sessions::{
-    Addressed, AgentState, QuotaStop, Session, SessionState, Sessions, WakeCause,
+    Addressed, AgentState, QuotaStop, Session, SessionState, Sessions, StopCause, WakeCause,
 };
 use cockpit_turso::Database;
 use cockpit_usage::{AccountQuota, QuotaPolicy, WindowState};
@@ -25,6 +30,9 @@ use cockpit_usage::{AccountQuota, QuotaPolicy, WindowState};
 /// The one message a resumed session gets.
 pub(crate) const CONTINUE: &str = "Torlek: the plan usage limit that stopped your last turn has \
      reset. Continue where you stopped.";
+/// The one message a session the network stopped gets.
+pub(crate) const NETWORK_CONTINUE: &str = "Torlek: the network connection that ended your last \
+     turn is back. Continue where you stopped.";
 
 /// The plan-window readings this daemon takes: the policy that judges them, and the providers
 /// it reads the owner's own sign-in of (#58).
@@ -117,7 +125,7 @@ pub(crate) async fn resume_due(
                 is_coordinator_pending |= is_coordinator && resumed == Some(Resumed::Pending);
             }
             Err(error) => {
-                tracing::error!(session = %stop.session, error, "a quota stop's pass failed");
+                tracing::error!(session = %stop.session, cause = ?stop.cause, error, "a stop's pass failed");
             }
         }
     }
@@ -151,11 +159,27 @@ impl Pass<'_> {
             Err(error) => return Err(error.to_string()),
         };
         let step = match judge(stop, &session, self.quotas) {
-            Step::Wait if is_overdue(stop, self.now) => Step::HandToOwner(
-                "quota-stopped, and no plan-window reading or account move resumed it in time: \
-                 continue the session yourself"
+            Step::Wait if is_overdue(stop, self.now) => Step::HandToOwner(match stop.cause {
+                StopCause::Quota => "quota-stopped, and no plan-window reading or account move \
+                                     resumed it in time: continue the session yourself"
                     .to_owned(),
-            ),
+                StopCause::Network => "the network ended its last turn, and no plan-window \
+                                       reading reached its provider in time: continue the \
+                                       session yourself"
+                    .to_owned(),
+            }),
+            Step::Wait if stop.cause == StopCause::Network => {
+                if is_provider_read(stop, self.readings) {
+                    Step::Wait
+                } else {
+                    Step::HandToOwner(format!(
+                        "the network ended its last turn, and Torlek reads no plan windows of \
+                         {}, so it cannot tell when the network is back: continue the session \
+                         yourself",
+                        stop.provider
+                    ))
+                }
+            }
             Step::Wait if is_unread(stop, self.quotas, self.readings) => {
                 let account = stop
                     .account
@@ -228,6 +252,13 @@ fn judge(stop: &QuotaStop, session: &Session, quotas: &[AccountQuota]) -> Step {
         SessionState::Ended => return Step::Drop("the session ended".to_owned()),
         SessionState::Failed => return Step::Drop("the session failed".to_owned()),
         _ => {}
+    }
+    if stop.cause == StopCause::Network {
+        return if is_answered_since(stop, quotas) {
+            Step::Due
+        } else {
+            Step::Wait
+        };
     }
     if stop.switched_at.is_some() {
         return Step::Due;
@@ -302,6 +333,22 @@ fn is_unread(stop: &QuotaStop, quotas: &[AccountQuota], readings: Option<&Readin
     stop.switched_at.is_none() && !is_read && quota_of(stop, quotas).is_none()
 }
 
+/// Whether a reading of `stop`'s provider, on any account, succeeded after the stop.
+fn is_answered_since(stop: &QuotaStop, quotas: &[AccountQuota]) -> bool {
+    quotas.iter().any(|quota| {
+        quota.provider.as_str() == stop.provider
+            && quota
+                .observed_at
+                .is_some_and(|observed_at| observed_at > stop.stopped_at)
+    })
+}
+
+/// Whether the daemon reads plan windows of `stop`'s provider. A reading recorded otherwise,
+/// such as one left from an earlier configuration, is never refreshed.
+fn is_provider_read(stop: &QuotaStop, readings: Option<&Readings>) -> bool {
+    readings.is_some_and(|readings| readings.providers.contains(&stop.provider))
+}
+
 /// The readings of the account `stop` ran on: its launch's, or the owner's own sign-in,
 /// which the daemon reads as `default` (#58).
 fn quota_of<'quotas>(
@@ -338,18 +385,23 @@ async fn resume(
 ) -> Result<Resumed, String> {
     match session.state {
         SessionState::Asleep => {
-            match sessions
-                .ensure_awake(&stop.session, WakeCause::QuotaReset)
-                .await
-            {
+            let cause = match stop.cause {
+                StopCause::Quota => WakeCause::QuotaReset,
+                StopCause::Network => WakeCause::NetworkBack,
+            };
+            match sessions.ensure_awake(&stop.session, cause).await {
                 Ok(_) => {
-                    tracing::info!(session = %stop.session, "woke a session at its plan's reset")
+                    tracing::info!(session = %stop.session, ?cause, "woke a stopped session")
                 }
                 Err(cockpit_sessions::Error::SessionBusy { .. }) => {}
                 Err(error) => {
+                    let resumable = match stop.cause {
+                        StopCause::Quota => "its plan's limit reset",
+                        StopCause::Network => "the network is back",
+                    };
                     let reason = format!(
-                        "its plan's limit reset, but waking it failed: {error}; continue the \
-                         session yourself"
+                        "{resumable}, but waking it failed: {error}; continue the session \
+                         yourself"
                     );
                     hand_to_owner(database, stop, &reason).await?;
                     return Ok(Resumed::Settled);
@@ -373,15 +425,20 @@ async fn resume(
     if !is_claimed {
         return Ok(Resumed::Settled);
     }
+    let message = match stop.cause {
+        StopCause::Quota => CONTINUE,
+        StopCause::Network => NETWORK_CONTINUE,
+    };
     match sessions
-        .submit(&stop.session, CONTINUE, Addressed::Work)
+        .submit(&stop.session, message, Addressed::Work)
         .await
     {
         Ok(()) => {
             tracing::info!(
                 session = %stop.session,
+                cause = ?stop.cause,
                 switched = stop.switched_at.is_some(),
-                "resumed a quota-stopped session"
+                "resumed a stopped session"
             );
         }
         // The message may have reached the agent: sending it again could make two.
@@ -389,10 +446,10 @@ async fn resume(
             error @ (cockpit_sessions::Error::TypingUnconfirmed { .. }
             | cockpit_sessions::Error::DeliveryUnconfirmed { .. }),
         ) => {
-            tracing::warn!(session = %stop.session, %error, "a quota stop's continue message may not have arrived; not sent again");
+            tracing::warn!(session = %stop.session, cause = ?stop.cause, %error, "a stop's continue message may not have arrived; not sent again");
         }
         Err(error) => {
-            tracing::warn!(session = %stop.session, %error, "a quota stop's continue message was not sent; a later pass tries again");
+            tracing::warn!(session = %stop.session, cause = ?stop.cause, %error, "a stop's continue message was not sent; a later pass tries again");
             let write = database.write().await.map_err(|error| error.to_string())?;
             cockpit_sessions::release_quota_resume(&write, stop.id)
                 .await
@@ -444,7 +501,7 @@ async fn hand_to_owner(database: &Database, stop: &QuotaStop, reason: &str) -> R
         .await
         .map_err(|error| error.to_string())?;
     write.commit().await.map_err(|error| error.to_string())?;
-    tracing::warn!(session = %stop.session, reason, "a quota stop waits on the owner");
+    tracing::warn!(session = %stop.session, cause = ?stop.cause, reason, "a stop waits on the owner");
     Ok(())
 }
 
@@ -454,7 +511,7 @@ async fn write_drop(database: &Database, stop: &QuotaStop, reason: &str) -> Resu
         .await
         .map_err(|error| error.to_string())?;
     write.commit().await.map_err(|error| error.to_string())?;
-    tracing::info!(session = %stop.session, reason, "a quota stop was dropped");
+    tracing::info!(session = %stop.session, cause = ?stop.cause, reason, "a stop was dropped");
     Ok(())
 }
 
@@ -466,6 +523,7 @@ mod tests {
         QuotaStop {
             id: 1,
             session: cockpit_sessions::SessionId::parse("s0123456789ab").unwrap(),
+            cause: StopCause::Quota,
             launch: 1,
             provider: "fake".to_owned(),
             account: None,

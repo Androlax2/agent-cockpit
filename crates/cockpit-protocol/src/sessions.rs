@@ -72,9 +72,13 @@ pub struct SessionView {
     pub quota_stop: Option<Box<QuotaStopView>>,
 }
 
-/// A turn a plan's usage limit stopped, and its one resume (#158).
+/// A turn a plan's usage limit stopped (#158), or the network ended (#718), and its one
+/// resume.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuotaStopView {
+    /// What ended the turn; a daemon from before #718 sends none, and stops only for quota.
+    #[serde(default)]
+    pub cause: QuotaStopCauseView,
     /// Seconds since the Unix epoch.
     pub stopped_at: i64,
     /// The account it stopped on; `None` for the owner's own sign-in.
@@ -88,6 +92,16 @@ pub struct QuotaStopView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inferred_from: Option<String>,
     pub status: QuotaStopStatusView,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum QuotaStopCauseView {
+    /// A plan's usage limit; it resumes after the plan's reset, or on another account.
+    #[default]
+    Quota,
+    /// The network; it resumes once a plan-window reading of its provider succeeds again.
+    Network,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

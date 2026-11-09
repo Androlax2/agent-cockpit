@@ -7,13 +7,13 @@ use std::time::Duration;
 
 use cockpit_protocol::{
     AgentExitView, AppliedSettingView, Command, DESKTOP_SESSION_VARIABLES, ErrorCode,
-    ExitStatusView, LaunchKindView, LaunchView, Outcome, ProtocolError, QuotaStopStatusView,
-    QuotaStopView, Reply, SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView,
-    SessionFailure, SessionStateView, SessionView, StopTargetView,
+    ExitStatusView, LaunchKindView, LaunchView, Outcome, ProtocolError, QuotaStopCauseView,
+    QuotaStopStatusView, QuotaStopView, Reply, SandboxEnforcementView, SandboxEvidenceView,
+    SandboxRuleView, SessionFailure, SessionStateView, SessionView, StopTargetView,
 };
 use cockpit_sessions::{
     DesktopSession, Error, ExitStatus, LaunchKind, QuotaStopResolution, Restored, Session,
-    SessionId, SessionState, Sessions, StartRequest, StopTarget, WakeCause,
+    SessionId, SessionState, Sessions, StartRequest, StopCause, StopTarget, WakeCause,
 };
 
 use cockpit_authorization::SessionId as TaskSession;
@@ -712,6 +712,10 @@ fn session_view(
 
 fn quota_stop_view(stop: &cockpit_sessions::QuotaStop) -> QuotaStopView {
     QuotaStopView {
+        cause: match stop.cause {
+            StopCause::Quota => QuotaStopCauseView::Quota,
+            StopCause::Network => QuotaStopCauseView::Network,
+        },
         stopped_at: stop.stopped_at,
         account: stop.account.clone(),
         resets_at: stop.resets_at,

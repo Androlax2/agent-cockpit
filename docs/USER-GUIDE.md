@@ -372,6 +372,21 @@ sign-in, inferred from 3 `rate_limit` failed turns within 30 minutes; …``, and
 logs it. Codex names a spent plan itself. OpenCode reports every provider error as `APIError`, so
 Torlek infers no quota stop from it.
 
+A Claude Code turn the network ended, after Claude Code's own retries, is reported as
+`network-lost`, not as a failure. Torlek sends that session one message once a plan-window
+reading of the provider succeeds after the turn: "Torlek: the network connection that ended
+your last turn is back. Continue where you stopped." The reading is the one Torlek already
+takes every `quota_refresh_minutes` (five by default); while such a session waits, a failed
+reading is retried at that interval instead of waiting longer each time, and no other host is
+asked. A session asleep by then is woken first, coordinators go first, and `torlek session
+show` prints `network lost: 2026-11-09 14:00:00 +00:00; resumes once its provider answers
+again`. The stop is dropped as a quota stop is. Torlek asks you to continue the session
+yourself when it reads no plan windows for the provider, when the stop still waits five hours
+on, and when the network ends the session's turn again within 30 minutes of its last resume:
+the provider then answers Torlek but not the agent. Codex waits for
+the network by itself and goes on; OpenCode names no lost network apart from other transport
+errors, so its turn stays failed.
+
 Each sandboxed session has its own home, which starts empty and goes when the session ends.
 For a project in `projects.trusted`, and its parallel clones, Torlek records the folder trust in
 that home's Claude configuration before the agent starts, so Claude does not ask again; a project

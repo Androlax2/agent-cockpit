@@ -282,11 +282,7 @@ impl Board {
         let outcome = report.and_then(|report| report.outcome.as_ref());
         let mut raised = Vec::new();
         let exited_by_itself = session.state.is_over() && session.exit.is_some();
-        // A turn the network ended rings too: nothing resumes it yet (#718).
-        let turn_failed = matches!(
-            outcome,
-            Some(TurnOutcome::Failed { .. } | TurnOutcome::NetworkLost { .. })
-        );
+        let turn_failed = matches!(outcome, Some(TurnOutcome::Failed { .. }));
         if session.state == SessionStateView::Failed || exited_by_itself || turn_failed {
             raised.push(raise(Event::Failure, Cause::State));
         }
@@ -415,9 +411,6 @@ impl Board {
             Cause::State if raised.event == Event::Failure => {
                 let turn_reason = report.and_then(|report| match &report.outcome {
                     Some(TurnOutcome::Failed { reason }) => reason.clone(),
-                    Some(TurnOutcome::NetworkLost { reason }) => {
-                        Some(format!("the network was lost ({reason})"))
-                    }
                     _ => None,
                 });
                 self.sessions
