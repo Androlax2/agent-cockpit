@@ -1478,7 +1478,7 @@ impl Sessions {
                 }
             }
             Err(error) => {
-                tracing::debug!(session = %session.id, %error, "the terminal could not be read")
+                tracing::warn!(session = %session.id, %error, "the terminal could not be read")
             }
         }
         let write = self.database.write().await?;
