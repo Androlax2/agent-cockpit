@@ -17,8 +17,8 @@ Issue #158, part 2. Decided by Theo (answer A, relayed by the coordinator on 202
   from; `torlek session show` prints it, the daemon logs it as a warning, and a stop whose
   windows show room tells the owner it was inferred.
 - **The count lives in the database.** `session_limit_failures` is written in the report's own
-  transaction, so a daemon restart neither loses nor doubles the count. Any other turn ending, a
-  new launch, or the stop itself clears it.
+  transaction, so a daemon restart neither loses nor doubles the count. Any other turn ending,
+  a failure for another reason, a new launch, or the stop itself clears it.
 - **Rejected:** counting OpenCode's `APIError`: it covers every provider error, so it would turn
   outages into quota stops. That gap stays open until OpenCode names a limit.
 

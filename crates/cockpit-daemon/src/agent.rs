@@ -44,16 +44,17 @@ pub(crate) async fn report(
     )
     .await;
     // This report's own quota stop: the recorded report carries an earlier one forward.
-    let mut is_quota_stop = false;
     let recorded = match recorded {
         Ok(recorded) => {
-            is_quota_stop = recorded.is_quota_stop;
-            wire_report(&write, recorded.report, crate::approvals::now()).await
+            let is_quota_stop = recorded.is_quota_stop;
+            wire_report(&write, recorded.report, crate::approvals::now())
+                .await
+                .map(|report| (report, is_quota_stop))
         }
         Err(error) => Err(error),
     };
     match recorded {
-        Ok(recorded) => match write.commit().await {
+        Ok((recorded, is_quota_stop)) => match write.commit().await {
             Ok(()) => {
                 if is_quota_stop {
                     relaunch_quota_stopped(sessions, &recorded.session);

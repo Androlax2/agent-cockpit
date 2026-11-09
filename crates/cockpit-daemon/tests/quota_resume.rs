@@ -542,6 +542,32 @@ async fn rate_limit_failures_older_than_half_an_hour_do_not_count() {
     assert_eq!(show(&client, &session.id).await.quota_stop, None);
 }
 
+/// A provider may declare more than one reason; a run counts one, so the stop names it.
+#[tokio::test]
+async fn failures_for_another_declared_reason_start_the_count_over() {
+    let home = Home::new();
+    let _daemon = start(&home).await;
+    let client = home.connect().await;
+    home.project(&client).await;
+    let (session, launch) = waiting_session(&home, &client).await;
+    report_as(&home, &launch, failed("rate_limit")).await;
+    report_as(&home, &launch, failed("rate_limit")).await;
+    let database = home.database.lock().unwrap().clone().unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "UPDATE session_limit_failures SET reason = 'another_limit'",
+            (),
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    report_as(&home, &launch, failed("rate_limit")).await;
+
+    assert_eq!(show(&client, &session.id).await.quota_stop, None);
+}
+
 #[tokio::test]
 async fn an_inferred_quota_stop_whose_windows_show_room_tells_the_owner_what_it_was_inferred_from()
 {

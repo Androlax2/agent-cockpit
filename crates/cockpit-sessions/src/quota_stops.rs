@@ -119,8 +119,9 @@ impl TransientLimits {
 }
 
 /// Counts a failed turn of `launch` for `reason` now. What a quota stop is inferred from,
-/// once this makes [`TRANSIENT_LIMIT_FAILURES`] of the launch within the window; the count
-/// then starts over.
+/// once this makes [`TRANSIENT_LIMIT_FAILURES`] of the launch for the same reason within the
+/// window; the count then starts over. Another reason starts it over too, so the provenance
+/// names the one reason counted.
 pub(crate) async fn count_limit_failure(
     write: &WriteTransaction<'_>,
     session: &str,
@@ -132,8 +133,8 @@ pub(crate) async fn count_limit_failure(
     write
         .execute(
             "DELETE FROM session_limit_failures
-             WHERE session_id = ?1 AND (launch_id <> ?2 OR failed_at <= ?3)",
-            (session, launch, window_start),
+             WHERE session_id = ?1 AND (launch_id <> ?2 OR failed_at <= ?3 OR reason <> ?4)",
+            (session, launch, window_start, reason),
         )
         .await?;
     write
