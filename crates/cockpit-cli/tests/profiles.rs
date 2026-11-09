@@ -856,6 +856,10 @@ fn daemon_install_writes_a_unit_that_imports_the_desktop_session_at_login_and_en
         "{unit}"
     );
     assert!(
+        unit.contains("Restart=on-failure\n") && unit.contains("StartLimitBurst=5\n"),
+        "a failed import is retried, but not forever: {unit}"
+    );
+    assert!(
         !unit.contains("X-Torlek-Profile="),
         "an import unit is not a daemon unit: {unit}"
     );

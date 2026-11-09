@@ -3,8 +3,8 @@
 //! runs `torlek desktop-session import` at each login. The daemon starts before the compositor
 //! exists and never invents display variables (decision 2026-11-01-303), so without this unit
 //! an owner who does not know the verb never gets image paste (#848). The unit is also part of
-//! the daemon's: a daemon restart forgets the import (#307), and restarts the unit that
-//! hands it over again.
+//! the daemon's: a daemon restart forgets the import (#307), and `systemctl restart` of the
+//! daemon restarts this unit, which hands it over again.
 //!
 //! A host with no graphical session never reaches the target, so nothing runs there. Any file
 //! of the unit's name that this installer did not write is refused.
@@ -111,7 +111,8 @@ fn unit_text(profile: &Profile, program: &Path) -> Result<String, String> {
         .collect();
     let name = profile.name();
     let daemon_unit = profile.systemd_unit();
-    // The daemon may not listen yet when the session starts: a failed import is tried again.
+    // The daemon may not listen yet when the session starts: a failed import is tried again,
+    // five starts within 30 s at most, so a daemon that stays down does not loop forever.
     Ok(format!(
         "# Written by `torlek daemon install`.\n\
          [Unit]\n\
@@ -119,6 +120,8 @@ fn unit_text(profile: &Profile, program: &Path) -> Result<String, String> {
          {MARKER}{name}\n\
          PartOf={GRAPHICAL_SESSION} {daemon_unit}\n\
          After={GRAPHICAL_SESSION} {daemon_unit}\n\
+         StartLimitIntervalSec=30\n\
+         StartLimitBurst=5\n\
          \n\
          [Service]\n\
          Type=oneshot\n\
@@ -126,7 +129,7 @@ fn unit_text(profile: &Profile, program: &Path) -> Result<String, String> {
          {environment}\
          ExecStart={program} --profile {name} desktop-session import\n\
          Restart=on-failure\n\
-         RestartSec=3\n\
+         RestartSec=2\n\
          \n\
          [Install]\n\
          WantedBy={GRAPHICAL_SESSION}\n"

@@ -37,6 +37,7 @@ const PROGRAM_SUFFIXES: &[&str] = &[
 /// Ends the name of the unit that imports the desktop session at login (#1236); a profile
 /// named so would take another profile's unit name.
 const DESKTOP_IMPORT_SUFFIX: &str = "desktop-import";
+const DESKTOP_IMPORT_UNIT_TAIL: &str = "-desktop-import";
 
 /// Long enough for `next` or a branch tag, short enough for a unix socket path inside it.
 const NAME_MAX: usize = 24;
@@ -72,9 +73,9 @@ impl Profile {
                 "profile {name:?} would name its daemon unit like another profile's notifier unit"
             ));
         }
-        if name == DESKTOP_IMPORT_SUFFIX || name.ends_with(&format!("-{DESKTOP_IMPORT_SUFFIX}")) {
+        if name == DESKTOP_IMPORT_SUFFIX || name.ends_with(DESKTOP_IMPORT_UNIT_TAIL) {
             return Err(format!(
-                "profile {name:?} would name its daemon unit like another profile's desktop-import unit"
+                "profile {name:?} would take the name of another profile's desktop-import unit"
             ));
         }
         if PROGRAM_SUFFIXES.contains(&name) {

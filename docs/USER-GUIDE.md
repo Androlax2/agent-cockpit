@@ -416,7 +416,9 @@ and pastes its path into the session on screen. It needs `wl-paste` (wl-clipboar
 daemon's `PATH` and the display your desktop session imported. `torlek daemon install` also
 installs the user service `torlek-desktop-import.service` (`torlek-NAME-desktop-import.service`
 for a named profile), tied to `graphical-session.target`, which runs `torlek desktop-session
-import` at each login and whenever the daemon restarts. Without an imported display CMD+V fails
+import` at each login and whenever the daemon restarts. It imports what the systemd user
+manager holds, so your desktop must put `WAYLAND_DISPLAY` there before the session starts
+(`systemctl --user import-environment WAYLAND_DISPLAY`). Without an imported display CMD+V fails
 and the viewer says so; run `torlek desktop-session import` in a terminal of your desktop.
 `torlek doctor` shows the `clipboard in` line.
 
