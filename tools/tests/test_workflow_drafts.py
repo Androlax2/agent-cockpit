@@ -26,7 +26,7 @@ def allows(expression, context):
     """Evaluate the workflows' boolean conditions, not steps or an Actions scheduler."""
     expression = expression.removeprefix("${{").removesuffix("}}").strip()
     expression = re.sub(
-        r"\b(?:github|needs)\.[\w.-]+",
+        r"\b(?:github|needs|inputs)\.[\w.-]+",
         lambda match: repr(context.get(match[0], "")),
         expression,
     )
@@ -288,6 +288,19 @@ class DraftWorkflowTests(unittest.TestCase):
         self.assertIn("permission-contents: write", token)
         self.assertNotIn("permission-pull-requests: write", token)
         self.assertNotIn("PROPOSAL_", tag)
+
+    def test_a_prerelease_dry_run_runs_only_the_job_without_approval(self):
+        for dry_run, expected in ((True, {"dry-run"}), (False, {"tag"})):
+            with self.subTest(dry_run=dry_run):
+                values = context("workflow_dispatch") | {"inputs.dry_run": dry_run}
+                self.assertEqual(self.eligible("prerelease.yml", values), expected)
+
+    def test_prerelease_dry_run_reads_no_release_secret(self):
+        dry_run = self.workflows["prerelease.yml"].split("\n  dry-run:\n", 1)[1]
+        self.assertNotRegex(dry_run, r"(?m)^    environment:")
+        for credential in ("secrets.", "vars.", "RELEASE_", "steps.app", "create-github-app-token"):
+            with self.subTest(credential=credential):
+                self.assertNotIn(credential, dry_run)
 
     def test_docs_catalog_still_rejects_ineligible_non_pr_events(self):
         expression = job_conditions(self.workflows["docs.yml"])["catalog"]

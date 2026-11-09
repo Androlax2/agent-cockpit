@@ -317,15 +317,19 @@ def current_main(base):
         raise Refusal("main advanced; leave every existing proposal intact and run on current main")
 
 
-def release_steps(version, base):
+def release_steps(version, base, *, dry_run_approval=False):
     """The copy-paste dispatch and approval steps, and what the dispatch refuses first (#669)."""
     dispatch = f"gh workflow run prerelease.yml -R {REPOSITORY} --ref main -f dry_run="
     actions = f"https://github.com/{REPOSITORY}/actions/workflows"
+    dry_run = (
+        f"1. Dry run: `{dispatch}true`, then approve the `release` environment on the run "
+        f"({actions}/prerelease.yml)."
+        if dry_run_approval
+        else f"1. Dry run: `{dispatch}true`; it needs no approval ({actions}/prerelease.yml)."
+    )
     return (
         "## How to release\n\n"
-        f"1. Dry run: `{dispatch}true`, then approve the `release` environment on the run "
-        f"({actions}/prerelease.yml). It prints `dry run: would tag {base} as v{version}` "
-        "and creates nothing.\n"
+        f"{dry_run} It prints `dry run: would tag {base} as v{version}` and creates nothing.\n"
         f"2. Release: `{dispatch}false`, then approve the `release` environment on the run. "
         f"It tags `{base}` as `v{version}`.\n"
         "3. The tag starts the Release workflow: approve its `release` jobs as its gates pass "
@@ -336,17 +340,27 @@ def release_steps(version, base):
         f"- an alpha's source carries `{release.KNOWN_GAPS}`;\n"
         f"- `main` is still `{base}` and this is the only open release proposal, unedited;\n"
         f"- `v{version}` is the next prerelease number and no tag has it yet.\n\n"
+        + (
+            ""
+            if dry_run_approval
+            else "This draft's `dispatch preconditions` status shows whether these checks "
+            "passed when it was published.\n\n"
+        )
     )
 
 
-def proposal_body(version, base, head, *, with_release_steps=True):
+def proposal_body(version, base, head, *, with_release_steps=True, dry_run_approval=False):
     if "-" in version:
         return (
             f"Next prerelease: `v{version}`. Generated locally with release-plz update and git-cliff.\n\n"
             "Draft for review only; prerelease dispatch verifies this version and tags its main source. "
             "Do not merge this draft. Separate release approval and all release gates still apply. "
             "The branch and commit are retained when superseded.\n\n"
-            + (release_steps(version, base) if with_release_steps else "")
+            + (
+                release_steps(version, base, dry_run_approval=dry_run_approval)
+                if with_release_steps
+                else ""
+            )
             + f"<!-- cockpit-release-proposal v1 base={base} head={head} -->"
         )
     return (
@@ -368,6 +382,9 @@ def owned_draft(pr, *, supersedable=False):
         # them accepts that body; dispatch still consumes nothing but the current one.
         # Remove this, and with_release_steps, once no pre-#669 draft is open.
         accepted_bodies.append(proposal_body(title[1], *marker[0], with_release_steps=False))
+        # Drafts published before #1260, such as #1259, ask to approve the dry run. Remove this,
+        # and dry_run_approval, once no such draft is open.
+        accepted_bodies.append(proposal_body(title[1], *marker[0], dry_run_approval=True))
     return (
         pr["body"] in accepted_bodies
         and pr["state"] == "open"
