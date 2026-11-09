@@ -33,7 +33,6 @@ merged,issue,pr,harness,model,effort,kind,trial,lines_added,ci_fix_rounds,ci_cau
 2026-11-05,#860,877,claude,Sonnet,high,research,default,,1,check,0,0,,,,0.9,,"asked Q1-Q4 one at a time; MD018 lint failure (a line starting with an issue number), fixed after my pointer; new issue #880"
 2026-11-05,#862,881,claude,Sonnet,high,research,default,,0,,0,0,,,,1.4,,asked Q1-Q4 one at a time; survived the alpha 3 daemon restart; changes posted on 9 issues
 2026-11-05,#858,887,claude,Opus,high,research,default,,0,,0,0,,,,2,,revised its options after #859 and re-asked Q1 rather than take a relayed old-list answer; changes posted on 7 issues
-,#892,,claude,Sonnet,high,research,default,,0,,0,0,,,,0.5,,no-PR audit of 6 reports vs 523 issues; 4 issues (#893-#896) + 3 comments filed by me; first `torlek agent end` worked
 2026-11-05,#874,891,claude,Sonnet,high,contained,trial,,1,unknown,0,0,,,,3,,"deviation trial; took owner-requested scope twice (trials log, start_worker, 5 alpha-3 fixes, prune-only); asked to confirm relayed scope rather than trust my message — correct"
 2026-11-05,#872,898,claude,Opus,high,security,default,,0,,0,0,,,,1.5,,"clean; closed its issue, marked item done unprompted"
 2026-11-05,#885+886,901,claude,Fable,medium,docs,trial,,0,,0,0,,,,1.3,,"deviation trial (Fable on docs): clean, closed both issues, item done unprompted"

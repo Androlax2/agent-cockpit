@@ -41,8 +41,9 @@ python3 -I docs/research/1264/model_card.py
 ```
 
 The script refuses a row whose columns or values do not match the table above, and names it.
-It counts every row; a decision uses only `trial`, `control` and `replay` rows, one issue
-counted once, by the [stopping rule](../2026-11-09-1264-model-benchmarking.md#stopping-rule).
-A cell under 5 rows is `none`, under 20 `screening`, from 20 `decidable`. Read the
+The shares count every row. The `decision issues` column counts only issues with a `trial`,
+`control` or `replay` row, each once, as the
+[stopping rule](../2026-11-09-1264-model-benchmarking.md#stopping-rule) does; its evidence label
+is `none` under 5, `screening` under 20 and `decidable` from 20. Read the
 [stress test](../2026-11-09-1264-model-benchmarking.md#stress-test) before drawing a
 conclusion from any cell.

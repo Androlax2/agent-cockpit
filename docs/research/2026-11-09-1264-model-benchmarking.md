@@ -52,7 +52,7 @@ Decisions for the owner, one at a time ([details](#decisions-for-the-owner)):
 - **Fetched 2026-11-09.** Every external page was read on that date; page dates are given
   where the page states one. Two pages could not be fetched (noted in place); Reddit was read
   only through mirrors and is not cited.
-- **Local data.** The coordinator's trials database, 164 rows, one per merged worker pull request
+- **Local data.** The coordinator's trials database, 163 rows, one per merged worker pull request
   from 2026-11-04 to 2026-11-09, now at [`1264/model-trials.csv`](1264/model-trials.csv). The
   reviewer gate prompts and the model card were read from the coordinator's private notes; only
   their rules are described here. The selection rule is in
@@ -255,11 +255,11 @@ How others choose and measure a model and effort level for coding agents, groupe
 
 ## Stress test
 
-Each claim our method relies on, tested on our 164 rows (*Observed* unless marked).
+Each claim our method relies on, tested on our 163 rows (*Observed* unless marked).
 
 ### 1. "Reviewer blocking findings per PR are the main quality signal"
 
-- **Data:** `reviewer_model`, `reviewer_blocking` and `regressions` are empty in all 164 rows.
+- **Data:** `reviewer_model`, `reviewer_blocking` and `regressions` are empty in all 163 rows.
   The signal has no data yet.
 - **Design gap:** the gate reviews trial PRs only. Default PRs, which are most rows, never get
   the same review, so a trial's blocking count has no baseline. A trial model with 0.8 blocking
@@ -273,7 +273,7 @@ Each claim our method relies on, tested on our 164 rows (*Observed* unless marke
 - **Fix:** control reviews (D1); a blind prompt and a blocking checklist (part 3); report
   blocking findings within size bands. **Cost:** about 20 minutes per control review (*Est.*,
   from Anthropic's figure and our `/code-review` runs), about 1.5 to 2 hours per alpha at one
-  default PR in four of about 25 to 40 merged PRs per alpha (164 rows over the six logged days).
+  default PR in four of about 25 to 40 merged PRs per alpha (163 rows over the six logged days).
 
 ### 2. "CI fix rounds measure the model"
 
@@ -285,9 +285,9 @@ Each claim our method relies on, tested on our 164 rows (*Observed* unless marke
   of 16 Opus security rows with a CI fix, 2 name the platform; 8 are checks the worker could have
   run first (mostly CodeQL alerts on logs in tests, and Markdown lint); 6 are unexplained.
 - **Simpson's paradox in our data.** Pooled, Opus needed a CI fix more often than Sonnet (26 of
-  75, 35%, against 15 of 69, 22%). Restricted to the kinds and sizes both models did (contained
-  and research work), the direction reverses: Opus 3 of 23 (13%), Sonnet 14 of 56 (25%),
-  Mantel-Haenszel odds ratio 0.43 over kind and size, Opus better. Both
+  75, 35%, against 15 of 68, 22%). Restricted to the kind and size strata both models share
+  (contained work in every size band, research work of unknown size), the direction reverses:
+  Opus 3 of 23 (13%), Sonnet 14 of 55 (25%), Mantel-Haenszel odds ratio 0.42, Opus better. Both
   intervals are wide; neither direction is significant. The pooled figure compares Opus on
   security work with Sonnet on docs.
 - **Fix:** count only `own` and `check` (done in the card); keep `flake` and `drift` for the
@@ -299,11 +299,11 @@ Each claim our method relies on, tested on our 164 rows (*Observed* unless marke
   wrong after backfill (#973 and #979, fixed). 8 rows whose notes report an idle stop count no
   nudge, because the coordinator noticed late or the worker woke on its own.
 - **Idle stops are a date effect more than a model effect.** On 2026-11-06, 15 of 43 rows
-  (35%, 22-50%) record an idle stop; on every other day together, 9 of 121 (7%, 4-14%). Sonnet
-  idled 9 of 27 that day and 1 of 44 on all others. The likeliest cause is the worker prompt of
+  (35%, 22-50%) record an idle stop; on every other day together, 9 of 120 (8%, 4-14%). Sonnet
+  idled 9 of 27 that day and 1 of 43 on all others. The likeliest cause is the worker prompt of
   the time (waiting on CI without a blocking loop), not the model.
 - **The card's claim that Fable idles more** is weakly supported. Off that day: Fable 2 of 11
-  (18%, 5-48%), Opus 5 of 65 (8%, 3-17%), Sonnet 1 of 44 (2%, 0-12%). The intervals overlap.
+  (18%, 5-48%), Opus 5 of 65 (8%, 3-17%), Sonnet 1 of 43 (2%, 0-12%). The intervals overlap.
 - **Fix:** a separate `idles` column (done); record the worker prompt version on each row
   (Proposed: the Torlek instructions id at start). **Cost:** none beyond the row.
 
@@ -334,16 +334,16 @@ Each claim our method relies on, tested on our 164 rows (*Observed* unless marke
 
 ### 5. "Trials are a fair comparison"
 
-- **Rate.** 13 of 164 rows (8%) are trials, not one in three.
-- **Choice of task.** The coordinator chooses which start becomes a trial. Fable's 9 trial rows
+- **Rate.** 13 of 163 rows (8%) are trials, not one in three.
+- **Choice of task.** The coordinator chooses which start becomes a trial. Fable's 8 trial rows
   are contained work except one docs and one research row; Fable never had a security
   task; Sonnet never had a risky or security task; Opus never had docs. Where a model never got a
   kind, nothing in the data can compare it there (no overlap).
-- **Effort.** Sonnet `medium` against Sonnet `high` on contained work: CI fix 2 of 22 against 11
-  of 28, but median sizes are 47 and 424 lines. Within size bands `medium` still looks better
-  (≤100 lines: 1 of 12 against 2 of 3; 101-500: 0 of 3 against 2 of 10; over 500: 1 of 3 against
-  4 of 9), but no band has more than 3 rows on one side, and effort was chosen by judged
-  difficulty. Our data cannot say whether `medium` is enough.
+- **Effort.** Sonnet `medium` against Sonnet `high` on contained work: a worker-preventable CI
+  failure in 0 of 22 against 5 of 28, but median sizes are 47 and 424 lines. Within size bands the
+  gap sits in large changes (≤100 lines: 0 of 12 against 0 of 3; 101-500: 0 of 3
+  against 1 of 10; over 500: 0 of 3 against 4 of 9). No band has more than 3 rows on one side,
+  and effort was chosen by judged difficulty. Our data cannot say whether `medium` is enough.
 - **Fix:** decide which start is a trial by a fixed rule, logged before the start; never on
   security or data-loss work. **Cost:** none.
 
@@ -452,9 +452,11 @@ the coordinator's private copy:
 - **Corrections:** #1016 and #1023 had 5 CI fix rounds from a backfill that read "5 batched"
   questions as CI rounds; their notes say one Markdown lint fix and clean, now 1 and 0. Nudges on
   #973 (1, not 2) and #979 (2, not 1) now match their notes.
+- **Removed:** the #892 row, a no-PR audit, which is not a pull request.
 - **Notes:** names of people replaced by "owner", quoted session text paraphrased.
 - **Script:** the one-off backfill from the old Markdown log is gone; the card validates every
-  row, counts only worker-preventable CI failures and prints intervals and evidence labels.
+  row, counts only worker-preventable CI failures, prints intervals, and labels evidence from the
+  issues with a `trial`, `control` or `replay` row, as the stopping rule counts them.
 
 ## What this does not show
 
