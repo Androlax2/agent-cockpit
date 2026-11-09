@@ -14,10 +14,8 @@ use cockpit_protocol::{
 use crate::daemon::{CONTROL_DEADLINE, request, unexpected, utf8_words};
 use crate::status_page::age;
 
-const DEFAULT_COST_DAYS: u32 = 7;
-const MOST_COST_DAYS: u32 = 366;
-const DEFAULT_DIGEST_DAYS: u32 = 7;
-const MOST_DIGEST_DAYS: u32 = 366;
+const DEFAULT_DAYS: u32 = 7;
+const MOST_DAYS: u32 = 366;
 const NANOS_PER_TEN_THOUSANDTH: u64 = 100_000;
 
 /// A `usage` verb's command, or the usage problem that stops it.
@@ -25,19 +23,15 @@ pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
     let words = utf8_words(arguments)?;
     match words.as_slice() {
         ["quota"] => Ok(Command::UsageQuota),
-        ["cost"] => Ok(Command::UsageCost {
-            days: DEFAULT_COST_DAYS,
-        }),
+        ["cost"] => Ok(Command::UsageCost { days: DEFAULT_DAYS }),
         ["cost", "--days", days] => match days.parse::<u32>() {
-            Ok(days) if (1..=MOST_COST_DAYS).contains(&days) => Ok(Command::UsageCost { days }),
-            _ => Err(format!("--days is a number from 1 to {MOST_COST_DAYS}")),
+            Ok(days) if (1..=MOST_DAYS).contains(&days) => Ok(Command::UsageCost { days }),
+            _ => Err(format!("--days is a number from 1 to {MOST_DAYS}")),
         },
-        ["digest"] => Ok(Command::UsageDigest {
-            days: DEFAULT_DIGEST_DAYS,
-        }),
+        ["digest"] => Ok(Command::UsageDigest { days: DEFAULT_DAYS }),
         ["digest", "--days", days] => match days.parse::<u32>() {
-            Ok(days) if (1..=MOST_DIGEST_DAYS).contains(&days) => Ok(Command::UsageDigest { days }),
-            _ => Err(format!("--days is a number from 1 to {MOST_DIGEST_DAYS}")),
+            Ok(days) if (1..=MOST_DAYS).contains(&days) => Ok(Command::UsageDigest { days }),
+            _ => Err(format!("--days is a number from 1 to {MOST_DAYS}")),
         },
         _ => Err("unknown usage arguments".to_owned()),
     }
@@ -77,7 +71,8 @@ fn digest_text(digest: &DigestView) -> String {
 }
 
 fn day_text(day: &DayDigestView) -> String {
-    let is_quiet = day.turns == 0 && day.approvals == 0 && day.replies == 0;
+    let is_quiet =
+        day.turns == 0 && day.approvals == 0 && day.replies == 0 && day.seconds_with_agent == 0;
     let mut text = if is_quiet {
         format!("{}\tnothing recorded\n", printable(&day.day))
     } else {

@@ -536,3 +536,29 @@ async fn usage_digest_refuses_a_day_count_outside_one_to_366_without_asking_the_
         );
     }
 }
+
+#[tokio::test]
+async fn usage_digest_does_not_call_a_day_quiet_when_a_turn_from_the_day_before_ran_into_it() {
+    let home = Home::new();
+    let day = DayDigestView {
+        seconds_with_agent: 600,
+        ..quiet_day("2026-11-08")
+    };
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::UsageDigest {
+            digest: DigestView {
+                first_day: "2026-11-08".to_owned(),
+                last_day: "2026-11-08".to_owned(),
+                days: vec![day],
+            },
+        }),
+    );
+
+    let output = home.cockpit(&["usage", "digest", "--days", "1"]).await;
+
+    let printed = text(&output.stdout);
+    assert!(!printed.contains("nothing recorded"), "{printed}");
+    assert!(printed.contains("10 min with the agent"), "{printed}");
+    drop(daemon);
+}

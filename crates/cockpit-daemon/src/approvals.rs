@@ -620,7 +620,10 @@ async fn approve(
         cockpit_approvals::approve_run(&write, through, RunId(request), revision, digest, now())
             .await?;
     crate::coordination::record_decision(&write, &run).await?;
-    record_granted_approval(&write, &run, request).await?;
+    // Statistics never stand between the owner and a run: a failure is logged, not returned.
+    if let Err(Failed(error)) = record_granted_approval(&write, &run, request).await {
+        tracing::warn!(request, error = %error.message, "the approval was not counted in the digest");
+    }
     write.commit().await?;
     tracing::info!(request, revision, "the owner approved a run");
     let reply = run_reply(&run, &runner);
