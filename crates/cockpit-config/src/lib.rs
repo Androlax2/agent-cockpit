@@ -37,7 +37,7 @@ use toml::Spanned;
 pub use github_token::{
     GITHUB_API_TOKENS_DIR, GITHUB_TOKEN_VARIABLE, GITHUB_TOKEN_VARIABLES, GITHUB_TOKENS_DIR,
     GithubToken, GithubTokenState, github_api_token_file, github_token_file, github_token_state,
-    read_github_token,
+    read_github_token, save_github_token,
 };
 pub use layout::{AGENT_SOCKET, AGENT_SOCKET_DIR, DAEMON_SOCKET, Environment, Layout};
 pub use profile::{
@@ -47,11 +47,12 @@ pub use profile::{
 pub use provider_credential::{
     AccountCredentialState, AccountLoginState, PROVIDER_CREDENTIALS_DIR, ProviderCredential,
     ProviderCredentialError, ProviderCredentialState, account_credentials_dir,
-    provider_credential_state, provider_credentials_dir, read_provider_credential,
+    credential_variable_to_save, provider_credential_state, provider_credentials_dir,
+    read_provider_credential, save_provider_credential,
 };
 pub use show::{SessionSettings, render};
 pub use start_files::{FileState, KNOWN_PROVIDERS, RecordedFile, StartFile, StartFileSnapshot};
-pub use token_file::TokenFileError;
+pub use token_file::{TokenFileError, TokenWriteError, remove_secret_file, token_file_mode};
 
 /// Where the project's own configuration lives, relative to the project directory.
 pub const PROJECT_CONFIG_FILE: &str = ".torlek/config.toml";

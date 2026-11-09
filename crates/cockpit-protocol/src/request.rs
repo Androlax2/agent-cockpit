@@ -9,6 +9,7 @@ use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::coordination::{
     CoordinatorAuditView, CoordinatorGrantView, HeldMessageView, InboxView, ObservedSessionView,
 };
+use crate::credentials::{CredentialTarget, CredentialView, SecretText};
 use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::instructions::{ContextBudgetView, InstructionTopicView};
 use crate::network::{NetworkGrantView, NetworkRequestView};
@@ -893,6 +894,21 @@ pub enum Command {
     },
     /// The providers `session-new` may name in `agent`: those the daemon was started with.
     ProviderList,
+    /// Owner only (#1251): save `value` as `target`'s secret, alone in its file with mode
+    /// `0600`, as the user guide says to by hand. A value a launch would refuse is refused.
+    CredentialSet {
+        target: CredentialTarget,
+        value: SecretText,
+    },
+    /// Owner only: where `target`'s secret lives, each file's mode and whether a launch
+    /// would use it; never the value.
+    CredentialShow {
+        target: CredentialTarget,
+    },
+    /// Owner only: remove `target`'s secret: the file `variable` names, or every file of it.
+    CredentialClear {
+        target: CredentialTarget,
+    },
     /// Owner only: the readiness report (#50): this host's requirements and, with `project`
     /// (an absolute directory), that project's, each with its status and next action.
     Readiness {
@@ -1316,6 +1332,14 @@ pub enum Reply {
     },
     Providers {
         providers: Vec<ProviderView>,
+    },
+    /// A secret's files after `credential-set`, or as `credential-show` found them.
+    Credential {
+        credential: CredentialView,
+    },
+    /// The files `credential-clear` removed; empty when there was none.
+    CredentialCleared {
+        removed: Vec<String>,
     },
     Readiness {
         requirements: Vec<RequirementView>,

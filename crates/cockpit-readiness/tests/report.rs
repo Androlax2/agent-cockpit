@@ -1108,7 +1108,13 @@ fn a_sandboxed_provider_without_a_credential_names_the_files_to_write() {
         ),
         "{next}"
     );
-    assert!(next.contains("chmod 600"), "{next}");
+    assert!(
+        next.contains(
+            "`torlek provider credential set claude --variable NAME`, NAME being \
+             ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN"
+        ),
+        "{next}"
+    );
 }
 
 /// The launch refuses an unusable credential, so `doctor` must not pass it.

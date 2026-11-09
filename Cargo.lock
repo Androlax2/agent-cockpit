@@ -485,6 +485,7 @@ dependencies = [
  "cockpit-client",
  "cockpit-config",
  "cockpit-protocol",
+ "rustix 1.1.6",
  "serde_json",
  "tempfile",
  "tokio",

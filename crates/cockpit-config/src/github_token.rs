@@ -6,7 +6,9 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::token_file::{TokenFileError, TokenRule, read_token_file};
+use crate::token_file::{
+    TokenFileError, TokenRule, TokenWriteError, read_token_file, save_token_file,
+};
 use crate::{Environment, Layout};
 
 /// The folder of [`Layout::config_dir`] that holds one token file per project, named as the
@@ -84,6 +86,13 @@ const GITHUB_TOKEN_RULE: TokenRule = TokenRule {
 /// that cannot be a GitHub token is refused, never used.
 pub fn read_github_token(path: &Path) -> Result<Option<GithubToken>, TokenFileError> {
     Ok(read_token_file(path, &GITHUB_TOKEN_RULE)?.map(GithubToken))
+}
+
+/// Saves `token` in `path` as the user guide says to by hand (#1251): alone, mode `0600`,
+/// its folder `0700` when created. Blocking. A value [`read_github_token`] would refuse is
+/// refused here.
+pub fn save_github_token(path: &Path, token: &str) -> Result<(), TokenWriteError> {
+    save_token_file(path, token, &GITHUB_TOKEN_RULE)
 }
 
 /// Whether a project has a usable token, for what Torlek shows: never the value.
