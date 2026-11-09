@@ -37,6 +37,10 @@ pub struct SessionView {
     /// The agent minutes the owner gave it, counted from its start (#412); `None`: no limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_minutes: Option<u32>,
+    /// A turn ended past the budget since the owner last set it (#412); `torlek-notify` tells
+    /// it once.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budget_spent: bool,
     /// The harness's own compaction threshold chosen at its start, in the provider's own
     /// words (#783); `None` when the harness's own setting applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]

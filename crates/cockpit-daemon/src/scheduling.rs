@@ -356,7 +356,9 @@ async fn inputs_in(
             account: account_of(session),
             model: session.model.clone(),
             effort: session.effort.clone(),
-            budget: session_budget(read, session, now).await?,
+            budget: crate::budgets::session_budget(read, session, now)
+                .await
+                .map_err(|error| internal(&error))?,
         });
     }
     Ok(Inputs {
@@ -395,25 +397,6 @@ async fn agent_seconds(
         spent.insert(item.id, seconds);
     }
     Ok(spent)
-}
-
-/// `session`'s budget against the agent seconds its turns have had since it started (#412).
-async fn session_budget(
-    read: &cockpit_turso::sql::Connection,
-    session: &Session,
-    now: i64,
-) -> Result<Option<cockpit_scheduling::SessionBudget>, Failed> {
-    let Some(minutes) = session.budget_minutes else {
-        return Ok(None);
-    };
-    let worked_seconds =
-        cockpit_usage::turn_seconds(read, session.id.as_str(), session.created_at, now)
-            .await
-            .map_err(|error| internal(&error))?;
-    Ok(Some(cockpit_scheduling::SessionBudget {
-        minutes,
-        worked_seconds,
-    }))
 }
 
 /// The account whose windows pace `session`'s queue starts: its launch's, or for an agent

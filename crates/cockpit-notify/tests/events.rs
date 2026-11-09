@@ -362,6 +362,73 @@ fn a_spent_budget_is_no_session_in_the_status_file() {
     assert_eq!(status.needs_you, 0);
 }
 
+fn spent_session(budget_minutes: u32) -> SessionView {
+    SessionView {
+        budget_minutes: Some(budget_minutes),
+        budget_spent: true,
+        ..worker()
+    }
+}
+
+#[test]
+fn a_session_past_its_budget_is_told_once_with_how_to_give_it_more() {
+    let mut notifier = running();
+
+    let told = change_session(&mut notifier, &spent_session(120));
+
+    assert_eq!(events(&told), [Event::Budget]);
+    assert_eq!(
+        told[0].detail.as_deref(),
+        Some(
+            "worked its 120 min budget since it started: it takes no queued work until you \
+             raise that total, `torlek session budget s00000000000a MINUTES`"
+        )
+    );
+    assert_eq!(change_session(&mut notifier, &spent_session(120)), []);
+}
+
+#[test]
+fn a_session_past_its_budget_is_no_need_in_the_status_file() {
+    let mut notifier = running();
+    change_session(&mut notifier, &spent_session(120));
+
+    let status = notifier.status(true, &Default::default());
+
+    assert_eq!(status.needs_you, 0);
+}
+
+#[test]
+fn a_session_given_more_time_and_past_it_again_is_told_again() {
+    let mut notifier = running();
+    change_session(&mut notifier, &spent_session(120));
+    change_session(
+        &mut notifier,
+        &SessionView {
+            budget_minutes: Some(150),
+            ..worker()
+        },
+    );
+
+    let told = change_session(&mut notifier, &spent_session(150));
+
+    assert_eq!(events(&told), [Event::Budget]);
+}
+
+#[test]
+fn an_ended_session_past_its_budget_is_not_told() {
+    let mut notifier = running();
+
+    let told = change_session(
+        &mut notifier,
+        &SessionView {
+            state: SessionStateView::Ended,
+            ..spent_session(120)
+        },
+    );
+
+    assert!(!events(&told).contains(&Event::Budget), "{told:?}");
+}
+
 #[test]
 fn a_session_the_task_list_says_finished_is_told_once() {
     let mut notifier = running();

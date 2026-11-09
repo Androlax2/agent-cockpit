@@ -48,6 +48,7 @@ pub fn session(id: &str, checkout: i64, created_at: i64) -> SessionView {
         model: None,
         effort: None,
         budget_minutes: None,
+        budget_spent: false,
         design_link: None,
         state: SessionStateView::Running,
         reason: None,

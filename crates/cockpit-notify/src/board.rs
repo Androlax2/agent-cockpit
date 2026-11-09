@@ -57,6 +57,10 @@ pub enum Cause {
         item: i64,
         budget_minutes: u32,
     },
+    /// The session's own spent budget (#412), the budget part of it as for an item's.
+    SessionBudget {
+        budget_minutes: u32,
+    },
 }
 
 /// A change the notifier cannot read: the batch is refused whole, never applied in part.
@@ -295,6 +299,15 @@ impl Board {
         if outcome == Some(&TurnOutcome::Completed) {
             raised.push(raise(Event::Turn, Cause::State));
         }
+        if session.budget_spent
+            && !session.state.is_over()
+            && let Some(budget_minutes) = session.budget_minutes
+        {
+            raised.push(raise(
+                Event::Budget,
+                Cause::SessionBudget { budget_minutes },
+            ));
+        }
         // A question a coordinator holds waits on it, not on the owner (#710).
         if let Some(report) = report.filter(|report| report.held_by.is_none())
             && let Some(question) = &report.needs_input
@@ -408,6 +421,11 @@ impl Board {
                     spent.project, spent.budget_minutes
                 )
             }),
+            Cause::SessionBudget { budget_minutes } => Some(format!(
+                "worked its {budget_minutes} min budget since it started: it takes no queued \
+                 work until you raise that total, `torlek session budget {} MINUTES`",
+                raised.session
+            )),
             Cause::State if raised.event == Event::Failure => {
                 let turn_reason = report.and_then(|report| match &report.outcome {
                     Some(TurnOutcome::Failed { reason }) => reason.clone(),

@@ -41,7 +41,9 @@ pub use reports::{
     AgentState, QuestionSource, Recorded, Report, SessionReport, current_context, latest_report,
     latest_reports, report, report_counting_limits,
 };
-pub use store::{MIGRATIONS, checkout_sessions, maintenance_sessions, session, sessions};
+pub use store::{
+    MIGRATIONS, checkout_sessions, maintenance_sessions, mark_budget_spent, session, sessions,
+};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("cockpit-sessions supports Linux (WSL2 included) and macOS (report 01)");

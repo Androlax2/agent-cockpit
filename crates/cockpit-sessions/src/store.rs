@@ -409,6 +409,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE sessions ADD COLUMN budget_minutes INTEGER
                 CHECK (budget_minutes >= 1);",
         },
+        // #412: a turn ended past the session's budget; the owner's next budget clears it, so
+        // the next spent budget is news again.
+        Migration {
+            version: 26,
+            sql: "ALTER TABLE sessions ADD COLUMN is_budget_spent INTEGER NOT NULL DEFAULT 0
+                CHECK (is_budget_spent IN (0, 1));",
+        },
     ],
 };
 
@@ -436,7 +443,7 @@ const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout
     EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id),
     (SELECT max(w.working_order) FROM session_launches w WHERE w.session_id = s.id),
     e.ended_by, e.code, e.output, s.model, s.effort, s.started_by, s.compaction_threshold,
-    l.account, l.switched_from, l.passed_over, s.budget_minutes";
+    l.account, l.switched_from, l.passed_over, s.budget_minutes, s.is_budget_spent";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
     (SELECT max(id) FROM session_launches WHERE session_id = s.id)
     LEFT JOIN session_exits e ON e.launch_id = l.id";
@@ -1094,7 +1101,20 @@ pub(crate) async fn set_design_link(
     session(write, id).await
 }
 
-/// Sets or lifts (`None`) `id`'s budget of agent minutes (#412).
+/// Marks that a turn of `id` ended past its budget (#412). Marking it again changes nothing,
+/// so later turns past the same budget tell nothing new.
+pub async fn mark_budget_spent(write: &WriteTransaction<'_>, id: &SessionId) -> Result<(), Error> {
+    write
+        .execute(
+            "UPDATE sessions SET is_budget_spent = 1, revision = revision + 1, changed_at = ?2
+             WHERE id = ?1 AND is_budget_spent = 0",
+            (id.as_str(), now()),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Sets or lifts (`None`) `id`'s budget of agent minutes and clears its spent mark (#412).
 pub(crate) async fn set_budget(
     write: &WriteTransaction<'_>,
     id: &SessionId,
@@ -1103,7 +1123,8 @@ pub(crate) async fn set_budget(
     session(write, id).await?;
     write
         .execute(
-            "UPDATE sessions SET budget_minutes = ?2, revision = revision + 1, changed_at = ?3
+            "UPDATE sessions SET budget_minutes = ?2, is_budget_spent = 0,
+                revision = revision + 1, changed_at = ?3
              WHERE id = ?1",
             (id.as_str(), minutes.map(i64::from), now()),
         )
@@ -1199,6 +1220,7 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
         restart_pending,
         started_by,
         budget_minutes,
+        is_budget_spent: row.get::<i64>(30)? == 1,
     })
 }
 
