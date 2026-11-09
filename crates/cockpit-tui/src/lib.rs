@@ -10,6 +10,7 @@ mod form;
 mod pane;
 mod phone;
 mod projects;
+mod quota;
 mod render;
 mod task_form;
 mod tasks;

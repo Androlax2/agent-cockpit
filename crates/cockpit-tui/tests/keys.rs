@@ -204,6 +204,9 @@ fn a_daemon_outage_is_logged_once_and_its_status_clears_when_the_daemon_answers(
             Command::NetworkList => Reply::NetworkRequests {
                 requests: Vec::new(),
             },
+            Command::UsageQuota => Reply::UsageQuota {
+                accounts: Vec::new(),
+            },
             other => panic!("not a refresh command: {other:?}"),
         };
         app.answer(&command, Ok(reply), now);
