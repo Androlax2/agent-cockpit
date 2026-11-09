@@ -43,6 +43,23 @@ pub struct QuotaWindowView {
     /// Unix seconds.
     pub resets_at: Option<i64>,
     pub state: QuotaWindowStateView,
+    /// Where the queue stands against the window (#412); `None` when it paces nothing:
+    /// pacing off, a stale reading, or a window of one model the provider does not block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pace: Option<QuotaPaceView>,
+}
+
+/// The even pace queued work of normal priority keeps through a window (#412).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuotaPaceView {
+    /// The share the queue may have used by now, rounded down; `None` for a blocked window or
+    /// one without a length and a reset.
+    pub line_percent: Option<u32>,
+    /// Whether queued work waits on this window now.
+    pub is_holding: bool,
+    /// Unix seconds: when queued work may start again; `None` when it does not wait, or when
+    /// no reading can say.
+    pub resumes_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

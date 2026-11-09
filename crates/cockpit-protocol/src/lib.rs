@@ -89,7 +89,8 @@ pub use tasks::{
 };
 pub use usage::{
     CostArchiveView, CostRowView, DayDigestView, DigestView, IncidentView, ProjectDayView,
-    QuotaAccountView, QuotaAlertView, QuotaFailureView, QuotaWindowStateView, QuotaWindowView,
+    QuotaAccountView, QuotaAlertView, QuotaFailureView, QuotaPaceView, QuotaWindowStateView,
+    QuotaWindowView,
 };
 pub use verification::{
     CheckArtifactView, CheckClaimView, CheckOutcomeView, CheckReceiptView, CheckStatusView,

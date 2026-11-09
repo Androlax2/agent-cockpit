@@ -6,7 +6,9 @@ mod common;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use cockpit_scheduling::{ActionBy, Candidate, Pacing, Presence, Reason, Standing, UsageWindow};
+use cockpit_scheduling::{
+    ActionBy, Candidate, Pacing, Presence, Reason, Standing, UsageWindow, WindowPace, window_pace,
+};
 use cockpit_tasks::{ItemId, Priority};
 use common::{ACCOUNT, Fixture, NOW, explanation_of};
 
@@ -384,4 +386,89 @@ async fn under_the_default_pace_the_queue_starts_nothing_in_the_owners_reserve()
         "{:?}",
         feed.used_at_start
     );
+}
+
+#[test]
+fn a_window_ahead_of_its_pace_holds_the_queue_until_the_line_reaches_it() {
+    let pace = window_pace(Pacing::DEFAULT, &window(70.0, 150), NOW).unwrap();
+
+    assert_eq!(
+        pace,
+        WindowPace {
+            line_percent: Some(60.0),
+            is_holding: true,
+            resumes_at: Some(NOW + 2000),
+        }
+    );
+}
+
+#[test]
+fn a_window_below_its_pace_holds_nothing() {
+    let pace = window_pace(Pacing::DEFAULT, &window(40.0, 150), NOW).unwrap();
+
+    assert_eq!(
+        pace,
+        WindowPace {
+            line_percent: Some(60.0),
+            is_holding: false,
+            resumes_at: None,
+        }
+    );
+}
+
+#[test]
+fn a_blocked_window_holds_the_queue_with_no_line() {
+    let blocked = UsageWindow {
+        standing: Standing::Blocked,
+        ..window(10.0, 60)
+    };
+
+    let pace = window_pace(Pacing::DEFAULT, &blocked, NOW).unwrap();
+
+    assert_eq!(
+        pace,
+        WindowPace {
+            line_percent: None,
+            is_holding: true,
+            resumes_at: None,
+        }
+    );
+}
+
+#[test]
+fn a_window_at_the_reserve_past_its_reset_resumes_now_not_in_the_past() {
+    let past_reset = UsageWindow {
+        resets_at: Some(NOW - 300),
+        ..window(95.0, 150)
+    };
+
+    let pace = window_pace(Pacing::DEFAULT, &past_reset, NOW).unwrap();
+
+    assert_eq!((pace.is_holding, pace.resumes_at), (true, Some(NOW)));
+}
+
+#[test]
+fn a_window_that_paces_nothing_has_no_pace() {
+    let cases = [
+        ("pacing off", Pacing::Off, window(70.0, 150)),
+        (
+            "a stale reading",
+            Pacing::DEFAULT,
+            UsageWindow {
+                standing: Standing::Stale,
+                ..window(70.0, 150)
+            },
+        ),
+        (
+            "a window scoped to one model",
+            Pacing::DEFAULT,
+            UsageWindow {
+                scope: Some("opus".to_owned()),
+                ..window(70.0, 150)
+            },
+        ),
+    ];
+    for (case, pacing, usage) in cases {
+        assert_eq!(window_pace(pacing, &usage, NOW), None, "{case}");
+    }
 }

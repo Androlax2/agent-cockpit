@@ -11,7 +11,7 @@ mod scripted;
 
 use cockpit_protocol::{
     Command, CostArchiveView, CostRowView, DayDigestView, DigestView, ErrorCode, IncidentView,
-    Outcome, ProjectDayView, ProtocolError, QuotaAccountView, QuotaFailureView,
+    Outcome, ProjectDayView, ProtocolError, QuotaAccountView, QuotaFailureView, QuotaPaceView,
     QuotaWindowStateView, QuotaWindowView, Reply,
 };
 use scripted::{scripted_daemon, text};
@@ -67,6 +67,7 @@ fn window(limit: &str, used_percent: u32, resets_at: Option<i64>) -> QuotaWindow
         used_percent,
         resets_at,
         state: QuotaWindowStateView::Available,
+        pace: None,
     }
 }
 
@@ -159,6 +160,59 @@ async fn a_window_whose_reset_passed_or_is_unknown_says_so() {
         "claude\tdefault\tplan pro\tread 3 h ago\tstale\n\
          \x20 five-hour\t100%\tstale\treset 20 min ago\n\
          \x20 window-60-minutes\t3%\tavailable\treset unknown\n"
+    );
+    daemon.await.unwrap();
+}
+
+#[tokio::test]
+async fn each_window_shows_the_queue_pace_and_how_long_queued_work_waits() {
+    let home = Home::new();
+    let now = unix_now();
+    let pace = |line_percent, is_holding, resumes_at| {
+        Some(QuotaPaceView {
+            line_percent,
+            is_holding,
+            resumes_at,
+        })
+    };
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::UsageQuota {
+            accounts: vec![QuotaAccountView {
+                provider: "claude".to_owned(),
+                account: "default".to_owned(),
+                plan: Some("max".to_owned()),
+                is_blocked: false,
+                observed_at: Some(now - 3 * 60 - 30),
+                is_current: true,
+                failure: None,
+                windows: vec![
+                    QuotaWindowView {
+                        pace: pace(Some(51), false, None),
+                        ..window("five-hour", 42, Some(now + 3 * 3600 + 30))
+                    },
+                    QuotaWindowView {
+                        pace: pace(Some(60), true, Some(now + 12 * 60 + 30)),
+                        ..window("seven-day", 70, Some(now + 2 * 86_400 + 1800))
+                    },
+                    QuotaWindowView {
+                        pace: pace(None, true, None),
+                        ..window("window-60-minutes", 3, None)
+                    },
+                ],
+            }],
+        }),
+    );
+
+    let output = home.cockpit(&["usage", "quota"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "claude\tdefault\tplan max\tread 3 min ago\tcurrent\n\
+         \x20 five-hour\t42%\tavailable\tresets in 3 h 0 min\tqueue pace 51%\n\
+         \x20 seven-day\t70%\tavailable\tresets in 2 days 0 h\tqueue waits 12 min (pace 60%)\n\
+         \x20 window-60-minutes\t3%\tavailable\treset unknown\tqueue waits\n"
     );
     daemon.await.unwrap();
 }

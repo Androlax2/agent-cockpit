@@ -291,6 +291,7 @@ impl Handler for Routes {
                 job: Box::pin(crate::usage::report(
                     Arc::clone(&self.database),
                     self.quota_policy.clone(),
+                    self.scheduling.settings.pacing,
                 )),
             },
             (Command::UsageQuota, Peer::Agent { .. }) => Route::Answer(owner_only()),

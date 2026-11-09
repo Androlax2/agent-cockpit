@@ -67,7 +67,8 @@ pub(crate) struct Paced {
 }
 
 /// Why a turn of `priority` waits on `provider`'s `account` at `now`; `None` when it may
-/// start. `priority` is the item's own: aging orders the queue but never earns a burst. Of several windows holding it, the one that holds it longest explains it.
+/// start. `priority` is the item's own: aging orders the queue but never earns a burst. Of
+/// several windows holding it, the one that holds it longest explains it.
 pub(crate) fn paced(
     pacing: Pacing,
     windows: &[UsageWindow],
@@ -111,6 +112,70 @@ pub(crate) fn paced(
         .max_by_key(|paced| paced.resumes_at.unwrap_or(i64::MAX))
 }
 
+/// Where normal-priority queued work stands against one window under the pacing (#412), as
+/// `torlek usage quota` shows it. Low-priority work gets no burst, so it waits while a window
+/// is within the burst below this line; high-priority work waits only at the reserve.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowPace {
+    /// The share the queue may have used by now; `None` for a window without a length and a
+    /// reset, or one the provider blocks, which no line runs through.
+    pub line_percent: Option<f64>,
+    /// Whether queued work of normal priority waits on this window now.
+    pub is_holding: bool,
+    /// When it may start again; `None` when it does not wait, or when no reading can say.
+    pub resumes_at: Option<i64>,
+}
+
+/// `window`'s pace at `now`; `None` when it paces nothing: pacing is off, its reading is
+/// stale, or it counts one model only and the provider does not block it.
+pub fn window_pace(pacing: Pacing, window: &UsageWindow, now: i64) -> Option<WindowPace> {
+    let Pacing::Even {
+        reserve_percent,
+        burst_percent,
+    } = pacing
+    else {
+        return None;
+    };
+    let line_percent = match window.standing {
+        Standing::Stale => return None,
+        Standing::Current if window.scope.is_some() => return None,
+        Standing::Blocked => None,
+        Standing::Current => {
+            let usable = 100.0 - f64::from(reserve_percent);
+            opening(window).map(|opening| even_line(opening, usable, f64::from(burst_percent), now))
+        }
+    };
+    let held = paced(
+        pacing,
+        std::slice::from_ref(window),
+        &window.provider,
+        &window.account,
+        Priority::NORMAL.level(),
+        now,
+    );
+    Some(WindowPace {
+        line_percent,
+        is_holding: held.is_some(),
+        resumes_at: held.and_then(|held| held.resumes_at),
+    })
+}
+
+/// The share a window of `length` seconds opened at `opened_at` may be used at `now`:
+/// `elapsed share × usable + burst`, capped at `usable`.
+fn even_line((length, opened_at): (f64, f64), usable: f64, burst: f64, now: i64) -> f64 {
+    let elapsed = ((now as f64 - opened_at) / length).clamp(0.0, 1.0);
+    (elapsed * usable + burst).min(usable)
+}
+
+/// The window's length and when it opened, in seconds.
+fn opening(window: &UsageWindow) -> Option<(f64, f64)> {
+    let (Some(length), Some(resets_at)) = (window.length_seconds, window.resets_at) else {
+        return None;
+    };
+    let length = f64::from(length);
+    Some((length, resets_at as f64 - length))
+}
+
 fn held(
     window: &UsageWindow,
     usable: f64,
@@ -128,19 +193,14 @@ fn held(
                  is kept for your own sessions"
             ),
             limited_by: name,
-            resumes_at: window.resets_at,
+            resumes_at: window.resets_at.map(|resets_at| resets_at.max(now)),
         });
     }
-    let (Some(length), Some(resets_at)) = (window.length_seconds, window.resets_at) else {
-        return None;
-    };
     if priority >= Priority::HIGH.level() {
         return None;
     }
-    let length = f64::from(length);
-    let opened_at = resets_at as f64 - length;
-    let elapsed = ((now as f64 - opened_at) / length).clamp(0.0, 1.0);
-    let line = (elapsed * usable + burst).min(usable);
+    let (length, opened_at) = opening(window)?;
+    let line = even_line((length, opened_at), usable, burst, now);
     if used < line {
         return None;
     }

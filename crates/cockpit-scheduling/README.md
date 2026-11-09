@@ -87,6 +87,10 @@ reason and when the line reaches the window's share (or the reset, at the reserv
 paced session is noted with its own window. Running work is never paused, so what it spends
 after the last start comes out of the reserve. A handoff is the owner's and is never paced.
 
+`window_pace` is one window's standing against the line for normal-priority work: the line
+now, whether it holds the queue, and when it lets work start. The daemon adds it to each
+window `usage-quota` answers.
+
 ## Delivery
 
 A placement's envelope (producer `scheduling`, effect key `placement-<id>`, destination the
@@ -144,7 +148,7 @@ reservation) and
   work back.
 - `tests/pacing.rs`: the line by priority, the reserve, blocked and unpacing windows, the
   explanation, and a recorded feed that full speed spends by half the window and the
-  default pace makes last until the reset.
+  default pace makes last until the reset; each window's pace as `usage quota` shows it.
 - `tests/charges.rs`: placed turns as held reservations that builds and `in_use` see.
 - Through the socket: `cockpit-daemon` `tests/scheduling.rs` and `cockpit-cli`
   `tests/queue.rs`.

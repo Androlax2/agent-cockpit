@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use cockpit_protocol::{
     ErrorCode, Outcome, ProtocolError, QuotaAccountView, QuotaAlertView, QuotaFailureView,
-    QuotaWindowStateView, QuotaWindowView, Reply,
+    QuotaPaceView, QuotaWindowStateView, QuotaWindowView, Reply,
 };
 use cockpit_provider_api::{
     Capability, LimitKey, Provider, ProviderError, ProviderName, QuotaReading,
@@ -258,7 +258,11 @@ fn alert_view(alert: &Alert) -> QuotaAlertView {
 /// `usage-quota`: every account's windows as last recorded, judged now under `policy`, the
 /// worker's own. `None` when this daemon reads no quota: its answer would judge readings an
 /// earlier start recorded under a policy nobody set.
-pub(crate) async fn report(database: Arc<Database>, policy: Option<QuotaPolicy>) -> Outcome {
+pub(crate) async fn report(
+    database: Arc<Database>,
+    policy: Option<QuotaPolicy>,
+    pacing: cockpit_scheduling::Pacing,
+) -> Outcome {
     let Some(policy) = policy else {
         return Outcome::Error(ProtocolError {
             code: ErrorCode::Refused,
@@ -266,9 +270,13 @@ pub(crate) async fn report(database: Arc<Database>, policy: Option<QuotaPolicy>)
             unblock: None,
         });
     };
-    match recorded_quotas(&database, &policy).await {
+    let now = crate::approvals::now();
+    match recorded_quotas(&database, &policy, now).await {
         Ok(accounts) => Outcome::Ok(Reply::UsageQuota {
-            accounts: accounts.into_iter().map(account_view).collect(),
+            accounts: accounts
+                .into_iter()
+                .map(|quota| account_view(quota, pacing, now))
+                .collect(),
         }),
         Err(error) => {
             tracing::error!(%error, "reading the recorded quota failed");
@@ -284,14 +292,33 @@ pub(crate) async fn report(database: Arc<Database>, policy: Option<QuotaPolicy>)
 async fn recorded_quotas(
     database: &Database,
     policy: &QuotaPolicy,
+    now: i64,
 ) -> Result<Vec<AccountQuota>, String> {
     let read = database.read().await.map_err(|error| error.to_string())?;
-    cockpit_usage::quotas(&read, policy, crate::approvals::now())
+    cockpit_usage::quotas(&read, policy, now)
         .await
         .map_err(|error| error.to_string())
 }
 
-fn account_view(quota: AccountQuota) -> QuotaAccountView {
+/// `quota` as the owner reads it, each window with the pace the queue keeps through it
+/// (#412).
+fn account_view(
+    quota: AccountQuota,
+    pacing: cockpit_scheduling::Pacing,
+    now: i64,
+) -> QuotaAccountView {
+    let windows = quota
+        .windows
+        .iter()
+        .map(|window| {
+            let pace = cockpit_scheduling::window_pace(
+                pacing,
+                &crate::scheduling::usage_window(&quota, window),
+                now,
+            );
+            window_view(window.clone(), pace)
+        })
+        .collect();
     QuotaAccountView {
         provider: quota.provider.as_str().to_owned(),
         account: quota.account.as_str().to_owned(),
@@ -303,11 +330,14 @@ fn account_view(quota: AccountQuota) -> QuotaAccountView {
             at: failure.at,
             reason: failure.reason,
         }),
-        windows: quota.windows.into_iter().map(window_view).collect(),
+        windows,
     }
 }
 
-fn window_view(window: WindowQuota) -> QuotaWindowView {
+fn window_view(
+    window: WindowQuota,
+    pace: Option<cockpit_scheduling::WindowPace>,
+) -> QuotaWindowView {
     QuotaWindowView {
         limit: window.limit.as_str().to_owned(),
         scope: window.scope,
@@ -321,6 +351,11 @@ fn window_view(window: WindowQuota) -> QuotaWindowView {
             WindowState::Blocked => QuotaWindowStateView::Blocked,
             WindowState::Stale => QuotaWindowStateView::Stale,
         },
+        pace: pace.map(|pace| QuotaPaceView {
+            line_percent: pace.line_percent.map(whole_percent),
+            is_holding: pace.is_holding,
+            resumes_at: pace.resumes_at,
+        }),
     }
 }
 
