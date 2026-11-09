@@ -305,6 +305,8 @@ impl Runner {
         let exited = self
             .launch(database, run, execution, terminal, git_config)
             .await;
+        // Read as the exit is observed: a stop sent after it did not end the command.
+        let is_stopped_by_owner = live.is_stopped_by_owner.load(Ordering::SeqCst);
         let terminal_held_open = tokio::time::timeout(DRAIN_AFTER_EXIT, drained)
             .await
             .is_err();
@@ -334,7 +336,7 @@ impl Runner {
                 exit_code,
                 output: present(tail, kept.total, self.settings.answer_lines),
                 output_retired: false,
-                stopped_by_owner: live.is_stopped_by_owner.load(Ordering::SeqCst),
+                stopped_by_owner: is_stopped_by_owner,
             },
             terminal_held_open,
             leftover: is_left_running.then_some(execution),
@@ -459,10 +461,19 @@ impl Runner {
             })?;
         // Set before the signal, so the run never reads its end without the owner's stop.
         live.is_stopped_by_owner.store(true, Ordering::SeqCst);
-        Ok(self
+        let terminated = self
             .supervisor
             .terminate(database, live.execution, OWNER_STOP)
-            .await?)
+            .await;
+        let has_signalled = match &terminated {
+            Ok(Termination::Confirmed { after }) => after.is_some(),
+            Ok(Termination::Unconfirmed { diagnostics }) => diagnostics.term.is_some(),
+            Err(_) => false,
+        };
+        if !has_signalled {
+            live.is_stopped_by_owner.store(false, Ordering::SeqCst);
+        }
+        Ok(terminated?)
     }
 
     /// The runs silent a while with their output ending mid-line: prompts. Read at one

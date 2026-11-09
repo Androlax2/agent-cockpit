@@ -599,8 +599,9 @@ async fn stop(database: &Arc<Database>, runner: &Runner, request: i64) -> Answer
     }
 }
 
-/// After a stop, how long the run's end may take to be recorded: the terminal drains for up
-/// to `cockpit_approvals`' two seconds after the exit, then the end is written.
+/// After a stop, how long the reply waits for the run's end to be recorded: the terminal
+/// drains after the exit, then the end is written. A slower end is answered `running`; the
+/// change feed and `approval show` read it once recorded.
 const STOP_RECORD_WAIT: Duration = Duration::from_secs(5);
 const STOP_RECORD_POLL: Duration = Duration::from_millis(50);
 

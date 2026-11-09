@@ -856,3 +856,14 @@ fn the_keys_of_a_waiting_command_offer_to_stop_it() {
 
     assert!(screen.contains("x stop it"), "{screen}");
 }
+
+#[test]
+fn a_stop_asked_for_before_the_pane_lost_focus_is_asked_for_again() {
+    let now = Instant::now();
+    let (mut app, ready) = app_at_sudo_prompt(now);
+    press(&mut app, &[Key::Char('x'), Key::Tab, Key::Tab], ready);
+
+    let confirmed = app.key(Key::Char('y'), after_grace(ready));
+
+    assert!(confirmed.send.is_empty(), "{:?}", confirmed.send);
+}

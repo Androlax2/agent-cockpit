@@ -171,3 +171,27 @@ async fn stopping_a_request_that_has_not_started_is_refused() {
     assert!(refusal.message.contains("asking"), "{}", refusal.message);
     assert_eq!(asking.status(asked.id).await.state, RunStateView::Asking);
 }
+
+/// A stop that arrives after the command exited by itself, while a helper it left still holds
+/// its terminal open, ends the helper but never claims the owner stopped the command.
+#[tokio::test]
+async fn a_stop_after_the_command_exited_does_not_mark_it_stopped() {
+    let asking = started(true).await;
+    let marker = asking.cwd.path().join("helper.pid");
+    let request = asking
+        .running("sleep 300 & echo $! > helper.pid; exit 0", &marker)
+        .await;
+    // The exit is observed well within the terminal's drain after it.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let helper = helper_pid(&asking);
+
+    let _ = stop(&asking, request.id).await;
+
+    let result = asking.ended(request.id).await.result.expect("a result");
+    assert_eq!(result.exit_code, 0);
+    assert!(!result.stopped_by_owner, "{result:?}");
+    assert!(
+        gone_in_time(helper).await,
+        "the helper {helper} outlived the stop"
+    );
+}

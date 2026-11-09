@@ -162,6 +162,8 @@ impl Pane {
 
     /// The pane took focus: input waits out the grace again.
     pub fn focus(&mut self, now: Instant) {
+        // A stop asked for before the pane lost focus is asked for again.
+        self.is_confirming_stop = false;
         if self.shown.is_some() {
             self.accepts_input_at = Some(now + INPUT_GRACE);
         }

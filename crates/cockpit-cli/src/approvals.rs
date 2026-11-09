@@ -277,8 +277,9 @@ fn run_detail(run: &RunRequestView) -> String {
         let _ = writeln!(
             text,
             "waiting for input: torlek approval input {} (reads one line from standard input, \
-             typed only while the terminal hides it; --shown answers a visible prompt)",
-            run.id
+             typed only while the terminal hides it; --shown answers a visible prompt), or \
+             stop it: torlek approval stop {}",
+            run.id, run.id
         );
     }
     if let Some(result) = &run.result {
