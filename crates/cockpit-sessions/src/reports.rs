@@ -818,6 +818,40 @@ fn checked_text(field: &'static str, text: &str) -> Result<String, Refusal> {
     Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
+/// `text`, from files an agent may have named, made safe to show and to carry in a dialog:
+/// each control or invisible format character becomes `?`, as does the `#` of a tmux format
+/// sequence; runs of whitespace become one space.
+pub(crate) fn displayable(text: &str) -> String {
+    let mut shown: String = text
+        .chars()
+        .map(|character| {
+            if character.is_control() || is_invisible_format(character) {
+                '?'
+            } else {
+                character
+            }
+        })
+        .collect();
+    for opener in ["#(", "#{", "#["] {
+        shown = shown.replace(opener, &opener.replacen('#', "?", 1));
+    }
+    shown.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The dialog of a launch whose agent never reported: `reason`, then `harness_trust`, the
+/// launch's note about the harness's folder trust (#1279), cut to fit a question.
+pub(crate) fn unreported_dialog(reason: &str, harness_trust: &str) -> String {
+    let dialog = format!("{reason}; harness trust: {}", displayable(harness_trust));
+    if dialog.chars().count() <= QUESTION_MAX_CHARS {
+        return dialog;
+    }
+    let (end, _) = dialog
+        .char_indices()
+        .nth(QUESTION_MAX_CHARS - 1)
+        .expect("a dialog longer than a question has that many characters");
+    format!("{}…", &dialog[..end])
+}
+
 /// Unicode format characters (category Cf) that change how surrounding text displays: soft
 /// hyphen, zero-width marks, bidirectional embeddings, overrides and isolates, word joiners
 /// and the byte-order mark.
@@ -900,5 +934,45 @@ fn context_from(tokens: Option<i64>, window: Option<i64>) -> Result<Option<Conte
                 .map(|window| count("context_window", window))
                 .transpose()?,
         })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_note_from_files_an_agent_named_is_shown_without_its_control_and_format_characters() {
+        assert_eq!(
+            displayable("differ: .claude/a\u{1b}[2J\u{202E}b, #(run)  x"),
+            "differ: .claude/a?[2J?b, ?(run) x"
+        );
+    }
+
+    #[test]
+    fn the_unreported_dialog_names_the_harness_trust_note() {
+        assert_eq!(
+            unreported_dialog("claude has not reported", "not recorded: why"),
+            "claude has not reported; harness trust: not recorded: why"
+        );
+    }
+
+    #[test]
+    fn a_dialog_exactly_as_long_as_a_question_is_not_cut() {
+        let reason = "r".repeat(QUESTION_MAX_CHARS - "; harness trust: x".len());
+
+        assert_eq!(
+            unreported_dialog(&reason, "x"),
+            format!("{reason}; harness trust: x")
+        );
+    }
+
+    #[test]
+    fn a_long_note_is_cut_to_fit_a_question() {
+        let dialog = unreported_dialog("claude has not reported", &"x".repeat(400));
+
+        assert_eq!(dialog.chars().count(), QUESTION_MAX_CHARS);
+        assert!(dialog.ends_with('…'), "{dialog}");
+        assert!(bounded_text("dialog", &dialog, QUESTION_MAX_CHARS).is_ok());
     }
 }

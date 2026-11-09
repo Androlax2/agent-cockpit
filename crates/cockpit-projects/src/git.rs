@@ -199,6 +199,89 @@ impl Git {
         ))
     }
 
+    /// The commit the checkout at `dir` last fetched as its remote's default branch
+    /// (`refs/remotes/origin/HEAD`), as a full object id; `None` when it has none.
+    pub fn default_branch_commit(&self, dir: &Path) -> Result<Option<String>, Error> {
+        let output = self.output(
+            dir,
+            &[
+                arg("rev-parse"),
+                arg("--verify"),
+                arg("--quiet"),
+                arg("refs/remotes/origin/HEAD^{commit}"),
+            ],
+        )?;
+        // `--verify --quiet` exits 1, printing nothing, for a ref that does not exist.
+        if output.status.code() == Some(1) && output.stdout.is_empty() {
+            return Ok(None);
+        }
+        if !output.status.success() {
+            return Err(git_failure(
+                &[arg("rev-parse"), arg("refs/remotes/origin/HEAD")],
+                &output,
+            ));
+        }
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ))
+    }
+
+    /// The bytes of the regular file at `path`, relative to the root of the checkout at
+    /// `dir`, in `commit`; `None` when the commit has no regular file there (nothing, a
+    /// directory, a link or a submodule).
+    pub fn file_at_commit(
+        &self,
+        dir: &Path,
+        commit: &str,
+        path: &Path,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        use std::os::unix::ffi::OsStrExt;
+
+        let listing = [
+            arg("--literal-pathspecs"),
+            arg("ls-tree"),
+            arg("-z"),
+            arg("--full-tree"),
+            arg(commit),
+            arg("--"),
+            path.as_os_str(),
+        ];
+        let listed = self.output(dir, &listing)?;
+        if !listed.status.success() {
+            return Err(git_failure(&listing, &listed));
+        }
+        // Each entry is `<mode> <type> <id>\t<path>`; a path names a directory's entry, not its
+        // contents, so only the entry whose path is exactly `path` counts.
+        let entry = listed
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter_map(|entry| {
+                let tab = entry.iter().position(|byte| *byte == b'\t')?;
+                Some((&entry[..tab], &entry[tab + 1..]))
+            })
+            .find(|(_, listed_path)| *listed_path == path.as_os_str().as_bytes());
+        let Some((header, _)) = entry else {
+            return Ok(None);
+        };
+        let header = String::from_utf8_lossy(header);
+        let mut fields = header.split(' ');
+        let (Some(mode), Some(kind), Some(object)) = (fields.next(), fields.next(), fields.next())
+        else {
+            return Err(Error::Refused {
+                reason: format!("git ls-tree printed an entry it could not read: {header:?}"),
+            });
+        };
+        if kind != "blob" || !matches!(mode, "100644" | "100755") {
+            return Ok(None);
+        }
+        let reading = [arg("cat-file"), arg("blob"), arg(object)];
+        let read = self.output(dir, &reading)?;
+        if !read.status.success() {
+            return Err(git_failure(&reading, &read));
+        }
+        Ok(Some(read.stdout))
+    }
+
     /// Every `key=value` setting a Git started in `dir` must apply over the configuration:
     /// [`SAFE_CONFIG`], then each program-running driver the configuration names, reset. For
     /// Git this crate does not start, such as an approved command's (#34).

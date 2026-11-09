@@ -13,8 +13,8 @@ use cockpit_config::StartFileSnapshot;
 use cockpit_processes::{ExecutionId, LaunchSpec, Phase, Supervisor, Termination};
 use cockpit_projects::{Checkout, CheckoutKind, Git, Holder};
 use cockpit_provider_api::{
-    Capability, Conversation, HeldCredential, LaunchRequest, Provider, ProviderError,
-    SessionHomeRequest, TrustRequest, WorkspaceTrust,
+    Capability, Conversation, DefaultBranch, HeldCredential, LaunchRequest, Provider,
+    ProviderError, SessionHomeRequest, TrustRequest, WorkspaceTrust,
 };
 use cockpit_tmux::{PaneId, PaneInfo, PaneState, Server, SessionLaunch, SessionName};
 use cockpit_turso::Database;
@@ -1418,11 +1418,21 @@ impl Sessions {
         if !reports_at_launch {
             return Ok(false);
         }
-        let reason = format!(
-            "{} has not reported {deadline} s after its launch: its terminal may wait on a \
-             screen of its own (folder trust, sign-in, update); attach to answer it",
-            session.provider
-        );
+        let reason = match &launch.harness_trust {
+            None => format!(
+                "{} has not reported {deadline} s after its launch: its terminal may wait on a \
+                 screen of its own (folder trust, sign-in, update); attach to answer it",
+                session.provider
+            ),
+            // Shorter, so the note, which names the likely screen, fits the question.
+            Some(note) => crate::reports::unreported_dialog(
+                &format!(
+                    "{} has not reported {deadline} s after its launch; attach to answer it",
+                    session.provider
+                ),
+                note,
+            ),
+        };
         let write = self.database.write().await?;
         let is_flagged = crate::reports::flag_unreported_launch(
             &write,
@@ -2363,18 +2373,22 @@ impl Sessions {
             .await;
         }
         if let Some((checkout, agent_environment)) = &harness_trust {
-            self.trust_checkout(
-                id,
-                session.provider.as_str(),
-                checkout,
-                &session.working_dir,
-                agent_environment,
-                prepared
-                    .staged
-                    .as_ref()
-                    .map(|staged| staged.home_source.clone()),
-            )
-            .await;
+            let note = self
+                .trust_checkout(
+                    id,
+                    session.provider.as_str(),
+                    checkout,
+                    &session.working_dir,
+                    agent_environment,
+                    prepared
+                        .staged
+                        .as_ref()
+                        .map(|staged| staged.home_source.clone()),
+                )
+                .await;
+            if let Some(note) = note {
+                self.note_harness_trust(id, execution, &note).await;
+            }
         }
         let mut environment = prepared.environment;
         environment.push((LAUNCH_TOKEN_VARIABLE.into(), token.as_str().into()));
@@ -2444,7 +2458,8 @@ impl Sessions {
     /// sandboxed launch in such a project's main checkout (#968). A sandboxed agent's home
     /// is `session_home`, its session's own, where the trust is recorded; never the owner's.
     /// Never fails the launch: a refusal leaves the dialog to the owner, and the periodic
-    /// pass shows the session as waiting on them.
+    /// pass shows the session as waiting on them. Returns what the owner should read about
+    /// the trust (#1279): why it was not recorded, or the provider's notice about it.
     #[allow(
         clippy::too_many_arguments,
         reason = "one launch's facts, each passed straight into the provider's request"
@@ -2457,12 +2472,12 @@ impl Sessions {
         working_dir: &Path,
         environment: &[(OsString, OsString)],
         session_home: Option<PathBuf>,
-    ) {
+    ) -> Option<String> {
         let provider = match self.provider(Some(provider)) {
             Ok(provider) => Arc::clone(provider),
             Err(error) => {
                 tracing::warn!(session = %id, %error, "the harness's trust is not recorded");
-                return;
+                return Some(format!("not recorded: {error}"));
             }
         };
         let owner_environment = self.settings.owner_environment.clone();
@@ -2487,12 +2502,15 @@ impl Sessions {
             .await
             .unwrap_or_else(|error| Err(error.to_string()));
         match recorded {
-            Ok(WorkspaceTrust::Recorded) => {
-                tracing::info!(session = %id, "recorded the harness's trust of the checkout");
+            Ok(trust) => {
+                if matches!(trust, WorkspaceTrust::Recorded { .. }) {
+                    tracing::info!(session = %id, notice = ?trust.notice(), "recorded the harness's trust of the checkout");
+                }
+                trust.notice().map(str::to_owned)
             }
-            Ok(WorkspaceTrust::AlreadyTrusted | WorkspaceTrust::NotKept) => {}
             Err(reason) => {
                 tracing::warn!(session = %id, %reason, "the harness's trust is not recorded");
+                Some(format!("not recorded: {reason}"))
             }
         }
     }
@@ -2537,6 +2555,23 @@ impl Sessions {
             .unwrap_or_else(|error| Err(error.to_string()));
         if let Err(reason) = prepared {
             tracing::warn!(session = %id, %reason, "the session's home is not prepared");
+        }
+    }
+
+    /// Keeps `note` about the harness's trust with the launch of `execution`, for the owner:
+    /// `session show`, `session new` and the dialog of a launch that never reports name it.
+    /// A failed write is logged; the launch goes on.
+    async fn note_harness_trust(&self, id: &SessionId, execution: ExecutionId, note: &str) {
+        let noted = async {
+            let write = self.database.write().await?;
+            store::note_harness_trust(&write, execution, &crate::reports::displayable(note))
+                .await?;
+            write.commit().await?;
+            Ok::<(), Error>(())
+        }
+        .await;
+        if let Err(error) = noted {
+            tracing::warn!(session = %id, %error, note, "the harness trust's note is not kept");
         }
     }
 
@@ -4598,6 +4633,7 @@ fn record_harness_trust(
     let config = cockpit_config::load(owner_environment, None, &[])
         .map_err(|error| format!("the owner configuration cannot be read: {error}"))?;
     let trusted_roots = cockpit_projects::resolve_trusted_roots(config.trusted_projects.value);
+    let is_clone = !matches!(checkout.kind, CheckoutKind::Main);
     let trusted_checkout = match checkout.kind {
         CheckoutKind::Main => match cockpit_projects::trust(checkout, &trusted_roots) {
             cockpit_projects::Trust::Trusted => checkout.path.clone(),
@@ -4610,15 +4646,39 @@ fn record_harness_trust(
         },
         _ => cockpit_projects::harness_trust_source(checkout, &trusted_roots, git)?,
     };
+    // From the trusted checkout's own Git: the clone's refs are the agent's to write. It only
+    // explains a refusal, so a read that fails still lets the provider run and revoke a trust
+    // a reused clone kept from an earlier branch.
+    let (commit, unread) = match is_clone.then(|| git.default_branch_commit(&trusted_checkout)) {
+        None | Some(Ok(None)) => (None, None),
+        Some(Ok(Some(commit))) => (Some(commit), None),
+        Some(Err(error)) => (
+            None,
+            Some(format!(
+                "; the trusted checkout's origin/HEAD cannot be read: {error}"
+            )),
+        ),
+    };
+    let files_at_commit = commit.as_deref().map(|commit| {
+        |relative: &Path| {
+            git.file_at_commit(&trusted_checkout, commit, relative)
+                .map_err(|error| error.to_string())
+        }
+    });
+    let default_branch = commit
+        .as_deref()
+        .zip(files_at_commit.as_ref())
+        .map(|(commit, file)| DefaultBranch { commit, file });
     provider
         .trust_workspace(&TrustRequest {
             workspace: &checkout.path,
             working_dir,
             trusted_checkout: &trusted_checkout,
+            default_branch: default_branch.as_ref(),
             environment,
             session_home,
         })
-        .map_err(|error| error.reason)
+        .map_err(|error| format!("{}{}", error.reason, unread.unwrap_or_default()))
 }
 
 #[cfg(test)]

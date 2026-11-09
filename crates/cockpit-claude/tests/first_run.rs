@@ -291,13 +291,14 @@ fn the_folder_trust_recorded_after_keeps_the_answers() {
         workspace: &checkout,
         working_dir: &checkout,
         trusted_checkout: &checkout,
+        default_branch: None,
         environment: &[(OsString::from("HOME"), home.path().join("owner").into())],
         session_home: Some(home.path()),
     });
 
     assert_eq!(
         trusted.map_err(|error| error.reason),
-        Ok(WorkspaceTrust::Recorded)
+        Ok(WorkspaceTrust::Recorded { notice: None })
     );
     let config = home.parsed();
     let key = checkout.canonicalize().unwrap();

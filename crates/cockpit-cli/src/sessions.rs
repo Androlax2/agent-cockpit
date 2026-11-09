@@ -224,6 +224,7 @@ pub fn run(command: Command) -> ExitCode {
             out!("{}", session_line(session));
             out!("{}", choice_lines(session));
             out!("{}", passed_over_lines(session));
+            out!("{}", harness_trust_lines(session));
             out!("{}", exit_lines(session));
             out!("{}", quota_stop_lines(session));
             out!("{}", over_lines(session));
@@ -235,6 +236,7 @@ pub fn run(command: Command) -> ExitCode {
             if let Some(needed) = &session.sign_in_needed {
                 eprintln!("sign-in: {needed}");
             }
+            eprint!("{}", harness_trust_lines(session));
         }
         Reply::Sessions { sessions } => sessions.iter().for_each(|session| {
             out!("{}", session_line(session));
@@ -388,6 +390,16 @@ fn passed_over_lines(session: &SessionView) -> String {
         .iter()
         .map(|line| format!("passed over: {line}\n"))
         .collect()
+}
+
+/// `harness trust: <note>` for a latest launch with a note about the harness's folder trust
+/// (#1279): which project MCP servers still ask, or why it was not recorded.
+fn harness_trust_lines(session: &SessionView) -> String {
+    session
+        .launch
+        .as_ref()
+        .and_then(|launch| launch.harness_trust.as_ref())
+        .map_or_else(String::new, |note| format!("harness trust: {note}\n"))
 }
 
 /// How the session's latest agent exited by itself (#629): `exit:` and

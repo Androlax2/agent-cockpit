@@ -321,7 +321,7 @@ impl Provider for FakeProvider {
             .map_err(|error| ProviderError {
                 reason: format!("the fake's trust log {}: {error}", log.display()),
             })?;
-        Ok(WorkspaceTrust::Recorded)
+        Ok(WorkspaceTrust::Recorded { notice: None })
     }
 
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {

@@ -91,6 +91,7 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
             account: None,
             switched_from: None,
             passed_over: Vec::new(),
+            harness_trust: None,
         }),
         exit: None,
         changed_start_files: Vec::new(),

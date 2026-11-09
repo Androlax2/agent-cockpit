@@ -115,6 +115,7 @@ fn handoff_keeps_the_displayed_task_and_session_launch_until_cancelled() {
         account: None,
         switched_from: None,
         passed_over: Vec::new(),
+        harness_trust: None,
     });
     let mut app = app_with(&["app"], vec![session.clone()], now);
     app.key(Key::Char('T'), now);
@@ -315,6 +316,7 @@ fn the_session_picker_scrolls_to_keep_the_selected_target_visible() {
                 account: None,
                 switched_from: None,
                 passed_over: Vec::new(),
+                harness_trust: None,
             });
             session
         })
@@ -349,6 +351,7 @@ fn a_finished_session_folded_out_of_the_session_list_is_still_a_handoff_target()
         account: None,
         switched_from: None,
         passed_over: Vec::new(),
+        harness_trust: None,
     });
     let mut app = app_with(&["app"], vec![session.clone()], now);
     app.key(Key::Char('T'), now);

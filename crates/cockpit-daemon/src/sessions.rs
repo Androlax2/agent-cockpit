@@ -705,6 +705,7 @@ fn session_view(
             account: launch.account.clone(),
             switched_from: launch.switched_from.clone(),
             passed_over: launch.passed_over.clone(),
+            harness_trust: launch.harness_trust.clone(),
         }),
         exit: session.exit.as_ref().map(|exit| AgentExitView {
             status: match exit.status {

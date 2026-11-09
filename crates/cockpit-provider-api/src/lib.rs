@@ -348,11 +348,12 @@ pub trait Provider: Send + Sync + 'static {
     /// Records the harness's own trust of `request.workspace` before a launch there, so the
     /// harness does not stop on its folder-trust dialog before its agent runs (#702). Torlek
     /// calls it only for a parallel clone it checked may inherit its project's trust; the
-    /// adapter refuses when the clone brings harness settings the trusted checkout lacks,
-    /// revoking a trust it kept from an earlier launch, or when the harness's record cannot
-    /// be written safely, writing nothing. A refusal does not
-    /// stop the launch: the dialog then shows, and the session waits on the owner. Reads and
-    /// writes files: run it off the async workers. The default keeps no trust.
+    /// adapter refuses when the clone brings harness settings the trusted checkout's working
+    /// tree lacks, revoking a trust it kept from an earlier launch, or when the harness's
+    /// record cannot be written safely, writing nothing. The refusal's reason is shown to
+    /// the owner (#1279). A refusal does not stop the launch: the dialog then shows, and the
+    /// session waits on the owner. Reads and writes files: run it off the async workers. The
+    /// default keeps no trust.
     fn trust_workspace(&self, request: &TrustRequest<'_>) -> Result<WorkspaceTrust, ProviderError> {
         let _ = request;
         Ok(WorkspaceTrust::NotKept)
@@ -424,6 +425,11 @@ pub struct TrustRequest<'a> {
     /// The project's main checkout, whose trust the workspace inherits; the workspace itself
     /// when it is that checkout.
     pub trusted_checkout: &'a Path,
+    /// The project's default branch as the trusted checkout last fetched it, so a refusal can
+    /// say when the workspace's settings are merged but the checkout is behind them (#1279);
+    /// it is never accepted in the checkout's place: the owner's pull is the acceptance.
+    /// `None` when the checkout has fetched none, and for the main checkout itself.
+    pub default_branch: Option<&'a DefaultBranch<'a>>,
     /// The environment the agent launches with, which locates the harness's own files.
     pub environment: &'a [(OsString, OsString)],
     /// The folder that backs the agent's home when it runs sandboxed, its session's own
@@ -454,15 +460,53 @@ pub struct HeldCredential<'a> {
     pub placeholder: &'a str,
 }
 
+/// A commit of the project's default branch, read from the trusted checkout's own Git, never
+/// the workspace's: the agent writes the workspace's refs.
+#[derive(Clone, Copy)]
+pub struct DefaultBranch<'a> {
+    /// The commit's full object id.
+    pub commit: &'a str,
+    /// The bytes of the regular file at a path relative to the checkout's root in that
+    /// commit; `None` when the commit has no regular file there.
+    pub file: &'a ReadFile<'a>,
+}
+
+/// Reads the regular file at a path relative to a checkout's root, from its working tree or
+/// a commit: its bytes, `None` when there is none, or why it cannot be read.
+pub type ReadFile<'a> = dyn Fn(&Path) -> Result<Option<Vec<u8>>, String> + Sync + 'a;
+
+impl std::fmt::Debug for DefaultBranch<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DefaultBranch")
+            .field("commit", &self.commit)
+            .finish_non_exhaustive()
+    }
+}
+
 /// What [`Provider::trust_workspace`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceTrust {
     /// The harness keeps no folder trust this adapter records.
     NotKept,
-    /// The harness already trusted the workspace.
-    AlreadyTrusted,
+    /// The harness already trusted the workspace as asked; its record is unchanged.
+    AlreadyTrusted { notice: Option<String> },
     /// The harness's trust of the workspace was recorded.
-    Recorded,
+    Recorded { notice: Option<String> },
+}
+
+impl WorkspaceTrust {
+    /// What the owner should see about this trust (#1279): which of the project's own tool
+    /// servers still wait on the harness's prompt, or why their approvals were not carried
+    /// over. `None` when nothing does.
+    pub fn notice(&self) -> Option<&str> {
+        match self {
+            WorkspaceTrust::NotKept => None,
+            WorkspaceTrust::AlreadyTrusted { notice } | WorkspaceTrust::Recorded { notice } => {
+                notice.as_deref()
+            }
+        }
+    }
 }
 
 /// The provider cannot launch the request; `reason` says why, for the owner.

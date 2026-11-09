@@ -431,6 +431,14 @@ first-run onboarding done and, when an API key is bound, says yes to the API key
 the placeholder the agent holds, so the session reaches its first turn with nobody at its
 terminal.
 
+A parallel clone gets that trust, sandboxed or not, only when its `.claude/` and `.mcp.json`
+match your main checkout's working tree. Settings merged on the default branch count once you
+pull them: while your checkout is behind, trust is withheld (Claude asks) and the reason gives
+the command to run, `git -C <checkout> pull --ff-only`. The project MCP servers you approved in the main checkout
+are approved in the clone too; any other server still asks. `session show` prints a
+`harness trust:` line when a server still asks or when trust was withheld and why; a session
+that waits on Claude's dialog names that reason too.
+
 ### Optional skill pack
 
 Torlek ships six skills from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT),

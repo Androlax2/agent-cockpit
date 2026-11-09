@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use cockpit_claude::ClaudeCode;
 use cockpit_claude::trust::{self, Recorded};
-use cockpit_provider_api::{Provider, TrustRequest, WorkspaceTrust};
+use cockpit_provider_api::{DefaultBranch, Provider, TrustRequest, WorkspaceTrust};
 
 /// A config as Claude Code 2.1.317 writes one: two-space indents, other projects, other keys.
 const CONFIG: &str = r#"{
@@ -75,7 +75,7 @@ fn a_new_clone_gets_claude_codes_own_entry_and_every_other_byte_stays() {
     let recorded = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        true,
+        &trust::Change::Trust(trust::McpApprovals::default()),
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -105,7 +105,7 @@ fn an_entry_that_refused_trust_has_only_its_value_turned_true() {
     trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        true,
+        &trust::Change::Trust(trust::McpApprovals::default()),
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -131,7 +131,7 @@ fn an_entry_without_the_trust_key_gets_only_that_key() {
     trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        true,
+        &trust::Change::Trust(trust::McpApprovals::default()),
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -152,7 +152,7 @@ fn a_config_without_projects_gets_the_projects_member() {
     trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        true,
+        &trust::Change::Trust(trust::McpApprovals::default()),
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -175,7 +175,7 @@ fn an_already_trusted_clone_leaves_the_file_untouched() {
     let recorded = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        true,
+        &trust::Change::Trust(trust::McpApprovals::default()),
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -195,7 +195,7 @@ fn the_write_keeps_the_files_mode_and_releases_the_lock() {
     trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        true,
+        &trust::Change::Trust(trust::McpApprovals::default()),
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -218,7 +218,7 @@ fn a_config_that_cannot_be_parsed_is_refused_and_left_as_it_is() {
     let refused = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        true,
+        &trust::Change::Trust(trust::McpApprovals::default()),
         trust::WhenMissing::Refuse,
     )
     .unwrap_err();
@@ -237,7 +237,7 @@ fn a_project_named_twice_is_refused() {
     let refused = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        true,
+        &trust::Change::Trust(trust::McpApprovals::default()),
         trust::WhenMissing::Refuse,
     )
     .unwrap_err();
@@ -254,7 +254,7 @@ fn a_config_held_locked_by_claude_code_is_refused() {
     let refused = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        true,
+        &trust::Change::Trust(trust::McpApprovals::default()),
         trust::WhenMissing::Refuse,
     )
     .unwrap_err();
@@ -274,7 +274,7 @@ fn a_config_that_is_a_link_is_refused() {
     let refused = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        true,
+        &trust::Change::Trust(trust::McpApprovals::default()),
         trust::WhenMissing::Refuse,
     )
     .unwrap_err();
@@ -292,7 +292,7 @@ fn revoking_turns_only_the_clones_existing_trust_false() {
     let revoked = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        false,
+        &trust::Change::Revoke,
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -314,7 +314,7 @@ fn revoking_a_clone_never_trusted_adds_nothing() {
     let revoked = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        false,
+        &trust::Change::Revoke,
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -461,6 +461,7 @@ fn trust_through_the_adapter(
             workspace: clone,
             working_dir: clone,
             trusted_checkout: main,
+            default_branch: None,
             environment: &environment(&[("HOME", home)]),
             session_home: None,
         })
@@ -473,7 +474,7 @@ fn a_clone_with_its_trusted_checkouts_settings_is_trusted_through_the_adapter() 
 
     let trusted = trust_through_the_adapter(dir.path(), &main, &clone);
 
-    assert_eq!(trusted, Ok(WorkspaceTrust::Recorded));
+    assert_eq!(trusted, Ok(WorkspaceTrust::Recorded { notice: None }));
 }
 
 #[test]
@@ -505,7 +506,7 @@ fn a_missing_config_the_caller_may_create_is_created_owner_only_with_the_trust()
     let recorded = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        true,
+        &trust::Change::Trust(trust::McpApprovals::default()),
         trust::WhenMissing::Create,
     )
     .unwrap();
@@ -524,7 +525,7 @@ fn a_missing_config_is_refused_unless_the_caller_may_create_it() {
     let refused = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        true,
+        &trust::Change::Trust(trust::McpApprovals::default()),
         trust::WhenMissing::Refuse,
     )
     .unwrap_err();
@@ -541,7 +542,7 @@ fn revoking_in_a_missing_config_creates_nothing() {
     let recorded = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        false,
+        &trust::Change::Revoke,
         trust::WhenMissing::Create,
     )
     .unwrap();
@@ -563,13 +564,14 @@ fn a_sandboxed_launch_records_the_trust_in_the_sessions_home_not_the_owners() {
         workspace: &clone,
         working_dir: &clone,
         trusted_checkout: &main,
+        default_branch: None,
         environment: &environment(&[("HOME", dir.path())]),
         session_home: Some(&session_home),
     });
 
     assert_eq!(
         trusted.map_err(|error| error.reason),
-        Ok(WorkspaceTrust::Recorded)
+        Ok(WorkspaceTrust::Recorded { notice: None })
     );
     assert_eq!(
         fs::read_to_string(dir.path().join(".claude.json")).unwrap(),
@@ -596,4 +598,298 @@ fn a_session_config_is_refused_when_claude_config_dir_names_another_folder() {
     .unwrap_err();
 
     assert!(refused.contains("CLAUDE_CONFIG_DIR"), "{refused}");
+}
+
+/// Issue #1279: the default branch as the trusted checkout fetched it, as the files it holds.
+const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+fn trust_with_default_branch(
+    home: &Path,
+    main: &Path,
+    clone: &Path,
+    files: &[(&str, &str)],
+) -> Result<WorkspaceTrust, String> {
+    let files: Vec<(PathBuf, Vec<u8>)> = files
+        .iter()
+        .map(|(path, text)| (PathBuf::from(path), text.as_bytes().to_vec()))
+        .collect();
+    let file = |relative: &Path| {
+        Ok(files
+            .iter()
+            .find(|(path, _)| path == relative)
+            .map(|(_, bytes)| bytes.clone()))
+    };
+    let default_branch = DefaultBranch {
+        commit: COMMIT,
+        file: &file,
+    };
+    ClaudeCode::new(PathBuf::from("/usr/bin/claude"), None, None)
+        .trust_workspace(&TrustRequest {
+            workspace: clone,
+            working_dir: clone,
+            trusted_checkout: main,
+            default_branch: Some(&default_branch),
+            environment: &environment(&[("HOME", home)]),
+            session_home: None,
+        })
+        .map_err(|error| error.reason)
+}
+
+/// The clone's entry in the fixture home's config.
+fn clone_entry(home: &Path, clone: &Path) -> serde_json::Value {
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
+    config["projects"][clone.canonicalize().unwrap().to_str().unwrap()].clone()
+}
+
+const SETTINGS: &str = "{\"hooks\": {}}";
+const DOCS_SERVER: &str = r#"{"mcpServers": {"docs": {"command": "docs-mcp"}}}"#;
+const DOCS_AND_EXTRA: &str =
+    r#"{"mcpServers": {"docs": {"command": "docs-mcp"}, "extra": {"command": "extra-mcp"}}}"#;
+
+/// A home whose config approves `approvals` (members of the trusted checkout's entry) for the
+/// main checkout, and a clone bringing `clone_mcp` as its `.mcp.json`.
+fn mcp_fixture(
+    main_mcp: Option<&str>,
+    clone_mcp: &str,
+    approvals: &str,
+) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let (dir, main, clone) = checkouts();
+    if let Some(main_mcp) = main_mcp {
+        fs::write(main.join(".mcp.json"), main_mcp).unwrap();
+    }
+    fs::write(clone.join(".mcp.json"), clone_mcp).unwrap();
+    let main_key = main.canonicalize().unwrap().to_str().unwrap().to_owned();
+    fs::write(
+        dir.path().join(".claude.json"),
+        format!(
+            "{{\"projects\": {{{}: {{\"hasTrustDialogAccepted\": true{approvals}}}}}}}",
+            serde_json::to_string(&main_key).unwrap()
+        ),
+    )
+    .unwrap();
+    (dir, main, clone)
+}
+
+/// Option B of #1279: the owner's pull, not a merge on the remote, accepts settings.
+#[test]
+fn a_clone_of_settings_merged_while_the_checkout_is_behind_is_refused_naming_the_pull() {
+    let (dir, main, clone) = adapter_fixture(|_| CONFIG.to_owned());
+    fs::write(clone.join(".mcp.json"), "{}").unwrap();
+
+    let refused = trust_with_default_branch(
+        dir.path(),
+        &main,
+        &clone,
+        &[(".claude/settings.json", SETTINGS), (".mcp.json", "{}")],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        refused,
+        format!(
+            "run `git -C {} pull --ff-only`: the trusted checkout is behind its origin/HEAD at \
+             0123456789ab, which holds this clone's settings (.mcp.json)",
+            main.display()
+        )
+    );
+    assert_eq!(clone_entry(dir.path(), &clone), serde_json::Value::Null);
+}
+
+#[test]
+fn settings_the_default_branch_lacks_too_are_refused_naming_each_file() {
+    let (dir, main, clone) = adapter_fixture(|_| CONFIG.to_owned());
+    fs::write(clone.join(".mcp.json"), "{\"mcpServers\": {}}").unwrap();
+
+    let refused = trust_with_default_branch(
+        dir.path(),
+        &main,
+        &clone,
+        &[(".claude/settings.json", SETTINGS), (".mcp.json", "{}")],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        refused,
+        "its harness settings differ from the trusted checkout's working tree (.mcp.json)"
+    );
+    assert_eq!(clone_entry(dir.path(), &clone), serde_json::Value::Null);
+}
+
+/// Each file matches one reference, but no reference holds them all: no pull would help.
+#[test]
+fn settings_mixing_the_working_tree_and_the_default_branch_name_no_pull() {
+    let (dir, main, clone) = adapter_fixture(|_| CONFIG.to_owned());
+    fs::write(clone.join(".mcp.json"), "{}").unwrap();
+
+    let refused = trust_with_default_branch(
+        dir.path(),
+        &main,
+        &clone,
+        &[(".claude/settings.json", "{}"), (".mcp.json", "{}")],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        refused,
+        "its harness settings differ from the trusted checkout's working tree (.mcp.json)"
+    );
+}
+
+#[test]
+fn a_checkout_path_needing_quotes_is_quoted_in_the_pull_command() {
+    let (dir, _main, clone) = adapter_fixture(|_| CONFIG.to_owned());
+    let main = dir.path().join("owner's checkout");
+    fs::create_dir_all(main.join(".claude")).unwrap();
+    fs::write(main.join(".claude/settings.json"), SETTINGS).unwrap();
+    fs::write(clone.join(".mcp.json"), "{}").unwrap();
+
+    let refused = trust_with_default_branch(
+        dir.path(),
+        &main,
+        &clone,
+        &[(".claude/settings.json", SETTINGS), (".mcp.json", "{}")],
+    )
+    .unwrap_err();
+
+    assert!(
+        refused.starts_with(&format!(
+            "run `git -C '{}' pull --ff-only`",
+            main.display().to_string().replace('\'', "'\\''")
+        )),
+        "{refused}"
+    );
+}
+
+#[test]
+fn the_owners_approved_servers_carry_over_to_a_clone_that_defines_them_alike() {
+    let (dir, main, clone) = mcp_fixture(
+        Some(DOCS_SERVER),
+        DOCS_SERVER,
+        r#", "enabledMcpjsonServers": ["docs"], "disabledMcpjsonServers": ["old"]"#,
+    );
+
+    let trusted = trust_through_the_adapter(dir.path(), &main, &clone).unwrap();
+
+    assert_eq!(trusted, WorkspaceTrust::Recorded { notice: None });
+    let entry = clone_entry(dir.path(), &clone);
+    assert_eq!(entry["enabledMcpjsonServers"], serde_json::json!(["docs"]));
+    assert_eq!(entry["disabledMcpjsonServers"], serde_json::json!(["old"]));
+}
+
+#[test]
+fn a_server_the_owner_never_approved_is_not_enabled_and_is_named() {
+    let (dir, main, clone) = mcp_fixture(
+        Some(DOCS_AND_EXTRA),
+        DOCS_AND_EXTRA,
+        r#", "enabledMcpjsonServers": ["docs"]"#,
+    );
+
+    let trusted = trust_through_the_adapter(dir.path(), &main, &clone).unwrap();
+
+    assert_eq!(
+        trusted.notice(),
+        Some("MCP servers left to Claude Code's prompt: extra")
+    );
+    let entry = clone_entry(dir.path(), &clone);
+    assert_eq!(entry["enabledMcpjsonServers"], serde_json::json!(["docs"]));
+}
+
+/// The settings check refuses such a clone first; the carry-over keeps its own guard.
+#[test]
+fn a_server_the_clone_defines_otherwise_than_the_checkout_waits_on_the_prompt() {
+    let redefined = r#"{"mcpServers": {"docs": {"command": "other-mcp"}}}"#;
+    let (dir, main, clone) = mcp_fixture(
+        Some(DOCS_SERVER),
+        redefined,
+        r#", "enabledMcpjsonServers": ["docs"]"#,
+    );
+
+    let carried =
+        trust::carried_approvals(&dir.path().join(".claude.json"), &clone, &main, &clone).unwrap();
+
+    assert_eq!(carried.approvals, trust::McpApprovals::default());
+    assert_eq!(carried.waiting, ["docs"]);
+}
+
+/// "Use all of this project's servers" in the checkout approves each server it defines, by
+/// name.
+#[test]
+fn approving_all_servers_in_the_checkout_carries_each_one_by_name() {
+    let (dir, main, clone) = mcp_fixture(
+        Some(DOCS_AND_EXTRA),
+        DOCS_AND_EXTRA,
+        r#", "enableAllProjectMcpServers": true"#,
+    );
+
+    trust_through_the_adapter(dir.path(), &main, &clone).unwrap();
+
+    let entry = clone_entry(dir.path(), &clone);
+    assert_eq!(
+        entry["enabledMcpjsonServers"],
+        serde_json::json!(["docs", "extra"])
+    );
+    assert_eq!(entry["enableAllProjectMcpServers"], serde_json::Value::Null);
+}
+
+/// A reused clone whose next branch is refused keeps no approval an earlier launch carried.
+#[test]
+fn revoking_clears_the_clones_project_server_approvals() {
+    let fixture = Fixture::new("");
+    let config = format!(
+        "{{\"projects\": {{{}: {{\"hasTrustDialogAccepted\": true, \
+         \"enabledMcpjsonServers\": [\"docs\"], \"enableAllProjectMcpServers\": true}}}}}}",
+        serde_json::to_string(&fixture.key()).unwrap()
+    );
+    fs::write(fixture.config(), &config).unwrap();
+
+    trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        &trust::Change::Revoke,
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap();
+
+    assert_eq!(
+        fixture.read(),
+        config
+            .replace(
+                "\"hasTrustDialogAccepted\": true",
+                "\"hasTrustDialogAccepted\": false"
+            )
+            .replace("[\"docs\"]", "[]")
+            .replace(
+                "\"enableAllProjectMcpServers\": true",
+                "\"enableAllProjectMcpServers\": false"
+            )
+    );
+}
+
+/// A server the owner rejected in the clone itself stays rejected beside the checkout's.
+#[test]
+fn the_clones_own_rejections_stay_beside_the_carried_ones() {
+    let fixture = Fixture::new("");
+    let config = format!(
+        "{{\"projects\": {{{}: {{\"hasTrustDialogAccepted\": true, \
+         \"disabledMcpjsonServers\": [\"mine\"]}}}}}}",
+        serde_json::to_string(&fixture.key()).unwrap()
+    );
+    fs::write(fixture.config(), &config).unwrap();
+
+    trust::record(
+        &fixture.config(),
+        &fixture.workspace(),
+        &trust::Change::Trust(trust::McpApprovals {
+            enabled: Vec::new(),
+            disabled: vec!["old".to_owned(), "mine".to_owned()],
+        }),
+        trust::WhenMissing::Refuse,
+    )
+    .unwrap();
+
+    assert_eq!(
+        fixture.read(),
+        config.replace("[\"mine\"]", "[\"mine\",\"old\"]")
+    );
 }

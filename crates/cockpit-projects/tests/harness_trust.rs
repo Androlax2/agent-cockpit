@@ -132,3 +132,77 @@ fn a_clone_without_an_origin_is_refused() {
 
     assert!(refused.contains("has no origin"), "{refused}");
 }
+
+/// Issue #1279: the main checkout's fetched default branch, read from its own Git.
+mod default_branch {
+    use super::*;
+
+    /// A main checkout whose `origin/HEAD` names a commit adding `.mcp.json` and a
+    /// `.claude/` folder that its working tree, still on the first commit, lacks.
+    fn behind() -> (Scratch, PathBuf, String) {
+        let scratch = Scratch::new();
+        let main = scratch.repository("app");
+        std::fs::create_dir(main.join(".claude")).unwrap();
+        std::fs::write(main.join(".claude/settings.json"), "{}").unwrap();
+        std::fs::write(main.join(".mcp.json"), "{\"mcpServers\": {}}").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", main.join("link")).unwrap();
+        git(&main, &["add", "."]);
+        git(&main, &["commit", "--quiet", "-m", "settings"]);
+        let merged = git(&main, &["rev-parse", "HEAD"]).trim().to_owned();
+        git(&main, &["update-ref", "refs/remotes/origin/main", &merged]);
+        git(
+            &main,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+        git(&main, &["reset", "--quiet", "--hard", "HEAD~1"]);
+        (scratch, main, merged)
+    }
+
+    #[test]
+    fn the_default_branch_commit_is_the_one_origin_head_names() {
+        let (_scratch, main, merged) = behind();
+
+        assert_eq!(
+            Git::from_path().default_branch_commit(&main).unwrap(),
+            Some(merged)
+        );
+    }
+
+    #[test]
+    fn a_checkout_that_fetched_no_default_branch_has_none() {
+        let scratch = Scratch::new();
+        let main = scratch.repository("app");
+
+        assert_eq!(Git::from_path().default_branch_commit(&main).unwrap(), None);
+    }
+
+    #[test]
+    fn a_file_the_default_branch_added_is_read_from_the_commit() {
+        let (_scratch, main, merged) = behind();
+
+        let read = Git::from_path()
+            .file_at_commit(&main, &merged, Path::new(".mcp.json"))
+            .unwrap();
+
+        assert_eq!(read, Some(b"{\"mcpServers\": {}}".to_vec()));
+        assert!(!main.join(".mcp.json").exists());
+    }
+
+    #[test]
+    fn a_folder_a_link_or_a_missing_path_is_no_file() {
+        let (_scratch, main, merged) = behind();
+        let git = Git::from_path();
+
+        for path in [".claude", "link", "missing.json", ".claude/*"] {
+            assert_eq!(
+                git.file_at_commit(&main, &merged, Path::new(path)).unwrap(),
+                None,
+                "{path}"
+            );
+        }
+    }
+}

@@ -311,6 +311,7 @@ async fn observe(context: &Context, sender: &Sender, launch_token: Option<String
             agent: session.provider.to_string(),
             state: crate::sessions::state_view(session.state),
             working_dir: session.working_dir.to_string_lossy().into_owned(),
+            harness_trust: session.launch.and_then(|launch| launch.harness_trust),
         })
         .collect();
     Ok(Reply::AgentSessions { sessions })

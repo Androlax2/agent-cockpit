@@ -208,6 +208,9 @@ pub struct Launch {
     /// The login accounts the launch passed over for want of the project's grant, each
     /// naming the account and the grant that lets it (#59).
     pub passed_over: Vec<String>,
+    /// What the owner should read about the harness's folder trust Torlek recorded for this
+    /// launch, or why it did not (#1279); `None` when there is nothing to say.
+    pub harness_trust: Option<String>,
 }
 
 /// The release whose helpers and instruction bundle a launch runs with (report 13, #64):

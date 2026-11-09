@@ -577,52 +577,75 @@ impl Provider for ClaudeCode {
         self.bridge.is_some()
     }
 
-    /// A clone whose settings differ from the trusted checkout's, or cannot be compared, has
-    /// any trust recorded earlier revoked: a reused clone never keeps the trust a previous
-    /// branch earned.
+    /// A clone whose settings differ from the trusted checkout's working tree, or cannot be
+    /// compared, has any trust recorded earlier revoked: a reused clone never keeps the trust
+    /// a previous branch earned (#702). The refusal says when the checkout is only behind its
+    /// fetched default branch (#1279). A trusted clone gets the owner's project MCP approvals
+    /// of the trusted checkout, for each server it defines as the checkout does.
     fn trust_workspace(&self, request: &TrustRequest<'_>) -> Result<WorkspaceTrust, ProviderError> {
         let refused = |reason: String| ProviderError { reason };
+        let owner_config = trust::config_file(request.environment);
         let (config, when_missing) = match request.session_home {
             Some(session_home) => (
                 trust::session_config_file(request.environment, session_home),
                 trust::WhenMissing::Create,
             ),
-            None => (
-                trust::config_file(request.environment),
-                trust::WhenMissing::Refuse,
-            ),
+            None => (owner_config.clone(), trust::WhenMissing::Refuse),
         };
         let config = config.map_err(refused)?;
-        let vetted = trust::unexpected_settings(
+        if let Err(reason) = trust::vetted_settings(
             request.workspace,
             request.trusted_checkout,
             request.working_dir,
-        )
-        .and_then(|unexpected| {
-            if unexpected.is_empty() {
-                return Ok(());
-            }
-            let names: Vec<String> = unexpected
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect();
-            Err(format!(
-                "the clone's harness settings differ from {}: {}",
-                request.trusted_checkout.display(),
-                names.join(", ")
-            ))
-        });
-        if let Err(reason) = vetted {
-            let revoked = match trust::record(&config, request.workspace, false, when_missing) {
+            request.default_branch,
+        ) {
+            let revoked = match trust::record(
+                &config,
+                request.workspace,
+                &trust::Change::Revoke,
+                when_missing,
+            ) {
                 Ok(trust::Recorded::Written) => "; its earlier trust is revoked".to_owned(),
                 Ok(trust::Recorded::Unchanged) => String::new(),
-                Err(error) => format!("; its earlier trust, if any, could not be revoked: {error}"),
+                Err(error) => {
+                    format!("; its earlier trust, if any, could not be revoked: {error}")
+                }
             };
             return Err(refused(format!("{reason}{revoked}")));
         }
-        match trust::record(&config, request.workspace, true, when_missing).map_err(refused)? {
-            trust::Recorded::Unchanged => Ok(WorkspaceTrust::AlreadyTrusted),
-            trust::Recorded::Written => Ok(WorkspaceTrust::Recorded),
+        let carried = owner_config.and_then(|owner_config| {
+            trust::carried_approvals(
+                &owner_config,
+                request.workspace,
+                request.trusted_checkout,
+                request.working_dir,
+            )
+        });
+        let (approvals, notice) = match carried {
+            Ok(carried) => {
+                let notice = (!carried.waiting.is_empty()).then(|| {
+                    format!(
+                        "MCP servers left to Claude Code's prompt: {}",
+                        carried.waiting.join(", ")
+                    )
+                });
+                (carried.approvals, notice)
+            }
+            Err(reason) => (
+                trust::McpApprovals::default(),
+                Some(format!("MCP approvals not carried over: {reason}")),
+            ),
+        };
+        match trust::record(
+            &config,
+            request.workspace,
+            &trust::Change::Trust(approvals),
+            when_missing,
+        )
+        .map_err(refused)?
+        {
+            trust::Recorded::Unchanged => Ok(WorkspaceTrust::AlreadyTrusted { notice }),
+            trust::Recorded::Written => Ok(WorkspaceTrust::Recorded { notice }),
         }
     }
 
