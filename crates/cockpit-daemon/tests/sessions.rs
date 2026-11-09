@@ -2114,6 +2114,37 @@ async fn a_launch_whose_agent_never_reports_waits_on_the_owner_with_why() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_unreported_launch_shows_the_fixture_panes_safe_last_lines() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = Home::new();
+    let fixture = home.path().join("pane-fixture");
+    std::fs::write(&fixture, "#!/bin/sh\nprintf '%0400d\n' 0\nprintf '\x1b[31mSign in\x1b[0m now\nNext\x07 step #(unsafe)\n'\n").unwrap();
+    std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let daemon = home
+        .start_wired(|| {
+            let mut wiring = home.wiring(REPORTING, short_report_deadline());
+            wiring.providers = vec![Arc::new(
+                FakeProvider::new(ProviderName::new("fake").unwrap(), home.agent_log())
+                    .reporting_at_launch()
+                    .running(fixture.clone()),
+            )];
+            wiring
+        })
+        .await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    let report = report_once(&client, &started.id, |report| report.needs_input.is_some()).await;
+    let text = report.needs_input.unwrap();
+    assert!(text.contains("Sign in now Next step"), "{text:?}");
+    assert!(!text.chars().any(char::is_control), "{text:?}");
+    assert!(!text.contains("#("), "{text:?}");
+    assert!(text.chars().count() <= 300, "{text:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_agents_first_report_answers_the_unreported_launch() {
     let home = Home::new();
     let daemon = home.start(REPORTING, short_report_deadline()).await;
