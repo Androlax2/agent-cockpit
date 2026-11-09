@@ -80,3 +80,39 @@ fn a_prompt_sign_without_its_padding_is_not_the_prompt() {
     assert_eq!(read("❯\n"), None);
     assert_eq!(read("│ ❯ │\n"), None);
 }
+
+const SUSPENDED_NOTICE: &str =
+    "Claude Code has been suspended. Run `fg` to bring Claude Code back.";
+
+fn is_suspended(screen: &str) -> bool {
+    common::claude().is_suspended(screen)
+}
+
+#[test]
+fn the_suspend_notice_below_the_last_frame_is_suspended() {
+    let screen = format!(
+        "● Done.\n\n────────\n❯\u{a0}\n────────\n\n{SUSPENDED_NOTICE}\n\
+         Note: ctrl + z now suspends Claude Code, ctrl + _ undoes input.\n"
+    );
+    assert!(is_suspended(&screen));
+}
+
+#[test]
+fn text_typed_after_the_suspend_notice_keeps_it_suspended() {
+    let screen = format!("❯\u{a0}\n\n{SUSPENDED_NOTICE}\nhello from another session\n");
+    assert!(is_suspended(&screen));
+}
+
+#[test]
+fn a_screen_quoting_the_suspend_notice_is_not_suspended() {
+    for screen in [
+        // Quoted by the conversation: indented.
+        format!("● The issue says:\n  {SUSPENDED_NOTICE}\n\n❯\u{a0}\n"),
+        // Printed at the first column, then the prompt drawn again below it.
+        format!("{SUSPENDED_NOTICE}\n● Resumed.\n────────\n❯\u{a0}\n────────\n"),
+        "● Done.\n\n❯\u{a0}\n".to_owned(),
+        String::new(),
+    ] {
+        assert!(!is_suspended(&screen), "{screen:?}");
+    }
+}

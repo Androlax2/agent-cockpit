@@ -489,7 +489,8 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::SleepRefused { .. }
         | Error::LaunchInProgress { .. }
         | Error::TerminalBusy { .. }
-        | Error::StopUnconfirmed { .. } => ErrorCode::Conflict,
+        | Error::StopUnconfirmed { .. }
+        | Error::AgentSuspended { .. } => ErrorCode::Conflict,
         Error::StepsBusy { .. } | Error::SessionBusy { .. } => ErrorCode::Busy,
         Error::UnknownConversation { .. }
         | Error::DeliveryUnconfirmed { .. }
@@ -622,6 +623,9 @@ fn log_tick(report: &cockpit_sessions::TickReport) {
             session = %id,
             "a session runs with no agent in its terminal; it waits on the owner"
         );
+    }
+    for id in &report.resumed {
+        tracing::warn!(session = %id, "a session's agent was suspended (Ctrl+Z); it was resumed");
     }
     for (id, reason) in &report.errors {
         tracing::warn!(session = %id, reason, "a session's periodic step failed");

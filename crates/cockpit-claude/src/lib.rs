@@ -567,6 +567,10 @@ impl Provider for ClaudeCode {
         screen::read(screen)
     }
 
+    fn is_suspended(&self, screen: &str) -> bool {
+        screen::is_suspended(screen)
+    }
+
     /// Its `SessionStart` hook runs as Claude Code starts, before any prompt: within a few
     /// seconds on 2.1.317, MCP servers included.
     fn reports_at_launch(&self) -> bool {

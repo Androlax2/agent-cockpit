@@ -824,6 +824,30 @@ impl Supervisor {
         })
     }
 
+    /// Sends `SIGCONT` to the whole containment of a running execution, so a program that
+    /// suspended itself, or waits for that signal after a job-control suspend, runs on
+    /// (#1271). Harmless to the processes that already run. `None` when the execution is gone
+    /// or not identified: nothing was signalled.
+    pub async fn send_continue(
+        &self,
+        database: &Database,
+        id: ExecutionId,
+    ) -> Result<Option<SignalOutcome>, Error> {
+        let execution = store::execution(database, id).await?;
+        let Presence::Ours { process_group, .. } =
+            self.record_presence(database, &execution).await?
+        else {
+            return Ok(None);
+        };
+        match (&execution.containment, process_group) {
+            (Containment::SystemdScope { unit }, _) => {
+                self.systemd.continue_scope(unit).await.map(Some)
+            }
+            (Containment::ProcessGroup, Some(group)) => platform::continue_group(group).map(Some),
+            (Containment::ProcessGroup, None) => Ok(None),
+        }
+    }
+
     /// The execution's presence for a stop request. One that is still launching gets up to
     /// the launch timeout to confirm its start, so a stop that races the launch is not lost.
     async fn identify_for_termination(

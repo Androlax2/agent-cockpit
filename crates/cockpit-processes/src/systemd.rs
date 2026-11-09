@@ -120,6 +120,15 @@ impl SystemdTools {
             Signal::Term => "--signal=SIGTERM",
             Signal::Kill => "--signal=SIGKILL",
         };
+        self.kill(unit, name).await
+    }
+
+    /// `SIGCONT` to every process of the scope's cgroup (#1271).
+    pub(crate) async fn continue_scope(&self, unit: &str) -> Result<crate::SignalOutcome, Error> {
+        self.kill(unit, "--signal=SIGCONT").await
+    }
+
+    async fn kill(&self, unit: &str, name: &str) -> Result<crate::SignalOutcome, Error> {
         match self
             .systemctl(&["--user", "kill", "--kill-who=all", name, unit])
             .await

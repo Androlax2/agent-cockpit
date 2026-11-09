@@ -180,7 +180,7 @@ impl Sessions {
         let tmux = self.tmux.clone();
         let name = terminal_name(id)?;
         let session_id = id.clone();
-        self.blocking("deliver an action to the agent", move || {
+        let delivered = self.blocking("deliver an action to the agent", move || {
             // Held until the blocking call returns, even when its caller times out.
             let _guard = guard;
             let action = message.as_deref().map_or(Action::Cancel, Action::Submit);
@@ -191,7 +191,7 @@ impl Sessions {
             };
             match provider.deliver(&action, &target, &conversation) {
                 Ok(Delivered::Unsupported) => {}
-                Ok(_) => return Ok(()),
+                Ok(_) => return Ok(Typing::Done),
                 Err(error) => {
                     return Err(Error::DeliveryUnconfirmed {
                         session: session_id,
@@ -202,6 +202,11 @@ impl Sessions {
             let input = provider.input(&action, activity)?;
             let tmux = tmux.map_err(|reason| Error::TmuxUnavailable { reason })?;
             let pane = agent_pane(&tmux, &name)?;
+            // Typed into a released terminal, the text would sit at a prompt nobody reads,
+            // or reach the harness as one stale burst once it resumes (#1271).
+            if shows_suspended(&tmux, &pane, provider.as_ref())? {
+                return Ok(Typing::AgentSuspended);
+            }
             let keys: Vec<Keystroke> = input
                 .iter()
                 .map(|step| match step {
@@ -212,24 +217,53 @@ impl Sessions {
                 })
                 .collect();
             refuse_before_typing(&keys).map_err(Error::Tmux)?;
-            type_in_separate_writes(&tmux, &pane, &keys).map_err(|failure| match failure {
-                (0, error @ cockpit_tmux::Error::CommandFailed { .. })
-                | (0, error @ cockpit_tmux::Error::InvalidArgument { .. }) => Error::Tmux(error),
-                (_, other) => Error::TypingUnconfirmed {
-                    session: session_id,
-                    reason: format!("tmux: {other}"),
-                },
-            })
-        })
-        .await
-        .map_err(|error| match error {
-            Error::StepTimedOut { .. } | Error::Blocking(_) => Error::DeliveryUnconfirmed {
+            type_in_separate_writes(&tmux, &pane, &keys)
+                .map(|()| Typing::Done)
+                .map_err(|failure| match failure {
+                    (0, error @ cockpit_tmux::Error::CommandFailed { .. })
+                    | (0, error @ cockpit_tmux::Error::InvalidArgument { .. }) => {
+                        Error::Tmux(error)
+                    }
+                    (_, other) => Error::TypingUnconfirmed {
+                        session: session_id,
+                        reason: format!("tmux: {other}"),
+                    },
+                })
+        });
+        match delivered.await {
+            Ok(Typing::Done) => Ok(()),
+            Ok(Typing::AgentSuspended) => Err(Error::AgentSuspended {
                 session: id.clone(),
-                reason: error.to_string(),
-            },
-            other => other,
-        })
+                is_resumed: self.continue_suspended(id, launch.execution).await,
+            }),
+            Err(error @ (Error::StepTimedOut { .. } | Error::Blocking(_))) => {
+                Err(Error::DeliveryUnconfirmed {
+                    session: id.clone(),
+                    reason: error.to_string(),
+                })
+            }
+            Err(other) => Err(other),
+        }
     }
+
+    /// Sends `SIGCONT` to a suspended agent found by a delivery, which is refused all the
+    /// same: whether it was sent. A failure is logged, the delivery's refusal says it.
+    async fn continue_suspended(&self, id: &SessionId, execution: ExecutionId) -> bool {
+        match self.send_continue(execution).await {
+            Ok(is_sent) => is_sent,
+            Err(error) => {
+                tracing::warn!(session = %id, %error, "a suspended agent could not be resumed");
+                false
+            }
+        }
+    }
+}
+
+/// What a delivery that reached the agent's terminal found there.
+enum Typing {
+    Done,
+    /// The agent released its terminal (#1271): nothing was typed.
+    AgentSuspended,
 }
 
 /// How long typed text settles before the keys after it are written. Claude Code reads a

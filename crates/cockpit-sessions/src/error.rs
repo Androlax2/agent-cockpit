@@ -71,6 +71,12 @@ pub enum Error {
         session: SessionId,
         execution: ExecutionId,
     },
+    /// The agent's terminal shows its harness suspended (Ctrl+Z, #1271): it reads nothing
+    /// typed, so nothing was. `is_resumed` when it was sent `SIGCONT` since.
+    AgentSuspended {
+        session: SessionId,
+        is_resumed: bool,
+    },
     Provider(cockpit_provider_api::ProviderError),
     Projects(cockpit_projects::Error),
     Processes(cockpit_processes::Error),
@@ -244,6 +250,22 @@ impl fmt::Display for Error {
                 formatter,
                 "session {session}'s agent termination is unconfirmed: {execution} was not \
                  observed ended; the session keeps it"
+            ),
+            Error::AgentSuspended {
+                session,
+                is_resumed: true,
+            } => write!(
+                formatter,
+                "session {session}'s agent was suspended (Ctrl+Z) and read nothing typed; \
+                 nothing was sent. Torlek resumed it: send again"
+            ),
+            Error::AgentSuspended {
+                session,
+                is_resumed: false,
+            } => write!(
+                formatter,
+                "session {session}'s agent is suspended (Ctrl+Z) and reads nothing typed; \
+                 nothing was sent, and Torlek could not resume it"
             ),
             Error::Provider(error) => write!(formatter, "the agent's provider: {error}"),
             Error::Projects(error) => error.fmt(formatter),
