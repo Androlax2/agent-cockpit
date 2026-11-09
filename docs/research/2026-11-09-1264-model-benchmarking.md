@@ -423,7 +423,7 @@ merged pull request is the reference result.
 | Contained, clear test | [#1183](https://github.com/Androlax2/agent-cockpit/issues/1183) | [#1186](https://github.com/Androlax2/agent-cockpit/pull/1186) | `cce11f7c8eceac3a83bba46f479d00b67f26f9f2` | Refusal messages tested at the CLI; the reference took 6 review findings |
 | Risky, cross-crate | [#1003](https://github.com/Androlax2/agent-cockpit/issues/1003) | [#1012](https://github.com/Androlax2/agent-cockpit/pull/1012) | `f1b9b05ed72d74c2b555577ec716f37ae18a696e` | A race across daemon, sandbox and sessions; the reference reproduced it deterministically first |
 | Security | [#1160](https://github.com/Androlax2/agent-cockpit/issues/1160) | [#1162](https://github.com/Androlax2/agent-cockpit/pull/1162) | `49523a5160dc20cf221b1323d0b9f2e76bf74e2a` | An input-echo leak across five crates; the reference proved the leak with a failing test first |
-| Docs | [#1028](https://github.com/Androlax2/agent-cockpit/issues/1028) | [#1059](https://github.com/Androlax2/agent-cockpit/pull/1059) | `37c9ba4ef026d450615290d36c247b27879c8d56` | Relocating 7 decision records without breaking links; the workspace-rules tests grade it |
+| Docs | [#1028](https://github.com/Androlax2/agent-cockpit/issues/1028) | [#1059](https://github.com/Androlax2/agent-cockpit/pull/1059) | `37c9ba4ef026d450615290d36c247b27879c8d56` | Moving 7 decision records into code, gates and release docs, then deleting them, without breaking a link |
 
 All four merged between 2026-11-06 and 2026-11-08. Check that this is after each candidate's
 stated training cutoff before using the set; replace an issue that is not. Where the reference
