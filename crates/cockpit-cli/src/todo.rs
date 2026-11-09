@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cockpit_protocol::{
-    Command, HexBytes, Reply, TaskDraftTargetView, TaskDraftView, TaskKindView, TaskNextView,
-    TaskView,
+    Command, HexBytes, Reply, TaskBudgetView, TaskDraftTargetView, TaskDraftView, TaskKindView,
+    TaskNextView, TaskView,
 };
 
 use crate::agent::{agent_socket, caller_socket, exchange, failed, is_in_a_session, launch_token};
@@ -141,6 +141,10 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
         ("priority", [id, level]) => Command::TaskPriority {
             item: item_id(id)?,
             priority: number(level, "a priority")?,
+        },
+        ("budget", [id, minutes]) => Command::TaskBudget {
+            item: item_id(id)?,
+            budget: budget(minutes)?,
         },
         ("queue", [id]) => Command::TaskQueue {
             item: item_id(id)?,
@@ -338,6 +342,9 @@ fn details(task: &TaskView) -> String {
         let from = task.filed_from.as_deref().unwrap_or("no project");
         text.push_str(&format!("filed by: {session} from {from}\n"));
     }
+    if let Some(minutes) = task.budget_minutes {
+        text.push_str(&format!("budget: {minutes} min of agent time\n"));
+    }
     if let Some(why) = &task.why {
         text.push_str(&format!("why: {why}\n"));
     }
@@ -414,6 +421,16 @@ fn item_ids(words: &[impl AsRef<str>]) -> Result<Vec<i64>, String> {
 
 fn item_id(text: &str) -> Result<i64, String> {
     number(text, "an item id")
+}
+
+/// `none` lifts the budget; the daemon refuses 0 minutes.
+fn budget(text: &str) -> Result<TaskBudgetView, String> {
+    if text == "none" {
+        return Ok(TaskBudgetView::NoLimit);
+    }
+    text.parse()
+        .map(TaskBudgetView::Minutes)
+        .map_err(|_| format!("{text} is not a number of minutes or `none`"))
 }
 
 pub(crate) fn number(text: &str, what: &str) -> Result<i64, String> {

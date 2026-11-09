@@ -442,11 +442,81 @@ async fn the_owners_decisions_are_refused_to_a_session() {
         refusal(cockpit_tasks::edit(&write, &agent, id, None, Edit::default(), NOW).await),
         refusal(cockpit_tasks::wait(&write, &agent, id, vec![id], NOW).await),
         refusal(cockpit_tasks::delete(&write, &agent, id).await),
+        refusal(cockpit_tasks::set_budget(&write, &agent, id, Some(60), NOW).await),
     ];
 
     for refused in refusals {
         assert!(matches!(refused, Refusal::OwnerOnly { .. }), "{refused:?}");
     }
+}
+
+#[tokio::test]
+async fn the_owner_sets_an_items_budget_and_lifts_it() {
+    let fixture = Fixture::new().await;
+    let item = fixture.owner_adds("app", "Schema").await;
+    assert_eq!(item.budget_minutes, None);
+
+    for (minutes, revision) in [(Some(90), 2), (None, 3)] {
+        let write = fixture.database.write().await.unwrap();
+        cockpit_tasks::set_budget(&write, &Actor::Owner, item.id, minutes, NOW)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+
+        let stored = fixture.item(item.id).await;
+        assert_eq!(stored.budget_minutes, minutes);
+        assert_eq!(stored.state_revision, revision);
+        assert_eq!(stored.intent_revision, item.intent_revision);
+    }
+}
+
+#[tokio::test]
+async fn a_declined_proposal_takes_no_budget() {
+    let fixture = Fixture::new().await;
+    let agent = fixture.session("s1", "app").await;
+    let proposal = fixture
+        .propose(&agent, None, "Cache the build")
+        .await
+        .unwrap();
+    let write = fixture.database.write().await.unwrap();
+    cockpit_tasks::decline(&write, &Actor::Owner, proposal.id, NOW)
+        .await
+        .unwrap();
+
+    let refused =
+        refusal(cockpit_tasks::set_budget(&write, &Actor::Owner, proposal.id, Some(30), NOW).await);
+
+    assert!(
+        matches!(
+            refused,
+            Refusal::WrongStatus {
+                action: "take a budget",
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_budget_of_no_minutes_is_refused() {
+    let fixture = Fixture::new().await;
+    let item = fixture.owner_adds("app", "Schema").await;
+    let write = fixture.database.write().await.unwrap();
+
+    let refused =
+        refusal(cockpit_tasks::set_budget(&write, &Actor::Owner, item.id, Some(0), NOW).await);
+
+    assert!(
+        matches!(
+            refused,
+            Refusal::InvalidRequest {
+                field: "minutes",
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
 }
 
 #[tokio::test]

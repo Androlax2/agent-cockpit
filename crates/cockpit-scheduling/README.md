@@ -17,8 +17,15 @@ Every open item of `cockpit-tasks` is in exactly one of these:
 | follows a blocked run, or one whose next step is the owner's | — | `run-blocked`, `owner-step` |
 | has no run, is `todo`, queued and waits on nothing unfinished | the item | the queue's reasons below |
 | has no run and waits on unfinished items, or is not queued | — | `waits-on-items`, `not-queued` |
+| would wait as its step or itself, but its sessions have worked it for its budget | — | `over-budget` |
 
 Items being done (an active step, a `doing` item without a run) are not waiting.
+
+An item's budget (`budget_minutes` in `cockpit-tasks`, #412 owner choice 2A) counts the agent
+seconds the daemon passes in `Inputs::agent_seconds`: the turns of each session it was placed
+on while that placement held (`work_spans`). Placed work runs on past it; the queue only stops
+placing the item again or its run's next step, and the action offers 30 minutes more. The
+owner's handoff is their answer, so a budget never holds it.
 
 ## One pass
 
@@ -159,6 +166,8 @@ reservation) and
   default pace makes last until the reset; each window's pace as `usage quota` shows it.
 - `tests/project_shares.rs`: a project at its share waits whatever its priority and the
   pacing, its explanation, and the windows and projects a share does not cap.
+- `tests/budget.rs`: an item and a run's next step at their budget wait for the owner, its
+  explanation, and an item without a budget or not queued.
 - `tests/charges.rs`: placed turns as held reservations that builds and `in_use` see.
 - Through the socket: `cockpit-daemon` `tests/scheduling.rs` and `cockpit-cli`
   `tests/queue.rs`.

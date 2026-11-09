@@ -319,3 +319,63 @@ async fn an_open_turn_over_a_week_is_refused_and_dropped() {
     assert!(matches!(result, Err(Error::Invalid { field: "turn", .. })));
     assert!(fixture.open_turns().await.is_empty());
 }
+
+async fn turn_seconds(fixture: &Fixture, session: &str, from: i64, until: i64) -> u64 {
+    let read = fixture.database.read().await.unwrap();
+    cockpit_usage::turn_seconds(&read, session, from, until)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_sessions_turn_seconds_in_a_span_count_only_the_part_of_each_turn_inside_it() {
+    let fixture = Fixture::new().await;
+    fixture
+        .turn("s1", "app", clock(0, 9, 50), clock(0, 10, 10))
+        .await;
+    fixture
+        .turn("s1", "app", clock(0, 10, 12), clock(0, 10, 14))
+        .await;
+    fixture
+        .turn("s1", "app", clock(0, 10, 55), clock(0, 11, 5))
+        .await;
+    fixture
+        .turn("s2", "app", clock(0, 10, 20), clock(0, 10, 30))
+        .await;
+
+    let seconds = turn_seconds(&fixture, "s1", clock(0, 10, 0), clock(0, 11, 0)).await;
+
+    assert_eq!(seconds, (10 + 2 + 5) * MINUTE as u64);
+}
+
+#[tokio::test]
+async fn the_turn_under_way_counts_until_the_end_of_the_span() {
+    let fixture = Fixture::new().await;
+    fixture.began("s1", "app", clock(0, 10, 0)).await;
+
+    let seconds = turn_seconds(&fixture, "s1", clock(0, 9, 0), clock(0, 10, 25)).await;
+
+    assert_eq!(seconds, 25 * MINUTE as u64);
+}
+
+#[tokio::test]
+async fn an_empty_span_has_no_turn_seconds() {
+    let fixture = Fixture::new().await;
+    fixture
+        .turn("s1", "app", clock(0, 10, 0), clock(0, 10, 20))
+        .await;
+
+    let seconds = turn_seconds(&fixture, "s1", clock(0, 10, 10), clock(0, 10, 10)).await;
+
+    assert_eq!(seconds, 0);
+}
+
+#[tokio::test]
+async fn a_turn_left_open_counts_a_weeks_time_at_most() {
+    let fixture = Fixture::new().await;
+    fixture.began("s1", "app", clock(0, 10, 0)).await;
+
+    let seconds = turn_seconds(&fixture, "s1", clock(0, 9, 0), clock(30, 10, 0)).await;
+
+    assert_eq!(seconds, cockpit_usage::MAX_TURN_SECONDS as u64);
+}

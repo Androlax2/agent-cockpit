@@ -2,6 +2,7 @@
 //! sessions as the daemon would pass them.
 #![allow(dead_code, reason = "each test binary uses a different subset")]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -147,7 +148,7 @@ impl Fixture {
         candidates: &[Candidate],
         viewed: Option<&str>,
     ) -> Dispatched {
-        self.dispatch_with(now, candidates, viewed, Vec::new())
+        self.dispatch_with(now, candidates, viewed, Vec::new(), BTreeMap::new())
             .await
     }
 
@@ -158,7 +159,28 @@ impl Fixture {
         candidates: &[Candidate],
         usage: Vec<UsageWindow>,
     ) -> Dispatched {
-        self.dispatch_with(now, candidates, None, usage).await
+        self.dispatch_with(now, candidates, None, usage, BTreeMap::new())
+            .await
+    }
+
+    /// One pass at `now` over `candidates`, each item having had its `agent_seconds` (#412).
+    pub async fn dispatch_after(
+        &self,
+        now: i64,
+        candidates: &[Candidate],
+        agent_seconds: BTreeMap<ItemId, u64>,
+    ) -> Dispatched {
+        self.dispatch_with(now, candidates, None, Vec::new(), agent_seconds)
+            .await
+    }
+
+    /// The owner gives `item` a budget of `minutes` agent minutes.
+    pub async fn budget(&self, item: ItemId, minutes: u32) {
+        let write = self.database.write().await.unwrap();
+        cockpit_tasks::set_budget(&write, &Actor::Owner, item, Some(minutes), NOW)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
     }
 
     async fn dispatch_with(
@@ -167,12 +189,14 @@ impl Fixture {
         candidates: &[Candidate],
         viewed: Option<&str>,
         usage: Vec<UsageWindow>,
+        agent_seconds: BTreeMap<ItemId, u64>,
     ) -> Dispatched {
         let write = self.database.write().await.unwrap();
         let inputs = Inputs {
             candidates: candidates.to_vec(),
             viewed: viewed.map(|id| SessionId::new(id).unwrap()),
             usage,
+            agent_seconds,
             now,
         };
         let dispatched =

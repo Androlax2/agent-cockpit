@@ -38,6 +38,7 @@ async fn crash_window(delivered: bool) {
             }],
             viewed: None,
             usage: Vec::new(),
+            agent_seconds: Default::default(),
             now,
         },
         &Settings {

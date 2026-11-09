@@ -34,6 +34,17 @@ pub struct TaskView {
     pub created_at: i64,
     pub changed_at: i64,
     pub next: TaskNextView,
+    /// The agent minutes the owner allows it before the queue stops placing it (#412).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_minutes: Option<u32>,
+}
+
+/// What `task-budget` sets: `"no-limit"` or `{"minutes": 90}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskBudgetView {
+    NoLimit,
+    Minutes(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

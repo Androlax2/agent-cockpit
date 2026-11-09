@@ -14,7 +14,7 @@ use cockpit_turso::{Migration, MigrationSet};
 pub use activity::{
     Approval, DayTime, Incident, JOIN_GAP_SECONDS, MAX_TURN_SECONDS, OpenTurn, ProjectTime, Turn,
     open_turns, record_approval, record_incident, record_turn, time_with_agent, turn_began,
-    turn_ended,
+    turn_ended, turn_seconds,
 };
 pub use cost::{
     DayCost, Recorded, costs, cursors, forget_home, price_unpriced, project_costs_since,

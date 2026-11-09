@@ -202,6 +202,42 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 CHECK ((reason = 'behind') = (behind IS NOT NULL))
             );",
         },
+        // #412: a pass may now explain `over-budget`. Recreated, as in version 3.
+        Migration {
+            version: 5,
+            sql: "DROP TABLE scheduling_explanations;
+            CREATE TABLE scheduling_explanations (
+                item INTEGER PRIMARY KEY,
+                position INTEGER NOT NULL UNIQUE,
+                project TEXT NOT NULL CHECK (project <> ''),
+                title TEXT NOT NULL CHECK (title <> ''),
+                run INTEGER,
+                step_position INTEGER CHECK (step_position >= 1),
+                step TEXT CHECK (step <> ''),
+                reason TEXT NOT NULL CHECK (reason IN ('not-queued', 'waits-on-items',
+                    'run-blocked', 'owner-step', 'queue-paused', 'low-disk',
+                    'control-unsupported',
+                    'infeasible', 'no-room', 'behind', 'no-session', 'no-session-free',
+                    'usage-paced', 'over-budget')),
+                why TEXT NOT NULL CHECK (why <> ''),
+                limited_by TEXT CHECK (limited_by <> ''),
+                sessions TEXT NOT NULL,
+                behind INTEGER,
+                action TEXT NOT NULL CHECK (action <> ''),
+                action_by TEXT NOT NULL CHECK (action_by IN ('owner', 'cockpit')),
+                priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 6),
+                aging_boost INTEGER NOT NULL CHECK (aging_boost >= 0),
+                cpu_millis INTEGER NOT NULL CHECK (cpu_millis >= 0),
+                memory_mib INTEGER NOT NULL CHECK (memory_mib >= 0),
+                headroom_percent INTEGER NOT NULL CHECK (headroom_percent >= 0),
+                waiting_since INTEGER,
+                evaluated_at INTEGER NOT NULL,
+                next_evaluation_at INTEGER NOT NULL,
+                CHECK ((run IS NULL) = (step_position IS NULL)),
+                CHECK ((run IS NULL) = (step IS NULL)),
+                CHECK ((reason = 'behind') = (behind IS NOT NULL))
+            );",
+        },
     ],
 };
 
@@ -252,13 +288,15 @@ pub async fn dispatch(
     let ended = settled.ended;
     let candidates = idle_since(write, &inputs.candidates).await?;
     let usage = &inputs.usage;
+    let agent_seconds = &inputs.agent_seconds;
     let inputs = &Inputs {
         candidates,
         viewed: inputs.viewed.clone(),
         usage: Vec::new(),
+        agent_seconds: BTreeMap::new(),
         now,
     };
-    let (waiting, outside) = units(&items, &runs);
+    let (waiting, outside) = units(&items, &runs, agent_seconds);
     let since = record_waiting(write, &waiting, now).await?;
     let waiting: Vec<Waiting> = waiting
         .into_iter()
@@ -384,15 +422,21 @@ impl Outside<'_> {
 pub async fn awaits_pass(connection: &Connection, item: ItemId) -> Result<bool, Error> {
     let items = cockpit_tasks::list(connection, &Actor::Owner, &ListFilter::default()).await?;
     let runs = cockpit_workflows::runs(connection, &Actor::Owner, &RunFilter::default()).await?;
-    let (waiting, outside) = units(&items, &runs);
+    // A budget moves an item between waiting and outside; either way a pass explains it.
+    let (waiting, outside) = units(&items, &runs, &BTreeMap::new());
     Ok(waiting.iter().any(|unit| unit.item == item)
         || outside.iter().any(|outside| outside.item.id == item))
 }
 
 /// Splits the open items into queue units and those waiting on something else. An item a
 /// running workflow follows waits as its run's ready step; one without a run waits as itself
-/// once queued and free of unfinished waits.
-fn units<'a>(items: &'a [Item], runs: &[Run]) -> (Vec<Waiting>, Vec<Outside<'a>>) {
+/// once queued and free of unfinished waits. Either waits on the owner instead once its
+/// `agent_seconds` reach its budget.
+fn units<'a>(
+    items: &'a [Item],
+    runs: &[Run],
+    agent_seconds: &BTreeMap<ItemId, u64>,
+) -> (Vec<Waiting>, Vec<Outside<'a>>) {
     let run_of: BTreeMap<ItemId, &Run> = runs.iter().map(|run| (run.item, run)).collect();
     let (mut waiting, mut outside) = (Vec::new(), Vec::new());
     for item in items {
@@ -406,16 +450,22 @@ fn units<'a>(items: &'a [Item], runs: &[Run]) -> (Vec<Waiting>, Vec<Outside<'a>>
                 name: step.definition.name,
             };
             match run.next_action() {
-                NextAction::AwaitPlacement { .. } => waiting.push(Waiting {
-                    item: item.id,
-                    project: item.project.clone(),
-                    title: item.title.clone(),
-                    unit,
-                    step: Some(step.definition),
-                    role: None,
-                    priority: item.priority.level(),
-                    since: 0,
-                }),
+                NextAction::AwaitPlacement { .. } => {
+                    if let Some(spent) = over_budget(item, agent_seconds) {
+                        outside.push(spent.outside(item, unit));
+                        continue;
+                    }
+                    waiting.push(Waiting {
+                        item: item.id,
+                        project: item.project.clone(),
+                        title: item.title.clone(),
+                        unit,
+                        step: Some(step.definition),
+                        role: None,
+                        priority: item.priority.level(),
+                        since: 0,
+                    })
+                }
                 NextAction::Unblock { action } => outside.push(Outside {
                     item,
                     unit,
@@ -469,6 +519,8 @@ fn units<'a>(items: &'a [Item], runs: &[Run]) -> (Vec<Waiting>, Vec<Outside<'a>>
                 why: "it is not queued".to_owned(),
                 action: format!("queue it: `torlek todo queue {}`", item.id.0),
             });
+        } else if let Some(spent) = over_budget(item, agent_seconds) {
+            outside.push(spent.outside(item, Unit::Item));
         } else {
             waiting.push(Waiting {
                 item: item.id,
@@ -483,6 +535,51 @@ fn units<'a>(items: &'a [Item], runs: &[Run]) -> (Vec<Waiting>, Vec<Outside<'a>>
         }
     }
     (waiting, outside)
+}
+
+/// An item's agent time against its budget, once it reached it.
+struct Spent {
+    minutes: u64,
+    budget_minutes: u32,
+}
+
+impl Spent {
+    fn outside(self, item: &Item, unit: Unit) -> Outside<'_> {
+        // Placed work runs on past the budget, so the offer starts from what it took.
+        let spent = u32::try_from(self.minutes).unwrap_or(u32::MAX);
+        let raised = self
+            .budget_minutes
+            .max(spent)
+            .saturating_add(BUDGET_STEP_MINUTES);
+        Outside {
+            item,
+            unit,
+            reason: Reason::OverBudget,
+            why: format!(
+                "its sessions have worked it about {} min, its {} min budget",
+                self.minutes, self.budget_minutes
+            ),
+            action: format!(
+                "give it {BUDGET_STEP_MINUTES} min more to go on: `torlek todo budget {} {raised}`",
+                item.id.0
+            ),
+        }
+    }
+}
+
+/// How much more time the over-budget action offers; the owner may give any.
+const BUDGET_STEP_MINUTES: u32 = 30;
+
+fn over_budget(item: &Item, agent_seconds: &BTreeMap<ItemId, u64>) -> Option<Spent> {
+    let budget_minutes = item.budget_minutes?;
+    let seconds = agent_seconds.get(&item.id).copied().unwrap_or(0);
+    if seconds < u64::from(budget_minutes) * 60 {
+        return None;
+    }
+    Some(Spent {
+        minutes: seconds / 60,
+        budget_minutes,
+    })
 }
 
 fn item_list(items: &[ItemId]) -> String {
@@ -954,6 +1051,40 @@ pub async fn active_placement(
 
 const PLACEMENT_COLUMNS: &str = "id, item, run, position, step, project, session, cpu_millis,
     memory_mib, placed_at, reservation";
+
+/// When one session worked an item through one placement (#412).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkSpan {
+    pub session: SessionId,
+    pub from: i64,
+    /// `None` while the placement holds.
+    pub until: Option<i64>,
+}
+
+/// Every placement `item` has had, ended or not, oldest first: the sessions whose agent time
+/// counts against its budget.
+pub async fn work_spans(connection: &Connection, item: ItemId) -> Result<Vec<WorkSpan>, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT session, placed_at, ended_at FROM scheduling_placements WHERE item = ?1
+             ORDER BY id",
+            [item.0],
+        )
+        .await?;
+    let mut spans = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let session: String = row.get(0)?;
+        spans.push(WorkSpan {
+            session: SessionId::new(session).map_err(|error| Error::InvalidStoredRow {
+                table: "scheduling_placements",
+                reason: error.to_string(),
+            })?,
+            from: row.get(1)?,
+            until: row.get(2)?,
+        });
+    }
+    Ok(spans)
+}
 
 /// Every active placement, oldest first.
 pub async fn placements(connection: &Connection) -> Result<Vec<Placement>, Error> {

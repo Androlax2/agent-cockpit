@@ -7,9 +7,9 @@
 use std::sync::Arc;
 
 use cockpit_protocol::{
-    Command, ErrorCode, HexBytes, ProtocolError, Reply, TaskDraftTargetView, TaskDraftView,
-    TaskImageView, TaskKindView, TaskNextView, TaskStatusView, TaskView, TaskWaitView, Unblock,
-    UnblockedBy,
+    Command, ErrorCode, HexBytes, ProtocolError, Reply, TaskBudgetView, TaskDraftTargetView,
+    TaskDraftView, TaskImageView, TaskKindView, TaskNextView, TaskStatusView, TaskView,
+    TaskWaitView, Unblock, UnblockedBy,
 };
 use cockpit_tasks::{
     Actor, Draft, DraftTarget, Edit, ImageInfo, Item, ItemId, Kind, ListFilter, NewItem,
@@ -159,6 +159,13 @@ async fn dispatch(
         Command::TaskPriority { item, priority } => {
             let priority = priority_of(priority)?;
             cockpit_tasks::set_priority(write, actor, ItemId(item), priority, now).await?
+        }
+        Command::TaskBudget { item, budget } => {
+            let minutes = match budget {
+                TaskBudgetView::NoLimit => None,
+                TaskBudgetView::Minutes(minutes) => Some(minutes),
+            };
+            cockpit_tasks::set_budget(write, actor, ItemId(item), minutes, now).await?
         }
         Command::TaskQueue { item, queued } => {
             cockpit_tasks::set_queued(write, actor, ItemId(item), queued, now).await?
@@ -479,6 +486,7 @@ pub(crate) fn task_view(item: Item) -> TaskView {
         created_at: item.created_at,
         changed_at: item.changed_at,
         next,
+        budget_minutes: item.budget_minutes,
     }
 }
 

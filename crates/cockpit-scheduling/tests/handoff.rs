@@ -24,6 +24,7 @@ async fn a_fresh_waiting_report_does_not_reset_a_handoff_sessions_idle_window() 
             candidates: vec![session],
             viewed: None,
             usage: Vec::new(),
+            agent_seconds: Default::default(),
             now: NOW + 1,
         },
         &fixture.settings,
