@@ -3630,8 +3630,10 @@ fn with_temp_dir(
     environment.retain(|(name, _)| name != "TMPDIR" && name != "CLAUDE_CODE_TMPDIR");
     environment.push(("TMPDIR".into(), temp_dir.into()));
     environment.push(("CLAUDE_CODE_TMPDIR".into(), temp_dir.into()));
-    environment.retain(|(name, _)| name != "DOCKER_CONFIG");
-    environment.push(("DOCKER_CONFIG".into(), docker_config_dir(temp_dir).into()));
+    // A launcher that provides its own configuration (proxy settings for builds) keeps it.
+    if !environment.iter().any(|(name, _)| name == "DOCKER_CONFIG") {
+        environment.push(("DOCKER_CONFIG".into(), docker_config_dir(temp_dir).into()));
+    }
     environment
 }
 
@@ -4554,6 +4556,20 @@ fn record_harness_trust(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_provided_docker_config_is_kept() {
+        let provided = vec![("DOCKER_CONFIG".into(), "/launcher/docker".into())];
+
+        let environment = with_temp_dir(provided, Path::new("/session/tmp"));
+
+        let docker_configs: Vec<_> = environment
+            .iter()
+            .filter(|(name, _)| name == "DOCKER_CONFIG")
+            .collect();
+        assert_eq!(docker_configs.len(), 1);
+        assert_eq!(docker_configs[0].1, "/launcher/docker");
+    }
 
     #[test]
     fn a_session_lock_nothing_holds_is_not_held() {
