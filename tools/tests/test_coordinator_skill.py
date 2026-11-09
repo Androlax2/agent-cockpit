@@ -403,6 +403,8 @@ esac
                 "0.2",
                 "--idle-grace-seconds",
                 "0",
+                "--stream-lag-seconds",
+                "0",
                 *extra_arguments,
             ],
             env=self.environment,
@@ -795,6 +797,27 @@ esac
 
         self.assertEqual(result.stdout.count("QUESTION"), 1, result.stdout)
 
+    def test_it_waits_for_the_watch_to_deliver_a_question_the_full_list_shows_first(self):
+        working = self.session("greenfield-9-ask", "working", "coding")
+        asking = self.session("greenfield-9-ask", "waiting", "coding", question="Rebase?")
+        self.shim(
+            "torlek",
+            f"""
+case "$*" in
+"agent sessions --watch") printf '%s\\n' '{working}'; sleep 0.8
+    printf '%s\\n' '{asking}'; sleep 1.5; exit 3 ;;
+"agent sessions") printf '%s\\n' '{asking}' ;;
+esac
+""",
+        )
+
+        result = self.watch(
+            extra_arguments=("--full-list-seconds", "0.5", "--stream-lag-seconds", "1")
+        )
+
+        self.assertIn("QUESTION s-greenfield-9-ask (greenfield/9-ask): Rebase?", result.stdout)
+        self.assertNotIn("missed", result.stdout)
+
     def test_it_does_not_repeat_a_question_a_watcher_reported_before_the_full_list_check(self):
         asking = self.session("greenfield-9-ask", "waiting", "coding", question="Rebase?")
         self.state_file.write_text(
@@ -853,6 +876,7 @@ class WatcherStateTests(FakeCommandsTestCase):
                 idle_grace_seconds=0,
                 summary_seconds=1,
                 full_list_seconds=1,
+                stream_lag_seconds=0,
                 state_file=state_file,
             )
         )

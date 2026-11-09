@@ -42,15 +42,19 @@ DEFAULT_WORKING_SECONDS = 120
 DEFAULT_IDLE_GRACE_SECONDS = 180
 # How often the full session list is compared with the questions already reported.
 DEFAULT_FULL_LIST_SECONDS = 180
+# The watch polls every 2 seconds: a question it has not delivered this long after the full
+# list showed it is missed, not merely on its way.
+DEFAULT_STREAM_LAG_SECONDS = 5
+TORLEK_TIMEOUT_SECONDS = 30
 
 lock = threading.Lock()
 batched = []
 gh_timeout_seconds = 60
 
 
-def run_text(command):
+def run_text(command, timeout=None):
     return subprocess.run(
-        command, capture_output=True, text=True, check=True, timeout=gh_timeout_seconds
+        command, capture_output=True, text=True, check=True, timeout=timeout or gh_timeout_seconds
     ).stdout.strip()
 
 
@@ -77,6 +81,7 @@ class Watcher:
         self.idle_grace_seconds = arguments.idle_grace_seconds
         self.summary_seconds = arguments.summary_seconds
         self.full_list_seconds = arguments.full_list_seconds
+        self.stream_lag_seconds = arguments.stream_lag_seconds
         self.state_path = arguments.state_file
         self.is_first_run = not self.state_path.exists()
         self.state = {} if self.is_first_run else json.loads(self.state_path.read_text())
@@ -93,6 +98,8 @@ class Watcher:
                 if session.get("question")
             }
         self.reported_questions = self.state["questions"]
+        # session id -> when the watch stream last delivered a line for it.
+        self.stream_seen_at = {}
         # session id -> the doing-text of the idle spell already reported; cleared when the
         # session works for at least `working_seconds`.
         if not isinstance(self.state.get("idle"), dict):
@@ -182,6 +189,7 @@ class Watcher:
         with lock:
             previous = self.sessions.get(session_id)
             self.sessions[session_id] = current
+            self.stream_seen_at[session_id] = time.monotonic()
             if previous == current:
                 return
             self.track_working_spell(session_id, previous, current["state"])
@@ -242,8 +250,14 @@ class Watcher:
         merged = self.is_merged(current["branch"])
         with lock:
             latest = self.sessions.get(session_id)
-            # gh ran without the lock; a worker that resumed meanwhile is not idle.
-            if latest is None or latest["state"] != "waiting" or latest["question"]:
+            # gh ran without the lock; a worker that resumed or asked meanwhile is not idle. A
+            # question only the full-list check found is not in `latest`.
+            if (
+                latest is None
+                or latest["state"] != "waiting"
+                or latest["question"]
+                or session_id in self.reported_questions
+            ):
                 return
             if merged is None:
                 reason = f"IDLE, merge state unknown (gh failed) {tag}: doing={current['doing']!r}"
@@ -261,6 +275,7 @@ class Watcher:
             self.idle_timers.pop(session_id, None)
             self.reported_idle.pop(session_id, None)
             self.reported_questions.pop(session_id, None)
+            self.stream_seen_at.pop(session_id, None)
             self.working_since.pop(session_id, None)
             self.save()
 
@@ -305,26 +320,32 @@ class Watcher:
 
     def report_failure(self, kind, error):
         now = time.monotonic()
-        last = self.last_failure_reports.get(kind)
-        if last is None or now - last >= FAILURE_REPORT_SECONDS:
-            print(f"{kind} (repeats are not reported for 30 minutes): {error}", flush=True)
-            self.last_failure_reports[kind] = now
+        with lock:
+            last = self.last_failure_reports.get(kind)
+            if last is None or now - last >= FAILURE_REPORT_SECONDS:
+                print(f"{kind} (repeats are not reported for 30 minutes): {error}", flush=True)
+                self.last_failure_reports[kind] = now
 
     def check_full_list(self):
         """Prints each open question the watch stream never delivered (#1298)."""
         while True:
             time.sleep(self.full_list_seconds)
+            listed_at = time.monotonic()
             try:
-                listing = run_text(["torlek", "agent", "sessions"])
+                listing = run_text(["torlek", "agent", "sessions"], TORLEK_TIMEOUT_SECONDS)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
                 self.report_failure("SESSIONS CHECK FAILED", error)
                 continue
             self.last_failure_reports.pop("SESSIONS CHECK FAILED", None)
+            time.sleep(self.stream_lag_seconds)
             for line in listing.splitlines():
                 current = self.parse(line)
                 if current is None or not current["question"]:
                     continue
                 with lock:
+                    # A line the watch delivered after the listing is newer than the listing.
+                    if self.stream_seen_at.get(current["id"], 0) > listed_at:
+                        continue
                     if current["question"] == self.reported_questions.get(current["id"]):
                         continue
                     tag = f"{current['id']} ({current['branch']})"
@@ -437,6 +458,12 @@ def parse_arguments(argv):
         type=float,
         default=DEFAULT_FULL_LIST_SECONDS,
         help="how often the full session list is checked for a question the watch missed",
+    )
+    parser.add_argument(
+        "--stream-lag-seconds",
+        type=float,
+        default=DEFAULT_STREAM_LAG_SECONDS,
+        help="how long the watch may take to deliver a question the full list shows",
     )
     parser.add_argument("--gh-timeout-seconds", type=float, default=60)
     arguments = parser.parse_args(argv)
