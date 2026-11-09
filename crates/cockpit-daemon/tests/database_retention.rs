@@ -100,6 +100,7 @@ async fn finish_an_old_run(home: &TestHome, database: &cockpit_turso::Database, 
             redacted: 0,
         },
         output_retired: false,
+        stopped_by_owner: false,
     };
     cockpit_approvals::finish_run(&write, &approved, &result, decided_at + 1)
         .await

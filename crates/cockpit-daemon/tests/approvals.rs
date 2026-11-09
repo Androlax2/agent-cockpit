@@ -7,6 +7,8 @@ mod candidate;
 mod common;
 #[path = "approvals/durability.rs"]
 mod durability;
+#[path = "approvals/stopping.rs"]
+mod stopping;
 #[path = "approvals/typed_input.rs"]
 mod typed_input;
 

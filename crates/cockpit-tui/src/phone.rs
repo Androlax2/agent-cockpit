@@ -257,7 +257,7 @@ fn hints(app: &App, width: usize, height: usize, now: Instant) -> Vec<String> {
                 "j scrolls to the end".to_owned(),
             ];
         }
-        let keys = pane_keys(app.pane.shown());
+        let keys = pane_keys(&app.pane);
         return vec![format!("{keys}   Tab sessions"), keys.to_owned()];
     }
     let card = if app.pane.shown().is_some() {

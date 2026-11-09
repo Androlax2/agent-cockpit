@@ -102,7 +102,8 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek usage quota | cost [--days N] | digest [--days N]
        torlek ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check
        torlek ask guide [--cwd DIR] < GUIDE | --wait ID
-       torlek approval list | show ID | decline ID | input ID [--shown] < LINE | purge-output ID
+       torlek approval list | show ID | decline ID | input ID [--shown] < LINE
+       torlek approval stop ID | purge-output ID
        torlek approval approve ID --revision REVISION --digest DIGEST
        torlek approval edit ID --revision REVISION COMMAND
        torlek guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID

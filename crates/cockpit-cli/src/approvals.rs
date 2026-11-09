@@ -50,6 +50,9 @@ pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, Strin
                 shown: true,
             }
         }
+        ("approval", ["stop", id]) => Command::ApprovalStop {
+            request: id_of(id)?,
+        },
         ("approval", ["purge-output", id]) => Command::ApprovalPurgeOutput {
             request: id_of(id)?,
         },
@@ -279,6 +282,9 @@ fn run_detail(run: &RunRequestView) -> String {
         );
     }
     if let Some(result) = &run.result {
+        if result.stopped_by_owner {
+            let _ = writeln!(text, "stopped by the owner");
+        }
         if result.output_retired {
             let _ = writeln!(
                 text,

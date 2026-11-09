@@ -325,6 +325,12 @@ fn run_answer(request: &RunRequestView) -> Option<ExitCode> {
         RunStateView::Asking | RunStateView::Approved | RunStateView::Running => None,
         RunStateView::Finished => {
             let result = request.result.as_ref()?;
+            if result.stopped_by_owner {
+                eprintln!(
+                    "torlek: the owner stopped request {} (exit status {})",
+                    request.id, result.exit_code
+                );
+            }
             if result.output_retired {
                 eprintln!("torlek: database retention removed this run's output");
                 return Some(ExitCode::from(u8::try_from(result.exit_code).unwrap_or(1)));

@@ -154,6 +154,7 @@ fn finished(exit_code: i32, output: &str) -> Outcome {
             truncated_bytes: 0,
             redacted: 0,
             output_retired: false,
+            stopped_by_owner: false,
         }),
         ..request(RunStateView::Finished)
     })
@@ -822,6 +823,7 @@ fn retired(exit_code: i32) -> Outcome {
             truncated_bytes: 9,
             redacted: 3,
             output_retired: true,
+            stopped_by_owner: false,
         }),
         ..request(RunStateView::Finished)
     })
@@ -855,4 +857,55 @@ async fn the_owner_reads_that_retention_removed_a_runs_output() {
         "{shown}"
     );
     assert!(!shown.contains("secrets redacted"), "{shown}");
+}
+
+/// A run the owner stopped at its prompt (#1301): SIGTERM's exit status, what it printed.
+fn stopped_by_the_owner() -> Outcome {
+    run_reply(RunRequestView {
+        result: Some(RunResultView {
+            exit_code: 143,
+            output: "Username for 'https://github.com':".to_owned(),
+            omitted_lines: 0,
+            truncated_bytes: 0,
+            redacted: 0,
+            output_retired: false,
+            stopped_by_owner: true,
+        }),
+        ..request(RunStateView::Finished)
+    })
+}
+
+#[tokio::test]
+async fn the_owner_stops_a_running_command_by_its_id() {
+    let home = Home::new();
+    let daemon = scripted_conversation(&home.owner_socket(), vec![stopped_by_the_owner()]);
+
+    let output = home.cockpit_as_owner(&["approval", "stop", "7"], "").await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        daemon.await.unwrap(),
+        [Command::ApprovalStop { request: 7 }]
+    );
+    assert!(
+        text(&output.stdout).contains("stopped by the owner"),
+        "{}",
+        text(&output.stdout)
+    );
+}
+
+#[tokio::test]
+async fn waiting_on_a_run_the_owner_stopped_says_so_with_its_exit_status() {
+    let home = Home::new();
+    let _daemon = scripted_conversation(&home.agent_socket(), vec![stopped_by_the_owner()]);
+
+    let output = home.cockpit(&["ask", "run", "--wait", "7"], "").await;
+
+    assert_eq!(output.status.code(), Some(143), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stderr).contains("torlek: the owner stopped request 7 (exit status 143)"),
+        "{}",
+        text(&output.stderr)
+    );
+    assert!(text(&output.stdout).contains("Username for"));
 }

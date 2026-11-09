@@ -42,7 +42,7 @@ const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, p
         project_root, reason, state, asked_at, expires_at, exit_code, output,
         output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant,
         kind, start_prompt, start_clone, start_agent, start_model, start_effort, decided_at,
-        decided_through, output_retired_at";
+        decided_through, output_retired_at, stopped_by_owner_at";
 const START_PROMPT_MAX_CHARS: usize = 4000;
 const START_KIND: &str = "start-session";
 
@@ -122,6 +122,8 @@ pub struct RunResult {
     /// Retention cleared the output long after the run (#406), or the owner purged it
     /// (#1160); `output.shown` is empty.
     pub output_retired: bool,
+    /// The owner stopped the command (#1301); `exit_code` is what the stop left.
+    pub stopped_by_owner: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -869,7 +871,7 @@ pub async fn finish_run(
         run,
         "UPDATE approvals_runs SET state = 'finished', exit_code = ?3, output = ?4,
             output_omitted_lines = ?5, output_truncated_bytes = ?6, redacted = ?7,
-            ended_at = ?8
+            ended_at = ?8, stopped_by_owner_at = ?9
          WHERE id = ?1 AND revision = ?2 AND state = 'running'",
         (
             run.id.0,
@@ -880,6 +882,7 @@ pub async fn finish_run(
             count_column(result.output.truncated_bytes),
             count_column(result.output.redacted),
             now,
+            result.stopped_by_owner.then_some(now),
         ),
     )
     .await
@@ -1206,6 +1209,7 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
                 redacted: count(16)?,
             },
             output_retired: row.get::<Option<i64>>(28)?.is_some(),
+            stopped_by_owner: row.get::<Option<i64>>(29)?.is_some(),
         }),
         None => None,
     };

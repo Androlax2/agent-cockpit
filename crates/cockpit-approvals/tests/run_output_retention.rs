@@ -47,6 +47,7 @@ async fn finished(fixture: &Fixture, command: &str, shown: &str, ended_at: i64) 
             redacted: 0,
         },
         output_retired: false,
+        stopped_by_owner: false,
     };
     finish_run(&write, &approved, &result, ended_at)
         .await

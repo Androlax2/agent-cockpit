@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cockpit_agent_channel::{PeerAncestry, ProcessError, ProcessIdentity};
 use cockpit_approvals::{
@@ -15,7 +15,7 @@ use cockpit_approvals::{
     Refusal, RunAsk, RunId, RunRequest, RunResult, RunSettings, RunState, Runner, Shown, Syntax,
 };
 use cockpit_authorization::SessionId;
-use cockpit_processes::ExecutionId;
+use cockpit_processes::{ExecutionId, Termination};
 use cockpit_protocol::{
     Command, DecidedThroughView, ErrorCode, FoldedView, GuideStateView, GuideStepView, GuideView,
     HiddenView, Outcome, ProtocolError, Reply, RunDecisionView, RunRequestView, RunResultView,
@@ -69,6 +69,8 @@ impl From<Refusal> for Failed {
             | Refusal::AlreadyDecided { .. }
             | Refusal::NotRunning
             | Refusal::InputWouldShow { .. }
+            | Refusal::NotStoppable { .. }
+            | Refusal::StopUnconfirmed { .. }
             | Refusal::NoStoredOutput { .. } => ErrorCode::Conflict,
             Refusal::TooSoon { .. } => ErrorCode::Refused,
         };
@@ -503,6 +505,7 @@ pub(crate) fn route_decision(
                 let read = database.read().await?;
                 Ok(run_reply(&existing_run(&read, request).await?, &runner))
             }
+            Command::ApprovalStop { request } => stop(&database, &runner, request).await,
             Command::ApprovalPurgeOutput { request } => {
                 let write = database.write().await?;
                 let run =
@@ -555,6 +558,51 @@ pub(crate) fn route_decision(
         job: work,
     }
 }
+
+/// The owner's stop of a running command (#1301). Answers the run once its end is recorded,
+/// or as it stands when that takes longer than [`STOP_RECORD_WAIT`].
+async fn stop(database: &Arc<Database>, runner: &Runner, request: i64) -> Answer {
+    let read = database.read().await?;
+    let run = existing_run(&read, request).await?;
+    drop(read);
+    if run.state != RunState::Running {
+        return Err(Refusal::NotStoppable {
+            why: format!(
+                "the request is {}; only a running command stops",
+                run.state.as_str()
+            ),
+        }
+        .into());
+    }
+    match runner.stop(database, RunId(request)).await? {
+        Termination::Confirmed { after } => {
+            tracing::info!(request, ?after, "the owner stopped a run");
+        }
+        Termination::Unconfirmed { diagnostics } => {
+            tracing::warn!(
+                request,
+                ?diagnostics,
+                "the owner's stop of a run was not confirmed"
+            );
+            return Err(Refusal::StopUnconfirmed { request }.into());
+        }
+    }
+    let deadline = tokio::time::Instant::now() + STOP_RECORD_WAIT;
+    loop {
+        let read = database.read().await?;
+        let run = existing_run(&read, request).await?;
+        drop(read);
+        if run.state != RunState::Running || tokio::time::Instant::now() >= deadline {
+            return Ok(run_reply(&run, runner));
+        }
+        tokio::time::sleep(STOP_RECORD_POLL).await;
+    }
+}
+
+/// After a stop, how long the run's end may take to be recorded: the terminal drains for up
+/// to `cockpit_approvals`' two seconds after the exit, then the end is written.
+const STOP_RECORD_WAIT: Duration = Duration::from_secs(5);
+const STOP_RECORD_POLL: Duration = Duration::from_millis(50);
 
 async fn existing_run(
     connection: &cockpit_turso::sql::Connection,
@@ -984,6 +1032,7 @@ fn run_view(
             truncated_bytes: result.output.truncated_bytes,
             redacted: result.output.redacted,
             output_retired: result.output_retired,
+            stopped_by_owner: result.stopped_by_owner,
         }),
         note: run.note.clone(),
     }
