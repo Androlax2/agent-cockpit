@@ -207,7 +207,10 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             exit_sweep: EXIT_SWEEP,
             run_settings,
             environment: environment.clone(),
-            scheduling: cockpit_scheduling::Settings::default(),
+            scheduling: cockpit_scheduling::Settings {
+                pacing: crate::scheduling::pacing(&config.usage),
+                ..cockpit_scheduling::Settings::default()
+            },
             feed_buffer_bytes: config.memory.feed_buffer_kib.value.saturating_mul(1024),
             quota: Some(QuotaPolling::from_settings(
                 &config.usage,

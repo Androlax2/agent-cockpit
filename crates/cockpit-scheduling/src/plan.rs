@@ -10,8 +10,10 @@ use cockpit_resource_admission::{Capacity, Demand, Hold, Resource};
 use cockpit_tasks::ItemId;
 use cockpit_workflows::StepDefinition;
 
+use crate::pacing::{self, Paced};
 use crate::{
     ActionBy, Candidate, Explanation, Presence, Reason, Role, SessionNote, Settings, Unit,
+    UsageWindow,
 };
 
 /// One unit of work in the queue.
@@ -48,6 +50,8 @@ pub(crate) struct Context<'a> {
     pub(crate) unfamiliar_hold: Option<Hold>,
     /// The budget left after admission's reservations, the active placements' among them.
     pub(crate) free: Demand,
+    /// The accounts' plan windows, which pace queue starts (#412).
+    pub(crate) usage: &'a [UsageWindow],
 }
 
 pub(crate) struct Planned {
@@ -216,6 +220,19 @@ fn decide(
             None => eligible.push(candidate),
         }
     }
+    let mut paced_sessions = Vec::new();
+    eligible.retain(|candidate| match pace(candidate, unit, context) {
+        Some(paced) => {
+            paced_sessions.push((candidate.session.clone(), paced));
+            false
+        }
+        None => true,
+    });
+    if eligible.is_empty()
+        && let Some(explanation) = usage_paced(&paced_sessions, &notes, context, wait)
+    {
+        return Decision::Wait(Box::new(explanation));
+    }
     let Some(session) = eligible.into_iter().min_by_key(|candidate| {
         (
             waiting_since(candidate),
@@ -260,6 +277,58 @@ fn decide(
         session: session.session.clone(),
         demand,
     }
+}
+
+/// Why `candidate`'s account holds `unit` back; `None` when it may start (#412).
+fn pace(candidate: &Candidate, unit: &Waiting, context: &Context<'_>) -> Option<Paced> {
+    pacing::paced(
+        context.settings.pacing,
+        context.usage,
+        &candidate.provider,
+        candidate.account.as_deref()?,
+        unit.priority,
+        context.now,
+    )
+}
+
+/// The explanation of a unit every free session of which is paced: the session whose window
+/// frees first names the reason; each paced session is noted with its own. `None` when no
+/// session is paced.
+fn usage_paced(
+    paced_sessions: &[(SessionId, Paced)],
+    notes: &[SessionNote],
+    context: &Context<'_>,
+    wait: impl Fn(Reason, String, String, ActionBy) -> Explanation,
+) -> Option<Explanation> {
+    let (_, first) = paced_sessions
+        .iter()
+        .min_by_key(|(_, paced)| paced.resumes_at.unwrap_or(i64::MAX))?;
+    let action = match first.resumes_at {
+        Some(at) => format!(
+            "wait: it starts once the window allows it, {}; `[usage] pacing = \"off\"` starts \
+             queued work at full speed",
+            pacing::wait_until(at, context.now)
+        ),
+        None => "wait: it starts once a reading shows the account usable again".to_owned(),
+    };
+    let mut explanation = wait(
+        Reason::UsagePaced,
+        first.why.clone(),
+        action,
+        ActionBy::Cockpit,
+    );
+    explanation.limited_by = Some(first.limited_by.clone());
+    explanation.sessions = notes.to_vec();
+    explanation
+        .sessions
+        .extend(paced_sessions.iter().map(|(session, paced)| SessionNote {
+            session: session.clone(),
+            why: paced.why.clone(),
+        }));
+    explanation
+        .sessions
+        .sort_by(|left, right| left.session.as_str().cmp(right.session.as_str()));
+    Some(explanation)
 }
 
 /// An explanation of an admission hold.

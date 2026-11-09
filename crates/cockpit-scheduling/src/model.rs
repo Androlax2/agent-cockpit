@@ -10,6 +10,8 @@ use cockpit_resource_admission::{Demand, ReservationId};
 use cockpit_tasks::ItemId;
 use cockpit_workflows::RunId;
 
+use crate::{Pacing, UsageWindow};
+
 /// The rules of dispatch. The daemon passes the product's values; tests shorten the windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
@@ -29,6 +31,8 @@ pub struct Settings {
     /// Added to `turn_demand` in a project no placement has finished in yet: its workload
     /// is unfamiliar, so it starts with headroom (report 10, "startup headroom").
     pub startup_headroom_percent: u64,
+    /// How queue starts follow the plan windows of each session's account (#412).
+    pub pacing: Pacing,
 }
 
 impl Default for Settings {
@@ -44,6 +48,7 @@ impl Default for Settings {
                 memory_mib: 1024,
             },
             startup_headroom_percent: 50,
+            pacing: Pacing::DEFAULT,
         }
     }
 }
@@ -98,6 +103,11 @@ pub struct Candidate {
     /// What its provider reports; a step's required capabilities are checked against it.
     pub capabilities: Capabilities,
     pub presence: Presence,
+    /// The provider its agent runs on, as `cockpit-usage` names it.
+    pub provider: String,
+    /// The account its current launch runs on, whose windows pace the work it takes;
+    /// `None` when no account is known, which nothing paces.
+    pub account: Option<String>,
 }
 
 /// What one pass works from besides the state database.
@@ -106,6 +116,8 @@ pub struct Inputs {
     pub candidates: Vec<Candidate>,
     /// The session the owner is looking at in the manager's viewer: it gets no new work.
     pub viewed: Option<SessionId>,
+    /// Every account's plan windows at their last reading (#58), which pace queue starts.
+    pub usage: Vec<UsageWindow>,
     /// Seconds since 1970.
     pub now: i64,
 }
@@ -146,10 +158,13 @@ pub enum Reason {
     NoSession,
     /// Sessions work in its project, but none can take it now; each says why.
     NoSessionFree,
+    /// A session could take it, but the plan window of its account is ahead of the pace
+    /// (#412).
+    UsagePaced,
 }
 
 impl Reason {
-    const ALL: [Reason; 12] = [
+    const ALL: [Reason; 13] = [
         Reason::NotQueued,
         Reason::WaitsOnItems,
         Reason::RunBlocked,
@@ -162,6 +177,7 @@ impl Reason {
         Reason::Behind,
         Reason::NoSession,
         Reason::NoSessionFree,
+        Reason::UsagePaced,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -178,6 +194,7 @@ impl Reason {
             Reason::Behind => "behind",
             Reason::NoSession => "no-session",
             Reason::NoSessionFree => "no-session-free",
+            Reason::UsagePaced => "usage-paced",
         }
     }
 
@@ -241,7 +258,8 @@ pub struct Explanation {
     pub why: String,
     /// The resource and the capacity, the backend or the control that limits it.
     pub limited_by: Option<String>,
-    /// For [`Reason::NoSessionFree`]: each session of the project and why it cannot take it.
+    /// For [`Reason::NoSessionFree`] and [`Reason::UsagePaced`]: each session of the project
+    /// and why it cannot take it.
     pub sessions: Vec<SessionNote>,
     /// For [`Reason::Behind`]: the item that gathers capacity first.
     pub behind: Option<ItemId>,

@@ -33,8 +33,11 @@ async fn crash_window(delivered: bool) {
                     cockpit_provider_api::Provenance::Discovered,
                 ),
                 presence: Presence::Waiting { since: now - 3600 },
+                provider: "claude".into(),
+                account: None,
             }],
             viewed: None,
+            usage: Vec::new(),
             now,
         },
         &Settings {

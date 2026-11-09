@@ -567,6 +567,7 @@ impl Instance {
             manager,
             provider_capabilities: Arc::new(provider_capabilities),
             settings: wiring.scheduling,
+            quota_policy: wiring.quota.as_ref().map(|polling| polling.policy.clone()),
             queue_changed,
         };
         let dispatching = tokio::spawn(supervisor::supervise(

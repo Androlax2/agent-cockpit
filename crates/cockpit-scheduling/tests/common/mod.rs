@@ -8,12 +8,17 @@ use std::time::Duration;
 use cockpit_authorization::{Permission, Scope, SessionId};
 use cockpit_provider_api::{Capabilities, Capability, Provenance};
 use cockpit_resource_admission::{Demand, Policy};
-use cockpit_scheduling::{Candidate, Dispatched, Explanation, Inputs, Presence, Settings};
+use cockpit_scheduling::{
+    Candidate, Dispatched, Explanation, Inputs, Presence, Settings, UsageWindow,
+};
 use cockpit_tasks::{Actor, Item, ItemId, Kind, NewItem, Priority};
 use cockpit_turso::Database;
 use cockpit_workflows::{Preset, Run};
 
 pub const NOW: i64 = 1_800_000_000;
+
+/// The account every fixture session runs on.
+pub const ACCOUNT: &str = "work";
 
 /// One agent turn's demand in these fixtures.
 pub const TURN: Demand = Demand {
@@ -142,10 +147,32 @@ impl Fixture {
         candidates: &[Candidate],
         viewed: Option<&str>,
     ) -> Dispatched {
+        self.dispatch_with(now, candidates, viewed, Vec::new())
+            .await
+    }
+
+    /// One pass at `now` over `candidates`, with the accounts' plan windows at `usage`.
+    pub async fn dispatch_using(
+        &self,
+        now: i64,
+        candidates: &[Candidate],
+        usage: Vec<UsageWindow>,
+    ) -> Dispatched {
+        self.dispatch_with(now, candidates, None, usage).await
+    }
+
+    async fn dispatch_with(
+        &self,
+        now: i64,
+        candidates: &[Candidate],
+        viewed: Option<&str>,
+        usage: Vec<UsageWindow>,
+    ) -> Dispatched {
         let write = self.database.write().await.unwrap();
         let inputs = Inputs {
             candidates: candidates.to_vec(),
             viewed: viewed.map(|id| SessionId::new(id).unwrap()),
+            usage,
             now,
         };
         let dispatched =
@@ -215,6 +242,8 @@ pub fn idle(id: &str, project: &str) -> Candidate {
         role: None,
         capabilities: observed().with(Capability::Submit, Provenance::Discovered),
         presence: Presence::Waiting { since: NOW - 3600 },
+        provider: "claude".to_owned(),
+        account: Some(ACCOUNT.to_owned()),
     }
 }
 

@@ -162,6 +162,20 @@ pub fn render(config: &EffectiveConfig) -> String {
         &format!("{:?}", usage.quota_alert_percents.value),
         &usage.quota_alert_percents.source,
     ));
+    lines.push(line(
+        "usage.pacing",
+        &Value::from(usage.pacing.value.as_str()).to_string(),
+        &usage.pacing.source,
+    ));
+    for (key, percent) in [
+        (
+            "usage.pacing_reserve_percent",
+            &usage.pacing_reserve_percent,
+        ),
+        ("usage.pacing_burst_percent", &usage.pacing_burst_percent),
+    ] {
+        lines.push(line(key, &percent.value.to_string(), &percent.source));
+    }
     for provider in crate::KNOWN_PROVIDERS {
         let accounts = config.accounts.sourced(provider);
         lines.push(line(

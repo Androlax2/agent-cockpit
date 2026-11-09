@@ -36,7 +36,7 @@ the records it writes commit together. The daemon runs one every 30 seconds and 
 3. **Admission.** An agent turn (500 millicores, 1 GiB) is checked against
    `cockpit-resource-admission`: a paused queue, a required control or a demand that never
    fits holds it with admission's reason. Room is counted against the budget left after
-   admission's reservations, which include every placement's (step 7).
+   admission's reservations, which include every placement's (step 8).
 4. **Startup headroom.** A project no placement has finished in yet is unfamiliar: its turns
    are charged 50 % more until one finishes with its work done.
 5. **Gathering.** A unit held for room that has waited 30 minutes gathers capacity: units
@@ -51,11 +51,40 @@ the records it writes commit together. The daemon runs one every 30 seconds and 
    reported waiting at its prompt and asks nothing, the owner is not viewing it, and the idle
    window (5 minutes since a pass first saw it waiting) has passed. The one waiting longest
    takes it.
-7. **Place.** A queued item is started by the session (`cockpit-tasks` `start`), a ready
+7. **Pace.** Of the eligible sessions, one whose account's plan windows are ahead of the
+   pace does not take it (#412, below). When every eligible session is paced, the unit
+   waits `usage-paced`.
+8. **Place.** A queued item is started by the session (`cockpit-tasks` `start`), a ready
    step begun by it (`cockpit-workflows` `begin`), its agent turn held as an admission
    reservation (`hold`, #386) that the placement's end releases, the placement recorded and
    its delivery enqueued in `cockpit-messaging`'s outbox (#385). When the session goes, its
    item returns to the queue and its step to ready.
+
+## Pacing
+
+`Settings::pacing` keeps queue starts to an even spend of each plan window (#412, owner
+decision 2026-11-09). The daemon passes every account's windows as `cockpit-usage` judged
+them, and each session's provider and account (an agent on no account runs on the owner's
+own sign-in, read as `default`). Under `Pacing::Even` (reserve 10 %, burst 15 % by default)
+a session takes queued work only while each whole-account window of its account is used
+below its line:
+
+```text
+line = min(elapsed share of the window × (100 − reserve) + burst, 100 − reserve)
+```
+
+| Work | Line |
+| --- | --- |
+| priority 1 (low) | no burst: it waits first |
+| priority 2 | the line above |
+| priority 3 and up | `100 − reserve` only |
+
+A window the provider blocks holds every priority; a stale window, one scoped to a model and
+one of another account pace nothing. Of several windows holding a session, the one that
+holds it longest explains it; of several paced sessions, the one that frees first names the
+reason and when the line reaches the window's share (or the reset, at the reserve). Each
+paced session is noted with its own window. Running work is never paused, so what it spends
+after the last start comes out of the reserve. A handoff is the owner's and is never paced.
 
 ## Delivery
 
@@ -112,6 +141,9 @@ reservation) and
 - `tests/explanations.rs`: every reason with its action, and records that survive a reopen.
 - `tests/delivery.rs`: the enqueued line for an item and a step; a failed delivery hands the
   work back.
+- `tests/pacing.rs`: the line by priority, the reserve, blocked and unpacing windows, the
+  explanation, and a recorded feed that full speed spends by half the window and the
+  default pace makes last until the reset.
 - `tests/charges.rs`: placed turns as held reservations that builds and `in_use` see.
 - Through the socket: `cockpit-daemon` `tests/scheduling.rs` and `cockpit-cli`
   `tests/queue.rs`.
