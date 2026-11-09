@@ -5,6 +5,8 @@ a grace period (once per idle spell; a short working blip does not end it), a CI
 PR's current head commit (once per commit and check), a PR merged or closed. Everything else
 that changed is dropped, so every printed line is one a coordinator acts on. `--summary-seconds N`
 opts in to one `SUMMARY` line of those changes every N seconds.
+Every few minutes the full `torlek agent sessions` list is read too, and a question the watch
+stream never delivered is printed then (#1298).
 State persists in the state file so a re-armed monitor does not repeat what it already reported.
 
 When `torlek agent sessions --watch` ends, or a helper thread dies, it prints `WATCH ENDED`, kills
@@ -32,12 +34,14 @@ from pathlib import Path
 KNOWN_FAILING_ON_MAIN = {"greenfield-macos"}
 FAILED_CONCLUSIONS = ("FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE")
 FIELD = re.compile(r'(\w[\w-]*)="((?:[^"\\]|\\.)*)"')
-POLL_FAILURE_REPORT_SECONDS = 1800
+FAILURE_REPORT_SECONDS = 1800
 # A worker waiting on CI wakes on every poll; a working spell shorter than this is a blip.
 DEFAULT_WORKING_SECONDS = 120
 # A worker that started a background review or command is woken by it; an idle that ends
 # within this period is harmless, so only a longer one is reported.
 DEFAULT_IDLE_GRACE_SECONDS = 180
+# How often the full session list is compared with the questions already reported.
+DEFAULT_FULL_LIST_SECONDS = 180
 
 lock = threading.Lock()
 batched = []
@@ -72,6 +76,7 @@ class Watcher:
         self.working_seconds = arguments.working_seconds
         self.idle_grace_seconds = arguments.idle_grace_seconds
         self.summary_seconds = arguments.summary_seconds
+        self.full_list_seconds = arguments.full_list_seconds
         self.state_path = arguments.state_file
         self.is_first_run = not self.state_path.exists()
         self.state = {} if self.is_first_run else json.loads(self.state_path.read_text())
@@ -79,6 +84,15 @@ class Watcher:
         self.sessions = self.state.setdefault("sessions", {})
         self.reported_failures = set(self.state.setdefault("failures", []))
         self.pr_states = self.state.setdefault("prs", {})
+        # session id -> the question last printed for it. A state file from before #1298 has
+        # none: the questions its sessions hold were printed then.
+        if "questions" not in self.state:
+            self.state["questions"] = {
+                session_id: session["question"]
+                for session_id, session in self.sessions.items()
+                if session.get("question")
+            }
+        self.reported_questions = self.state["questions"]
         # session id -> the doing-text of the idle spell already reported; cleared when the
         # session works for at least `working_seconds`.
         if not isinstance(self.state.get("idle"), dict):
@@ -93,7 +107,8 @@ class Watcher:
         self.idle_timers = {}
         self.saved_text = None
         self.process = None
-        self.last_poll_failure_report = None
+        # failure kind -> when it was last printed; cleared once that kind succeeds again.
+        self.last_failure_reports = {}
 
     def save(self):
         """Writes the state only when it changed, atomically (a kill mid-write keeps the old file)."""
@@ -173,9 +188,10 @@ class Watcher:
             # The first look at a fresh start fills the summary with history; a question or an
             # idle worker found then is still news.
             seeding = self.is_first_run and time.monotonic() - self.started_at < self.seed_seconds
-            if current["question"] and current["question"] != (previous or {}).get("question"):
-                print(f"QUESTION {tag}: {current['question']}", flush=True)
-                self.save()
+            if not current["question"]:
+                self.reported_questions.pop(session_id, None)
+            elif current["question"] != self.reported_questions.get(session_id):
+                self.report_question(session_id, tag, current["question"])
                 return
             went_idle = current["state"] == "waiting" and (previous or {}).get("state") != "waiting"
             needs_merge_check = (
@@ -193,6 +209,12 @@ class Watcher:
                 self.save()
                 return
         self.report_idle(session_id, previous, current, tag, seeding)
+
+    def report_question(self, session_id, tag, question, how=""):
+        """Prints the question once per text. Call holding the lock."""
+        print(f"QUESTION {tag}{how}: {question}", flush=True)
+        self.reported_questions[session_id] = question
+        self.save()
 
     def start_idle_timer(self, session_id, previous, tag, seeding):
         """Reports the idle spell after the grace period unless the session works again first."""
@@ -238,6 +260,7 @@ class Watcher:
             self.sessions.pop(session_id, None)
             self.idle_timers.pop(session_id, None)
             self.reported_idle.pop(session_id, None)
+            self.reported_questions.pop(session_id, None)
             self.working_since.pop(session_id, None)
             self.save()
 
@@ -280,12 +303,34 @@ class Watcher:
         finally:
             self.stop_child()
 
-    def report_poll_failure(self, error):
+    def report_failure(self, kind, error):
         now = time.monotonic()
-        last = self.last_poll_failure_report
-        if last is None or now - last >= POLL_FAILURE_REPORT_SECONDS:
-            print(f"PR POLL FAILED (repeats are not reported for 30 minutes): {error}", flush=True)
-            self.last_poll_failure_report = now
+        last = self.last_failure_reports.get(kind)
+        if last is None or now - last >= FAILURE_REPORT_SECONDS:
+            print(f"{kind} (repeats are not reported for 30 minutes): {error}", flush=True)
+            self.last_failure_reports[kind] = now
+
+    def check_full_list(self):
+        """Prints each open question the watch stream never delivered (#1298)."""
+        while True:
+            time.sleep(self.full_list_seconds)
+            try:
+                listing = run_text(["torlek", "agent", "sessions"])
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                self.report_failure("SESSIONS CHECK FAILED", error)
+                continue
+            self.last_failure_reports.pop("SESSIONS CHECK FAILED", None)
+            for line in listing.splitlines():
+                current = self.parse(line)
+                if current is None or not current["question"]:
+                    continue
+                with lock:
+                    if current["question"] == self.reported_questions.get(current["id"]):
+                        continue
+                    tag = f"{current['id']} ({current['branch']})"
+                    self.report_question(
+                        current["id"], tag, current["question"], ", missed by the session watch"
+                    )
 
     def poll_prs(self):
         query = [
@@ -301,10 +346,10 @@ class Watcher:
                 subprocess.TimeoutExpired,
                 json.JSONDecodeError,
             ) as error:
-                self.report_poll_failure(error)
+                self.report_failure("PR POLL FAILED", error)
                 time.sleep(self.poll_seconds)
                 continue
-            self.last_poll_failure_report = None
+            self.last_failure_reports.pop("PR POLL FAILED", None)
             with lock:
                 self.on_pulls(pulls)
                 self.save()
@@ -387,6 +432,12 @@ def parse_arguments(argv):
         default=0,
         help="print one SUMMARY line of non-actionable changes every N seconds; 0 (default) never",
     )
+    parser.add_argument(
+        "--full-list-seconds",
+        type=float,
+        default=DEFAULT_FULL_LIST_SECONDS,
+        help="how often the full session list is checked for a question the watch missed",
+    )
     parser.add_argument("--gh-timeout-seconds", type=float, default=60)
     arguments = parser.parse_args(argv)
     gh_timeout_seconds = arguments.gh_timeout_seconds
@@ -416,7 +467,7 @@ def main(argv):
         print(f"WATCH ENDED: could not start: {error}", flush=True)
         return 1
     print(f"WATCHING {watcher.repo}, workers under {watcher.worker_root}", flush=True)
-    helpers = [watcher.poll_prs]
+    helpers = [watcher.poll_prs, watcher.check_full_list]
     if watcher.summary_seconds > 0:
         helpers.append(watcher.summarize)
     for helper in helpers:
