@@ -409,6 +409,17 @@ per session. Enter opens a session full screen and read-only; `i` types a line i
 goes back. `[tui] phone_below_columns` in the owner configuration changes the width, and `0`
 turns it off.
 
+### Image paste
+
+CMD+V in the viewer saves the PNG on your Wayland clipboard in the session's temporary folder
+and pastes its path into the session on screen. It needs `wl-paste` (wl-clipboard) on the
+daemon's `PATH` and the display your desktop session imported. `torlek daemon install` also
+installs the user service `torlek-desktop-import.service` (`torlek-NAME-desktop-import.service`
+for a named profile), tied to `graphical-session.target`, which runs `torlek desktop-session
+import` at each login and whenever the daemon restarts. Without an imported display CMD+V fails
+and the viewer says so; run `torlek desktop-session import` in a terminal of your desktop.
+`torlek doctor` shows the `clipboard in` line.
+
 ### Desktop notifications and sounds
 
 `torlek notify` shows a desktop notification and plays a sound when a session fails, is held

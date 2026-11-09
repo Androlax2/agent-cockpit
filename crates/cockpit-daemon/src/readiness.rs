@@ -312,10 +312,12 @@ fn image_paste_requirement(context: &Context) -> cockpit_readiness::Requirement 
     let Some(display) = crate::clipboard::wayland_display(&desktop) else {
         return cockpit_readiness::Requirement::available(
             name,
-            "not usable, optional: the daemon knows no Wayland display to read the clipboard on",
+            "not usable, optional: no Wayland display imported, so CMD+V in the viewer fails \
+             instead of pasting",
         )
         .with_advice(
-            "to use it, run `torlek desktop-session import` in a terminal of your desktop",
+            "to use it, run `torlek desktop-session import` in a terminal of your desktop; \
+             `torlek daemon install` makes your desktop session run it at each login",
         );
     };
     cockpit_readiness::Requirement::available(

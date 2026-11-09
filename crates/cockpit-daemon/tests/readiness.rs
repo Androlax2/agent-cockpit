@@ -238,6 +238,7 @@ async fn without_the_owners_wayland_display_image_paste_is_optional_naming_the_i
     let (line, next) = requirement(&report, "clipboard in");
     assert!(line.contains("not usable, optional"), "{line}");
     let next = next.unwrap_or_else(|| panic!("no next action in:\n{report}"));
+    assert!(line.contains("no Wayland display imported"), "{line}");
     assert!(next.contains("torlek desktop-session import"), "{next}");
 }
 

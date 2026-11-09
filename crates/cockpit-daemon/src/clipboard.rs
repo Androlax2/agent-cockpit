@@ -17,6 +17,9 @@ const PNG_TYPE: &str = "image/png";
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 /// A larger image is refused rather than cut: a 4K screenshot is about 10 MiB.
 const IMAGE_LIMIT_MIB: usize = 32;
+/// What the viewer shows for CMD+V when no display was imported. `torlek doctor` words its
+/// advice around the same verb.
+const NO_DISPLAY_IMPORTED: &str = "no Wayland display imported: run `torlek desktop-session import` in a terminal of your desktop (`torlek daemon install` runs it at each login)";
 /// The clipboard's owner, another program, answers each read; one that never does fails the
 /// key instead of holding a daemon thread.
 const READ_LIMIT: Duration = Duration::from_secs(5);
@@ -29,17 +32,18 @@ const SAVE_ATTEMPTS: u32 = 100;
 /// What of the clipboard's list of types is read: a few lines in practice.
 const TYPES_LIMIT: usize = 64 * 1024;
 
-/// The clipboard's PNG; none when it holds no image, or when the daemon cannot reach it (no
-/// Wayland display imported, no `reader`), so CMD+V goes on as before #848 to an agent that
-/// reads the clipboard itself, and `torlek doctor` says why; or why it could not be read.
-/// `desktop` is the owner's last import; the desktop variables it lacks are unset for `reader`.
+/// The clipboard's PNG; none when it holds no image, or when the daemon has no `reader`, so
+/// CMD+V goes on to the session and `torlek doctor` says why; or why it could not be read.
+/// With no Wayland display imported it fails (#1236): a silent C-v is what the owner got on
+/// every default install, where the daemon starts before the compositor and nothing imported
+/// the display. `desktop` is the owner's last import; the desktop variables it lacks are
+/// unset for `reader`.
 pub(crate) fn read_png(
     reader: &Path,
     desktop: &[(OsString, OsString)],
 ) -> Result<Option<Vec<u8>>, ProtocolError> {
     if wayland_display(desktop).is_none() {
-        tracing::info!("CMD+V goes on to the session: no Wayland display was imported");
-        return Ok(None);
+        return Err(refused(NO_DISPLAY_IMPORTED.to_owned()));
     }
     if find_program(reader).is_none() {
         tracing::info!(reader = %reader.display(), "CMD+V goes on to the session: no clipboard reader");

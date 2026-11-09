@@ -134,6 +134,8 @@ fn a_profile_name_that_is_not_a_plain_name_or_names_a_program_is_refused() {
         "tui",
         "notify",
         "next-notify",
+        "desktop-import",
+        "next-desktop-import",
         "claude-hook",
         "abcdefghijklmnopqrstuvwxy",
     ] {
