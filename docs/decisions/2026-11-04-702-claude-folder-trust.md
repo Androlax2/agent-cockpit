@@ -33,8 +33,7 @@ worker measured in Claude Code 2.1.317.
   owner's untracked `.claude/settings.local.json`, are allowed: the clone applies fewer settings,
   never other ones. A branch that changes them gets the dialog: clones are reused, so a launch
   whose settings differ, or cannot be compared, also turns a trust recorded earlier for that
-  clone back to `false` (only an existing `true`; no entry is added), and empties the project
-  MCP approvals it holds. Each launch in a parallel clone reads `projects.trusted` from the
+  clone back to `false` (only an existing `true`; no entry is added). Each launch in a parallel clone reads `projects.trusted` from the
   owner's configuration as it is then, and records the trust off the async workers once the
   launch passed its gates (sandbox, checkout, execution reserved), before the agent runs; any
   refusal is logged and the launch goes on (`crates/cockpit-sessions/src/lifecycle.rs`
@@ -52,16 +51,22 @@ worker measured in Claude Code 2.1.317.
   files count, and a commit that cannot be read leaves the plain reason, naming why.
   Rejected: option A, trusting the settings of the fetched `origin/HEAD` as a whole, which
   would let an auto-merged change through without the owner.
-- **The owner's project MCP approvals carry over (#1279).** A trusted clone's entry gets the
-  owner's `enabledMcpjsonServers` from the main checkout's entry (or, for
-  `enableAllProjectMcpServers`, each server the checkout defines), but only for each server
-  whose definition in every `.mcp.json` from the start up to the root is the same in the
-  clone as in the main checkout's working tree, where the owner approved it; the checkout's
-  `disabledMcpjsonServers` join the clone's own, and the clone's `enableAllProjectMcpServers`
-  is turned off. Any other server keeps Claude Code's prompt, and the launch's note names it.
-  The approvals are read from the owner's own config without its lock (a file that does not
-  parse carries nothing) and written with the trust, in the same locked edit, changing only
-  the keys whose values change. Sandboxed session homes (#968) get the same entry.
+- **The owner's project MCP approvals carry over, in the launch only (#1279).** Decided by
+  Theo on 2026-11-09 (option A, relayed by the coordinator session), after the owner's
+  machine showed where Claude Code 2.1.321 keeps them: the folder's
+  `.claude/settings.local.json` (every `.claude.json` project entry held an empty list, and
+  Claude Code moves the keys it finds there into that file). A parallel clone's launch gets,
+  in its `--settings`, the `enabledMcpjsonServers` the owner approved in the main checkout
+  (its `.claude/settings.local.json`, then its `.claude.json` entry; for
+  `enableAllProjectMcpServers`, each server the checkout defines), but only when the clone's
+  harness settings match the checkout's working tree, and only for each server whose
+  definition in every `.mcp.json` from the start up to the root is the same in both; the
+  checkout's `disabledMcpjsonServers` carry too. Any other server keeps Claude Code's prompt,
+  and the launch's note names it. Nothing is written into the clone or into its
+  `.claude.json` entry, so a reused clone keeps no approval from an earlier launch.
+  Rejected: writing the clone's `.claude/settings.local.json`, a file the clone's checkout
+  must not bring (above), and a settings file in the session's folder, which its agent
+  writes and could use to drop Torlek's hooks.
 - **Why trust is withheld is shown (#1279).** A refusal's reason, naming the settings files
   that differ, is kept with the launch (`session_launches.harness_trust`), shown by
   `session new`, `session show` and `agent sessions` (`harness-trust=`), and appended to the

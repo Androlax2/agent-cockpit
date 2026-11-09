@@ -15,6 +15,30 @@ impl Home {
         self.path().join("agent-home")
     }
 
+    /// Where the fake `claude` writes the arguments of its latest launch, one per line.
+    fn claude_arguments_file(&self) -> PathBuf {
+        self.path().join("claude-arguments")
+    }
+
+    /// The `--settings` JSON the latest launch of `claude` got.
+    fn claude_launch_settings(&self) -> serde_json::Value {
+        let file = self.claude_arguments_file();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let arguments = loop {
+            if let Ok(arguments) = std::fs::read_to_string(&file) {
+                break arguments;
+            }
+            assert!(std::time::Instant::now() < deadline, "claude never started");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let arguments: Vec<&str> = arguments.lines().collect();
+        let at = arguments
+            .iter()
+            .position(|argument| *argument == "--settings")
+            .expect("a launch with --settings");
+        serde_json::from_str(arguments[at + 1]).unwrap()
+    }
+
     fn claude_config(&self) -> serde_json::Value {
         let text = std::fs::read_to_string(self.claude_home().join(".claude.json")).unwrap();
         serde_json::from_str(&text).unwrap()
@@ -25,7 +49,14 @@ impl Home {
     /// does.
     async fn start_claude(&self, bridge: bool, settings: cockpit_sessions::Settings) -> Daemon {
         let program = self.path().join("claude");
-        std::fs::write(&program, "#!/bin/sh\nexec sleep 120\n").unwrap();
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexec sleep 120\n",
+                self.claude_arguments_file().display()
+            ),
+        )
+        .unwrap();
         std::fs::set_permissions(
             &program,
             std::os::unix::fs::PermissionsExt::from_mode(0o755),
@@ -52,7 +83,8 @@ impl Home {
 }
 
 /// Commits `files` on a `merged` branch of the project at `root`, makes that commit its
-/// fetched default branch (`origin/HEAD`), and leaves its working tree on the commit before.
+/// fetched default branch (`origin/HEAD`), which its `main` follows, and leaves its working
+/// tree on the commit before.
 fn merge_behind_the_checkout(root: &Path, files: &[(&str, &str)]) -> String {
     git(root, &["switch", "--quiet", "-c", "merged"]);
     for (path, text) in files {
@@ -66,6 +98,10 @@ fn merge_behind_the_checkout(root: &Path, files: &[(&str, &str)]) -> String {
     git(root, &["switch", "--quiet", "main"]);
     git(root, &["fetch", "--quiet", "origin"]);
     git(root, &["remote", "set-head", "origin", "main"]);
+    git(
+        root,
+        &["branch", "--quiet", "--set-upstream-to=origin/main"],
+    );
     let output = Process::new("git")
         .current_dir(root)
         .args(["rev-parse", "refs/remotes/origin/HEAD"])
@@ -122,6 +158,36 @@ async fn a_clone_is_trusted_with_merged_settings_only_once_the_owner_pulls_them(
             .as_deref(),
         Some("MCP servers left to Claude Code's prompt: docs")
     );
+}
+
+/// Claude Code 2.1.321 saves the owner's approval in the folder's own
+/// `.claude/settings.local.json`; a clone's launch gets it in its `--settings`.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owners_server_approval_in_the_checkout_reaches_a_clones_launch() {
+    let home = Home::new();
+    let daemon = home.start_claude(false, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    home.trust_project(&root);
+    std::fs::write(root.join(".mcp.json"), MCP).unwrap();
+    git(&root, &["add", ".mcp.json"]);
+    git(&root, &["commit", "--quiet", "-m", "a project server"]);
+    std::fs::create_dir_all(root.join(".claude")).unwrap();
+    std::fs::write(
+        root.join(".claude/settings.local.json"),
+        "{\"enabledMcpjsonServers\": [\"docs\"]}",
+    )
+    .unwrap();
+
+    let session = start_in(&client, &root, Some("approved")).await;
+
+    assert_eq!(
+        home.claude_launch_settings()["enabledMcpjsonServers"],
+        serde_json::json!(["docs"])
+    );
+    assert_eq!(session.launch.and_then(|launch| launch.harness_trust), None);
+    let clone = PathBuf::from(&session.working_dir);
+    assert!(!clone.join(".claude/settings.local.json").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]

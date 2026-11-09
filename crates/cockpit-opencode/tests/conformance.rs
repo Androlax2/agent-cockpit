@@ -89,6 +89,7 @@ fn a_launched_server_answers_its_password_and_lists_commands() {
             model: None,
             remote_control: false,
             compaction_threshold: None,
+            inherited_trust: None,
         })
         .unwrap();
     let server = Server::from_launch(&launch).unwrap();

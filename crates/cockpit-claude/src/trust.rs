@@ -7,15 +7,18 @@
 //! lookup walks from the working directory up to the git root only, so a project's trust never
 //! covers a clone: each clone is its own root.
 //!
-//! The write here takes the same lock, re-reads the file, changes only the clone's trust key
-//! and its project MCP approvals, keeps every other byte of the file and replaces it by an
-//! atomic rename. Anything it cannot do safely is refused, writing nothing: the dialog then
-//! shows and the session waits on the owner.
+//! The write here takes the same lock, re-reads the file, changes only the clone's trust key,
+//! keeps every other byte of the file and replaces it by an atomic rename. Anything it cannot
+//! do safely is refused, writing nothing: the dialog then shows and the session waits on the
+//! owner.
 //!
 //! A clone's settings are accepted only when they match the trusted checkout's working tree;
 //! when they match its fetched default branch instead, the refusal says the checkout is
 //! behind and how to fast-forward it (#1279). The owner's own approvals of the project's
-//! `.mcp.json` servers in the trusted checkout carry over to the clone.
+//! `.mcp.json` servers in the trusted checkout ([`carried_approvals`]) reach the clone's
+//! launch through its `--settings`, never through a file: measured on 2.1.321, Claude Code
+//! keeps them in the folder's `.claude/settings.local.json`, and moves those it finds in
+//! `.claude.json` there.
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -37,13 +40,16 @@ pub const PROJECT_SETTINGS: [&str; 2] = [".claude", ".mcp.json"];
 const TRUST_KEY: &str = "hasTrustDialogAccepted";
 
 /// The project's `.mcp.json` servers the owner approved, rejected, or all approved at once,
-/// as Claude Code 2.1.321 keeps them in a project's entry.
-const ENABLED_SERVERS_KEY: &str = "enabledMcpjsonServers";
-const DISABLED_SERVERS_KEY: &str = "disabledMcpjsonServers";
+/// as Claude Code names them in its settings and in a project's entry of its config.
+pub const ENABLED_SERVERS_KEY: &str = "enabledMcpjsonServers";
+pub const DISABLED_SERVERS_KEY: &str = "disabledMcpjsonServers";
 const ALL_SERVERS_KEY: &str = "enableAllProjectMcpServers";
 
 /// The project MCP server file Claude Code reads in each directory it compares settings in.
 const MCP_FILE: &str = ".mcp.json";
+
+/// Where Claude Code saves the owner's answers in a folder, MCP approvals among them.
+const LOCAL_SETTINGS_FILE: &str = ".claude/settings.local.json";
 
 /// A new project entry as Claude Code 2.1.317 writes one when the owner accepts the dialog:
 /// its defaults, with the trust key set.
@@ -294,7 +300,7 @@ fn working_tree_file(checkout: &Path, relative: &Path) -> Result<Option<Vec<u8>>
     }
 }
 
-/// The project MCP approvals a clone's entry gets: the owner's in the trusted checkout, for
+/// The project MCP approvals a clone's launch gets: the owner's in the trusted checkout, for
 /// the servers the clone defines exactly as the checkout does.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct McpApprovals {
@@ -310,14 +316,18 @@ pub struct McpApprovals {
 pub struct CarriedApprovals {
     pub approvals: McpApprovals,
     /// Servers the owner never approved in the trusted checkout, or approved as the
-    /// checkout defines them while the clone defines them otherwise. Sorted.
+    /// checkout defines them while the clone defines them otherwise. Sorted. The second
+    /// kind cannot follow [`vetted_settings`], which refuses a clone whose `.mcp.json`
+    /// differs; it is kept so that an approval never outlives its definition, whoever calls.
     pub waiting: Vec<String>,
 }
 
-/// The owner's project MCP approvals for `trusted_checkout`, read from `owner_config`, carried
-/// to `clone` (#1279): a server is approved in the clone only when the owner approved it in
-/// the checkout (one by one or all at once) and each `.mcp.json` from `start` up to the root
-/// defines it with the same value in both. Rejections carry as they are.
+/// The owner's project MCP approvals for `trusted_checkout`, carried to `clone` (#1279): read
+/// from the checkout's `.claude/settings.local.json`, where Claude Code saves them, and its
+/// entry in `owner_config`, where older releases did. A server is approved in the clone only
+/// when the owner approved it in the checkout (one by one or all at once) and each `.mcp.json`
+/// from `start` up to the root defines it with the same value in both: a guard of its own,
+/// beside the byte comparison [`vetted_settings`] makes first. Rejections carry as they are.
 pub fn carried_approvals(
     owner_config: &Path,
     clone: &Path,
@@ -386,8 +396,8 @@ fn mcp_servers(
     Ok(servers)
 }
 
-/// The owner's approvals in `checkout`'s entry of `config`; none when it has no entry or
-/// `config` does not exist.
+/// The owner's approvals of `checkout`'s project MCP servers, from every place Claude Code
+/// keeps them.
 #[derive(Default)]
 struct OwnerApprovals {
     enabled: Vec<String>,
@@ -395,7 +405,45 @@ struct OwnerApprovals {
     all: bool,
 }
 
+impl OwnerApprovals {
+    /// Adds the approvals `settings` holds, an object of Claude Code's settings or a project
+    /// entry of its config, which `place` names in a refusal.
+    fn add(&mut self, settings: &Value, place: &str) -> Result<(), String> {
+        let names = |member: &str| -> Result<Vec<String>, String> {
+            match settings.get(member) {
+                None => Ok(Vec::new()),
+                Some(Value::Array(names)) => names
+                    .iter()
+                    .map(|name| {
+                        name.as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| format!("{place}'s `{member}` holds a non-string"))
+                    })
+                    .collect(),
+                Some(_) => Err(format!("{place}'s `{member}` is not a list")),
+            }
+        };
+        for (member, approved) in [
+            (ENABLED_SERVERS_KEY, &mut self.enabled),
+            (DISABLED_SERVERS_KEY, &mut self.disabled),
+        ] {
+            for name in names(member)? {
+                if !approved.contains(&name) {
+                    approved.push(name);
+                }
+            }
+        }
+        self.all |= settings.get(ALL_SERVERS_KEY) == Some(&Value::Bool(true));
+        Ok(())
+    }
+}
+
 fn owner_approvals(config: &Path, checkout: &Path) -> Result<OwnerApprovals, String> {
+    let mut approvals = OwnerApprovals::default();
+    let local_settings = checkout.join(LOCAL_SETTINGS_FILE);
+    if let Some(settings) = json_file(&local_settings)? {
+        approvals.add(&settings, &local_settings.display().to_string())?;
+    }
     let checkout = checkout
         .canonicalize()
         .map_err(|error| format!("resolve {}: {error}", checkout.display()))?;
@@ -404,58 +452,37 @@ fn owner_approvals(config: &Path, checkout: &Path) -> Result<OwnerApprovals, Str
         .ok_or_else(|| format!("{} is not UTF-8", checkout.display()))?;
     // Read without Claude Code's lock: it replaces the file whole, and a file read while
     // it is written fails to parse, which carries nothing.
-    let text = match fs::read_to_string(config) {
+    if let Some(config_text) = json_file(config)? {
+        approvals.add(
+            &config_text["projects"][key],
+            &format!("the checkout's entry in {}", config.display()),
+        )?;
+    }
+    Ok(approvals)
+}
+
+/// The JSON in `path`; `None` when there is no such file, as for an owner who never ran
+/// Claude Code or approved nothing in the checkout.
+fn json_file(path: &Path) -> Result<Option<Value>, String> {
+    let text = match fs::read_to_string(path) {
         Ok(text) => text,
-        // An owner who never ran Claude Code approved nothing.
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            return Ok(OwnerApprovals::default());
-        }
-        Err(error) => return Err(format!("read {}: {error}", config.display())),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
     };
-    let parsed: Value = serde_json::from_str(&text)
-        .map_err(|error| format!("{} is not JSON: {error}", config.display()))?;
-    let entry = &parsed["projects"][key];
-    let names = |member: &str| -> Result<Vec<String>, String> {
-        match entry.get(member) {
-            None => Ok(Vec::new()),
-            Some(Value::Array(names)) => names
-                .iter()
-                .map(|name| {
-                    name.as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| format!("the checkout's `{member}` holds a non-string"))
-                })
-                .collect(),
-            Some(_) => Err(format!("the checkout's `{member}` is not a list")),
-        }
-    };
-    Ok(OwnerApprovals {
-        enabled: names(ENABLED_SERVERS_KEY)?,
-        disabled: names(DISABLED_SERVERS_KEY)?,
-        all: entry.get(ALL_SERVERS_KEY) == Some(&Value::Bool(true)),
-    })
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|error| format!("{} is not JSON: {error}", path.display()))
 }
 
-/// What [`record`] changes in the workspace's entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Change {
-    /// Trust it with these project MCP approvals: a clone's own earlier approvals and an
-    /// "approve all" are replaced, its own rejections kept beside the carried ones.
-    Trust(McpApprovals),
-    /// Turn an existing trust and project MCP approvals off, adding nothing, so a reused
-    /// clone keeps none a previous branch earned.
-    Revoke,
-}
-
-/// Applies `change` to `workspace`'s entry in `config`: under Claude Code's own lock, from the
-/// file as it is then, changing only that project's trust and MCP approval keys, and only
-/// those whose value changes. Revoking never adds an entry or a key. Refuses, writing nothing,
+/// Records Claude Code's trust of `workspace` in `config` as `trusted`: under Claude Code's
+/// own lock, from the file as it is then, changing only that project's trust key. Revoking
+/// only turns an existing `true` to `false`; it never adds an entry. Refuses, writing nothing,
 /// when the file is a link, cannot be parsed, has an unexpected shape or stays locked, and
 /// when it is missing unless `when_missing` creates it.
 pub fn record(
     config: &Path,
     workspace: &Path,
-    change: &Change,
+    trusted: bool,
     when_missing: WhenMissing,
 ) -> Result<Recorded, String> {
     let workspace = workspace
@@ -475,7 +502,7 @@ pub fn record(
         ),
         None => ("{}".to_owned(), CREATED_MODE),
     };
-    let Some(edited) = with_change(&text, key, change)? else {
+    let Some(edited) = with_trust(&text, key, trusted)? else {
         return Ok(Recorded::Unchanged);
     };
     replace(config, mode, &edited)?;
@@ -500,10 +527,11 @@ pub(crate) fn existing(
     }
 }
 
-/// `text` with `change` applied to `projects[key]`, every other byte kept; `None` when nothing
-/// changes. A missing entry, key or list reads as untrusted, with nothing approved, so
-/// revoking adds none. The edit is checked by parsing the result.
-pub fn with_change(text: &str, key: &str, change: &Change) -> Result<Option<String>, String> {
+/// `text` with `projects[key].hasTrustDialogAccepted` set to `trusted`, every other byte
+/// kept; `None` when nothing changes: already trusted, or, to revoke, not trusted (a missing
+/// entry or key reads as untrusted, so none is added). The edit is checked by parsing the
+/// result.
+pub fn with_trust(text: &str, key: &str, trusted: bool) -> Result<Option<String>, String> {
     let unparsable = |error: serde_json::Error| format!("the config is not JSON: {error}");
     let mut expected: Value = serde_json::from_str(text).map_err(unparsable)?;
     let top = expected
@@ -514,30 +542,31 @@ pub fn with_change(text: &str, key: &str, change: &Change) -> Result<Option<Stri
         .or_insert_with(|| Value::Object(serde_json::Map::new()))
         .as_object_mut()
         .ok_or("the config's `projects` is not an object")?;
-    let entry = match projects.get(key) {
-        Some(entry) => Some(
+    let is_trusted = match projects.get(key) {
+        Some(entry) => {
             entry
                 .as_object()
-                .ok_or("the workspace's project entry is not an object")?,
-        ),
-        None => None,
+                .ok_or("the workspace's project entry is not an object")?
+                .get(TRUST_KEY)
+                == Some(&Value::Bool(true))
+        }
+        None => false,
     };
-    let edits = entry_edits(entry, change);
-    if edits.is_empty() {
+    if is_trusted == trusted {
         return Ok(None);
     }
-    let edited = splice(text, key, &edits)?;
-    let entry = match projects.get_mut(key) {
-        Some(entry) => entry,
-        None => projects
-            .entry(key.to_owned())
-            .or_insert(serde_json::from_str(NEW_PROJECT_ENTRY).map_err(unparsable)?),
-    };
-    let entry = entry
-        .as_object_mut()
-        .ok_or("the workspace's project entry is not an object")?;
-    for (member, value) in &edits {
-        entry.insert((*member).to_owned(), value.clone());
+    let edited = splice(text, key, trusted)?;
+    match projects.get_mut(key) {
+        Some(entry) => {
+            entry
+                .as_object_mut()
+                .ok_or("the workspace's project entry is not an object")?
+                .insert(TRUST_KEY.to_owned(), Value::Bool(trusted));
+        }
+        None => {
+            let entry = serde_json::from_str(NEW_PROJECT_ENTRY).map_err(unparsable)?;
+            projects.insert(key.to_owned(), entry);
+        }
     }
     let written: Value = serde_json::from_str(&edited).map_err(unparsable)?;
     if written != expected {
@@ -546,138 +575,44 @@ pub fn with_change(text: &str, key: &str, change: &Change) -> Result<Option<Stri
     Ok(Some(edited))
 }
 
-/// The members of the workspace's `entry` that `change` sets, with their new values: only
-/// those whose value differs. Revoking a missing entry sets nothing.
-fn entry_edits(
-    entry: Option<&serde_json::Map<String, Value>>,
-    change: &Change,
-) -> Vec<(&'static str, Value)> {
-    let current = |member: &str| entry.and_then(|entry| entry.get(member));
-    let no_servers = Value::Array(Vec::new());
-    let listed = |member: &str| current(member).unwrap_or(&no_servers).clone();
-    let mut edits = Vec::new();
-    match change {
-        Change::Trust(approvals) => {
-            if current(TRUST_KEY) != Some(&Value::Bool(true)) {
-                edits.push((TRUST_KEY, Value::Bool(true)));
-            }
-            let enabled = approvals.enabled.clone();
-            // Rejections the owner made in the clone itself stay: rejecting more is safe.
-            let mut disabled: Vec<String> = match listed(DISABLED_SERVERS_KEY) {
-                Value::Array(names) => names
-                    .into_iter()
-                    .filter_map(|name| name.as_str().map(str::to_owned))
-                    .collect(),
-                _ => Vec::new(),
-            };
-            for name in &approvals.disabled {
-                if !disabled.contains(name) {
-                    disabled.push(name.clone());
-                }
-            }
-            for (member, names) in [
-                (ENABLED_SERVERS_KEY, enabled),
-                (DISABLED_SERVERS_KEY, disabled),
-            ] {
-                let wanted = Value::Array(names.into_iter().map(Value::String).collect());
-                if listed(member) != wanted {
-                    edits.push((member, wanted));
-                }
-            }
-        }
-        Change::Revoke => {
-            if entry.is_none() {
-                return edits;
-            }
-            if current(TRUST_KEY) == Some(&Value::Bool(true)) {
-                edits.push((TRUST_KEY, Value::Bool(false)));
-            }
-            if listed(ENABLED_SERVERS_KEY) != no_servers {
-                edits.push((ENABLED_SERVERS_KEY, no_servers.clone()));
-            }
-        }
-    }
-    if current(ALL_SERVERS_KEY) == Some(&Value::Bool(true)) {
-        edits.push((ALL_SERVERS_KEY, Value::Bool(false)));
-    }
-    edits
-}
-
-/// The textual edit: each member of `edits` set in the workspace's entry, its value replaced
-/// or, when the entry lacks it, the member inserted first. A missing entry is Claude Code's
-/// own new one with `edits` applied, inserted first in `projects`, itself inserted first in
-/// the file when missing. Revoking reaches here only for an existing entry.
-fn splice(text: &str, key: &str, edits: &[(&str, Value)]) -> Result<String, String> {
+/// The textual edit: the trust key's value replaced, or, to trust, a member inserted first in
+/// the innermost object that exists on the path `projects` → `key` → trust key. Revoking
+/// reaches here only for a key that is `true`, so it only replaces.
+fn splice(text: &str, key: &str, trusted: bool) -> Result<String, String> {
     let bytes = text.as_bytes();
     let top = skip_whitespace(bytes, 0);
     let top_members = members(bytes, top)?;
+    let insert_first = |object: usize, member: String, is_empty: bool| {
+        let at = object + 1;
+        let separator = if is_empty { "" } else { "," };
+        format!("{}{member}{separator}{}", &text[..at], &text[at..])
+    };
     let Some(projects) = find(&top_members, "projects")? else {
-        let member = format!("\"projects\":{{{}:{}}}", quoted(key)?, new_entry(edits)?);
-        return Ok(insert_first(text, top, &member, top_members.is_empty()));
+        let member = format!("\"projects\":{{{}:{NEW_PROJECT_ENTRY}}}", quoted(key)?);
+        return Ok(insert_first(top, member, top_members.is_empty()));
     };
     let project_members = members(bytes, projects.value)?;
-    if find(&project_members, key)?.is_none() {
-        let member = format!("{}:{}", quoted(key)?, new_entry(edits)?);
+    let Some(entry) = find(&project_members, key)? else {
+        let member = format!("{}:{NEW_PROJECT_ENTRY}", quoted(key)?);
         return Ok(insert_first(
-            text,
             projects.value,
-            &member,
+            member,
             project_members.is_empty(),
         ));
-    }
-    let mut edited = text.to_owned();
-    for (member, value) in edits {
-        let entry = entry_start(&edited, key)?;
-        edited = set_member(&edited, entry, member, value)?;
-    }
-    Ok(edited)
-}
-
-/// Claude Code's new project entry with `edits` applied.
-fn new_entry(edits: &[(&str, Value)]) -> Result<String, String> {
-    let mut entry = NEW_PROJECT_ENTRY.to_owned();
-    for (member, value) in edits {
-        entry = set_member(&entry, 0, member, value)?;
-    }
-    Ok(entry)
-}
-
-/// Where the value of `projects[key]` starts in `text`, which has it.
-fn entry_start(text: &str, key: &str) -> Result<usize, String> {
-    let bytes = text.as_bytes();
-    let top_members = members(bytes, skip_whitespace(bytes, 0))?;
-    let projects = find(&top_members, "projects")?.ok_or("the config lost `projects`")?;
-    let project_members = members(bytes, projects.value)?;
-    Ok(find(&project_members, key)?
-        .ok_or("the config lost the workspace's entry")?
-        .value)
-}
-
-/// `text` with the member `name` of the object whose `{` is at `object` set to `value`: its
-/// value replaced, or the member inserted first.
-fn set_member(text: &str, object: usize, name: &str, value: &Value) -> Result<String, String> {
-    let value = serde_json::to_string(value).map_err(|error| error.to_string())?;
-    let object_members = members(text.as_bytes(), object)?;
-    match find(&object_members, name)? {
-        Some(member) => Ok(format!(
-            "{}{value}{}",
-            &text[..member.value],
-            &text[member.value_end..]
+    };
+    let entry_members = members(bytes, entry.value)?;
+    match find(&entry_members, TRUST_KEY)? {
+        Some(flag) => Ok(format!(
+            "{}{trusted}{}",
+            &text[..flag.value],
+            &text[flag.value_end..]
         )),
         None => Ok(insert_first(
-            text,
-            object,
-            &format!("{}:{value}", quoted(name)?),
-            object_members.is_empty(),
+            entry.value,
+            format!("\"{TRUST_KEY}\":true"),
+            entry_members.is_empty(),
         )),
     }
-}
-
-/// `text` with `member` inserted first in the object whose `{` is at `object`.
-fn insert_first(text: &str, object: usize, member: &str, is_empty: bool) -> String {
-    let at = object + 1;
-    let separator = if is_empty { "" } else { "," };
-    format!("{}{member}{separator}{}", &text[..at], &text[at..])
 }
 
 pub(crate) fn quoted(key: &str) -> Result<String, String> {

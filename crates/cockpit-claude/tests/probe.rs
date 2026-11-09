@@ -106,6 +106,7 @@ fn a_launch_asking_for_a_capability_the_probe_took_away_is_refused() {
             model: None,
             remote_control: false,
             compaction_threshold: None,
+            inherited_trust: None,
         })
         .unwrap_err();
 
@@ -140,6 +141,7 @@ fn a_harness_without_autocompact_refuses_a_compaction_threshold_naming_the_flag_
             model: None,
             remote_control: false,
             compaction_threshold: Some("200k"),
+            inherited_trust: None,
         })
         .unwrap_err();
     assert_eq!(

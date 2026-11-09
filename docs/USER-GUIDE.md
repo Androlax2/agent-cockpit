@@ -435,7 +435,8 @@ A parallel clone gets that trust, sandboxed or not, only when its `.claude/` and
 match your main checkout's working tree. Settings merged on the default branch count once you
 pull them: while your checkout is behind, trust is withheld (Claude asks) and the reason gives
 the command to run, `git -C <checkout> pull --ff-only`. The project MCP servers you approved in the main checkout
-are approved in the clone too; any other server still asks. `session show` prints a
+are approved in the clone's launch too (Torlek passes them in its `--settings`, writing no file
+in the clone); any other server still asks. `session show` prints a
 `harness trust:` line when a server still asks or when trust was withheld and why; a session
 that waits on Claude's dialog names that reason too.
 

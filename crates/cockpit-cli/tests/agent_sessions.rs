@@ -145,7 +145,7 @@ async fn without_watch_every_session_is_listed_once() {
 }
 
 #[tokio::test]
-async fn a_launchs_harness_trust_note_is_listed_with_its_session() {
+async fn the_latest_launch_harness_trust_note_is_listed_with_its_session() {
     let home = Home::new();
     let mut withheld = observed("s1", "tests");
     withheld.harness_trust = Some("not recorded: its settings differ".to_owned());

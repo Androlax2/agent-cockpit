@@ -200,8 +200,13 @@ impl Git {
     }
 
     /// The commit the checkout at `dir` last fetched as its remote's default branch
-    /// (`refs/remotes/origin/HEAD`), as a full object id; `None` when it has none.
+    /// (`refs/remotes/origin/HEAD`), as a full object id; `None` when it has none, or when
+    /// the branch checked out there does not follow that branch, so that a
+    /// `git pull --ff-only` there would not bring the commit in.
     pub fn default_branch_commit(&self, dir: &Path) -> Result<Option<String>, Error> {
+        if !self.follows_default_branch(dir)? {
+            return Ok(None);
+        }
         let output = self.output(
             dir,
             &[
@@ -223,6 +228,41 @@ impl Git {
         }
         Ok(Some(
             String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ))
+    }
+
+    /// Whether the branch checked out at `dir` has the branch `origin/HEAD` names as its
+    /// upstream; false on a detached head, without an upstream or without `origin/HEAD`.
+    fn follows_default_branch(&self, dir: &Path) -> Result<bool, Error> {
+        const DEFAULT_BRANCH: &str = "refs/remotes/origin/HEAD";
+        let listing = [
+            arg("for-each-ref"),
+            arg("--format=%(HEAD)%00%(refname)%00%(upstream)%00%(symref)"),
+            arg("refs/heads/"),
+            arg(DEFAULT_BRANCH),
+        ];
+        let output = self.output(dir, &listing)?;
+        if !output.status.success() {
+            return Err(git_failure(&listing, &output));
+        }
+        let listed = String::from_utf8_lossy(&output.stdout);
+        let mut upstream = None;
+        let mut default_branch = None;
+        for line in listed.lines() {
+            let fields: Vec<&str> = line.split('\0').collect();
+            let [head_mark, name, its_upstream, its_target] = fields[..] else {
+                continue;
+            };
+            if head_mark == "*" {
+                upstream = Some(its_upstream);
+            }
+            if name == DEFAULT_BRANCH {
+                default_branch = Some(its_target);
+            }
+        }
+        Ok(matches!(
+            (upstream, default_branch),
+            (Some(upstream), Some(target)) if !upstream.is_empty() && upstream == target
         ))
     }
 

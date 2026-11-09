@@ -121,6 +121,7 @@ fn a_harness_without_the_compaction_reserved_setting_refuses_a_threshold_naming_
             model: None,
             remote_control: false,
             compaction_threshold: Some("20000"),
+            inherited_trust: None,
         })
         .unwrap_err();
     assert_eq!(

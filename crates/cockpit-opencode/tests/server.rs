@@ -407,6 +407,7 @@ fn launch_for(fake: &FakeServer) -> LaunchCommand {
             model: None,
             remote_control: false,
             compaction_threshold: None,
+            inherited_trust: None,
         })
         .unwrap();
     let port = launch

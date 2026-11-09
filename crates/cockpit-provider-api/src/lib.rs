@@ -136,6 +136,22 @@ pub struct LaunchRequest<'request> {
     /// for Claude Code, a percent for Codex, a buffer for OpenCode); needs
     /// [`Capability::CompactionThreshold`]. `None` leaves the harness's own setting alone.
     pub compaction_threshold: Option<&'request str>,
+    /// For a parallel clone of a trusted project, the checkout it inherits its harness trust
+    /// from, so the adapter can carry the owner's approvals there of the project's own tool
+    /// servers into the launch (#1279); `None` for any other workspace.
+    pub inherited_trust: Option<InheritedTrust<'request>>,
+}
+
+/// The trusted checkout a parallel clone inherits its harness trust from (#702), as a launch
+/// there sees it ([`LaunchRequest::inherited_trust`]).
+#[derive(Debug, Clone, Copy)]
+pub struct InheritedTrust<'a> {
+    /// The clone's root.
+    pub workspace: &'a Path,
+    /// The project's main checkout.
+    pub trusted_checkout: &'a Path,
+    /// The environment that locates the owner's own harness files.
+    pub owner_environment: &'a [(OsString, OsString)],
 }
 
 impl LaunchRequest<'_> {

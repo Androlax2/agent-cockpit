@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 
 use cockpit_claude::ClaudeCode;
 use cockpit_claude::trust::{self, Recorded};
-use cockpit_provider_api::{DefaultBranch, Provider, TrustRequest, WorkspaceTrust};
+use cockpit_provider_api::{
+    Conversation, DefaultBranch, InheritedTrust, LaunchRequest, Provider, TrustRequest,
+    WorkspaceTrust,
+};
 
 /// A config as Claude Code 2.1.317 writes one: two-space indents, other projects, other keys.
 const CONFIG: &str = r#"{
@@ -75,7 +78,7 @@ fn a_new_clone_gets_claude_codes_own_entry_and_every_other_byte_stays() {
     let recorded = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals::default()),
+        true,
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -105,7 +108,7 @@ fn an_entry_that_refused_trust_has_only_its_value_turned_true() {
     trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals::default()),
+        true,
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -131,7 +134,7 @@ fn an_entry_without_the_trust_key_gets_only_that_key() {
     trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals::default()),
+        true,
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -152,7 +155,7 @@ fn a_config_without_projects_gets_the_projects_member() {
     trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals::default()),
+        true,
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -175,7 +178,7 @@ fn an_already_trusted_clone_leaves_the_file_untouched() {
     let recorded = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals::default()),
+        true,
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -195,7 +198,7 @@ fn the_write_keeps_the_files_mode_and_releases_the_lock() {
     trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals::default()),
+        true,
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -218,7 +221,7 @@ fn a_config_that_cannot_be_parsed_is_refused_and_left_as_it_is() {
     let refused = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals::default()),
+        true,
         trust::WhenMissing::Refuse,
     )
     .unwrap_err();
@@ -237,7 +240,7 @@ fn a_project_named_twice_is_refused() {
     let refused = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals::default()),
+        true,
         trust::WhenMissing::Refuse,
     )
     .unwrap_err();
@@ -254,7 +257,7 @@ fn a_config_held_locked_by_claude_code_is_refused() {
     let refused = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals::default()),
+        true,
         trust::WhenMissing::Refuse,
     )
     .unwrap_err();
@@ -274,7 +277,7 @@ fn a_config_that_is_a_link_is_refused() {
     let refused = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals::default()),
+        true,
         trust::WhenMissing::Refuse,
     )
     .unwrap_err();
@@ -292,7 +295,7 @@ fn revoking_turns_only_the_clones_existing_trust_false() {
     let revoked = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Revoke,
+        false,
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -314,7 +317,7 @@ fn revoking_a_clone_never_trusted_adds_nothing() {
     let revoked = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Revoke,
+        false,
         trust::WhenMissing::Refuse,
     )
     .unwrap();
@@ -506,7 +509,7 @@ fn a_missing_config_the_caller_may_create_is_created_owner_only_with_the_trust()
     let recorded = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals::default()),
+        true,
         trust::WhenMissing::Create,
     )
     .unwrap();
@@ -525,7 +528,7 @@ fn a_missing_config_is_refused_unless_the_caller_may_create_it() {
     let refused = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals::default()),
+        true,
         trust::WhenMissing::Refuse,
     )
     .unwrap_err();
@@ -542,7 +545,7 @@ fn revoking_in_a_missing_config_creates_nothing() {
     let recorded = trust::record(
         &fixture.config(),
         &fixture.workspace(),
-        &trust::Change::Revoke,
+        false,
         trust::WhenMissing::Create,
     )
     .unwrap();
@@ -647,8 +650,9 @@ const DOCS_SERVER: &str = r#"{"mcpServers": {"docs": {"command": "docs-mcp"}}}"#
 const DOCS_AND_EXTRA: &str =
     r#"{"mcpServers": {"docs": {"command": "docs-mcp"}, "extra": {"command": "extra-mcp"}}}"#;
 
-/// A home whose config approves `approvals` (members of the trusted checkout's entry) for the
-/// main checkout, and a clone bringing `clone_mcp` as its `.mcp.json`.
+/// A home holding the trusted checkout's `.mcp.json` (`main_mcp`) with the owner's
+/// `approvals` saved where Claude Code 2.1.321 saves them, the checkout's
+/// `.claude/settings.local.json`, and a clone bringing `clone_mcp` as its `.mcp.json`.
 fn mcp_fixture(
     main_mcp: Option<&str>,
     clone_mcp: &str,
@@ -659,16 +663,42 @@ fn mcp_fixture(
         fs::write(main.join(".mcp.json"), main_mcp).unwrap();
     }
     fs::write(clone.join(".mcp.json"), clone_mcp).unwrap();
-    let main_key = main.canonicalize().unwrap().to_str().unwrap().to_owned();
-    fs::write(
-        dir.path().join(".claude.json"),
-        format!(
-            "{{\"projects\": {{{}: {{\"hasTrustDialogAccepted\": true{approvals}}}}}}}",
-            serde_json::to_string(&main_key).unwrap()
-        ),
-    )
-    .unwrap();
+    fs::write(main.join(".claude/settings.local.json"), approvals).unwrap();
+    fs::write(dir.path().join(".claude.json"), "{}").unwrap();
     (dir, main, clone)
+}
+
+/// The `--settings` JSON of a launch in `clone`, which inherits `main`'s trust, for an
+/// adapter with or without the bridge's hooks; `None` when it passes none.
+fn launch_settings(
+    home: &Path,
+    main: &Path,
+    clone: &Path,
+    bridge: Option<cockpit_claude::Bridge>,
+) -> Option<serde_json::Value> {
+    let environment = environment(&[("HOME", home)]);
+    let command = ClaudeCode::new(PathBuf::from("/usr/bin/claude"), None, bridge)
+        .launch(&LaunchRequest {
+            working_dir: clone,
+            session_dir: home,
+            conversation: &Conversation::New,
+            first_message: None,
+            effort: None,
+            model: None,
+            remote_control: false,
+            compaction_threshold: None,
+            inherited_trust: Some(InheritedTrust {
+                workspace: clone,
+                trusted_checkout: main,
+                owner_environment: &environment,
+            }),
+        })
+        .unwrap();
+    let at = command
+        .arguments
+        .iter()
+        .position(|argument| argument == "--settings")?;
+    Some(serde_json::from_str(command.arguments[at + 1].to_str().unwrap()).unwrap())
 }
 
 /// Option B of #1279: the owner's pull, not a merge on the remote, accepts settings.
@@ -762,19 +792,50 @@ fn a_checkout_path_needing_quotes_is_quoted_in_the_pull_command() {
 }
 
 #[test]
-fn the_owners_approved_servers_carry_over_to_a_clone_that_defines_them_alike() {
+fn the_owners_approved_servers_reach_the_clones_launch_and_no_file_of_the_clone() {
     let (dir, main, clone) = mcp_fixture(
         Some(DOCS_SERVER),
         DOCS_SERVER,
-        r#", "enabledMcpjsonServers": ["docs"], "disabledMcpjsonServers": ["old"]"#,
+        r#"{"enabledMcpjsonServers": ["docs"], "disabledMcpjsonServers": ["old"]}"#,
     );
 
     let trusted = trust_through_the_adapter(dir.path(), &main, &clone).unwrap();
+    let settings = launch_settings(dir.path(), &main, &clone, None).unwrap();
 
     assert_eq!(trusted, WorkspaceTrust::Recorded { notice: None });
-    let entry = clone_entry(dir.path(), &clone);
-    assert_eq!(entry["enabledMcpjsonServers"], serde_json::json!(["docs"]));
-    assert_eq!(entry["disabledMcpjsonServers"], serde_json::json!(["old"]));
+    assert_eq!(
+        settings,
+        serde_json::json!({
+            "enabledMcpjsonServers": ["docs"],
+            "disabledMcpjsonServers": ["old"],
+        })
+    );
+    assert!(!clone.join(".claude/settings.local.json").exists());
+    assert_eq!(
+        clone_entry(dir.path(), &clone)["enabledMcpjsonServers"],
+        serde_json::json!([])
+    );
+}
+
+/// Releases before 2.1.321 kept the approvals in the checkout's entry of `.claude.json`.
+#[test]
+fn approvals_in_the_checkouts_config_entry_reach_the_clones_launch_too() {
+    let (dir, main, clone) = mcp_fixture(Some(DOCS_SERVER), DOCS_SERVER, "{}");
+    fs::write(
+        dir.path().join(".claude.json"),
+        format!(
+            "{{\"projects\": {{{}: {{\"enabledMcpjsonServers\": [\"docs\"]}}}}}}",
+            serde_json::to_string(main.canonicalize().unwrap().to_str().unwrap()).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let settings = launch_settings(dir.path(), &main, &clone, None).unwrap();
+
+    assert_eq!(
+        settings,
+        serde_json::json!({ "enabledMcpjsonServers": ["docs"] })
+    );
 }
 
 #[test]
@@ -782,17 +843,34 @@ fn a_server_the_owner_never_approved_is_not_enabled_and_is_named() {
     let (dir, main, clone) = mcp_fixture(
         Some(DOCS_AND_EXTRA),
         DOCS_AND_EXTRA,
-        r#", "enabledMcpjsonServers": ["docs"]"#,
+        r#"{"enabledMcpjsonServers": ["docs"]}"#,
     );
 
     let trusted = trust_through_the_adapter(dir.path(), &main, &clone).unwrap();
+    let settings = launch_settings(dir.path(), &main, &clone, None).unwrap();
 
     assert_eq!(
         trusted.notice(),
         Some("MCP servers left to Claude Code's prompt: extra")
     );
-    let entry = clone_entry(dir.path(), &clone);
-    assert_eq!(entry["enabledMcpjsonServers"], serde_json::json!(["docs"]));
+    assert_eq!(
+        settings,
+        serde_json::json!({ "enabledMcpjsonServers": ["docs"] })
+    );
+}
+
+/// The main checkout's own servers are its owner's to answer there; nothing carries over.
+#[test]
+fn the_main_checkout_is_trusted_with_no_notice_about_its_own_servers() {
+    let (dir, main, _clone) = mcp_fixture(
+        Some(DOCS_AND_EXTRA),
+        DOCS_AND_EXTRA,
+        r#"{"enabledMcpjsonServers": ["docs"]}"#,
+    );
+
+    let trusted = trust_through_the_adapter(dir.path(), &main, &main).unwrap();
+
+    assert_eq!(trusted.notice(), None);
 }
 
 /// The settings check refuses such a clone first; the carry-over keeps its own guard.
@@ -802,7 +880,7 @@ fn a_server_the_clone_defines_otherwise_than_the_checkout_waits_on_the_prompt() 
     let (dir, main, clone) = mcp_fixture(
         Some(DOCS_SERVER),
         redefined,
-        r#", "enabledMcpjsonServers": ["docs"]"#,
+        r#"{"enabledMcpjsonServers": ["docs"]}"#,
     );
 
     let carried =
@@ -812,6 +890,17 @@ fn a_server_the_clone_defines_otherwise_than_the_checkout_waits_on_the_prompt() 
     assert_eq!(carried.waiting, ["docs"]);
 }
 
+#[test]
+fn a_clone_whose_settings_differ_carries_no_approval() {
+    let (dir, main, clone) = mcp_fixture(
+        Some(DOCS_SERVER),
+        DOCS_AND_EXTRA,
+        r#"{"enabledMcpjsonServers": ["docs"]}"#,
+    );
+
+    assert_eq!(launch_settings(dir.path(), &main, &clone, None), None);
+}
+
 /// "Use all of this project's servers" in the checkout approves each server it defines, by
 /// name.
 #[test]
@@ -819,77 +908,34 @@ fn approving_all_servers_in_the_checkout_carries_each_one_by_name() {
     let (dir, main, clone) = mcp_fixture(
         Some(DOCS_AND_EXTRA),
         DOCS_AND_EXTRA,
-        r#", "enableAllProjectMcpServers": true"#,
+        r#"{"enableAllProjectMcpServers": true}"#,
     );
 
-    trust_through_the_adapter(dir.path(), &main, &clone).unwrap();
-
-    let entry = clone_entry(dir.path(), &clone);
-    assert_eq!(
-        entry["enabledMcpjsonServers"],
-        serde_json::json!(["docs", "extra"])
-    );
-    assert_eq!(entry["enableAllProjectMcpServers"], serde_json::Value::Null);
-}
-
-/// A reused clone whose next branch is refused keeps no approval an earlier launch carried.
-#[test]
-fn revoking_clears_the_clones_project_server_approvals() {
-    let fixture = Fixture::new("");
-    let config = format!(
-        "{{\"projects\": {{{}: {{\"hasTrustDialogAccepted\": true, \
-         \"enabledMcpjsonServers\": [\"docs\"], \"enableAllProjectMcpServers\": true}}}}}}",
-        serde_json::to_string(&fixture.key()).unwrap()
-    );
-    fs::write(fixture.config(), &config).unwrap();
-
-    trust::record(
-        &fixture.config(),
-        &fixture.workspace(),
-        &trust::Change::Revoke,
-        trust::WhenMissing::Refuse,
-    )
-    .unwrap();
+    let settings = launch_settings(dir.path(), &main, &clone, None).unwrap();
 
     assert_eq!(
-        fixture.read(),
-        config
-            .replace(
-                "\"hasTrustDialogAccepted\": true",
-                "\"hasTrustDialogAccepted\": false"
-            )
-            .replace("[\"docs\"]", "[]")
-            .replace(
-                "\"enableAllProjectMcpServers\": true",
-                "\"enableAllProjectMcpServers\": false"
-            )
+        settings,
+        serde_json::json!({ "enabledMcpjsonServers": ["docs", "extra"] })
     );
 }
 
-/// A server the owner rejected in the clone itself stays rejected beside the checkout's.
 #[test]
-fn the_clones_own_rejections_stay_beside_the_carried_ones() {
-    let fixture = Fixture::new("");
-    let config = format!(
-        "{{\"projects\": {{{}: {{\"hasTrustDialogAccepted\": true, \
-         \"disabledMcpjsonServers\": [\"mine\"]}}}}}}",
-        serde_json::to_string(&fixture.key()).unwrap()
+fn the_carried_approvals_sit_beside_the_bridges_hooks() {
+    let (dir, main, clone) = mcp_fixture(
+        Some(DOCS_SERVER),
+        DOCS_SERVER,
+        r#"{"enabledMcpjsonServers": ["docs"]}"#,
     );
-    fs::write(fixture.config(), &config).unwrap();
+    let bridge = cockpit_claude::Bridge {
+        hook_program: "/opt/torlek/cockpit-claude-hook".into(),
+        cockpit_program: "/opt/torlek/cockpit".into(),
+    };
 
-    trust::record(
-        &fixture.config(),
-        &fixture.workspace(),
-        &trust::Change::Trust(trust::McpApprovals {
-            enabled: Vec::new(),
-            disabled: vec!["old".to_owned(), "mine".to_owned()],
-        }),
-        trust::WhenMissing::Refuse,
-    )
-    .unwrap();
+    let settings = launch_settings(dir.path(), &main, &clone, Some(bridge)).unwrap();
 
     assert_eq!(
-        fixture.read(),
-        config.replace("[\"mine\"]", "[\"mine\",\"old\"]")
+        settings["enabledMcpjsonServers"],
+        serde_json::json!(["docs"])
     );
+    assert!(settings["hooks"]["SessionStart"].is_array(), "{settings}");
 }

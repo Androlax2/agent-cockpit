@@ -138,7 +138,8 @@ mod default_branch {
     use super::*;
 
     /// A main checkout whose `origin/HEAD` names a commit adding `.mcp.json` and a
-    /// `.claude/` folder that its working tree, still on the first commit, lacks.
+    /// `.claude/` folder that its working tree, still on the first commit, lacks; its `main`
+    /// follows `origin/main`.
     fn behind() -> (Scratch, PathBuf, String) {
         let scratch = Scratch::new();
         let main = scratch.repository("app");
@@ -158,6 +159,11 @@ mod default_branch {
                 "refs/remotes/origin/main",
             ],
         );
+        git(&main, &["remote", "add", "origin", "../origin.git"]);
+        git(
+            &main,
+            &["branch", "--quiet", "--set-upstream-to=origin/main"],
+        );
         git(&main, &["reset", "--quiet", "--hard", "HEAD~1"]);
         (scratch, main, merged)
     }
@@ -170,6 +176,23 @@ mod default_branch {
             Git::from_path().default_branch_commit(&main).unwrap(),
             Some(merged)
         );
+    }
+
+    /// A pull there would not bring the default branch in, so there is none to name.
+    #[test]
+    fn a_checkout_on_a_branch_not_following_the_default_branch_has_none() {
+        let (_scratch, main, _merged) = behind();
+        git(&main, &["switch", "--quiet", "-c", "feature"]);
+
+        assert_eq!(Git::from_path().default_branch_commit(&main).unwrap(), None);
+    }
+
+    #[test]
+    fn a_checkout_on_a_detached_head_has_none() {
+        let (_scratch, main, _merged) = behind();
+        git(&main, &["switch", "--quiet", "--detach"]);
+
+        assert_eq!(Git::from_path().default_branch_commit(&main).unwrap(), None);
     }
 
     #[test]

@@ -13,8 +13,8 @@ use cockpit_config::StartFileSnapshot;
 use cockpit_processes::{ExecutionId, LaunchSpec, Phase, Supervisor, Termination};
 use cockpit_projects::{Checkout, CheckoutKind, Git, Holder};
 use cockpit_provider_api::{
-    Capability, Conversation, DefaultBranch, HeldCredential, LaunchRequest, Provider,
-    ProviderError, SessionHomeRequest, TrustRequest, WorkspaceTrust,
+    Capability, Conversation, DefaultBranch, HeldCredential, InheritedTrust, LaunchRequest,
+    Provider, ProviderError, SessionHomeRequest, TrustRequest, WorkspaceTrust,
 };
 use cockpit_tmux::{PaneId, PaneInfo, PaneState, Server, SessionLaunch, SessionName};
 use cockpit_turso::Database;
@@ -502,6 +502,7 @@ impl Sessions {
                     model: model.as_deref(),
                     remote_control: false,
                     compaction_threshold: compaction_threshold.as_deref(),
+                    inherited_trust: None,
                 })?;
                 provider.check_choices(model.as_deref(), effort.as_deref())?;
                 Ok(())
@@ -2140,8 +2141,51 @@ impl Sessions {
             })
             .await?;
         }
+        let (checkout, _) = self.checkout_containing(&session.working_dir).await?;
+        // Before the command is built, which carries the owner's approvals of the project's
+        // tool servers into a parallel clone (#1279). A clone this finds no trusted checkout
+        // for carries none; the trust step, once the launch passed its gates, names why.
+        let inherited_from = match checkout.kind {
+            CheckoutKind::Parallel { .. } => {
+                let owner_environment = self.settings.owner_environment.clone();
+                let git = self.git.clone();
+                let clone = checkout.clone();
+                let counted = TerminalStep::start(&self.session_lock(id));
+                let found = self
+                    .blocking(
+                        "find the checkout a clone inherits its trust from",
+                        move || {
+                            let _counted = counted;
+                            Ok(trusted_checkout(&owner_environment, &git, &clone))
+                        },
+                    )
+                    .await;
+                match found {
+                    Ok(Ok(trusted)) => Some(trusted),
+                    Ok(Err(reason)) => {
+                        tracing::warn!(
+                            session = %id,
+                            %reason,
+                            "a clone's launch carries no MCP approvals"
+                        );
+                        None
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            session = %id,
+                            %error,
+                            "a clone's launch carries no MCP approvals"
+                        );
+                        None
+                    }
+                }
+            }
+            CheckoutKind::Main | CheckoutKind::Review { .. } => None,
+        };
         let command = {
             let provider = Arc::clone(self.provider(Some(session.provider.as_str()))?);
+            let workspace = checkout.path.clone();
+            let owner_environment = self.launch_environment();
             let working_dir = session.working_dir.clone();
             let session_dir = session_dir.clone();
             let conversation = conversation.clone();
@@ -2162,6 +2206,13 @@ impl Sessions {
                     model: model.as_deref(),
                     remote_control: false,
                     compaction_threshold: compaction_threshold.as_deref(),
+                    inherited_trust: inherited_from.as_deref().map(|trusted_checkout| {
+                        InheritedTrust {
+                            workspace: &workspace,
+                            trusted_checkout,
+                            owner_environment: &owner_environment,
+                        }
+                    }),
                 })?)
             })
             .await?
@@ -2192,7 +2243,6 @@ impl Sessions {
         // `agents.sandbox = "required"` while no backend exists (#828), fails the launch
         // before anything is reserved. The agent gets its whole checkout,
         // not just the folder it starts in: Git and the project's own files live at its root.
-        let (checkout, _) = self.checkout_containing(&session.working_dir).await?;
         let output_project = checkout.project.as_str().to_owned();
         let setting = self.owner_settings().sandbox;
         let github = self.github_access(setting, &output_project).await?;
@@ -4618,6 +4668,30 @@ fn create_session_dir(dir: &Path) -> Result<(), Error> {
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(failed)
 }
 
+/// The checkout whose harness trust `checkout` inherits: itself for a main checkout in the
+/// owner's `projects.trusted` as it is now, its project's main checkout for a clone of one
+/// (`cockpit_projects::harness_trust_source`). Blocking: it reads the owner's configuration
+/// and the checkouts' Git origins.
+fn trusted_checkout(
+    owner_environment: &cockpit_config::Environment,
+    git: &Git,
+    checkout: &Checkout,
+) -> Result<PathBuf, String> {
+    let config = cockpit_config::load(owner_environment, None, &[])
+        .map_err(|error| format!("the owner configuration cannot be read: {error}"))?;
+    let trusted_roots = cockpit_projects::resolve_trusted_roots(config.trusted_projects.value);
+    match checkout.kind {
+        CheckoutKind::Main => match cockpit_projects::trust(checkout, &trusted_roots) {
+            cockpit_projects::Trust::Trusted => Ok(checkout.path.clone()),
+            _ => Err(format!(
+                "its project {} is not in projects.trusted",
+                checkout.path.display()
+            )),
+        },
+        _ => cockpit_projects::harness_trust_source(checkout, &trusted_roots, git),
+    }
+}
+
 /// The trust check and write of [`Sessions::trust_checkout`], blocking: it reads the owner's
 /// configuration, the clone's and its project's Git origins, and the harness's files. The
 /// source is the owner's `projects.trusted` alone, never a file the agent wrote (#968).
@@ -4630,22 +4704,8 @@ fn record_harness_trust(
     environment: &[(OsString, OsString)],
     session_home: Option<&Path>,
 ) -> Result<WorkspaceTrust, String> {
-    let config = cockpit_config::load(owner_environment, None, &[])
-        .map_err(|error| format!("the owner configuration cannot be read: {error}"))?;
-    let trusted_roots = cockpit_projects::resolve_trusted_roots(config.trusted_projects.value);
     let is_clone = !matches!(checkout.kind, CheckoutKind::Main);
-    let trusted_checkout = match checkout.kind {
-        CheckoutKind::Main => match cockpit_projects::trust(checkout, &trusted_roots) {
-            cockpit_projects::Trust::Trusted => checkout.path.clone(),
-            _ => {
-                return Err(format!(
-                    "its project {} is not in projects.trusted",
-                    checkout.path.display()
-                ));
-            }
-        },
-        _ => cockpit_projects::harness_trust_source(checkout, &trusted_roots, git)?,
-    };
+    let trusted_checkout = trusted_checkout(owner_environment, git, checkout)?;
     // From the trusted checkout's own Git: the clone's refs are the agent's to write. It only
     // explains a refusal, so a read that fails still lets the provider run and revoke a trust
     // a reused clone kept from an earlier branch.

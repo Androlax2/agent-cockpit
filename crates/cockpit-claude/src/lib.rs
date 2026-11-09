@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 
 use cockpit_provider_api::{
     Action, Activity, Capabilities, Capability, Conversation, ConversationId, Credentials,
-    InvalidValue, Key, LaunchCommand, LaunchRequest, Needs, Observation, Probe, Provenance,
-    Provider, ProviderError, ProviderName, QuotaReading, ReplyScan, SessionHomeRequest,
+    InheritedTrust, InvalidValue, Key, LaunchCommand, LaunchRequest, Needs, Observation, Probe,
+    Provenance, Provider, ProviderError, ProviderName, QuotaReading, ReplyScan, SessionHomeRequest,
     SourceCursor, TerminalInput, TrustRequest, WorkspaceTrust,
 };
 
@@ -322,7 +322,27 @@ impl ClaudeCode {
 
     /// `--settings` JSON that runs `bridge` on every hook event it normalizes, and, after
     /// each [`hooks::INBOX_EVENTS`] event, its inbox waiter in the background (#703).
-    fn hook_settings(bridge: &Bridge) -> String {
+    /// The launch's `--settings` JSON: the bridge's hooks, and the project MCP approvals the
+    /// clone carries (#1279). `None` when it has neither.
+    fn launch_settings(&self, approvals: Option<&trust::McpApprovals>) -> Option<String> {
+        let mut settings = match &self.bridge {
+            Some(bridge) => ClaudeCode::hook_settings(bridge),
+            None => serde_json::Map::new(),
+        };
+        if let Some(approvals) = approvals {
+            for (key, names) in [
+                (trust::ENABLED_SERVERS_KEY, &approvals.enabled),
+                (trust::DISABLED_SERVERS_KEY, &approvals.disabled),
+            ] {
+                if !names.is_empty() {
+                    settings.insert(key.to_owned(), serde_json::json!(names));
+                }
+            }
+        }
+        (!settings.is_empty()).then(|| serde_json::Value::Object(settings).to_string())
+    }
+
+    fn hook_settings(bridge: &Bridge) -> serde_json::Map<String, serde_json::Value> {
         let command = format!(
             "{} {}",
             shell_quoted(&bridge.hook_program),
@@ -348,7 +368,7 @@ impl ClaudeCode {
                 )
             })
             .collect();
-        serde_json::json!({ "hooks": events }).to_string()
+        serde_json::Map::from_iter([("hooks".to_owned(), serde_json::Value::Object(events))])
     }
 
     /// `--mcp-config` JSON that registers `cockpit mcp` (#419).
@@ -475,10 +495,14 @@ impl Provider for ClaudeCode {
         if let Some(root) = &self.instruction_skills {
             arguments.extend(["--add-dir".into(), root.into()]);
         }
+        let approvals = request
+            .inherited_trust
+            .and_then(|inherited| launch_approvals(&inherited, request.working_dir));
+        if let Some(settings) = self.launch_settings(approvals.as_ref()) {
+            arguments.extend(["--settings".into(), settings.into()]);
+        }
         if let Some(bridge) = &self.bridge {
             arguments.extend([
-                "--settings".into(),
-                ClaudeCode::hook_settings(bridge).into(),
                 // Variadic, so a flag or the `--` before the first message must follow it.
                 "--mcp-config".into(),
                 ClaudeCode::mcp_config(bridge).into(),
@@ -599,12 +623,7 @@ impl Provider for ClaudeCode {
             request.working_dir,
             request.default_branch,
         ) {
-            let revoked = match trust::record(
-                &config,
-                request.workspace,
-                &trust::Change::Revoke,
-                when_missing,
-            ) {
+            let revoked = match trust::record(&config, request.workspace, false, when_missing) {
                 Ok(trust::Recorded::Written) => "; its earlier trust is revoked".to_owned(),
                 Ok(trust::Recorded::Unchanged) => String::new(),
                 Err(error) => {
@@ -613,37 +632,31 @@ impl Provider for ClaudeCode {
             };
             return Err(refused(format!("{reason}{revoked}")));
         }
-        let carried = owner_config.and_then(|owner_config| {
-            trust::carried_approvals(
-                &owner_config,
-                request.workspace,
-                request.trusted_checkout,
-                request.working_dir,
-            )
+        // Approvals carry over into a clone only; the main checkout already holds its own.
+        let is_clone = request.workspace != request.trusted_checkout;
+        let carried = is_clone.then(|| {
+            owner_config.and_then(|owner_config| {
+                trust::carried_approvals(
+                    &owner_config,
+                    request.workspace,
+                    request.trusted_checkout,
+                    request.working_dir,
+                )
+            })
         });
-        let (approvals, notice) = match carried {
-            Ok(carried) => {
-                let notice = (!carried.waiting.is_empty()).then(|| {
-                    format!(
-                        "MCP servers left to Claude Code's prompt: {}",
-                        carried.waiting.join(", ")
-                    )
-                });
-                (carried.approvals, notice)
-            }
-            Err(reason) => (
-                trust::McpApprovals::default(),
-                Some(format!("MCP approvals not carried over: {reason}")),
-            ),
+        // The launch carries the approvals themselves (`launch_approvals`); here only what the
+        // owner should know about them.
+        let notice = match carried {
+            None => None,
+            Some(Ok(carried)) => (!carried.waiting.is_empty()).then(|| {
+                format!(
+                    "MCP servers left to Claude Code's prompt: {}",
+                    carried.waiting.join(", ")
+                )
+            }),
+            Some(Err(reason)) => Some(format!("MCP approvals not carried over: {reason}")),
         };
-        match trust::record(
-            &config,
-            request.workspace,
-            &trust::Change::Trust(approvals),
-            when_missing,
-        )
-        .map_err(refused)?
-        {
+        match trust::record(&config, request.workspace, true, when_missing).map_err(refused)? {
             trust::Recorded::Unchanged => Ok(WorkspaceTrust::AlreadyTrusted { notice }),
             trust::Recorded::Written => Ok(WorkspaceTrust::Recorded { notice }),
         }
@@ -662,6 +675,32 @@ impl Provider for ClaudeCode {
         first_run::record(&config, api_key).map_err(refused)?;
         Ok(())
     }
+}
+
+/// The owner's approvals of a clone's project MCP servers that its launch carries (#1279):
+/// only when the trusted checkout's working tree holds the clone's harness settings, the
+/// check its trust passes too. Anything that cannot be read carries nothing: the trust step
+/// names it to the owner (`trust_workspace`'s notice).
+fn launch_approvals(
+    inherited: &InheritedTrust<'_>,
+    working_dir: &Path,
+) -> Option<trust::McpApprovals> {
+    trust::vetted_settings(
+        inherited.workspace,
+        inherited.trusted_checkout,
+        working_dir,
+        None,
+    )
+    .ok()?;
+    let owner_config = trust::config_file(inherited.owner_environment).ok()?;
+    trust::carried_approvals(
+        &owner_config,
+        inherited.workspace,
+        inherited.trusted_checkout,
+        working_dir,
+    )
+    .ok()
+    .map(|carried| carried.approvals)
 }
 
 /// Claude Code's program could not be used.
