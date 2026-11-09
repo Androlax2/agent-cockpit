@@ -58,6 +58,7 @@ async fn start_with(home: &Home, provider: FakeProvider) -> Daemon {
         home: home.path().join("home"),
         refresh: Duration::from_secs(3600),
         policy: QuotaPolicy::default(),
+        project_shares: std::collections::BTreeMap::new(),
     });
     home.start_wired(wiring).await
 }
