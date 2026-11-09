@@ -1,0 +1,4 @@
+# The `ci` profile writes each shard's JUnit report: tools/ci-shards.py reads the seconds per
+# test binary from it to balance the shards (tools/ci-test-weights.json, #1261).
+[profile.ci.junit]
+path = "junit.xml"

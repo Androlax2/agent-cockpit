@@ -76,8 +76,9 @@ jobs:
       - name: Run the greenfield gate's checks that run no test
         run: make greenfield-lint
 
-  # The workspace's tests, split by nextest's hash partition: every test runs in exactly one
-  # shard, and each shard builds the whole workspace (docs/decisions/2026-11-06-997-sharded-greenfield-tests.md).
+  # The workspace's tests, in shards of test binaries cut by their measured time
+  # (tools/ci-shards.py, tools/ci-test-weights.json): every binary runs in exactly one shard,
+  # and each shard builds the whole workspace (docs/decisions/2026-11-09-1261-balanced-shards.md).
   greenfield-test:
     needs: changes
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && needs.changes.outputs.greenfield == 'true'
@@ -86,7 +87,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,8 +123,27 @@ jobs:
         if: runner.environment == 'github-hosted'
         # Disposable hosted runners have no workstation game-guard daemon.
         run: python3 config/bin/.local/bin/cockpit-game-guard off
+      - name: Cut this shard's test binaries from the workspace's list
+        id: plan
+        run: |
+          set -euo pipefail
+          cargo nextest list --locked --cargo-quiet --manifest-path Cargo.toml --workspace \
+            --message-format json \
+            | python3 tools/ci-shards.py plan --shards 4 --shard ${{ matrix.shard }} >> "$GITHUB_OUTPUT"
       - name: Run this shard of the greenfield workspace's tests
-        run: make crates-test TEST_PARTITION=hash:${{ matrix.shard }}/3
+        env:
+          NEXTEST_PROFILE: ci
+          TEST_FILTER: ${{ steps.plan.outputs.filter }}
+        run: make crates-test TEST_FILTER="$TEST_FILTER"
+      # The seconds each test binary took: tools/ci-shards.py weights turns the reports into
+      # tools/ci-test-weights.json.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: junit-shard-${{ matrix.shard }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
+          if-no-files-found: warn
 
   # The sandbox steps that need the whole build but none of the tests: a second Unix user, and
   # the live probe. A job beside the shards, so neither lengthens a shard (#997).

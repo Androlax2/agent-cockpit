@@ -37,16 +37,18 @@ def run_required_check(changes, selected, lint, tests, sandbox):
 
 
 class ShardedGreenfieldTests(unittest.TestCase):
-    def test_the_shards_cover_every_partition_of_the_workspace_tests(self):
+    def test_the_shards_cover_every_slice_of_the_workspace_tests(self):
         steps = ci_job(WORKFLOW, "greenfield-test")
         shards = re.search(r"^        shard: \[([0-9, ]+)\]$", steps, re.MULTILINE)
         self.assertIsNotNone(shards, "greenfield-test lists its shards in its matrix")
         numbers = [int(number) for number in shards[1].split(",")]
-        partition = re.search(
-            r"run: make crates-test TEST_PARTITION=hash:\$\{\{ matrix\.shard \}\}/(\d+)\n", steps
+        plan = re.search(
+            r"ci-shards\.py plan --shards (\d+) --shard \$\{\{ matrix\.shard \}\}", steps
         )
-        self.assertIsNotNone(partition, "each shard runs one hash partition of crates-test")
-        self.assertEqual(numbers, list(range(1, int(partition[1]) + 1)))
+        self.assertIsNotNone(plan, "each shard cuts its own slice with the same shard count")
+        self.assertEqual(numbers, list(range(1, int(plan[1]) + 1)))
+        self.assertIn('run: make crates-test TEST_FILTER="$TEST_FILTER"\n', steps)
+        self.assertIn("TEST_FILTER: ${{ steps.plan.outputs.filter }}\n", steps)
 
     def test_a_failing_shard_does_not_cancel_the_others(self):
         self.assertIn("      fail-fast: false\n", ci_job(WORKFLOW, "greenfield-test"))
