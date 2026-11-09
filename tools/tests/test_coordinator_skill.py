@@ -401,8 +401,6 @@ esac
                 "0",
                 "--poll-seconds",
                 "0.2",
-                "--summary-seconds",
-                "1000",
                 "--idle-grace-seconds",
                 "0",
                 *extra_arguments,
@@ -508,6 +506,55 @@ esac
         result = self.watch(self.session("greenfield-8-x", "working", "coding"))
 
         self.assertIn("PR #8 MERGED (greenfield/8-x)", result.stdout)
+
+    def open_a_pull_request_on_the_second_poll(self):
+        pull = {
+            "number": 9,
+            "state": "OPEN",
+            "headRefName": "greenfield/9-y",
+            "headRefOid": "2" * 16,
+        }
+        self.shim(
+            "gh",
+            f"""
+case "$*" in
+*--search*)
+    count=$(cat "$FAKE_PULLS.count" 2>/dev/null || echo 0)
+    echo $((count + 1)) > "$FAKE_PULLS.count"
+    case $count in 0) echo '[]' ;; *) echo '{json.dumps([pull])}' ;; esac ;;
+esac
+""",
+        )
+
+    def test_it_prints_nothing_for_a_doing_change_by_default(self):
+        result = self.watch(
+            self.session("greenfield-9-y", "working", "reading"),
+            self.session("greenfield-9-y", "working", "editing"),
+        )
+
+        self.assertNotIn("SUMMARY", result.stdout)
+        self.assertNotIn("editing", result.stdout)
+
+    def test_it_prints_nothing_for_a_pr_opening_by_default(self):
+        self.open_a_pull_request_on_the_second_poll()
+
+        result = self.watch(self.session("greenfield-9-y", "working", "coding"))
+
+        self.assertNotIn("SUMMARY", result.stdout)
+        self.assertNotIn("opened", result.stdout)
+
+    def test_it_prints_a_summary_of_changes_when_summary_seconds_is_set(self):
+        self.open_a_pull_request_on_the_second_poll()
+
+        result = self.watch(
+            self.session("greenfield-9-y", "working", "reading"),
+            self.session("greenfield-9-y", "working", "editing"),
+            extra_arguments=("--summary-seconds", "0.5"),
+        )
+
+        self.assertIn("SUMMARY (no action needed):", result.stdout)
+        self.assertIn("working: editing", result.stdout)
+        self.assertIn("PR #9 opened (greenfield/9-y)", result.stdout)
 
     def test_it_ignores_pull_requests_outside_the_branch_prefix(self):
         failing = self.pull_with_checks(self.HEAD, ("greenfield", "FAILURE"))
@@ -729,6 +776,20 @@ class WatcherStateTests(FakeCommandsTestCase):
         watcher.save()
 
         self.assertEqual(state_file.stat().st_ino, written_inode)
+
+
+class WatcherDefaultsTests(unittest.TestCase):
+    def test_the_summary_is_off_unless_summary_seconds_is_given(self):
+        spec = importlib.util.spec_from_file_location("coordinator_watch", WATCHER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        base = ["state.json", "--repo", "example/shop", "--worker-root", "workers"]
+
+        default = module.parse_arguments(base)
+        opted_in = module.parse_arguments([*base, "--summary-seconds", "600"])
+
+        self.assertEqual(default.summary_seconds, 0)
+        self.assertEqual(opted_in.summary_seconds, 600)
 
 
 class SkillContentTests(unittest.TestCase):
