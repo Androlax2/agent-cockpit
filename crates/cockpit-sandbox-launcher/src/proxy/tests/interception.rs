@@ -343,10 +343,10 @@ fn git_reads() -> CredentialScheme {
     }
 }
 
-/// #857: both halves of a push are answered by the proxy, naming `torlek push`; nothing
+/// #857: both halves of a push are answered by the proxy, naming the owner route; nothing
 /// reaches GitHub and the token is added to neither.
 #[test]
-fn a_git_push_over_https_is_answered_403_naming_torlek_push() {
+fn a_git_push_over_https_is_answered_403_naming_the_owner_route() {
     for request in [
         "GET /owner/repo.git/info/refs?service=git-receive-pack HTTP/1.1\r\nHost: github.com\r\n\r\n",
         "POST /owner/repo.git/git-receive-pack HTTP/1.1\r\nHost: github.com\r\n\
@@ -362,7 +362,7 @@ fn a_git_push_over_https_is_answered_403_naming_torlek_push() {
         let answer = request_to(running.address, GIT_HOST, &session_ca, request).unwrap();
 
         assert!(answer.starts_with("HTTP/1.1 403 Forbidden: "), "{answer}");
-        assert!(answer.contains("`torlek push`"), "{answer}");
+        assert!(answer.contains("`torlek ask run`"), "{answer}");
         assert!(!answer.contains(BASIC_SECRET), "{answer}");
         let counters = counters_of(&running, GIT_HOST, |counters| counters.refused == 1);
         assert_eq!(

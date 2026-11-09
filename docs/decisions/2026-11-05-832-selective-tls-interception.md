@@ -32,7 +32,7 @@ upstream servers, 2026-11-05) and by the worker (the rest, reasons below).
   Under `agents.sandbox = "required"` the proxy adds it as Bearer on `api.github.com` and as
   Basic `x-access-token:<token>` on `github.com` for `git-upload-pack` alone; anything naming
   `git-receive-pack` (both halves of a push, after percent-decoding) is answered 403 naming
-  `torlek push`; other requests on `github.com` pass unchanged. The agent's `GH_TOKEN` holds a
+  the owner route (`torlek ask run`, `torlek todo blocked`); other requests on `github.com` pass unchanged. The agent's `GH_TOKEN` holds a
   placeholder so `gh` runs.
 - **A binding never grants reach (#857 decision 3).** The spec refuses a credential bound to a
   host that neither its allowlist nor the owner's decisions at launch (#674: the project's

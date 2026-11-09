@@ -78,7 +78,7 @@ certificate and the host's bundle with it into the session's read-only tool conf
 folder (`authority.rs`). On a bound host the proxy completes TLS with the client itself,
 opens TLS to the upstream server verified against the host's CA bundle, and relays HTTP/1.1
 one exchange per tunnel, adding the credential (`intercept.rs`): Bearer on every request, or
-Basic on Git fetches alone with any `git-receive-pack` request refused naming `torlek push`.
+Basic on Git fetches alone with any `git-receive-pack` request refused naming the owner route (`torlek ask run`).
 Every other host stays a plain tunnel. A client that refuses the session CA is counted
 (`ca_refused`) and named with the host in the report. See
 [the decision](../../docs/decisions/2026-11-05-832-selective-tls-interception.md).
