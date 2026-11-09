@@ -111,6 +111,13 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
             },
         ),
         (
+            "task budget (routes.rs:518)",
+            Command::TaskBudget {
+                item: 0,
+                budget: cockpit_protocol::TaskBudgetView::Minutes(30),
+            },
+        ),
+        (
             "workflow start/cancel (routes.rs:556)",
             Command::WorkflowStart {
                 item: 0,

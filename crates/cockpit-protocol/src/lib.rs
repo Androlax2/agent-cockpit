@@ -85,8 +85,8 @@ pub use storage::{
     TargetSizeView,
 };
 pub use tasks::{
-    HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskNextView,
-    TaskStatusView, TaskView, TaskWaitView,
+    HexBytes, TaskBudgetView, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView,
+    TaskNextView, TaskStatusView, TaskView, TaskWaitView,
 };
 pub use usage::{
     CostArchiveView, CostRowView, DayDigestView, DigestView, IncidentView, ProjectDayView,

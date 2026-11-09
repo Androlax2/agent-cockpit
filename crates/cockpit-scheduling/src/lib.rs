@@ -13,6 +13,7 @@ pub use model::{
 };
 pub use pacing::{Pacing, ProjectShare, Standing, UsageWindow, WindowPace, window_pace};
 pub use store::{
-    DELIVERY_PRODUCER, Handoff, MIGRATIONS, active_placement, awaits_pass, delivery_failed,
-    delivery_key, dispatch, explanations, handoff, placement_of_delivery, placements,
+    DELIVERY_PRODUCER, Handoff, MIGRATIONS, WorkSpan, active_placement, awaits_pass,
+    delivery_failed, delivery_key, dispatch, explanations, handoff, placement_of_delivery,
+    placements, work_spans,
 };

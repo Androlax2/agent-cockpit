@@ -1,6 +1,7 @@
 //! What scheduling reasons about: the sessions that could take work, the waiting work, the
 //! placements made, and the explanation of every item that waits.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
@@ -118,6 +119,9 @@ pub struct Inputs {
     pub viewed: Option<SessionId>,
     /// Every account's plan windows at their last reading (#58), which pace queue starts.
     pub usage: Vec<UsageWindow>,
+    /// The agent seconds each item with a budget has had through its placements (#412); an
+    /// item missing here has had none.
+    pub agent_seconds: BTreeMap<ItemId, u64>,
     /// Seconds since 1970.
     pub now: i64,
 }
@@ -143,6 +147,9 @@ pub enum Reason {
     WaitsOnItems,
     /// Its workflow run is blocked on a next action.
     RunBlocked,
+    /// Its sessions have worked it for its budget's agent minutes (#412): the owner raises the
+    /// budget for it to go on.
+    OverBudget,
     /// Its workflow's current step is the owner's.
     OwnerStep,
     QueuePaused,
@@ -164,10 +171,11 @@ pub enum Reason {
 }
 
 impl Reason {
-    const ALL: [Reason; 13] = [
+    const ALL: [Reason; 14] = [
         Reason::NotQueued,
         Reason::WaitsOnItems,
         Reason::RunBlocked,
+        Reason::OverBudget,
         Reason::OwnerStep,
         Reason::QueuePaused,
         Reason::LowDisk,
@@ -185,6 +193,7 @@ impl Reason {
             Reason::NotQueued => "not-queued",
             Reason::WaitsOnItems => "waits-on-items",
             Reason::RunBlocked => "run-blocked",
+            Reason::OverBudget => "over-budget",
             Reason::OwnerStep => "owner-step",
             Reason::QueuePaused => "queue-paused",
             Reason::LowDisk => "low-disk",
@@ -209,7 +218,11 @@ impl Reason {
     pub fn is_queued(self) -> bool {
         !matches!(
             self,
-            Reason::NotQueued | Reason::WaitsOnItems | Reason::RunBlocked | Reason::OwnerStep
+            Reason::NotQueued
+                | Reason::WaitsOnItems
+                | Reason::RunBlocked
+                | Reason::OverBudget
+                | Reason::OwnerStep
         )
     }
 }

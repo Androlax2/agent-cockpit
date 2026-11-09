@@ -172,6 +172,9 @@ pub struct Item {
     pub state_revision: i64,
     pub created_at: i64,
     pub changed_at: i64,
+    /// The agent minutes the owner allows it (#412): once its sessions have worked it that
+    /// long, the queue places none of it until the owner raises the budget. `None`: no limit.
+    pub budget_minutes: Option<u32>,
 }
 
 /// One session's items: how many it is doing, and when it last finished one it was doing.

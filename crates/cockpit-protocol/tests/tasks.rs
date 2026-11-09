@@ -1,7 +1,7 @@
 //! The wire form of the task commands and views (#38).
 use cockpit_protocol::{
-    Command, ErrorCode, HexBytes, Reply, TaskKindView, TaskNextView, TaskStatusView, TaskView,
-    decode_request,
+    Command, ErrorCode, HexBytes, Reply, TaskBudgetView, TaskKindView, TaskNextView,
+    TaskStatusView, TaskView, decode_request,
 };
 use serde_json::json;
 
@@ -55,6 +55,45 @@ fn image_bytes_travel_as_lower_case_hex() {
 }
 
 #[test]
+fn a_task_budget_names_its_minutes_or_no_limit() {
+    for (budget, expected) in [
+        (json!({"minutes": 90}), TaskBudgetView::Minutes(90)),
+        (json!("no-limit"), TaskBudgetView::NoLimit),
+    ] {
+        let wire = json!({
+            "id": 4,
+            "command": {"kind": "task-budget", "item": 7, "budget": budget}
+        });
+
+        let request = decode_request(&wire.to_string()).unwrap();
+
+        assert_eq!(
+            request.command,
+            Command::TaskBudget {
+                item: 7,
+                budget: expected
+            }
+        );
+        assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    }
+}
+
+#[test]
+fn a_task_budget_without_its_budget_is_refused_rather_than_lifting_one() {
+    for command in [
+        json!({"kind": "task-budget", "item": 7}),
+        json!({"kind": "task-budget", "item": 7, "budget": null}),
+        json!({"kind": "task-budget", "item": 7, "budget": {"minutes": -1}}),
+    ] {
+        let wire = json!({"id": 5, "command": command});
+
+        let rejection = decode_request(&wire.to_string()).unwrap_err();
+
+        assert_eq!(rejection.error.code, ErrorCode::InvalidRequest, "{command}");
+    }
+}
+
+#[test]
 fn malformed_hex_is_an_invalid_request() {
     for data in ["abc", "zz", "AB"] {
         let wire = json!({
@@ -92,6 +131,7 @@ fn a_task_view_says_what_it_waits_for_next() {
         created_at: 10,
         changed_at: 10,
         next: TaskNextView::FinishDependencies { items: vec![1] },
+        budget_minutes: None,
     };
 
     let wire = serde_json::to_value(Reply::Task {

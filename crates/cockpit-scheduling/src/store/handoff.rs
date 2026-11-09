@@ -45,7 +45,8 @@ pub async fn handoff(
     // Selecting an item is the owner's explicit opt-in, without changing its queue flag
     // if eligibility or admission refuses the placement.
     item.is_queued = true;
-    let (waiting, outside) = units(std::slice::from_ref(&item), &[]);
+    // Handing it over is the owner's answer to a spent budget, so none holds it (#412).
+    let (waiting, outside) = units(std::slice::from_ref(&item), &[], &BTreeMap::new());
     if let Some(outside) = outside.into_iter().next() {
         return Err(Error::HandoffRefused {
             reason: outside.why,

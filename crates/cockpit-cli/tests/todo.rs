@@ -116,6 +116,23 @@ fn a_queued_item_is_marked_in_the_list() {
 }
 
 #[test]
+fn the_owner_sets_an_items_budget_and_show_lists_it_until_lifted() {
+    let (home, _daemon) = with_app();
+    home.cockpit_ok(&["todo", "add", "Fix the login", "--project", "app"]);
+
+    home.cockpit_ok(&["todo", "budget", "1", "90"]);
+    let budgeted = home.cockpit_ok(&["todo", "show", "1"]);
+    home.cockpit_ok(&["todo", "budget", "1", "none"]);
+    let lifted = home.cockpit_ok(&["todo", "show", "1"]);
+
+    assert_eq!(
+        the_line(&budgeted, "budget:"),
+        "budget: 90 min of agent time"
+    );
+    assert!(!lifted.contains("budget:"), "{lifted}");
+}
+
+#[test]
 fn a_deleted_item_leaves_the_list() {
     let (home, _daemon) = with_app();
     home.cockpit_ok(&["todo", "add", "Fix the login", "--project", "app"]);
@@ -293,6 +310,7 @@ fn proposed_view() -> TaskView {
         created_at: 10,
         changed_at: 10,
         next: TaskNextView::DecideProposal,
+        budget_minutes: None,
     }
 }
 

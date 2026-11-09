@@ -536,6 +536,7 @@ impl Handler for Routes {
             // Deciding, ordering and attaching are the owner's.
             (
                 command @ (Command::TaskPriority { .. }
+                | Command::TaskBudget { .. }
                 | Command::TaskQueue { .. }
                 | Command::TaskApprove { .. }
                 | Command::TaskDecline { .. }

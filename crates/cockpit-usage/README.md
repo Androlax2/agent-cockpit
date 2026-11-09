@@ -116,6 +116,9 @@ every later day with time. Which events feed them is the daemon's (see below).
   transaction. A turn begun twice keeps its first start; ended with nothing open, it records
   nothing and says so; ended before it began, it lasts no time. A turn the archive refuses is
   dropped with its open row, so one bad turn is not retried forever.
+- **One session's time.** `turn_seconds` adds up a session's turns, the one under way
+  included, cut to a span and without joining gaps: an item's budget counts the turns while
+  it was placed on the session (#412).
 - **Limits.** A turn is recorded when it ends: one still running, or lost to a crash, has no
   time yet. A turn's project is the project name the caller gives, and a name that is not a
   plain one is `unknown`, as for cost.

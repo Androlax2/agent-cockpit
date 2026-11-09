@@ -29,7 +29,7 @@ use crate::{
 /// The columns `item_from` reads, in its order.
 const SELECT_ITEMS: &str = "SELECT id, project, title, notes, kind, priority, status,
         is_blocker_report, why, filed_by, filed_from, doing_session, summary, is_queued,
-        intent_revision, state_revision, created_at, changed_at, finished_by
+        intent_revision, state_revision, created_at, changed_at, finished_by, budget_minutes
      FROM tasks_items";
 
 /// What `list` returns.
@@ -565,6 +565,36 @@ pub async fn set_priority(
     required(write, id).await
 }
 
+/// The owner sets the agent minutes `id` may take before the queue stops placing it and asks
+/// them (#412), or lifts the limit with `None`. Raising it lets the queue go on.
+pub async fn set_budget(
+    write: &WriteTransaction<'_>,
+    actor: &Actor,
+    id: ItemId,
+    minutes: Option<u32>,
+    now: i64,
+) -> Result<Item, Error> {
+    owner_only(actor, "set a budget")?;
+    if minutes == Some(0) {
+        return Err(Refusal::InvalidRequest {
+            field: "minutes",
+            reason: "a budget is at least 1 minute".to_owned(),
+        }
+        .into());
+    }
+    let item = required(write, id).await?;
+    in_status(&item, &[Status::Todo, Status::Doing], "take a budget")?;
+    write
+        .execute(
+            "UPDATE tasks_items SET budget_minutes = ?2, state_revision = state_revision + 1,
+                changed_at = ?3
+             WHERE id = ?1",
+            (id.0, minutes.map(i64::from), now),
+        )
+        .await?;
+    required(write, id).await
+}
+
 /// The owner makes a `todo` item available for a session to take, or takes it back.
 pub async fn set_queued(
     write: &WriteTransaction<'_>,
@@ -1071,6 +1101,13 @@ fn item_from(row: &Row) -> Result<Item, Error> {
         created_at: row.get(16)?,
         changed_at: row.get(17)?,
         finished_by: session_of(row.get(18)?)?,
+        budget_minutes: row
+            .get::<Option<i64>>(19)?
+            .map(|minutes| {
+                u32::try_from(minutes)
+                    .map_err(|_| invalid_row("tasks_items", format!("budget {minutes} min")))
+            })
+            .transpose()?,
     })
 }
 

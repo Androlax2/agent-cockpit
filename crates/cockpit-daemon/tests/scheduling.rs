@@ -180,6 +180,29 @@ impl Home {
         write.commit().await.unwrap();
     }
 
+    /// `session`'s open placement moved ten minutes back, and a turn of `seconds` it ran
+    /// since recorded, as if the agent worked the placed item that long.
+    async fn worked_under_placement(&self, session: &str, seconds: i64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let database = self.database();
+        let write = database.write().await.unwrap();
+        write
+            .execute(
+                "UPDATE scheduling_placements SET placed_at = placed_at - 600
+                 WHERE session = ?1 AND ended_at IS NULL",
+                [session],
+            )
+            .await
+            .unwrap();
+        let turn =
+            cockpit_usage::Turn::new(session, "app", now - 300, now - 300 + seconds).unwrap();
+        cockpit_usage::record_turn(&write, &turn).await.unwrap();
+        write.commit().await.unwrap();
+    }
+
     async fn project(&self, client: &Connection) -> PathBuf {
         let root = self.path().join("projects/app");
         std::fs::create_dir_all(&root).unwrap();
@@ -510,6 +533,47 @@ async fn a_placement_whose_agent_never_receives_it_goes_back_to_the_queue_after_
             TaskStatusView::Doing,
             TaskStatusView::Todo
         ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_item_handed_back_after_its_budget_waits_for_the_owner_instead_of_being_placed_again() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let idle = home
+        .session_reporting(&client, &root, AgentState::Waiting)
+        .await;
+    home.close_terminal_of(&idle.id);
+    let item = queued_item(&client, "Fix the login").await;
+    request(
+        &client,
+        Command::TaskBudget {
+            item,
+            budget: cockpit_protocol::TaskBudgetView::Minutes(1),
+        },
+    )
+    .await
+    .unwrap();
+    request(&client, Command::QueueDispatch).await.unwrap();
+    // The session worked the item for 100 s under its placement. A real minute is too long
+    // for a test, so the placement is moved ten minutes back and the turn recorded in it.
+    home.worked_under_placement(&idle.id, 100).await;
+
+    for _ in 0..3 {
+        request(&client, Command::QueueDispatch).await.unwrap();
+    }
+
+    assert_eq!(task_status(&client, item).await, TaskStatusView::Todo);
+    let explained = request(&client, Command::QueueExplain { item: Some(item) }).await;
+    let Ok(Reply::QueueExplanations { explanations }) = explained else {
+        panic!("queue-explain: {explained:?}");
+    };
+    assert_eq!(explanations[0].reason, "over-budget");
+    assert_eq!(
+        explanations[0].action,
+        format!("give it 30 min more to go on: `torlek todo budget {item} 31`")
     );
 }
 

@@ -22,7 +22,8 @@ use crate::sessions::{
 };
 use crate::storage::{CloneStorageView, SessionTempStorageView};
 use crate::tasks::{
-    HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskView,
+    HexBytes, TaskBudgetView, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView,
+    TaskView,
 };
 use crate::verification::{CheckClaimView, CheckReceiptView, GateView};
 use crate::workflows::{
@@ -596,6 +597,12 @@ pub enum Command {
     TaskPriority {
         item: i64,
         priority: i64,
+    },
+    /// Owner only: the agent minutes the item may take before the queue stops placing it and
+    /// asks the owner (#412). Required, so a request that misnames it never lifts a budget.
+    TaskBudget {
+        item: i64,
+        budget: TaskBudgetView,
     },
     /// Owner only: make a `todo` item available for a session to take, or take it back.
     TaskQueue {

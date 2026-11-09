@@ -353,6 +353,7 @@ async fn inputs_in(
             })
         })
         .collect::<Result<_, Failed>>()?;
+    let now = now();
     Ok(Inputs {
         candidates,
         viewed: context
@@ -362,8 +363,44 @@ async fn inputs_in(
             .transpose()
             .map_err(|error| internal(&error))?,
         usage: usage(context, read).await?,
-        now: now(),
+        agent_seconds: agent_seconds(read, now).await?,
+        now,
     })
+}
+
+/// The agent seconds each open item with a budget has had: its placements' sessions' turns
+/// while each placement held, until `now` for one that still does (#412).
+async fn agent_seconds(
+    read: &cockpit_turso::sql::Connection,
+    now: i64,
+) -> Result<BTreeMap<cockpit_tasks::ItemId, u64>, Failed> {
+    let items = cockpit_tasks::list(
+        read,
+        &cockpit_tasks::Actor::Owner,
+        &cockpit_tasks::ListFilter::default(),
+    )
+    .await
+    .map_err(|error| internal(&error))?;
+    let mut spent = BTreeMap::new();
+    for item in items.iter().filter(|item| item.budget_minutes.is_some()) {
+        let spans = cockpit_scheduling::work_spans(read, item.id)
+            .await
+            .map_err(|error| internal(&error))?;
+        let mut seconds: u64 = 0;
+        for span in spans {
+            let worked = cockpit_usage::turn_seconds(
+                read,
+                span.session.as_str(),
+                span.from,
+                span.until.unwrap_or(now),
+            )
+            .await
+            .map_err(|error| internal(&error))?;
+            seconds = seconds.saturating_add(worked);
+        }
+        spent.insert(item.id, seconds);
+    }
+    Ok(spent)
 }
 
 /// The account whose windows pace `session`'s queue starts: its launch's, or for an agent

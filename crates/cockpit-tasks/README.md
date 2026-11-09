@@ -35,8 +35,11 @@ Kinds: `task`, `feature`, `bug`, `improvement`, `chore`, `research`. Priority 1 
 - **Blocker reports.** What a session could not do because of the setup goes, with its
   reason, to `Settings::blocker_project`, queued; without one configured, it is refused.
 - **Revisions.** Title, notes, kind, waits and images are intent: each change increments
-  `intent_revision`, and an edit naming an older one is refused. Status, priority, queue and
-  summary are state (`state_revision`), and keep the intent.
+  `intent_revision`, and an edit naming an older one is refused. Status, priority, budget,
+  queue and summary are state (`state_revision`), and keep the intent.
+- **Budget.** The owner may give a `todo` or `doing` item a budget of agent minutes
+  (`set_budget`, #412); `cockpit-scheduling` stops placing it once its sessions worked it
+  that long.
 - **Images and drafts.** The owner attaches PNG, JPEG, GIF or WebP images (type read from
   the bytes, 4 MiB, 20 per item); `[Image N]` in the notes names image N. A draft keeps
   unsaved form text for a project's new item or for an item, and says when the item's intent

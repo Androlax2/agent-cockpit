@@ -311,6 +311,38 @@ pub async fn open_turns(connection: &Connection) -> Result<Vec<OpenTurn>, Error>
     Ok(turns)
 }
 
+/// The seconds `session`'s agent worked between `from` and `until`: its ended turns and the
+/// one under way, each cut to the span, with no joining of gaps (#412: an item's budget
+/// counts the agent's turns while the item was placed on the session).
+pub async fn turn_seconds(
+    connection: &Connection,
+    session: &str,
+    from: i64,
+    until: i64,
+) -> Result<u64, Error> {
+    check_key("session", session)?;
+    if until <= from {
+        return Ok(0);
+    }
+    let mut rows = connection
+        .query(
+            "SELECT started_at, ended_at FROM usage_turns
+             WHERE session = ?1 AND ended_at > ?2 AND started_at < ?3
+             UNION ALL
+             SELECT started_at, ?3 FROM usage_open_turns
+             WHERE session = ?1 AND started_at < ?3",
+            params![session, from, until],
+        )
+        .await?;
+    let mut seconds: u64 = 0;
+    while let Some(row) = rows.next().await? {
+        let (started_at, ended_at): (i64, i64) = (row.get(0)?, row.get(1)?);
+        let overlap = ended_at.min(until) - started_at.max(from);
+        seconds = seconds.saturating_add(u64::try_from(overlap).unwrap_or(0));
+    }
+    Ok(seconds)
+}
+
 /// Records a decided approval; one already recorded under its key is kept as it was. Returns
 /// whether this one was new.
 pub async fn record_approval(
