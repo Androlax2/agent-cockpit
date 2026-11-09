@@ -353,9 +353,9 @@ if later).
 A limit the harness does not name as a spent plan can still be one. When a Claude Code
 session's turns fail with `rate_limit` three times within 30 minutes, with no turn ending
 otherwise in between, Torlek records the third as a quota stop and handles it as above.
-`torlek session show` says where it came from, for example `quota stop: … on the owner's
-sign-in, inferred from 3 `rate_limit` failed turns within 30 minutes; …`, and the daemon logs
-it. Codex names a spent plan itself. OpenCode reports every provider error as `APIError`, so
+`torlek session show` says where it came from, for example ``quota stop: … on the owner's
+sign-in, inferred from 3 `rate_limit` failed turns within 30 minutes; …``, and the daemon
+logs it. Codex names a spent plan itself. OpenCode reports every provider error as `APIError`, so
 Torlek infers no quota stop from it.
 
 Each sandboxed session has its own home, which starts empty and goes when the session ends.
