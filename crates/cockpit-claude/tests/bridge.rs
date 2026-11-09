@@ -577,3 +577,139 @@ fn a_completed_turn_never_asks_for_the_plan_windows() {
     );
     assert!(!home.path().join("curl-input").exists());
 }
+
+/// #718: the payload and transcript tail Claude Code 2.1.319 wrote for a turn whose API
+/// connection was refused, captured with its transcript copied as the hook ran; the payload
+/// names that copy.
+fn connection_failed_stop(transcript_tail: &str) -> (tempfile::TempDir, String) {
+    let directory = tempfile::tempdir().unwrap();
+    let transcript = directory.path().join("transcript.jsonl");
+    std::fs::write(&transcript, transcript_tail).unwrap();
+    let mut payload: serde_json::Value = serde_json::from_str(&common::captured(
+        "2.1.319",
+        "stop-failure-connection-failed.json",
+    ))
+    .unwrap();
+    payload["transcript_path"] = transcript.to_str().unwrap().into();
+    (directory, payload.to_string())
+}
+
+fn captured_connection_failed_tail() -> String {
+    common::captured("2.1.319", "transcript-connection-failed.jsonl")
+}
+
+fn reported_outcome(payload: &str) -> Vec<String> {
+    let cockpit = FakeCockpit::exiting_with(0);
+    let output = run_hook(&cockpit.program(), payload, Some("token-1"));
+    assert!(output.status.success(), "{output:?}");
+    outcome_of(&cockpit.arguments().unwrap())
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_turn_whose_api_connection_failed_is_reported_as_network_lost() {
+    let (_directory, payload) = connection_failed_stop(&captured_connection_failed_tail());
+
+    assert_eq!(
+        reported_outcome(&payload),
+        [
+            "--outcome",
+            "network-lost",
+            "--outcome-reason",
+            "connection_failed"
+        ]
+    );
+}
+
+#[test]
+fn a_server_error_whose_turn_ended_on_another_api_error_stays_a_failure() {
+    let tail = captured_connection_failed_tail().replace(r#""apiError":"connection_failed","#, "");
+    let (_directory, payload) = connection_failed_stop(&tail);
+
+    assert_eq!(
+        reported_outcome(&payload),
+        ["--outcome", "failed", "--outcome-reason", "server_error"]
+    );
+}
+
+#[test]
+fn a_connection_failure_of_an_earlier_turn_leaves_this_failure_as_it_is() {
+    let mut tail = captured_connection_failed_tail();
+    tail.push_str(
+        r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":"try again"}}"#,
+    );
+    tail.push('\n');
+    let (_directory, payload) = connection_failed_stop(&tail);
+
+    assert_eq!(
+        reported_outcome(&payload),
+        ["--outcome", "failed", "--outcome-reason", "server_error"]
+    );
+}
+
+#[test]
+fn a_server_error_whose_transcript_cannot_be_read_stays_a_failure() {
+    let payload = common::captured("2.1.319", "stop-failure-connection-failed.json");
+
+    assert_eq!(
+        reported_outcome(&payload),
+        ["--outcome", "failed", "--outcome-reason", "server_error"]
+    );
+}
+
+/// The transcript is written asynchronously: an API error Claude Code appends just after the
+/// hook starts still counts.
+#[test]
+fn a_connection_failure_written_just_after_the_hook_starts_is_still_network_lost() {
+    let tail = captured_connection_failed_tail();
+    let (error_at, _) = tail
+        .match_indices('\n')
+        .find(|(at, _)| tail[..*at].ends_with('}') && tail[at + 1..].contains("connection_failed"))
+        .unwrap();
+    let (directory, payload) = connection_failed_stop(&tail[..=error_at]);
+    let transcript = directory.path().join("transcript.jsonl");
+    let rest = tail[error_at + 1..].to_owned();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(transcript)
+            .unwrap();
+        file.write_all(rest.as_bytes()).unwrap();
+    });
+
+    let outcome = reported_outcome(&payload);
+
+    writer.join().unwrap();
+    assert_eq!(
+        outcome,
+        [
+            "--outcome",
+            "network-lost",
+            "--outcome-reason",
+            "connection_failed"
+        ]
+    );
+}
+
+#[test]
+fn a_meta_record_after_the_connection_failure_leaves_it_network_lost() {
+    let mut tail = captured_connection_failed_tail();
+    tail.push_str(
+        r#"{"type":"user","isSidechain":false,"isMeta":true,"message":{"role":"user","content":"<local-command-caveat>"}}"#,
+    );
+    tail.push('\n');
+    let (_directory, payload) = connection_failed_stop(&tail);
+
+    assert_eq!(
+        reported_outcome(&payload),
+        [
+            "--outcome",
+            "network-lost",
+            "--outcome-reason",
+            "connection_failed"
+        ]
+    );
+}

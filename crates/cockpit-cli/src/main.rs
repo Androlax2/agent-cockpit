@@ -65,7 +65,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek config show [--project DIR] [--set KEY=VALUE]...
        torlek config reload
        torlek logs level [DIRECTIVES [--for Ns|Nm] | --revert]
-       torlek agent report [--state working|waiting] [--label TEXT] [--doing TEXT] [--needs-input QUESTION | --dialog QUESTION] [--prompt] [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT] [--conversation ID [--conversation-ends]]
+       torlek agent report [--state working|waiting] [--label TEXT] [--doing TEXT] [--needs-input QUESTION | --dialog QUESTION] [--prompt] [--outcome completed|failed|quota-stopped|network-lost] [--outcome-reason TEXT] [--conversation ID [--conversation-ends]]
        torlek agent report --compaction started|ended|failed [--compaction-trigger auto|manual] [--compaction-tokens-before N] [--compaction-tokens-after N] [--conversation ID]
        torlek agent reports
        torlek agent sessions [--watch]

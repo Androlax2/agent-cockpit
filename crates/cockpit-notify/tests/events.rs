@@ -425,6 +425,12 @@ fn each_turn_outcome_is_its_own_event() {
         (TurnOutcome::Completed, Event::Turn),
         (TurnOutcome::Failed { reason: None }, Event::Failure),
         (TurnOutcome::QuotaStopped, Event::Quota),
+        (
+            TurnOutcome::NetworkLost {
+                reason: "connection_failed".to_owned(),
+            },
+            Event::Failure,
+        ),
     ] {
         let mut notifier = running();
 
@@ -432,6 +438,24 @@ fn each_turn_outcome_is_its_own_event() {
 
         assert_eq!(events(&told), [event], "{outcome:?}");
     }
+}
+
+/// #718: a turn the network ended says so, with the harness's own word for it.
+#[test]
+fn a_turn_the_network_ended_names_the_lost_network() {
+    let mut notifier = running();
+
+    let told = set_reports(
+        &mut notifier,
+        vec![ended_turn(TurnOutcome::NetworkLost {
+            reason: "connection_failed".to_owned(),
+        })],
+    );
+
+    assert_eq!(
+        told[0].detail.as_deref(),
+        Some("the network was lost (connection_failed)")
+    );
 }
 
 #[test]

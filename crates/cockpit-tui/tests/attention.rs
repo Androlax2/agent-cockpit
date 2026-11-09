@@ -180,6 +180,26 @@ fn a_turn_that_failed_rings_once() {
     assert!(app.take_bell());
 }
 
+/// #718: nothing resumes a turn the network ended yet, so it rings as a failure does.
+#[test]
+fn a_turn_the_network_ended_rings_once() {
+    let now = Instant::now();
+    let mut app = running_app(now);
+
+    reports(
+        &mut app,
+        vec![SessionReport {
+            outcome: Some(TurnOutcome::NetworkLost {
+                reason: "connection_failed".to_owned(),
+            }),
+            ..report(WORKER)
+        }],
+        now,
+    );
+
+    assert!(app.take_bell());
+}
+
 #[test]
 fn an_agent_that_exited_by_itself_rings_once() {
     let now = Instant::now();

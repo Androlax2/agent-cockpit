@@ -1,0 +1,12 @@
+{
+  "session_id": "a3d8148e-432e-4084-b523-e10bd5aec7d1",
+  "transcript_path": "/home/owner/.claude/projects/-work/a3d8148e-432e-4084-b523-e10bd5aec7d1.jsonl",
+  "cwd": "/work",
+  "prompt_id": "f4145637-5a1e-43e0-becf-f6088179589c",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "StopFailure",
+  "error": "server_error",
+  "last_assistant_message": "API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)"
+}

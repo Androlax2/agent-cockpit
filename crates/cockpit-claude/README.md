@@ -87,7 +87,7 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   answers its name and version: `Bridge::check`, run by the daemon at its start, proves the
   bridge runs here (#203). A question the agent channel
   would refuse is replaced by a plain one; line breaks become spaces and a long one is cut
-  to 300 characters. A turn's end reports its outcome (`--outcome completed` or `failed`);
+  to 300 characters. A turn's end reports its outcome (`--outcome completed`, `failed` or `network-lost`);
   a failure's reason the channel would refuse is left out, a long one cut to 80 characters.
   `StopFailure` `rate_limit` is ambiguous: Claude Code sends it for a spent plan window and
   a transient 429 alike (#212), so the bridge judges it by the plan windows of the session's
@@ -98,7 +98,12 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   `quota-stopped`, which moves the session to its next account (#59); a window scoped to one
   model is not read, since the payload does not say which model the turn ran on. Headroom in
   both, or windows that cannot be read, keep it `failed` with reason `rate_limit`, said on
-  the hook's standard error. A `SessionStart` after a compaction
+  the hook's standard error. `StopFailure` `server_error` is ambiguous too: Claude Code
+  sends it for a lost connection, a server's 5xx and a timed-out request alike, so the
+  bridge reads the transcript the payload names (#718). A turn whose last main-chain message
+  is Claude Code's own API error tagged `apiError: "connection_failed"` reports
+  `--outcome network-lost --outcome-reason connection_failed`; any other, or a transcript that
+  cannot say, stays `failed` with reason `server_error`. A `SessionStart` after a compaction
   reports nothing: an automatic one happens in the middle of a turn.
 - **Inbox (#703).** On `SessionStart` and `Stop`, a second hook runs in the background
   (`asyncRewake`): `torlek-claude-hook <torlek> --inbox` waits on `torlek agent inbox` for a

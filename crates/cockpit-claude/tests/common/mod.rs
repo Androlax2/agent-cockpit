@@ -53,3 +53,13 @@ pub fn transcript(name: &str) -> PathBuf {
         .join(format!("claude-code-{CONFORMANCE_VERSION}"))
         .join(format!("{name}.jsonl"))
 }
+
+/// A fixture captured from Claude Code `version`, which need not be the pinned one: `name`
+/// with its extension.
+pub fn captured(version: &str, name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(format!("claude-code-{version}"))
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}

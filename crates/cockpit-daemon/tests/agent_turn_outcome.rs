@@ -10,8 +10,9 @@ use cockpit_authorization::Permission;
 use cockpit_protocol::{AgentReport, AgentState, Command, Reply, TurnOutcome};
 use common::{GENEROUS, TestHome};
 
-#[tokio::test]
-async fn a_failed_turn_reaches_the_owner_with_its_reason() {
+/// Reports `outcome` as the agent of a launch on the agent socket; what the owner then reads
+/// back of the session.
+async fn reported_and_read_back(outcome: TurnOutcome) -> (Option<AgentState>, Option<TurnOutcome>) {
     let home = TestHome::new();
     let token = home
         .launch(
@@ -21,9 +22,6 @@ async fn a_failed_turn_reaches_the_owner_with_its_reason() {
         )
         .await;
     let _daemon = home.start();
-    let failed = TurnOutcome::Failed {
-        reason: Some("server_error".to_owned()),
-    };
 
     let reply = home
         .connect_agent()
@@ -32,7 +30,7 @@ async fn a_failed_turn_reaches_the_owner_with_its_reason() {
             Command::AgentReport {
                 launch_token: Some(token.as_str().to_owned()),
                 report: AgentReport {
-                    outcome: Some(failed.clone()),
+                    outcome: Some(outcome),
                     ..AgentReport::default()
                 },
             },
@@ -53,6 +51,30 @@ async fn a_failed_turn_reaches_the_owner_with_its_reason() {
         Ok(Reply::AgentReports { reports }) => reports,
         other => panic!("expected the reports, got {other:?}"),
     };
-    assert_eq!(reports[0].state, Some(AgentState::Waiting));
-    assert_eq!(reports[0].outcome, Some(failed));
+    (reports[0].state, reports[0].outcome.clone())
+}
+
+#[tokio::test]
+async fn a_failed_turn_reaches_the_owner_with_its_reason() {
+    let failed = TurnOutcome::Failed {
+        reason: Some("server_error".to_owned()),
+    };
+
+    assert_eq!(
+        reported_and_read_back(failed.clone()).await,
+        (Some(AgentState::Waiting), Some(failed))
+    );
+}
+
+/// #718: a lost network is its own outcome, never shown as a failure.
+#[tokio::test]
+async fn a_network_lost_turn_reaches_the_owner_with_its_reason() {
+    let network_lost = TurnOutcome::NetworkLost {
+        reason: "connection_failed".to_owned(),
+    };
+
+    assert_eq!(
+        reported_and_read_back(network_lost.clone()).await,
+        (Some(AgentState::Waiting), Some(network_lost))
+    );
 }

@@ -413,7 +413,7 @@ async fn store_report(write: &WriteTransaction<'_>, merged: &SessionReport) -> R
                 merged
                     .outcome
                     .as_ref()
-                    .and_then(TurnOutcome::failure_reason)
+                    .and_then(TurnOutcome::reason)
                     .map(str::to_owned),
                 merged.question_source.map(QuestionSource::as_str),
                 merged.covered_question.clone(),
@@ -723,6 +723,9 @@ fn validate(report: Report) -> Result<(Report, Option<ConversationId>), Refusal>
                 &reason,
                 OUTCOME_REASON_MAX_CHARS,
             )?),
+        }),
+        Some(TurnOutcome::NetworkLost { reason }) => Some(TurnOutcome::NetworkLost {
+            reason: bounded_text("outcome-reason", &reason, OUTCOME_REASON_MAX_CHARS)?,
         }),
         outcome => outcome,
     };

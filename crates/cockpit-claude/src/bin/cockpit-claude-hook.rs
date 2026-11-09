@@ -15,6 +15,9 @@
 //! read, keep it `failed` with reason `rate_limit`, so a transient rate limit never moves the
 //! session to another account (#59).
 //!
+//! A `StopFailure` of `server_error` is judged by the transcript the payload names (#718):
+//! a turn that ended on Claude Code's own `connection_failed` API error is `network-lost`.
+//!
 //! Reporting, it exits 1 on any failure and never 2, which would block Claude Code's stop or
 //! prompt. `cockpit-claude-hook --version` is the daemon's start check that the
 //! bridge runs on this machine (#203); Claude Code never passes it.
@@ -88,7 +91,8 @@ fn run(cockpit: &OsStr) -> Result<(), String> {
     std::io::stdin()
         .read_to_string(&mut payload)
         .map_err(|error| format!("cannot read the hook payload: {error}"))?;
-    let mut event = hooks::normalize(&payload).map_err(|error| error.to_string())?;
+    let mut event =
+        hooks::judged_by_transcript(hooks::normalize(&payload).map_err(|error| error.to_string())?);
     if hooks::needs_plan_windows(&event) {
         // Unreadable windows leave the event as it is: the report still goes out, and the
         // reason stays in Claude Code's debug log, where it keeps a hook's standard error.

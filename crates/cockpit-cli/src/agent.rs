@@ -18,9 +18,9 @@ use cockpit_protocol::{
 pub(crate) const DEADLINE: Duration = Duration::from_secs(10);
 
 /// `--state working|waiting`, `--label`, `--doing`, `--needs-input`, `--dialog`, the
-/// value-less `--prompt`, `--outcome completed|failed|quota-stopped`, `--outcome-reason`
-/// (with `failed` only), `--conversation` and the value-less `--conversation-ends` (with
-/// `--conversation` only), and a context compaction's moment: `--compaction
+/// value-less `--prompt`, `--outcome completed|failed|quota-stopped|network-lost`,
+/// `--outcome-reason` (with `failed`, and always with `network-lost`), `--conversation` and
+/// the value-less `--conversation-ends` (with `--conversation` only), and a context compaction's moment: `--compaction
 /// started|ended|failed` with `--compaction-trigger auto|manual`, `--compaction-tokens-before N`
 /// and `--compaction-tokens-after N`, which report nothing else (#782), and the harness's
 /// context at a turn's end: `--context-tokens N` and `--context-window N`, with `--outcome`
@@ -248,11 +248,15 @@ fn turn_outcome(
         (Some("failed"), reason) => Ok(Some(TurnOutcome::Failed { reason })),
         (Some("completed"), None) => Ok(Some(TurnOutcome::Completed)),
         (Some("quota-stopped"), None) => Ok(Some(TurnOutcome::QuotaStopped)),
+        (Some("network-lost"), Some(reason)) => Ok(Some(TurnOutcome::NetworkLost { reason })),
+        (Some("network-lost"), None) => {
+            Err("--outcome network-lost needs --outcome-reason, the harness's own word".to_owned())
+        }
         (None | Some("completed" | "quota-stopped"), Some(_)) => {
-            Err("--outcome-reason needs --outcome failed".to_owned())
+            Err("--outcome-reason needs --outcome failed or network-lost".to_owned())
         }
         (Some(other), _) => Err(format!(
-            "--outcome {other}: use completed, failed or quota-stopped"
+            "--outcome {other}: use completed, failed, quota-stopped or network-lost"
         )),
     }
 }
@@ -411,6 +415,9 @@ fn render(report: &SessionReport) -> String {
         None => {}
         Some(TurnOutcome::Completed) => line.push_str(" outcome=completed"),
         Some(TurnOutcome::QuotaStopped) => line.push_str(" outcome=quota-stopped"),
+        Some(TurnOutcome::NetworkLost { reason }) => {
+            line.push_str(&format!(" outcome=network-lost outcome-reason={reason:?}"));
+        }
         Some(TurnOutcome::Failed { reason }) => {
             line.push_str(" outcome=failed");
             if let Some(reason) = reason {
