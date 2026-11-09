@@ -1,3 +1,4 @@
+import json
 import re
 import unittest
 from pathlib import Path
@@ -33,7 +34,13 @@ def allows(expression, context):
     expression = expression.replace("&&", " and ").replace("||", " or ")
     expression = re.sub(r"!(?!=)", " not ", expression)
     # No run is cancelled here: `!cancelled()` holds, as in a run nobody cancelled.
-    names = {"true": True, "false": False, "cancelled": lambda: False}
+    names = {
+        "true": True,
+        "false": False,
+        "cancelled": lambda: False,
+        "fromJSON": json.loads,
+        "contains": lambda collection, item: item in collection,
+    }
     return bool(eval(expression.strip(), {"__builtins__": {}}, names))
 
 
@@ -51,6 +58,7 @@ def context(event, draft=False, branch="feature/example", ref="refs/heads/main",
         "needs.changes.outputs.greenfield": selected,
         "needs.changes.outputs.platform": selected,
         "needs.changes.outputs.docs": selected,
+        "needs.languages.outputs.languages": '["rust", "actions"]',
         "needs.plan.outputs.tag": "v0.1.0-alpha.1" if event == "push" else "",
     }
     if event != "pull_request":
