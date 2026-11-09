@@ -79,6 +79,18 @@ pub const COMPACTION_THRESHOLD_PROBE_VALUE: &str = "torlek-probe";
 /// alone and against an app-server: with it, the TUI goes straight to its own screen.
 pub const UPDATE_CHECK_CONFIG: &str = "check_for_update_on_startup=false";
 
+/// The sandbox every session Torlek starts runs its commands in, over the owner's own
+/// `sandbox_mode` (owner's decision on #1281, 2026-11-09): the workspace writable, and the
+/// network open, without which Codex's sandbox refuses every `connect`, Torlek's agent socket
+/// included (`EPERM`, measured on 0.166.0; `writable_roots` does not change it, and no narrower
+/// setting lets one Unix socket through). Torlek's own sandbox, its proxy and its grants stay the
+/// boundary. The owner's approval policy and `writable_roots` are left alone: a `--config` array
+/// would replace the owner's list, not add to it. Codex sessions started by hand are untouched.
+pub const SANDBOX_CONFIGS: [&str; 2] = [
+    "sandbox_mode=\"workspace-write\"",
+    "sandbox_workspace_write.network_access=true",
+];
+
 /// Codex's model setting; a launch with a [`LaunchRequest::model`] sets it for the session.
 pub const MODEL_KEY: &str = "model";
 
@@ -336,9 +348,10 @@ impl Provider for Codex {
     /// [--config <threshold>] --config <session>… --config <update check> [-- [<thread id>]
     /// [<first message>]]`. A chosen compaction threshold is one more `--config` value
     /// ([`COMPACTION_THRESHOLD_KEY`]), for the app-server with the bridge and the TUI without.
-    /// The session's own settings ([`session_configs`]: a chosen model and effort) go to both
-    /// the app-server and the TUI, so neither falls back to the owner's `~/.codex/config.toml`
-    /// for them; the TUI's update screen is always off ([`UPDATE_CHECK_CONFIG`]).
+    /// The session's own settings ([`session_configs`]: its sandbox, a chosen model and
+    /// effort) go to both the app-server and the TUI, so neither falls back to the owner's
+    /// `~/.codex/config.toml` for them; the TUI's update screen is always off
+    /// ([`UPDATE_CHECK_CONFIG`]).
     /// A new conversation's thread id is Codex's own and unknown at launch: the first report
     /// names it.
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
@@ -427,10 +440,11 @@ fn compaction_threshold_config(threshold: &str) -> Result<String, ProviderError>
 }
 
 /// The `--config` values of the session's own settings, for both the app-server and the TUI:
-/// the chosen model and effort, as TOML strings. Codex takes any model id and refuses one the
-/// account cannot use itself, so only the shapes are checked here.
+/// its sandbox ([`SANDBOX_CONFIGS`]), then the chosen model and effort, as TOML strings. Codex
+/// takes any model id and refuses one the account cannot use itself, so only the shapes are
+/// checked here.
 pub fn session_configs(request: &LaunchRequest<'_>) -> Result<Vec<String>, ProviderError> {
-    let mut configs = Vec::new();
+    let mut configs: Vec<String> = SANDBOX_CONFIGS.map(str::to_owned).to_vec();
     if let Some(model) = request.model {
         check_model(model)?;
         configs.push(format!("{MODEL_KEY}={}", hooks::toml_string(model)));

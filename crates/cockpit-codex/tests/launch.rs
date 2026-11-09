@@ -81,9 +81,13 @@ fn with_the_bridge_a_launch_registers_cockpits_mcp_server() {
         .launch(&request(&Conversation::New))
         .unwrap();
     let configs = values_of(&common::words(&command.arguments), "--config");
+    let mcp: Vec<&String> = configs
+        .iter()
+        .filter(|config| config.starts_with("mcp_servers.torlek."))
+        .collect();
 
     assert_eq!(
-        configs[configs.len() - 3..configs.len() - 1],
+        mcp[..2],
         [
             format!(
                 "mcp_servers.torlek.command=\"{}\"",
@@ -91,6 +95,8 @@ fn with_the_bridge_a_launch_registers_cockpits_mcp_server() {
             ),
             "mcp_servers.torlek.args=[\"mcp\"]".to_owned(),
         ]
+        .iter()
+        .collect::<Vec<_>>()
     );
 }
 
@@ -103,8 +109,8 @@ fn cockpits_mcp_server_receives_the_launch_token_and_the_agent_socket() {
         .unwrap();
     let configs = values_of(&common::words(&command.arguments), "--config");
     let passed = configs
-        .last()
-        .and_then(|config| config.strip_prefix("mcp_servers.torlek.env_vars="))
+        .iter()
+        .find_map(|config| config.strip_prefix("mcp_servers.torlek.env_vars="))
         .unwrap_or_else(|| panic!("no env_vars for cockpit's MCP server: {configs:?}"));
 
     for variable in [
@@ -236,6 +242,10 @@ fn without_the_bridge_a_new_conversation_runs_codex_out_of_the_shared_daemon() {
         [
             "--no-daemon",
             "--config",
+            "sandbox_mode=\"workspace-write\"",
+            "--config",
+            "sandbox_workspace_write.network_access=true",
+            "--config",
             "check_for_update_on_startup=false"
         ]
     );
@@ -287,9 +297,9 @@ fn with_the_bridge_a_compaction_threshold_is_one_more_config_value_for_the_app_s
         .unwrap();
 
     let configs = values_of(&common::words(&command.arguments), "--config");
-    assert_eq!(
-        configs.last().map(String::as_str),
-        Some("model_post_turn_compact_threshold_percent=75")
+    assert!(
+        configs.contains(&"model_post_turn_compact_threshold_percent=75".to_owned()),
+        "{configs:?}"
     );
 }
 
@@ -311,6 +321,10 @@ fn without_the_bridge_a_compaction_threshold_is_a_config_value_before_the_separa
             "--no-daemon",
             "--config",
             "model_post_turn_compact_threshold_percent=0",
+            "--config",
+            "sandbox_mode=\"workspace-write\"",
+            "--config",
+            "sandbox_workspace_write.network_access=true",
             "--config",
             "check_for_update_on_startup=false",
             "--",
@@ -374,7 +388,8 @@ fn with_the_bridge_a_model_and_effort_reach_both_the_app_server_and_the_tui() {
 
     let server = values_of(&words, "--config");
     assert_eq!(server[server.len() - 2..], chosen);
-    assert_eq!(values_of(&words, "--tui-config")[..2], chosen);
+    let tui = values_of(&words, "--tui-config");
+    assert_eq!(tui[tui.len() - 3..tui.len() - 1], chosen);
 }
 
 #[test]
@@ -392,6 +407,10 @@ fn without_the_bridge_a_model_and_effort_are_config_values_before_the_separator(
         common::words(&command.arguments),
         [
             "--no-daemon",
+            "--config",
+            "sandbox_mode=\"workspace-write\"",
+            "--config",
+            "sandbox_workspace_write.network_access=true",
             "--config",
             "model=\"gpt-6-astra\"",
             "--config",
@@ -413,13 +432,66 @@ fn with_the_bridge_the_tui_skips_the_update_screen() {
     let words = common::words(&command.arguments);
 
     assert_eq!(
-        values_of(&words, "--tui-config"),
-        ["check_for_update_on_startup=false"]
+        values_of(&words, "--tui-config").last().map(String::as_str),
+        Some("check_for_update_on_startup=false")
     );
     assert!(
         !values_of(&words, "--config").contains(&"check_for_update_on_startup=false".to_owned()),
         "the app-server shows no screen: {words:?}"
     );
+}
+
+/// #1281: Codex's default sandbox for an untrusted clone is read-only, and without the network
+/// it refuses every `connect`, Torlek's agent socket included. The owner chose that every
+/// session Torlek starts writes its workspace and has the network, whatever
+/// `~/.codex/config.toml` says.
+#[test]
+fn every_launch_runs_its_commands_in_a_writable_workspace_with_the_network() {
+    let sandbox = [
+        "sandbox_mode=\"workspace-write\"".to_owned(),
+        "sandbox_workspace_write.network_access=true".to_owned(),
+    ];
+    let bridged = common::words(
+        &common::codex()
+            .launch(&request(&Conversation::New))
+            .unwrap()
+            .arguments,
+    );
+    let direct = common::words(
+        &without_bridge()
+            .launch(&request(&Conversation::New))
+            .unwrap()
+            .arguments,
+    );
+
+    for (words, flag) in [
+        (&bridged, "--config"),
+        (&bridged, "--tui-config"),
+        (&direct, "--config"),
+    ] {
+        let values = values_of(words, flag);
+        assert!(
+            sandbox.iter().all(|config| values.contains(config)),
+            "{flag}: {values:?}"
+        );
+    }
+}
+
+/// The owner's `writable_roots` (an sccache folder, say) and approval policy stay theirs: a
+/// `--config` array replaces the owner's list instead of adding to it.
+#[test]
+fn no_launch_sets_the_owners_writable_roots_or_approval_policy() {
+    for codex in [common::codex(), without_bridge()] {
+        let command = codex.launch(&request(&Conversation::New)).unwrap();
+
+        let words = common::words(&command.arguments);
+        assert!(
+            !words
+                .iter()
+                .any(|word| word.contains("writable_roots") || word.starts_with("approval_policy")),
+            "{words:?}"
+        );
+    }
 }
 
 #[test]

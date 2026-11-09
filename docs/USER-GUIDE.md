@@ -157,6 +157,7 @@ The following table describes the adapters in this checkout, not a promise that 
 
 Adapters label a capability `tested` only at their exact capability pin; other or unknown versions are `discovered` (unverified).
 Fixture tests and help/flag checks do not establish a live signed-in end-to-end conversation.
+Torlek overrides your Codex `sandbox_mode` for the Codex sessions it starts: each runs its commands with `sandbox_mode = "workspace-write"` and `sandbox_workspace_write.network_access = true`, set for that session only, whatever `~/.codex/config.toml` says. Codex's sandbox refuses every connection without the network, Torlek's agent socket included, so `torlek agent report` would turn into an approval prompt; Torlek's own sandbox, proxy and grants stay the boundary. Your approval policy and `writable_roots` still apply, and Codex sessions you start by hand are untouched. Torlek also turns off Codex's update screen for its sessions (`check_for_update_on_startup = false`), which would hold a restart until you answered it.
 Codex delivered-turn approval routing has local fake-model evidence on 0.166.0; signed-in acceptance, the older 0.161.0 target and in-session resume/fork remain unmeasured. See its adapter's known gaps.
 Receiving a prompt is not evidence that an agent completed its task.
 

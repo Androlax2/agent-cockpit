@@ -65,6 +65,16 @@ provider and nothing above the contract sees a Codex type (#48).
   0.166.0, `thread/start` answers with them over the home's own `model`. Only their shapes are
   checked: Codex takes any model id and accepts any effort word at `thread/start`, refusing one
   its model lacks only when a turn runs. Without them, nothing is passed.
+- **Sandbox** (#1281, owner's decision 2026-11-09). Every launch overrides the owner's
+  `sandbox_mode`: `--config sandbox_mode="workspace-write"` and `--config
+  sandbox_workspace_write.network_access=true` (`SANDBOX_CONFIGS`), with the model and effort in
+  `session_configs`, so the app-server and the TUI. Measured on 0.166.0: without them an
+  untrusted clone runs read-only; without the network Codex's sandbox refuses every `connect`
+  (`EPERM`), Torlek's agent socket included, and adding the socket's folder to `writable_roots`
+  does not change that, nor does the experimental network proxy's `allow_unix_sockets`. Torlek's
+  own sandbox, proxy and grants stay the boundary. The owner's approval policy and
+  `writable_roots` are not set: a `--config` array replaces the owner's list instead of adding
+  to it. Codex sessions started by hand are untouched.
 - **Update screen** (#1281). Every launch gives the TUI `--config
   check_for_update_on_startup=false` (`UPDATE_CHECK_CONFIG`): Codex's "Update available" screen
   held a restarted session until the owner answered it in the terminal. On 0.166.0 the screen
@@ -181,7 +191,8 @@ provider and nothing above the contract sees a Codex type (#48).
   is a Codex (the nightly job runs the latest, #732, and checks the version it installed), its help documents every flag passed, it lists the `hooks` feature,
   Codex trusts every hook a launch subscribes, a delivered message's prompt reports through
   the bridge, a message joins a turn under way and a cancel interrupts it, a failed turn is
-  followed to its outcome, a thread runs the model and effort a launch chooses, and the
+  followed to its outcome, a thread runs the model, effort and sandbox a launch chooses, a
+  command in that sandbox reaches a Unix socket outside its workspace, and the
   launcher completes and resumes the same conversation and skips the update screen in private
   tmux. Children have cleared environments and scratch homes; successful and
   gated-error responses come from a loopback fixture without credentials or account use.

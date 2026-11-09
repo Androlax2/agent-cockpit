@@ -25,7 +25,7 @@ use cockpit_codex::{
 };
 use cockpit_provider_api::{Action, ConversationId, Delivered, Provider, documents_flag};
 use rustix::process::{Pid, Signal, kill_process_group};
-use serde_json::json;
+use serde_json::{Value, json};
 
 /// The installed Codex the ignored live tests run.
 /// The first message of a terminal session's launch.
@@ -659,14 +659,13 @@ fn the_session_launcher_skips_the_update_screen() {
     assert!(!screen.contains("Update available"), "{screen}");
 }
 
-/// #1281: the model and effort a launch chooses are the ones a thread runs, over the home's own
-/// `model`; `thread/start` answers them without a model turn.
-#[test]
-#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM)"]
-fn a_thread_runs_the_model_and_effort_a_launch_chooses() {
-    let model = Model::conformance(Scenario::Success);
+/// What `thread/start` answers on an app-server given the session's own settings for a launch
+/// choosing `model` and `effort`, in a home whose configuration names `mock-model` and a
+/// read-only sandbox.
+fn thread_started_with_session_settings(model: Option<&str>, effort: Option<&str>) -> Value {
+    let fixture = Model::conformance(Scenario::Success);
     let work = tempfile::tempdir().unwrap();
-    let home = fresh_home(&model, work.path());
+    let home = fresh_home(&fixture, work.path());
     let session_dir = tempfile::tempdir().unwrap();
     let socket = cockpit_codex::delivery::socket_path(session_dir.path());
     let configs = cockpit_codex::session_configs(&cockpit_provider_api::LaunchRequest {
@@ -674,8 +673,8 @@ fn a_thread_runs_the_model_and_effort_a_launch_chooses() {
         session_dir: session_dir.path(),
         conversation: &cockpit_provider_api::Conversation::New,
         first_message: None,
-        effort: Some("max"),
-        model: Some("gpt-6-astra"),
+        effort,
+        model,
         remote_control: false,
         compaction_threshold: None,
     })
@@ -698,16 +697,70 @@ fn a_thread_runs_the_model_and_effort_a_launch_chooses() {
     connection
         .set_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-
-    let started = connection
+    connection
         .call(
             "thread/start",
             json!({"cwd": work.path().to_str().unwrap(), "ephemeral": true}),
         )
-        .unwrap();
+        .unwrap()
+}
+
+/// #1281: the model and effort a launch chooses are the ones a thread runs, over the home's own
+/// `model`; `thread/start` answers them without a model turn.
+#[test]
+#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM)"]
+fn a_thread_runs_the_model_and_effort_a_launch_chooses() {
+    let started = thread_started_with_session_settings(Some("gpt-6-astra"), Some("max"));
 
     assert_eq!(started["model"], "gpt-6-astra", "{started}");
     assert_eq!(started["reasoningEffort"], "max", "{started}");
+}
+
+/// #1281: a thread of a Torlek launch writes its workspace and has the network, over the home's
+/// own `sandbox_mode = "read-only"`.
+#[test]
+#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM)"]
+fn a_thread_runs_in_the_sandbox_a_launch_sets() {
+    let started = thread_started_with_session_settings(None, None);
+
+    assert_eq!(started["sandbox"]["type"], "workspaceWrite", "{started}");
+    assert_eq!(started["sandbox"]["networkAccess"], true, "{started}");
+}
+
+/// #1281: in the sandbox a launch sets, a command reaches a Unix socket outside its workspace,
+/// as `torlek agent report` reaches Torlek's agent socket, and writes its workspace. Without
+/// the network, Codex refused the `connect` (`EPERM`).
+#[test]
+#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM) and python3"]
+fn a_command_in_a_launchs_sandbox_reaches_a_socket_outside_its_workspace() {
+    let home = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let socket = outside.path().join("agent.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut command = native_command(&installed(), home.path());
+    command.current_dir(work.path()).arg("sandbox");
+    for config in cockpit_codex::SANDBOX_CONFIGS {
+        command.args([CONFIG_FLAG, config]);
+    }
+    command.args([
+        "--",
+        "/usr/bin/python3",
+        "-I",
+        "-c",
+        "import pathlib, socket, sys\n\
+         socket.socket(socket.AF_UNIX).connect(sys.argv[1])\n\
+         pathlib.Path(sys.argv[2], 'written').write_text('x')",
+    ]);
+    command.arg(&socket).arg(work.path());
+
+    let output = bounded_command::output(&mut command, Duration::from_secs(20)).unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    // A finished connection waits in the listener's queue.
+    assert!(listener.accept().is_ok());
+    assert!(work.path().join("written").is_file());
 }
 
 #[test]
