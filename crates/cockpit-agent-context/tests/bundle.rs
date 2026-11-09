@@ -144,11 +144,11 @@ fn the_sandbox_topic_says_which_symptoms_are_deliberate_and_what_to_do() {
         "{body}"
     );
     for row in [
-        "| `~` holds no config, caches or tools from an earlier session | The session home starts empty and is removed when the session ends. |",
-        "| `Read-only file system` (`EROFS`) writing `.git/config`, `.git/hooks`, `.torlek` or `.cockpit` | These paths are read-only on purpose",
-        "| A `.env` file reads as empty or is missing | `.env` files are hidden on purpose. |",
-        "| `command not found` for a tool in `~/.local/bin`, or in another folder outside the toolchain table | That folder is not mounted",
-        "| `git push` is refused | Pushes go to the owner. |",
+        "| `~` is empty at the start of a session, or its files are gone at the next one | The session home survives relaunches and is removed when the session ends. | Keep what must outlive the session in the checkout, not in `~`. |",
+        "| `Read-only file system` (`EROFS`) writing `.git/config`, `.git/hooks`, `.torlek` or `.cockpit` | These paths are read-only on purpose: Git hooks and config run on the owner's host. | Do not retry. `torlek todo blocked TITLE --why TEXT`, naming the path. |",
+        "| A `.env` file reads as empty or is missing | `.env` files are hidden on purpose. | Use the references the environment gives you. If the task needs the values, `torlek todo blocked TITLE --why TEXT`. |",
+        "| `command not found` for a tool in `~/.local/bin`, or in another folder outside the toolchain table | That folder is outside the toolchain roots, so it is not mounted. | `torlek todo blocked TITLE --why TEXT`, naming the tool. |",
+        "| `git push` over HTTPS is refused by the session proxy | The session has no push route; the owner pushes. | Stop pushing. `torlek todo blocked TITLE --why TEXT`, naming the branch. |",
     ] {
         assert!(body.contains(row), "missing {row:?} in\n{body}");
     }
