@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Split the greenfield workspace's test binaries into CI shards by their measured run time.
 
-Usage: cargo nextest list --archive-file A --message-format json | ci-shards.py plan [--shards N]
+Usage: cargo nextest list --workspace --message-format json | ci-shards.py plan [--shards N]
        ci-shards.py weights JUNIT.xml [JUNIT.xml ...]
 
-`plan` reads the test list of the archive the build job made and prints `matrix=<json>` for
+`plan` reads the test list of the build the archive was made from and prints `matrix=<json>` for
 $GITHUB_OUTPUT: one `{"shard": n, "filter": "<nextest filterset>"}` entry per shard. Every
-binary in the archive lands in exactly one shard, because the shards are cut from that very
+binary in that list lands in exactly one shard, because the shards are cut from that very
 list: a new test binary needs no edit here, and a stale entry in the weights file is ignored.
 A binary the weights file does not know weighs `UNKNOWN_SECONDS`.
 
@@ -17,6 +17,7 @@ drops a test.
 """
 
 import json
+import re
 import sys
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
@@ -42,7 +43,15 @@ def split_into_shards(ids, weights, shard_count):
     return shards
 
 
+SAFE_BINARY_ID = re.compile(r"[A-Za-z0-9_:/.-]+")
+
+
 def filterset(ids):
+    for binary_id in ids:
+        # An id with a character the filterset language reads (space, comma, parenthesis, quote)
+        # would cut a shard short or break its parse: refuse it here, in the build job.
+        if not SAFE_BINARY_ID.fullmatch(binary_id):
+            raise SystemExit(f"ci-shards: unsupported character in test binary id {binary_id!r}")
     return " | ".join(f"binary_id(={binary_id})" for binary_id in sorted(ids))
 
 

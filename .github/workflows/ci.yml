@@ -116,6 +116,7 @@ jobs:
       - name: Cut the archive's test binaries into shards by measured time
         id: plan
         run: |
+          set -euo pipefail
           cargo nextest list --locked --cargo-quiet --manifest-path Cargo.toml --workspace \
             --message-format json | python3 tools/ci-shards.py plan >> "$GITHUB_OUTPUT"
       # Already zstd-compressed: zipping it again only costs time.
@@ -254,6 +255,8 @@ jobs:
       - name: "Probe the native sandbox live: denied paths, an unknown and an allowed host, four launches (#433)"
         # Ignored in the gate because it reaches the internet; retried so a network blip is
         # reported flaky, not failed. The evidence each launch recorded prints in this log.
+        env:
+          COCKPIT_PREBUILT_PROGRAMS: "1"
         run: >-
           cargo nextest run
           --cargo-metadata target/nextest/cargo-metadata.json

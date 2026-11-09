@@ -167,7 +167,13 @@ fn programs() -> &'static Programs {
             e2e_daemon: dir.join("examples/cockpit-e2e-daemon"),
             dir,
         };
-        for program in [&programs.cockpit, &programs.daemon, &programs.e2e_daemon] {
+        let claude_hook = programs.dir.join("torlek-claude-hook");
+        for program in [
+            &programs.cockpit,
+            &programs.daemon,
+            &programs.e2e_daemon,
+            &claude_hook,
+        ] {
             assert!(
                 program.is_file(),
                 "program under test missing: {}",

@@ -60,7 +60,13 @@ class ShardedGreenfieldTests(unittest.TestCase):
                 self.assertNotIn("cargo test", steps)
                 self.assertNotIn("make crates-test\n", steps)
                 self.assertNotIn("make crates-test ", steps)
-        self.assertIn("COCKPIT_PREBUILT_PROGRAMS=1", MAKEFILE)
+                self.assertNotIn("cargo build", steps)
+                for step in re.split(r"\n      - ", steps):
+                    if "cargo nextest run" in step:
+                        self.assertTrue(
+                            "--archive-file" in step or "--binaries-metadata" in step,
+                            "a nextest run in this job must use the archive, not compile",
+                        )
 
     def test_a_failing_shard_does_not_cancel_the_others(self):
         self.assertIn("      fail-fast: false\n", ci_job(WORKFLOW, "greenfield-test"))

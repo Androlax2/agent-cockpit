@@ -64,6 +64,14 @@ class ShardPlanTests(unittest.TestCase):
         for shard in plan:
             self.assertEqual(len(ids_in(shard["filter"]) & {"a", "b", "c"}), 1)
 
+    def test_a_binary_id_the_filterset_language_would_misread_is_refused(self):
+        ci_shards = shards_module()
+        for binary_id in ("has space::a", "a,b", "a)b", "a'b"):
+            with self.subTest(binary=binary_id), self.assertRaises(SystemExit):
+                ci_shards.plan(nextest_list(binary_id), {}, 2)
+        plan = ci_shards.plan(nextest_list("cockpit-cli::bin/torlek"), {}, 2)
+        self.assertEqual(plan[0]["filter"], "binary_id(=cockpit-cli::bin/torlek)")
+
     def test_an_empty_archive_is_refused(self):
         with self.assertRaises(SystemExit):
             shards_module().plan(nextest_list(), {}, 3)
