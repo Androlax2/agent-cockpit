@@ -508,6 +508,38 @@ esac
         self.assertIn("QUESTION s-greenfield-5-thing", result.stdout)
         self.assertIn("DIALOG s-greenfield-5-thing", result.stdout)
 
+    def test_it_reports_a_worker_idle_whose_dialog_cleared_while_it_stayed_waiting(self):
+        result = self.watch(
+            self.session("greenfield-6-idle", "waiting", "coding", dialog="Approve?"),
+            self.session("greenfield-6-idle", "waiting", "coding"),
+        )
+
+        self.assertIn("DIALOG s-greenfield-6-idle", result.stdout)
+        self.assertIn("IDLE without merged PR s-greenfield-6-idle", result.stdout)
+
+    def test_it_reads_a_state_file_written_before_dialogs_were_parsed(self):
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "sessions": {
+                        "s-greenfield-6-idle": {
+                            "id": "s-greenfield-6-idle",
+                            "lifecycle": "running",
+                            "state": "waiting",
+                            "branch": "greenfield/6-idle",
+                            "doing": "coding",
+                            "question": "",
+                        }
+                    }
+                }
+            )
+        )
+
+        result = self.watch(self.session("greenfield-6-idle", "waiting", "coding", dialog="Hi?"))
+
+        self.assertIn("DIALOG s-greenfield-6-idle", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_it_ignores_a_dialog_of_a_session_outside_the_worker_root(self):
         result = self.watch(
             self.session("greenfield-5-thing", "waiting", dialog="Mine", root="/elsewhere")
