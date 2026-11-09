@@ -377,9 +377,11 @@ esac
 """,
         )
 
-    def session(self, name, state, doing="", question="", root=None):
+    def session(self, name, state, doing="", question="", dialog="", root=None):
         workspace = f"{root or self.worker_root}/{name}"
-        fields = f'doing="{doing}"' + (f' needs-input="{question}"' if question else "")
+        fields = f'doing="{doing}"'
+        fields += f' needs-input="{question}"' if question else ""
+        fields += f' dialog="{dialog}"' if dialog else ""
         return "\t".join(["s-" + name, "running", "-", state, workspace, fields])
 
     def watch(self, *session_lines, first_run=False, extra_arguments=(), timeout=30):
@@ -433,6 +435,94 @@ esac
         self.assertIn(
             "QUESTION s-greenfield-5-thing (greenfield/5-thing): Which option?", result.stdout
         )
+
+    def test_it_reports_a_workers_open_dialog_with_its_branch(self):
+        result = self.watch(
+            self.session(
+                "greenfield-5-thing",
+                "waiting",
+                "coding",
+                dialog="Codex is waiting for you in its terminal",
+            )
+        )
+
+        self.assertIn(
+            "DIALOG s-greenfield-5-thing (greenfield/5-thing): "
+            "Codex is waiting for you in its terminal",
+            result.stdout,
+        )
+
+    def test_it_reports_an_unchanged_dialog_once(self):
+        waiting_with_dialog = self.session(
+            "greenfield-5-thing", "waiting", "coding", dialog="Approve the command?"
+        )
+        still_waiting_with_dialog = self.session(
+            "greenfield-5-thing", "waiting", "coding again", dialog="Approve the command?"
+        )
+
+        result = self.watch(waiting_with_dialog, still_waiting_with_dialog)
+
+        self.assertEqual(result.stdout.count("DIALOG"), 1, result.stdout)
+
+    def test_it_reports_a_new_dialog_after_the_previous_one_cleared(self):
+        result = self.watch(
+            self.session("greenfield-5-thing", "waiting", "coding", dialog="First prompt"),
+            self.session("greenfield-5-thing", "working", "coding"),
+            self.session("greenfield-5-thing", "waiting", "coding", dialog="Second prompt"),
+        )
+
+        self.assertIn(
+            "DIALOG s-greenfield-5-thing (greenfield/5-thing): First prompt", result.stdout
+        )
+        self.assertIn(
+            "DIALOG s-greenfield-5-thing (greenfield/5-thing): Second prompt", result.stdout
+        )
+
+    def test_it_reports_a_changed_dialog_text(self):
+        result = self.watch(
+            self.session("greenfield-5-thing", "waiting", "coding", dialog="First prompt"),
+            self.session("greenfield-5-thing", "waiting", "coding", dialog="Second prompt"),
+        )
+
+        self.assertEqual(result.stdout.count("DIALOG"), 2, result.stdout)
+
+    def test_it_reports_a_dialog_already_open_when_a_fresh_watcher_starts(self):
+        result = self.watch(
+            self.session("greenfield-5-thing", "waiting", "coding", dialog="Approve?"),
+            first_run=True,
+        )
+
+        self.assertIn("DIALOG s-greenfield-5-thing", result.stdout)
+
+    def test_it_reports_a_question_and_a_dialog_that_appear_together(self):
+        result = self.watch(
+            self.session(
+                "greenfield-5-thing",
+                "waiting",
+                "asking",
+                question="Which option?",
+                dialog="Approve?",
+            )
+        )
+
+        self.assertIn("QUESTION s-greenfield-5-thing", result.stdout)
+        self.assertIn("DIALOG s-greenfield-5-thing", result.stdout)
+
+    def test_it_ignores_a_dialog_of_a_session_outside_the_worker_root(self):
+        result = self.watch(
+            self.session("greenfield-5-thing", "waiting", dialog="Mine", root="/elsewhere")
+        )
+
+        self.assertNotIn("DIALOG", result.stdout)
+
+    def test_it_does_not_call_a_worker_idle_while_its_dialog_is_open(self):
+        result = self.watch(
+            self.session("greenfield-6-idle", "working", "coding"),
+            self.session("greenfield-6-idle", "waiting", "coding", dialog="Approve?"),
+        )
+
+        self.assertIn("DIALOG s-greenfield-6-idle", result.stdout)
+        self.assertNotIn("IDLE", result.stdout)
 
     def test_it_ignores_sessions_outside_the_worker_root(self):
         result = self.watch(

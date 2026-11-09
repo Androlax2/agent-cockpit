@@ -1,7 +1,8 @@
 """Coordinator event filter: wakes the coordinator only for events that need action.
 
-Immediate: a worker question appears or changes, a worker still idle without a merged PR after
-a grace period (once per idle spell; a short working blip does not end it), a CI failure on a
+Immediate: a worker question or an open dialog appears or changes (a dialog is the owner's to
+act on in the worker's pane, so the worker is blocked, not idle), a worker still idle without a
+merged PR after a grace period (once per idle spell; a short working blip does not end it), a CI failure on a
 PR's current head commit (once per commit and check), a PR merged or closed. Everything else
 that changed is dropped, so every printed line is one a coordinator acts on. `--summary-seconds N`
 opts in to one `SUMMARY` line of those changes every N seconds.
@@ -147,7 +148,13 @@ class Watcher:
             "branch": self.branch_of(columns[4]),
             "doing": fields.get("doing", ""),
             "question": fields.get("needs-input", ""),
+            "dialog": fields.get("dialog", ""),
         }
+
+    @staticmethod
+    def is_blocked_on_owner(session):
+        # .get: a state file written before dialogs were parsed has sessions without the key.
+        return bool(session["question"] or session.get("dialog"))
 
     def is_merged(self, branch):
         """True or False; None when GitHub could not say. Never call this holding the lock."""
@@ -198,13 +205,26 @@ class Watcher:
             seeding = self.is_first_run and time.monotonic() - self.started_at < self.seed_seconds
             if not current["question"]:
                 self.reported_questions.pop(session_id, None)
-            elif current["question"] != self.reported_questions.get(session_id):
+            reported_question = bool(current["question"]) and (
+                current["question"] != self.reported_questions.get(session_id)
+            )
+            if reported_question:
                 self.report_question(session_id, tag, current["question"])
+            reported_dialog = bool(current["dialog"]) and (
+                current["dialog"] != (previous or {}).get("dialog")
+            )
+            if reported_dialog:
+                print(f"DIALOG {tag}: {current['dialog']}", flush=True)
+                self.save()
+            if reported_question or reported_dialog:
                 return
-            went_idle = current["state"] == "waiting" and (previous or {}).get("state") != "waiting"
+            was_idle = (previous or {}).get("state") == "waiting" and not self.is_blocked_on_owner(
+                previous
+            )
+            went_idle = current["state"] == "waiting" and not was_idle
             needs_merge_check = (
                 went_idle
-                and not current["question"]
+                and not self.is_blocked_on_owner(current)
                 and self.reported_idle.get(session_id) != current["doing"]
             )
             if not needs_merge_check:
@@ -233,7 +253,9 @@ class Watcher:
                     return
                 del self.idle_timers[session_id]
                 current = self.sessions.get(session_id)
-            if current is None or current["state"] != "waiting" or current["question"]:
+            if current is None or current["state"] != "waiting":
+                return
+            if self.is_blocked_on_owner(current):
                 return
             self.report_idle(session_id, previous, current, tag, seeding)
 
@@ -255,7 +277,7 @@ class Watcher:
             if (
                 latest is None
                 or latest["state"] != "waiting"
-                or latest["question"]
+                or self.is_blocked_on_owner(latest)
                 or session_id in self.reported_questions
             ):
                 return
