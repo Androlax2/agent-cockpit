@@ -52,8 +52,8 @@ the wire. Report 14 treats this contract as stable from the first release.
    `without confirmation` when nobody was asked.
 6. Sessions (#31): `session-new` (an absolute `dir`, optional `agent`, `prompt` and
    `clone` branch), `session-list` (`ended` adds the ended ones), `session-restart`,
-   `session-restart-all`, `session-sleep`, `session-wake`, `session-resume`, `session-end` and
-   `session-link` answer a `session` view, `sessions`, or `restarted-all` with each
+   `session-restart-all`, `session-sleep`, `session-wake`, `session-resume`, `session-end`,
+   `session-link` and `session-budget` (#412) answer a `session` view, `sessions`, or `restarted-all` with each
    session that could not restart; `session-end-finished` answers `ended-finished` with each
    session ended and each it could not end. A view's `finished` says the task list has the
    session's work done (#157). `session-send` (`session`, `message`) and `session-cancel`

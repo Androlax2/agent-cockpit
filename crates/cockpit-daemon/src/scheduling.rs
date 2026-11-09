@@ -334,30 +334,31 @@ async fn inputs_in(
             .into_iter()
             .map(|checkout| (checkout.id, checkout.project.as_str().to_owned()))
             .collect();
-    let candidates = sessions
+    let now = now();
+    let mut candidates = Vec::new();
+    for session in sessions
         .iter()
         .filter(|session| session.state != SessionState::Ended)
-        .map(|session| {
-            Ok(Candidate {
-                session: cockpit_authorization::SessionId::new(session.id.as_str())
-                    .map_err(|error| internal(&error))?,
-                project: projects.get(&session.checkout).cloned(),
-                // Roles come from cockpit-teams (#53).
-                role: None,
-                capabilities: context
-                    .provider_capabilities
-                    .get(session.provider.as_str())
-                    .cloned()
-                    .unwrap_or_else(Capabilities::none),
-                presence: presence(session, reports.get(session.id.as_str())),
-                provider: session.provider.as_str().to_owned(),
-                account: account_of(session),
-                model: session.model.clone(),
-                effort: session.effort.clone(),
-            })
-        })
-        .collect::<Result<_, Failed>>()?;
-    let now = now();
+    {
+        candidates.push(Candidate {
+            session: cockpit_authorization::SessionId::new(session.id.as_str())
+                .map_err(|error| internal(&error))?,
+            project: projects.get(&session.checkout).cloned(),
+            // Roles come from cockpit-teams (#53).
+            role: None,
+            capabilities: context
+                .provider_capabilities
+                .get(session.provider.as_str())
+                .cloned()
+                .unwrap_or_else(Capabilities::none),
+            presence: presence(session, reports.get(session.id.as_str())),
+            provider: session.provider.as_str().to_owned(),
+            account: account_of(session),
+            model: session.model.clone(),
+            effort: session.effort.clone(),
+            budget: session_budget(read, session, now).await?,
+        });
+    }
     Ok(Inputs {
         candidates,
         viewed: context
@@ -394,6 +395,25 @@ async fn agent_seconds(
         spent.insert(item.id, seconds);
     }
     Ok(spent)
+}
+
+/// `session`'s budget against the agent seconds its turns have had since it started (#412).
+async fn session_budget(
+    read: &cockpit_turso::sql::Connection,
+    session: &Session,
+    now: i64,
+) -> Result<Option<cockpit_scheduling::SessionBudget>, Failed> {
+    let Some(minutes) = session.budget_minutes else {
+        return Ok(None);
+    };
+    let worked_seconds =
+        cockpit_usage::turn_seconds(read, session.id.as_str(), session.created_at, now)
+            .await
+            .map_err(|error| internal(&error))?;
+    Ok(Some(cockpit_scheduling::SessionBudget {
+        minutes,
+        worked_seconds,
+    }))
 }
 
 /// The account whose windows pace `session`'s queue starts: its launch's, or for an agent

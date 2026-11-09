@@ -11,9 +11,10 @@ use cockpit_tasks::ItemId;
 use cockpit_workflows::StepDefinition;
 
 use crate::pacing::{self, Paced};
+use crate::store::BUDGET_STEP_MINUTES;
 use crate::{
-    ActionBy, Candidate, Economy, Explanation, Presence, Reason, Role, SessionNote, Settings, Unit,
-    UsageWindow,
+    ActionBy, Candidate, Economy, Explanation, Presence, Reason, Role, SessionBudget, SessionNote,
+    Settings, Unit, UsageWindow,
 };
 
 /// One unit of work in the queue.
@@ -224,15 +225,33 @@ fn decide(
         )));
     }
     let mut eligible = Vec::new();
+    let mut is_any_freeing = false;
     for candidate in project_sessions {
         match refusal(candidate, unit, context, taken) {
-            Some(why) => notes.push(SessionNote {
-                session: candidate.session.clone(),
-                why,
-            }),
+            Some(refused) => {
+                is_any_freeing |= refused.frees_on_its_own;
+                notes.push(SessionNote {
+                    session: candidate.session.clone(),
+                    why: refused.why,
+                });
+            }
             None => eligible.push(candidate),
         }
     }
+    let mut spent_sessions = Vec::new();
+    eligible.retain(
+        |candidate| match candidate.budget.filter(|budget| budget.is_spent()) {
+            Some(budget) => {
+                spent_sessions.push((candidate.session.clone(), budget));
+                false
+            }
+            None => true,
+        },
+    );
+    notes.extend(spent_sessions.iter().map(|(session, budget)| SessionNote {
+        session: session.clone(),
+        why: spent_why(*budget),
+    }));
     let mut paced_sessions = Vec::new();
     eligible.retain(|candidate| match pace(candidate, unit, context) {
         Some(paced) => {
@@ -244,6 +263,32 @@ fn decide(
     if eligible.is_empty()
         && let Some(explanation) = usage_paced(&paced_sessions, &notes, context, wait)
     {
+        return Decision::Wait(Box::new(explanation));
+    }
+    // A busy session frees on its own; a spent budget waits for the owner. The offer goes to
+    // the session that needs the least more.
+    if eligible.is_empty()
+        && !is_any_freeing
+        && let Some((session, budget)) = spent_sessions
+            .iter()
+            .min_by_key(|(session, budget)| (budget.overrun_seconds(), session.as_str()))
+    {
+        let mut explanation = wait(
+            Reason::SessionOverBudget,
+            match spent_sessions.len() {
+                1 => format!("session {} {}", session.as_str(), spent_why(*budget)),
+                count => format!(
+                    "the {count} sessions of project {} have each worked their budget of agent minutes",
+                    unit.project
+                ),
+            },
+            more_session_time(session, *budget),
+            ActionBy::Owner,
+        );
+        explanation.sessions = notes;
+        explanation
+            .sessions
+            .sort_by(|left, right| left.session.as_str().cmp(right.session.as_str()));
         return Decision::Wait(Box::new(explanation));
     }
     let Some(session) = eligible.into_iter().min_by_key(|candidate| {
@@ -365,6 +410,28 @@ fn session_new_flags(economy: &Economy) -> String {
         .into_iter()
         .filter_map(|(flag, word)| word.as_ref().map(|word| format!(" {flag} {word}")))
         .collect()
+}
+
+fn spent_why(budget: SessionBudget) -> String {
+    format!(
+        "has worked about {} min since it started, its {} min budget",
+        budget.worked_seconds / 60,
+        budget.minutes
+    )
+}
+
+/// The owner's action on a spent session budget. Placed work runs on past it, so the offer
+/// starts from what the session took.
+fn more_session_time(session: &SessionId, budget: SessionBudget) -> String {
+    let session = session.as_str();
+    let worked = u32::try_from(budget.worked_seconds / 60).unwrap_or(u32::MAX);
+    let raised = budget
+        .minutes
+        .max(worked)
+        .saturating_add(BUDGET_STEP_MINUTES);
+    format!(
+        "give session {session} {BUDGET_STEP_MINUTES} min more: `torlek session budget {session} {raised}`"
+    )
 }
 
 /// Why `candidate`'s account holds `unit` back, by the pace or by `unit`'s project's share;
@@ -496,6 +563,30 @@ fn limit(resource: Resource, capacity: Capacity) -> String {
     format!("{} in {capacity}", resource.as_str())
 }
 
+/// Why a session cannot take a unit now.
+struct Refused {
+    why: String,
+    /// It may take the unit later without anyone's action: it is busy, viewed or in its idle
+    /// window. A role, a provider or an inactive session waits for the owner.
+    frees_on_its_own: bool,
+}
+
+impl Refused {
+    fn lasting(why: String) -> Refused {
+        Refused {
+            why,
+            frees_on_its_own: false,
+        }
+    }
+
+    fn passing(why: String) -> Refused {
+        Refused {
+            why,
+            frees_on_its_own: true,
+        }
+    }
+}
+
 /// Why `candidate` cannot take `unit` now; `None` when it can. What can never change for this
 /// unit (role, provider) comes first, then what changes on its own.
 fn refusal(
@@ -503,51 +594,63 @@ fn refusal(
     unit: &Waiting,
     context: &Context<'_>,
     taken: &HashMap<SessionId, ItemId>,
-) -> Option<String> {
+) -> Option<Refused> {
     match (unit.role, candidate.role) {
         (Some(needed), held) if held != Some(needed) => {
-            return Some(format!("the step needs the {} role", needed.as_str()));
+            return Some(Refused::lasting(format!(
+                "the step needs the {} role",
+                needed.as_str()
+            )));
         }
         (None, Some(held)) => {
-            return Some(format!(
+            return Some(Refused::lasting(format!(
                 "it holds the {} role and takes only that role's steps",
                 held.as_str()
-            ));
+            )));
         }
         _ => {}
     }
     if let Some(step) = unit.step
         && let Err(refusal) = cockpit_workflows::check_capabilities(step, &candidate.capabilities)
     {
-        return Some(refusal.to_string());
+        return Some(Refused::lasting(refusal.to_string()));
     }
     // A placement is delivered by typing it to the agent (#385).
     if let Err(refusal) = candidate.capabilities.require(Capability::Submit) {
-        return Some(format!("its agent cannot be sent work: {refusal}"));
+        return Some(Refused::lasting(format!(
+            "its agent cannot be sent work: {refusal}"
+        )));
     }
     if let Some(why) = context.unavailable.get(&candidate.session) {
-        return Some(why.clone());
+        return Some(Refused::passing(why.clone()));
     }
     if let Some(item) = taken.get(&candidate.session) {
-        return Some(format!("it takes item {} in this pass", item.0));
+        return Some(Refused::passing(format!(
+            "it takes item {} in this pass",
+            item.0
+        )));
     }
     let since = match &candidate.presence {
-        Presence::Inactive { state } => return Some(format!("it is {state}")),
+        Presence::Inactive { state } => return Some(Refused::lasting(format!("it is {state}"))),
         Presence::Unreported => {
-            return Some("its agent has not reported since its launch".to_owned());
+            return Some(Refused::passing(
+                "its agent has not reported since its launch".to_owned(),
+            ));
         }
-        Presence::Working => return Some("its agent is working".to_owned()),
-        Presence::NeedsInput => return Some("it waits for your answer".to_owned()),
+        Presence::Working => return Some(Refused::passing("its agent is working".to_owned())),
+        Presence::NeedsInput => {
+            return Some(Refused::passing("it waits for your answer".to_owned()));
+        }
         Presence::Waiting { since } => *since,
     };
     if context.viewed == Some(&candidate.session) {
-        return Some("you are viewing it".to_owned());
+        return Some(Refused::passing("you are viewing it".to_owned()));
     }
     let remaining = seconds(context.settings.idle_window) - (context.now - since);
     if remaining > 0 {
-        return Some(format!(
+        return Some(Refused::passing(format!(
             "idle window: {remaining} s left before it gets new work"
-        ));
+        )));
     }
     None
 }

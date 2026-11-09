@@ -201,6 +201,7 @@ fn session() -> SessionView {
         conversation: None,
         model: None,
         effort: None,
+        budget_minutes: None,
         design_link: None,
         state: SessionStateView::Ended,
         reason: None,

@@ -313,6 +313,7 @@ pub fn idle(id: &str, project: &str) -> Candidate {
         account: Some(ACCOUNT.to_owned()),
         model: None,
         effort: None,
+        budget: None,
     }
 }
 

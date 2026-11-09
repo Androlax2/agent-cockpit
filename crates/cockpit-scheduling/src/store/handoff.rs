@@ -61,6 +61,11 @@ pub async fn handoff(
         .await?
         .into_iter()
         .filter(|c| c.session == request.session)
+        // The owner picks the session: its spent budget holds back the queue, not the owner.
+        .map(|candidate| crate::Candidate {
+            budget: None,
+            ..candidate
+        })
         .collect();
     let unavailable = unavailable(write, &items, &runs, inputs).await?;
     let familiar = familiar_projects(write).await?;

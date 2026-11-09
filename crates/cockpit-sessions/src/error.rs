@@ -25,6 +25,8 @@ pub enum Error {
     InvalidLink {
         link: String,
     },
+    /// A budget of zero minutes: `None` is the way to have no limit (#412).
+    EmptyBudget,
     /// A name or id the provider contract refused.
     InvalidValue(cockpit_provider_api::InvalidValue),
     UnknownSession {
@@ -197,6 +199,9 @@ impl fmt::Display for Error {
                 formatter,
                 "{link:?} is not a design link: an http or https URL without spaces"
             ),
+            Error::EmptyBudget => {
+                write!(formatter, "a budget is at least 1 minute; `none` lifts it")
+            }
             Error::InvalidValue(invalid) => invalid.fmt(formatter),
             Error::UnknownSession { session } => write!(formatter, "no session has id {session}"),
             Error::UnknownProvider { name, available } => write!(

@@ -19,7 +19,7 @@ use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{Capabilities, Daemon, Instance, Limits, Options, Routes, Wiring};
 use cockpit_protocol::{
     Command, ErrorCode, ExitStatusView, LaunchKindView, QuestionSource, Reply, SessionReport,
-    SessionStateView, SessionView,
+    SessionStateView, SessionView, TaskBudgetView,
 };
 use cockpit_provider_api::fake::{FakeLaunch as AgentLaunch, FakeProvider};
 use cockpit_provider_api::{Capability, ProviderName};
@@ -1897,6 +1897,48 @@ async fn a_design_link_is_kept_on_the_session_and_anything_but_a_url_is_refused(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_owner_gives_a_session_a_budget_and_lifts_it() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    let budget = |budget| Command::SessionBudget {
+        session: started.id.clone(),
+        budget,
+    };
+
+    let budgeted = session_reply(&client, budget(TaskBudgetView::Minutes(90))).await;
+    let listed = sessions(&client, false).await;
+    let lifted = session_reply(&client, budget(TaskBudgetView::NoLimit)).await;
+
+    assert_eq!(budgeted.budget_minutes, Some(90));
+    assert!(budgeted.revision > started.revision);
+    assert_eq!(listed[0].budget_minutes, Some(90));
+    assert_eq!(lifted.budget_minutes, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_budget_of_zero_minutes_is_refused() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    let refused = request(
+        &client,
+        Command::SessionBudget {
+            session: started.id.clone(),
+            budget: TaskBudgetView::Minutes(0),
+        },
+    )
+    .await;
+
+    assert_eq!(refusal_code(refused), ErrorCode::InvalidArgument);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_agent_socket_refuses_every_session_command() {
     let home = Home::new();
     let daemon = home.start(BASELINE, settings()).await;
@@ -1935,6 +1977,10 @@ async fn the_agent_socket_refuses_every_session_command() {
         Command::SessionLink {
             session: session.clone(),
             url: "https://example.com".to_owned(),
+        },
+        Command::SessionBudget {
+            session: session.clone(),
+            budget: TaskBudgetView::Minutes(60),
         },
     ] {
         assert_eq!(

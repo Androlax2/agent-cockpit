@@ -34,6 +34,9 @@ pub struct SessionView {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// The agent minutes the owner gave it, counted from its start (#412); `None`: no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_minutes: Option<u32>,
     /// The harness's own compaction threshold chosen at its start, in the provider's own
     /// words (#783); `None` when the harness's own setting applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]

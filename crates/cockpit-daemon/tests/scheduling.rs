@@ -17,6 +17,8 @@ mod durability;
 mod economy;
 #[path = "scheduling/handoff.rs"]
 mod handoff;
+#[path = "scheduling/session_budget.rs"]
+mod session_budget;
 
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;

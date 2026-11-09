@@ -1,7 +1,7 @@
 //! The wire form of the session commands and views (#31).
 use cockpit_protocol::{
     Command, LaunchKindView, LaunchView, QuotaStopCauseView, QuotaStopStatusView, QuotaStopView,
-    Reply, SessionStateView, SessionView, StopTargetView, decode_request,
+    Reply, SessionStateView, SessionView, StopTargetView, TaskBudgetView, decode_request,
 };
 use serde_json::json;
 
@@ -54,6 +54,42 @@ fn a_session_new_carries_its_compaction_threshold_in_the_providers_words() {
 }
 
 #[test]
+fn a_session_budget_names_its_minutes_or_no_limit() {
+    for (budget, wire_budget) in [
+        (TaskBudgetView::Minutes(90), json!({"minutes": 90})),
+        (TaskBudgetView::NoLimit, json!("no-limit")),
+    ] {
+        let wire = json!({
+            "id": 2,
+            "command": {"kind": "session-budget", "session": "s0123456789ab", "budget": wire_budget}
+        });
+
+        let request = decode_request(&wire.to_string()).unwrap();
+
+        assert_eq!(
+            request.command,
+            Command::SessionBudget {
+                session: "s0123456789ab".to_owned(),
+                budget,
+            }
+        );
+        assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    }
+}
+
+#[test]
+fn a_session_budget_without_its_budget_is_refused() {
+    let wire = json!({"id": 3, "command": {"kind": "session-budget", "session": "s0123456789ab"}});
+
+    let rejection = decode_request(&wire.to_string()).unwrap_err();
+
+    assert_eq!(
+        rejection.error.code,
+        cockpit_protocol::ErrorCode::InvalidRequest
+    );
+}
+
+#[test]
 fn a_session_list_without_ended_lists_the_open_sessions() {
     let wire = json!({"id": 2, "command": {"kind": "session-list"}});
 
@@ -73,6 +109,7 @@ fn a_session_view_names_its_state_and_latest_launch_on_the_wire() {
         conversation: Some("c-1".to_owned()),
         model: None,
         effort: None,
+        budget_minutes: None,
         design_link: None,
         state: SessionStateView::Stopping {
             to: StopTargetView::Restart,

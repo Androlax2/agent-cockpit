@@ -237,6 +237,14 @@ item to a session yourself (`torlek todo handoff`) goes on whatever its budget. 
 started on its own (`torlek todo start`) counts nothing, nor do sessions the queue did not
 place the item on.
 
+To stop one session from taking more and more work, give it a budget of agent minutes:
+`torlek session budget SESSION 120` (`none` lifts it; `torlek session show` shows it). Torlek
+counts every turn of the session since it started, whoever prompted it. Once that reaches the
+budget, the queue places nothing more on it: another session of the project takes the work, or,
+with none free, `torlek queue explain` shows `session-over-budget` with the command that gives
+the session 30 minutes more. A turn under way is never cut. Handing work to the session yourself
+(`torlek todo handoff`) goes on whatever its budget.
+
 To run some tasks cheaper, name a project's economy model or effort in the owner's config:
 
 ```toml

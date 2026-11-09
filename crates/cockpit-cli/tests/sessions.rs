@@ -12,7 +12,7 @@ use cockpit_protocol::{
     AgentExitView, Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, ExitStatusView,
     HeldMessageView, LaunchKindView, LaunchView, Outcome, ProtocolError, QuotaStopCauseView,
     QuotaStopStatusView, QuotaStopView, Reply, SandboxEnforcementView, SandboxEvidenceView,
-    SandboxRuleView, SessionFailure, SessionStateView, SessionView, StopTargetView,
+    SandboxRuleView, SessionFailure, SessionStateView, SessionView, StopTargetView, TaskBudgetView,
 };
 use scripted::{scripted_daemon, text};
 
@@ -76,6 +76,7 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
         conversation: Some("c-1".to_owned()),
         model: None,
         effort: None,
+        budget_minutes: None,
         design_link: None,
         state,
         reason: None,
@@ -471,6 +472,30 @@ async fn session_show_prints_the_model_and_effort_it_was_started_with() {
 }
 
 #[tokio::test]
+async fn session_show_prints_the_budget_the_owner_gave_it() {
+    let home = Home::new();
+    let mut shown = view("s0123456789ab", SessionStateView::Running);
+    shown.budget_minutes = Some(90);
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Session {
+            session: Box::new(shown),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "show", "s0123456789ab"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stdout).ends_with("\nbudget: 90 min of agent time since it started\n"),
+        "{}",
+        text(&output.stdout)
+    );
+}
+
+#[tokio::test]
 async fn session_list_ended_asks_for_ended_sessions_and_prints_one_line_each() {
     let home = Home::new();
     let mut ended = view("s000000000002", SessionStateView::Ended);
@@ -613,7 +638,7 @@ async fn session_show_of_a_running_session_prints_only_its_line() {
 #[tokio::test]
 async fn each_one_session_verb_sends_its_command() {
     let session = "s0123456789ab".to_owned();
-    let cases: [(&[&str], Command); 6] = [
+    let cases: [(&[&str], Command); 8] = [
         (
             &["restart", "s0123456789ab"],
             Command::SessionRestart {
@@ -649,6 +674,20 @@ async fn each_one_session_verb_sends_its_command() {
             Command::SessionLink {
                 session: session.clone(),
                 url: "https://example.com/canvas".to_owned(),
+            },
+        ),
+        (
+            &["budget", "s0123456789ab", "90"],
+            Command::SessionBudget {
+                session: session.clone(),
+                budget: TaskBudgetView::Minutes(90),
+            },
+        ),
+        (
+            &["budget", "s0123456789ab", "none"],
+            Command::SessionBudget {
+                session: session.clone(),
+                budget: TaskBudgetView::NoLimit,
             },
         ),
     ];
@@ -729,7 +768,7 @@ async fn a_refused_session_verb_exits_1_with_the_daemons_reason() {
 #[tokio::test]
 async fn malformed_session_arguments_exit_2_before_any_connection() {
     let home = Home::new();
-    let cases: [&[&str]; 9] = [
+    let cases: [&[&str]; 10] = [
         &["session"],
         &["session", "new"],
         &["session", "new", "app", "--agent"],
@@ -749,6 +788,7 @@ async fn malformed_session_arguments_exit_2_before_any_connection() {
         ],
         &["session", "new", "app", "--sandbox", "x"],
         &["session", "link", "s0123456789ab"],
+        &["session", "budget", "s0123456789ab", "an hour"],
     ];
     for arguments in cases {
         let output = home.cockpit(home.dir.path(), arguments).await;

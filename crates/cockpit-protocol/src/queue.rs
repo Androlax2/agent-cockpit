@@ -26,7 +26,7 @@ pub struct QueueExplanationView {
     pub step: Option<QueueStepView>,
     /// `not-queued`, `waits-on-items`, `run-blocked`, `over-budget`, `owner-step`,
     /// `queue-paused`, `low-disk`, `control-unsupported`, `infeasible`, `no-room`, `behind`,
-    /// `no-session`, `no-session-free`, `usage-paced` or `economy`.
+    /// `no-session`, `no-session-free`, `usage-paced`, `economy` or `session-over-budget`.
     pub reason: String,
     pub why: String,
     /// The resource and capacity, or the control, that holds it.
