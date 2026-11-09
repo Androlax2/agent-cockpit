@@ -22,7 +22,7 @@ cheapest first:
 3. **Blind and anchor the reviewer.** Remove the author model's name and the words "model trial"
    from the reviewer prompt, and give it a fixed checklist of what counts as blocking. Cost: about
    30 minutes once.
-4. **Give the reviewer a baseline** (decision D1). Run the same independent review on about one
+4. **Give the reviewer a baseline** (D1, decided A). Run the same independent review on about one
    default pull request in four. Without it, "blocking findings per PR" can only be measured on
    trial PRs and has nothing to compare against. Cost: about 1.5 to 2 hours of agent time per alpha.
 5. **Decide each cell with a written stopping rule** ([below](#stopping-rule)), not by
@@ -41,7 +41,8 @@ whenever a new model enters.
 
 Decisions for the owner, one at a time ([details](#decisions-for-the-owner)):
 
-- [ ] D1: control reviews on 1 in 4 default PRs (A, recommended) or trial PRs only (B).
+- [x] D1: control reviews on 1 in 4 default PRs (A, recommended) or trial PRs only (B).
+  **Decided 2026-11-09: A.**
 - [ ] D2: a second reviewer from another family on 1 in 4 reviewed PRs once Codex trials start
   (A, recommended) or one Claude reviewer only (B).
 - [ ] D3: a 4-issue replay before a new model's first live trial (A, recommended) or live
@@ -433,7 +434,7 @@ on [#1264](https://github.com/Androlax2/agent-cockpit/issues/1264) when it arriv
 - **D1, control reviews.** A (recommended): also run the trial reviewer on 1 in 4 default PRs,
   chosen by number, logged as `trial=control`, so blocking findings per PR have a baseline; about
   1.5 to 2 hours per alpha. B: review trial PRs only; cheaper, and the main quality signal has no
-  baseline. *Asked 2026-11-09; no answer yet.*
+  baseline. **Owner chose A on 2026-11-09.**
 - **D2, second reviewer from another family.** A (recommended): once Codex trials start, a Codex
   reviewer at `high` also reviews 1 in 4 reviewed PRs with the same checklist, to measure
   family bias; about 1 hour per alpha. B: one Claude reviewer only; Codex authors may be judged
