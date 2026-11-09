@@ -146,6 +146,14 @@ pub fn session_settings(config: &cockpit_config::EffectiveConfig) -> cockpit_ses
     }
 }
 
+/// The owner's per-project caps on each plan window; none for a daemon that reads no quota,
+/// whose windows cap nothing (#412).
+fn project_shares(quota: Option<&QuotaPolling>) -> std::collections::BTreeMap<String, u8> {
+    quota
+        .map(|polling| polling.project_shares.clone())
+        .unwrap_or_default()
+}
+
 /// The owner's settings a running daemon holds until `config reload` (#354).
 fn owner_session_settings(
     config: &cockpit_config::EffectiveConfig,
@@ -206,6 +214,8 @@ pub struct Capabilities {
     pub skill_pack: Arc<DeliveredSkillPack>,
     /// The policy the quota worker judges readings under; `None` when it reads none (#58).
     pub quota_policy: Option<cockpit_usage::QuotaPolicy>,
+    /// The owner's per-project caps on each plan window (#412); empty without quota.
+    pub project_shares: std::collections::BTreeMap<String, u8>,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -538,6 +548,7 @@ impl Instance {
                 state_dir: options.state_dir.clone(),
                 skill_pack,
                 quota_policy: wiring.quota.as_ref().map(|polling| polling.policy.clone()),
+                project_shares: project_shares(wiring.quota.as_ref()),
             }),
         });
         let detected = bug_reports::Context {
@@ -573,6 +584,7 @@ impl Instance {
             provider_capabilities: Arc::new(provider_capabilities),
             settings: wiring.scheduling,
             quota_policy: wiring.quota.as_ref().map(|polling| polling.policy.clone()),
+            project_shares: project_shares(wiring.quota.as_ref()),
             queue_changed,
         };
         let dispatching = tokio::spawn(supervisor::supervise(

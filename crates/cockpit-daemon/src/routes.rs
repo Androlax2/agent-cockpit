@@ -163,6 +163,7 @@ impl Routes {
                 provider_capabilities,
                 settings: capabilities.scheduling,
                 quota_policy: capabilities.quota_policy.clone(),
+                project_shares: capabilities.project_shares.clone(),
                 queue_changed: Arc::clone(&capabilities.queue_changed),
             },
             verification: verification::Context {

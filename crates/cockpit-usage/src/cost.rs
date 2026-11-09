@@ -201,6 +201,41 @@ pub async fn costs(connection: &Connection, first: Day, last: Day) -> Result<Vec
     Ok(totals)
 }
 
+/// What each project's replies on `provider`'s `account` from `since` on (Unix seconds,
+/// included) cost at the provider's API prices, in nano-dollars, by project. A reply of a model
+/// without a known price adds nothing until [`price_unpriced`] prices it. Usage-aware pacing
+/// (#412) estimates a project's part of a plan window from these.
+pub async fn project_costs_since(
+    connection: &Connection,
+    provider: &ProviderName,
+    account: &AccountName,
+    since: i64,
+) -> Result<BTreeMap<String, u64>, Error> {
+    // The day bound lets the day index narrow the scan; `at` decides.
+    let mut rows = connection
+        .query(
+            "SELECT project, SUM(cost_nanos) FROM usage_cost_replies
+             WHERE provider = ?1 AND account = ?2 AND day >= ?3 AND at >= ?4
+             GROUP BY project",
+            params![
+                provider.as_str(),
+                account.as_str(),
+                Day::containing(since).to_string(),
+                since
+            ],
+        )
+        .await?;
+    let mut costs = BTreeMap::new();
+    while let Some(row) = rows.next().await? {
+        let project: String = row.get(0)?;
+        let nanos: Option<i64> = row.get(1)?;
+        let nanos = u64::try_from(nanos.unwrap_or(0))
+            .map_err(|_| invalid_row(format!("a negative cost for project {project}")))?;
+        costs.insert(project, nanos);
+    }
+    Ok(costs)
+}
+
 fn day_cost_from(row: &Row) -> Result<DayCost, Error> {
     let count = |position: usize| -> Result<u64, Error> {
         let value: Option<i64> = row.get(position)?;

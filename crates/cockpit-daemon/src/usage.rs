@@ -7,6 +7,7 @@
 //! retracts it. `usage-quota` answers the recorded windows to the owner,
 //! judged under the same policy.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,6 +36,8 @@ pub struct QuotaPolling {
     /// Between two readings of one provider while they succeed.
     pub refresh: Duration,
     pub policy: QuotaPolicy,
+    /// The owner's per-project caps on each plan window, in percent (#412).
+    pub project_shares: BTreeMap<String, u8>,
 }
 
 impl QuotaPolling {
@@ -49,6 +52,11 @@ impl QuotaPolling {
             home,
             refresh: Duration::from_secs(u64::from(settings.quota_refresh_minutes.value) * 60),
             policy,
+            project_shares: settings
+                .project_shares
+                .iter()
+                .map(|(project, share)| (project.clone(), share.value))
+                .collect(),
         }
     }
 

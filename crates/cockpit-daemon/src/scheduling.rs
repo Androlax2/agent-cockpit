@@ -17,7 +17,8 @@ use cockpit_protocol::{
 use cockpit_provider_api::Capabilities;
 use cockpit_resource_admission::Backend;
 use cockpit_scheduling::{
-    Candidate, Dispatched, Explanation, Inputs, Placement, Presence, Standing, Unit, UsageWindow,
+    Candidate, Dispatched, Explanation, Inputs, Placement, Presence, ProjectShare, Standing, Unit,
+    UsageWindow,
 };
 use cockpit_sessions::{AgentState, Session, SessionReport, SessionState, Sessions};
 use cockpit_turso::Database;
@@ -41,6 +42,8 @@ pub(crate) struct Context {
     /// How the recorded plan windows that pace queue starts are judged (#412); `None` when
     /// this daemon reads no quota, which paces nothing.
     pub(crate) quota_policy: Option<QuotaPolicy>,
+    /// The owner's per-project caps on each plan window, in percent (#412).
+    pub(crate) project_shares: BTreeMap<String, u8>,
     /// Wakes the periodic pass early: `queue explain` answers from the last pass's records,
     /// which a pause or resume makes wrong until the next one (#646).
     pub(crate) queue_changed: Arc<tokio::sync::Notify>,
@@ -387,15 +390,60 @@ async fn usage(
     let quotas = cockpit_usage::quotas(read, policy, now())
         .await
         .map_err(|error| internal(&error))?;
-    Ok(quotas.into_iter().flat_map(usage_windows).collect())
+    let mut windows = Vec::new();
+    for quota in &quotas {
+        for window in &quota.windows {
+            let mut usage = usage_window(quota, window);
+            if !context.project_shares.is_empty() {
+                usage.project_shares =
+                    project_shares(read, quota, &usage, &context.project_shares).await?;
+            }
+            windows.push(usage);
+        }
+    }
+    Ok(windows)
 }
 
-fn usage_windows(quota: AccountQuota) -> Vec<UsageWindow> {
-    quota
-        .windows
+/// Each capped project's part of `window`, estimated as the window's used share times what the
+/// project's replies on the account since the window opened cost at API prices, against all
+/// of the account's (#412). None for a window that caps nothing: not current, scoped to a model
+/// or without a length and a reset.
+async fn project_shares(
+    read: &cockpit_turso::sql::Connection,
+    quota: &AccountQuota,
+    window: &UsageWindow,
+    shares: &BTreeMap<String, u8>,
+) -> Result<Vec<ProjectShare>, Failed> {
+    let (Some(length), Some(resets_at)) = (window.length_seconds, window.resets_at) else {
+        return Ok(Vec::new());
+    };
+    if window.standing != Standing::Current || window.scope.is_some() {
+        return Ok(Vec::new());
+    }
+    let opened_at = resets_at - i64::from(length);
+    let costs =
+        cockpit_usage::project_costs_since(read, &quota.provider, &quota.account, opened_at)
+            .await
+            .map_err(|error| internal(&error))?;
+    let total = costs
+        .values()
+        .fold(0_u64, |sum, cost| sum.saturating_add(*cost));
+    Ok(shares
         .iter()
-        .map(|window| usage_window(&quota, window))
-        .collect()
+        .map(|(project, share_percent)| {
+            let spent = costs.get(project).copied().unwrap_or(0);
+            let used_percent = if total == 0 {
+                0.0
+            } else {
+                window.used_percent * spent as f64 / total as f64
+            };
+            ProjectShare {
+                project: project.clone(),
+                share_percent: *share_percent,
+                used_percent,
+            }
+        })
+        .collect())
 }
 
 /// `window` of `quota`'s account as scheduling paces it.
@@ -413,6 +461,7 @@ pub(crate) fn usage_window(quota: &AccountQuota, window: &WindowQuota) -> UsageW
             WindowState::Blocked => Standing::Blocked,
             WindowState::Stale => Standing::Stale,
         },
+        project_shares: Vec::new(),
     }
 }
 

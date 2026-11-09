@@ -25,6 +25,7 @@ fn window(used_percent: f64, elapsed_minutes: i64) -> UsageWindow {
         length_seconds: Some(FIVE_HOURS),
         resets_at: Some(NOW - elapsed_minutes * 60 + i64::from(FIVE_HOURS)),
         standing: Standing::Current,
+        project_shares: Vec::new(),
     }
 }
 

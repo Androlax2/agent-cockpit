@@ -16,7 +16,10 @@ pub use activity::{
     open_turns, record_approval, record_incident, record_turn, time_with_agent, turn_began,
     turn_ended,
 };
-pub use cost::{DayCost, Recorded, costs, cursors, forget_home, price_unpriced, record_replies};
+pub use cost::{
+    DayCost, Recorded, costs, cursors, forget_home, price_unpriced, project_costs_since,
+    record_replies,
+};
 pub use day::{Day, MAX_RANGE_DAYS};
 pub use digest::{DayDigest, ProjectDay, digests};
 pub use error::Error;

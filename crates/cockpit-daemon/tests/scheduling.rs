@@ -30,6 +30,8 @@ use common::{GENEROUS, refused};
 struct Home {
     dir: tempfile::TempDir,
     database: Mutex<Option<Arc<cockpit_turso::Database>>>,
+    /// The owner's `[usage.project_shares]` (#412).
+    project_shares: std::collections::BTreeMap<String, u8>,
 }
 
 impl Home {
@@ -37,6 +39,7 @@ impl Home {
         Home {
             dir: tempfile::tempdir().unwrap(),
             database: Mutex::new(None),
+            project_shares: std::collections::BTreeMap::new(),
         }
     }
 
@@ -71,6 +74,7 @@ impl Home {
                 home: self.path().join("home"),
                 refresh: Duration::from_secs(3600),
                 policy: cockpit_usage::QuotaPolicy::default(),
+                project_shares: self.project_shares.clone(),
             });
             // #825: a test that kills a terminal (the delivery that never arrives) must not have
             // the exit sweep end the session between two of its passes.
@@ -133,6 +137,43 @@ impl Home {
             &reading,
             &cockpit_usage::QuotaPolicy::default(),
             now,
+        )
+        .await
+        .unwrap();
+        write.commit().await.unwrap();
+    }
+
+    /// A reply of project `project` on the fake provider's `default` account a minute ago,
+    /// as the cost archive records it.
+    async fn record_reply(&self, project: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let reply = cockpit_provider_api::ModelReply::new(
+            "message:reply",
+            now - 60,
+            "claude-opus-5-5",
+            None,
+            cockpit_provider_api::ReplyTokens {
+                input: 1_000,
+                ..cockpit_provider_api::ReplyTokens::default()
+            },
+        )
+        .unwrap();
+        let scan = cockpit_provider_api::ReplyScan {
+            replies: vec![reply],
+            ..cockpit_provider_api::ReplyScan::default()
+        };
+        let database = self.database();
+        let write = database.write().await.unwrap();
+        cockpit_usage::record_replies(
+            &write,
+            &ProviderName::new("fake").unwrap(),
+            &cockpit_usage::AccountName::new("default").unwrap(),
+            "owner",
+            &scan,
+            &|_| project.to_owned(),
         )
         .await
         .unwrap();
@@ -557,6 +598,39 @@ async fn queue_explain_names_the_plan_window_that_paces_the_item() {
         Some("window five-hour of fake account default")
     );
     assert_eq!(explanation.action_by, "cockpit");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_past_its_share_of_the_window_waits_and_queue_explain_says_so() {
+    let mut home = Home::new();
+    home.project_shares = [("app".to_owned(), 20)].into();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    home.session_reporting(&client, &root, AgentState::Waiting)
+        .await;
+    // Four hours into the five-hour window, 40 % used is below the even line (87 %), and every
+    // reply since it opened was app's: app has used all 40 %, past its 20 % share.
+    home.record_quota(40.0).await;
+    home.record_reply("app").await;
+    let item = queued_item(&client, "Fix the login").await;
+
+    let dispatched = request(&client, Command::QueueDispatch).await;
+
+    let Ok(Reply::QueueDispatched { placed, .. }) = dispatched else {
+        panic!("queue-dispatch: {dispatched:?}");
+    };
+    assert!(placed.is_empty(), "{placed:?}");
+    let explained = request(&client, Command::QueueExplain { item: Some(item) }).await;
+    let Ok(Reply::QueueExplanations { explanations }) = explained else {
+        panic!("queue-explain: {explained:?}");
+    };
+    let explanation = &explanations[0];
+    assert_eq!(explanation.reason, "usage-paced");
+    assert_eq!(
+        explanation.limited_by.as_deref(),
+        Some("project app's share of window five-hour of fake account default")
+    );
 }
 
 /// `item`'s explanation once its reason is no longer `stale`: the pass a queue change wakes

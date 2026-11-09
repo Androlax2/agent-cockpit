@@ -279,16 +279,29 @@ fn decide(
     }
 }
 
-/// Why `candidate`'s account holds `unit` back; `None` when it may start (#412).
+/// Why `candidate`'s account holds `unit` back, by the pace or by `unit`'s project's share;
+/// `None` when it may start (#412). Of both, the one that holds it longer explains it.
 fn pace(candidate: &Candidate, unit: &Waiting, context: &Context<'_>) -> Option<Paced> {
-    pacing::paced(
+    let account = candidate.account.as_deref()?;
+    let paced = pacing::paced(
         context.settings.pacing,
         context.usage,
         &candidate.provider,
-        candidate.account.as_deref()?,
+        account,
         unit.priority,
         context.now,
-    )
+    );
+    let over_share = pacing::over_share(
+        context.usage,
+        &candidate.provider,
+        account,
+        &unit.project,
+        context.now,
+    );
+    [paced, over_share]
+        .into_iter()
+        .flatten()
+        .max_by_key(|paced| paced.resumes_at.unwrap_or(i64::MAX))
 }
 
 /// The explanation of a unit every free session of which is paced: the session whose window
@@ -305,9 +318,9 @@ fn usage_paced(
         .min_by_key(|(_, paced)| paced.resumes_at.unwrap_or(i64::MAX))?;
     let action = match first.resumes_at {
         Some(at) => format!(
-            "wait: it starts once the window allows it, {}; `[usage] pacing = \"off\"` starts \
-             queued work at full speed",
-            pacing::wait_until(at, context.now)
+            "wait: it starts once the window allows it, {}; {}",
+            pacing::wait_until(at, context.now),
+            first.remedy
         ),
         None => "wait: it starts once a reading shows the account usable again".to_owned(),
     };

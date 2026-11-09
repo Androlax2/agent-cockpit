@@ -1,6 +1,8 @@
 //! Owner-only: how often the daemon reads each provider's plan windows, how long a reading
 //! counts, at which shares used it alerts (#58, report 18), and how queue starts follow the
 //! windows (#412). Read at the daemon's start.
+use std::collections::BTreeMap;
+
 use crate::{ConfigError, Layer, Source, Sourced};
 use serde::Deserialize;
 use toml::Spanned;
@@ -45,6 +47,9 @@ pub struct UsageSettings {
     /// How far ahead of the even line normal-priority work may start, so work starts when a
     /// window opens.
     pub pacing_burst_percent: Sourced<u8>,
+    /// The most of each plan window a project's queued work may use, in percent, by project
+    /// name; a project not listed has no cap of its own (#412).
+    pub project_shares: BTreeMap<String, Sourced<u8>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,6 +61,7 @@ pub(super) struct UsageTable {
     pacing: Option<Spanned<Pacing>>,
     pacing_reserve_percent: Option<Spanned<u8>>,
     pacing_burst_percent: Option<Spanned<u8>>,
+    project_shares: Option<BTreeMap<String, Spanned<u8>>>,
 }
 
 pub(super) fn settings(layers: &[Layer]) -> Result<UsageSettings, ConfigError> {
@@ -67,6 +73,7 @@ pub(super) fn settings(layers: &[Layer]) -> Result<UsageSettings, ConfigError> {
         pacing: Sourced::new(Pacing::Even, Source::ProductDefault),
         pacing_reserve_percent: Sourced::new(10, Source::ProductDefault),
         pacing_burst_percent: Sourced::new(15, Source::ProductDefault),
+        project_shares: BTreeMap::new(),
     };
     for layer in layers {
         let Some(table) = &layer.settings.usage else {
@@ -95,6 +102,11 @@ pub(super) fn settings(layers: &[Layer]) -> Result<UsageSettings, ConfigError> {
         }
         if let Some(value) = &table.pacing_burst_percent {
             result.pacing_burst_percent = percent(value);
+        }
+        for (project, share) in table.project_shares.iter().flatten() {
+            result
+                .project_shares
+                .insert(project.clone(), percent(share));
         }
     }
     let invalid = |key: &str, source: &Source, reason: String| ConfigError::Invalid {
@@ -158,5 +170,31 @@ pub(super) fn settings(layers: &[Layer]) -> Result<UsageSettings, ConfigError> {
             ));
         }
     }
+    for (project, share) in &result.project_shares {
+        if !is_project_name(project) {
+            return Err(invalid(
+                &format!("project_shares.{project}"),
+                &share.source,
+                "is not a project name: 1 to 64 ASCII letters, digits, `.`, `_` and `-`, not \
+                 starting with `.` or `-`"
+                    .to_owned(),
+            ));
+        }
+        if !(1..=100).contains(&share.value) {
+            return Err(invalid(
+                &format!("project_shares.{project}"),
+                &share.source,
+                "must be 1 to 100 percent".to_owned(),
+            ));
+        }
+    }
     Ok(result)
+}
+
+/// `cockpit-projects`' rule for a project's name, so a share no project could carry is refused
+/// instead of capping nothing.
+fn is_project_name(name: &str) -> bool {
+    let is_plain =
+        |character: char| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-');
+    (1..=64).contains(&name.len()) && !name.starts_with(['.', '-']) && name.chars().all(is_plain)
 }
