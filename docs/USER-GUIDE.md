@@ -286,8 +286,8 @@ A project without one gets no `GH_TOKEN`. `torlek project show PROJECT` says whi
 token. A file whose mode is not `0600` or `0400`, or one that holds anything but the token, stops the
 project's sessions from launching until you fix it.
 
-Under `agents.sandbox = "required"` no session gets that token: it can push, and pushes go
-through `torlek push`. Save a second token for the project in
+Under `agents.sandbox = "required"` no session gets that token: it can push, and a push is
+refused with a pointer to ask you (`torlek ask run`, `torlek todo blocked`) until `torlek push` ships (#155). Save a second token for the project in
 `~/.config/torlek/github-api-tokens/<project>`, same rules, with pull requests and issues
 read and write and contents read only. The session proxy adds it on `api.github.com`, and on
 `github.com` for fetches; the agent holds a placeholder `GH_TOKEN` and trusts a per-session
