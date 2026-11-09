@@ -59,7 +59,7 @@ class ScannerEventTests(unittest.TestCase):
         self.assertNotIn("actions/checkout", job)
         self.assertIn("category: /language:rust", job)
         self.assertIn("ref: refs/pull/${{ github.event.pull_request.number }}/merge", job)
-        self.assertIn("sha: ${{ github.event.pull_request.head.sha }}", job)
+        self.assertIn("sha: ${{ github.sha }}", job)
         self.assertIn("Re-run the latest CodeQL run on main", job)
 
     def test_scorecard_refuses_pr_and_non_main_contexts(self):

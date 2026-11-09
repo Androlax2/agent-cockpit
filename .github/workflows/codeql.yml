@@ -108,4 +108,4 @@ jobs:
           sarif_file: ${{ runner.temp }}/main-rust/rust.sarif
           category: /language:rust
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
-          sha: ${{ github.event.pull_request.head.sha }}
+          sha: ${{ github.sha }}
