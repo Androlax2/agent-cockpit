@@ -54,10 +54,19 @@ fn model_call_tokens(record: &serde_json::Value) -> Option<u64> {
     (tokens > 0).then_some(tokens)
 }
 
-/// The `apiError` Claude Code tagged the turn's end with (#718): set only when the last
-/// main-chain message, the user's or the assistant's, is Claude Code's own API error. A later
-/// prompt, or an error message not written yet, gives `None`.
-pub fn turn_api_error(transcript: &Path) -> Option<String> {
+/// How the turn's last main-chain message, the user's or the assistant's, ended it (#718).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnEnd {
+    /// Claude Code's own API error, with the `apiError` it was tagged with, if any.
+    ApiError(Option<String>),
+    /// Anything else: a reply, or a prompt whose error message is not written yet.
+    Other,
+}
+
+/// How the transcript's last main-chain message ended the turn; `None` when the transcript
+/// cannot be read or holds no message. A meta record Claude Code adds as the user's (a
+/// command's caveat, injected context) is not a message.
+pub fn turn_end(transcript: &Path) -> Option<TurnEnd> {
     let last_message = tail(transcript)?
         .lines()
         .rev()
@@ -65,11 +74,14 @@ pub fn turn_api_error(transcript: &Path) -> Option<String> {
         .find(|record| {
             matches!(record["type"].as_str(), Some("user" | "assistant"))
                 && record["isSidechain"] != true
+                && record["isMeta"] != true
         })?;
     if last_message["type"] != "assistant" || last_message["isApiErrorMessage"] != true {
-        return None;
+        return Some(TurnEnd::Other);
     }
-    last_message["apiError"].as_str().map(str::to_owned)
+    Some(TurnEnd::ApiError(
+        last_message["apiError"].as_str().map(str::to_owned),
+    ))
 }
 
 fn is_compact_boundary(record: &serde_json::Value) -> bool {

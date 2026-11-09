@@ -658,3 +658,58 @@ fn a_server_error_whose_transcript_cannot_be_read_stays_a_failure() {
         ["--outcome", "failed", "--outcome-reason", "server_error"]
     );
 }
+
+/// The transcript is written asynchronously: an API error Claude Code appends just after the
+/// hook starts still counts.
+#[test]
+fn a_connection_failure_written_just_after_the_hook_starts_is_still_network_lost() {
+    let tail = captured_connection_failed_tail();
+    let (error_at, _) = tail
+        .match_indices('\n')
+        .find(|(at, _)| tail[..*at].ends_with('}') && tail[at + 1..].contains("connection_failed"))
+        .unwrap();
+    let (directory, payload) = connection_failed_stop(&tail[..=error_at]);
+    let transcript = directory.path().join("transcript.jsonl");
+    let rest = tail[error_at + 1..].to_owned();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(transcript)
+            .unwrap();
+        file.write_all(rest.as_bytes()).unwrap();
+    });
+
+    let outcome = reported_outcome(&payload);
+
+    writer.join().unwrap();
+    assert_eq!(
+        outcome,
+        [
+            "--outcome",
+            "network-lost",
+            "--outcome-reason",
+            "connection_failed"
+        ]
+    );
+}
+
+#[test]
+fn a_meta_record_after_the_connection_failure_leaves_it_network_lost() {
+    let mut tail = captured_connection_failed_tail();
+    tail.push_str(
+        r#"{"type":"user","isSidechain":false,"isMeta":true,"message":{"role":"user","content":"<local-command-caveat>"}}"#,
+    );
+    tail.push('\n');
+    let (_directory, payload) = connection_failed_stop(&tail);
+
+    assert_eq!(
+        reported_outcome(&payload),
+        [
+            "--outcome",
+            "network-lost",
+            "--outcome-reason",
+            "connection_failed"
+        ]
+    );
+}

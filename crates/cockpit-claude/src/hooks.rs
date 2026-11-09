@@ -3,7 +3,9 @@
 
 use std::fmt;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
+use crate::transcript::TurnEnd;
 use cockpit_provider_api::{
     Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ContextUsage, ConversationId,
     EventKind, ProviderEvent, QuotaReading, TurnOutcome,
@@ -149,10 +151,17 @@ pub const SERVER_ERROR: &str = "server_error";
 /// be resolved or reached, or the connection was refused or dropped (#718).
 pub const CONNECTION_FAILED: &str = "connection_failed";
 
+/// How long the bridge waits for Claude Code to write the turn's API-error message, which it
+/// writes to the transcript asynchronously (#718).
+const API_ERROR_WAIT: Duration = Duration::from_secs(1);
+const API_ERROR_POLL: Duration = Duration::from_millis(100);
+
 /// `event` judged by the transcript it names (#718): a [`SERVER_ERROR`] failure whose turn
 /// ended on Claude Code's own API error tagged [`CONNECTION_FAILED`] is `network-lost`, with
 /// that tag as its reason. Any other event, or a transcript that cannot say, is kept as it is:
-/// the hook payload alone never tells a lost network from a server's failure.
+/// the hook payload alone never tells a lost network from a server's failure. While the turn's
+/// last message is not an API error yet, the transcript is read again for up to
+/// a second.
 pub fn judged_by_transcript(event: ProviderEvent) -> ProviderEvent {
     let is_server_error = matches!(
         &event.kind,
@@ -161,11 +170,22 @@ pub fn judged_by_transcript(event: ProviderEvent) -> ProviderEvent {
     if !is_server_error {
         return event;
     }
-    let transcript = serde_json::from_str::<serde_json::Value>(&event.raw)
+    let Some(transcript) = serde_json::from_str::<serde_json::Value>(&event.raw)
         .ok()
-        .and_then(|payload| payload["transcript_path"].as_str().map(PathBuf::from));
-    let api_error =
-        transcript.and_then(|transcript| crate::transcript::turn_api_error(&transcript));
+        .and_then(|payload| payload["transcript_path"].as_str().map(PathBuf::from))
+    else {
+        return event;
+    };
+    let deadline = Instant::now() + API_ERROR_WAIT;
+    let api_error = loop {
+        match crate::transcript::turn_end(&transcript) {
+            Some(TurnEnd::ApiError(api_error)) => break api_error,
+            Some(TurnEnd::Other) if Instant::now() < deadline => {
+                std::thread::sleep(API_ERROR_POLL);
+            }
+            _ => break None,
+        }
+    };
     if api_error.as_deref() != Some(CONNECTION_FAILED) {
         return event;
     }

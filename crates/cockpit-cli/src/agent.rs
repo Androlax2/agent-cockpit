@@ -19,8 +19,8 @@ pub(crate) const DEADLINE: Duration = Duration::from_secs(10);
 
 /// `--state working|waiting`, `--label`, `--doing`, `--needs-input`, `--dialog`, the
 /// value-less `--prompt`, `--outcome completed|failed|quota-stopped|network-lost`,
-/// `--outcome-reason` (with `failed`, and always with `network-lost`), `--conversation` and the value-less `--conversation-ends` (with
-/// `--conversation` only), and a context compaction's moment: `--compaction
+/// `--outcome-reason` (with `failed`, and always with `network-lost`), `--conversation` and
+/// the value-less `--conversation-ends` (with `--conversation` only), and a context compaction's moment: `--compaction
 /// started|ended|failed` with `--compaction-trigger auto|manual`, `--compaction-tokens-before N`
 /// and `--compaction-tokens-after N`, which report nothing else (#782), and the harness's
 /// context at a turn's end: `--context-tokens N` and `--context-window N`, with `--outcome`
