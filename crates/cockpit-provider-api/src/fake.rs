@@ -57,6 +57,7 @@ pub struct FakeProvider {
     /// The replies each home holds, in the order its record source holds them, and the log
     /// each scan is appended to.
     replies: Option<(Vec<HomeReplies>, PathBuf)>,
+    transient_limit_reasons: &'static [&'static str],
     conversations: AtomicUsize,
 }
 
@@ -78,6 +79,7 @@ impl FakeProvider {
             trusted: None,
             quota: None,
             replies: None,
+            transient_limit_reasons: &[],
             conversations: AtomicUsize::new(logged),
         }
     }
@@ -151,6 +153,13 @@ impl FakeProvider {
         self.reporting(Capability::Quota)
     }
 
+    /// Declares `reasons` as failures its harness gives both for a spent plan and for a
+    /// transient limit ([`Provider::transient_limit_reasons`]).
+    pub fn limiting_on(mut self, reasons: &'static [&'static str]) -> FakeProvider {
+        self.transient_limit_reasons = reasons;
+        self
+    }
+
     /// Reports `cost`, as discovered: each [`Provider::scan_replies`] of one of `homes` gives
     /// the replies past its cursor (one source, `fake`, counted in replies) and appends
     /// `<home>\t<offset asked from>` to `log` ([`FakeProvider::reply_scans`]). A home not
@@ -216,6 +225,10 @@ impl FakeProvider {
 impl Provider for FakeProvider {
     fn name(&self) -> &ProviderName {
         &self.name
+    }
+
+    fn transient_limit_reasons(&self) -> &'static [&'static str] {
+        self.transient_limit_reasons
     }
 
     fn capabilities(&self) -> Capabilities {

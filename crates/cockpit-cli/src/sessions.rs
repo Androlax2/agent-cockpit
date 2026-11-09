@@ -420,8 +420,13 @@ fn quota_stop_lines(session: &SessionView) -> String {
         }
         (QuotaStopStatusView::Waiting, None, None) => "resumes after the plan's reset".to_owned(),
     };
+    let inferred = stop
+        .inferred_from
+        .as_deref()
+        .map(|inferred_from| format!(", inferred from {inferred_from}"))
+        .unwrap_or_default();
     format!(
-        "quota stop: {} on {account}; {resolution}\n",
+        "quota stop: {} on {account}{inferred}; {resolution}\n",
         time(stop.stopped_at)
     )
 }

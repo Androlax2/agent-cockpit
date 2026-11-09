@@ -67,9 +67,9 @@ pub struct SessionView {
     /// sign-in it cannot keep (#968).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sign_in_needed: Option<String>,
-    /// Its latest quota stop and what became of it (#158).
+    /// Its latest quota stop and what became of it (#158). Boxed: most sessions have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quota_stop: Option<QuotaStopView>,
+    pub quota_stop: Option<Box<QuotaStopView>>,
 }
 
 /// A turn a plan's usage limit stopped, and its one resume (#158).
@@ -83,6 +83,10 @@ pub struct QuotaStopView {
     pub resets_at: Option<i64>,
     /// When a relaunch moved the session to another account with capacity (#59).
     pub switched_at: Option<i64>,
+    /// What the stop was inferred from when the agent reported failed turns instead, such as
+    /// "3 `rate_limit` failed turns within 30 minutes".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inferred_from: Option<String>,
     pub status: QuotaStopStatusView,
 }
 

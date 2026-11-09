@@ -2720,6 +2720,12 @@ impl Sessions {
         Ok(())
     }
 
+    /// The failure reasons each provider gives both for a spent plan window and for a
+    /// transient limit, which the agent channel counts towards a quota stop (#158).
+    pub fn transient_limits(&self) -> crate::TransientLimits {
+        crate::TransientLimits::of(&self.providers)
+    }
+
     /// Whether the quota-stopped running session `id` will move to another account with
     /// capacity (#59), so its stop needs no reset: `false` for one that is not running or
     /// not quota-stopped on its current launch. Refused with [`Error::SessionBusy`] while

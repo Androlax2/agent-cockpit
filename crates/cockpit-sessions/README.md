@@ -51,6 +51,11 @@ stopped in the middle of one finishes or repairs it at its next start.
   stop in its own transaction; a later stop, a report of work or another ended turn drops it.
   The daemon resumes each stop at most once: it claims `resumed_at` before sending the
   continue message. The #59 relaunch marks the stop switched, so it is due at once.
+  `report_counting_limits` also records a stop after `TRANSIENT_LIMIT_FAILURES` (3) failed
+  turns within `TRANSIENT_LIMIT_WINDOW_SECONDS` (30 min) whose reason the session's provider
+  declares in `Provider::transient_limit_reasons`, in `session_limit_failures`; the stop's
+  `inferred_from` says so. Any other turn ending, another reason or a new launch starts the
+  count over.
 - **Reports bound to their conversation** (#219). A report that names its conversation is
   refused unless it is the session's, so a hook run with another launch's environment cannot
   move this session's state. The session follows a legitimate change (`/clear`, an

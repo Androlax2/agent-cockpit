@@ -29,26 +29,32 @@ pub(crate) async fn report(
     report: cockpit_protocol::AgentReport,
 ) -> Outcome {
     let peer_pid = connector.as_ref().ok().map(|process| process.pid);
-    // This report's own outcome: the recorded one carries an earlier quota stop forward.
-    let is_quota_stop = report.outcome == Some(cockpit_protocol::TurnOutcome::QuotaStopped);
     let sender = Sender::read(connector).await;
+    let limits = sessions.transient_limits();
     let write = match database.write().await {
         Ok(write) => write,
         Err(error) => return internal(&error),
     };
-    let recorded = cockpit_sessions::report(
+    let recorded = cockpit_sessions::report_counting_limits(
         &write,
         sender.ancestry(),
         launch_token.as_deref(),
         from_wire(report),
+        &limits,
     )
     .await;
+    // This report's own quota stop: the recorded report carries an earlier one forward.
     let recorded = match recorded {
-        Ok(recorded) => wire_report(&write, recorded, crate::approvals::now()).await,
+        Ok(recorded) => {
+            let is_quota_stop = recorded.is_quota_stop;
+            wire_report(&write, recorded.report, crate::approvals::now())
+                .await
+                .map(|report| (report, is_quota_stop))
+        }
         Err(error) => Err(error),
     };
     match recorded {
-        Ok(recorded) => match write.commit().await {
+        Ok((recorded, is_quota_stop)) => match write.commit().await {
             Ok(()) => {
                 if is_quota_stop {
                     relaunch_quota_stopped(sessions, &recorded.session);
