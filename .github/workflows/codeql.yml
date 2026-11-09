@@ -73,3 +73,39 @@ jobs:
       - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: /language:${{ matrix.language }}
+
+  # A pull request that touches no Rust has no Rust scan, but the CodeQL merge protection ruleset
+  # still waits for a `/language:rust` configuration on its head commit. That change cannot alter
+  # Rust results, so it carries main's latest Rust analysis instead of the slow scan (#1300).
+  reuse-rust:
+    needs: languages
+    if: >-
+      github.event_name == 'pull_request' &&
+      !contains(fromJSON(needs.languages.outputs.languages), 'rust')
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      security-events: write
+    steps:
+      - name: Fetch main's latest Rust analysis
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          analysis_id=$(gh api "repos/$REPOSITORY/code-scanning/analyses?ref=refs/heads/main&tool_name=CodeQL&per_page=100" \
+            --jq 'first(.[] | select(.category == "/language:rust" and .error == "")) | .id')
+          if [ -z "$analysis_id" ]; then
+            echo "::error::No /language:rust CodeQL analysis exists on main. Re-run the latest CodeQL run on main (Actions tab) so a Rust scan exists, then re-run this job."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/main-rust"
+          gh api -H "Accept: application/sarif+json" "repos/$REPOSITORY/code-scanning/analyses/$analysis_id" \
+            > "$RUNNER_TEMP/main-rust/rust.sarif"
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: ${{ runner.temp }}/main-rust/rust.sarif
+          category: /language:rust
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          sha: ${{ github.event.pull_request.head.sha }}

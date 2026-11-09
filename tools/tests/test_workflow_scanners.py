@@ -36,6 +36,32 @@ class ScannerEventTests(unittest.TestCase):
         conditions = job_conditions(text)
         self.assertEqual(conditions["languages"], conditions["analyze"])
 
+    def test_codeql_reuses_main_rust_analysis_for_pull_requests_that_skip_the_rust_scan(self):
+        text = (WORKFLOWS / "codeql.yml").read_text()
+        conditions = job_conditions(text)
+        self.assertEqual(
+            conditions["reuse-rust"],
+            "github.event_name == 'pull_request' && "
+            "!contains(fromJSON(needs.languages.outputs.languages), 'rust')",
+        )
+        for event, languages, expected in (
+            ("pull_request", '["actions"]', True),
+            ("pull_request", '["rust", "actions"]', False),
+            ("push", '["rust", "actions"]', False),
+            ("schedule", '["rust", "actions"]', False),
+        ):
+            with self.subTest(event=event, languages=languages):
+                values = context(event) | {"needs.languages.outputs.languages": languages}
+                self.assertEqual(allows(conditions["reuse-rust"], values), expected)
+        job = text.split("\n  reuse-rust:\n", 1)[1]
+        self.assertRegex(job, r"(?m)^    needs: languages\n")
+        self.assertRegex(job, r"(?m)^    permissions:\n      security-events: write\n    steps:")
+        self.assertNotIn("actions/checkout", job)
+        self.assertIn("category: /language:rust", job)
+        self.assertIn("ref: refs/pull/${{ github.event.pull_request.number }}/merge", job)
+        self.assertIn("sha: ${{ github.event.pull_request.head.sha }}", job)
+        self.assertIn("Re-run the latest CodeQL run on main", job)
+
     def test_scorecard_refuses_pr_and_non_main_contexts(self):
         expression = self.condition("scorecard.yml", "scorecard")
         for event, ref, expected in (
