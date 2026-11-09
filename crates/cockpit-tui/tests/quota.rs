@@ -10,7 +10,7 @@ use cockpit_protocol::{
     QuotaWindowView, Reply,
 };
 use cockpit_tui::App;
-use common::{answer, app_with, screen};
+use common::{answer, app_with, queue, run, screen, session, sized_screen};
 
 const WIDTH: u16 = 120;
 
@@ -178,4 +178,52 @@ fn a_row_wider_than_the_terminal_ends_where_it_was_cut() {
 
     assert!(row.chars().count() <= usize::from(WIDTH), "{row}");
     assert!(row.ends_with('…'), "{row}");
+}
+
+#[test]
+fn a_failed_reading_takes_the_rows_away_rather_than_keep_old_waits() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], Vec::new(), now);
+    quota(
+        &mut app,
+        vec![account(
+            "claude",
+            vec![window("five-hour", 42, pace(Some(51), None))],
+        )],
+        now,
+    );
+
+    app.answer(
+        &Command::UsageQuota,
+        Err("database is locked".to_owned()),
+        now,
+    );
+
+    assert_eq!(
+        bottom(&app, now, 2),
+        [
+            "└".to_owned() + &"─".repeat(usize::from(WIDTH) - 2) + "┘",
+            "usage-quota: database is locked".to_owned()
+        ]
+    );
+}
+
+#[test]
+fn on_a_short_terminal_the_approval_pane_keeps_its_rows_before_the_accounts() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], vec![session("s1", 1, 0)], now);
+    queue(&mut app, vec![run(1, "s1", "make test")], Vec::new(), now);
+    let without_rows = sized_screen(&app, now, WIDTH, 18);
+    let accounts = ["claude", "codex", "opencode", "gemini"]
+        .into_iter()
+        .map(|provider| account(provider, vec![window("five-hour", 42, None)]))
+        .collect();
+
+    quota(&mut app, accounts, now);
+
+    assert!(
+        without_rows.concat().contains("make test"),
+        "{without_rows:#?}"
+    );
+    assert_eq!(sized_screen(&app, now, WIDTH, 18), without_rows);
 }

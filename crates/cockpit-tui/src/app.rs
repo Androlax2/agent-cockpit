@@ -135,7 +135,7 @@ pub struct App {
     /// The terminal's width and height, as the runtime last drew it.
     pub(crate) screen: Option<(u16, u16)>,
     /// A row per provider account read: its windows and the queue's pace (#412), timed when
-    /// the answer came, at most a refresh ago.
+    /// the answer came, a refresh ago at most; none since a refresh failed.
     pub(crate) quota_rows: Vec<String>,
 }
 
@@ -861,6 +861,8 @@ impl App {
         match command {
             Command::AgentReports => self.board.start_source_failed(StartSource::Reports),
             Command::ApprovalQueue => self.board.start_source_failed(StartSource::Queue),
+            // Old windows and waits would pass for current; the status line says why.
+            Command::UsageQuota => self.quota_rows.clear(),
             _ => {}
         }
         if is_column_focus(command) {

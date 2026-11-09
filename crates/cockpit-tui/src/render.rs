@@ -97,7 +97,10 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
         return;
     }
     let pane_height = if app.pane().shown().is_some() { 14 } else { 0 };
-    let quota_height = u16::try_from(app.quota_rows.len()).unwrap_or(u16::MAX);
+    // The accounts get only the rows the list, the pane and the status line leave.
+    let quota_height = u16::try_from(app.quota_rows.len())
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(3 + pane_height + 1));
     let [main, pane, quota, status] = Layout::vertical([
         Constraint::Min(3),
         Constraint::Length(pane_height),
