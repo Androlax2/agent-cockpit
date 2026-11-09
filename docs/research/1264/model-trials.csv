@@ -1,0 +1,164 @@
+merged,issue,pr,harness,model,effort,kind,trial,lines_added,ci_fix_rounds,ci_cause,nudges,idles,reviewer_model,reviewer_blocking,reviewer_minor,open_to_merge_h,regressions,notes
+2026-11-04,#710,745,claude,Opus,high,risky,default,1328,0,,0,0,,,,0.2,,
+2026-11-04,#713,792,claude,Fable,high,risky,default,1086,1,drift,0,0,,,,6.1,,reboot + rebase inside
+2026-11-04,#714,810,claude,Fable,high,contained,default,732,0,,0,0,,,,0.3,,
+2026-11-04,#770,795,claude,Sonnet,high,contained,default,216,0,,0,0,,,,0.2,,
+2026-11-04,#771,796,claude,Sonnet,medium,contained,default,23,0,,0,0,,,,0.6,,
+2026-11-04,#777,794,claude,Sonnet,medium,docs,default,22,0,,0,0,,,,0.2,,
+2026-11-04,#764,803,claude,Sonnet,high,contained,default,182,0,,0,0,,,,0.2,,
+2026-11-04,#800,801,claude,Sonnet,medium,contained,default,13,1,drift,0,0,,,,5.5,,reboot inside; failure was main drift
+2026-11-04,#804,806,claude,Sonnet,high,contained,default,,,,0,0,,,,,,measured 16 -> 1 parallel builds
+2026-11-04,#769,808,claude,Sonnet,medium,contained,default,,,,0,0,,,,,,
+2026-11-04,#767,811,claude,Opus,high,risky,default,,,,0,0,,,,,,second review pass
+2026-11-04,#706,812,claude,Opus,high,contained,default,,,,0,0,,,,,,asked a design question first
+2026-11-04,#406,797,claude,Opus,high,risky,default,2013,0,,0,0,,,,5.7,,reboot inside
+2026-11-04,#766,807,claude,Opus,high,risky,default,1046,1,flake,1,1,,,,0.9,,the CI failure was flaky tests (#816); the worker went idle and missed it until nudged
+2026-11-04,#406,818,claude,Sonnet,medium,contained,trial,522,1,flake,0,0,,,,0.4,,"deviation trial; one rebase conflict; CI failure log came back empty, a rerun passed"
+2026-11-04,#754,819,claude,Opus,high,risky,default,1104,1,own,0,0,,,,0.5,,opened the PR before its review (auto-merge not armed); 3 checks failed on the pre-review commit
+2026-11-04,#816,821,claude,Opus,medium,contained,trial,105,0,,0,0,,,,0.2,,"deviation trial; found a real product race (a busy session counted as a delivery try), not just a test race"
+2026-11-04,#406,824,claude,Fable,high,contained,default,1375,0,,0,1,,,,0.2,,stalled once mid-task before the PR; clean CI after
+2026-11-05,#546,827,claude,Opus,high,research,default,,0,,0,0,,,,,,asked D1-D6 one at a time; re-planned on the owner's direct reorder; filed as #828-#835
+2026-11-05,#406,820,claude,Opus,high,risky,default,2553,1,flake,0,0,,,,1.3,,"asked A/B/C on DB retention first; CI failure was the disk-floor flake (#838), rerun passed"
+2026-11-05,#825,837,claude,Sonnet,high,contained,default,31,1,flake,0,0,,,,0.5,,CI failure was the unrelated proxy port flake (#841); rerun passed; asked why the log showed no test output (gh run view hides it)
+2026-11-05,#838,839,claude,Sonnet,medium,contained,trial,50,0,,0,0,,,,0.25,,deviation trial; clean
+2026-11-05,#136,843,claude,Opus,high,contained,default,716,1,check,0,0,,,,0.5,,"lint fix (MD018); its runner tests killed the installed tmux server twice (#845), breaking the isolation it was told to keep"
+2026-11-05,#846,849,claude,Fable,medium,contained,trial,88,0,,0,1,,,,0.2,,"deviation trial; clean; one stray-looking idle at review, no nudge needed"
+2026-11-05,#850,853,claude,Opus,high,risky,default,1413,0,,0,0,,,,0.4,,asked a real spec gap (tailnet Host header) before coding it; one stray needs-input
+2026-11-05,#845,854,claude,Opus,high,risky,default,565,1,check,0,0,,,,0.4,,clippy useless format; proved the -L fallback in a mount namespace; product now always -S; workspace rule test added
+2026-11-05,#856,866,claude,Fable,high,research,trial,,0,,0,0,,,,,,deviation trial; asked Q1-Q6 one at a time; review fixes pushed before auto-merge; changes posted on 8 issues
+2026-11-05,#857,867,claude,Sonnet,high,research,default,,0,,0,0,,,,,,"asked D1-D4 one at a time, answered a why-C-over-B question directly; changes posted on 8 issues"
+2026-11-05,#859,868,claude,Sonnet,high,research,default,,0,,0,0,,,,,,asked Q1-Q3 one at a time; measured cache sizes; changes posted on 10 issues
+2026-11-05,#855,870,claude,Opus,high,risky,default,2487,0,,0,0,,,,1.5,,phone layout + read-only phone TUI; review fixes then gate re-run; clean CI
+2026-11-05,#861,876,claude,Sonnet,high,research,default,,0,,0,0,,,,0.6,,asked Q1-Q3 one at a time; changes posted on 8 issues; clean CI
+2026-11-05,#860,877,claude,Sonnet,high,research,default,,1,check,0,0,,,,0.9,,"asked Q1-Q4 one at a time; MD018 lint failure (a line starting with an issue number), fixed after my pointer; new issue #880"
+2026-11-05,#862,881,claude,Sonnet,high,research,default,,0,,0,0,,,,1.4,,asked Q1-Q4 one at a time; survived the alpha 3 daemon restart; changes posted on 9 issues
+2026-11-05,#858,887,claude,Opus,high,research,default,,0,,0,0,,,,2,,revised its options after #859 and re-asked Q1 rather than take a relayed old-list answer; changes posted on 7 issues
+2026-11-05,#874,891,claude,Sonnet,high,contained,trial,,1,unknown,0,0,,,,3,,"deviation trial; took owner-requested scope twice (trials log, start_worker, 5 alpha-3 fixes, prune-only); asked to confirm relayed scope rather than trust my message — correct"
+2026-11-05,#872,898,claude,Opus,high,security,default,,0,,0,0,,,,1.5,,"clean; closed its issue, marked item done unprompted"
+2026-11-05,#885+886,901,claude,Fable,medium,docs,trial,,0,,0,0,,,,1.3,,"deviation trial (Fable on docs): clean, closed both issues, item done unprompted"
+2026-11-05,#830,903,claude,Opus,high,security,default,,1,unknown,0,0,,,,1.7,,"asked a real scope split (daemon acceptance needs #829 launcher); I answered, moved it to #829"
+2026-11-05,#864,900,claude,Sonnet,high,contained,default,,0,,0,0,,,,1.5,,treated its own e2e failure as flake and re-ran; fixed after I pointed at the changed label
+2026-11-05,#882+883,904,claude,Opus,high,security,default,,0,,0,0,,,,2.5,,"clean; closed both, item done unprompted"
+2026-11-05,#884,909,claude,Sonnet,medium,contained,default,,0,,0,0,,,,1,,clean
+2026-11-05,#844,899,claude,Sonnet,high,contained,default,,1,unknown,0,0,,,,2.5,,split scope unasked (left the state half for a follow-up); finished it after I sent it back; asked state choice (A)
+2026-11-05,#906,915,claude,Sonnet,medium,contained,default,,0,,0,0,,,,1,,clean
+2026-11-05,#897,914,claude,Opus,high,contained,default,,0,,0,0,,,,2,,chose overtake note itself (allowed by prompt); clean
+2026-11-05,#828,911,claude,Opus,high,security,default,,2,check+flake,0,0,,,,4,,asked doctor-cleanup UX (A); broke doc links to deleted files (fixed after my note); hit flaky #917
+2026-11-05,#847,918,claude,Fable,high,contained,trial,,0,,0,0,,,,2,,deviation trial (Fable on TUI bug): clean; rebased once; hit flaky #917
+2026-11-05,#382,923,claude,Opus,high,security,default,,3,unknown,0,0,,,,2,,asked Q1-Q3 one at a time (all A); left 2 owner scripts; issue stays open until the owner runs them
+2026-11-05,#848,916,claude,Opus,high,security,default,,1,platform,0,0,,,,3.5,,asked paste-in security choice (A) with costs; both CI failures were older-tmux options (3.6 on CI)
+2026-11-05,#917,928,claude,Sonnet,high,contained,default,,1,unknown,0,1,,,,2,,"first worker stalled before push (asked for a GH_TOKEN, then idled); restarted, second pushed at once"
+2026-11-05,#831,934,claude,Opus,high,security,default,,1,check,1,1,,,,,,"asked rustix dependency (owner A); typos CI fail fixed after my note; idled once mid-rebase, pushed after nudge"
+2026-11-05,#674,944,claude,Opus,high,security,default,,2,unknown,0,0,,,,2,,"asked network verbs (A) + allow-once scope (A, rest of session); clean CI first try; closed #641 too"
+2026-11-05,#829,929,claude,Opus,high,security,default,,1,unknown,0,0,,,,8,,"split into 7 PRs on its own (fine for size); asked second-user CI test (I answered A from acceptance); issue close denied by permission check, I posted its mapping"
+2026-11-05,#433,951,claude,Opus,high,security,default,,1,unknown,0,0,,,,2,,"asked WSL2 Ubuntu version (owner A, 26.04); clean"
+2026-11-05,#482,950,claude,Sonnet,high,contained,default,,0,,0,0,,,,1.5,,clean; rebased once on moved main
+2026-11-05,#832,947,claude,Opus,high,security,default,,1,unknown,0,0,,,,4,,asked TLS crates (owner A); stuck once on a Claude Code permission prompt the owner answered; follow-up PR after my note; owner live check left on the issue
+2026-11-06,#958,959,claude,Sonnet,medium,contained,default,,0,,1,0,,,,40,,release blocker (KNOWN-GAPS linked closed #831); clean; needed a nudge to mark its item done
+2026-11-06,#961,970,claude,Sonnet,medium,contained,default,22,0,,1,1,,,,0.2,,"alpha 5; idled once watching CI, nudged"
+2026-11-06,#522,971,claude,Sonnet,medium,contained,default,55,0,,1,1,,,,0.2,,"alpha 5; idled once waiting for /code-review (background skill), nudged"
+2026-11-06,#889,972,claude,Sonnet,low,docs,default,4,0,,0,0,,,,0.2,,"alpha 5; asked for a GH_TOKEN to push (none needed, machine gh login); fine after the note"
+2026-11-06,#963,973,claude,Fable,high,contained,default,372,0,,1,2,,,,0.3,,"alpha 5; idled twice during checks, one nudge; diagnosed tui e2e failures itself"
+2026-11-06,#966,976,claude,Opus,high,security,default,324,1,check,0,0,,,,0.35,,"alpha 5; MD038 docs lint in its decision file, fixed alone"
+2026-11-06,#736,977,claude,Opus,high,contained,default,404,1,own,0,1,,,,0.5,,"alpha 5; asked acceptance (owner A: PR Release run, no beta tag); new job failed once, fixed alone; idled once on CI"
+2026-11-06,#980,981,claude,Sonnet,high,contained,default,110,0,,0,0,,,,0.3,,alpha 5 side task (the owner asked); used a Monitor wait itself; clean
+2026-11-06,#962,979,claude,Sonnet,medium,contained,default,14,0,,2,1,,,,0.5,,alpha 5; reported auto-merge armed but it was not; hit flake #984; two nudges
+2026-11-06,#964,982,claude,Sonnet,high,contained,default,469,0,,1,1,,,,0.3,,"alpha 5; idled once on CI, nudged"
+2026-11-06,#965,985,claude,Sonnet,high,contained,default,243,0,,1,1,,,,0.2,,"alpha 5; idled once on CI, nudged"
+2026-11-06,#102,988,claude,Sonnet,high,docs,default,93,0,,0,1,,,,0.15,,"alpha 5; mapped scope first; issue stays open for owner-only steps (custom domain, reader walkthrough); idled once on CI"
+2026-11-06,#994,995,claude,Sonnet,medium,contained,default,7,0,,0,1,,,,0.25,,alpha 5; main-red fix after #962 x #964 ran in parallel on shared files (my scheduling mistake); idled once on CI
+2026-11-06,#562,990,claude,Fable,high,contained,default,323,1,drift,0,0,,,,0.9,,alpha 5; asked name (convention) and maintainer (owner); found main red (#994) and offered a fix; AUR publish left to owner
+2026-11-06,#563,989,claude,Opus,high,risky,default,1455,2,check+drift,0,0,,,,1.05,,alpha 5; asked APT hosting and key custody (owner); spelling CI fail; rebased after main red; publication left to owner
+2026-11-06,#64,999,claude,Sonnet,high,contained,default,1127,0,,0,0,,,,0.3,,alpha 5; asked for GH_TOKEN (told: machine gh login); issue closed
+2026-11-06,#984,996,claude,Opus,high,risky,default,76,1,flake+drift,0,0,,,,0.85,,alpha 5 flake; coordinator decision A (rerun flake); rebased after main red; follow-up #1003
+2026-11-06,#997,1005,claude,Opus,high,contained,default,359,0,,2,2,,,,0.55,,"alpha 5 CI speed: gate 13.8 -> 8.0 min median, no ruleset change; idled twice on CI waits (2 nudges)"
+2026-11-06,#563,1011,claude,Sonnet,medium,contained,default,,0,,0,0,,,,0.4,,alpha 5; committed real public key + fingerprint; spelling-check fix after coordinator hint
+2026-11-06,#1003,1012,claude,Opus,high,risky,default,129,0,,0,0,,,,0.55,,"hardening flake; deterministic repro 50/50 before fix; clean run, no nudges"
+2026-11-06,#618,1016,claude,Sonnet,high,research,default,320,1,check,0,0,,,,0.6,,alpha 5; batched 5 questions (owner took all recommendations); markdownlint fix; clean
+2026-11-06,#1018,1022,claude,Sonnet,medium,contained,default,200,0,,0,0,,,,0.4,,"hardening docs slice 1 (map + test); clean, no nudges"
+2026-11-06,#548,1023,claude,Sonnet,high,research,default,381,0,,0,0,,,,0.4,,alpha 5; 165 records classified with 4 reviewers; owner took all recommendations; clean
+2026-11-06,#1020,1031,claude,Sonnet,medium,contained,default,22,0,,0,0,,,,0.3,,hardening docs slice 3 (site feed); clean
+2026-11-06,#1025,1032,claude,Sonnet,high,contained,default,231,0,,0,0,,,,0.3,,hardening decisions slice 1 (convention + superseded-by test); clean
+2026-11-06,#1019,1033,claude,Sonnet,high,contained,default,54,1,unknown,0,0,,,,0.6,,hardening docs slice 2; asked push token (coordinator: machine gh login); waited on #1031
+2026-11-06,#1010,1035,claude,Opus,high,risky,default,340,0,,0,0,,,,0.6,,hardening security UX: prompt shown + masked input (Tab reveals); clean
+2026-11-06,#1026,1037,claude,Sonnet,medium,contained,default,12,0,,0,0,,,,0.25,,hardening decisions slice 2 (status lines); clean
+2026-11-06,#565,992,claude,Sonnet,high,contained,default,718,1,own,2,2,,,,4,,"alpha 5; main PR fine, then long Scoop CI tail: analyzer retry, file-list check, real consent-decline bug in launcher; idled on CI twice, needed nudges"
+2026-11-06,#893,1044,claude,Sonnet,medium,contained,default,35,0,,0,0,,,,0.15,,alpha 5 name gate decision file + stable follow-up #1043; clean
+2026-11-06,#1027,1041,claude,Sonnet,medium,docs,default,1057,0,,0,1,,,,1.05,,"five sequential fold PRs, clean; idled once between PRs; issue left open (PRs said Part of), closed by coordinator"
+2026-11-06,#1047,1056,claude,Opus,high,risky,default,1427,0,,0,0,,,,0.2,,asked one real owner question (prerelease /latest 404; owner chose versioned URL); clean
+2026-11-06,#1048,1057,claude,Fable,high,contained,trial,429,0,,2,2,,,,0.15,,"deviation trial (Fable on daemon perf); idled twice mid-work with nothing running, needed 2 nudges; ~1.5h start to merge"
+2026-11-06,#1028,1059,claude,Sonnet,medium,docs,default,91,0,,0,0,,,,0.17,,"relocate+delete 7 decision records; clean, no nudges"
+2026-11-06,#1029,1066,claude,Sonnet,medium,docs,default,7,0,,0,0,,,,0.18,,removed 8 dead records (-281); clean
+2026-11-06,#1063,1064,claude,Sonnet,low,docs,trial,1,0,,0,0,,,,0.14,,deviation trial (low on trivial README bump); clean
+2026-11-06,#565,1065,claude,Opus,high,contained,default,119,0,,0,0,,,,0.25,,found the hidden log line (render.py refused alpha versions in rehearse); added ::error:: trap so failures show; clean
+2026-11-06,#969,1069,claude,Opus,high,security,default,354,0,,1,1,,,,0.14,,"refuses mode-changed restore before launch, both directions; idled once before the PR, 1 nudge"
+2026-11-06,#743,1072,claude,Sonnet,high,contained,default,569,0,,0,0,,,,0.2,,removed closed model/effort lists; clean
+2026-11-06,#789,1073,claude,Fable,medium,contained,trial,95,0,,0,0,,,,0.2,,"deviation trial (Fable 1-in-5); clean, no nudge"
+2026-11-06,#480,1078,claude,Sonnet,medium,contained,default,69,0,,0,0,,,,0.2,,agent name checked before filing; clean
+2026-11-06,#968,1081,claude,Opus,high,security,default,1651,0,,0,0,,,,0.19,,"asked one owner question (trust source, owner chose A); clean"
+2026-11-06,#62,1070,claude,Opus,high,risky,default,,0,,1,1,,,,1.2,,"four sequential PRs; asked hold-rule question (A); idled once early, 1 nudge"
+2026-11-07,#782,1083,claude,Sonnet,high,contained,default,2562,1,check,0,0,,,,0.4,,"compaction records on the session card; one typos CI fix, self-fixed"
+2026-11-07,#419,1086,claude,Opus,high,risky,default,275,0,,1,1,,,,0.2,,"brief/MCP/skill delivered per adapter, sandboxed too; idled once, 1 nudge"
+2026-11-07,#781,1090,claude,Opus,high,risky,default,668,0,,0,0,,,,0.2,,"task packet reinjected; clean, no nudge"
+2026-11-07,#783,1099,claude,Fable,high,contained,default,1335,1,check,0,0,,,,1.1,,"73 files across adapters; one markdownlint fix relayed; no nudge. Merged with Release jobs red (pre-existing, #1100). Wrong OpenCode key (buffer is v2; 1.19.5 reads reserved), caught by nightly, fixed in #1112"
+2026-11-07,#1100,1102,claude,Opus,high,risky,default,,0,,0,0,,,,0.5,,release stand-in providers report a tested version; all Release jobs green before arming; no nudge
+2026-11-07,#786,1104,claude,Opus,high,risky,default,3643,0,,1,1,,,,1.4,,"vendored skill pack, off by default; idle after merge without closing its item (session restart), 1 nudge"
+2026-11-07,#787,1111,claude,Sonnet,high,contained,default,451,0,,0,0,,,,0.3,,"user-invoked skills hidden per adapter; clean, no nudge"
+2026-11-07,#1106/#1107,1110,claude,Sonnet,high,contained,default,69,0,,0,0,,,,0.5,,"node for codex in nightly; opencode 1.19.5 reads compaction.reserved (found in its source); clean, no nudge"
+2026-11-07,#1116,1117,claude,Sonnet,low,docs,default,2,0,,0,0,,,,0.4,,"known gap re-pointed #968 -> #59; clean, no nudge"
+2026-11-07,#479,1115,claude,Opus,high,risky,default,,0,,0,0,,,,1,,"harness context total per adapter, new wire field; clean, no nudge"
+2026-11-07,#732,1087,claude,Sonnet,high,contained,default,,0,,0,0,,,,1,,split in 3 PRs on its own; asked the App-vs-setting question correctly (the owner: A); no nudge
+2026-11-07,#420,1095,claude,Sonnet,high,contained,default,946,1,own,0,0,,,,0.3,,"manifest user/project scopes; CI-only subtract overflow in test, fixed after coordinator relay"
+2026-11-07,#775,1097,claude,Sonnet,medium,contained,default,126,0,,0,0,,,,0.15,,"brief arrives at start; --measure counts delivered parts; clean, no nudge"
+2026-11-07,#103,1121,claude,Sonnet,high,research,default,521,0,,0,0,,,,0.2,,team roles report + measurements; held merge for the tag as told; no nudge. #732 PR B (#1091) also broke the Release jobs (#1100)
+2026-11-07,#497,1122,claude,Sonnet,high,research,default,541,0,,0,0,,,,0.2,,model-selection report; held merge for the tag as told; no nudge
+2026-11-07,#1126,1134,claude,Sonnet,medium,contained,default,663,0,,0,0,,,,1,,notify autostart unit via daemon install; same session continues #1127
+2026-11-07,#1130,1133,claude,Sonnet,high,contained,default,360,1,unknown,0,0,,,,2,,sound-design guide; implementation still open
+2026-11-07,#832,1135,claude,Opus,high,contained,default,384,0,,0,0,,,,2,,acceptance tests only; issue stays open for owner's live GitHub-token check
+2026-11-07,#58,1136,claude,Opus,high,contained,default,1884,0,,0,0,,,,3,,"usage quota windows model; same session continues part 2 (OAuth poll, B)"
+2026-11-07,#1127,1138,claude,Sonnet,medium,contained,default,397,0,,0,0,,,,1,,"finished = task done, turn event off by default, notify logging"
+2026-11-07,#406,1139,claude,Opus,high,contained,default,717,0,,0,0,,,,3,,composed torlek storage report
+2026-11-07,#1130,1146,claude,Sonnet,medium,contained,default,516,0,,0,0,,,,1.5,,"bundled the owner's 5 picked sounds per event, owner file overrides"
+2026-11-07,#102,1145,claude,Fable,high,contained,default,71,0,,0,0,,,,1,,"docs-site polish (install-step scan); site built over earlier PRs (#988 etc.), issue stays open for live Pages deploy"
+2026-11-07,#58,1149,claude,Opus,high,security,default,1682,0,,0,0,,,,0.2,,Claude OAuth quota reader in the daemon; then asked the Codex sign-in choice for p3 (owner: B)
+2026-11-07,#1131,1150,claude,Opus,high,security,default,1184,0,,0,0,,,,0.2,,coordinator grants scoped to one project; closed issue and item done unprompted; its new `all_projects` field broke #1154 (#685) which added a SessionGrant test before the merge
+2026-11-07,#1143,1155,claude,Sonnet,high,contained,default,568,0,,0,0,,,,0.2,,"clean; closed issue, item done unprompted; left a nextest log in .scratch/ (untracked)"
+2026-11-07,#685,1154,claude,?,?,security,default,680,1,drift,1,1,,,,0.3,,"started by prior coordinator; asked to confirm scope first; idled after #1140 until nudged; CI fail was main drift from #1150 (new all_projects field), fixed after my pointer; never updated --doing"
+2026-11-07,#58,1156,claude,Opus,high,security,default,838,1,flake,0,0,,,,0.6,,"Codex quota reader on its own sign-in (owner B); CI failure was the #1159 flake, rerun passed; watcher missed the merge (#1151, several PRs on one branch)"
+2026-11-07,#1160,1162,claude,Opus,high,security,default,555,0,,0,0,,,,0.2,,sudo echo leak; asked the sudo design A/B/C first (owner B); reproduced the leak red before fixing; added purge-output verb and a decision record; review fixes before merge
+2026-11-07,#58,1163,claude,Opus,high,contained,default,843,0,,0,0,,,,0.4,,usage request; new branch greenfield/58-usage-request
+2026-11-08,#1158,1168,claude,Opus,high,security,default,884,0,,0,0,,,,0.3,,"asked the section 1 mechanism (owner B) and the push credential (owner: keyring gh, filed #1167) before acting; section 2 verified live in the VM"
+2026-11-08,#58,1169,claude,Opus,high,contained,default,606,0,,0,0,,,,0.2,,quota alerts to torlek-notify; all 5 parts done on one worker; closed issue and item unprompted
+2026-11-08,#1171,1172,claude,Sonnet,high,contained,default,398,0,,0,0,,,,0.2,,found npm 12 stub install; pinned native binary; verified in a separate fresh guest; noted a separate `sandbox show` bug without fixing it
+2026-11-08,#59,1176,claude,Opus,high,security,default,1197,1,check,0,0,,,,0.4,,"account pick; CodeQL cleartext-log alert in a test, self-fixed"
+2026-11-08,#59,1179,claude,Opus,high,security,default,637,1,check,0,0,,,,0.4,,"quota-stop switch (owner A); same CodeQL test-log alert again, fixed"
+2026-11-08,#1178+#1175,1181,claude,Opus,high,security,default,992,0,,0,0,,,,0.2,,"root cause in cockpit-claude (first-run screens in per-session home), reproduced with throwaway homes; filed follow-up note (breach exit 0 -> #1182); could not message coordinator (no message-sessions grant)"
+2026-11-08,#1183,1186,claude,Fable,medium,contained,trial,428,0,,0,0,,,,0.1,,"rotation sample; decided the not-a-repo case from git answers, not locale text; 6 review findings fixed; CLI-level tests; total ~35 min start to merge"
+2026-11-08,#59,1185,claude,Opus,high,security,default,,1,flake+check,0,0,,,,,,login accounts + sign-in verb (owner A/C); logs flake #1187 rerun; CodeQL #110 false positive dismissed with the owner's OK
+2026-11-08,#59,1190,claude,Opus,high,security,default,,0,,0,0,,,,,,torlek account grant for login accounts
+2026-11-08,#59,1192,claude,Opus,high,security,default,,1,check,0,0,,,,,,login mount + grant routing; MD018 docs lint fix
+2026-11-08,#59,1194,claude,Opus,high,security,default,,0,,0,0,,,,,,one session per login account (owner A)
+2026-11-08,#59,1196,claude,Opus,high,security,default,,1,platform+check,0,0,,,,,,"doctor shows login accounts; new test failed in sandbox CI + CodeQL test alert, fixed after my note; worker did not close #59, I closed after acceptance check"
+2026-11-08,#1182,1198,claude,Sonnet,medium,contained,default,44,0,,0,0,,,,0.2,,breach exits non-zero; ~20 min start to merge
+2026-11-08,#249,1200,claude,Fable,medium,contained,trial,789,1,check,0,0,,,,0.3,,rotation sample; cargo doc private-link failure in CI (didn't run the doc check locally); review ran (8 findings) but not recorded in PR body
+2026-11-08,#699,1202,claude,Sonnet,high,contained,default,3581,1,check,0,0,,,,0.2,,"cost archive per account; spelling CI fail, fixed; large diff for Sonnet, went fine"
+2026-11-08,#700,1204,claude,Sonnet,high,contained,default,1439,0,,0,0,,,,0.2,,data layer only (my brief too narrow); part 2 daemon feed + verb sent to same worker
+2026-11-09,#412,1206,claude,Opus,high,contained,default,,1,flake,0,0,,,,,,queue pacing on by default (owner A); CI flake #1208 rerun
+2026-11-09,#700,1207,claude,Sonnet,high,contained,default,1429,0,,0,0,,,,0.3,,daemon feed + usage digest verb; closed #700
+2026-11-09,#412,1212,claude,Opus,high,contained,default,422,0,,0,0,,,,,,pace in usage quota; clean; 2b TUI status line (owner A) next
+2026-11-09,#412,1215,claude,Opus,high,contained,default,347,0,,0,0,,,,,,TUI quota status line (owner A); clean
+2026-11-09,#158,1216,claude,Opus,high,risky,default,1605,0,,0,0,,,,1.5,,"resume at reset (owner A A A); wsl2 runner hang, rerun; part 2 next"
+2026-11-09,#412,1218,claude,Opus,high,contained,default,651,0,,0,0,,,,,,opt-in project share cap (owner 1A); clean
+2026-11-09,#412,1221,claude,Opus,high,contained,default,1,0,,0,0,,,,,,main build broke: #1216 test wiring vs #1218 shares merged together; worker fixed
+2026-11-09,#158,1222,claude,Opus,high,risky,default,603,1,check,0,0,,,,,,"3 rate_limit in 30 min = quota stop (owner A); MD038 docs lint fail, fixed"
+2026-11-09,#412,1225,claude,Opus,high,contained,default,857,0,,0,0,,,,,,per-item minutes budget holds queue (owner A); clean
+2026-11-09,#412,1227,claude,Opus,high,contained,default,772,0,,0,0,,,,,,one-time budget notice; clean; part 4 next (owner A)
+2026-11-09,#158,1228,claude,Opus,high,risky,default,161,0,,0,0,,,,,,needs-you on failed #59 relaunch; closed #158
+2026-11-09,#718,1235,claude,Opus,high,risky,default,647,0,,0,0,,,,,,network-lost outcome from Claude transcript; clean
+2026-11-09,#718,1239,claude,Opus,high,risky,default,918,0,,0,0,,,,,,resume once provider answers (owner A); closed #718
+2026-11-09,#1236,1240,claude,Sonnet,high,contained,default,381,1,check,0,0,,,,,,"login unit imports desktop session (owner B); MD012 docs fail, fixed"
+2026-11-09,#412,1243,claude,Opus,high,contained,default,980,0,,0,1,,,,,,"economy routing (owner A-always); slept mid-checks, woken"
+2026-11-09,#412,1245,claude,Opus,high,contained,default,885,0,,0,0,,,,,,per-session budget (since session start)
+2026-11-09,#412,1254,claude,Opus,high,contained,default,297,0,,0,0,,,,,,session budget notice; #412 scope done pending close
+2026-11-09,#1257,1258,claude,Sonnet,medium,docs,default,2,0,,0,0,,,,0.3,,"KNOWN-GAPS relink, unblocked alpha 7 dry run"
+2026-11-09,#1260,1263,claude,Opus,high,risky,default,299,0,,0,0,,,,0.2,,release precheck on proposals + approval-free dry run (A+B); clean

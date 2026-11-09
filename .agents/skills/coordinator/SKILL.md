@@ -137,7 +137,8 @@ an issue. Ignore `greenfield-macos` (macOS is not supported yet; the watcher alr
    The script skips a clone a process still works in, and refuses a name with a slash and a
    clone that is a symlink. Torlek also sweeps a clone when its session ends; the prune covers
    the `target/` of idle clones.
-6. Add the trial row to [trials-log.md](trials-log.md) (see "Model and effort").
+6. Add the worker's row to the [trials database](../../../docs/research/1264/README.md) (see
+   "Model and effort").
 
 ## Decision issues
 
@@ -190,6 +191,7 @@ risky work.
 
 Rotation: about one start in three deviates by one step (Fable instead of Opus or Sonnet,
 medium instead of high, low on a trivial docs change) so every cell collects samples. Never
-deviate downward on security or data-loss work. When a worker's PR merges, add one row to
-[trials-log.md](trials-log.md), which lists the columns. Re-compare every ten new rows,
+deviate downward on security or data-loss work. When a worker's PR merges, add one row to the
+[trials database](../../../docs/research/1264/README.md), which lists the columns. Re-compare
+with its card at each alpha, not every ten rows ([why](../../../docs/research/2026-11-09-1264-model-benchmarking.md#stress-test)),
 update this rule and tell the owner the change in one line.
