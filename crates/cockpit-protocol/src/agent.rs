@@ -42,6 +42,10 @@ pub enum TurnOutcome {
     },
     /// The plan's usage limit stopped the turn.
     QuotaStopped,
+    /// The provider was unreachable (#718); `reason` is the harness's own word for it.
+    NetworkLost {
+        reason: String,
+    },
 }
 
 /// Where an open question came from, which decides what clears it.

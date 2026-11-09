@@ -355,6 +355,46 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             ALTER TABLE session_quota_stops ADD COLUMN inferred_from TEXT
                 CHECK (inferred_from <> '');",
         },
+        // #718: a turn that ended because the provider was unreachable, always with the
+        // harness's own word for it.
+        Migration {
+            version: 23,
+            sql: "CREATE TABLE session_reports_with_network_lost (
+                session TEXT PRIMARY KEY CHECK (session <> ''),
+                state TEXT CHECK (state IN ('working', 'waiting')),
+                label TEXT,
+                doing TEXT,
+                needs_input TEXT,
+                reported_at INTEGER NOT NULL,
+                launch_id INTEGER,
+                outcome TEXT
+                    CHECK (outcome IN ('completed', 'failed', 'quota-stopped', 'network-lost')),
+                outcome_reason TEXT
+                    CHECK (outcome_reason IS NULL OR outcome IN ('failed', 'network-lost')),
+                question_source TEXT CHECK (question_source IN ('agent', 'dialog')),
+                covered_question TEXT
+                    CHECK (covered_question IS NULL OR question_source = 'dialog'),
+                question_asked_at INTEGER,
+                question_escalated_at INTEGER
+                    CHECK (question_escalated_at IS NULL OR question_asked_at IS NOT NULL),
+                context_tokens INTEGER CHECK (context_tokens >= 0),
+                context_window INTEGER
+                    CHECK (context_window IS NULL
+                        OR (context_window > 0 AND context_tokens IS NOT NULL)),
+                CHECK ((question_source IS NULL) = (needs_input IS NULL)),
+                CHECK (outcome IS NULL OR outcome <> 'network-lost' OR outcome_reason IS NOT NULL)
+            );
+            INSERT INTO session_reports_with_network_lost
+                (session, state, label, doing, needs_input, reported_at, launch_id, outcome,
+                 outcome_reason, question_source, covered_question, question_asked_at,
+                 question_escalated_at, context_tokens, context_window)
+                SELECT session, state, label, doing, needs_input, reported_at, launch_id,
+                    outcome, outcome_reason, question_source, covered_question,
+                    question_asked_at, question_escalated_at, context_tokens, context_window
+                FROM session_reports;
+            DROP TABLE session_reports;
+            ALTER TABLE session_reports_with_network_lost RENAME TO session_reports;",
+        },
     ],
 };
 

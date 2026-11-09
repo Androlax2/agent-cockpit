@@ -2,6 +2,7 @@
 //! agent-channel report the in-sandbox bridge (`cockpit-claude-hook`) sends for each.
 
 use std::fmt;
+use std::path::PathBuf;
 
 use cockpit_provider_api::{
     Activity, CompactionMoment, CompactionPhase, CompactionTrigger, ContextUsage, ConversationId,
@@ -138,6 +139,44 @@ pub fn needs_plan_windows(event: &ProviderEvent) -> bool {
         &event.kind,
         EventKind::TurnEnded { outcome } if outcome.failure_reason() == Some(RATE_LIMIT)
     )
+}
+
+/// The `StopFailure` error Claude Code sends for a lost connection, and for a server's 5xx
+/// or a timed-out request alike (#718).
+pub const SERVER_ERROR: &str = "server_error";
+
+/// The transcript's `apiError` for a request that never reached the API: the host could not
+/// be resolved or reached, or the connection was refused or dropped (#718).
+pub const CONNECTION_FAILED: &str = "connection_failed";
+
+/// `event` judged by the transcript it names (#718): a [`SERVER_ERROR`] failure whose turn
+/// ended on Claude Code's own API error tagged [`CONNECTION_FAILED`] is `network-lost`, with
+/// that tag as its reason. Any other event, or a transcript that cannot say, is kept as it is:
+/// the hook payload alone never tells a lost network from a server's failure.
+pub fn judged_by_transcript(event: ProviderEvent) -> ProviderEvent {
+    let is_server_error = matches!(
+        &event.kind,
+        EventKind::TurnEnded { outcome } if outcome.failure_reason() == Some(SERVER_ERROR)
+    );
+    if !is_server_error {
+        return event;
+    }
+    let transcript = serde_json::from_str::<serde_json::Value>(&event.raw)
+        .ok()
+        .and_then(|payload| payload["transcript_path"].as_str().map(PathBuf::from));
+    let api_error =
+        transcript.and_then(|transcript| crate::transcript::turn_api_error(&transcript));
+    if api_error.as_deref() != Some(CONNECTION_FAILED) {
+        return event;
+    }
+    ProviderEvent {
+        kind: EventKind::TurnEnded {
+            outcome: TurnOutcome::NetworkLost {
+                reason: CONNECTION_FAILED.to_owned(),
+            },
+        },
+        ..event
+    }
 }
 
 /// The plan's own windows, the ones a turn on any model spends: the five-hour and the
@@ -309,7 +348,7 @@ pub fn measured_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
 fn outcome_arguments(outcome: &TurnOutcome) -> Vec<String> {
     let mut arguments = vec!["--outcome".to_owned(), outcome.name().to_owned()];
     let reason = outcome
-        .failure_reason()
+        .reason()
         .and_then(|reason| channel_text(reason, OUTCOME_REASON_MAX_CHARS));
     if let Some(reason) = reason {
         arguments.extend(["--outcome-reason".to_owned(), reason]);

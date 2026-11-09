@@ -47,6 +47,11 @@ pub enum TurnOutcome {
     },
     /// The plan's usage limit stopped the turn.
     QuotaStopped,
+    /// The provider was unreachable (#718); `reason` is the harness's own word for it, never
+    /// a guess from a generic failure.
+    NetworkLost {
+        reason: String,
+    },
 }
 
 impl TurnOutcome {
@@ -56,15 +61,18 @@ impl TurnOutcome {
             TurnOutcome::Completed => "completed",
             TurnOutcome::Failed { .. } => "failed",
             TurnOutcome::QuotaStopped => "quota-stopped",
+            TurnOutcome::NetworkLost { .. } => "network-lost",
         }
     }
 
-    /// The outcome `name` spells, with `reason` for a failure; `None` for another name.
+    /// The outcome `name` spells, with `reason` for a failure or a lost network; `None` for
+    /// another name, or a lost network without its reason.
     pub fn from_name(name: &str, reason: Option<String>) -> Option<TurnOutcome> {
         match name {
             "completed" => Some(TurnOutcome::Completed),
             "failed" => Some(TurnOutcome::Failed { reason }),
             "quota-stopped" => Some(TurnOutcome::QuotaStopped),
+            "network-lost" => reason.map(|reason| TurnOutcome::NetworkLost { reason }),
             _ => None,
         }
     }
@@ -74,6 +82,16 @@ impl TurnOutcome {
         match self {
             TurnOutcome::Failed { reason } => reason.as_deref(),
             _ => None,
+        }
+    }
+
+    /// The harness's own word for why the turn ended: a failure's, when it gives one, or a
+    /// lost network's.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            TurnOutcome::Failed { reason } => reason.as_deref(),
+            TurnOutcome::NetworkLost { reason } => Some(reason),
+            TurnOutcome::Completed | TurnOutcome::QuotaStopped => None,
         }
     }
 }

@@ -58,6 +58,9 @@ async fn each_outcome_reads_back_as_reported() {
         TurnOutcome::Failed {
             reason: Some("server_error".to_owned()),
         },
+        TurnOutcome::NetworkLost {
+            reason: "connection_failed".to_owned(),
+        },
     ];
     let dir = tempfile::tempdir().unwrap();
     let database = reporting_session(dir.path()).await;

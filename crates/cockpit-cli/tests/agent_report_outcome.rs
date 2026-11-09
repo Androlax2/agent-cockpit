@@ -57,7 +57,7 @@ fn session_report(outcome: Option<TurnOutcome>) -> SessionReport {
 
 #[tokio::test]
 async fn each_outcome_flag_sends_its_outcome() {
-    let cases: [(&[&str], TurnOutcome); 4] = [
+    let cases: [(&[&str], TurnOutcome); 5] = [
         (&["--outcome", "completed"], TurnOutcome::Completed),
         (&["--outcome", "quota-stopped"], TurnOutcome::QuotaStopped),
         (
@@ -68,6 +68,17 @@ async fn each_outcome_flag_sends_its_outcome() {
             &["--outcome-reason", "server_error", "--outcome", "failed"],
             TurnOutcome::Failed {
                 reason: Some("server_error".to_owned()),
+            },
+        ),
+        (
+            &[
+                "--outcome",
+                "network-lost",
+                "--outcome-reason",
+                "connection_failed",
+            ],
+            TurnOutcome::NetworkLost {
+                reason: "connection_failed".to_owned(),
             },
         ),
     ];
@@ -108,8 +119,9 @@ async fn each_outcome_flag_sends_its_outcome() {
 
 #[tokio::test]
 async fn malformed_outcome_arguments_exit_2_before_any_connection() {
-    let cases: [&[&str]; 5] = [
+    let cases: [&[&str]; 6] = [
         &["--outcome", "abandoned"],
+        &["--outcome", "network-lost"],
         &["--outcome-reason", "server_error"],
         &["--outcome", "completed", "--outcome-reason", "server_error"],
         &["--outcome", "failed", "--outcome", "completed"],
@@ -175,5 +187,26 @@ async fn the_owner_sees_a_failed_turn_and_its_reason() {
     assert_eq!(
         text(&output.stdout),
         "s1 waiting outcome=failed outcome-reason=\"server_error\"\n"
+    );
+}
+
+#[tokio::test]
+async fn the_owner_sees_a_network_lost_turn_and_its_reason() {
+    let home = tempfile::tempdir().unwrap();
+    let _daemon = scripted_daemon(
+        &socket(home.path(), "daemon.sock"),
+        Outcome::Ok(Reply::AgentReports {
+            reports: vec![session_report(Some(TurnOutcome::NetworkLost {
+                reason: "connection_failed".to_owned(),
+            }))],
+        }),
+    );
+
+    let output = cockpit(home.path(), &["agent", "reports"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "s1 waiting outcome=network-lost outcome-reason=\"connection_failed\"\n"
     );
 }

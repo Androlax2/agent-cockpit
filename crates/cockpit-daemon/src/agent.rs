@@ -184,6 +184,9 @@ fn from_wire(report: cockpit_protocol::AgentReport) -> Report {
             cockpit_protocol::TurnOutcome::Completed => TurnOutcome::Completed,
             cockpit_protocol::TurnOutcome::Failed { reason } => TurnOutcome::Failed { reason },
             cockpit_protocol::TurnOutcome::QuotaStopped => TurnOutcome::QuotaStopped,
+            cockpit_protocol::TurnOutcome::NetworkLost { reason } => {
+                TurnOutcome::NetworkLost { reason }
+            }
         }),
         dialog: report.dialog,
         is_new_prompt: report.is_new_prompt,
@@ -253,6 +256,9 @@ fn to_wire(
             TurnOutcome::Completed => cockpit_protocol::TurnOutcome::Completed,
             TurnOutcome::Failed { reason } => cockpit_protocol::TurnOutcome::Failed { reason },
             TurnOutcome::QuotaStopped => cockpit_protocol::TurnOutcome::QuotaStopped,
+            TurnOutcome::NetworkLost { reason } => {
+                cockpit_protocol::TurnOutcome::NetworkLost { reason }
+            }
         }),
         question_source: report.question_source.map(|source| match source {
             QuestionSource::Agent => cockpit_protocol::QuestionSource::Agent,
