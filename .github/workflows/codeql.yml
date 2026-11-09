@@ -13,7 +13,39 @@ permissions:
   contents: read
 
 jobs:
+  # The languages to scan (tools/codeql-languages.py): a pull request scans Rust only when it
+  # touches Rust, so a docs-only change waits on no Rust scan. `actions` is always scanned: the
+  # CodeQL merge protection ruleset needs CodeQL results on every pull request (#1261).
+  languages:
+    if: >-
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
+      ((github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      languages: ${{ steps.select.outputs.languages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select the languages this change needs
+        id: select
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            git diff --name-only --no-renames "$BASE_SHA...HEAD" | python3 tools/codeql-languages.py >> "$GITHUB_OUTPUT"
+          else
+            python3 tools/codeql-languages.py --all >> "$GITHUB_OUTPUT"
+          fi
+
   analyze:
+    needs: languages
     if: >-
       (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
       ((github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main')
@@ -25,7 +57,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [rust, actions]
+        language: ${{ fromJSON(needs.languages.outputs.languages) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

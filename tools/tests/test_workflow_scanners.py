@@ -27,6 +27,15 @@ class ScannerEventTests(unittest.TestCase):
             with self.subTest(event=event, draft=draft, ref=ref):
                 self.assertEqual(allows(expression, context(event, draft, ref=ref)), expected)
 
+    def test_codeql_scans_the_languages_codeql_languages_selects(self):
+        text = (WORKFLOWS / "codeql.yml").read_text()
+        self.assertIn("python3 tools/codeql-languages.py", text)
+        self.assertIn("language: ${{ fromJSON(needs.languages.outputs.languages) }}", text)
+        self.assertNotRegex(text, r"language: \[")
+        self.assertRegex(text, r"(?m)^  analyze:\n    needs: languages\n")
+        conditions = job_conditions(text)
+        self.assertEqual(conditions["languages"], conditions["analyze"])
+
     def test_scorecard_refuses_pr_and_non_main_contexts(self):
         expression = self.condition("scorecard.yml", "scorecard")
         for event, ref, expected in (

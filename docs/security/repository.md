@@ -105,7 +105,7 @@ has its own check:
 | Dependabot security updates | Enabled | `gh api $R/automated-security-fixes` → `{"enabled":true,...}` |
 | Dependabot version updates | Monthly, one grouped PR per ecosystem (Actions, root Cargo workspace), at most 2 open in all | [dependabot.yml](../../.github/dependabot.yml) |
 | Private vulnerability reporting | Enabled | `gh api $R/private-vulnerability-reporting` |
-| CodeQL | [codeql.yml](../../.github/workflows/codeql.yml): Rust and Actions on ready PRs, `main` pushes and weekly; default setup stays `not-configured` (it would conflict) | `gh api "$R/code-scanning/analyses?per_page=10" --jq '.[]\|[.ref,.category,.results_count,.error]'` |
+| CodeQL | [codeql.yml](../../.github/workflows/codeql.yml): Actions on every ready PR, Rust on a ready PR only when it touches Rust, Cargo or toolchain files or the workflow itself ([codeql-languages.py](../../tools/codeql-languages.py)), both on `main` pushes and weekly; default setup stays `not-configured` (it would conflict) | `gh api "$R/code-scanning/analyses?per_page=10" --jq '.[]\|[.ref,.category,.results_count,.error]'` |
 | Scorecard | [scorecard.yml](../../.github/workflows/scorecard.yml) on `main` pushes and weekly; results published to api.scorecard.dev for the README badge | `gh run list -w Scorecard -L 1` and the [viewer](https://scorecard.dev/viewer/?uri=github.com/Androlax2/agent-cockpit) |
 
 CodeQL Rust analysis uses `build-mode: none`, which still runs build scripts and procedural
