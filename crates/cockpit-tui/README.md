@@ -5,7 +5,9 @@ through cockpit-client.
 
 Deliberately basic until M6 (decision 17, report 05): the session list grouped by project,
 open, next needing you, new session (`N`), restart, exit, the approval pane,
-the task view (`T`, #44), the workflow view (`F`, #330), bug report drafts (one needs-you card, the `B` list and the `b`
+the task view (`T`, #44), the workflow view (`F`, #330), a plain row per provider account
+read above the status line with each window's used share and queue pace (#412; the designed
+view is Beta 3's), bug report drafts (one needs-you card, the `B` list and the `b`
 form, #471; review and send stay in `torlek bug-report`, and `B` records the issue of a draft a send opened, #847), the log view and help. Effort, billing, compact and Remote Control are CLI verbs and provider
 capabilities only; no key reaches them here.
 
@@ -38,7 +40,7 @@ detaching the terminal leaves everything running.
   the open task or workflow view) is on the feed as one `view-stamp` per area (#706): when a
   stamp moves, the TUI asks again for that area at once. A slow refresh of all of them
   every 5 s remains for what no commit records (the runner's memory, a question's hold
-  running out). A command's answer never takes a session back to an older revision nor
+  running out, the accounts' plan windows from `usage-quota`). A command's answer never takes a session back to an older revision nor
   brings back one the feed took off.
 - **Usage.** Every key counts as one named command (`open`, `restart`, `approval-approve`,
   `unbound`…) in `$XDG_STATE_HOME/torlek/logs/tui/cockpit.log`: the name only, never what
@@ -153,6 +155,8 @@ and when a session opens or closes; the daemon answers whether the window is a p
 - `tests/workflows.rs`: the `F` view, a running workflow's steps, checkpoint, next action
   and last handoff, and the owner's complete, release, unblock and cancel keys.
 - `tests/usage.rs`: each key's command reaches the TUI's log by name.
+- `tests/quota.rs` (#412): the accounts' rows above the status line, each window's state
+  and queue pace, an account never read, a row cut to the terminal's width.
 - `tests/coordination.rs`: the card's coordinator grants and inbound message line (#410).
 - `tests/e2e/` (#300): the TUI end to end, the way Playwright drives a browser. A real
   daemon on a scratch home under `/tmp`, `torlek tui` attached in a pane of a test-owned

@@ -134,6 +134,9 @@ pub struct App {
     pub(crate) phone_scroll: usize,
     /// The terminal's width and height, as the runtime last drew it.
     pub(crate) screen: Option<(u16, u16)>,
+    /// A row per provider account read: its windows and the queue's pace (#412), timed when
+    /// the answer came, a refresh ago at most; none since a refresh failed.
+    pub(crate) quota_rows: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +183,7 @@ impl App {
             Command::AgentReports,
             Command::ApprovalQueue,
             Command::NetworkList,
+            Command::UsageQuota,
         ]
     }
 
@@ -737,6 +741,9 @@ impl App {
                 ));
             }
             Reply::AgentReports { reports } => self.board.set_reports(reports),
+            Reply::UsageQuota { accounts } => {
+                self.quota_rows = crate::quota::quota_rows(&accounts, crate::quota::unix_now());
+            }
             Reply::ApprovalQueue { runs, guides } => {
                 self.board.set_queue(runs, guides);
                 send = self.follow_queue(now);
@@ -854,6 +861,8 @@ impl App {
         match command {
             Command::AgentReports => self.board.start_source_failed(StartSource::Reports),
             Command::ApprovalQueue => self.board.start_source_failed(StartSource::Queue),
+            // Old windows and waits would pass for current; the status line says why.
+            Command::UsageQuota => self.quota_rows.clear(),
             _ => {}
         }
         if is_column_focus(command) {

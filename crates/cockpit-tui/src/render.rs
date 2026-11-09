@@ -1,5 +1,5 @@
 //! Draws the app: the session list grouped by project, the approval pane, the form, the
-//! help and the log, and a status line. Plain on purpose (decision 17): the designed UI is
+//! help and the log, a row per provider account's plan windows, and a status line. Plain on purpose (decision 17): the designed UI is
 //! M6's. Everything shown comes from the board and the wire fields, never from a screen.
 
 use std::time::Instant;
@@ -97,9 +97,14 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
         return;
     }
     let pane_height = if app.pane().shown().is_some() { 14 } else { 0 };
-    let [main, pane, status] = Layout::vertical([
+    // The accounts get only the rows the list, the pane and the status line leave.
+    let quota_height = u16::try_from(app.quota_rows.len())
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(3 + pane_height + 1));
+    let [main, pane, quota, status] = Layout::vertical([
         Constraint::Min(3),
         Constraint::Length(pane_height),
+        Constraint::Length(quota_height),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -116,6 +121,13 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
     if pane_height > 0 {
         draw_pane(app, frame, pane, now);
     }
+    let width = usize::from(quota.width);
+    let quota_lines: Vec<Line<'_>> = app
+        .quota_rows
+        .iter()
+        .map(|row| Line::from(truncated(row, width)))
+        .collect();
+    frame.render_widget(Paragraph::new(quota_lines), quota);
     frame.render_widget(Paragraph::new(status_line(app)), status);
 }
 
