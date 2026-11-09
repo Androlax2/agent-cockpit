@@ -318,6 +318,27 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE session_launches ADD COLUMN uses_login INTEGER NOT NULL DEFAULT 0
                 CHECK (uses_login IN (0, 1));",
         },
+        // #158: each quota stop and its one resume at the reset, or why it was dropped.
+        Migration {
+            version: 21,
+            sql: "CREATE TABLE session_quota_stops (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL CHECK (session_id <> ''),
+                launch_id INTEGER NOT NULL,
+                provider TEXT NOT NULL CHECK (provider <> ''),
+                account TEXT CHECK (account <> ''),
+                stopped_at INTEGER NOT NULL,
+                confirmed_at INTEGER,
+                resets_at INTEGER,
+                switched_at INTEGER,
+                resumed_at INTEGER,
+                dropped_at INTEGER,
+                dropped_reason TEXT CHECK (dropped_reason <> ''),
+                CHECK ((dropped_at IS NULL) = (dropped_reason IS NULL)),
+                CHECK (resumed_at IS NULL OR dropped_at IS NULL)
+            );
+            CREATE INDEX session_quota_stops_by_session ON session_quota_stops (session_id, id);",
+        },
     ],
 };
 

@@ -67,6 +67,34 @@ pub struct SessionView {
     /// sign-in it cannot keep (#968).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sign_in_needed: Option<String>,
+    /// Its latest quota stop and what became of it (#158).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_stop: Option<QuotaStopView>,
+}
+
+/// A turn a plan's usage limit stopped, and its one resume (#158).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuotaStopView {
+    /// Seconds since the Unix epoch.
+    pub stopped_at: i64,
+    /// The account it stopped on; `None` for the owner's own sign-in.
+    pub account: Option<String>,
+    /// When the plan's spent windows start over, as a reading after the stop said.
+    pub resets_at: Option<i64>,
+    /// When a relaunch moved the session to another account with capacity (#59).
+    pub switched_at: Option<i64>,
+    pub status: QuotaStopStatusView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum QuotaStopStatusView {
+    /// Waits for its plan's reset, or for its new account's agent to wait at its prompt.
+    Waiting,
+    /// It was sent its continue message at `at`.
+    Resumed { at: i64 },
+    /// Nothing resumes it, for `reason`.
+    Dropped { at: i64, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

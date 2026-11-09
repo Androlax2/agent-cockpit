@@ -49,6 +49,7 @@ pub fn session(id: &str, checkout: i64, created_at: i64) -> SessionView {
         inbound_message: None,
         compaction_threshold: None,
         sign_in_needed: None,
+        quota_stop: None,
     }
 }
 

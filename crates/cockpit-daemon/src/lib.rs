@@ -23,6 +23,7 @@ mod manager;
 mod network;
 mod output_retention;
 mod projects;
+mod quota_resume;
 mod readiness;
 mod resources;
 mod routes;
@@ -229,6 +230,7 @@ pub struct Daemon {
     maintaining_database: tokio::task::JoinHandle<()>,
     sweeping_ended: tokio::task::JoinHandle<()>,
     guarding_disk: tokio::task::JoinHandle<()>,
+    resuming_quota_stops: tokio::task::JoinHandle<()>,
     polling_quota: Option<tokio::task::JoinHandle<()>>,
     archiving_costs: Option<tokio::task::JoinHandle<()>>,
     prune_stop: Arc<std::sync::atomic::AtomicBool>,
@@ -624,6 +626,32 @@ impl Instance {
                 )
             },
         ));
+        let resumed_database = Arc::clone(&database);
+        let resumed_sessions = Arc::clone(&sessions);
+        let resume_readings = wiring.quota.as_ref().map(|polling| quota_resume::Readings {
+            policy: polling.policy.clone(),
+            providers: quota_providers
+                .iter()
+                .filter(|provider| {
+                    provider
+                        .capabilities()
+                        .supports(cockpit_provider_api::Capability::Quota)
+                })
+                .map(|provider| provider.name().as_str().to_owned())
+                .collect(),
+        });
+        let resuming_quota_stops = tokio::spawn(supervisor::supervise(
+            "quota-resume",
+            faults.clone(),
+            move || {
+                quota_resume::resume_forever(
+                    Arc::clone(&resumed_database),
+                    Arc::clone(&resumed_sessions),
+                    resume_readings.clone(),
+                    wiring.session_tick,
+                )
+            },
+        ));
         let scanned_sessions = Arc::clone(&sessions);
         let ticking = tokio::spawn(supervisor::supervise(
             "sessions-tick",
@@ -764,6 +792,7 @@ impl Instance {
             maintaining_database,
             sweeping_ended,
             guarding_disk,
+            resuming_quota_stops,
             polling_quota,
             archiving_costs,
             prune_stop,
@@ -897,6 +926,7 @@ impl Drop for Daemon {
         self.maintaining_database.abort();
         self.sweeping_ended.abort();
         self.guarding_disk.abort();
+        self.resuming_quota_stops.abort();
         if let Some(polling) = &self.polling_quota {
             polling.abort();
         }

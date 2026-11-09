@@ -10,9 +10,9 @@ mod scripted;
 
 use cockpit_protocol::{
     AgentExitView, Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, ExitStatusView,
-    HeldMessageView, LaunchKindView, LaunchView, Outcome, ProtocolError, Reply,
-    SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure, SessionStateView,
-    SessionView, StopTargetView,
+    HeldMessageView, LaunchKindView, LaunchView, Outcome, ProtocolError, QuotaStopStatusView,
+    QuotaStopView, Reply, SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView,
+    SessionFailure, SessionStateView, SessionView, StopTargetView,
 };
 use scripted::{scripted_daemon, text};
 
@@ -96,6 +96,7 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
         inbound_message: None,
         compaction_threshold: None,
         sign_in_needed: None,
+        quota_stop: None,
     }
 }
 
@@ -268,6 +269,94 @@ async fn session_show_prints_the_account_a_quota_stop_moved_its_launch_off() {
         "{}",
         text(&output.stdout)
     );
+}
+
+/// One `session show` of a running session whose last quota stop is `stop`, in UTC.
+async fn shown_quota_stop(stop: QuotaStopView) -> String {
+    let home = Home::new();
+    let mut shown = view("s0123456789ab", SessionStateView::Running);
+    shown.quota_stop = Some(stop);
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Session {
+            session: Box::new(shown),
+        }),
+    );
+    let mut command = home.command(&["session", "show", "s0123456789ab"]);
+    command.current_dir(home.dir.path()).env("TZ", "UTC");
+    let output = output_off_runtime(command).await;
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    text(&output.stdout)
+}
+
+/// 2026-11-09 14:00:00 UTC.
+const STOPPED_AT: i64 = 1_794_232_800;
+
+#[tokio::test]
+async fn session_show_prints_each_quota_stop_with_where_its_resume_stands() {
+    let hour = 3600;
+    let cases = [
+        (
+            None,
+            None,
+            None,
+            QuotaStopStatusView::Waiting,
+            "quota stop: 2026-11-09 14:00:00 +00:00 on the owner's sign-in; resumes after the plan's reset\n",
+        ),
+        (
+            None,
+            Some(STOPPED_AT + 5 * hour),
+            None,
+            QuotaStopStatusView::Waiting,
+            "quota stop: 2026-11-09 14:00:00 +00:00 on the owner's sign-in; resumes after the plan's reset at 2026-11-09 19:00:00 +00:00\n",
+        ),
+        (
+            Some("work"),
+            None,
+            Some(STOPPED_AT),
+            QuotaStopStatusView::Waiting,
+            "quota stop: 2026-11-09 14:00:00 +00:00 on account work; resumes once its agent waits on its new account\n",
+        ),
+        (
+            Some("work"),
+            None,
+            Some(STOPPED_AT),
+            QuotaStopStatusView::Resumed {
+                at: STOPPED_AT + 60,
+            },
+            "quota stop: 2026-11-09 14:00:00 +00:00 on account work; resumed at 2026-11-09 14:01:00 +00:00 on its new account\n",
+        ),
+        (
+            None,
+            Some(STOPPED_AT + 5 * hour),
+            None,
+            QuotaStopStatusView::Resumed {
+                at: STOPPED_AT + 5 * hour,
+            },
+            "quota stop: 2026-11-09 14:00:00 +00:00 on the owner's sign-in; resumed at 2026-11-09 19:00:00 +00:00 after the plan's reset\n",
+        ),
+        (
+            None,
+            None,
+            None,
+            QuotaStopStatusView::Dropped {
+                at: STOPPED_AT + hour,
+                reason: "the agent worked again before the reset".to_owned(),
+            },
+            "quota stop: 2026-11-09 14:00:00 +00:00 on the owner's sign-in; not resumed: the agent worked again before the reset\n",
+        ),
+    ];
+    for (account, resets_at, switched_at, status, line) in cases {
+        let stop = QuotaStopView {
+            stopped_at: STOPPED_AT,
+            account: account.map(str::to_owned),
+            resets_at,
+            switched_at,
+            status,
+        };
+        let shown = shown_quota_stop(stop).await;
+        assert!(shown.contains(line), "expected {line:?} in:\n{shown}");
+    }
 }
 
 #[tokio::test]
@@ -601,6 +690,7 @@ async fn session_list_marks_a_finished_session_in_its_work_column() {
                     inbound_message: None,
                     compaction_threshold: None,
                     sign_in_needed: None,
+                    quota_stop: None,
                     ..view("s000000000001", SessionStateView::Running)
                 },
                 view("s000000000002", SessionStateView::Running),

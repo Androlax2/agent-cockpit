@@ -1650,6 +1650,19 @@ async fn a_quota_stop_resumes_the_conversation_on_the_next_account_within_a_minu
         arguments.contains(&format!("--resume {}", before.conversation.unwrap())),
         "{arguments}"
     );
+    // #158: the move makes the stop due its continue message without waiting for a reset.
+    let switched = Instant::now();
+    loop {
+        let stop = listed(&client, &agent.session).await.quota_stop;
+        if stop.as_ref().is_some_and(|stop| stop.switched_at.is_some()) {
+            break;
+        }
+        assert!(
+            switched.elapsed() < Duration::from_secs(5),
+            "the quota stop does not record the move: {stop:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// #59: after an account quota-stops, a new session starts on the next account with

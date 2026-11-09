@@ -2696,14 +2696,34 @@ impl Sessions {
         }
         // Checked before the stop, as a deferred restart is: a refused relaunch keeps its agent.
         self.restart_conversation(session).await?;
-        self.restart_from(
-            lock,
-            &session.id,
-            &[SessionState::Running],
-            LaunchPurpose::Upkeep,
-        )
-        .await
-        .map(Some)
+        let relaunched = self
+            .restart_from(
+                lock,
+                &session.id,
+                &[SessionState::Running],
+                LaunchPurpose::Upkeep,
+            )
+            .await?;
+        // On an account with capacity, the stop is due its continue message now (#158).
+        let write = self.database.write().await?;
+        crate::quota_stops::mark_switched(&write, &session.id).await?;
+        write.commit().await?;
+        Ok(Some(relaunched))
+    }
+
+    /// Whether the quota-stopped running session `id` will move to another account with
+    /// capacity (#59), so its stop needs no reset: `false` for one that is not running or
+    /// not quota-stopped on its current launch. Waits out a relaunch under way, which marks
+    /// the stop switched before it lets go of the session.
+    pub async fn will_switch_account(&self, id: &SessionId) -> Result<bool, Error> {
+        let _operation = self.lock(id).await;
+        let Some((session, agent_report)) = self.running_with_report(id).await? else {
+            return Ok(false);
+        };
+        if !is_quota_stopped(&session, agent_report.as_ref()) {
+            return Ok(false);
+        }
+        self.has_account_with_capacity(&session).await
     }
 
     /// What each of `provider`'s accounts would bind as a sandboxed launch's sign-in (#968,

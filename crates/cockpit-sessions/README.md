@@ -47,6 +47,10 @@ stopped in the middle of one finishes or repairs it at its next start.
   only a report of the current launch. A dialog the bridge saw clears on the next report;
   the agent's own question waits for a new prompt or launch (#182) and stays beneath a
   dialog, open again once the dialog is answered (#214).
+- **Quota stops** (#158, `quota_stops.rs`). A report whose turn quota-stopped records one
+  stop in its own transaction; a later stop, a report of work or another ended turn drops it.
+  The daemon resumes each stop at most once: it claims `resumed_at` before sending the
+  continue message. The #59 relaunch marks the stop switched, so it is due at once.
 - **Reports bound to their conversation** (#219). A report that names its conversation is
   refused unless it is the session's, so a hook run with another launch's environment cannot
   move this session's state. The session follows a legitimate change (`/clear`, an
