@@ -23,6 +23,9 @@ pub enum Event {
     /// A plan window passed one of the owner's alert thresholds (#58). Not a session's: the
     /// notice names the provider's window.
     Usage,
+    /// A queued item's sessions worked it past its budget of agent minutes (#412). Not a
+    /// session's: the notice names the item.
+    Budget,
     /// It finished its work: the task list says so (#1127).
     Finished,
     /// Its agent completed a turn, whether or not its work is done. Off by default for both
@@ -31,13 +34,14 @@ pub enum Event {
 }
 
 impl Event {
-    pub const ALL: [Event; 8] = [
+    pub const ALL: [Event; 9] = [
         Event::Failure,
         Event::Hold,
         Event::Question,
         Event::Quota,
         Event::Disk,
         Event::Usage,
+        Event::Budget,
         Event::Finished,
         Event::Turn,
     ];
@@ -59,6 +63,7 @@ impl Event {
             Event::Quota => "quota",
             Event::Disk => "disk",
             Event::Usage => "usage",
+            Event::Budget => "budget",
             Event::Finished => "finished",
             Event::Turn => "turn",
         }

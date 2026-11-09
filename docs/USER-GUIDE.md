@@ -230,7 +230,9 @@ while the item was there, whoever prompted them. A reopened item keeps its budge
 time already worked, so it waits for more time if it used its budget. Once that reaches the budget, the queue places none of it again,
 neither the item after a session gave it back nor its workflow's next step, and `torlek queue
 explain` shows `over-budget` with the command that gives it 30 minutes more. A turn under way
-is never cut and the agent is not told: it may finish the item past its budget. Handing the
+is never cut and the agent is not told: it may finish the item past its budget. The first turn
+that ends past the budget tells you once (the `budget` event of `torlek notify`); setting the
+budget again, finishing or deleting the item makes the next one news again. Handing the
 item to a session yourself (`torlek todo handoff`) goes on whatever its budget. Work an agent
 started on its own (`torlek todo start`) counts nothing, nor do sessions the queue did not
 place the item on.
@@ -455,7 +457,8 @@ question = "/home/me/sounds/question.wav"
 exits with an error when it cannot. An agent's own terminal bell (Claude Code `terminal_bell`,
 Codex `bel`) is a second sound the notifier does not control.
 
-The events are `failure`, `hold`, `question`, `quota`, `disk`, `usage`, `finished` and `turn`. `disk`
+The events are `failure`, `hold`, `question`, `quota`, `disk`, `usage`, `budget`, `finished` and
+`turn`. `budget` is told once when a turn ends past a task's budget of agent minutes. `disk`
 is told when free space falls below the floor, once per fall: not again while it stays low, but
 again when it rises above the floor and falls below it again. `usage` is told once per threshold
 and window: when the five-hour window passes 80 %, again at 95 %, and again after it resets. `quota`

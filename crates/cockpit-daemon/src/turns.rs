@@ -5,10 +5,13 @@
 //! difference. A pass that finds nothing to record takes no write transaction, so it does
 //! not wake itself.
 //!
+//! A turn's end is also when an item placed on the session may have spent its budget: the
+//! pass tells it in the same transaction (`budgets`, #412).
+//!
 //! A turn that begins and ends between two passes is missed; a turn lasts longer than a pass.
 //! A session that stopped while its agent worked ends the turn at the session's last change.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -118,6 +121,14 @@ async fn pass(database: &Database, sessions: &Sessions) -> Result<(), String> {
             }
             Err(error) => return Err(error.to_string()),
         }
+    }
+    if !difference.ends.is_empty() {
+        let ended: BTreeSet<&str> = difference
+            .ends
+            .iter()
+            .map(|(session, _)| session.as_str())
+            .collect();
+        crate::budgets::publish_spent(&write, &ended, now).await?;
     }
     for (session, working_dir, began_at) in &difference.begins {
         let project =

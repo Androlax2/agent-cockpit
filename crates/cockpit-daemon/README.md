@@ -205,6 +205,12 @@ not share code.
   provider's capabilities, and what its current launch's agent last reported. The session
   last shown in the manager's viewer is the one the owner views.
 - `queue-explain` reads the records the last pass wrote; nothing is computed on request.
+- Each pass counts the agent seconds of every open item with a budget (`src/budgets.rs`,
+  #412). When the turn recorder ends a turn of a session an item with a budget was placed on,
+  and its sessions worked it for the budget or longer, it publishes a `budget-spent` entity,
+  id the item's, in the turn's own transaction, so `torlek-notify` tells the owner. The same
+  state again changes nothing; `task-budget`, `task-done` and `task-delete` retract it in
+  their own transaction, so the next spent budget is news again.
 
 ## Database maintenance (#406)
 
@@ -355,7 +361,9 @@ builds it only when asked and no release installs it.
   an agent cannot run a check or read a receipt, an agent's claim stays unverified, socket
   roles, and checks refused before they run (undeclared, untrusted, another environment).
 - `tests/scheduling.rs`: issue #43 on the binary's sockets: a queued item placed on the idle
-  session of its project, the working session named in its explanation.
+  session of its project, the working session named in its explanation; `scheduling/budget.rs`,
+  a turn ended past an item's budget put on the feed once and taken back by the owner's next
+  decision (#412).
 - `tests/executions.rs`: a daemon started after a killed one reattaches an execution that
   kept running and releases one that ended meanwhile, before it accepts requests.
 - `tests/overload.rs`: issue #26's overload fixture and panic containment, on the real socket

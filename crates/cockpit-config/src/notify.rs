@@ -12,8 +12,8 @@ use toml::Spanned;
 pub const AWAY_HOLD: &str = "away";
 
 /// The events the notifier tells, in its names, most urgent first.
-pub const NOTIFY_EVENTS: [&str; 8] = [
-    "failure", "hold", "question", "quota", "disk", "usage", "finished", "turn",
+pub const NOTIFY_EVENTS: [&str; 9] = [
+    "failure", "hold", "question", "quota", "disk", "usage", "budget", "finished", "turn",
 ];
 
 /// Whether each of [`NOTIFY_EVENTS`] is on, in that order. Every event is on by default but
@@ -26,6 +26,7 @@ pub struct NotifyEvents {
     pub quota: Sourced<bool>,
     pub disk: Sourced<bool>,
     pub usage: Sourced<bool>,
+    pub budget: Sourced<bool>,
     pub finished: Sourced<bool>,
     pub turn: Sourced<bool>,
 }
@@ -40,13 +41,14 @@ impl NotifyEvents {
             quota: on(),
             disk: on(),
             usage: on(),
+            budget: on(),
             finished: on(),
             turn: Sourced::new(false, Source::ProductDefault),
         }
     }
 
     /// Each event's name with its setting, in [`NOTIFY_EVENTS`] order.
-    pub fn by_name(&self) -> [(&'static str, &Sourced<bool>); 8] {
+    pub fn by_name(&self) -> [(&'static str, &Sourced<bool>); 9] {
         [
             (NOTIFY_EVENTS[0], &self.failure),
             (NOTIFY_EVENTS[1], &self.hold),
@@ -54,8 +56,9 @@ impl NotifyEvents {
             (NOTIFY_EVENTS[3], &self.quota),
             (NOTIFY_EVENTS[4], &self.disk),
             (NOTIFY_EVENTS[5], &self.usage),
-            (NOTIFY_EVENTS[6], &self.finished),
-            (NOTIFY_EVENTS[7], &self.turn),
+            (NOTIFY_EVENTS[6], &self.budget),
+            (NOTIFY_EVENTS[7], &self.finished),
+            (NOTIFY_EVENTS[8], &self.turn),
         ]
     }
 
@@ -111,6 +114,7 @@ struct NotifySoundTable {
     quota: Option<Spanned<bool>>,
     disk: Option<Spanned<bool>>,
     usage: Option<Spanned<bool>>,
+    budget: Option<Spanned<bool>>,
     finished: Option<Spanned<bool>>,
     turn: Option<Spanned<bool>>,
     files: Option<BTreeMap<String, Spanned<String>>>,
@@ -125,6 +129,7 @@ struct NotifyEventsTable {
     quota: Option<Spanned<bool>>,
     disk: Option<Spanned<bool>>,
     usage: Option<Spanned<bool>>,
+    budget: Option<Spanned<bool>>,
     finished: Option<Spanned<bool>>,
     turn: Option<Spanned<bool>>,
 }
@@ -214,6 +219,7 @@ impl NotifySoundTable {
             quota: self.quota.clone(),
             disk: self.disk.clone(),
             usage: self.usage.clone(),
+            budget: self.budget.clone(),
             finished: self.finished.clone(),
             turn: self.turn.clone(),
         }
@@ -268,6 +274,7 @@ fn apply(layer: &Layer, table: &NotifyEventsTable, events: &mut NotifyEvents) {
         (&table.quota, &mut events.quota),
         (&table.disk, &mut events.disk),
         (&table.usage, &mut events.usage),
+        (&table.budget, &mut events.budget),
         (&table.finished, &mut events.finished),
         (&table.turn, &mut events.turn),
     ];

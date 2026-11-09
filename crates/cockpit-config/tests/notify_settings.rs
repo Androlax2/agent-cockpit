@@ -35,7 +35,7 @@ fn a_clean_home_tells_every_event_but_turn_both_ways() {
         }
         assert_eq!(
             events.to_argument(),
-            "failure,hold,question,quota,disk,usage,finished"
+            "failure,hold,question,quota,disk,usage,budget,finished"
         );
     }
 }
@@ -58,7 +58,7 @@ fn the_owner_turns_one_sound_off_with_its_line_and_keeps_its_notification() {
     assert!(config.notify.desktop.finished.value);
     assert_eq!(
         config.notify.sound.to_argument(),
-        "failure,hold,question,quota,disk,usage"
+        "failure,hold,question,quota,disk,usage,budget"
     );
 }
 
@@ -73,7 +73,7 @@ fn the_owner_turns_the_low_disk_notice_off_for_the_desktop_only() {
     assert!(config.notify.sound.disk.value);
     assert_eq!(
         config.notify.desktop.to_argument(),
-        "failure,hold,question,quota,usage,finished"
+        "failure,hold,question,quota,usage,budget,finished"
     );
 }
 
@@ -88,7 +88,7 @@ fn the_owner_turns_the_quota_alerts_off_for_the_sound_only() {
     assert!(!config.notify.sound.usage.value);
     assert_eq!(
         config.notify.sound.to_argument(),
-        "failure,hold,question,quota,disk,finished"
+        "failure,hold,question,quota,disk,budget,finished"
     );
 }
 
@@ -233,6 +233,21 @@ fn the_owner_turns_autostart_off_and_config_show_says_where() {
 }
 
 #[test]
+fn the_owner_turns_the_spent_budget_notice_off_for_the_desktop_only() {
+    let home = TempDir::new().unwrap();
+    write_user_config(home.path(), "[notify.desktop]\nbudget = false\n");
+
+    let config = load(home.path(), None).unwrap();
+
+    assert!(!config.notify.desktop.budget.value);
+    assert!(config.notify.sound.budget.value);
+    assert_eq!(
+        config.notify.desktop.to_argument(),
+        "failure,hold,question,quota,disk,usage,finished"
+    );
+}
+
+#[test]
 fn the_owner_turns_on_the_completed_turn_event_for_the_desktop_only() {
     let home = TempDir::new().unwrap();
     write_user_config(home.path(), "[notify.desktop]\nturn = true\n");
@@ -243,7 +258,10 @@ fn the_owner_turns_on_the_completed_turn_event_for_the_desktop_only() {
     assert!(!config.notify.sound.turn.value);
     assert_eq!(
         config.notify.desktop.to_argument(),
-        format!("{},turn", "failure,hold,question,quota,disk,usage,finished")
+        format!(
+            "{},turn",
+            "failure,hold,question,quota,disk,usage,budget,finished"
+        )
     );
 }
 

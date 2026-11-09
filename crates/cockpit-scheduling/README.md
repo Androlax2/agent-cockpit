@@ -25,7 +25,8 @@ An item's budget (`budget_minutes` in `cockpit-tasks`, #412 owner choice 2A) cou
 seconds the daemon passes in `Inputs::agent_seconds`: the turns of each session it was placed
 on while that placement held (`work_spans`). Placed work runs on past it; the queue only stops
 placing the item again or its run's next step, and the action offers 30 minutes more. The
-owner's handoff is their answer, so a budget never holds it.
+owner's handoff is their answer, so a budget never holds it. The daemon tells the owner once,
+when a turn ends past the budget (`budget-spent` on the change feed).
 
 ## One pass
 

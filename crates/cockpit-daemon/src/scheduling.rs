@@ -383,21 +383,9 @@ async fn agent_seconds(
     .map_err(|error| internal(&error))?;
     let mut spent = BTreeMap::new();
     for item in items.iter().filter(|item| item.budget_minutes.is_some()) {
-        let spans = cockpit_scheduling::work_spans(read, item.id)
+        let seconds = crate::budgets::worked_seconds(read, item.id, now)
             .await
             .map_err(|error| internal(&error))?;
-        let mut seconds: u64 = 0;
-        for span in spans {
-            let worked = cockpit_usage::turn_seconds(
-                read,
-                span.session.as_str(),
-                span.from,
-                span.until.unwrap_or(now),
-            )
-            .await
-            .map_err(|error| internal(&error))?;
-            seconds = seconds.saturating_add(worked);
-        }
         spent.insert(item.id, seconds);
     }
     Ok(spent)
