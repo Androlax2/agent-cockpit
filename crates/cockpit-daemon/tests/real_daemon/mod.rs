@@ -99,7 +99,7 @@ fi
 if [ "$*" = 'auth status' ]; then exit 2; fi
 printf '%s pid=%s\n' "$TORLEK_SESSION" "$$" >> '@LOG@'
 printf '%s %s\n' "$TORLEK_SESSION" "$*" >> '@LOG@.arguments'
-printf '%s %s %s\n' "$TORLEK_SESSION" "${TMPDIR-unset}" "${CLAUDE_CODE_TMPDIR-unset}" \
+printf '%s %s %s %s\n' "$TORLEK_SESSION" "${TMPDIR-unset}" "${CLAUDE_CODE_TMPDIR-unset}" "${DOCKER_CONFIG-unset}" \
   >> '@TEMP_LOG@'
 printf '%s %s %s\n' "$TORLEK_SESSION" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" \
   >> '@GITHUB_LOG@'
