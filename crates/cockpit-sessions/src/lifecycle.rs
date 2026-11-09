@@ -2670,7 +2670,7 @@ impl Sessions {
     /// next account with capacity, resuming its conversation (report 18, #59): the daemon
     /// calls it as the quota stop is recorded, and its periodic pass again. `None`, changing
     /// nothing, for a session that is not quota-stopped or has no account to move to. A move
-    /// that fails asks the owner at once (#158).
+    /// that is refused asks the owner at once (#158).
     pub async fn relaunch_quota_stopped(&self, id: &SessionId) -> Result<Option<Session>, Error> {
         self.tmux()?;
         let operation = self.lock(id).await;
@@ -2692,25 +2692,16 @@ impl Sessions {
         {
             return Ok(None);
         }
-        let moved = self.move_to_next_account(lock, session).await;
-        if let Err(error) = &moved {
-            self.hand_failed_move_to_owner(&session.id, error).await;
-        }
-        moved
-    }
-
-    /// Relaunches the quota-stopped `session` on the next account with capacity, if it has
-    /// one, for [`Self::relaunch_quota_stopped_locked`].
-    async fn move_to_next_account(
-        &self,
-        lock: &Operation,
-        session: &Session,
-    ) -> Result<Option<Session>, Error> {
         if !self.has_account_with_capacity(session).await? {
             return Ok(None);
         }
         // Checked before the stop, as a deferred restart is: a refused relaunch keeps its agent.
-        self.restart_conversation(session).await?;
+        // The refusal holds until the owner changes something, so the owner is asked at once
+        // (#158). A failure past it is retried by the periodic pass, or fails the session.
+        if let Err(refusal) = self.restart_conversation(session).await {
+            self.hand_refused_move_to_owner(&session.id).await;
+            return Err(refusal);
+        }
         let relaunched = self
             .restart_from(
                 lock,
@@ -2728,21 +2719,27 @@ impl Sessions {
         Ok(Some(relaunched))
     }
 
-    /// Asks the owner to continue the session whose quota-stop move failed with `error`, at
-    /// once rather than once its stop is overdue (#158): its stop is dropped with
-    /// [`FAILED_MOVE_REASON`], which becomes its needs-you question. The periodic pass still
-    /// tries the move again. The move's own error is the caller's, so this one only logs.
-    async fn hand_failed_move_to_owner(&self, id: &SessionId, error: &Error) {
-        tracing::warn!(session = %id, %error, "a quota-stopped session's move to another account failed");
+    /// Asks the owner to continue the session whose quota-stop move was refused, at once
+    /// rather than once its stop is overdue (#158): its open stop is dropped with
+    /// [`REFUSED_MOVE_REASON`], which becomes its needs-you question. The refusal is the
+    /// caller's to report, so a failure to hand the stop over is only logged.
+    async fn hand_refused_move_to_owner(&self, id: &SessionId) {
         let handed = async {
             let write = self.database.write().await?;
-            crate::quota_stops::hand_open_to_owner(&write, id, FAILED_MOVE_REASON).await?;
+            let handed =
+                crate::quota_stops::hand_open_to_owner(&write, id, REFUSED_MOVE_REASON).await?;
             write.commit().await?;
-            Ok::<(), Error>(())
+            Ok::<bool, Error>(handed)
         }
         .await;
-        if let Err(handing) = handed {
-            tracing::error!(session = %id, error = %handing, "handing a quota stop whose move failed to the owner failed");
+        match handed {
+            Ok(true) => {
+                tracing::warn!(session = %id, "a quota stop whose move was refused waits on the owner");
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::error!(session = %id, %error, "handing a quota stop whose move was refused to the owner failed");
+            }
         }
     }
 
@@ -3779,10 +3776,10 @@ enum Holding {
 /// own estimate; a launch with no other account still takes it.
 const QUOTA_STOP_HOLD_SECONDS: i64 = 5 * 60 * 60;
 
-/// The needs-you question of a quota-stopped session whose move to another account failed
-/// (#158); the daemon log holds the move's error, which may not fit a question.
-const FAILED_MOVE_REASON: &str = "quota-stopped, and moving it to another account with \
-     capacity failed (the daemon log says why): continue the session yourself";
+/// The needs-you question of a quota-stopped session whose move to another account was
+/// refused (#158); the daemon log holds the refusal, which may not fit a question.
+const REFUSED_MOVE_REASON: &str = "quota-stopped, and its move to another account with \
+     capacity was refused (the daemon log says why): continue the session yourself";
 
 /// Which account a launch takes (report 18, #59).
 #[derive(Debug)]

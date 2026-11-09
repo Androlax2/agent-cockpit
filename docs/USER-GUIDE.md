@@ -359,7 +359,7 @@ prints the stop and where its resume stands, for example `quota stop: 2026-11-09
 again or its session ends, the stop is dropped and no message goes out. Torlek reads no plan
 windows for a named account, nor for a provider without plan windows, so a stop there it
 cannot move asks you to continue the session yourself, as does a stop whose windows show room,
-a move to another account that fails, a wake that fails, or a stop still waiting five hours on (an hour past the reset a reading said,
+a move to another account that is refused, a wake that fails, or a stop still waiting five hours on (an hour past the reset a reading said,
 if later).
 
 A limit the harness does not name as a spent plan can still be one. When a Claude Code

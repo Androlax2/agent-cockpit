@@ -1729,11 +1729,11 @@ async fn a_quota_stop_with_no_other_account_keeps_the_session_where_it_is() {
     assert_eq!(session.launch.unwrap(), before);
 }
 
-/// #158: a quota stop whose move to another account fails asks the owner at once, rather
+/// #158: a quota stop whose move to another account is refused asks the owner at once, rather
 /// than once the stop is overdue, and the session keeps its agent. The move is refused because
 /// the owner turned the sandbox on after the session's first, unsandboxed launch (#969).
 #[tokio::test(flavor = "multi_thread")]
-async fn a_quota_stop_whose_account_move_fails_asks_the_owner_at_once() {
+async fn a_quota_stop_whose_account_move_is_refused_asks_the_owner_at_once() {
     let home = Home::new();
     // The accounts are read at start; only the sandbox setting follows a reload.
     home.write_owner_config(TWO_ACCOUNTS);
@@ -1770,12 +1770,12 @@ async fn a_quota_stop_whose_account_move_fails_asks_the_owner_at_once() {
         }
         assert!(
             Instant::now() < deadline,
-            "the failed move did not reach the owner: {session:?}"
+            "the refused move did not reach the owner: {session:?}"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     assert!(
-        reason.contains("moving it to another account with capacity failed"),
+        reason.contains("its move to another account with capacity was refused"),
         "{reason}"
     );
     let reply = client

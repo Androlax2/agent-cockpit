@@ -27,9 +27,10 @@ Evidence: `crates/cockpit-daemon/tests/quota_resume.rs`, `crates/cockpit-daemon/
 
 ## Revisited 2026-11-09 (#158)
 
-A #59 move that fails hands the stop to the owner at once, instead of once it is overdue:
-the session stays on its spent account, and five hours is too long to wait for a move that a
-refusal, such as a changed sandbox setting (#969), will keep refusing. The periodic pass still
-tries the move. The issue's scope asks for it (item 2); the coordinator chose it over leaving
-the stop to the overdue hand-over.
-Evidence: `cockpit-daemon` `sandbox::a_quota_stop_whose_account_move_fails_asks_the_owner_at_once`.
+A #59 move refused before it stops the agent hands the stop to the owner at once, instead of
+once it is overdue: the session stays on its spent account, and five hours is too long to wait
+for a move that a refusal, such as a changed sandbox setting (#969), will keep refusing. The
+periodic pass still tries the move. A failure past the refusal is not handed over: a passing
+error is retried, and a failed launch fails the session, which shows it. The issue's scope asks
+for it (item 2); the coordinator chose it over leaving the stop to the overdue hand-over.
+Evidence: `cockpit-daemon` `sandbox::a_quota_stop_whose_account_move_is_refused_asks_the_owner_at_once`.
