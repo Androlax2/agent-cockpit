@@ -28,16 +28,16 @@ cheapest first:
 5. **Decide each cell with a written stopping rule** ([below](#stopping-rule)), not by
    re-comparing every 10 rows, which is a form of peeking.
 6. **Before a new model's first live trial, run it on a small replay set of past issues**
-   (decision D3), paired against the merged result. Cost: about 4 hours per new configuration,
-   not per alpha.
+   (D3, decided A), paired against the merged result. Cost: about 4 to 6 hours per new
+   configuration, not per alpha.
 7. **Add a reviewer from another model family on a sample** once Codex trials start
-   (decision D2). Today's reviewer is always Claude and is likely to be lenient on Claude authors.
+   (D2, decided A). Today's reviewer is always Claude and is likely to be lenient on Claude authors.
    Cost: about 1 hour per alpha.
 
 Not recommended at our volume: bandit algorithms, Elo or pairwise rankings, learned routers,
 pass^k on live work, and public benchmark scores as the deciding evidence (see
-[Survey](#survey)). Parts 3 to 7 together cost about 3 hours of agent time per alpha, plus 4 hours
-whenever a new model enters.
+[Survey](#survey)). Parts 3 to 7 together cost about 3 hours of agent time per alpha, plus 4 to 6
+hours whenever a new model enters.
 
 Decisions for the owner, one at a time ([details](#decisions-for-the-owner)):
 
@@ -409,11 +409,10 @@ Per trial cell and per model version, with one issue counted once:
 
 Four merged issues from this repository, chosen to discriminate and kept fixed: one contained
 fix with a clear test, one cross-crate (risky) change, one security change and one docs or
-research change. Each is rerun from its base commit with the original issue text as the brief, in
-a fresh clone, and reviewed by the same blind reviewer as live trials, against the merged PR.
-Tasks merged after the candidate model's training cutoff avoid most contamination. **Cost**
-(*Est.*): 4 runs of about 40 minutes plus 4 reviews of about 20 minutes, about 4 hours per new
-configuration.
+research change. Each is rerun from its base commit with the original issue text as the brief and
+reviewed by the same blind reviewer as live trials, against the merged PR. **Cost** (*Est.*): 4
+runs of 40 to 90 minutes (the security issue is the longest) plus 4 reviews of about 20 minutes,
+about 4 to 6 hours per new configuration; D3 was asked at about 4 hours.
 
 The set, fixed on 2026-11-09. The base commit is the parent of the merge commit on `main`, so the
 merged pull request is the reference result.
@@ -423,12 +422,24 @@ merged pull request is the reference result.
 | Contained, clear test | [#1183](https://github.com/Androlax2/agent-cockpit/issues/1183) | [#1186](https://github.com/Androlax2/agent-cockpit/pull/1186) | `cce11f7c8eceac3a83bba46f479d00b67f26f9f2` | Refusal messages tested at the CLI; the reference took 6 review findings |
 | Risky, cross-crate | [#1003](https://github.com/Androlax2/agent-cockpit/issues/1003) | [#1012](https://github.com/Androlax2/agent-cockpit/pull/1012) | `f1b9b05ed72d74c2b555577ec716f37ae18a696e` | A race across daemon, sandbox and sessions; the reference reproduced it deterministically first |
 | Security | [#1160](https://github.com/Androlax2/agent-cockpit/issues/1160) | [#1162](https://github.com/Androlax2/agent-cockpit/pull/1162) | `49523a5160dc20cf221b1323d0b9f2e76bf74e2a` | An input-echo leak across five crates; the reference proved the leak with a failing test first |
-| Docs | [#1028](https://github.com/Androlax2/agent-cockpit/issues/1028) | [#1059](https://github.com/Androlax2/agent-cockpit/pull/1059) | `37c9ba4ef026d450615290d36c247b27879c8d56` | Moving 7 decision records into code, gates and release docs, then deleting them, without breaking a link |
+| Research | [#618](https://github.com/Androlax2/agent-cockpit/issues/618) | [#1016](https://github.com/Androlax2/agent-cockpit/pull/1016) | `fda4754b5708308f46a81048d64804117439f510` | A repository-wide documentation plan, one Markdown file; the reference failed a Markdown lint check in CI |
 
-All four merged between 2026-11-06 and 2026-11-08. Check that this is after each candidate's
-stated training cutoff before using the set; replace an issue that is not. Where the reference
-worker asked the owner a question (#1160: the sudo design, answered B), put the answer in the
-brief, so the replay measures the work and not the question.
+How a replay runs:
+
+- **No access to the answer.** Fetch only the base commit into a new repository with no `origin`
+  remote, and run without GitHub or web access: the merged fix is on `main`, and the issue links
+  to its pull request.
+- **Known failures first.** Before the first replay, run the workspace tests once at each base
+  commit and record what already fails there (sandboxed runs of #1186 and #1162 reported
+  `cockpit-tui` end-to-end failures). Those failures do not count against the model.
+- **Owner questions.** The person running the replay answers them in the session, using the
+  reference as the answer key: for #1160 the sudo design recorded in the decision file #1162
+  added; for #618, the recommended option each time, as the owner chose then. The decision file
+  is not in the brief, because it did not exist at the base commit.
+- **Contamination is labelled, not replaced.** All four merged between 2026-11-06 and 2026-11-08.
+  A candidate whose stated training cutoff is later may have seen them; keep the set, so results
+  stay comparable across models, and mark that model's replay rows as possibly contaminated in
+  `notes`. Rotate the set only with a release, keeping the old one's results.
 
 ### Budget per alpha (*Est.*)
 
@@ -438,7 +449,7 @@ brief, so the replay measures the work and not the question.
 | Control reviews, 1 in 4 defaults (D1) | 1.5 to 2 h |
 | Second-family reviews, 1 in 4 reviewed PRs (D2) | about 1 h |
 | Blind prompt and checklist, once | 0.5 h |
-| Replay, per new configuration only (D3) | about 4 h |
+| Replay, per new configuration only (D3) | about 4 to 6 h |
 | Row bookkeeping and card | minutes per row |
 
 ## Decisions for the owner
