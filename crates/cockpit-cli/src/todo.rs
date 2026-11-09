@@ -431,7 +431,7 @@ fn item_id(text: &str) -> Result<i64, String> {
 }
 
 /// `none` lifts the budget; the daemon refuses 0 minutes.
-fn budget(text: &str) -> Result<TaskBudgetView, String> {
+pub(crate) fn budget(text: &str) -> Result<TaskBudgetView, String> {
     if text == "none" {
         return Ok(TaskBudgetView::NoLimit);
     }

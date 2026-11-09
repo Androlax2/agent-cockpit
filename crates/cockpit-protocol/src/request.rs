@@ -520,6 +520,13 @@ pub enum Command {
         session: String,
         url: String,
     },
+    /// Owner only: the agent minutes the session may work, counted from its start, before the
+    /// queue places nothing more on it and asks the owner (#412). Same form as `task-budget`'s;
+    /// required, so a request that misnames it never lifts a budget.
+    SessionBudget {
+        session: String,
+        budget: TaskBudgetView,
+    },
     /// File an item. The owner names `project`; an agent files in its own project's list
     /// without one, or hands it across to `project`'s. `after` names items it waits on.
     TaskAdd {

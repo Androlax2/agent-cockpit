@@ -402,6 +402,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE session_quota_stops ADD COLUMN cause TEXT NOT NULL DEFAULT 'quota'
                 CHECK (cause IN ('quota', 'network'));",
         },
+        // #412: the owner's budget of agent minutes for the session; past it the queue places
+        // nothing more on it.
+        Migration {
+            version: 25,
+            sql: "ALTER TABLE sessions ADD COLUMN budget_minutes INTEGER
+                CHECK (budget_minutes >= 1);",
+        },
     ],
 };
 
@@ -429,7 +436,7 @@ const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout
     EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id),
     (SELECT max(w.working_order) FROM session_launches w WHERE w.session_id = s.id),
     e.ended_by, e.code, e.output, s.model, s.effort, s.started_by, s.compaction_threshold,
-    l.account, l.switched_from, l.passed_over";
+    l.account, l.switched_from, l.passed_over, s.budget_minutes";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
     (SELECT max(id) FROM session_launches WHERE session_id = s.id)
     LEFT JOIN session_exits e ON e.launch_id = l.id";
@@ -1087,6 +1094,23 @@ pub(crate) async fn set_design_link(
     session(write, id).await
 }
 
+/// Sets or lifts (`None`) `id`'s budget of agent minutes (#412).
+pub(crate) async fn set_budget(
+    write: &WriteTransaction<'_>,
+    id: &SessionId,
+    minutes: Option<u32>,
+) -> Result<Session, Error> {
+    session(write, id).await?;
+    write
+        .execute(
+            "UPDATE sessions SET budget_minutes = ?2, revision = revision + 1, changed_at = ?3
+             WHERE id = ?1",
+            (id.as_str(), minutes.map(i64::from), now()),
+        )
+        .await?;
+    session(write, id).await
+}
+
 fn session_from_row(row: &Row) -> Result<Session, Error> {
     let id_text: String = row.get(0)?;
     let invalid = |reason: String| Error::InvalidStoredRow {
@@ -1148,6 +1172,11 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
         .map(|starter| SessionId::parse(&starter))
         .transpose()
         .map_err(|error| invalid(format!("started_by: {error}")))?;
+    let budget_minutes = row
+        .get::<Option<i64>>(29)?
+        .map(u32::try_from)
+        .transpose()
+        .map_err(|error| invalid(format!("budget_minutes: {error}")))?;
     Ok(Session {
         id,
         provider,
@@ -1169,6 +1198,7 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
         working_launch_order,
         restart_pending,
         started_by,
+        budget_minutes,
     })
 }
 

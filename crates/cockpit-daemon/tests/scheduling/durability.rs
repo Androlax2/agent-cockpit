@@ -37,6 +37,7 @@ async fn crash_window(delivered: bool) {
                 account: None,
                 model: None,
                 effort: None,
+                budget: None,
             }],
             viewed: None,
             usage: Vec::new(),

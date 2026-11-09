@@ -9,7 +9,7 @@ use cockpit_protocol::{
     AgentExitView, AppliedSettingView, Command, DESKTOP_SESSION_VARIABLES, ErrorCode,
     ExitStatusView, LaunchKindView, LaunchView, Outcome, ProtocolError, QuotaStopCauseView,
     QuotaStopStatusView, QuotaStopView, Reply, SandboxEnforcementView, SandboxEvidenceView,
-    SandboxRuleView, SessionFailure, SessionStateView, SessionView, StopTargetView,
+    SandboxRuleView, SessionFailure, SessionStateView, SessionView, StopTargetView, TaskBudgetView,
 };
 use cockpit_sessions::{
     DesktopSession, Error, ExitStatus, LaunchKind, QuotaStopResolution, Restored, Session,
@@ -204,6 +204,15 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
         Command::SessionLink { session, url } => {
             one(session, sessions, |sessions, id| async move {
                 sessions.link(&id, &url).await
+            })
+        }
+        Command::SessionBudget { session, budget } => {
+            let minutes = match budget {
+                TaskBudgetView::NoLimit => None,
+                TaskBudgetView::Minutes(minutes) => Some(minutes),
+            };
+            one(session, sessions, move |sessions, id| async move {
+                sessions.budget(&id, minutes).await
             })
         }
         other => {
@@ -461,6 +470,7 @@ fn error_code(error: &Error) -> ErrorCode {
     match error {
         Error::InvalidSessionId { .. }
         | Error::InvalidLink { .. }
+        | Error::EmptyBudget
         | Error::InvalidMessage { .. }
         | Error::InvalidValue(_)
         | Error::ProviderNeeded { .. } => ErrorCode::InvalidArgument,
@@ -670,6 +680,7 @@ fn session_view(
         conversation: session.conversation.as_ref().map(ToString::to_string),
         model: session.model.clone(),
         effort: session.effort.clone(),
+        budget_minutes: session.budget_minutes,
         design_link: session.design_link.clone(),
         state: state_view(session.state),
         reason: session.reason.clone(),

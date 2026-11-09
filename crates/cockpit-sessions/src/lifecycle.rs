@@ -872,6 +872,19 @@ impl Sessions {
         Ok(session)
     }
 
+    /// Sets or lifts (`None`) the session's budget of agent minutes (#412). A budget of zero
+    /// minutes is refused: `None` is the way to have no limit.
+    pub async fn budget(&self, id: &SessionId, minutes: Option<u32>) -> Result<Session, Error> {
+        if minutes == Some(0) {
+            return Err(Error::EmptyBudget);
+        }
+        let _operation = self.lock(id).await;
+        let write = self.database.write().await?;
+        let session = store::set_budget(&write, id, minutes).await?;
+        write.commit().await?;
+        Ok(session)
+    }
+
     /// Reboot restore, run once at daemon start after the processes reconciled and before
     /// requests are accepted. A session that was active and whose agent is gone is reopened
     /// with its conversation, without a key press; a reopen that fails leaves the session

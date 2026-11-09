@@ -489,6 +489,7 @@ impl Handler for Routes {
                 | Command::SessionEnd { .. }
                 | Command::SessionEndFinished { .. }
                 | Command::SessionLink { .. }
+                | Command::SessionBudget { .. }
                 | Command::SessionSandbox { .. }
                 | Command::SessionSandboxRecord { .. }
                 | Command::SandboxShow { .. }),

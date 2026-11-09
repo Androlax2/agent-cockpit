@@ -95,6 +95,10 @@ pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
             session: session(id),
             url: (*url).to_owned(),
         },
+        ["budget", id, minutes] => Command::SessionBudget {
+            session: session(id),
+            budget: crate::todo::budget(minutes)?,
+        },
         ["grant", id, permission, options @ ..] => session_grant(id, permission, options)?,
         ["revoke", id, permission] => Command::SessionRevoke {
             session: session(id),
@@ -353,6 +357,10 @@ fn choice_lines(session: &SessionView) -> String {
         .as_deref()
         .map(|threshold| format!("compaction threshold: {threshold}\n"))
         .unwrap_or_default();
+    let budget = session
+        .budget_minutes
+        .map(|minutes| format!("budget: {minutes} min of agent time since it started\n"))
+        .unwrap_or_default();
     let account = session
         .launch
         .as_ref()
@@ -366,7 +374,7 @@ fn choice_lines(session: &SessionView) -> String {
             })
         })
         .unwrap_or_default();
-    started_with + &threshold + &account
+    started_with + &threshold + &budget + &account
 }
 
 /// The login accounts the session's latest launch passed over for want of the project's

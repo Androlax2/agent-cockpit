@@ -28,6 +28,12 @@ placing the item again or its run's next step, and the action offers 30 minutes 
 owner's handoff is their answer, so a budget never holds it. The daemon tells the owner once,
 when a turn ends past the budget (`budget-spent` on the change feed).
 
+A session's budget (`budget_minutes` in `cockpit-sessions`, #412) comes in
+`Candidate::budget` with the agent seconds the daemon counted from the session's turns since it
+started. A session at its budget takes no new work (step 6) and is noted; when the only sessions
+of a project that could take the unit are at their budgets, it waits `session-over-budget` with
+the owner's action to give one 30 minutes more. The owner's handoff ignores it.
+
 ## One pass
 
 `dispatch` runs in the caller's write transaction, so what it reads, the work it takes and
@@ -63,8 +69,8 @@ the records it writes commit together. The daemon runs one every 30 seconds and 
    (the work is typed to its agent), it does no
    other item or step and may change its own state, it runs, its current launch's agent
    reported waiting at its prompt and asks nothing, the owner is not viewing it, and the idle
-   window (5 minutes since a pass first saw it waiting) has passed. The one waiting longest
-   takes it.
+   window (5 minutes since a pass first saw it waiting) has passed, and it has not worked its
+   budget (below). The one waiting longest takes it.
 7. **Pace.** Of the eligible sessions, one whose account's plan windows are ahead of the
    pace does not take it (#412, below). When every eligible session is paced, the unit
    waits `usage-paced`.
@@ -178,6 +184,9 @@ reservation) and
 - `tests/economy.rs`: an economy item goes only to a session started with its project's
   economy, waits `economy` without one or without a project economy, and is handed over
   anywhere.
+- `tests/session_budget.rs`: a session at its budget takes no work, another of the project
+  does, the unit waits for a busy session rather than the owner, `session-over-budget` and its
+  action, and the owner's handoff past the budget.
 - `tests/charges.rs`: placed turns as held reservations that builds and `in_use` see.
 - Through the socket: `cockpit-daemon` `tests/scheduling.rs` and `cockpit-cli`
   `tests/queue.rs`.

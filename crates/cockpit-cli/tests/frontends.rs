@@ -112,6 +112,7 @@ async fn session_show_asks_the_daemon_to_show_the_session_and_prints_it() {
                 conversation: Some("c-1".to_owned()),
                 model: None,
                 effort: None,
+                budget_minutes: None,
                 design_link: None,
                 state: SessionStateView::Running,
                 reason: None,

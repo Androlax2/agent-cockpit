@@ -9,7 +9,7 @@ mod store;
 pub use error::Error;
 pub use model::{
     ActionBy, Candidate, Dispatched, Economy, Explanation, Inputs, Placement, PlacementId,
-    Presence, Reason, Role, SessionNote, Settings, Unit,
+    Presence, Reason, Role, SessionBudget, SessionNote, Settings, Unit,
 };
 pub use pacing::{Pacing, ProjectShare, Standing, UsageWindow, WindowPace, window_pace};
 pub use store::{

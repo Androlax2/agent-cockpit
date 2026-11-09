@@ -114,6 +114,29 @@ pub struct Candidate {
     /// [`Economy`].
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The agent minutes the owner gave it, against what it has had since it started (#412);
+    /// `None`: no limit.
+    pub budget: Option<SessionBudget>,
+}
+
+/// A session's budget of agent minutes and the agent seconds its turns have had since the
+/// session started (#412). Once they reach it, the queue places nothing more on it; work
+/// already placed runs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionBudget {
+    pub minutes: u32,
+    pub worked_seconds: u64,
+}
+
+impl SessionBudget {
+    pub(crate) fn is_spent(self) -> bool {
+        self.worked_seconds >= u64::from(self.minutes) * 60
+    }
+
+    pub(crate) fn overrun_seconds(self) -> u64 {
+        self.worked_seconds
+            .saturating_sub(u64::from(self.minutes) * 60)
+    }
 }
 
 /// The model and effort a project's economy sessions were started with (#412): an item the
@@ -195,10 +218,13 @@ pub enum Reason {
     /// It runs economy, and no session of its project was started with the project's economy
     /// model and effort, or the project has none (#412).
     Economy,
+    /// Each session of its project that could take it has worked its budget of agent minutes
+    /// since it started (#412): the owner gives one more.
+    SessionOverBudget,
 }
 
 impl Reason {
-    const ALL: [Reason; 15] = [
+    const ALL: [Reason; 16] = [
         Reason::NotQueued,
         Reason::WaitsOnItems,
         Reason::RunBlocked,
@@ -214,6 +240,7 @@ impl Reason {
         Reason::NoSessionFree,
         Reason::UsagePaced,
         Reason::Economy,
+        Reason::SessionOverBudget,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -233,6 +260,7 @@ impl Reason {
             Reason::NoSessionFree => "no-session-free",
             Reason::UsagePaced => "usage-paced",
             Reason::Economy => "economy",
+            Reason::SessionOverBudget => "session-over-budget",
         }
     }
 
