@@ -14,7 +14,7 @@ use crate::{Error, compactions, conversations, quota_stops};
 const LABEL_MAX_CHARS: usize = 60;
 const DOING_MAX_CHARS: usize = 80;
 const DOING_WORDS: std::ops::RangeInclusive<usize> = 2..=12;
-const QUESTION_MAX_CHARS: usize = 300;
+pub(crate) const QUESTION_MAX_CHARS: usize = 300;
 const OUTCOME_REASON_MAX_CHARS: usize = 80;
 
 /// The columns `report_from` reads, in its order.

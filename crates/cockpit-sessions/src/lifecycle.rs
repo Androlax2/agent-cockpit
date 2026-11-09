@@ -1419,7 +1419,7 @@ impl Sessions {
         if !reports_at_launch {
             return Ok(false);
         }
-        let reason = match &launch.harness_trust {
+        let mut reason = match &launch.harness_trust {
             None => format!(
                 "{} has not reported {deadline} s after its launch: its terminal may wait on a \
                  screen of its own (folder trust, sign-in, update); attach to answer it",
@@ -1434,6 +1434,53 @@ impl Sessions {
                 note,
             ),
         };
+        let tmux = self.tmux()?;
+        let name = terminal_name(&session.id)?;
+        let captured = self
+            .blocking("read the unreported agent's terminal", move || {
+                let pane = agent_pane(&tmux, &name)?;
+                Ok(tmux.capture_text(&pane, 200)?)
+            })
+            .await;
+        match captured {
+            Ok(printed) => {
+                let safe: String = printed
+                    .chars()
+                    .map(|character| match character {
+                        '\n' | '\t' => ' ',
+                        other => other,
+                    })
+                    .filter(|character| {
+                        !character.is_control() && !crate::reports::is_invisible_format(*character)
+                    })
+                    .collect();
+                let safe = safe.split_whitespace().collect::<Vec<_>>().join(" ");
+                let safe = safe
+                    .replace("#(", " (")
+                    .replace("#{", " {")
+                    .replace("#[", " [");
+                if !safe.is_empty() && reason.chars().count() > 200 {
+                    reason = format!("{}…", reason.chars().take(199).collect::<String>());
+                }
+                let available =
+                    crate::reports::QUESTION_MAX_CHARS.saturating_sub(reason.chars().count() + 2);
+                let tail: String = safe
+                    .chars()
+                    .rev()
+                    .take(available)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect();
+                if !tail.trim().is_empty() {
+                    reason.push_str(": ");
+                    reason.push_str(tail.trim());
+                }
+            }
+            Err(error) => {
+                tracing::debug!(session = %session.id, %error, "the terminal could not be read")
+            }
+        }
         let write = self.database.write().await?;
         let is_flagged = crate::reports::flag_unreported_launch(
             &write,
