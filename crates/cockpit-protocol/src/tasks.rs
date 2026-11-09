@@ -47,6 +47,16 @@ pub enum TaskBudgetView {
     Minutes(u32),
 }
 
+/// The state of a [`crate::EntityKind::BudgetSpent`] entity: the item and the budget its
+/// sessions' turns used up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskBudgetSpentView {
+    pub item: i64,
+    pub project: String,
+    pub title: String,
+    pub budget_minutes: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TaskKindView {

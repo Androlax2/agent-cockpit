@@ -36,7 +36,7 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 const LONGEST_PAUSE: Duration = Duration::from_secs(30);
 
 const USAGE: &str = "usage: torlek-notify --socket PATH --state-dir DIR [--desktop EVENTS] [--sound EVENTS] [--sound-file EVENT=PATH]... [--test EVENT] [--status-file FILE] [--away-file FILE] [--hold NAME=PROGRAM]... | --version
-EVENTS: none, or a comma-separated list of failure, hold, question, quota, disk, usage, finished, turn (default: all but turn)";
+EVENTS: none, or a comma-separated list of failure, hold, question, quota, disk, usage, budget, finished, turn (default: all but turn)";
 
 struct Options {
     socket: PathBuf,

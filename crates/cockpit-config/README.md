@@ -163,9 +163,10 @@ question = true   # asks a question or waits for input
 quota = true      # stopped at the plan's usage limit
 disk = true       # free disk space fell below the floor (#1143)
 usage = true      # a plan window passed a quota alert threshold (#58)
+budget = true     # a queued item's sessions worked it past its budget (#412)
 finished = true   # its task item is marked done
 turn = false      # completed a turn; off unless set (#1127)
-[notify.sound]    # the same eight events
+[notify.sound]    # the same nine events
 ```
 
 `[notify.hold]` names the owner's hold programs: while one exits 0 the notifier keeps quiet

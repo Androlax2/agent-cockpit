@@ -1,7 +1,7 @@
 //! The wire form of the task commands and views (#38).
 use cockpit_protocol::{
-    Command, ErrorCode, HexBytes, Reply, TaskBudgetView, TaskKindView, TaskNextView,
-    TaskStatusView, TaskView, decode_request,
+    Command, ErrorCode, HexBytes, Reply, TaskBudgetSpentView, TaskBudgetView, TaskKindView,
+    TaskNextView, TaskStatusView, TaskView, decode_request,
 };
 use serde_json::json;
 
@@ -52,6 +52,27 @@ fn image_bytes_travel_as_lower_case_hex() {
         }
     );
     assert_eq!(serde_json::to_value(request).unwrap(), wire);
+}
+
+#[test]
+fn a_spent_budget_names_its_item_and_the_minutes_it_allowed() {
+    let spent = TaskBudgetSpentView {
+        item: 7,
+        project: "app".to_owned(),
+        title: "Fix the login".to_owned(),
+        budget_minutes: 60,
+    };
+
+    let wire = serde_json::to_value(&spent).unwrap();
+
+    assert_eq!(
+        wire,
+        json!({"item": 7, "project": "app", "title": "Fix the login", "budget_minutes": 60})
+    );
+    assert_eq!(
+        serde_json::from_value::<TaskBudgetSpentView>(wire).unwrap(),
+        spent
+    );
 }
 
 #[test]

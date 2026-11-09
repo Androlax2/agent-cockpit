@@ -7,6 +7,8 @@
 //! and its idle window at zero, so each pass is the test's own.
 #![cfg(target_os = "linux")]
 
+#[path = "scheduling/budget.rs"]
+mod budget;
 mod candidate;
 mod common;
 #[path = "scheduling/durability.rs"]

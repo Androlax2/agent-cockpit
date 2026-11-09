@@ -4,6 +4,7 @@ mod accounts;
 mod agent;
 mod agent_context;
 mod approvals;
+mod budgets;
 mod bug_report_feed;
 mod bug_reports;
 mod clipboard;

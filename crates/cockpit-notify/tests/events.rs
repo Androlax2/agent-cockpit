@@ -6,7 +6,7 @@ mod common;
 use cockpit_notify::{Event, Notice, Notifier};
 use cockpit_protocol::{
     AgentExitView, AgentState, Command, DiskView, EntityKind, ExitStatusView, QuestionSource,
-    QuotaAlertView, SessionReport, SessionStateView, SessionView, TurnOutcome,
+    QuotaAlertView, SessionReport, SessionStateView, SessionView, TaskBudgetSpentView, TurnOutcome,
 };
 use common::{
     after_snapshot, change_session, guide, loaded, network_request, report, run, session,
@@ -272,6 +272,89 @@ fn a_quota_alert_already_on_the_feed_when_the_notifier_starts_is_not_news() {
 fn a_quota_alert_is_no_session_in_the_status_file() {
     let mut notifier = running();
     change_quota_alert(&mut notifier, &quota_alert(80, 83, 1_800_000_000));
+
+    let status = notifier.status(true, &Default::default());
+
+    assert_eq!(status.sessions.len(), 1);
+    assert_eq!(status.needs_you, 0);
+}
+
+fn budget_spent(budget_minutes: u32) -> TaskBudgetSpentView {
+    TaskBudgetSpentView {
+        item: 7,
+        project: "app".to_owned(),
+        title: "Fix the login".to_owned(),
+        budget_minutes,
+    }
+}
+
+fn change_budget_spent(notifier: &mut Notifier, spent: &TaskBudgetSpentView) -> Vec<Notice> {
+    notifier
+        .apply_changes(&after_snapshot(vec![upsert(
+            EntityKind::BudgetSpent,
+            "7",
+            spent,
+        )]))
+        .unwrap()
+}
+
+#[test]
+fn a_spent_budget_is_told_with_the_item_and_how_to_go_on() {
+    let mut notifier = running();
+
+    let told = change_budget_spent(&mut notifier, &budget_spent(60));
+
+    assert_eq!(events(&told), [Event::Budget]);
+    assert_eq!(told[0].name, "Fix the login");
+    assert_eq!(
+        told[0].detail.as_deref(),
+        Some("item 7 of app, 60 min budget: `torlek queue explain 7` says how to go on")
+    );
+}
+
+#[test]
+fn the_same_spent_budget_published_again_is_not_told_again() {
+    let mut notifier = running();
+    change_budget_spent(&mut notifier, &budget_spent(60));
+
+    let renamed = TaskBudgetSpentView {
+        title: "Fix the login page".to_owned(),
+        ..budget_spent(60)
+    };
+
+    assert_eq!(change_budget_spent(&mut notifier, &renamed), []);
+}
+
+#[test]
+fn a_raised_budget_spent_again_is_told_again() {
+    let mut notifier = running();
+    change_budget_spent(&mut notifier, &budget_spent(60));
+
+    let told = change_budget_spent(&mut notifier, &budget_spent(90));
+
+    assert_eq!(events(&told), [Event::Budget]);
+}
+
+#[test]
+fn a_retracted_spent_budget_no_longer_raises_its_notice() {
+    let mut notifier = running();
+    let told = change_budget_spent(&mut notifier, &budget_spent(60));
+
+    let retracted = notifier
+        .apply_changes(&after_snapshot(vec![tombstone(
+            EntityKind::BudgetSpent,
+            "7",
+        )]))
+        .unwrap();
+
+    assert_eq!(retracted, []);
+    assert!(!notifier.still_raises(&told[0]));
+}
+
+#[test]
+fn a_spent_budget_is_no_session_in_the_status_file() {
+    let mut notifier = running();
+    change_budget_spent(&mut notifier, &budget_spent(60));
 
     let status = notifier.status(true, &Default::default());
 

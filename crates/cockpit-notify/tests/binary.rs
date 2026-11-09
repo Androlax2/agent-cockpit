@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use cockpit_protocol::{
     AgentState, Capability, ChangeBatch, Command, DiskView, EntityKind, Hello, Outcome,
     QuestionSource, QuotaAlertView, Reply, Request, Response, SUPPORTED_VERSIONS, ServerFrame,
-    SessionReport, SessionStateView, SessionView, negotiate,
+    SessionReport, SessionStateView, SessionView, TaskBudgetSpentView, negotiate,
 };
 use common::{after_snapshot, report, session, snapshot, upsert};
 
@@ -152,6 +152,17 @@ fn quota_alert() -> ChangeBatch {
         "codex/default/five-hour",
         &alert,
     )])
+}
+
+/// What the daemon publishes when a turn ends past item 7's hour of agent time.
+fn budget_spent() -> ChangeBatch {
+    let spent = TaskBudgetSpentView {
+        item: 7,
+        project: "app".to_owned(),
+        title: "Fix the login".to_owned(),
+        budget_minutes: 60,
+    };
+    after_snapshot(vec![upsert(EntityKind::BudgetSpent, "7", &spent)])
 }
 
 /// A program on the fake `PATH` that appends its name and arguments to `record`.
@@ -785,6 +796,28 @@ fn a_quota_alert_shows_a_notification_and_plays_the_themes_information_sound() {
             "canberra-gtk-play [--id=dialog-information] [--description=Torlek: usage]".to_owned(),
             "notify-send [--app-name=Torlek] [--urgency=normal] [--] \
              [codex five-hour window is filling up] [84% used, alert at 80%, account default]"
+                .to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn a_spent_budget_shows_a_notification_and_plays_the_themes_information_sound() {
+    let setup = Setup::with_later(budget_spent());
+    fake_program(&setup.bin, "notify-send", &setup.record);
+    fake_program(&setup.bin, "canberra-gtk-play", &setup.record);
+    let _notifier = setup.start(&[], true);
+
+    let mut calls = setup.calls(2);
+    calls.sort();
+
+    assert_eq!(
+        calls,
+        [
+            "canberra-gtk-play [--id=dialog-information] [--description=Torlek: budget]".to_owned(),
+            "notify-send [--app-name=Torlek] [--urgency=normal] [--] \
+             [Fix the login spent its budget] \
+             [item 7 of app, 60 min budget: `torlek queue explain 7` says how to go on]"
                 .to_owned(),
         ]
     );

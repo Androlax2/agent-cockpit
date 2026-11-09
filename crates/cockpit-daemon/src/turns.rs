@@ -5,6 +5,9 @@
 //! difference. A pass that finds nothing to record takes no write transaction, so it does
 //! not wake itself.
 //!
+//! A turn's end is also when an item placed on the session may have spent its budget: the
+//! pass tells it in the same transaction (`budgets`, #412).
+//!
 //! A turn that begins and ends between two passes is missed; a turn lasts longer than a pass.
 //! A session that stopped while its agent worked ends the turn at the session's last change.
 
@@ -117,6 +120,27 @@ async fn pass(database: &Database, sessions: &Sessions) -> Result<(), String> {
                 tracing::warn!(session, %error, "a turn could not be recorded and was dropped");
             }
             Err(error) => return Err(error.to_string()),
+        }
+    }
+    if !difference.ends.is_empty() {
+        let ended: BTreeMap<&str, crate::budgets::EndedTurn> = difference
+            .ends
+            .iter()
+            .filter_map(|(session, ended_at)| {
+                let turn = open.get(session.as_str())?;
+                Some((
+                    session.as_str(),
+                    crate::budgets::EndedTurn {
+                        started_at: turn.started_at,
+                        ended_at: *ended_at,
+                    },
+                ))
+            })
+            .collect();
+        // Telling a spent budget must not stop the turns from being recorded: its failure
+        // is logged and the turns commit without it.
+        if let Err(problem) = crate::budgets::publish_spent(&write, &ended, now).await {
+            tracing::warn!(problem, "telling the items' spent budgets failed");
         }
     }
     for (session, working_dir, began_at) in &difference.begins {

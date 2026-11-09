@@ -76,6 +76,11 @@ pub enum EntityKind {
     /// and limit, id `provider/account/limit`, in the state of a [`crate::QuotaAlertView`].
     /// Published when a threshold fires and kept after, so a new state is a new alert.
     QuotaAlert,
+    /// A queued item whose sessions worked it past its budget of agent minutes (#412): one
+    /// entity per item, id the item's, in the state of a [`crate::TaskBudgetSpentView`].
+    /// Published when a turn of its work ends past the budget, and retracted when the owner
+    /// sets the budget again or the item is closed or deleted, so the next time is news again.
+    BudgetSpent,
     /// A kind this version does not know, kept as sent so a client can skip or show it.
     /// Never build one with a known name: it would read back as the known variant.
     #[serde(untagged)]

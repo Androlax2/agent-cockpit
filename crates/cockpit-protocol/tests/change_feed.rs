@@ -113,6 +113,7 @@ fn every_known_entity_kind_has_its_published_name() {
         (EntityKind::ViewStamp, "view-stamp"),
         (EntityKind::Disk, "disk"),
         (EntityKind::QuotaAlert, "quota-alert"),
+        (EntityKind::BudgetSpent, "budget-spent"),
     ];
 
     for (kind, name) in published {

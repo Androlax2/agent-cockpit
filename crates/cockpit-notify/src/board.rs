@@ -2,7 +2,7 @@
 //! agents' reports, the approval queue and the network requests the daemon answers by request.
 //! From them it derives what each session needs the owner for now. The checkouts on the feed
 //! name each session's project for the status file. The host's own events come from the feed
-//! too: the low disk and the plan windows' quota alerts.
+//! too: the low disk, the plan windows' quota alerts and the items' spent budgets.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -11,15 +11,15 @@ use cockpit_protocol::{
     Change, ChangeBatch, DiskView, EntityKind, FeedPosition, GuideStateView, GuideView,
     NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, QuestionSource,
     QuotaAlertView, RunRequestView, RunStateView, SessionReport, SessionStateView, SessionView,
-    TurnOutcome, ViewArea, ViewStamp,
+    TaskBudgetSpentView, TurnOutcome, ViewArea, ViewStamp,
 };
 
 use crate::event::Event;
 
-/// The "session" of an event that is the host's, not a session's: the low disk, and with
-/// `host:` and the window's `quota-alert` id, a quota alert, so each window's alert is held
-/// and still raised apart. A session id is `s` and twelve hex digits, so no session can have
-/// either.
+/// The "session" of an event that is the host's, not a session's: the low disk; with `host:`
+/// and the window's `quota-alert` id, a quota alert, so each window's alert is held and still
+/// raised apart; with `host:budget/` and the item's id, a spent budget. A session id is `s` and
+/// twelve hex digits, so no session can have any of them.
 pub(crate) const HOST: &str = "host";
 
 /// One reason a session needs the owner. A session raises it while its cause stands; the
@@ -50,6 +50,12 @@ pub enum Cause {
         window: String,
         threshold: u8,
         fired_at: i64,
+    },
+    /// An item's spent budget: the budget is part of it, so a raised budget spent again is
+    /// news, and a new title is not.
+    Budget {
+        item: i64,
+        budget_minutes: u32,
     },
 }
 
@@ -83,6 +89,8 @@ pub(crate) struct Board {
     disk: Option<DiskView>,
     /// The last alert of each plan window, by `quota-alert` entity id (#58).
     quota_alerts: BTreeMap<String, QuotaAlertView>,
+    /// Each item's spent budget, by item id (#412).
+    spent_budgets: BTreeMap<i64, TaskBudgetSpentView>,
     runs: Vec<RunRequestView>,
     guides: Vec<GuideView>,
     network: Vec<NetworkRequestView>,
@@ -101,6 +109,8 @@ enum Edit {
     RemoveDisk,
     PutQuotaAlert(String, Box<QuotaAlertView>),
     RemoveQuotaAlert(String),
+    PutSpentBudget(Box<TaskBudgetSpentView>),
+    RemoveSpentBudget(i64),
 }
 
 impl Board {
@@ -143,6 +153,16 @@ impl Board {
                 (EntityKind::QuotaAlert, Change::Tombstone) => {
                     Edit::RemoveQuotaAlert(event.entity.id.clone())
                 }
+                (EntityKind::BudgetSpent, Change::Upsert { state }) => {
+                    Edit::PutSpentBudget(Box::new(decode(state).map_err(refused)?))
+                }
+                (EntityKind::BudgetSpent, Change::Tombstone) => Edit::RemoveSpentBudget(
+                    event
+                        .entity
+                        .id
+                        .parse()
+                        .map_err(|_| refused("an item id is a number".to_owned()))?,
+                ),
                 (EntityKind::ViewStamp, Change::Upsert { state }) => {
                     // An area this version does not know has no view here to ask for.
                     let Some(area) = ViewArea::from_id(&event.entity.id) else {
@@ -158,6 +178,7 @@ impl Board {
             self.projects.clear();
             self.disk = None;
             self.quota_alerts.clear();
+            self.spent_budgets.clear();
         }
         for edit in edits {
             match edit {
@@ -180,6 +201,12 @@ impl Board {
                 }
                 Edit::RemoveQuotaAlert(id) => {
                     self.quota_alerts.remove(&id);
+                }
+                Edit::PutSpentBudget(spent) => {
+                    self.spent_budgets.insert(spent.item, *spent);
+                }
+                Edit::RemoveSpentBudget(item) => {
+                    self.spent_budgets.remove(&item);
                 }
                 Edit::PutStamp(area, stamp) => {
                     if self.stamps.insert(area, stamp) != Some(stamp) {
@@ -228,11 +255,20 @@ impl Board {
                 fired_at: alert.fired_at,
             },
         });
+        let spent_budgets = self.spent_budgets.values().map(|spent| Raised {
+            session: format!("{HOST}:budget/{}", spent.item),
+            event: Event::Budget,
+            cause: Cause::Budget {
+                item: spent.item,
+                budget_minutes: spent.budget_minutes,
+            },
+        });
         self.sessions
             .values()
             .flat_map(|session| self.raised_by(session))
             .chain(low_disk)
             .chain(quota_alerts)
+            .chain(spent_budgets)
             .collect()
     }
 
@@ -324,6 +360,10 @@ impl Board {
                 || window.clone(),
                 |alert| format!("{} {} window", alert.provider, alert.limit),
             ),
+            Cause::Budget { item, .. } => self
+                .spent_budgets
+                .get(item)
+                .map_or_else(|| format!("item {item}"), |spent| spent.title.clone()),
             _ => self.name_of(&raised.session),
         }
     }
@@ -359,6 +399,13 @@ impl Board {
                 format!(
                     "{}% used, alert at {}%, account {}",
                     alert.used_percent, alert.threshold, alert.account
+                )
+            }),
+            Cause::Budget { item, .. } => self.spent_budgets.get(item).map(|spent| {
+                format!(
+                    "item {item} of {}, {} min budget: `torlek queue explain {item}` says how to \
+                     go on",
+                    spent.project, spent.budget_minutes
                 )
             }),
             Cause::State if raised.event == Event::Failure => {

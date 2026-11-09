@@ -165,7 +165,11 @@ async fn dispatch(
                 TaskBudgetView::NoLimit => None,
                 TaskBudgetView::Minutes(minutes) => Some(minutes),
             };
-            cockpit_tasks::set_budget(write, actor, ItemId(item), minutes, now).await?
+            let item = cockpit_tasks::set_budget(write, actor, ItemId(item), minutes, now).await?;
+            crate::budgets::retract_spent(write, item.id)
+                .await
+                .map_err(|error| internal(&error))?;
+            item
         }
         Command::TaskQueue { item, queued } => {
             cockpit_tasks::set_queued(write, actor, ItemId(item), queued, now).await?
@@ -180,7 +184,12 @@ async fn dispatch(
             cockpit_tasks::start(write, actor, ItemId(item), now).await?
         }
         Command::TaskDone { item, summary, .. } => {
-            cockpit_tasks::finish(write, actor, ItemId(item), summary.as_deref(), now).await?
+            let item =
+                cockpit_tasks::finish(write, actor, ItemId(item), summary.as_deref(), now).await?;
+            crate::budgets::retract_spent(write, item.id)
+                .await
+                .map_err(|error| internal(&error))?;
+            item
         }
         Command::TaskReopen { item } => {
             cockpit_tasks::reopen(write, actor, ItemId(item), now).await?
@@ -195,6 +204,9 @@ async fn dispatch(
         }
         Command::TaskDelete { item, .. } => {
             cockpit_tasks::delete(write, actor, ItemId(item)).await?;
+            crate::budgets::retract_spent(write, ItemId(item))
+                .await
+                .map_err(|error| internal(&error))?;
             return Ok(Reply::TaskDeleted { item });
         }
         Command::TaskImageAdd { item, data } => {
