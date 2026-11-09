@@ -93,7 +93,7 @@ impl Options {
                 Some("--torlek") => cockpit = Some(PathBuf::from(&value)),
                 Some("--codex") => codex = Some(PathBuf::from(&value)),
                 Some("--socket") => socket = Some(PathBuf::from(&value)),
-                Some("--config") => configs.push(text()?),
+                Some(cockpit_codex::CONFIG_FLAG) => configs.push(text()?),
                 Some(cockpit_codex::TUI_CONFIG_OPTION) => tui_configs.push(text()?),
                 Some("--resume") => {
                     resume = Some(ConversationId::new(text()?).map_err(|error| error.to_string())?);

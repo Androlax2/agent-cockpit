@@ -45,8 +45,9 @@ pub const CONFORMANCE_VERSION: &str = "0.166.0";
 pub const LAUNCH_FLAGS: [&str; 1] = ["--no-daemon"];
 
 /// Every flag the session launcher passes the TUI ([`tui_arguments`]); found in
-/// `codex --help` and `codex resume --help`. A launch without the bridge passes
-/// [`CONFIG_FLAG`] too: every launch turns the update screen off ([`UPDATE_CHECK_CONFIG`]).
+/// `codex --help` and `codex resume --help`. Every launch, with the bridge or without, passes
+/// the TUI [`CONFIG_FLAG`] values: the update screen off ([`UPDATE_CHECK_CONFIG`]) and the
+/// session's own settings ([`session_configs`]).
 pub const TUI_FLAGS: [&str; 2] = ["--remote", CONFIG_FLAG];
 
 /// Every flag the session launcher passes the app-server ([`server_arguments`]); found in

@@ -27,10 +27,10 @@ use cockpit_provider_api::{Action, ConversationId, Delivered, Provider, document
 use rustix::process::{Pid, Signal, kill_process_group};
 use serde_json::{Value, json};
 
-/// The installed Codex the ignored live tests run.
 /// The first message of a terminal session's launch.
 const READY: &str = "Reply READY only. Do not use tools.";
 
+/// The installed Codex the ignored live tests run.
 fn installed() -> PathBuf {
     PathBuf::from(
         std::env::var_os("COCKPIT_CODEX_PROGRAM")
