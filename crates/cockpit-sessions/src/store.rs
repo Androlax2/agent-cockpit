@@ -339,6 +339,22 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             );
             CREATE INDEX session_quota_stops_by_session ON session_quota_stops (session_id, id);",
         },
+        // #158: failed turns whose reason a provider gives for a spent plan and a transient
+        // limit alike, counted towards a quota stop; and what such a stop was inferred from.
+        Migration {
+            version: 22,
+            sql: "CREATE TABLE session_limit_failures (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL CHECK (session_id <> ''),
+                launch_id INTEGER NOT NULL,
+                reason TEXT NOT NULL CHECK (reason <> ''),
+                failed_at INTEGER NOT NULL
+            );
+            CREATE INDEX session_limit_failures_by_session
+                ON session_limit_failures (session_id, launch_id, failed_at);
+            ALTER TABLE session_quota_stops ADD COLUMN inferred_from TEXT
+                CHECK (inferred_from <> '');",
+        },
     ],
 };
 

@@ -43,12 +43,15 @@ async fn start_unread(home: &Home) -> Daemon {
     start_with(home, fake(home)).await
 }
 
+/// A `fake` provider whose agent's messages land in `messages`, and that gives `rate_limit`
+/// both for a spent plan and for a transient limit, as Claude Code does.
 fn fake(home: &Home) -> FakeProvider {
     FakeProvider::new(
         ProviderName::new("fake").unwrap(),
         home.path().join("launches"),
     )
     .reading_messages(home.path().join("messages"))
+    .limiting_on(&["rate_limit"])
 }
 
 async fn start_with(home: &Home, provider: FakeProvider) -> Daemon {
@@ -58,6 +61,7 @@ async fn start_with(home: &Home, provider: FakeProvider) -> Daemon {
         home: home.path().join("home"),
         refresh: Duration::from_secs(3600),
         policy: QuotaPolicy::default(),
+        project_shares: std::collections::BTreeMap::new(),
     });
     home.start_wired(wiring).await
 }
@@ -66,15 +70,18 @@ fn launches(home: &Home) -> Vec<FakeLaunch> {
     FakeProvider::launches(&home.path().join("launches"))
 }
 
-/// Reports `report` as the agent of `launch`, through the agent channel's own record.
+/// Reports `report` as the agent of `launch`, through the agent channel's own record,
+/// counting the `rate_limit` failures [`fake`] gives as the daemon does.
 async fn report_as(home: &Home, launch: &FakeLaunch, report: cockpit_sessions::Report) {
     let database = home.database.lock().unwrap().clone().unwrap();
     let write = database.write().await.unwrap();
-    cockpit_sessions::report(
+    let providers: [Arc<dyn cockpit_provider_api::Provider>; 1] = [Arc::new(fake(home))];
+    cockpit_sessions::report_counting_limits(
         &write,
         &cockpit_agent_channel::ancestry(launch.pid as u32),
         Some(&launch.token),
         report,
+        &cockpit_sessions::TransientLimits::of(&providers),
     )
     .await
     .unwrap();
@@ -149,7 +156,7 @@ async fn quota_stop_once(
     loop {
         let stop = show(client, session).await.quota_stop;
         if let Some(stop) = stop.as_ref().filter(|stop| check(stop)) {
-            return stop.clone();
+            return (**stop).clone();
         }
         assert!(Instant::now() < deadline, "{session}: {stop:?}");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -414,6 +421,154 @@ async fn the_coordinator_is_resumed_before_the_workers() {
             (coordinator.id.clone(), CONTINUE.to_owned()),
             (worker.id.clone(), CONTINUE.to_owned())
         ]
+    );
+}
+
+fn failed(reason: &str) -> cockpit_sessions::Report {
+    cockpit_sessions::Report {
+        state: Some(cockpit_sessions::AgentState::Waiting),
+        outcome: Some(TurnOutcome::Failed {
+            reason: Some(reason.to_owned()),
+        }),
+        ..Default::default()
+    }
+}
+
+fn completed() -> cockpit_sessions::Report {
+    cockpit_sessions::Report {
+        state: Some(cockpit_sessions::AgentState::Waiting),
+        outcome: Some(TurnOutcome::Completed),
+        ..Default::default()
+    }
+}
+
+/// A session whose agent waits at its prompt, and its launch.
+async fn waiting_session(home: &Home, client: &Connection) -> (SessionView, FakeLaunch) {
+    let root = home.path().join("project");
+    let session = home.session(client, &root, "fake").await;
+    let launch = common::once_logged(1, || launches(home)).await[0].clone();
+    report_as(home, &launch, waiting()).await;
+    (session, launch)
+}
+
+#[tokio::test]
+async fn three_rate_limit_failures_within_half_an_hour_are_recorded_as_a_quota_stop() {
+    let home = Home::new();
+    let _daemon = start(&home).await;
+    let client = home.connect().await;
+    home.project(&client).await;
+    let (session, launch) = waiting_session(&home, &client).await;
+    for _ in 0..2 {
+        report_as(&home, &launch, failed("rate_limit")).await;
+    }
+    assert_eq!(show(&client, &session.id).await.quota_stop, None);
+
+    report_as(&home, &launch, failed("rate_limit")).await;
+
+    let stop = show(&client, &session.id).await.quota_stop.unwrap();
+    assert_eq!(
+        stop.inferred_from.as_deref(),
+        Some("3 `rate_limit` failed turns within 30 minutes")
+    );
+    let reports = agent_reports(&client).await;
+    let report = reports
+        .iter()
+        .find(|report| report.session == session.id)
+        .unwrap();
+    assert_eq!(
+        report.outcome,
+        Some(cockpit_protocol::TurnOutcome::QuotaStopped)
+    );
+}
+
+#[tokio::test]
+async fn a_completed_turn_between_rate_limit_failures_starts_the_count_over() {
+    let home = Home::new();
+    let _daemon = start(&home).await;
+    let client = home.connect().await;
+    home.project(&client).await;
+    let (session, launch) = waiting_session(&home, &client).await;
+
+    for report in [
+        failed("rate_limit"),
+        failed("rate_limit"),
+        completed(),
+        failed("rate_limit"),
+        failed("rate_limit"),
+    ] {
+        report_as(&home, &launch, report).await;
+    }
+
+    assert_eq!(show(&client, &session.id).await.quota_stop, None);
+}
+
+#[tokio::test]
+async fn a_failure_the_provider_does_not_give_for_limits_is_never_counted() {
+    let home = Home::new();
+    let _daemon = start(&home).await;
+    let client = home.connect().await;
+    home.project(&client).await;
+    let (session, launch) = waiting_session(&home, &client).await;
+
+    for _ in 0..3 {
+        report_as(&home, &launch, failed("overloaded")).await;
+    }
+
+    assert_eq!(show(&client, &session.id).await.quota_stop, None);
+}
+
+#[tokio::test]
+async fn rate_limit_failures_older_than_half_an_hour_do_not_count() {
+    let home = Home::new();
+    let _daemon = start(&home).await;
+    let client = home.connect().await;
+    home.project(&client).await;
+    let (session, launch) = waiting_session(&home, &client).await;
+    report_as(&home, &launch, failed("rate_limit")).await;
+    report_as(&home, &launch, failed("rate_limit")).await;
+    let database = home.database.lock().unwrap().clone().unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "UPDATE session_limit_failures SET failed_at = failed_at - 1801",
+            (),
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    report_as(&home, &launch, failed("rate_limit")).await;
+
+    assert_eq!(show(&client, &session.id).await.quota_stop, None);
+}
+
+#[tokio::test]
+async fn an_inferred_quota_stop_whose_windows_show_room_tells_the_owner_what_it_was_inferred_from()
+{
+    let home = Home::new();
+    let _daemon = start(&home).await;
+    let client = home.connect().await;
+    home.project(&client).await;
+    let (session, launch) = waiting_session(&home, &client).await;
+    for _ in 0..3 {
+        report_as(&home, &launch, failed("rate_limit")).await;
+    }
+
+    record_reading(&home, 40.0, unix_now() + 3600).await;
+    let stop = quota_stop_once(&client, &session.id, |stop| {
+        matches!(stop.status, QuotaStopStatusView::Dropped { .. })
+    })
+    .await;
+
+    let QuotaStopStatusView::Dropped { reason, .. } = stop.status else {
+        unreachable!()
+    };
+    assert!(
+        reason.starts_with(
+            "quota stop inferred from 3 `rate_limit` failed turns within 30 minutes, but its \
+             plan windows show room"
+        ),
+        "{reason}"
     );
 }
 

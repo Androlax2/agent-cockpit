@@ -275,7 +275,7 @@ async fn session_show_prints_the_account_a_quota_stop_moved_its_launch_off() {
 async fn shown_quota_stop(stop: QuotaStopView) -> String {
     let home = Home::new();
     let mut shown = view("s0123456789ab", SessionStateView::Running);
-    shown.quota_stop = Some(stop);
+    shown.quota_stop = Some(Box::new(stop));
     let _daemon = scripted_daemon(
         &home.daemon_socket(),
         Outcome::Ok(Reply::Session {
@@ -352,11 +352,33 @@ async fn session_show_prints_each_quota_stop_with_where_its_resume_stands() {
             account: account.map(str::to_owned),
             resets_at,
             switched_at,
+            inferred_from: None,
             status,
         };
         let shown = shown_quota_stop(stop).await;
         assert!(shown.contains(line), "expected {line:?} in:\n{shown}");
     }
+}
+
+#[tokio::test]
+async fn session_show_prints_what_a_quota_stop_was_inferred_from() {
+    let shown = shown_quota_stop(QuotaStopView {
+        stopped_at: STOPPED_AT,
+        account: None,
+        resets_at: None,
+        switched_at: None,
+        inferred_from: Some("3 `rate_limit` failed turns within 30 minutes".to_owned()),
+        status: QuotaStopStatusView::Waiting,
+    })
+    .await;
+
+    assert!(
+        shown.contains(
+            "quota stop: 2026-11-09 14:00:00 +00:00 on the owner's sign-in, inferred from 3 \
+             `rate_limit` failed turns within 30 minutes; resumes after the plan's reset\n"
+        ),
+        "{shown}"
+    );
 }
 
 #[tokio::test]

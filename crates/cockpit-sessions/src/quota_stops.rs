@@ -5,6 +5,10 @@
 //! both; it is dropped when the agent works again before that, when it stops again, when its
 //! session ends, or when nothing can tell the daemon its reset and the owner is asked instead.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use cockpit_provider_api::Provider;
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 
@@ -30,6 +34,9 @@ pub struct QuotaStop {
     pub resets_at: Option<i64>,
     /// When the quota-stop relaunch moved the session to another account (#59).
     pub switched_at: Option<i64>,
+    /// What the stop was inferred from, when the agent reported failed turns rather than a
+    /// quota stop, such as "3 `rate_limit` failed turns within 30 minutes".
+    pub inferred_from: Option<String>,
     pub resolution: Option<QuotaStopResolution>,
 }
 
@@ -42,27 +49,130 @@ pub enum QuotaStopResolution {
 }
 
 const SELECT_STOP: &str = "SELECT id, session_id, launch_id, provider, account, stopped_at,
-    confirmed_at, resets_at, switched_at, resumed_at, dropped_at, dropped_reason
+    confirmed_at, resets_at, switched_at, resumed_at, dropped_at, dropped_reason, inferred_from
     FROM session_quota_stops AS q";
 
 const IS_OPEN: &str = "resumed_at IS NULL AND dropped_at IS NULL";
 
-/// Records that `launch`'s turn quota-stopped now, dropping an earlier stop of the session
-/// still open: only the latest stop is resumed.
+/// Records that `launch`'s turn quota-stopped now, `inferred_from` failed turns when the
+/// agent did not say so, dropping an earlier stop of the session still open: only the latest
+/// stop is resumed.
 pub(crate) async fn record(
     write: &WriteTransaction<'_>,
     session: &str,
     launch: i64,
+    inferred_from: Option<&str>,
 ) -> Result<(), Error> {
     let at = now();
     drop_open(write, session, "the agent quota-stopped again", at).await?;
     write
         .execute(
-            "INSERT INTO session_quota_stops (session_id, launch_id, provider, account, stopped_at)
-             SELECT s.id, l.id, s.provider, l.account, ?3 FROM session_launches l
+            "INSERT INTO session_quota_stops
+                 (session_id, launch_id, provider, account, stopped_at, inferred_from)
+             SELECT s.id, l.id, s.provider, l.account, ?3, ?4 FROM session_launches l
              JOIN sessions s ON s.id = l.session_id
              WHERE s.id = ?1 AND l.id = ?2",
-            (session, launch, at),
+            (session, launch, at, inferred_from),
+        )
+        .await?;
+    Ok(())
+}
+
+/// How many failed turns of [`TransientLimits`] within [`TRANSIENT_LIMIT_WINDOW_SECONDS`] make
+/// a quota stop (#158, owner decision 2026-11-09).
+pub const TRANSIENT_LIMIT_FAILURES: i64 = 3;
+pub const TRANSIENT_LIMIT_WINDOW_SECONDS: i64 = 30 * 60;
+
+/// Each provider's failure reasons that it gives both for a spent plan window and for a
+/// transient limit ([`cockpit_provider_api::Provider::transient_limit_reasons`]).
+#[derive(Debug, Clone, Default)]
+pub struct TransientLimits {
+    reasons: HashMap<String, &'static [&'static str]>,
+}
+
+impl TransientLimits {
+    /// The reasons each of `providers` declares.
+    pub fn of(providers: &[Arc<dyn Provider>]) -> TransientLimits {
+        TransientLimits {
+            reasons: providers
+                .iter()
+                .map(|provider| {
+                    (
+                        provider.name().as_str().to_owned(),
+                        provider.transient_limit_reasons(),
+                    )
+                })
+                .filter(|(_, reasons)| !reasons.is_empty())
+                .collect(),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.reasons.is_empty()
+    }
+
+    pub(crate) fn counts(&self, provider: &str, reason: &str) -> bool {
+        self.reasons
+            .get(provider)
+            .is_some_and(|reasons| reasons.contains(&reason))
+    }
+}
+
+/// Counts a failed turn of `launch` for `reason` now. What a quota stop is inferred from,
+/// once this makes [`TRANSIENT_LIMIT_FAILURES`] of the launch within the window; the count
+/// then starts over.
+pub(crate) async fn count_limit_failure(
+    write: &WriteTransaction<'_>,
+    session: &str,
+    launch: i64,
+    reason: &str,
+) -> Result<Option<String>, Error> {
+    let at = now();
+    let window_start = at - TRANSIENT_LIMIT_WINDOW_SECONDS;
+    write
+        .execute(
+            "DELETE FROM session_limit_failures
+             WHERE session_id = ?1 AND (launch_id <> ?2 OR failed_at <= ?3)",
+            (session, launch, window_start),
+        )
+        .await?;
+    write
+        .execute(
+            "INSERT INTO session_limit_failures (session_id, launch_id, reason, failed_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            (session, launch, reason, at),
+        )
+        .await?;
+    let mut rows = write
+        .query(
+            "SELECT count(*) FROM session_limit_failures WHERE session_id = ?1",
+            [session],
+        )
+        .await?;
+    let failures: i64 = match rows.next().await? {
+        Some(row) => row.get(0)?,
+        None => 0,
+    };
+    drop(rows);
+    if failures < TRANSIENT_LIMIT_FAILURES {
+        return Ok(None);
+    }
+    clear_limit_failures(write, session).await?;
+    Ok(Some(format!(
+        "{failures} `{reason}` failed turns within {} minutes",
+        TRANSIENT_LIMIT_WINDOW_SECONDS / 60
+    )))
+}
+
+/// Forgets `session`'s counted failures: a turn that ended otherwise breaks the run.
+pub(crate) async fn clear_limit_failures(
+    write: &WriteTransaction<'_>,
+    session: &str,
+) -> Result<(), Error> {
+    write
+        .execute(
+            "DELETE FROM session_limit_failures WHERE session_id = ?1",
+            [session],
         )
         .await?;
     Ok(())
@@ -252,6 +362,7 @@ fn stop_from(row: &Row) -> Result<QuotaStop, Error> {
         confirmed_at: row.get(6)?,
         resets_at: row.get(7)?,
         switched_at: row.get(8)?,
+        inferred_from: row.get(12)?,
         resolution,
     })
 }

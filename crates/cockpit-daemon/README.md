@@ -239,6 +239,9 @@ open quota stop its one continue message: once a reading of the owner's own sign
 after the stop shows a window spent and a later one shows room, or right after the #59
 relaunch moved it. Coordinators go first; an asleep session is woken, then sent its message
 once its agent waits. A stop no reading can judge becomes a needs-you dialog for the owner.
+The agent channel's `report` counts a provider's transient-limit failures (`rate_limit` for
+Claude Code), so the third within 30 minutes is recorded as an inferred quota stop, logged as
+a warning, and relaunched and resumed like any other.
 
 The cost archive (#699, `cost.rs`) is a second supervised worker. Every `Wiring::cost`
 interval (a minute in the product; `None` in tests not about cost) it asks each provider

@@ -7,6 +7,7 @@ use cockpit_provider_api::{CompactionMoment, ContextUsage, ConversationId, TurnO
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 
+use crate::quota_stops::TransientLimits;
 use crate::store::now;
 use crate::{Error, compactions, conversations, quota_stops};
 
@@ -139,14 +140,39 @@ pub struct SessionReport {
 /// Records `report` for the session the sender is identified as (see
 /// [`cockpit_agent_channel::identify`]), after
 /// `cockpit-authorization` allows that session `change-state` over itself. Nested agents
-/// therefore report with their parent session's identity and grants.
+/// therefore report with their parent session's identity and grants. Counts no failed turn
+/// towards a quota stop: [`report_counting_limits`] does.
 pub async fn report(
     write: &WriteTransaction<'_>,
     peer: &PeerAncestry,
     token: Option<&str>,
     report: Report,
 ) -> Result<SessionReport, Error> {
-    let (report, conversation) = validate(report).map_err(refused)?;
+    report_counting_limits(write, peer, token, report, &TransientLimits::default())
+        .await
+        .map(|recorded| recorded.report)
+}
+
+/// A report as [`report_counting_limits`] recorded it.
+#[derive(Debug, Clone)]
+pub struct Recorded {
+    pub report: SessionReport,
+    /// Whether this report's turn quota-stopped, as the agent said or as its failed turns
+    /// showed; the recorded report also carries an earlier stop forward.
+    pub is_quota_stop: bool,
+}
+
+/// [`report`], counting a failed turn whose reason the session's provider declares in
+/// `limits`: the [`crate::TRANSIENT_LIMIT_FAILURES`]th within the window is recorded as a
+/// quota stop instead (#158), logged with what it was inferred from.
+pub async fn report_counting_limits(
+    write: &WriteTransaction<'_>,
+    peer: &PeerAncestry,
+    token: Option<&str>,
+    report: Report,
+    limits: &TransientLimits,
+) -> Result<Recorded, Error> {
+    let (mut report, conversation) = validate(report).map_err(refused)?;
     let session = cockpit_agent_channel::identify(write, peer, token).await?;
     let decision = cockpit_authorization::evaluate(
         write,
@@ -181,11 +207,20 @@ pub async fn report(
             ))
         })?;
         compactions::record(write, &session, launch, compaction).await?;
-        return Ok(previous.unwrap_or_else(|| unreported(&session)));
+        return Ok(unchanged(previous, &session));
     }
     // An announced end reports nothing about the agent: the latest report stays as it is.
     if report.is_conversation_ending {
-        return Ok(previous.unwrap_or_else(|| unreported(&session)));
+        return Ok(unchanged(previous, &session));
+    }
+    let inferred_from = match (&report.outcome, launch) {
+        (Some(outcome), Some(launch)) => {
+            infer_quota_stop(write, &session, launch, outcome, limits).await?
+        }
+        _ => None,
+    };
+    if inferred_from.is_some() {
+        report.outcome = Some(TurnOutcome::QuotaStopped);
     }
     let is_quota_stop = report.outcome == Some(TurnOutcome::QuotaStopped);
     let ends_turn = report.outcome.is_some();
@@ -195,12 +230,75 @@ pub async fn report(
     // and the session relaunches on another account (#59) or resumes at the reset (#158).
     if is_quota_stop && let Some(launch) = launch {
         crate::store::record_quota_stop(write, launch).await?;
-        quota_stops::record(write, session.as_str(), launch).await?;
+        quota_stops::record(write, session.as_str(), launch, inferred_from.as_deref()).await?;
     } else if ends_turn || merged.state == Some(AgentState::Working) {
         let reason = "the agent worked again before the reset";
         quota_stops::drop_open(write, session.as_str(), reason, now()).await?;
     }
-    Ok(merged)
+    Ok(Recorded {
+        report: merged,
+        is_quota_stop,
+    })
+}
+
+fn unchanged(previous: Option<SessionReport>, session: &SessionId) -> Recorded {
+    Recorded {
+        report: previous.unwrap_or_else(|| unreported(session)),
+        is_quota_stop: false,
+    }
+}
+
+/// Counts `outcome` of `launch` when it is a failure `limits` declares for the session's
+/// provider; any other ended turn starts the count over. What a quota stop is inferred from,
+/// once the failures make one.
+async fn infer_quota_stop(
+    write: &WriteTransaction<'_>,
+    session: &SessionId,
+    launch: i64,
+    outcome: &TurnOutcome,
+    limits: &TransientLimits,
+) -> Result<Option<String>, Error> {
+    if limits.is_empty() {
+        return Ok(None);
+    }
+    // A launch recorded on the agent channel alone has no session row, nor a provider.
+    let provider = session_provider(write, session).await?;
+    let counted = outcome.failure_reason().zip(provider.as_deref());
+    let Some((reason, provider)) =
+        counted.filter(|(reason, provider)| limits.counts(provider, reason))
+    else {
+        quota_stops::clear_limit_failures(write, session.as_str()).await?;
+        return Ok(None);
+    };
+    let inferred_from =
+        quota_stops::count_limit_failure(write, session.as_str(), launch, reason).await?;
+    if let Some(inferred_from) = &inferred_from {
+        tracing::warn!(
+            session = %session.as_str(),
+            launch,
+            provider,
+            reason,
+            inferred_from,
+            "the provider reported a transient limit again and again: recorded as a quota stop"
+        );
+    }
+    Ok(inferred_from)
+}
+
+async fn session_provider(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Option<String>, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT provider FROM sessions WHERE id = ?1",
+            [session.as_str()],
+        )
+        .await?;
+    match rows.next().await? {
+        Some(row) => Ok(Some(row.get(0)?)),
+        None => Ok(None),
+    }
 }
 
 /// Records that `launch`'s agent has not reported by the launch deadline (#702): an open

@@ -706,7 +706,7 @@ fn session_view(
         quota_stop: inputs
             .quota_stops
             .get(session.id.as_str())
-            .map(quota_stop_view),
+            .map(|stop| Box::new(quota_stop_view(stop))),
     }
 }
 
@@ -716,6 +716,7 @@ fn quota_stop_view(stop: &cockpit_sessions::QuotaStop) -> QuotaStopView {
         account: stop.account.clone(),
         resets_at: stop.resets_at,
         switched_at: stop.switched_at,
+        inferred_from: stop.inferred_from.clone(),
         status: match &stop.resolution {
             None => QuotaStopStatusView::Waiting,
             Some(QuotaStopResolution::Resumed { at }) => QuotaStopStatusView::Resumed { at: *at },

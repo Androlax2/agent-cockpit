@@ -228,6 +228,13 @@ pub trait Provider: Send + Sync + 'static {
         None
     }
 
+    /// The failure reasons its harness gives both for a spent plan window and for a transient
+    /// limit (#158): the session counts such failed turns, and enough of them within a window
+    /// make a quota stop. The default declares none, for a harness that names a spent plan.
+    fn transient_limit_reasons(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// The hosts and home folders its harness needs from the sandbox (#830). The default is
     /// the floor: no host and no folder beyond the checkout and the session's own. Refuses a
     /// malformed declaration instead of narrowing it.

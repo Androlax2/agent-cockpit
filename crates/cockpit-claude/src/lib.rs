@@ -383,6 +383,11 @@ impl Provider for ClaudeCode {
         self.quota_within(home, quota::QUOTA_DEADLINE)
     }
 
+    /// `rate_limit` the bridge could not judge by the session's plan windows (#249).
+    fn transient_limit_reasons(&self) -> &'static [&'static str] {
+        &[hooks::RATE_LIMIT]
+    }
+
     fn scan_replies(
         &self,
         home: &Path,

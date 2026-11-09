@@ -270,11 +270,15 @@ fn judge(stop: &QuotaStop, session: &Session, quotas: &[AccountQuota]) -> Step {
             observed_at,
             resets_at: spent.iter().filter_map(|window| window.resets_at).max(),
         },
-        None => Step::HandToOwner(
-            "quota-stopped, but its plan windows show room: Torlek cannot tell its reset, so \
-             continue the session yourself"
+        None => Step::HandToOwner(match &stop.inferred_from {
+            Some(inferred_from) => format!(
+                "quota stop inferred from {inferred_from}, but its plan windows show room: \
+                 Torlek cannot tell its reset, so continue the session yourself"
+            ),
+            None => "quota-stopped, but its plan windows show room: Torlek cannot tell its \
+                     reset, so continue the session yourself"
                 .to_owned(),
-        ),
+        }),
         Some(confirmed_at) if observed_at > confirmed_at && !is_spent => Step::Due,
         Some(_) => Step::Wait,
     }
@@ -469,6 +473,7 @@ mod tests {
             confirmed_at: None,
             resets_at,
             switched_at: None,
+            inferred_from: None,
             resolution: None,
         }
     }

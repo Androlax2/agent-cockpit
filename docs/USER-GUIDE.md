@@ -350,6 +350,14 @@ cannot move asks you to continue the session yourself, as does a stop whose wind
 a wake that fails, or a stop still waiting five hours on (an hour past the reset a reading said,
 if later).
 
+A limit the harness does not name as a spent plan can still be one. When a Claude Code
+session's turns fail with `rate_limit` three times within 30 minutes, with no turn ending
+otherwise in between, Torlek records the third as a quota stop and handles it as above.
+`torlek session show` says where it came from, for example `quota stop: … on the owner's
+sign-in, inferred from 3 `rate_limit` failed turns within 30 minutes; …`, and the daemon logs
+it. Codex names a spent plan itself. OpenCode reports every provider error as `APIError`, so
+Torlek infers no quota stop from it.
+
 Each sandboxed session has its own home, which starts empty and goes when the session ends.
 For a project in `projects.trusted`, and its parallel clones, Torlek records the folder trust in
 that home's Claude configuration before the agent starts, so Claude does not ask again; a project

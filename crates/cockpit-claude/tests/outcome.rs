@@ -108,3 +108,16 @@ fn without_the_bridge_neither_events_nor_outcome_are_reported() {
         );
     }
 }
+
+#[test]
+fn the_reason_a_rate_limited_turn_fails_with_is_one_the_daemon_counts_toward_a_quota_stop() {
+    let arguments = stop_failure_arguments("rate_limit");
+    let reason = arguments.last().unwrap();
+
+    assert!(
+        common::claude()
+            .transient_limit_reasons()
+            .contains(&reason.as_str()),
+        "{reason}"
+    );
+}
