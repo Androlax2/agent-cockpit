@@ -2080,7 +2080,8 @@ impl Sessions {
             self.blocking("create the session's directories", move || {
                 let _counted = counted;
                 create_session_dir(&session_dir)?;
-                create_session_dir(&temp_dir)
+                create_session_dir(&temp_dir)?;
+                create_session_dir(&docker_config_dir(&temp_dir))
             })
             .await?;
         }
@@ -3629,6 +3630,8 @@ fn with_temp_dir(
     environment.retain(|(name, _)| name != "TMPDIR" && name != "CLAUDE_CODE_TMPDIR");
     environment.push(("TMPDIR".into(), temp_dir.into()));
     environment.push(("CLAUDE_CODE_TMPDIR".into(), temp_dir.into()));
+    environment.retain(|(name, _)| name != "DOCKER_CONFIG");
+    environment.push(("DOCKER_CONFIG".into(), docker_config_dir(temp_dir).into()));
     environment
 }
 
@@ -3920,6 +3923,13 @@ fn kept_account(
             "holds no credential or login any more".to_owned(),
         )),
     }
+}
+
+/// The empty folder a session's `docker` reads its configuration from (#1253). The sandbox
+/// denies the owner's `~/.docker/config.json`, and `docker` warns on every call while that
+/// file is unreadable; an empty folder has nothing to warn about and nothing to widen.
+fn docker_config_dir(temp_dir: &Path) -> PathBuf {
+    temp_dir.join("docker-config")
 }
 
 /// A launch's bound credentials file (#832), removed if the launch returns before its agent is

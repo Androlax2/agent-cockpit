@@ -47,6 +47,26 @@ async fn logged_temp_variables(home: &Home, id: &str) -> (String, String) {
     }
 }
 
+/// The `DOCKER_CONFIG` session `id`'s agent logged at its start.
+async fn logged_docker_config(home: &Home, id: &str) -> String {
+    let deadline = Instant::now() + GENEROUS;
+    loop {
+        let log = std::fs::read_to_string(home.temp_log()).unwrap_or_default();
+        let logged = log
+            .lines()
+            .find(|line| line.split(' ').next() == Some(id))
+            .and_then(|line| line.split(' ').nth(3));
+        if let Some(logged) = logged {
+            return logged.to_owned();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{id}'s agent logged no DOCKER_CONFIG: {log}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn two_sessions_start_with_temp_folders_of_their_own() {
     let home = Home::new();
@@ -71,6 +91,20 @@ async fn two_sessions_start_with_temp_folders_of_their_own() {
         home.session_temp_dir(&first),
         home.session_temp_dir(&second)
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_points_docker_at_an_empty_folder_of_its_own() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let id = launched_session(&home, &client, "app").await;
+
+    let docker_config = logged_docker_config(&home, &id).await;
+
+    let expected = home.session_temp_dir(&id).join("docker-config");
+    assert_eq!(Path::new(&docker_config), expected);
+    assert_eq!(std::fs::read_dir(&expected).unwrap().count(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
