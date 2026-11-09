@@ -427,8 +427,8 @@ configuration.
 
 ## Decisions for the owner
 
-Each is asked one at a time with `torlek agent report --needs-input`; the answer is recorded
-here when it arrives.
+Each is asked one at a time with `torlek agent report --needs-input`; each answer is recorded
+on [#1264](https://github.com/Androlax2/agent-cockpit/issues/1264) when it arrives.
 
 - **D1, control reviews.** A (recommended): also run the trial reviewer on 1 in 4 default PRs,
   chosen by number, logged as `trial=control`, so blocking findings per PR have a baseline; about
