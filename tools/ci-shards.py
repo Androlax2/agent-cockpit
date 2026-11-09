@@ -12,9 +12,11 @@ file is ignored. A binary the weights file does not know weighs `UNKNOWN_SECONDS
 `weights` sums each test binary's seconds from the JUnit files nextest writes (profile `ci`,
 .config/nextest.toml) and prints tools/ci-test-weights.json. Refresh it from the shards' JUnit
 artifacts when the shards drift apart; a stale file only unbalances the shards, never
-drops a test.
+drops a test. A binary's weight is the sum of its tests' own seconds, not its wall time (nextest
+runs tests in parallel), so it ranks binaries rather than predicting a shard's duration.
 """
 
+import argparse
 import json
 import re
 import sys
@@ -78,29 +80,29 @@ def weights_from_junit(paths):
     }
 
 
+def parse_arguments(arguments):
+    parser = argparse.ArgumentParser(prog="ci-shards.py", description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    plan_command = commands.add_parser("plan")
+    plan_command.add_argument("--shards", type=int, required=True)
+    plan_command.add_argument("--shard", type=int, required=True)
+    weights_command = commands.add_parser("weights")
+    weights_command.add_argument("junit", nargs="+")
+    return parser.parse_args(arguments)
+
+
 def main(arguments):
-    if (
-        arguments[:1] == ["plan"]
-        and len(arguments) == 5
-        and arguments[1::2]
-        == [
-            "--shards",
-            "--shard",
-        ]
-    ):
-        shard_count, shard_number = int(arguments[2]), int(arguments[4])
-        if not 1 <= shard_number <= shard_count:
-            raise SystemExit(f"ci-shards: shard {shard_number} is not in 1..{shard_count}")
-        shards = plan(json.load(sys.stdin), json.loads(WEIGHTS.read_text()), shard_count)
-        for shard in shards:
-            print(f"shard {shard['shard']}: about {shard['seconds']} s", file=sys.stderr)
-        print(f"filter={shards[shard_number - 1]['filter']}")
+    parsed = parse_arguments(arguments)
+    if parsed.command == "weights":
+        print(json.dumps(weights_from_junit(parsed.junit), indent=2))
         return 0
-    if arguments[:1] == ["weights"] and len(arguments) > 1:
-        print(json.dumps(weights_from_junit(arguments[1:]), indent=2))
-        return 0
-    print(__doc__, file=sys.stderr)
-    return 2
+    if not 1 <= parsed.shard <= parsed.shards:
+        raise SystemExit(f"ci-shards: shard {parsed.shard} is not in 1..{parsed.shards}")
+    shards = plan(json.load(sys.stdin), json.loads(WEIGHTS.read_text()), parsed.shards)
+    for shard in shards:
+        print(f"shard {shard['shard']}: about {shard['seconds']} s", file=sys.stderr)
+    print(f"filter={shards[parsed.shard - 1]['filter']}")
+    return 0
 
 
 if __name__ == "__main__":

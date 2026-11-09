@@ -143,7 +143,7 @@ jobs:
           name: junit-shard-${{ matrix.shard }}
           path: target/nextest/ci/junit.xml
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
   # The sandbox steps that need the whole build but none of the tests: a second Unix user, and
   # the live probe. A job beside the shards, so neither lengthens a shard (#997).

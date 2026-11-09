@@ -52,7 +52,7 @@ class ShardPlanTests(unittest.TestCase):
             ["brand-new", "known"],
         )
 
-    def test_a_weight_for_a_binary_no_longer_in_the_archive_is_ignored(self):
+    def test_a_weight_for_a_binary_no_longer_in_the_workspace_is_ignored(self):
         ci_shards = shards_module()
         plan = ci_shards.plan(nextest_list("kept"), {"kept": 3.0, "removed": 900.0}, 2)
         self.assertEqual(ids_in(plan[0]["filter"]), {"kept"})
@@ -73,7 +73,7 @@ class ShardPlanTests(unittest.TestCase):
         plan = ci_shards.plan(nextest_list("cockpit-cli::bin/torlek"), {}, 2)
         self.assertEqual(plan[0]["filter"], "binary_id(=cockpit-cli::bin/torlek)")
 
-    def test_an_empty_archive_is_refused(self):
+    def test_a_workspace_without_test_binaries_is_refused(self):
         with self.assertRaises(SystemExit):
             shards_module().plan(nextest_list(), {}, 3)
 

@@ -59,8 +59,9 @@ crates-build: ## Build the greenfield workspace in crates/ (debug profile, into 
 	$(build_runner) cargo build --locked --manifest-path Cargo.toml --workspace --all-targets
 
 # TEST_FILTER runs one CI shard (#997, #1261): a nextest filterset from tools/ci-shards.py.
-# Only a command-line value counts: one left in the environment must not shrink a full run.
-test_filter = $(if $(filter command line,$(origin TEST_FILTER)),-E '$(TEST_FILTER)')
+# Only a non-empty command-line value counts: one left in the environment must not shrink a full
+# run. A shard whose filter selects nothing passes; a full run with no tests still fails.
+test_filter = $(if $(and $(filter command line,$(origin TEST_FILTER)),$(TEST_FILTER)),-E '$(TEST_FILTER)' --no-tests pass)
 crates-test: ## Run the greenfield workspace's tests
 	$(build_runner) cargo nextest run --locked --cargo-quiet --status-level fail --manifest-path Cargo.toml --workspace $(test_filter)
 
