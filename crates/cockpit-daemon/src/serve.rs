@@ -220,6 +220,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
                 home: owner_home,
                 interval: COST_SCAN_INTERVAL,
             }),
+            economy: crate::scheduling::economy(&config.usage),
         };
         let daemon = instance
             .start(wiring, |capabilities| {

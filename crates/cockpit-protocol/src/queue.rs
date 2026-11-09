@@ -24,9 +24,9 @@ pub struct QueueExplanationView {
     /// `None` when the item itself waits; the step when a workflow run's step does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<QueueStepView>,
-    /// `not-queued`, `waits-on-items`, `run-blocked`, `owner-step`, `queue-paused`,
-    /// `low-disk`, `control-unsupported`, `infeasible`, `no-room`, `behind`, `no-session`,
-    /// `no-session-free` or `usage-paced`.
+    /// `not-queued`, `waits-on-items`, `run-blocked`, `over-budget`, `owner-step`,
+    /// `queue-paused`, `low-disk`, `control-unsupported`, `infeasible`, `no-room`, `behind`,
+    /// `no-session`, `no-session-free`, `usage-paced` or `economy`.
     pub reason: String,
     pub why: String,
     /// The resource and capacity, or the control, that holds it.

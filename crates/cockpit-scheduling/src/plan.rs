@@ -12,7 +12,7 @@ use cockpit_workflows::StepDefinition;
 
 use crate::pacing::{self, Paced};
 use crate::{
-    ActionBy, Candidate, Explanation, Presence, Reason, Role, SessionNote, Settings, Unit,
+    ActionBy, Candidate, Economy, Explanation, Presence, Reason, Role, SessionNote, Settings, Unit,
     UsageWindow,
 };
 
@@ -29,6 +29,8 @@ pub(crate) struct Waiting {
     pub(crate) role: Option<Role>,
     pub(crate) priority: i64,
     pub(crate) since: i64,
+    /// The owner marked its item economy (#412).
+    pub(crate) is_economy: bool,
 }
 
 /// What a pass decides from, besides the waiting work.
@@ -52,6 +54,8 @@ pub(crate) struct Context<'a> {
     pub(crate) free: Demand,
     /// The accounts' plan windows, which pace queue starts (#412).
     pub(crate) usage: &'a [UsageWindow],
+    /// Each project's economy (#412).
+    pub(crate) economy: &'a BTreeMap<String, Economy>,
 }
 
 pub(crate) struct Planned {
@@ -193,11 +197,21 @@ fn decide(
     if let Some(hold) = hold {
         return Decision::Wait(Box::new(held(hold, wait)));
     }
-    let project_sessions: Vec<&Candidate> = context
+    let mut project_sessions: Vec<&Candidate> = context
         .candidates
         .iter()
         .filter(|candidate| candidate.project.as_deref() == Some(unit.project.as_str()))
         .collect();
+    let mut notes = Vec::new();
+    if unit.is_economy {
+        match economy_sessions(unit, context, project_sessions, wait) {
+            Ok((matching, other)) => {
+                project_sessions = matching;
+                notes = other;
+            }
+            Err(explanation) => return Decision::Wait(explanation),
+        }
+    }
     if project_sessions.is_empty() {
         return Decision::Wait(Box::new(wait(
             Reason::NoSession,
@@ -209,7 +223,6 @@ fn decide(
             ActionBy::Owner,
         )));
     }
-    let mut notes = Vec::new();
     let mut eligible = Vec::new();
     for candidate in project_sessions {
         match refusal(candidate, unit, context, taken) {
@@ -277,6 +290,81 @@ fn decide(
         session: session.session.clone(),
         demand,
     }
+}
+
+/// The sessions of an economy `unit`'s project started with its economy, and a note on each
+/// other one; the explanation of its wait when there is no such session (#412).
+fn economy_sessions<'a>(
+    unit: &Waiting,
+    context: &Context<'_>,
+    project_sessions: Vec<&'a Candidate>,
+    wait: impl Fn(Reason, String, String, ActionBy) -> Explanation,
+) -> Result<(Vec<&'a Candidate>, Vec<SessionNote>), Box<Explanation>> {
+    let Some(economy) = context.economy.get(&unit.project) else {
+        return Err(Box::new(wait(
+            Reason::Economy,
+            format!(
+                "it runs economy, and project {} has no economy model or effort",
+                unit.project
+            ),
+            format!(
+                "set them in `[usage.economy.{}]` of the owner's config, or run it as usual: \
+                 `torlek todo economy {} off`",
+                unit.project, unit.item.0
+            ),
+            ActionBy::Owner,
+        )));
+    };
+    let (matching, other): (Vec<&Candidate>, Vec<&Candidate>) = project_sessions
+        .into_iter()
+        .partition(|candidate| economy.is_run_by(candidate));
+    let notes: Vec<SessionNote> = other
+        .into_iter()
+        .map(|candidate| SessionNote {
+            session: candidate.session.clone(),
+            why: format!(
+                "started with {}, not the economy",
+                started_with(&candidate.model, &candidate.effort)
+            ),
+        })
+        .collect();
+    if matching.is_empty() {
+        let mut explanation = wait(
+            Reason::Economy,
+            format!(
+                "it runs economy, and no session of project {} was started with {}",
+                unit.project,
+                started_with(&economy.model, &economy.effort)
+            ),
+            format!(
+                "start one: `torlek session new DIR{}`",
+                session_new_flags(economy)
+            ),
+            ActionBy::Owner,
+        );
+        explanation.sessions = notes;
+        return Err(Box::new(explanation));
+    }
+    Ok((matching, notes))
+}
+
+/// `model M, effort E` for what is set, `the harness's own model and effort` for neither.
+fn started_with(model: &Option<String>, effort: &Option<String>) -> String {
+    let words: Vec<String> = [("model", model), ("effort", effort)]
+        .into_iter()
+        .filter_map(|(name, word)| word.as_ref().map(|word| format!("{name} {word}")))
+        .collect();
+    if words.is_empty() {
+        return "the harness's own model and effort".to_owned();
+    }
+    words.join(", ")
+}
+
+fn session_new_flags(economy: &Economy) -> String {
+    [("--model", &economy.model), ("--effort", &economy.effort)]
+        .into_iter()
+        .filter_map(|(flag, word)| word.as_ref().map(|word| format!(" {flag} {word}")))
+        .collect()
 }
 
 /// Why `candidate`'s account holds `unit` back, by the pace or by `unit`'s project's share;

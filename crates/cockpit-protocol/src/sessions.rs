@@ -27,6 +27,13 @@ pub struct SessionView {
     pub working_dir: String,
     /// The provider's conversation id, once known.
     pub conversation: Option<String>,
+    /// The model and effort chosen at its start, in the provider's own words (#701); `None`
+    /// when the harness's own setting applies. An economy item goes only to a session started
+    /// with its project's economy (#412).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     /// The harness's own compaction threshold chosen at its start, in the provider's own
     /// words (#783); `None` when the harness's own setting applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]

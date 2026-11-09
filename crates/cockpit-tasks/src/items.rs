@@ -29,7 +29,8 @@ use crate::{
 /// The columns `item_from` reads, in its order.
 const SELECT_ITEMS: &str = "SELECT id, project, title, notes, kind, priority, status,
         is_blocker_report, why, filed_by, filed_from, doing_session, summary, is_queued,
-        intent_revision, state_revision, created_at, changed_at, finished_by, budget_minutes
+        intent_revision, state_revision, created_at, changed_at, finished_by, budget_minutes,
+        is_economy
      FROM tasks_items";
 
 /// What `list` returns.
@@ -595,6 +596,30 @@ pub async fn set_budget(
     required(write, id).await
 }
 
+/// The owner marks `id` to run economy (#412): the queue places it only on a session of its
+/// project started with each of the project's economy model and effort that is set, or
+/// unmarks it.
+pub async fn set_economy(
+    write: &WriteTransaction<'_>,
+    actor: &Actor,
+    id: ItemId,
+    is_economy: bool,
+    now: i64,
+) -> Result<Item, Error> {
+    owner_only(actor, "mark an item for economy")?;
+    let item = required(write, id).await?;
+    in_status(&item, &[Status::Todo, Status::Doing], "run economy")?;
+    write
+        .execute(
+            "UPDATE tasks_items SET is_economy = ?2, state_revision = state_revision + 1,
+                changed_at = ?3
+             WHERE id = ?1",
+            (id.0, i64::from(is_economy), now),
+        )
+        .await?;
+    required(write, id).await
+}
+
 /// The owner makes a `todo` item available for a session to take, or takes it back.
 pub async fn set_queued(
     write: &WriteTransaction<'_>,
@@ -1108,6 +1133,7 @@ fn item_from(row: &Row) -> Result<Item, Error> {
                     .map_err(|_| invalid_row("tasks_items", format!("budget {minutes} min")))
             })
             .transpose()?,
+        is_economy: row.get::<i64>(20)? == 1,
     })
 }
 

@@ -130,6 +130,9 @@ pub struct Wiring {
     /// How each provider reporting `cost` is read for the cost archive (#699); `None` reads
     /// none, as in tests that are not about cost.
     pub cost: Option<CostScanning>,
+    /// Each project's economy model and effort, by project name (#412): an item marked
+    /// economy goes only to a session of its project started with them.
+    pub economy: std::collections::BTreeMap<String, cockpit_scheduling::Economy>,
 }
 
 /// The sessions' settings the owner configured: the idle window and the asleep expiry
@@ -217,6 +220,8 @@ pub struct Capabilities {
     pub quota_policy: Option<cockpit_usage::QuotaPolicy>,
     /// The owner's per-project caps on each plan window (#412); empty without quota.
     pub project_shares: std::collections::BTreeMap<String, u8>,
+    /// Each project's economy model and effort (#412).
+    pub economy: std::collections::BTreeMap<String, cockpit_scheduling::Economy>,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -550,6 +555,7 @@ impl Instance {
                 skill_pack,
                 quota_policy: wiring.quota.as_ref().map(|polling| polling.policy.clone()),
                 project_shares: project_shares(wiring.quota.as_ref()),
+                economy: wiring.economy.clone(),
             }),
         });
         let detected = bug_reports::Context {
@@ -586,6 +592,7 @@ impl Instance {
             settings: wiring.scheduling,
             quota_policy: wiring.quota.as_ref().map(|polling| polling.policy.clone()),
             project_shares: project_shares(wiring.quota.as_ref()),
+            economy: wiring.economy,
             queue_changed,
         };
         let dispatching = tokio::spawn(supervisor::supervise(

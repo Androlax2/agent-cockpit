@@ -44,6 +44,8 @@ pub(crate) struct Context {
     pub(crate) quota_policy: Option<QuotaPolicy>,
     /// The owner's per-project caps on each plan window, in percent (#412).
     pub(crate) project_shares: BTreeMap<String, u8>,
+    /// Each project's economy model and effort (#412).
+    pub(crate) economy: BTreeMap<String, cockpit_scheduling::Economy>,
     /// Wakes the periodic pass early: `queue explain` answers from the last pass's records,
     /// which a pause or resume makes wrong until the next one (#646).
     pub(crate) queue_changed: Arc<tokio::sync::Notify>,
@@ -350,6 +352,8 @@ async fn inputs_in(
                 presence: presence(session, reports.get(session.id.as_str())),
                 provider: session.provider.as_str().to_owned(),
                 account: account_of(session),
+                model: session.model.clone(),
+                effort: session.effort.clone(),
             })
         })
         .collect::<Result<_, Failed>>()?;
@@ -364,6 +368,7 @@ async fn inputs_in(
             .map_err(|error| internal(&error))?,
         usage: usage(context, read).await?,
         agent_seconds: agent_seconds(read, now).await?,
+        economy: context.economy.clone(),
         now,
     })
 }
@@ -499,6 +504,25 @@ pub(crate) fn pacing(usage: &cockpit_config::UsageSettings) -> cockpit_schedulin
             burst_percent: usage.pacing_burst_percent.value,
         },
     }
+}
+
+/// The owner's `[usage.economy]`, by project name (#412).
+pub(crate) fn economy(
+    usage: &cockpit_config::UsageSettings,
+) -> BTreeMap<String, cockpit_scheduling::Economy> {
+    usage
+        .economy
+        .iter()
+        .map(|(project, economy)| {
+            (
+                project.clone(),
+                cockpit_scheduling::Economy {
+                    model: economy.value.model.clone(),
+                    effort: economy.value.effort.clone(),
+                },
+            )
+        })
+        .collect()
 }
 
 /// Where the session's agent is: only a report from its current launch says anything about

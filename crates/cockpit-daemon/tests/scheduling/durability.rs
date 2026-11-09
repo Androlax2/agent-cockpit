@@ -35,10 +35,13 @@ async fn crash_window(delivered: bool) {
                 presence: Presence::Waiting { since: now - 3600 },
                 provider: "claude".into(),
                 account: None,
+                model: None,
+                effort: None,
             }],
             viewed: None,
             usage: Vec::new(),
             agent_seconds: Default::default(),
+            economy: Default::default(),
             now,
         },
         &Settings {

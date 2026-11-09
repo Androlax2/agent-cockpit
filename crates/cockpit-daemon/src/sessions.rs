@@ -668,6 +668,8 @@ fn session_view(
         holds_checkout: session.holds_checkout,
         working_dir: session.working_dir.to_string_lossy().into_owned(),
         conversation: session.conversation.as_ref().map(ToString::to_string),
+        model: session.model.clone(),
+        effort: session.effort.clone(),
         design_link: session.design_link.clone(),
         state: state_view(session.state),
         reason: session.reason.clone(),

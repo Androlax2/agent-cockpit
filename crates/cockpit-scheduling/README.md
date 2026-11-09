@@ -51,7 +51,13 @@ the records it writes commit together. The daemon runs one every 30 seconds and 
    ordered after it that would start are held `behind` it, so released capacity accumulates
    until the large job starts. Units held for another reason do not take capacity and keep
    their own explanation.
-6. **Eligible session.** A session of the unit's project takes it when, in this order:
+6. **Eligible session.** An item the owner marked economy (`is_economy` in
+   `cockpit-tasks`, #412) looks only at the sessions of its project started with the
+   project's `Economy` model and effort (`Inputs::economy`, from the owner's
+   `[usage.economy]`); each other session is noted. Without such a session, or without an
+   economy for the project, it waits `economy` with the `session new` flags to start one;
+   the queue never starts or relaunches a session. The owner's handoff ignores the mark.
+   A session of the unit's project takes it when, in this order:
    its role matches (a step naming a role goes only to that role; a session holding a role
    takes only its role's steps), its provider reports the step's capabilities and `submit`
    (the work is typed to its agent), it does no
@@ -169,6 +175,9 @@ reservation) and
   pacing, its explanation, and the windows and projects a share does not cap.
 - `tests/budget.rs`: an item and a run's next step at their budget wait for the owner, its
   explanation, and an item without a budget or not queued.
+- `tests/economy.rs`: an economy item goes only to a session started with its project's
+  economy, waits `economy` without one or without a project economy, and is handed over
+  anywhere.
 - `tests/charges.rs`: placed turns as held reservations that builds and `in_use` see.
 - Through the socket: `cockpit-daemon` `tests/scheduling.rs` and `cockpit-cli`
   `tests/queue.rs`.

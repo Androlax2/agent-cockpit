@@ -37,6 +37,9 @@ pub struct TaskView {
     /// The agent minutes the owner allows it before the queue stops placing it (#412).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_minutes: Option<u32>,
+    /// The owner marked it to run economy (#412).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_economy: bool,
 }
 
 /// What `task-budget` sets: `"no-limit"` or `{"minutes": 90}`.

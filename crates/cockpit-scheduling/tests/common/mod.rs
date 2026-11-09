@@ -10,7 +10,7 @@ use cockpit_authorization::{Permission, Scope, SessionId};
 use cockpit_provider_api::{Capabilities, Capability, Provenance};
 use cockpit_resource_admission::{Demand, Policy};
 use cockpit_scheduling::{
-    Candidate, Dispatched, Explanation, Inputs, Presence, Settings, UsageWindow,
+    Candidate, Dispatched, Economy, Explanation, Inputs, Presence, Settings, UsageWindow,
 };
 use cockpit_tasks::{Actor, Item, ItemId, Kind, NewItem, Priority};
 use cockpit_turso::Database;
@@ -148,8 +148,15 @@ impl Fixture {
         candidates: &[Candidate],
         viewed: Option<&str>,
     ) -> Dispatched {
-        self.dispatch_with(now, candidates, viewed, Vec::new(), BTreeMap::new())
-            .await
+        self.dispatch_with(
+            now,
+            candidates,
+            viewed,
+            Vec::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .await
     }
 
     /// One pass at `now` over `candidates`, with the accounts' plan windows at `usage`.
@@ -159,8 +166,15 @@ impl Fixture {
         candidates: &[Candidate],
         usage: Vec<UsageWindow>,
     ) -> Dispatched {
-        self.dispatch_with(now, candidates, None, usage, BTreeMap::new())
-            .await
+        self.dispatch_with(
+            now,
+            candidates,
+            None,
+            usage,
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .await
     }
 
     /// One pass at `now` over `candidates`, each item having had its `agent_seconds` (#412).
@@ -170,8 +184,35 @@ impl Fixture {
         candidates: &[Candidate],
         agent_seconds: BTreeMap<ItemId, u64>,
     ) -> Dispatched {
-        self.dispatch_with(now, candidates, None, Vec::new(), agent_seconds)
+        self.dispatch_with(
+            now,
+            candidates,
+            None,
+            Vec::new(),
+            agent_seconds,
+            BTreeMap::new(),
+        )
+        .await
+    }
+
+    /// One pass at `now` over `candidates`, with each project's `economy` (#412).
+    pub async fn dispatch_economy(
+        &self,
+        now: i64,
+        candidates: &[Candidate],
+        economy: BTreeMap<String, Economy>,
+    ) -> Dispatched {
+        self.dispatch_with(now, candidates, None, Vec::new(), BTreeMap::new(), economy)
             .await
+    }
+
+    /// The owner marks `item` to run economy.
+    pub async fn mark_economy(&self, item: ItemId) {
+        let write = self.database.write().await.unwrap();
+        cockpit_tasks::set_economy(&write, &Actor::Owner, item, true, NOW)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
     }
 
     /// The owner gives `item` a budget of `minutes` agent minutes.
@@ -190,6 +231,7 @@ impl Fixture {
         viewed: Option<&str>,
         usage: Vec<UsageWindow>,
         agent_seconds: BTreeMap<ItemId, u64>,
+        economy: BTreeMap<String, Economy>,
     ) -> Dispatched {
         let write = self.database.write().await.unwrap();
         let inputs = Inputs {
@@ -197,6 +239,7 @@ impl Fixture {
             viewed: viewed.map(|id| SessionId::new(id).unwrap()),
             usage,
             agent_seconds,
+            economy,
             now,
         };
         let dispatched =
@@ -268,6 +311,8 @@ pub fn idle(id: &str, project: &str) -> Candidate {
         presence: Presence::Waiting { since: NOW - 3600 },
         provider: "claude".to_owned(),
         account: Some(ACCOUNT.to_owned()),
+        model: None,
+        effort: None,
     }
 }
 

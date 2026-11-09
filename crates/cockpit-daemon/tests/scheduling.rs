@@ -13,6 +13,8 @@ mod candidate;
 mod common;
 #[path = "scheduling/durability.rs"]
 mod durability;
+#[path = "scheduling/economy.rs"]
+mod economy;
 #[path = "scheduling/handoff.rs"]
 mod handoff;
 
@@ -34,6 +36,8 @@ struct Home {
     database: Mutex<Option<Arc<cockpit_turso::Database>>>,
     /// The owner's `[usage.project_shares]` (#412).
     project_shares: std::collections::BTreeMap<String, u8>,
+    /// The owner's `[usage.economy]` (#412).
+    economy: std::collections::BTreeMap<String, cockpit_scheduling::Economy>,
 }
 
 impl Home {
@@ -42,6 +46,7 @@ impl Home {
             dir: tempfile::tempdir().unwrap(),
             database: Mutex::new(None),
             project_shares: std::collections::BTreeMap::new(),
+            economy: std::collections::BTreeMap::new(),
         }
     }
 
@@ -68,7 +73,9 @@ impl Home {
                 ProviderName::new("fake").unwrap(),
                 self.path().join("agent.log"),
             )
-            .reading_messages(self.path().join("messages.log"));
+            .reading_messages(self.path().join("messages.log"))
+            // An economy session is started at a chosen effort (#412).
+            .reporting(cockpit_provider_api::Capability::Effort);
             let mut wiring = common::wiring_in(&self.path(), vec![Arc::new(provider)]);
             wiring.scheduling.idle_window = Duration::ZERO;
             // The fake provider reads no quota: a test records the windows that pace it.
@@ -81,6 +88,7 @@ impl Home {
             // #825: a test that kills a terminal (the delivery that never arrives) must not have
             // the exit sweep end the session between two of its passes.
             wiring.exit_sweep = Duration::from_secs(3600);
+            wiring.economy = self.economy.clone();
             let started = match Instance::acquire(options) {
                 Ok(instance) => {
                     instance
@@ -231,7 +239,18 @@ impl Home {
         root: &Path,
         state: AgentState,
     ) -> SessionView {
-        let started = new_session(client, root).await;
+        self.session_at_effort(client, root, None, state).await
+    }
+
+    /// A session started at `effort`, whose agent last reported `state`.
+    async fn session_at_effort(
+        &self,
+        client: &Connection,
+        root: &Path,
+        effort: Option<&str>,
+        state: AgentState,
+    ) -> SessionView {
+        let started = new_session_at_effort(client, root, effort).await;
         let launch = self.first_launch_of(&started.id).await;
         let database = self.database();
         let write = database.write().await.unwrap();
@@ -362,7 +381,11 @@ async fn request(client: &Connection, command: Command) -> Result<Reply, ClientE
     client.request(command, Duration::from_secs(60)).await
 }
 
-async fn new_session(client: &Connection, dir: &Path) -> SessionView {
+async fn new_session_at_effort(
+    client: &Connection,
+    dir: &Path,
+    effort: Option<&str>,
+) -> SessionView {
     match request(
         client,
         Command::SessionNew {
@@ -371,7 +394,7 @@ async fn new_session(client: &Connection, dir: &Path) -> SessionView {
             prompt: None,
             clone: None,
             model: None,
-            effort: None,
+            effort: effort.map(str::to_owned),
             compaction_threshold: None,
         },
     )

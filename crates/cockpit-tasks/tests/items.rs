@@ -443,6 +443,7 @@ async fn the_owners_decisions_are_refused_to_a_session() {
         refusal(cockpit_tasks::wait(&write, &agent, id, vec![id], NOW).await),
         refusal(cockpit_tasks::delete(&write, &agent, id).await),
         refusal(cockpit_tasks::set_budget(&write, &agent, id, Some(60), NOW).await),
+        refusal(cockpit_tasks::set_economy(&write, &agent, id, true, NOW).await),
     ];
 
     for refused in refusals {
@@ -868,5 +869,53 @@ async fn the_audit_keeps_the_head_of_long_notes_and_their_length() {
             item.id.0,
             "x".repeat(200)
         ))
+    );
+}
+
+#[tokio::test]
+async fn the_owner_marks_an_item_for_economy_and_unmarks_it() {
+    let fixture = Fixture::new().await;
+    let item = fixture.owner_adds("app", "Schema").await;
+    assert!(!item.is_economy);
+
+    for (is_economy, revision) in [(true, 2), (false, 3)] {
+        let write = fixture.database.write().await.unwrap();
+        cockpit_tasks::set_economy(&write, &Actor::Owner, item.id, is_economy, NOW)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+
+        let stored = fixture.item(item.id).await;
+        assert_eq!(stored.is_economy, is_economy);
+        assert_eq!(stored.state_revision, revision);
+        assert_eq!(stored.intent_revision, item.intent_revision);
+    }
+}
+
+#[tokio::test]
+async fn a_declined_proposal_takes_no_economy_mark() {
+    let fixture = Fixture::new().await;
+    let agent = fixture.session("s1", "app").await;
+    let proposal = fixture
+        .propose(&agent, None, "Cache the build")
+        .await
+        .unwrap();
+    let write = fixture.database.write().await.unwrap();
+    cockpit_tasks::decline(&write, &Actor::Owner, proposal.id, NOW)
+        .await
+        .unwrap();
+
+    let refused =
+        refusal(cockpit_tasks::set_economy(&write, &Actor::Owner, proposal.id, true, NOW).await);
+
+    assert!(
+        matches!(
+            refused,
+            Refusal::WrongStatus {
+                action: "run economy",
+                ..
+            }
+        ),
+        "{refused:?}"
     );
 }

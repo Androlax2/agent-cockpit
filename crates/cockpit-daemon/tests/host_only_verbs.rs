@@ -118,6 +118,13 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
             },
         ),
         (
+            "task economy (routes.rs:518)",
+            Command::TaskEconomy {
+                item: 0,
+                economy: true,
+            },
+        ),
+        (
             "workflow start/cancel (routes.rs:556)",
             Command::WorkflowStart {
                 item: 0,

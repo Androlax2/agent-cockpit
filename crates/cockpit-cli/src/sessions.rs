@@ -340,9 +340,14 @@ fn last_output(session: &SessionView) -> Option<&str> {
     session.exit.as_ref()?.output.last().map(String::as_str)
 }
 
-/// What `session show` adds for the settings chosen at the start (#783), and the account its
-/// latest launch runs on (#59); nothing when the harness's own apply and it runs on none.
+/// What `session show` adds for the settings chosen at the start (#701, #783), and the
+/// account its latest launch runs on (#59); nothing when the harness's own apply and it runs
+/// on none. The model and effort say which economy items it may take (#412).
 fn choice_lines(session: &SessionView) -> String {
+    let started_with: String = [("model", &session.model), ("effort", &session.effort)]
+        .into_iter()
+        .filter_map(|(name, word)| word.as_ref().map(|word| format!("{name}: {word}\n")))
+        .collect();
     let threshold = session
         .compaction_threshold
         .as_deref()
@@ -361,7 +366,7 @@ fn choice_lines(session: &SessionView) -> String {
             })
         })
         .unwrap_or_default();
-    threshold + &account
+    started_with + &threshold + &account
 }
 
 /// The login accounts the session's latest launch passed over for want of the project's

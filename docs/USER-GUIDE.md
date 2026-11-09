@@ -237,6 +237,20 @@ item to a session yourself (`torlek todo handoff`) goes on whatever its budget. 
 started on its own (`torlek todo start`) counts nothing, nor do sessions the queue did not
 place the item on.
 
+To run some tasks cheaper, name a project's economy model or effort in the owner's config:
+
+```toml
+[usage.economy.app]
+effort = "low"        # or model = "...", or both, in the provider's own words
+```
+
+then mark a task with `torlek todo economy ID on` (`off` unmarks it; `torlek todo show` shows
+`economy: on`). The queue places a marked task only on a session of its project started with
+each of that model and effort you set (`torlek session new DIR --effort low`; `torlek session
+show` prints a session's model and effort). The queue never starts or relaunches a session for it: without
+one, the task waits and `torlek queue explain` shows `economy` with the command to start one.
+Handing the task to a session yourself (`torlek todo handoff`) goes to any session.
+
 `torlek usage cost [--days N]` shows what your replies cost at the provider's published API
 prices (a plan is flat, so this is what the same tokens would bill on API credits): one line
 per UTC day, provider, account and project over the last N days (7 by default, up to 366),

@@ -133,6 +133,23 @@ fn the_owner_sets_an_items_budget_and_show_lists_it_until_lifted() {
 }
 
 #[test]
+fn the_owner_marks_an_item_for_economy_and_show_lists_it_until_unmarked() {
+    let (home, _daemon) = with_app();
+    home.cockpit_ok(&["todo", "add", "Fix the login", "--project", "app"]);
+
+    home.cockpit_ok(&["todo", "economy", "1", "on"]);
+    let marked = home.cockpit_ok(&["todo", "show", "1"]);
+    home.cockpit_ok(&["todo", "economy", "1", "off"]);
+    let unmarked = home.cockpit_ok(&["todo", "show", "1"]);
+
+    assert_eq!(
+        the_line(&marked, "economy:"),
+        "economy: on, only for a session started with its project's economy"
+    );
+    assert!(!unmarked.contains("economy:"), "{unmarked}");
+}
+
+#[test]
 fn a_deleted_item_leaves_the_list() {
     let (home, _daemon) = with_app();
     home.cockpit_ok(&["todo", "add", "Fix the login", "--project", "app"]);
@@ -311,6 +328,7 @@ fn proposed_view() -> TaskView {
         changed_at: 10,
         next: TaskNextView::DecideProposal,
         budget_minutes: None,
+        is_economy: false,
     }
 }
 

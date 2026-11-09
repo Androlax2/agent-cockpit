@@ -109,6 +109,28 @@ pub struct Candidate {
     /// The account its current launch runs on, whose windows pace the work it takes;
     /// `None` when no account is known, which nothing paces.
     pub account: Option<String>,
+    /// The model and effort it was started with, in its provider's own words; `None`: the
+    /// harness's own setting. An economy item goes only to a session matching its project's
+    /// [`Economy`].
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+/// The model and effort a project's economy sessions were started with (#412): an item the
+/// owner marks economy goes only to a session of its project started with both that are set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Economy {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+impl Economy {
+    pub(crate) fn is_run_by(&self, candidate: &Candidate) -> bool {
+        let matches = |wanted: &Option<String>, started: &Option<String>| {
+            wanted.is_none() || wanted == started
+        };
+        matches(&self.model, &candidate.model) && matches(&self.effort, &candidate.effort)
+    }
 }
 
 /// What one pass works from besides the state database.
@@ -122,6 +144,8 @@ pub struct Inputs {
     /// The agent seconds each item with a budget has had through its placements (#412); an
     /// item missing here has had none.
     pub agent_seconds: BTreeMap<ItemId, u64>,
+    /// Each project's economy by project name (#412); a project missing here runs none.
+    pub economy: BTreeMap<String, Economy>,
     /// Seconds since 1970.
     pub now: i64,
 }
@@ -168,10 +192,13 @@ pub enum Reason {
     /// A session could take it, but the plan window of its account is ahead of the pace
     /// (#412).
     UsagePaced,
+    /// It runs economy, and no session of its project was started with the project's economy
+    /// model and effort, or the project has none (#412).
+    Economy,
 }
 
 impl Reason {
-    const ALL: [Reason; 14] = [
+    const ALL: [Reason; 15] = [
         Reason::NotQueued,
         Reason::WaitsOnItems,
         Reason::RunBlocked,
@@ -186,6 +213,7 @@ impl Reason {
         Reason::NoSession,
         Reason::NoSessionFree,
         Reason::UsagePaced,
+        Reason::Economy,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -204,6 +232,7 @@ impl Reason {
             Reason::NoSession => "no-session",
             Reason::NoSessionFree => "no-session-free",
             Reason::UsagePaced => "usage-paced",
+            Reason::Economy => "economy",
         }
     }
 
