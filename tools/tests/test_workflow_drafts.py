@@ -95,7 +95,7 @@ class DraftWorkflowTests(unittest.TestCase):
 
     def test_ready_prs_execute_checks_but_never_publish(self):
         expected = {
-            "codeql.yml": {"analyze"},
+            "codeql.yml": {"languages", "analyze"},
             "scorecard.yml": set(),
             "ci.yml": {
                 "changes",
