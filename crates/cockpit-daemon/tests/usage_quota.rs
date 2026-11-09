@@ -72,6 +72,7 @@ impl Polled {
             home: dir.path().join("home"),
             refresh: REFRESH,
             policy: QuotaPolicy::default(),
+            project_shares: std::collections::BTreeMap::new(),
         });
         let environment = wiring.environment.clone();
         let opened = Arc::new(std::sync::Mutex::new(None));

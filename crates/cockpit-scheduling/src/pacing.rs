@@ -55,6 +55,19 @@ pub struct UsageWindow {
     /// Seconds since 1970.
     pub resets_at: Option<i64>,
     pub standing: Standing,
+    /// The projects the owner gave a share of their own and the part of this window each has
+    /// used (#412); a project not listed has no cap.
+    pub project_shares: Vec<ProjectShare>,
+}
+
+/// A project's cap on one window and its part of the window so far. The provider reports only
+/// the account's total: the daemon estimates the part from what the project's replies since
+/// the window opened would cost at API prices, against the account's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectShare {
+    pub project: String,
+    pub share_percent: u8,
+    pub used_percent: f64,
 }
 
 /// Why work of some priority does not start on an account now.
@@ -64,7 +77,11 @@ pub(crate) struct Paced {
     pub(crate) limited_by: String,
     /// When the window lets it start again; `None` when no reading can say.
     pub(crate) resumes_at: Option<i64>,
+    /// The owner's setting that would let it start sooner.
+    pub(crate) remedy: String,
 }
+
+const PACING_OFF: &str = "`[usage] pacing = \"off\"` starts queued work at full speed";
 
 /// Why a turn of `priority` waits on `provider`'s `account` at `now`; `None` when it may
 /// start. `priority` is the item's own: aging orders the queue but never earns a burst. Of
@@ -103,6 +120,7 @@ pub(crate) fn paced(
                     ),
                     limited_by: name(),
                     resumes_at: None,
+                    remedy: PACING_OFF.to_owned(),
                 }),
                 // A block refuses every model, so a scoped window says it as well as any.
                 Standing::Current if window.scope.is_some() => None,
@@ -194,6 +212,7 @@ fn held(
             ),
             limited_by: name,
             resumes_at: window.resets_at.map(|resets_at| resets_at.max(now)),
+            remedy: PACING_OFF.to_owned(),
         });
     }
     if priority >= Priority::HIGH.level() {
@@ -213,7 +232,50 @@ fn held(
         ),
         limited_by: name,
         resumes_at: Some(resumes_at.max(now)),
+        remedy: PACING_OFF.to_owned(),
     })
+}
+
+/// Why `project`'s queued work waits on `provider`'s `account` at `now`: a whole-account
+/// window with a current reading where the project's part reached its share. It holds every
+/// priority and whatever the pacing, since the owner set the share on its own; it frees at the
+/// window's reset. Of several windows, the one that holds it longest explains it.
+pub(crate) fn over_share(
+    windows: &[UsageWindow],
+    provider: &str,
+    account: &str,
+    project: &str,
+    now: i64,
+) -> Option<Paced> {
+    windows
+        .iter()
+        .filter(|window| {
+            window.provider == provider
+                && window.account == account
+                && window.standing == Standing::Current
+                && window.scope.is_none()
+        })
+        .filter_map(|window| {
+            let share = window
+                .project_shares
+                .iter()
+                .find(|share| share.project == project)?;
+            if share.used_percent < f64::from(share.share_percent) {
+                return None;
+            }
+            let name = format!("window {} of {provider} account {account}", window.limit);
+            Some(Paced {
+                why: format!(
+                    "project {project} has used about {:.0} % of {name}, at its {} % share \
+                     (estimated from its replies' API-price value)",
+                    share.used_percent, share.share_percent
+                ),
+                limited_by: format!("project {project}'s share of {name}"),
+                resumes_at: window.resets_at.map(|resets_at| resets_at.max(now)),
+                remedy: format!("`[usage.project_shares] {project}` raises the share"),
+            })
+        })
+        .max_by_key(|paced| paced.resumes_at.unwrap_or(i64::MAX))
 }
 
 /// `at` as a wait from `now`, in whole minutes rounded up.

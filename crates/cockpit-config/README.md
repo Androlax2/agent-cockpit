@@ -73,6 +73,9 @@ quota_alert_percents = [80, 95]    # 1 to 5 percents from 1 to 100, ascending
 pacing = "even"                    # "even" or "off": queue starts follow the windows (#412)
 pacing_reserve_percent = 10        # 0 to 90: the share the queue never starts work in
 pacing_burst_percent = 15          # 0 to 100: how far ahead of the even line work may start
+
+[usage.project_shares]             # none by default: no project is capped
+app = 30                           # 1 to 100: the share of each window the queue starts app's work in
 ```
 
 A failed reading waits twice as long before the next, up to an hour, and the last good one

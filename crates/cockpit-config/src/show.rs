@@ -176,6 +176,13 @@ pub fn render(config: &EffectiveConfig) -> String {
     ] {
         lines.push(line(key, &percent.value.to_string(), &percent.source));
     }
+    for (project, share) in &usage.project_shares {
+        lines.push(line(
+            &format!("usage.project_shares.{project}"),
+            &share.value.to_string(),
+            &share.source,
+        ));
+    }
     for provider in crate::KNOWN_PROVIDERS {
         let accounts = config.accounts.sourced(provider);
         lines.push(line(

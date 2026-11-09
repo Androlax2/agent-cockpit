@@ -107,6 +107,14 @@ fn a_quota_setting_outside_its_rules_is_refused_with_its_key() {
             "usage.pacing_reserve_percent",
         ),
         ("pacing_burst_percent = 101", "usage.pacing_burst_percent"),
+        (
+            "[usage.project_shares]\napp = 0",
+            "usage.project_shares.app",
+        ),
+        (
+            "[usage.project_shares]\napp = 101",
+            "usage.project_shares.app",
+        ),
     ] {
         write_owner_config(home.path(), &format!("[usage]\n{setting}\n"));
 
@@ -147,4 +155,35 @@ fn an_unknown_pacing_is_refused() {
     let loaded = cockpit_config::load(&environment(home.path()), None, &[]);
 
     assert!(loaded.is_err(), "{loaded:?}");
+}
+
+#[test]
+fn no_project_has_a_share_until_the_owner_sets_one() {
+    let home = tempfile::tempdir().unwrap();
+
+    let config = cockpit_config::load(&environment(home.path()), None, &[]).unwrap();
+
+    assert!(config.usage.project_shares.is_empty());
+}
+
+#[test]
+fn the_owner_caps_a_projects_share_of_each_window_and_show_names_the_line() {
+    let home = tempfile::tempdir().unwrap();
+    write_owner_config(home.path(), "[usage.project_shares]\napp = 20\nweb = 30\n");
+
+    let config = cockpit_config::load(&environment(home.path()), None, &[]).unwrap();
+
+    let shares: Vec<(&str, u8)> = config
+        .usage
+        .project_shares
+        .iter()
+        .map(|(project, share)| (project.as_str(), share.value))
+        .collect();
+    assert_eq!(shares, [("app", 20), ("web", 30)]);
+    let shown = cockpit_config::render(&config);
+    assert!(
+        shown.contains("usage.project_shares.app = 20  # user config"),
+        "{shown}"
+    );
+    assert!(shown.contains("config.toml:3"), "{shown}");
 }

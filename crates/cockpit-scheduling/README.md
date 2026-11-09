@@ -87,6 +87,14 @@ reason and when the line reaches the window's share (or the reset, at the reserv
 paced session is noted with its own window. Running work is never paused, so what it spends
 after the last start comes out of the reserve. A handoff is the owner's and is never paced.
 
+A project the owner gives a share (`UsageWindow::project_shares`, #412 owner choice 1A) gets
+no queue start on an account once its estimated part of one of the account's current,
+whole-account windows reaches the share: every priority, whatever `Settings::pacing`, until
+the window resets. The daemon estimates the part as the window's share used times the
+project's API-price cost since the window opened over the account's. The explanation is the
+same `usage-paced`, limited by the project's share; of pacing and a share, the one holding
+longer explains it.
+
 `window_pace` is one window's standing against the line for normal-priority work: the line
 now, whether it holds the queue, and when it lets work start. The daemon adds it to each
 window `usage-quota` answers.
@@ -149,6 +157,8 @@ reservation) and
 - `tests/pacing.rs`: the line by priority, the reserve, blocked and unpacing windows, the
   explanation, and a recorded feed that full speed spends by half the window and the
   default pace makes last until the reset; each window's pace as `usage quota` shows it.
+- `tests/project_shares.rs`: a project at its share waits whatever its priority and the
+  pacing, its explanation, and the windows and projects a share does not cap.
 - `tests/charges.rs`: placed turns as held reservations that builds and `in_use` see.
 - Through the socket: `cockpit-daemon` `tests/scheduling.rs` and `cockpit-cli`
   `tests/queue.rs`.

@@ -210,6 +210,17 @@ stale reading, a window scoped to one model and a session on an account Torlek r
 windows for pace nothing.
 `usage.pacing = "off"` starts queued work at full speed.
 
+To keep one project from taking a whole window, give it a share in `[usage.project_shares]`
+(`app = 30`, from 1 to 100). The queue then starts none of that project's work on an account
+once the project has used about its share of one of the account's windows, whatever its
+priority and even with `pacing = "off"`, until the window resets; `torlek queue explain`
+names the project's share. The rest of the window stays free for every project, and a
+project without a share has no cap. Providers report only the account's total, so a
+project's part is estimated: the window's share used times what the project's replies since
+the window opened cost at API prices (see `torlek usage cost`), over the account's. Replies
+of a model with no price add nothing to it, and a share named for a project Torlek does not
+know caps nothing. Your own interactive sessions are never capped: only queue starts wait.
+
 `torlek usage cost [--days N]` shows what your replies cost at the provider's published API
 prices (a plan is flat, so this is what the same tokens would bill on API credits): one line
 per UTC day, provider, account and project over the last N days (7 by default, up to 366),

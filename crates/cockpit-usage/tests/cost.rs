@@ -4,7 +4,7 @@ mod common;
 
 use cockpit_provider_api::{ProviderName, ReplyScan, ReplyTokens, SourceCursor};
 use cockpit_usage::{AccountName, Day, Error};
-use common::{DAY, Fixture, MONDAY, app_project, reply, scan_of, tokens};
+use common::{DAY, Fixture, HOUR, MONDAY, app_project, reply, scan_of, tokens};
 
 const OPUS: &str = "claude-opus-5-5";
 
@@ -492,4 +492,84 @@ fn text_that_is_not_a_real_date_is_not_a_day() {
         assert!(Day::parse(text).is_err(), "{text}");
     }
     let _ = (app_project(None), AccountName::new("main"));
+}
+
+#[tokio::test]
+async fn each_projects_cost_on_one_account_since_a_time_counts_only_its_replies_since() {
+    let fixture = Fixture::new().await;
+    let since = MONDAY + 2 * HOUR;
+    fixture
+        .archive_for(
+            "work",
+            "session-1",
+            &scan_of(vec![
+                reply("early:r", since - 1, OPUS, tokens(1_000_000, 0)),
+                reply("app:r", since, OPUS, tokens(1_000, 0)),
+            ]),
+        )
+        .await
+        .unwrap();
+    fixture
+        .archive_in_project(
+            "work",
+            "session-2",
+            &scan_of(vec![reply("tools:r", since + HOUR, OPUS, tokens(3_000, 0))]),
+            &|_| "tools".to_owned(),
+        )
+        .await
+        .unwrap();
+    fixture
+        .archive_for(
+            "private",
+            "session-3",
+            &scan_of(vec![reply("other:r", since + HOUR, OPUS, tokens(2_000, 0))]),
+        )
+        .await
+        .unwrap();
+    let read = fixture.database.read().await.unwrap();
+
+    let costs = cockpit_usage::project_costs_since(
+        &read,
+        &ProviderName::new("claude").unwrap(),
+        &AccountName::new("work").unwrap(),
+        since,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        costs.into_iter().collect::<Vec<_>>(),
+        [
+            ("app".to_owned(), 4_000_000),
+            ("tools".to_owned(), 12_000_000)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_reply_without_a_price_adds_nothing_to_its_projects_cost_since() {
+    let fixture = Fixture::new().await;
+    fixture
+        .archive(vec![reply(
+            "m:r",
+            MONDAY,
+            "unknown-model-1",
+            tokens(1_000, 0),
+        )])
+        .await;
+    let read = fixture.database.read().await.unwrap();
+
+    let costs = cockpit_usage::project_costs_since(
+        &read,
+        &ProviderName::new("claude").unwrap(),
+        &AccountName::new("main").unwrap(),
+        MONDAY,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        costs.into_iter().collect::<Vec<_>>(),
+        [("app".to_owned(), 0)]
+    );
 }
