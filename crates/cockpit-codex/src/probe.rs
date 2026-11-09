@@ -32,12 +32,6 @@ pub fn probe(program: &Path, version: &str) -> Result<Probe, ProbeError> {
                 });
             }
         }
-        if !documents_flag(&help, CONFIG_FLAG) {
-            missing.push(Missing {
-                requirement: format!("flag {CONFIG_FLAG} in `codex {}`", command.join(" ")),
-                blocks: vec![Capability::CompactionThreshold],
-            });
-        }
     }
     let server_help = command_output(program, &["app-server", "--help"], COMMAND_DEADLINE)?;
     for flag in SERVER_FLAGS {

@@ -25,7 +25,10 @@ use cockpit_codex::{
 };
 use cockpit_provider_api::{Action, ConversationId, Delivered, Provider, documents_flag};
 use rustix::process::{Pid, Signal, kill_process_group};
-use serde_json::json;
+use serde_json::{Value, json};
+
+/// The first message of a terminal session's launch.
+const READY: &str = "Reply READY only. Do not use tools.";
 
 /// The installed Codex the ignored live tests run.
 fn installed() -> PathBuf {
@@ -588,8 +591,14 @@ fn the_session_launcher_runs_a_conversation_in_its_terminal() {
     let model = Model::conformance(Scenario::Success);
     let work = tempfile::tempdir().unwrap();
     let home = fresh_home(&model, work.path());
-    let session =
-        TerminalSession::start(&recorder.bridge(), home.path(), work.path(), &model, None);
+    let session = TerminalSession::start(
+        &recorder.bridge(),
+        home.path(),
+        work.path(),
+        &model,
+        None,
+        Some(READY),
+    );
     let report = recorder.report_with("--prompt");
     assert_eq!(
         &report[..6],
@@ -607,6 +616,153 @@ fn the_session_launcher_runs_a_conversation_in_its_terminal() {
     session.quit();
 }
 
+/// #1281: Codex's "Update available" screen held a restarted session until the owner answered
+/// it. A launch without a first message, as a restart is, skips it even when the home's own
+/// configuration leaves the check on and a newer version is on record. (Codex 0.166.0 skips the
+/// screen by itself when a launch carries a first message.)
+#[test]
+#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM) and tmux"]
+fn the_session_launcher_skips_the_update_screen() {
+    let recorder = Recorder::new();
+    let model = Model::conformance(Scenario::Success);
+    let work = tempfile::tempdir().unwrap();
+    let home = fresh_home(&model, work.path());
+    let config = home.path().join("config.toml");
+    let isolated = std::fs::read_to_string(&config).unwrap();
+    let checks_for_updates = isolated.replace("check_for_update_on_startup = false\n", "");
+    assert_ne!(checks_for_updates, isolated);
+    std::fs::write(&config, checks_for_updates).unwrap();
+    // Checked in the future, so Codex reads this record instead of asking the network.
+    std::fs::write(
+        home.path().join("version.json"),
+        r#"{"latest_version":"999.0.0","last_checked_at":"2999-01-01T00:00:00Z","dismissed_version":null}"#,
+    )
+    .unwrap();
+
+    let session = TerminalSession::start(
+        &recorder.bridge(),
+        home.path(),
+        work.path(),
+        &model,
+        None,
+        None,
+    );
+
+    let screen = wait_until("the TUI's first screen", || {
+        let screen = session.screen();
+        ["mock-model", "Update available"]
+            .iter()
+            .any(|text| screen.contains(text))
+            .then_some(screen)
+    });
+    session.quit();
+    assert!(!screen.contains("Update available"), "{screen}");
+}
+
+/// What `thread/start` answers on an app-server given the session's own settings for a launch
+/// choosing `model` and `effort`, in a home whose configuration names `mock-model` and a
+/// read-only sandbox.
+fn thread_started_with_session_settings(model: Option<&str>, effort: Option<&str>) -> Value {
+    let fixture = Model::conformance(Scenario::Success);
+    let work = tempfile::tempdir().unwrap();
+    let home = fresh_home(&fixture, work.path());
+    let session_dir = tempfile::tempdir().unwrap();
+    let socket = cockpit_codex::delivery::socket_path(session_dir.path());
+    let configs = cockpit_codex::session_configs(&cockpit_provider_api::LaunchRequest {
+        working_dir: work.path(),
+        session_dir: session_dir.path(),
+        conversation: &cockpit_provider_api::Conversation::New,
+        first_message: None,
+        effort,
+        model,
+        remote_control: false,
+        compaction_threshold: None,
+    })
+    .unwrap();
+    let _server = Server {
+        child: native_command(&installed(), home.path())
+            .args(cockpit_codex::server_arguments(&socket, &configs))
+            .current_dir(work.path())
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+        _reports: cockpit_codex::reports::LaunchReports::new(&socket).unwrap(),
+    };
+    let mut connection = wait_until("the app-server listening", || {
+        AppServer::connect(&socket, "cockpit-conformance", Duration::from_secs(1)).ok()
+    });
+    connection
+        .set_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    connection
+        .call(
+            "thread/start",
+            json!({"cwd": work.path().to_str().unwrap(), "ephemeral": true}),
+        )
+        .unwrap()
+}
+
+/// #1281: the model and effort a launch chooses are the ones a thread runs, over the home's own
+/// `model`; `thread/start` answers them without a model turn.
+#[test]
+#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM)"]
+fn a_thread_runs_the_model_and_effort_a_launch_chooses() {
+    let started = thread_started_with_session_settings(Some("gpt-6-astra"), Some("max"));
+
+    assert_eq!(started["model"], "gpt-6-astra", "{started}");
+    assert_eq!(started["reasoningEffort"], "max", "{started}");
+}
+
+/// #1281: a thread of a Torlek launch writes its workspace and has the network, over the home's
+/// own `sandbox_mode = "read-only"`.
+#[test]
+#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM)"]
+fn a_thread_runs_in_the_sandbox_a_launch_sets() {
+    let started = thread_started_with_session_settings(None, None);
+
+    assert_eq!(started["sandbox"]["type"], "workspaceWrite", "{started}");
+    assert_eq!(started["sandbox"]["networkAccess"], true, "{started}");
+}
+
+/// #1281: in the sandbox a launch sets, a command reaches a Unix socket outside its workspace,
+/// as `torlek agent report` reaches Torlek's agent socket, and writes its workspace. Without
+/// the network, Codex refused the `connect` (`EPERM`).
+#[test]
+#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM) and python3"]
+fn a_command_in_the_sandbox_a_launch_sets_reaches_a_socket_outside_its_workspace() {
+    let home = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let socket = outside.path().join("agent.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut command = native_command(&installed(), home.path());
+    command.current_dir(work.path()).arg("sandbox");
+    for config in cockpit_codex::SANDBOX_CONFIGS {
+        command.args([CONFIG_FLAG, config]);
+    }
+    command.args([
+        "--",
+        "/usr/bin/python3",
+        "-I",
+        "-c",
+        "import pathlib, socket, sys\n\
+         socket.socket(socket.AF_UNIX).connect(sys.argv[1])\n\
+         pathlib.Path(sys.argv[2], 'written').write_text('x')",
+    ]);
+    command.arg(&socket).arg(work.path());
+
+    let output = bounded_command::output(&mut command, Duration::from_secs(20)).unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    // A finished connection waits in the listener's queue.
+    assert!(listener.accept().is_ok());
+    assert!(work.path().join("written").is_file());
+}
+
 #[test]
 #[ignore = "needs explicitly approved native Codex 0.166.0 and tmux; local model only"]
 fn the_session_launcher_resumes_the_same_completed_conversation() {
@@ -614,8 +770,14 @@ fn the_session_launcher_resumes_the_same_completed_conversation() {
     let model = Model::conformance(Scenario::Success);
     let work = tempfile::tempdir().unwrap();
     let home = fresh_home(&model, work.path());
-    let session =
-        TerminalSession::start(&recorder.bridge(), home.path(), work.path(), &model, None);
+    let session = TerminalSession::start(
+        &recorder.bridge(),
+        home.path(),
+        work.path(),
+        &model,
+        None,
+        Some(READY),
+    );
     let completed = recorder.report_with("completed");
     let conversation = ConversationId::new(completed.last().unwrap()).unwrap();
     session.quit();
@@ -631,6 +793,7 @@ fn the_session_launcher_resumes_the_same_completed_conversation() {
         work.path(),
         &model,
         Some(&conversation),
+        Some(READY),
     );
     let reports = wait_until("a resumed prompt report", || {
         let reports = recorder.reports();
@@ -677,6 +840,7 @@ impl TerminalSession {
         work: &Path,
         model: &Model,
         resumed: Option<&ConversationId>,
+        first_message: Option<&str>,
     ) -> Self {
         let preflight_dir = tempfile::tempdir().unwrap();
         // The actual launcher starts its TUI immediately; check the same scratch
@@ -702,7 +866,7 @@ impl TerminalSession {
                 working_dir: work,
                 session_dir: &session.dir,
                 conversation: &conversation,
-                first_message: Some("Reply READY only. Do not use tools."),
+                first_message,
                 effort: None,
                 model: None,
                 remote_control: false,
@@ -784,6 +948,18 @@ while :; do sleep 1; done"#,
             .arg("-f")
             .arg(self.dir.join("tmux.conf"));
         command
+    }
+
+    /// What the pane shows now.
+    fn screen(&self) -> String {
+        let output = bounded_command::output(
+            self.tmux()
+                .args(["capture-pane", "-p", "-t", "=conformance:0.0"]),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
     fn quit(&self) {

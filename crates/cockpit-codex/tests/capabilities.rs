@@ -7,8 +7,10 @@ use std::path::PathBuf;
 use cockpit_codex::{CONFORMANCE_VERSION, Codex};
 use cockpit_provider_api::{Availability, Capability, Provenance, Provider};
 
-const REPORTED: [Capability; 7] = [
+const REPORTED: [Capability; 9] = [
     Capability::Resume,
+    Capability::Model,
+    Capability::Effort,
     Capability::Events,
     Capability::Submit,
     Capability::Cancel,
@@ -97,10 +99,10 @@ fn with_an_unknown_version_each_capability_is_unverified() {
     }
 }
 
-/// The tested set (#48, #407, #783): effort, compact, billing, commands, evidence, remote
+/// The tested set (#48, #407, #783, #1281): compact, billing, commands, evidence, remote
 /// control and screen reading are not.
 #[test]
-fn it_reports_nothing_beyond_resume_events_submit_cancel_outcome_compaction_threshold_and_quota() {
+fn it_reports_nothing_beyond_resume_model_effort_bridge_compaction_threshold_and_quota() {
     let capabilities = common::codex().capabilities();
 
     for capability in Capability::ALL {
@@ -115,7 +117,7 @@ fn it_reports_nothing_beyond_resume_events_submit_cancel_outcome_compaction_thre
 }
 
 #[test]
-fn without_the_bridge_only_resume_the_compaction_threshold_and_quota_are_reported() {
+fn without_the_bridge_only_resume_model_effort_the_compaction_threshold_and_quota_are_reported() {
     let codex = Codex::new(
         PathBuf::from("/usr/bin/codex"),
         Some(CONFORMANCE_VERSION.to_owned()),
@@ -128,7 +130,11 @@ fn without_the_bridge_only_resume_the_compaction_threshold_and_quota_are_reporte
             capabilities.supports(capability),
             matches!(
                 capability,
-                Capability::Resume | Capability::CompactionThreshold | Capability::Quota
+                Capability::Resume
+                    | Capability::Model
+                    | Capability::Effort
+                    | Capability::CompactionThreshold
+                    | Capability::Quota
             ),
             "{capability:?}"
         );

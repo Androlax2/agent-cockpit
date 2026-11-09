@@ -72,8 +72,8 @@ Use the same profile for every command. To keep a preview's state apart from an 
    A local sign-in check does not prove your account has model access or remaining quota.
    Provider accounts and usage are managed by the provider.
 
-3. Choose a model and effort for a Claude session. Pass `--model MODEL` (an alias such as `opus` or a model id) and `--effort LEVEL` (`low`, `medium`, `high`, `xhigh` or `max`) to `torlek session new`.
-   Every restart, wake and resume of the session keeps them. Without them, Claude Code's own settings apply. A provider that cannot set them refuses the start.
+3. Choose a model and effort for a Claude or Codex session. Pass `--model MODEL` and `--effort LEVEL` to `torlek session new`, in the harness's own words: for Claude Code an alias such as `opus` or a model id, and `low`, `medium`, `high`, `xhigh` or `max`; for Codex a model id such as `gpt-6.1-terra`, and a level its model lists, such as `high` or `max` (Codex's `model` and `model_reasoning_effort`, set for that session only).
+   Every restart, wake and resume of the session keeps them. Without them, the harness's own settings apply (for Codex, `~/.codex/config.toml`). A provider that cannot set them refuses the start.
    `--compaction-threshold VALUE` sets the harness's own compaction threshold, off by default, in the harness's words: Claude Code `auto` or a context window such as `200k` (`--autocompact`), Codex a whole percent such as `75` (`model_post_turn_compact_threshold_percent`), OpenCode a token count such as `20000` (`compaction.reserved`). The session card shows it. An installed harness version without the option refuses the start with the missing flag or setting.
 
 ## Approvals
@@ -152,11 +152,12 @@ The following table describes the adapters in this checkout, not a promise that 
 | Provider name | Adapter capabilities with its bridge | Capability pin and provenance |
 | --- | --- | --- |
 | `claude` (Claude Code) | Resume, events/outcomes, submit/cancel, effort, compact, remote control, screen fallback | [2.1.316 adapter and fixture evidence](../crates/cockpit-claude/README.md) |
-| `codex` (Codex) | Resume, events/outcomes, submit/cancel through a private app-server | [0.161.0 capability pin](../crates/cockpit-codex/README.md); local sign-in has a separate 0.166.0 conformance pin |
+| `codex` (Codex) | Resume, events/outcomes, submit/cancel through a private app-server, model, effort | [0.161.0 capability pin](../crates/cockpit-codex/README.md); local sign-in has a separate 0.166.0 conformance pin |
 | `opencode` (OpenCode) | Resume, events/outcomes, submit/cancel, native commands | [1.19.5 adapter and fixture evidence](../crates/cockpit-opencode/README.md); sign-in remains discovered/unverified |
 
 Adapters label a capability `tested` only at their exact capability pin; other or unknown versions are `discovered` (unverified).
 Fixture tests and help/flag checks do not establish a live signed-in end-to-end conversation.
+Torlek overrides your Codex `sandbox_mode` for the Codex sessions it starts: each runs its commands with `sandbox_mode = "workspace-write"` and `sandbox_workspace_write.network_access = true`, set for that session only, whatever `~/.codex/config.toml` says. Codex's sandbox refuses every connection without the network, Torlek's agent socket included, so `torlek agent report` would turn into an approval prompt; Torlek's own sandbox, proxy and grants stay the boundary. Your approval policy and `writable_roots` still apply, and Codex sessions you start by hand are untouched. Torlek also turns off Codex's update screen for its sessions (`check_for_update_on_startup = false`), which would hold a restart until you answered it.
 Codex delivered-turn approval routing has local fake-model evidence on 0.166.0; signed-in acceptance, the older 0.161.0 target and in-session resume/fork remain unmeasured. See its adapter's known gaps.
 Receiving a prompt is not evidence that an agent completed its task.
 
