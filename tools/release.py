@@ -4,7 +4,7 @@
 Usage: release.py check-tag TAG --main REF --alpha-checklist open|closed
                              --beta-checklist open|closed
        release.py next-prerelease --main REF --alpha-checklist open|closed
-                                  --beta-checklist open|closed
+                                  --beta-checklist open|closed --open-issues-of OWNER/REPO
        release.py dry-run-version
        release.py stamp VERSION
        release.py package --version V --channel C --platform P --revision SHA
@@ -326,8 +326,11 @@ def prerelease_channel(alpha_checklist, beta_checklist):
     return "alpha"
 
 
-def next_prerelease(main_ref, alpha_checklist, beta_checklist, cwd):
-    """The tag the dispatched prerelease workflow cuts on HEAD, after every refusal."""
+def next_prerelease(main_ref, alpha_checklist, beta_checklist, issues_repository, cwd):
+    """The tag the dispatched prerelease workflow cuts on HEAD, after every refusal.
+
+    The release proposal workflow runs the same checks on each draft it publishes (#1260).
+    """
     channel = prerelease_channel(alpha_checklist, beta_checklist)
     refuse_shallow(cwd)
     commit = git("rev-parse", "HEAD", cwd=cwd)
@@ -342,6 +345,9 @@ def next_prerelease(main_ref, alpha_checklist, beta_checklist, cwd):
     refuse_prerelease(candidate, commit, version, tags, base, cwd)
     if git_succeeds("show-ref", "--verify", "--quiet", f"refs/tags/{candidate['tag']}", cwd=cwd):
         raise Refusal(f"{candidate['tag']} already exists; never reuse or move a tag")
+    if channel == "alpha":
+        # Before a tag exists, because the tag's file can no longer change (#886).
+        known_gaps(None, issues_repository, cwd)
     import release_pr
 
     try:
@@ -813,6 +819,7 @@ def parse_arguments(arguments):
     check_command = commands.add_parser("check-tag")
     check_command.add_argument("tag")
     next_command = commands.add_parser("next-prerelease")
+    next_command.add_argument("--open-issues-of", required=True)
     for gated_command in (check_command, next_command):
         for checklist in ("--alpha-checklist", "--beta-checklist"):
             gated_command.add_argument(checklist, choices=("open", "closed"), required=True)
@@ -854,7 +861,13 @@ def main(arguments, cwd=ROOT):
             )
         elif options.command == "next-prerelease":
             print_outputs(
-                next_prerelease(options.main, options.alpha_checklist, options.beta_checklist, cwd)
+                next_prerelease(
+                    options.main,
+                    options.alpha_checklist,
+                    options.beta_checklist,
+                    options.open_issues_of,
+                    cwd,
+                )
             )
         elif options.command == "dry-run-version":
             print_outputs(dry_run_version(cwd))
@@ -882,7 +895,7 @@ def main(arguments, cwd=ROOT):
                 raise Refusal(f"{len(gaps)} release gate check(s) have no job; publishing waits")
         elif options.command == "known-gaps":
             gaps = known_gaps(options.version, options.open_issues_of, cwd)
-            # Without a version this only checks: prerelease.yml runs it before a tag exists.
+            # Without a version this only checks; next-prerelease runs it before a tag exists.
             if options.version is not None:
                 print(gaps, end="")
         elif options.command == "release-plan":

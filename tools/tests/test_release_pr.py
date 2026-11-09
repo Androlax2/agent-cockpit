@@ -6,6 +6,7 @@ import importlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -413,6 +414,17 @@ class ProposalTests(unittest.TestCase):
             with self.subTest(step=step):
                 self.assertIn(step, body)
 
+    def test_draft_says_the_dry_run_needs_no_approval(self):
+        body = self.published_prerelease_body()
+        self.assertIn("-f dry_run=true`; it needs no approval (", body)
+        self.assertEqual(body.count("approve the `release` environment on the run"), 1)
+
+    def test_draft_points_at_its_dispatch_preconditions_status(self):
+        self.assertIn(
+            "This draft's `dispatch preconditions` status shows whether these checks passed",
+            self.published_prerelease_body(),
+        )
+
     def test_draft_names_the_tag_its_dispatch_creates(self):
         body = self.published_prerelease_body()
         self.assertIn(f"would tag {self.fixture.base} as v0.1.0-alpha.1`", body)
@@ -456,6 +468,36 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual(self.fixture.api.pulls[2]["state"], "open")
         self.assertEqual(
             git(self.fixture.remote, "rev-parse", "refs/heads/release-plz/" + old_base), old_head
+        )
+
+    def test_draft_asking_to_approve_the_dry_run_is_superseded(self):
+        old_head = self.prepare()
+        self.publish()
+        pull = self.fixture.api.pulls[1]
+        dispatch = "gh workflow run prerelease.yml -R Androlax2/agent-cockpit --ref main"
+        actions = "https://github.com/Androlax2/agent-cockpit/actions/workflows/prerelease.yml"
+        # The steps drafts carried before #1260, such as #1259.
+        pull["body"] = (
+            pull["body"]
+            .replace(
+                f"`{dispatch} -f dry_run=true`; it needs no approval ({actions}).",
+                f"`{dispatch} -f dry_run=true`, then approve the `release` environment on the run "
+                f"({actions}).",
+            )
+            .replace(
+                "This draft's `dispatch preconditions` status shows whether these checks passed "
+                "when it was published.\n\n",
+                "",
+            )
+        )
+        self.assertFalse(proposal.owned_draft(pull))
+        self.fixture.next_base()
+        self.prepare()
+        self.publish()
+        self.assertEqual(self.fixture.api.pulls[1]["state"], "closed")
+        self.assertEqual(self.fixture.api.pulls[2]["state"], "open")
+        self.assertEqual(
+            git(self.fixture.remote, "rev-parse", "refs/heads/" + pull["head"]["ref"]), old_head
         )
 
     def test_selection_refuses_a_draft_without_release_steps(self):
@@ -639,6 +681,8 @@ class ProposalTests(unittest.TestCase):
                     "closed",
                     "--beta-checklist",
                     beta,
+                    "--open-issues-of",
+                    proposal.REPOSITORY,
                 ],
                 cwd=self.fixture.root,
             )
@@ -725,8 +769,12 @@ class ProposalTests(unittest.TestCase):
                 self.assertEqual(output, "")
                 self.assertEqual(self.fixture.api.writes, writes)
 
-    def test_workflow_freezes_selection_after_token_creation_and_before_tag_request(self):
+    def tag_job(self):
         workflow = (ROOT / ".github/workflows/prerelease.yml").read_text()
+        return workflow.split("\n  tag:\n", 1)[1].split("\n  dry-run:\n", 1)[0]
+
+    def test_workflow_freezes_selection_after_token_creation_and_before_tag_request(self):
+        workflow = self.tag_job()
         token_step = workflow.index("      - uses: actions/create-github-app-token@")
         selection_step = workflow.index("      - name: Verify the open draft")
         self.assertLess(token_step, selection_step)
@@ -747,8 +795,11 @@ class ProposalTests(unittest.TestCase):
                 "number": 2,
                 "state": "open",
             }
-        workflow = (ROOT / ".github/workflows/prerelease.yml").read_text()
-        step = workflow.split("      - name: Verify the open draft", 1)[1].split("\n      - ", 1)[0]
+        step = (
+            self.tag_job()
+            .split("      - name: Verify the open draft", 1)[1]
+            .split("\n      - ", 1)[0]
+        )
         script = textwrap.dedent(step.split("        run: |\n", 1)[1])
         outputs = self.parent / "outputs"
         requests = self.parent / "requests"
@@ -811,6 +862,22 @@ class ProposalTests(unittest.TestCase):
             check=False,
         )
         return completed, requests, outputs, source
+
+    def test_dry_run_job_runs_the_tag_job_s_checks_without_its_token(self):
+        workflow = (ROOT / ".github/workflows/prerelease.yml").read_text()
+        dry_run = workflow.split("\n  dry-run:\n", 1)[1]
+
+        def steps(job):
+            body = job.split("    steps:\n", 1)[1]
+            return [step for step in re.split(r"\n(?=      - )", body) if step.strip()]
+
+        tag_steps = [
+            re.sub(r"(?m)^      # .*\n", "", step)
+            for step in steps(self.tag_job())
+            if "create-github-app-token@" not in step
+        ]
+        self.assertEqual(steps(dry_run)[:4], tag_steps[:4])
+        self.assertIn("name: Read the checklist issues", tag_steps[3])
 
     def test_workflow_never_requests_a_tag_when_final_selection_refuses(self):
         completed, requests, _, _ = self.run_snapshot_step(1)

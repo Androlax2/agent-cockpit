@@ -6,7 +6,9 @@ name: Pre-release
 # because a tag pushed with GITHUB_TOKEN starts no workflow; release.yml takes it from there.
 # Setup: the App (contents: write on this repository only) has its client ID in the
 # RELEASE_APP_CLIENT_ID repository variable and its private key in the release environment's
-# RELEASE_APP_PRIVATE_KEY secret. The environment requires Theo's approval, including dry runs.
+# RELEASE_APP_PRIVATE_KEY secret. The environment requires Theo's approval. A dry run runs the
+# dry-run job instead: the same steps without the token, so it reads no release secret and needs
+# no approval (#1260).
 
 on:
   workflow_dispatch:
@@ -30,7 +32,9 @@ defaults:
     shell: bash
 
 jobs:
+  # Only real dispatches run this job; its dry-run guards stay as a second check (#192).
   tag:
+    if: ${{ !inputs.dry_run }}
     environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -66,12 +70,6 @@ jobs:
           beta=$(gh issue view 57 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
           echo "alpha=$alpha" | tee -a "$GITHUB_OUTPUT"
           echo "beta=$beta" | tee -a "$GITHUB_OUTPUT"
-      # Before a tag exists, because the tag's file can no longer change (#886).
-      - name: Check the known gaps an alpha's notes carry
-        if: steps.checklists.outputs.beta == 'open'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 tools/release.py known-gaps --open-issues-of "$GITHUB_REPOSITORY"
       - name: Verify the open draft, freeze the snapshot and optionally tag
         id: next
         env:
@@ -82,7 +80,8 @@ jobs:
           BETA_CHECKLIST: ${{ steps.checklists.outputs.beta }}
         run: |
           snapshot=$(python3 tools/release.py next-prerelease --main origin/main \
-            --alpha-checklist "$ALPHA_CHECKLIST" --beta-checklist "$BETA_CHECKLIST"
+            --alpha-checklist "$ALPHA_CHECKLIST" --beta-checklist "$BETA_CHECKLIST" \
+            --open-issues-of "$GITHUB_REPOSITORY"
           )
           printf '%s\n' "$snapshot" | tee -a "$GITHUB_OUTPUT"
           while IFS='=' read -r key value; do
@@ -97,10 +96,50 @@ jobs:
               -f ref="refs/tags/$tag" -f sha="$revision"
             echo "tagged frozen source $revision as $tag; the Release workflow builds it"
           fi
-      - name: Report the dry run
-        if: ${{ inputs.dry_run }}
-        env:
-          TAG: ${{ steps.next.outputs.tag }}
-          REVISION: ${{ steps.next.outputs.revision }}
+
+  # The tag job's checks without its token or environment: it reads no release secret, so it
+  # needs no approval (#1260). test_release_pr.py keeps the shared steps identical.
+  dry-run:
+    if: ${{ inputs.dry_run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Refuse anything but main
+        if: github.ref != 'refs/heads/main'
         run: |
-          echo "dry run: would tag $REVISION as $TAG"
+          echo "::error::pre-releases tag main only, not $GITHUB_REF"
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Test the release tool
+        run: python3 -m unittest discover -s tools/tests -p 'test_release*.py'
+      - name: Read the checklist issues
+        id: checklists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # The same two lines as release.yml's plan job reads.
+        run: |
+          alpha=$(gh issue view 52 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+          beta=$(gh issue view 57 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+          echo "alpha=$alpha" | tee -a "$GITHUB_OUTPUT"
+          echo "beta=$beta" | tee -a "$GITHUB_OUTPUT"
+      - name: Verify the open draft and report the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALPHA_CHECKLIST: ${{ steps.checklists.outputs.alpha }}
+          BETA_CHECKLIST: ${{ steps.checklists.outputs.beta }}
+        run: |
+          snapshot=$(python3 tools/release.py next-prerelease --main origin/main \
+            --alpha-checklist "$ALPHA_CHECKLIST" --beta-checklist "$BETA_CHECKLIST" \
+            --open-issues-of "$GITHUB_REPOSITORY"
+          )
+          printf '%s\n' "$snapshot"
+          while IFS='=' read -r key value; do
+            case "$key" in
+              tag) tag=$value ;;
+              revision) revision=$value ;;
+            esac
+          done <<< "$snapshot"
+          echo "dry run: would tag ${revision:?missing snapshot revision} as ${tag:?missing snapshot tag}"

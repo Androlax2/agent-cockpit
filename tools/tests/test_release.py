@@ -64,7 +64,7 @@ class Repository:
             f'version = 4\n\n[[package]]\nname = "cockpit-cli"\nversion = "{version}"\n'
         )
         (self.path / "docs").mkdir()
-        (self.path / release.KNOWN_GAPS).write_text("## Known gaps\n")
+        (self.path / release.KNOWN_GAPS).write_text("# Known gaps\n\n- **No macOS** (#568).\n")
         self.commit_count = 0
         self.bootstrap = self.commit("build: bootstrap")
 
@@ -105,8 +105,14 @@ class ReleaseTestCase(unittest.TestCase):
         return run(*arguments, cwd=self.repository.path)
 
     def next_prerelease(
-        self, alpha_checklist="closed", beta_checklist="open", main="main", version=None
+        self,
+        alpha_checklist="closed",
+        beta_checklist="open",
+        main="main",
+        version=None,
+        closed_issues=(),
     ):
+        """next-prerelease against a fixture draft, with fake GitHub pulls and issue states."""
         import release_pr
 
         repository = self.repository
@@ -154,9 +160,16 @@ class ReleaseTestCase(unittest.TestCase):
                 return pr
             self.fail(f"unexpected fixture API request {path}")
 
+        def issue_state(issue, issues_repository):
+            self.assertEqual(issues_repository, release_pr.REPOSITORY)
+            self.issues_read.append(issue)
+            return "closed" if issue in closed_issues else "open"
+
+        self.issues_read = []
         with (
             patch.object(release_pr, "api", api),
             patch.object(release_pr, "ORIGIN", str(repository.path)),
+            patch.object(release, "issue_state", issue_state),
         ):
             return self.run_release(
                 "next-prerelease",
@@ -166,6 +179,8 @@ class ReleaseTestCase(unittest.TestCase):
                 alpha_checklist,
                 "--beta-checklist",
                 beta_checklist,
+                "--open-issues-of",
+                release_pr.REPOSITORY,
             )
 
     def check_tag(self, tag, alpha_checklist="closed", beta_checklist="open", main="main"):
@@ -420,6 +435,26 @@ class NextPrereleaseTests(ReleaseTestCase):
         )
         self.assertEqual(code, 1)
         self.assertIn("an alpha needs docs/KNOWN-GAPS.md", error)
+
+    def test_no_alpha_whose_known_gaps_link_a_closed_issue(self):
+        self.repository.commits(1)
+        code, outputs, error = self.next_prerelease(closed_issues=("568",))
+        self.assertEqual((code, outputs), (1, {}))
+        self.assertIn("#568 is closed; a gap links open issues only", error)
+
+    def test_an_alpha_reads_its_known_gaps_issue_states(self):
+        self.repository.commits(1)
+        code, _outputs, error = self.next_prerelease()
+        self.assertEqual(code, 0, error)
+        self.assertEqual(self.issues_read, ["568"])
+
+    def test_a_beta_does_not_read_known_gaps_issue_states(self):
+        self.repository.commits(1)
+        code, _outputs, error = self.next_prerelease(
+            beta_checklist="closed", closed_issues=("568",)
+        )
+        self.assertEqual(code, 0, error)
+        self.assertEqual(self.issues_read, [])
 
     def test_no_alpha_while_the_alpha_1_checklist_is_open(self):
         self.repository.commits(1)
@@ -1177,12 +1212,8 @@ class KnownGapsTests(unittest.TestCase):
     def test_the_repository_s_gaps_name_no_release_and_link_issues(self):
         self.assertTrue(release.known_gaps("0.1.0-alpha.7", None, ROOT))
 
-    def test_issue_states_are_read_before_a_tag_and_in_dry_runs_but_not_for_a_tag(self):
-        prerelease = (ROOT / ".github/workflows/prerelease.yml").read_text()
+    def test_release_notes_read_issue_states_in_dry_runs_but_not_for_a_tag(self):
         notes = RELEASE_WORKFLOW.read_text().split("\n  notes:\n", 1)[1].split("\n  build:\n", 1)[0]
-        self.assertIn(
-            'tools/release.py known-gaps --open-issues-of "$GITHUB_REPOSITORY"', prerelease
-        )
         self.assertIn('if [ "$CHANNEL" = alpha ]; then issues=(); fi', notes)
         self.assertIn('tools/release.py known-gaps --version "$VERSION" "${issues[@]}"', notes)
         self.assertNotIn("cat docs/KNOWN-GAPS.md", notes)
@@ -1305,15 +1336,31 @@ class WorkflowMatrixTests(unittest.TestCase):
 
 
 class ChecklistIssueTests(unittest.TestCase):
-    def test_both_workflows_read_the_checklist_issues_release_py_names(self):
-        for workflow in ("prerelease.yml", "release.yml"):
+    def test_every_workflow_reads_the_checklist_issues_release_py_names(self):
+        checklists = [str(release.ALPHA_CHECKLIST_ISSUE), str(release.BETA_CHECKLIST_ISSUE)]
+        # prerelease.yml reads them in its tag job and again in its dry-run job.
+        for workflow, jobs in (("prerelease.yml", 2), ("release.yml", 1), ("release-plz.yml", 1)):
             text = (ROOT / ".github/workflows" / workflow).read_text()
             read_issues = re.findall(r"gh issue view (\d+) ", text)
             with self.subTest(workflow=workflow):
-                self.assertEqual(
-                    read_issues,
-                    [str(release.ALPHA_CHECKLIST_ISSUE), str(release.BETA_CHECKLIST_ISSUE)],
-                )
+                self.assertEqual(read_issues, checklists * jobs)
+
+
+class DispatchPreconditionTests(unittest.TestCase):
+    def test_the_proposal_check_and_both_dispatch_jobs_run_one_command(self):
+        command = re.compile(
+            r'python3 tools/release\.py next-prerelease .*?--open-issues-of "\$GITHUB_REPOSITORY"',
+            re.DOTALL,
+        )
+        prerelease = (ROOT / ".github/workflows/prerelease.yml").read_text()
+        proposal = (ROOT / ".github/workflows/release-plz.yml").read_text()
+        commands = command.findall(prerelease) + command.findall(proposal)
+        expected = (
+            "python3 tools/release.py next-prerelease --main origin/main \\ "
+            '--alpha-checklist "$ALPHA_CHECKLIST" --beta-checklist "$BETA_CHECKLIST" \\ '
+            '--open-issues-of "$GITHUB_REPOSITORY"'
+        )
+        self.assertEqual([" ".join(found.split()) for found in commands], [expected] * 3)
 
 
 class ChangelogConfigTests(unittest.TestCase):

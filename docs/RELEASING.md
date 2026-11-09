@@ -28,8 +28,9 @@ every tag update/deletion, including by that App.
 
 Tagging, release drafting and publication reference `release`, whose reviewer is Theo
 (`39646949`), with administrator bypass disabled and only branch `main`/tag `v*` allowed.
-A manual prerelease dry run also requires approval. Different jobs or runs may require
-separate approvals. Automatic proposal drafts use the independent `release-proposal`
+A manual prerelease dry run runs a separate job without that environment: it reads no
+release secret and needs no approval (#1260). Different jobs or runs may require separate
+approvals. Automatic proposal drafts use the independent `release-proposal`
 environment and require no reviewer.
 
 The existing Release App is already registered. The bootstrap instructions below describe
@@ -107,9 +108,12 @@ PR runs test only with read permissions. The main-only `proposal` job references
 `release-proposal`, restricted to branch `main`. It prepares files before creating any
 App token, then uses `PROPOSAL_APP_CLIENT_ID` and `PROPOSAL_APP_PRIVATE_KEY` to mint a
 contents/read + pull_requests/write token for this repository only. Its `GITHUB_TOKEN`
-stays read-only. `PROPOSAL_GIT_SSH_KEY` is injected only into the publication step for
-the fixed-repository SSH branch push, with a pinned GitHub host key, strict checking,
-no agent forwarding and temporary-file cleanup.
+reads, and in this job also has statuses/write: after publishing, the job runs the dispatch's
+own check, `tools/release.py next-prerelease`, against the draft and posts the result as the
+draft's `dispatch preconditions` status, so a refusal shows before anyone dispatches (#1260).
+A refusal turns only that status red; it names the refusal and the run's log has the rest. `PROPOSAL_GIT_SSH_KEY` is
+injected only into the publication step for the fixed-repository SSH branch push, with a
+pinned GitHub host key, strict checking, no agent forwarding and temporary-file cleanup.
 
 The verified proposal App is `5582369`, slug `agent-cockpit-proposal`, bot
 `agent-cockpit-proposal[bot]`, numeric bot ID `351595931`. Its Git-only deploy key is
@@ -194,10 +198,9 @@ A live draft workflow run must be linked separately before claiming live accepta
 Each prerelease draft's "How to release" section carries these steps with its exact tag and
 source commit (#669). Do not merge the draft.
 
-1. Dry run: `gh workflow run prerelease.yml -R Androlax2/agent-cockpit --ref main -f dry_run=true`,
-   then approve the `release` environment on the
-   [run](https://github.com/Androlax2/agent-cockpit/actions/workflows/prerelease.yml). It
-   prints the tag and source it would create and creates nothing.
+1. Dry run: `gh workflow run prerelease.yml -R Androlax2/agent-cockpit --ref main -f dry_run=true`;
+   the [run](https://github.com/Androlax2/agent-cockpit/actions/workflows/prerelease.yml)
+   needs no approval. It prints the tag and source it would create and creates nothing.
 2. Release: `gh workflow run prerelease.yml -R Androlax2/agent-cockpit --ref main -f dry_run=false`,
    then approve the `release` environment on the run. It tags the draft's main source.
 3. The tag starts the Release workflow: approve its `release` jobs as its gates pass
@@ -213,8 +216,10 @@ Among its checks, the dispatch refuses before tagging unless the Alpha 1 checkli
 closed (once the Beta 1 checklist, #57, closes, only a beta is cut), an alpha's source has
 `docs/KNOWN-GAPS.md`, `main` is still the draft's base and the draft is the only open,
 unedited proposal, and the draft's version is the next prerelease number. The full list is
-under [Tags](#tags). Drafts published before #669 lack the section; the next
-proposal supersedes them as usual, while dispatch consumes only a draft that carries it.
+under [Tags](#tags). The draft's `dispatch preconditions` status ran these checks when the
+draft was published. Drafts published before #669 lack the section, and drafts published
+before #1260 ask to approve the dry run; the next proposal supersedes them as usual, while
+dispatch consumes only a draft that carries the current section.
 
 ## Versions
 
@@ -366,8 +371,10 @@ README's `install.sh` URL is the exception: step 4 of [Cut a release](#cut-a-rel
   GitHub for the newest release instead.
 - `docs/KNOWN-GAPS.md` names no release. `tools/release.py known-gaps` heads it with the version
   for the notes and refuses a named pre-release and a gap without an issue. With
-  `--open-issues-of`, it also refuses a gap whose issue is not open: `prerelease.yml` runs that
-  before it creates an alpha tag, and the nightly and a dispatched dry run rehearse it.
+  `--open-issues-of`, it also refuses a gap whose issue is not open. `release.py next-prerelease`
+  runs that check for an alpha: `prerelease.yml` before it creates the tag, and the release
+  proposal workflow on each draft it publishes (#1260). The nightly and a dispatched Release
+  dry run rehearse it.
 
 ## Who does what
 

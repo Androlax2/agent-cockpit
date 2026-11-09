@@ -65,7 +65,7 @@ class ActionPinningTests(unittest.TestCase):
         files = sorted([*github.rglob("*.yml"), *github.rglob("*.yaml")])
         self.assertIn(WORKFLOWS / "ci.yml", files)
         for path in files:
-            for reference in re.findall(r"uses: *['\"]?([^\s#'\"]+)", path.read_text()):
+            for reference in re.findall(r"(?<![\w-])uses: *['\"]?([^\s#'\"]+)", path.read_text()):
                 if reference.startswith("./"):
                     continue
                 with self.subTest(path=str(path.relative_to(github)), reference=reference):

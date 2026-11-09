@@ -62,6 +62,12 @@ jobs:
     environment: release-proposal
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      # For the dispatch-preconditions status; every step's github.token has it.
+      statuses: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,8 +87,12 @@ jobs:
         id: channel
         env:
           GH_TOKEN: ${{ github.token }}
+        # The same two lines as prerelease.yml reads.
         run: |
+          alpha=$(gh issue view 52 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
           beta=$(gh issue view 57 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+          echo "alpha=$alpha" | tee -a "$GITHUB_OUTPUT"
+          echo "beta=$beta" | tee -a "$GITHUB_OUTPUT"
           case "$beta" in
             open) echo "value=alpha" >> "$GITHUB_OUTPUT" ;;
             closed) echo "value=beta" >> "$GITHUB_OUTPUT" ;;
@@ -110,3 +120,34 @@ jobs:
           PROPOSAL_GIT_SSH_KEY: ${{ secrets.PROPOSAL_GIT_SSH_KEY }}
           BASE: ${{ github.sha }}
         run: python3 tools/release_pr.py publish --base "$BASE"
+      # After publish, so the draft it replaced is already closed. A refusal turns only the
+      # status red, not this run: the draft was published correctly. The red status names the
+      # refusal; the run's log has it in full. The dispatch still checks again (#1260).
+      - name: Check the dispatch's preconditions on the published draft
+        if: github.event_name == 'push' || !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.sha }}
+          ALPHA_CHECKLIST: ${{ steps.channel.outputs.alpha }}
+          BETA_CHECKLIST: ${{ steps.channel.outputs.beta }}
+        run: |
+          draft_head=$(git rev-parse HEAD)
+          git checkout --quiet --detach "$BASE"
+          refusal_file="$RUNNER_TEMP/dispatch-refusal"
+          # The same command as both prerelease.yml jobs run.
+          if python3 tools/release.py next-prerelease --main origin/main \
+            --alpha-checklist "$ALPHA_CHECKLIST" --beta-checklist "$BETA_CHECKLIST" \
+            --open-issues-of "$GITHUB_REPOSITORY" 2>"$refusal_file"; then
+            state=success
+            description="The prerelease dispatch's checks pass on this draft"
+          else
+            cat "$refusal_file" >&2
+            state=failure
+            refusal=$(grep -m 1 '^release: ' "$refusal_file" || echo "release: unexpected error")
+            description=$(printf '%s' "$refusal" | cut -c 1-140)
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$draft_head" \
+            -f state="$state" \
+            -f context="dispatch preconditions" \
+            -f description="$description" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
