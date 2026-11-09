@@ -3,7 +3,8 @@
 //! continue message: once its account's plan window has refilled, or right after a quota-stop
 //! relaunch moved the session to another account (#59). A stop ends resumed or dropped, never
 //! both; it is dropped when the agent works again before that, when it stops again, when its
-//! session ends, or when nothing can tell the daemon its reset and the owner is asked instead.
+//! session ends, or when nothing can tell the daemon its reset, or its move to another account
+//! failed, and the owner is asked instead.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -214,6 +215,27 @@ pub(crate) async fn mark_switched(
         )
         .await?;
     Ok(())
+}
+
+/// Hands `session`'s open stop, if any, to the owner for `reason`, as
+/// [`hand_quota_stop_to_owner`] does.
+pub(crate) async fn hand_open_to_owner(
+    write: &WriteTransaction<'_>,
+    session: &SessionId,
+    reason: &str,
+) -> Result<(), Error> {
+    let mut rows = write
+        .query(
+            &format!("{SELECT_STOP} WHERE session_id = ?1 AND {IS_OPEN}"),
+            [session.as_str()],
+        )
+        .await?;
+    let open = match rows.next().await? {
+        Some(row) => stop_from(&row)?,
+        None => return Ok(()),
+    };
+    drop(rows);
+    hand_quota_stop_to_owner(write, &open, reason).await
 }
 
 /// Every open stop, oldest first.

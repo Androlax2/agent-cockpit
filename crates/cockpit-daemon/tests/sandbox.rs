@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
-use cockpit_protocol::{Command, ErrorCode, LaunchKindView, SessionStateView, SessionView};
+use cockpit_protocol::{
+    Command, ErrorCode, LaunchKindView, QuotaStopStatusView, Reply, SessionStateView, SessionView,
+};
 use real_daemon::{
     BUILD_PROFILE_DIR, COMMANDED_PROJECT, Daemon, GENEROUS, Home, SETTLE, added_context,
     cockpit_program, is_alive, launch_option, listed, mcp_tool_text, new_session,
@@ -1725,6 +1727,72 @@ async fn a_quota_stop_with_no_other_account_keeps_the_session_where_it_is() {
     let session = listed(&client, &agent.session).await;
     assert_eq!(session.state, SessionStateView::Running);
     assert_eq!(session.launch.unwrap(), before);
+}
+
+/// #158: a quota stop whose move to another account fails asks the owner at once, rather
+/// than once the stop is overdue, and the session keeps its agent. The move is refused because
+/// the owner turned the sandbox on after the session's first, unsandboxed launch (#969).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_quota_stop_whose_account_move_fails_asks_the_owner_at_once() {
+    let home = Home::new();
+    // The accounts are read at start; only the sandbox setting follows a reload.
+    home.write_owner_config(TWO_ACCOUNTS);
+    for name in ["work", "spare"] {
+        home.write_account_credential(
+            "claude",
+            name,
+            "ANTHROPIC_API_KEY",
+            &format!("{SETUP_TOKEN}\n"),
+            0o600,
+        );
+    }
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    let started = new_session(&client, &root).await;
+    assert_eq!(run_in_agent(&home, &root, "true").await, "exit=0\n");
+    let before = listed(&client, &started.id).await;
+    assert!(before.conversation.is_some(), "{before:?}");
+    home.write_owner_config(&format!("{REQUIRED}{TWO_ACCOUNTS}"));
+    let reloaded = home.cockpit(&["config", "reload"], &[]).await;
+    assert!(reloaded.status.success(), "{}", text(&reloaded.stderr));
+
+    let reported = run_in_agent(&home, &root, &quota_stop_line()).await;
+
+    assert!(reported.ends_with("exit=0\n"), "{reported}");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let reason = loop {
+        let session = listed(&client, &started.id).await;
+        if let Some(QuotaStopStatusView::Dropped { reason, .. }) =
+            session.quota_stop.as_ref().map(|stop| &stop.status)
+        {
+            break reason.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the failed move did not reach the owner: {session:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(
+        reason.contains("moving it to another account with capacity failed"),
+        "{reason}"
+    );
+    let reply = client
+        .request(Command::AgentReports, GENEROUS)
+        .await
+        .unwrap();
+    let Reply::AgentReports { reports } = reply else {
+        panic!("{reply:?}")
+    };
+    let report = reports
+        .iter()
+        .find(|report| report.session == started.id)
+        .unwrap();
+    assert_eq!(report.needs_input.as_deref(), Some(reason.as_str()));
+    let session = listed(&client, &started.id).await;
+    assert_eq!(session.state, SessionStateView::Running);
+    assert_eq!(session.launch, before.launch, "never launched again");
 }
 
 /// #59: an unusable credential refuses the launch, naming the account, rather than being
