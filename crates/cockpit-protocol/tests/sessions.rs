@@ -95,6 +95,7 @@ fn a_session_view_names_its_state_and_latest_launch_on_the_wire() {
         inbound_message: None,
         compaction_threshold: None,
         sign_in_needed: None,
+        quota_stop: None,
     };
 
     let wire = serde_json::to_value(Reply::Session {

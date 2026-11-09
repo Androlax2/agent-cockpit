@@ -438,6 +438,8 @@ pub enum WakeCause {
     Todo,
     /// The owner woke it from the phone.
     Phone,
+    /// Its plan's usage window refilled after a quota stop (#158).
+    QuotaReset,
 }
 
 impl WakeCause {
@@ -448,6 +450,7 @@ impl WakeCause {
             WakeCause::Message => "woken by a message",
             WakeCause::Todo => "woken by a todo",
             WakeCause::Phone => "woken from the phone",
+            WakeCause::QuotaReset => "woken at its plan's reset",
         }
     }
 }

@@ -132,6 +132,7 @@ async fn session_show_asks_the_daemon_to_show_the_session_and_prints_it() {
                 inbound_message: None,
                 compaction_threshold: None,
                 sign_in_needed: None,
+                quota_stop: None,
             }),
         }),
     );

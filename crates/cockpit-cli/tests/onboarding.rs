@@ -221,6 +221,7 @@ fn session() -> SessionView {
         inbound_message: None,
         compaction_threshold: None,
         sign_in_needed: None,
+        quota_stop: None,
     }
 }
 

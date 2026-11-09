@@ -319,10 +319,23 @@ launch it again and it takes the next listed account.
 When a session reports that its plan's usage limit stopped its turn (Codex does), Torlek
 relaunches it at once on the next listed account that holds a credential and has not
 quota-stopped in the last five hours, resuming the same conversation; `torlek session show`
-then prints `account: spare (switched from work at a quota stop)`. The agent waits at its
-prompt there: send it a message to carry on. New launches pass over an account for five hours
-after it quota-stopped, unless no other account holds a credential. With no other account to
-move to, the session stays where it is.
+then prints `account: spare (switched from work at a quota stop)`. Once its agent waits at
+its prompt there, Torlek sends it one message: "Torlek: the plan usage limit that stopped your
+last turn has reset. Continue where you stopped." New launches pass over an account for five
+hours after it quota-stopped, unless no other account holds a credential. With no other
+account to move to, the session stays where it is.
+
+A session that stays quota-stopped gets the same one message when its plan's limit resets.
+Torlek tells the reset from its own plan-window readings of your sign-in: a reading after the
+stop must show the limit spent, then a later one room. A session asleep by then is woken
+first; sessions holding a coordinator grant go before the others. `torlek session show`
+prints the stop and where its resume stands, for example `quota stop: 2026-11-09 14:00:00
++00:00 on the owner's sign-in; resumes after the plan's reset at 2026-11-09 19:00:00 +00:00`. When the agent works again first, stops
+again or its session ends, the stop is dropped and no message goes out. Torlek reads no plan
+windows for a named account, nor for a provider without plan windows, so a stop there it
+cannot move asks you to continue the session yourself, as does a stop whose windows show room,
+a wake that fails, or a stop still waiting five hours on (an hour past the reset a reading said,
+if later).
 
 Each sandboxed session has its own home, which starts empty and goes when the session ends.
 For a project in `projects.trusted`, and its parallel clones, Torlek records the folder trust in

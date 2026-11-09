@@ -6,7 +6,8 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 use cockpit_protocol::{
-    Command, CoordinatorAuditView, CoordinatorGrantView, Reply, SessionFailure, SessionView,
+    Command, CoordinatorAuditView, CoordinatorGrantView, QuotaStopStatusView, Reply,
+    SessionFailure, SessionView,
 };
 
 use crate::daemon::{
@@ -220,6 +221,7 @@ pub fn run(command: Command) -> ExitCode {
             out!("{}", choice_lines(session));
             out!("{}", passed_over_lines(session));
             out!("{}", exit_lines(session));
+            out!("{}", quota_stop_lines(session));
             out!("{}", over_lines(session));
         }
         Reply::Session { session } => {
@@ -389,6 +391,39 @@ fn exit_lines(session: &SessionView) -> String {
         }
     }
     lines
+}
+
+/// What `session show` says of the session's latest quota stop (#158): when it stopped, on
+/// which account, and its one resume at the reset, or why nothing resumes it.
+fn quota_stop_lines(session: &SessionView) -> String {
+    let Some(stop) = &session.quota_stop else {
+        return String::new();
+    };
+    let time = crate::approvals::local_time;
+    let account = stop.account.as_deref().map_or_else(
+        || "the owner's sign-in".to_owned(),
+        |account| format!("account {account}"),
+    );
+    let resolution = match (&stop.status, stop.switched_at, stop.resets_at) {
+        (QuotaStopStatusView::Resumed { at }, Some(_), _) => {
+            format!("resumed at {} on its new account", time(*at))
+        }
+        (QuotaStopStatusView::Resumed { at }, None, _) => {
+            format!("resumed at {} after the plan's reset", time(*at))
+        }
+        (QuotaStopStatusView::Dropped { reason, .. }, _, _) => format!("not resumed: {reason}"),
+        (QuotaStopStatusView::Waiting, Some(_), _) => {
+            "resumes once its agent waits on its new account".to_owned()
+        }
+        (QuotaStopStatusView::Waiting, None, Some(resets_at)) => {
+            format!("resumes after the plan's reset at {}", time(resets_at))
+        }
+        (QuotaStopStatusView::Waiting, None, None) => "resumes after the plan's reset".to_owned(),
+    };
+    format!(
+        "quota stop: {} on {account}; {resolution}\n",
+        time(stop.stopped_at)
+    )
 }
 
 /// What `session show` adds for an ended or failed session, which has no terminal to show

@@ -8,7 +8,7 @@ use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 
 use crate::store::now;
-use crate::{Error, compactions, conversations};
+use crate::{Error, compactions, conversations, quota_stops};
 
 const LABEL_MAX_CHARS: usize = 60;
 const DOING_MAX_CHARS: usize = 80;
@@ -188,12 +188,17 @@ pub async fn report(
         return Ok(previous.unwrap_or_else(|| unreported(&session)));
     }
     let is_quota_stop = report.outcome == Some(TurnOutcome::QuotaStopped);
+    let ends_turn = report.outcome.is_some();
     let merged = merge(&session, previous, report, launch, is_new_conversation);
     store_report(write, &merged).await?;
     // The account's stop is the daemon's record from here: the next launches pass it over,
-    // and the session relaunches on another account (#59).
+    // and the session relaunches on another account (#59) or resumes at the reset (#158).
     if is_quota_stop && let Some(launch) = launch {
         crate::store::record_quota_stop(write, launch).await?;
+        quota_stops::record(write, session.as_str(), launch).await?;
+    } else if ends_turn || merged.state == Some(AgentState::Working) {
+        let reason = "the agent worked again before the reset";
+        quota_stops::drop_open(write, session.as_str(), reason, now()).await?;
     }
     Ok(merged)
 }
@@ -245,6 +250,22 @@ pub(crate) async fn flag_agentless_launch(
     }
     store_dialog(write, session, previous, launch, reason).await?;
     Ok(true)
+}
+
+/// Opens the daemon's own dialog question `reason` on `launch`'s report for the owner to
+/// act on (#158), unless a newer launch began. The agent's next report of what it does
+/// clears it, as it clears any dialog.
+pub(crate) async fn flag_owner_needed(
+    write: &WriteTransaction<'_>,
+    session: &SessionId,
+    launch: i64,
+    reason: &str,
+) -> Result<(), Error> {
+    if latest_launch(write, session).await? != Some(launch) {
+        return Ok(());
+    }
+    let previous = latest_report(write, session).await?;
+    store_dialog(write, session, previous, launch, reason).await
 }
 
 /// Opens the daemon's own dialog question `reason` on `launch`'s report.

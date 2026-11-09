@@ -10,6 +10,7 @@ mod home_observer;
 mod lifecycle;
 mod model;
 mod questions;
+mod quota_stops;
 mod reports;
 mod retention;
 mod store;
@@ -29,6 +30,10 @@ pub use model::{
 };
 pub use questions::{
     QUESTION_HOLD_SECONDS, answer_question, coordinator_scope, escalate_question, question_holder,
+};
+pub use quota_stops::{
+    QuotaStop, QuotaStopResolution, claim_quota_resume, confirm_quota_stop, drop_quota_stop,
+    hand_quota_stop_to_owner, latest_quota_stops, open_quota_stops, release_quota_resume,
 };
 pub use reports::{
     AgentState, QuestionSource, Report, SessionReport, current_context, latest_report,

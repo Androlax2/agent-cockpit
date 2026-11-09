@@ -7,13 +7,13 @@ use std::time::Duration;
 
 use cockpit_protocol::{
     AgentExitView, AppliedSettingView, Command, DESKTOP_SESSION_VARIABLES, ErrorCode,
-    ExitStatusView, LaunchKindView, LaunchView, Outcome, ProtocolError, Reply,
-    SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure, SessionStateView,
-    SessionView, StopTargetView,
+    ExitStatusView, LaunchKindView, LaunchView, Outcome, ProtocolError, QuotaStopStatusView,
+    QuotaStopView, Reply, SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView,
+    SessionFailure, SessionStateView, SessionView, StopTargetView,
 };
 use cockpit_sessions::{
-    DesktopSession, Error, ExitStatus, LaunchKind, Restored, Session, SessionId, SessionState,
-    Sessions, StartRequest, StopTarget, WakeCause,
+    DesktopSession, Error, ExitStatus, LaunchKind, QuotaStopResolution, Restored, Session,
+    SessionId, SessionState, Sessions, StartRequest, StopTarget, WakeCause,
 };
 
 use cockpit_authorization::SessionId as TaskSession;
@@ -384,6 +384,8 @@ async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Ans
 pub(crate) struct CardInputs {
     items: HashMap<TaskSession, SessionWork>,
     coordination: coordination::Notes,
+    /// Each session's latest quota stop, by session id (#158).
+    quota_stops: HashMap<String, cockpit_sessions::QuotaStop>,
 }
 
 /// The coordinator messages an owner's message to `id` sent now overtakes (#897).
@@ -397,6 +399,11 @@ pub(crate) async fn card_inputs(sessions: &Sessions) -> Result<CardInputs, Faile
     Ok(CardInputs {
         items: cockpit_tasks::session_work(&read).await?,
         coordination: coordination::notes(&read).await?,
+        quota_stops: cockpit_sessions::latest_quota_stops(&read)
+            .await?
+            .into_iter()
+            .map(|stop| (stop.session.as_str().to_owned(), stop))
+            .collect(),
     })
 }
 
@@ -696,6 +703,27 @@ fn session_view(
         inbound_message: inputs.coordination.inbound_message_of(session.id.as_str()),
         compaction_threshold: session.compaction_threshold.clone(),
         sign_in_needed: None,
+        quota_stop: inputs
+            .quota_stops
+            .get(session.id.as_str())
+            .map(quota_stop_view),
+    }
+}
+
+fn quota_stop_view(stop: &cockpit_sessions::QuotaStop) -> QuotaStopView {
+    QuotaStopView {
+        stopped_at: stop.stopped_at,
+        account: stop.account.clone(),
+        resets_at: stop.resets_at,
+        switched_at: stop.switched_at,
+        status: match &stop.resolution {
+            None => QuotaStopStatusView::Waiting,
+            Some(QuotaStopResolution::Resumed { at }) => QuotaStopStatusView::Resumed { at: *at },
+            Some(QuotaStopResolution::Dropped { at, reason }) => QuotaStopStatusView::Dropped {
+                at: *at,
+                reason: reason.clone(),
+            },
+        },
     }
 }
 
