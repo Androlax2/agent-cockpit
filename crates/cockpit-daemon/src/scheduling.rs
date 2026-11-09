@@ -21,7 +21,7 @@ use cockpit_scheduling::{
 };
 use cockpit_sessions::{AgentState, Session, SessionReport, SessionState, Sessions};
 use cockpit_turso::Database;
-use cockpit_usage::{AccountQuota, QuotaPolicy, WindowState};
+use cockpit_usage::{AccountQuota, QuotaPolicy, WindowQuota, WindowState};
 
 use crate::Manager;
 use crate::approvals::{Answer, Failed, job, now};
@@ -390,8 +390,16 @@ async fn usage(
     Ok(quotas.into_iter().flat_map(usage_windows).collect())
 }
 
-fn usage_windows(quota: AccountQuota) -> impl Iterator<Item = UsageWindow> {
-    quota.windows.into_iter().map(move |window| UsageWindow {
+fn usage_windows(mut quota: AccountQuota) -> impl Iterator<Item = UsageWindow> {
+    let windows = std::mem::take(&mut quota.windows);
+    windows
+        .into_iter()
+        .map(move |window| usage_window(&quota, window))
+}
+
+/// `window` of `quota`'s account as scheduling paces it.
+pub(crate) fn usage_window(quota: &AccountQuota, window: WindowQuota) -> UsageWindow {
+    UsageWindow {
         provider: quota.provider.as_str().to_owned(),
         account: quota.account.as_str().to_owned(),
         limit: window.limit.as_str().to_owned(),
@@ -404,7 +412,7 @@ fn usage_windows(quota: AccountQuota) -> impl Iterator<Item = UsageWindow> {
             WindowState::Blocked => Standing::Blocked,
             WindowState::Stale => Standing::Stale,
         },
-    })
+    }
 }
 
 /// The owner's `[usage]` pacing as scheduling applies it.

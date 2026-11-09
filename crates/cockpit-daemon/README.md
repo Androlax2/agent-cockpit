@@ -228,7 +228,8 @@ alert until a reading shows the window below every threshold, which retracts it.
 the refresh returns with its next reading. `Wiring::quota` is `None` in tests not about quota.
 
 `usage-quota`, the owner's alone, answers every recorded account's windows judged at the
-time asked under the worker's own policy, so `torlek usage quota` and the alerts agree. A
+time asked under the worker's own policy, so `torlek usage quota` and the alerts agree,
+each window with its queue pace under the daemon's own pacing (`window_pace`, #412). A
 daemon whose wiring reads no quota refuses it rather than judge old readings by a default.
 
 The cost archive (#699, `cost.rs`) is a second supervised worker. Every `Wiring::cost`

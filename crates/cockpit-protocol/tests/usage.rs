@@ -2,8 +2,8 @@
 //! plan windows. A `quota-alert` entity on the change feed carries the alert a window fired.
 use cockpit_protocol::{
     Command, CostArchiveView, CostRowView, DayDigestView, DigestView, IncidentView, ProjectDayView,
-    QuotaAccountView, QuotaAlertView, QuotaFailureView, QuotaWindowStateView, QuotaWindowView,
-    Reply, decode_request,
+    QuotaAccountView, QuotaAlertView, QuotaFailureView, QuotaPaceView, QuotaWindowStateView,
+    QuotaWindowView, Reply, decode_request,
 };
 use serde_json::json;
 
@@ -38,6 +38,7 @@ fn the_reply_names_each_accounts_windows_and_its_last_failure() {
                 used_percent: 81,
                 resets_at: Some(1_800_100_000),
                 state: QuotaWindowStateView::Stale,
+                pace: None,
             }],
         }],
     };
@@ -62,6 +63,50 @@ fn the_reply_names_each_accounts_windows_and_its_last_failure() {
             }],
         }]})
     );
+}
+
+#[test]
+fn a_window_carries_the_queue_pace_through_it() {
+    let window = QuotaWindowView {
+        limit: "five-hour".to_owned(),
+        scope: None,
+        length_seconds: Some(18_000),
+        used_percent: 70,
+        resets_at: Some(1_800_009_000),
+        state: QuotaWindowStateView::Available,
+        pace: Some(QuotaPaceView {
+            line_percent: Some(60),
+            is_holding: true,
+            resumes_at: Some(1_800_002_000),
+        }),
+    };
+
+    let wire = serde_json::to_value(&window).unwrap();
+
+    assert_eq!(
+        wire["pace"],
+        json!({"line_percent": 60, "is_holding": true, "resumes_at": 1_800_002_000})
+    );
+    assert_eq!(
+        serde_json::from_value::<QuotaWindowView>(wire).unwrap(),
+        window
+    );
+}
+
+#[test]
+fn a_window_from_a_daemon_without_pacing_reads_with_no_pace() {
+    let wire = json!({
+        "limit": "five-hour",
+        "scope": null,
+        "length_seconds": 18_000,
+        "used_percent": 70,
+        "resets_at": 1_800_009_000,
+        "state": "available",
+    });
+
+    let window: QuotaWindowView = serde_json::from_value(wire).unwrap();
+
+    assert_eq!(window.pace, None);
 }
 
 #[test]

@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use cockpit_protocol::{
     Command, CostArchiveView, DayDigestView, DigestView, IncidentView, ProjectDayView,
-    QuotaAccountView, QuotaWindowView, Reply,
+    QuotaAccountView, QuotaPaceView, QuotaWindowView, Reply,
 };
 
 use crate::daemon::{CONTROL_DEADLINE, request, unexpected, utf8_words};
@@ -256,11 +256,32 @@ fn window_text(window: &QuotaWindowView, now: i64) -> String {
         None => "reset unknown".to_owned(),
     };
     format!(
-        "  {}\t{}%\t{}\t{reset}\n",
+        "  {}\t{}%\t{}\t{reset}{}\n",
         printable(&window.limit),
         window.used_percent,
-        window.state.as_str()
+        window.state.as_str(),
+        pace_text(window.pace.as_ref(), now)
     )
+}
+
+/// Where queued work stands against the window (#412): the share its even pace allows by
+/// now, and how long the queue waits when the window is ahead of it.
+fn pace_text(pace: Option<&QuotaPaceView>, now: i64) -> String {
+    let Some(pace) = pace else {
+        return String::new();
+    };
+    let line = pace.line_percent.map(|line| format!("pace {line}%"));
+    if !pace.is_holding {
+        return line.map_or_else(String::new, |line| format!("\tqueue {line}"));
+    }
+    let wait = match pace.resumes_at {
+        Some(resumes_at) => format!("queue waits {}", span((resumes_at - now).max(0))),
+        None => "queue waits".to_owned(),
+    };
+    match line {
+        Some(line) => format!("\t{wait} ({line})"),
+        None => format!("\t{wait}"),
+    }
 }
 
 /// A wait in its two largest units, rounded down, so a reset 4 days 23 h away does not read

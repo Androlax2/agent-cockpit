@@ -15,8 +15,8 @@ use std::time::Duration;
 use cockpit_client::{ClientError, Connection, Subscription};
 use cockpit_daemon::{Daemon, Instance, Limits, Options, QuotaPolling, Routes};
 use cockpit_protocol::{
-    Change, Command, EntityKind, ErrorCode, QuotaAccountView, QuotaAlertView, QuotaWindowStateView,
-    QuotaWindowView, Reply,
+    Change, Command, EntityKind, ErrorCode, QuotaAccountView, QuotaAlertView, QuotaPaceView,
+    QuotaWindowStateView, QuotaWindowView, Reply,
 };
 use cockpit_provider_api::fake::FakeProvider;
 use cockpit_provider_api::{LimitKey, ProviderError, ProviderName, QuotaReading, QuotaWindow};
@@ -252,6 +252,7 @@ async fn the_owner_reads_each_accounts_windows_as_recorded_and_judged_now() {
         used_percent,
         resets_at,
         state,
+        pace,
     } = &account.windows[0];
     assert_eq!(
         (
@@ -270,6 +271,15 @@ async fn the_owner_reads_each_accounts_windows_as_recorded_and_judged_now() {
         )
     );
     assert!(resets_at.is_some_and(|at| at > common::unix_now()));
+    // Two of five hours in, the default line is 0.4 × 90 + 15 = 51 %.
+    assert_eq!(
+        pace,
+        &Some(QuotaPaceView {
+            line_percent: Some(51),
+            is_holding: false,
+            resumes_at: None,
+        })
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
