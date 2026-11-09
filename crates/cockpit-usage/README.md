@@ -79,7 +79,7 @@ them and never reads a provider's file format.
   `unknown`; only a count past a trillion tokens refuses a reply.
 - **Each project's part.** `project_costs_since` totals each project's cost on one account
   since a time, the share of a window the daemon estimates for `[usage.project_shares]`
-  (#412). A reply without a price adds nothing to it.
+  (#412). A reply without a price counts in no project's cost, so it is in no total either.
 - **Limits.** The account of a reply is the account of the home it was read in (the owner's
   home is `default`; a session's own home is its launch's account). A session that runs
   unsandboxed writes to the owner's home and is attributed to `default`. Two accounts signed

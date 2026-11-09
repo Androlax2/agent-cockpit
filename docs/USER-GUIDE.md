@@ -218,8 +218,10 @@ names the project's share. The rest of the window stays free for every project, 
 project without a share has no cap. Providers report only the account's total, so a
 project's part is estimated: the window's share used times what the project's replies since
 the window opened cost at API prices (see `torlek usage cost`), over the account's. Replies
-of a model with no price add nothing to it, and a share named for a project Torlek does not
-know caps nothing. Your own interactive sessions are never capped: only queue starts wait.
+of a model with no price count for neither, so while one is in the window the projects with
+priced replies read a larger part than they used. A share named for a project Torlek does not
+know caps nothing. `torlek usage quota` and the TUI show the account's pace, not the
+projects' shares. Your own interactive sessions are never capped: only queue starts wait.
 
 `torlek usage cost [--days N]` shows what your replies cost at the provider's published API
 prices (a plan is flat, so this is what the same tokens would bill on API credits): one line

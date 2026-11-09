@@ -171,6 +171,15 @@ pub(super) fn settings(layers: &[Layer]) -> Result<UsageSettings, ConfigError> {
         }
     }
     for (project, share) in &result.project_shares {
+        if !is_project_name(project) {
+            return Err(invalid(
+                &format!("project_shares.{project}"),
+                &share.source,
+                "is not a project name: 1 to 64 ASCII letters, digits, `.`, `_` and `-`, not \
+                 starting with `.` or `-`"
+                    .to_owned(),
+            ));
+        }
         if !(1..=100).contains(&share.value) {
             return Err(invalid(
                 &format!("project_shares.{project}"),
@@ -180,4 +189,12 @@ pub(super) fn settings(layers: &[Layer]) -> Result<UsageSettings, ConfigError> {
         }
     }
     Ok(result)
+}
+
+/// `cockpit-projects`' rule for a project's name, so a share no project could carry is refused
+/// instead of capping nothing.
+fn is_project_name(name: &str) -> bool {
+    let is_plain =
+        |character: char| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-');
+    (1..=64).contains(&name.len()) && !name.starts_with(['.', '-']) && name.chars().all(is_plain)
 }

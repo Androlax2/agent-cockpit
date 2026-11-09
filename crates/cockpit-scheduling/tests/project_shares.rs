@@ -81,9 +81,26 @@ async fn a_capped_project_says_which_window_and_share_hold_it_until_the_reset() 
     assert_eq!(
         explanation.action,
         "wait: it starts once the window allows it, in about 2 h 30 min; \
-         `[usage.project_shares] a` raises the share"
+         `[usage.project_shares] a` sets the share"
     );
     assert_eq!(explanation.action_by, ActionBy::Cockpit);
+}
+
+#[tokio::test]
+async fn the_setting_named_for_a_dotted_project_quotes_its_key() {
+    let fixture = Fixture::with_budget(4).await;
+    let session = fixture.session("a-1", "my.app").await;
+    let item = fixture.queued("my.app", "task", Priority::NORMAL).await;
+
+    let dispatched = fixture
+        .dispatch_using(NOW, &[session], vec![window_with("my.app", 20, 25.0)])
+        .await;
+
+    let action = &explanation_of(&dispatched.explanations, item.id).action;
+    assert!(
+        action.ends_with("`[usage.project_shares] \"my.app\"` sets the share"),
+        "{action}"
+    );
 }
 
 #[tokio::test]

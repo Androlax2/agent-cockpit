@@ -115,6 +115,14 @@ fn a_quota_setting_outside_its_rules_is_refused_with_its_key() {
             "[usage.project_shares]\napp = 101",
             "usage.project_shares.app",
         ),
+        (
+            "[usage.project_shares]\n\"my app\" = 20",
+            "usage.project_shares.my app",
+        ),
+        (
+            "[usage.project_shares]\n\".hidden\" = 20",
+            "usage.project_shares..hidden",
+        ),
     ] {
         write_owner_config(home.path(), &format!("[usage]\n{setting}\n"));
 

@@ -272,10 +272,21 @@ pub(crate) fn over_share(
                 ),
                 limited_by: format!("project {project}'s share of {name}"),
                 resumes_at: window.resets_at.map(|resets_at| resets_at.max(now)),
-                remedy: format!("`[usage.project_shares] {project}` raises the share"),
+                remedy: format!(
+                    "`[usage.project_shares] {}` sets the share",
+                    toml_key(project)
+                ),
             })
         })
         .max_by_key(|paced| paced.resumes_at.unwrap_or(i64::MAX))
+}
+
+/// `project` as a TOML key: a project name with a `.` is quoted, or TOML reads a dotted key.
+fn toml_key(project: &str) -> String {
+    if project.contains('.') {
+        return format!("\"{project}\"");
+    }
+    project.to_owned()
 }
 
 /// `at` as a wait from `now`, in whole minutes rounded up.
