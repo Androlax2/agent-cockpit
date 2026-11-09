@@ -16,13 +16,14 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use cockpit_processes::{
     EndReason, Escalation, ExecutionId, LaunchSpec, Phase, Supervisor, Terminal, Termination,
 };
 use cockpit_turso::Database;
+use regex::Regex;
 use rustix::fs::{Mode, OFlags};
 use rustix::io::FdFlags;
 use rustix::pty::OpenptFlags;
@@ -37,9 +38,15 @@ use crate::{Error, Refusal};
 /// After the command exits, how long output still in the terminal may take to arrive. A
 /// background process that keeps the terminal open is not waited for.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
-/// How long a run must have been silent, its output ending mid-line, to count as waiting for
-/// input (a prompt).
+/// How long a run's prompt-like output must have been silent to count as waiting for input.
 const PROMPT_IDLE: Duration = Duration::from_millis(1500);
+static PROMPT_END: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:[:?>]|\[(?:y|yes)/(?:n|no)\]|\((?:y|yes)/(?:n|no)\))\s*\z")
+        .expect("the pattern compiles")
+});
+/// A carriage return or a move to the first column starts a new drawn frame.
+static LINE_RESTARTS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\r|\x1b\[[01]?G").expect("the pattern compiles"));
 const SYNTAX_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// How the owner's stop ends a run (#1301): a prompt ends at `SIGTERM`; whatever ignores it
 /// gets `SIGKILL` soon after, so the owner's request is not held long.
@@ -476,7 +483,7 @@ impl Runner {
         Ok(terminated?)
     }
 
-    /// The runs silent a while with their output ending mid-line: prompts. Read at one
+    /// The runs silent a while with prompt-like output ending mid-line. Read at one
     /// instant, so a queue sorted by it stays consistent.
     pub fn waiting_for_input(&self) -> Vec<RunId> {
         let now = Instant::now();
@@ -526,25 +533,28 @@ impl Runner {
     }
 }
 
-/// Whether the run's output stopped mid-line a while ago: it probably waits at a prompt.
+/// Silence alone also matches progress bars and spinners (#1262). Prefer missing an unusual
+/// prompt to interrupting the owner for ordinary output; input remains available either way.
 fn is_at_prompt(kept: &Kept, now: Instant) -> bool {
-    kept.total > 0
-        && kept.bytes.last() != Some(&b'\n')
-        && now.duration_since(kept.last_output) >= PROMPT_IDLE
+    if kept.total == 0 || now.duration_since(kept.last_output) < PROMPT_IDLE {
+        return false;
+    }
+    let line = kept
+        .bytes
+        .rsplit(|byte| *byte == b'\n')
+        .next()
+        .unwrap_or_default();
+    drawn_line(line).is_some_and(|line| PROMPT_END.is_match(&line))
 }
 
 /// The most characters of a prompt shown; a longer line shows its end.
 pub const PROMPT_MAX_CHARS: usize = 200;
 
-/// What a terminal shows of `line`, output after the last newline: the last segment a carriage
-/// return started that is not blank, without terminal controls, redacted, at most
+/// What a terminal shows of `line`, output after the last newline: the last nonblank redraw,
+/// without terminal controls, redacted, at most
 /// [`PROMPT_MAX_CHARS`] from its end.
 fn prompt_line(line: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(line);
-    let drawn = text
-        .split('\r')
-        .map(strip_terminal_controls)
-        .rfind(|segment| !segment.trim().is_empty())?;
+    let drawn = drawn_line(line)?;
     let (redacted, _) = redact_secrets(&drawn);
     let length = redacted.chars().count();
     if length <= PROMPT_MAX_CHARS {
@@ -552,6 +562,15 @@ fn prompt_line(line: &[u8]) -> Option<String> {
     }
     let end: String = redacted.chars().skip(length - PROMPT_MAX_CHARS).collect();
     Some(format!("…{end}"))
+}
+
+fn drawn_line(line: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(line);
+    LINE_RESTARTS
+        .split(&text)
+        .map(strip_terminal_controls)
+        .filter(|segment| !segment.trim().is_empty())
+        .last()
 }
 
 /// The most output bytes an answer quotes; what came before is counted in the omission line.

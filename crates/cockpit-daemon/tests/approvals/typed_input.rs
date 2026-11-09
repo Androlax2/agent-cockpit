@@ -70,18 +70,18 @@ async fn sudos_prompt_line_is_not_counted_as_a_secret() {
 async fn input_typed_after_echo_came_back_on_is_refused_and_not_in_the_output() {
     let asking = started(true).await;
     fake_sudo(asking.cwd.path());
+    let echo_ready = asking.cwd.path().join("echo-ready");
     let request = asking
-        .waiting_at_a_prompt("./sudo sh -c \"printf 'Installing... '; sleep 5; echo done\"")
+        .waiting_at_a_prompt(
+            "./sudo sh -c \"printf 'Installing... '; touch echo-ready; sleep 5; echo done\"",
+        )
         .await;
     asking.type_line(request.id, TYPED_SECRET).await;
-    let echoing = asking
-        .status_once(request.id, |run| {
-            run.waiting_prompt
-                .as_ref()
-                .is_some_and(|prompt| prompt.text.starts_with("Installing"))
-        })
-        .await;
-    assert!(echoing.waiting_for_input, "{echoing:?}");
+    let deadline = Instant::now() + GENEROUS;
+    while !echo_ready.exists() {
+        assert!(Instant::now() < deadline, "echo never came back on");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 
     let refusal = refused(
         asking
