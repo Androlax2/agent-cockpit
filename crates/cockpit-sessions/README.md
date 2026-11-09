@@ -50,7 +50,9 @@ stopped in the middle of one finishes or repairs it at its next start.
 - **Quota stops** (#158, `quota_stops.rs`). A report whose turn quota-stopped records one
   stop in its own transaction; a later stop, a report of work or another ended turn drops it.
   The daemon resumes each stop at most once: it claims `resumed_at` before sending the
-  continue message. The #59 relaunch marks the stop switched, so it is due at once.
+  continue message. The #59 relaunch marks the stop switched, so it is due at once; a
+  relaunch refused before it stops the agent hands the stop to the owner at once, as a
+  needs-you question.
   `report_counting_limits` also records a stop after `TRANSIENT_LIMIT_FAILURES` (3) failed
   turns within `TRANSIENT_LIMIT_WINDOW_SECONDS` (30 min) whose reason the session's provider
   declares in `Provider::transient_limit_reasons`, in `session_limit_failures`; the stop's

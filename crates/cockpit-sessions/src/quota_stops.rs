@@ -3,7 +3,8 @@
 //! continue message: once its account's plan window has refilled, or right after a quota-stop
 //! relaunch moved the session to another account (#59). A stop ends resumed or dropped, never
 //! both; it is dropped when the agent works again before that, when it stops again, when its
-//! session ends, or when nothing can tell the daemon its reset and the owner is asked instead.
+//! session ends, or when nothing can tell the daemon its reset, or its move to another account
+//! is refused, and the owner is asked instead.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -216,6 +217,27 @@ pub(crate) async fn mark_switched(
     Ok(())
 }
 
+/// Hands `session`'s open stop, if any, to the owner for `reason`, as
+/// [`hand_quota_stop_to_owner`] does. Whether it did.
+pub(crate) async fn hand_open_to_owner(
+    write: &WriteTransaction<'_>,
+    session: &SessionId,
+    reason: &str,
+) -> Result<bool, Error> {
+    let mut rows = write
+        .query(
+            &format!("{SELECT_STOP} WHERE session_id = ?1 AND {IS_OPEN}"),
+            [session.as_str()],
+        )
+        .await?;
+    let open = match rows.next().await? {
+        Some(row) => stop_from(&row)?,
+        None => return Ok(false),
+    };
+    drop(rows);
+    hand_quota_stop_to_owner(write, &open, reason).await
+}
+
 /// Every open stop, oldest first.
 pub async fn open_quota_stops(connection: &Connection) -> Result<Vec<QuotaStop>, Error> {
     let mut rows = connection
@@ -311,11 +333,12 @@ pub async fn drop_quota_stop(
 /// Drops `stop` for `reason` and asks the owner to continue the session: `reason` becomes a
 /// dialog question on the stop's launch while it is the session's latest, which the agent's
 /// next report of what it does clears. A stop a relaunch moved meanwhile is left due.
+/// Whether the stop was still open to hand over.
 pub async fn hand_quota_stop_to_owner(
     write: &WriteTransaction<'_>,
     stop: &QuotaStop,
     reason: &str,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let dropped = write
         .execute(
             &format!(
@@ -326,7 +349,7 @@ pub async fn hand_quota_stop_to_owner(
         )
         .await?;
     if dropped != 1 {
-        return Ok(());
+        return Ok(false);
     }
     let session =
         cockpit_authorization::SessionId::new(stop.session.as_str()).map_err(|error| {
@@ -335,7 +358,7 @@ pub async fn hand_quota_stop_to_owner(
             }
         })?;
     crate::reports::flag_owner_needed(write, &session, stop.launch, reason).await?;
-    Ok(())
+    Ok(true)
 }
 
 fn stop_from(row: &Row) -> Result<QuotaStop, Error> {
