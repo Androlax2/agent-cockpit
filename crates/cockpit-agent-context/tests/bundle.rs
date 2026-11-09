@@ -133,6 +133,27 @@ fn the_manifest_id_changes_with_any_document() {
     );
 }
 
+/// #1248: an agent that meets `EROFS` or `command not found` cannot tell a deliberate limit
+/// from a broken setup unless the manual says which symptoms are deliberate.
+#[test]
+fn the_sandbox_topic_says_which_symptoms_are_deliberate_and_what_to_do() {
+    let body = document("sandbox").expect("the sandbox topic ships").body;
+
+    assert!(
+        body.contains("| What you see | What it means | The one action |"),
+        "{body}"
+    );
+    for row in [
+        "| `~` holds no config, caches or tools from an earlier session | The session home starts empty and is removed when the session ends. |",
+        "| `Read-only file system` (`EROFS`) writing `.git/config`, `.git/hooks`, `.torlek` or `.cockpit` | These paths are read-only on purpose",
+        "| A `.env` file reads as empty or is missing | `.env` files are hidden on purpose. |",
+        "| `command not found` for a tool in `~/.local/bin`, or in another folder outside the toolchain table | That folder is not mounted",
+        "| `git push` is refused | Pushes go to the owner. |",
+    ] {
+        assert!(body.contains(row), "missing {row:?} in\n{body}");
+    }
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
     sha2::Sha256::digest(bytes)
