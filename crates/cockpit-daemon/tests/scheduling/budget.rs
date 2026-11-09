@@ -25,7 +25,16 @@ impl Home {
             )
             .await
             .unwrap();
-        cockpit_usage::turn_began(&write, session, "app", now - 300)
+        write.commit().await.unwrap();
+        self.turn_ends(session, now - 300).await;
+    }
+
+    /// A turn of `session` opened at `started_at` that the daemon ends from the agent's last
+    /// report, which is not `working`.
+    async fn turn_ends(&self, session: &str, started_at: i64) {
+        let database = self.database();
+        let write = database.write().await.unwrap();
+        cockpit_usage::turn_began(&write, session, "app", started_at)
             .await
             .unwrap();
         write.commit().await.unwrap();
@@ -140,34 +149,96 @@ async fn a_later_turn_past_the_same_budget_tells_nothing_new() {
     assert_eq!(home.budget_notices().await, told);
 }
 
+/// Whether the item's `budget-spent` entity is off the feed after `decision`.
+async fn is_taken_back_by(decision: impl FnOnce(i64) -> Command) -> bool {
+    let home = Home::new();
+    let (_daemon, client, session, item) = placed_with_budget(&home, 1).await;
+    home.turn_ends_under_placement(&session.id).await;
+
+    request(&client, decision(item)).await.unwrap();
+
+    let notices = home.budget_notices().await;
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    notices[0].2.is_none()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn the_owners_next_decision_on_the_item_takes_the_spent_budget_back() {
-    for decision in ["budget", "done", "delete"] {
-        let home = Home::new();
-        let (_daemon, client, session, item) = placed_with_budget(&home, 1).await;
-        home.turn_ends_under_placement(&session.id).await;
-        let command = match decision {
-            "budget" => Command::TaskBudget {
-                item,
-                budget: cockpit_protocol::TaskBudgetView::Minutes(31),
-            },
-            "done" => Command::TaskDone {
-                launch_token: None,
-                item,
-                summary: None,
-            },
-            _ => Command::TaskDelete {
-                launch_token: None,
-                item,
-            },
-        };
+async fn a_new_budget_takes_the_spent_budget_back() {
+    assert!(
+        is_taken_back_by(|item| Command::TaskBudget {
+            item,
+            budget: cockpit_protocol::TaskBudgetView::Minutes(31),
+        })
+        .await
+    );
+}
 
-        request(&client, command).await.unwrap();
+#[tokio::test(flavor = "multi_thread")]
+async fn finishing_the_item_takes_the_spent_budget_back() {
+    assert!(
+        is_taken_back_by(|item| Command::TaskDone {
+            launch_token: None,
+            item,
+            summary: None,
+        })
+        .await
+    );
+}
 
-        let notices = home.budget_notices().await;
-        assert_eq!(notices.len(), 1, "{decision}: {notices:?}");
-        assert_eq!(notices[0].2, None, "{decision}");
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_the_item_takes_the_spent_budget_back() {
+    assert!(
+        is_taken_back_by(|item| Command::TaskDelete {
+            launch_token: None,
+            item,
+        })
+        .await
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_after_the_items_placement_ended_tells_nothing() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let session = home
+        .session_reporting(&client, &root, AgentState::Waiting)
+        .await;
+    home.close_terminal_of(&session.id);
+    let item = queued_item(&client, "Fix the login").await;
+    request(
+        &client,
+        Command::TaskBudget {
+            item,
+            budget: cockpit_protocol::TaskBudgetView::Minutes(1),
+        },
+    )
+    .await
+    .unwrap();
+    request(&client, Command::QueueDispatch).await.unwrap();
+    home.turn_ends_under_placement(&session.id).await;
+    // Nothing reaches the closed terminal: the third try gives the item back.
+    for _ in 0..3 {
+        request(&client, Command::QueueDispatch).await.unwrap();
     }
+    assert_eq!(task_status(&client, item).await, TaskStatusView::Todo);
+    request(
+        &client,
+        Command::TaskBudget {
+            item,
+            budget: cockpit_protocol::TaskBudgetView::Minutes(2),
+        },
+    )
+    .await
+    .unwrap();
+    // The next turn starts in a later second than the placement ended.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+
+    home.turn_ends(&session.id, common::unix_now()).await;
+
+    let notices = home.budget_notices().await;
+    assert_eq!(notices[0].2, None, "{notices:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

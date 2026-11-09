@@ -11,7 +11,7 @@
 //! A turn that begins and ends between two passes is missed; a turn lasts longer than a pass.
 //! A session that stopped while its agent worked ends the turn at the session's last change.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -123,12 +123,25 @@ async fn pass(database: &Database, sessions: &Sessions) -> Result<(), String> {
         }
     }
     if !difference.ends.is_empty() {
-        let ended: BTreeSet<&str> = difference
+        let ended: BTreeMap<&str, crate::budgets::EndedTurn> = difference
             .ends
             .iter()
-            .map(|(session, _)| session.as_str())
+            .filter_map(|(session, ended_at)| {
+                let turn = open.get(session.as_str())?;
+                Some((
+                    session.as_str(),
+                    crate::budgets::EndedTurn {
+                        started_at: turn.started_at,
+                        ended_at: *ended_at,
+                    },
+                ))
+            })
             .collect();
-        crate::budgets::publish_spent(&write, &ended, now).await?;
+        // Telling a spent budget must not stop the turns from being recorded: its failure
+        // is logged and the turns commit without it.
+        if let Err(problem) = crate::budgets::publish_spent(&write, &ended, now).await {
+            tracing::warn!(problem, "telling the items' spent budgets failed");
+        }
     }
     for (session, working_dir, began_at) in &difference.begins {
         let project =

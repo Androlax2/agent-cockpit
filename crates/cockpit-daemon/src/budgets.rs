@@ -6,7 +6,7 @@
 //! same budget tell nothing new; the owner's next decision on the item (a new budget, done,
 //! deleted) retracts it, so the next spent budget is news again.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use cockpit_protocol::TaskBudgetSpentView;
 use cockpit_tasks::{Actor, Item, ItemId, ListFilter, Status};
@@ -48,11 +48,17 @@ async fn seconds_in(
     Ok(seconds)
 }
 
-/// Publishes the spent budget of each open item placed on one of `sessions`, whose turns just
-/// ended, when they worked it for its budget or longer.
+/// A turn the recorder just ended, of the session it is keyed by.
+pub(crate) struct EndedTurn {
+    pub(crate) started_at: i64,
+    pub(crate) ended_at: i64,
+}
+
+/// Publishes the spent budget of each open item whose placement held during one of `ended`,
+/// when its sessions worked it for its budget or longer.
 pub(crate) async fn publish_spent(
     write: &WriteTransaction<'_>,
-    sessions: &BTreeSet<&str>,
+    ended: &BTreeMap<&str, EndedTurn>,
     now: i64,
 ) -> Result<(), String> {
     let items = cockpit_tasks::list(write, &Actor::Owner, &ListFilter::default())
@@ -68,10 +74,13 @@ pub(crate) async fn publish_spent(
         let spans = cockpit_scheduling::work_spans(write, item.id)
             .await
             .map_err(|error| error.to_string())?;
-        if !spans
-            .iter()
-            .any(|span| sessions.contains(span.session.as_str()))
-        {
+        let held_during_an_ended_turn = spans.iter().any(|span| {
+            ended.get(span.session.as_str()).is_some_and(|turn| {
+                span.from <= turn.ended_at
+                    && span.until.is_none_or(|until| until >= turn.started_at)
+            })
+        });
+        if !held_during_an_ended_turn {
             continue;
         }
         if seconds_in(write, &spans, now).await? < u64::from(budget_minutes) * 60 {

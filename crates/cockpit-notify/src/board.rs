@@ -16,10 +16,10 @@ use cockpit_protocol::{
 
 use crate::event::Event;
 
-/// The "session" of an event that is the host's, not a session's: the low disk, and with
-/// `host:` and the window's `quota-alert` id, a quota alert, so each window's alert is held
-/// and still raised apart; with `host:budget/` and the item's id, a spent budget. A session id is `s` and twelve hex digits, so no session can have
-/// either.
+/// The "session" of an event that is the host's, not a session's: the low disk; with `host:`
+/// and the window's `quota-alert` id, a quota alert, so each window's alert is held and still
+/// raised apart; with `host:budget/` and the item's id, a spent budget. A session id is `s` and
+/// twelve hex digits, so no session can have any of them.
 pub(crate) const HOST: &str = "host";
 
 /// One reason a session needs the owner. A session raises it while its cause stands; the
