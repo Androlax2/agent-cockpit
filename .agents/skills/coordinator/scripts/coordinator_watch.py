@@ -3,7 +3,8 @@
 Immediate: a worker question appears or changes, a worker still idle without a merged PR after
 a grace period (once per idle spell; a short working blip does not end it), a CI failure on a
 PR's current head commit (once per commit and check), a PR merged or closed. Everything else
-that changed is batched into one summary every 10 minutes.
+that changed is dropped, so every printed line is one a coordinator acts on. `--summary-seconds N`
+opts in to one `SUMMARY` line of those changes every N seconds.
 State persists in the state file so a re-armed monitor does not repeat what it already reported.
 
 When `torlek agent sessions --watch` ends, or a helper thread dies, it prints `WATCH ENDED`, kills
@@ -142,7 +143,11 @@ class Watcher:
     def batch(self, previous, current, tag):
         changed = previous is None or previous["doing"] != current["doing"]
         if changed or previous["state"] != current["state"]:
-            batched.append(f"{tag} {current['state']}: {current['doing']}")
+            self.add_to_summary(f"{tag} {current['state']}: {current['doing']}")
+
+    def add_to_summary(self, text):
+        if self.summary_seconds > 0:
+            batched.append(text)
 
     def track_working_spell(self, session_id, previous, state):
         if state != "waiting":
@@ -317,7 +322,7 @@ class Watcher:
             if not first_poll and known != pull["state"] and pull["state"] in ("MERGED", "CLOSED"):
                 print(f"PR #{pull['number']} {pull['state']} ({branch})", flush=True)
             elif not first_poll and known is None and pull["state"] == "OPEN":
-                batched.append(f"PR #{pull['number']} opened ({branch})")
+                self.add_to_summary(f"PR #{pull['number']} opened ({branch})")
             if pull["state"] != "OPEN":
                 continue
             for check in pull.get("statusCheckRollup") or []:
@@ -376,7 +381,12 @@ def parse_arguments(argv):
         default=DEFAULT_IDLE_GRACE_SECONDS,
         help="report an idle worker only if it is still idle after this long; 0 reports at once",
     )
-    parser.add_argument("--summary-seconds", type=float, default=600)
+    parser.add_argument(
+        "--summary-seconds",
+        type=float,
+        default=0,
+        help="print one SUMMARY line of non-actionable changes every N seconds; 0 (default) never",
+    )
     parser.add_argument("--gh-timeout-seconds", type=float, default=60)
     arguments = parser.parse_args(argv)
     gh_timeout_seconds = arguments.gh_timeout_seconds
@@ -406,7 +416,10 @@ def main(argv):
         print(f"WATCH ENDED: could not start: {error}", flush=True)
         return 1
     print(f"WATCHING {watcher.repo}, workers under {watcher.worker_root}", flush=True)
-    for helper in (watcher.poll_prs, watcher.summarize):
+    helpers = [watcher.poll_prs]
+    if watcher.summary_seconds > 0:
+        helpers.append(watcher.summarize)
+    for helper in helpers:
         threading.Thread(target=run_or_exit, args=(watcher, helper), daemon=True).start()
     return watcher.follow_sessions()
 

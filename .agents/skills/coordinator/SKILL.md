@@ -65,7 +65,8 @@ output line wakes you:
 python3 .agents/skills/coordinator/scripts/coordinator_watch.py "$SESSION_TEMP/watch-state.json"
 ```
 
-It wakes you only for these lines; everything else is one `SUMMARY` every 10 minutes:
+It prints only these lines, so every line is one to act on. A `doing` change or a PR opening
+prints nothing (`--summary-seconds N` opts in to a `SUMMARY` line every N seconds; off by default):
 
 | Line | Action |
 | --- | --- |
