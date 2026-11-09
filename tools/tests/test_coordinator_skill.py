@@ -403,6 +403,8 @@ esac
                 "0.2",
                 "--idle-grace-seconds",
                 "0",
+                "--stream-lag-seconds",
+                "0",
                 *extra_arguments,
             ],
             env=self.environment,
@@ -753,6 +755,108 @@ esac
             "WATCH ENDED: torlek agent sessions --watch exited 3: no grant", result.stdout
         )
 
+    def test_it_reports_a_question_from_a_worker_that_was_already_waiting(self):
+        result = self.watch(
+            self.session("greenfield-9-ask", "waiting", "waiting on CI"),
+            self.session("greenfield-9-ask", "waiting", "waiting on CI", question="Rebase?"),
+        )
+
+        self.assertIn("QUESTION s-greenfield-9-ask (greenfield/9-ask): Rebase?", result.stdout)
+
+    def fake_session_lists(self, watched, listed):
+        """The watch prints `watched` then ends; the full list prints `listed`."""
+        self.shim(
+            "torlek",
+            f"""
+case "$*" in
+"agent sessions --watch") printf '%s\\n' '{watched}'; sleep 2; exit 3 ;;
+"agent sessions") printf '%s\\n' '{listed}' ;;
+esac
+""",
+        )
+
+    def test_it_reports_a_question_the_session_watch_never_delivered(self):
+        self.fake_session_lists(
+            self.session("greenfield-9-ask", "working", "coding"),
+            self.session("greenfield-9-ask", "waiting", "coding", question="Rebase?"),
+        )
+
+        result = self.watch(extra_arguments=("--full-list-seconds", "0.5"))
+
+        self.assertIn(
+            "QUESTION s-greenfield-9-ask (greenfield/9-ask), missed by the session watch: Rebase?",
+            result.stdout,
+        )
+        self.assertEqual(result.stdout.count("QUESTION"), 1, result.stdout)
+
+    def test_it_does_not_repeat_a_question_the_watch_already_reported(self):
+        asking = self.session("greenfield-9-ask", "waiting", "coding", question="Rebase?")
+        self.fake_session_lists(asking, asking)
+
+        result = self.watch(extra_arguments=("--full-list-seconds", "0.5"))
+
+        self.assertEqual(result.stdout.count("QUESTION"), 1, result.stdout)
+
+    def test_it_waits_for_the_watch_to_deliver_a_question_the_full_list_shows_first(self):
+        working = self.session("greenfield-9-ask", "working", "coding")
+        asking = self.session("greenfield-9-ask", "waiting", "coding", question="Rebase?")
+        self.shim(
+            "torlek",
+            f"""
+case "$*" in
+"agent sessions --watch") printf '%s\\n' '{working}'; sleep 0.8
+    printf '%s\\n' '{asking}'; sleep 1.5; exit 3 ;;
+"agent sessions") printf '%s\\n' '{asking}' ;;
+esac
+""",
+        )
+
+        result = self.watch(
+            extra_arguments=("--full-list-seconds", "0.5", "--stream-lag-seconds", "1")
+        )
+
+        self.assertIn("QUESTION s-greenfield-9-ask (greenfield/9-ask): Rebase?", result.stdout)
+        self.assertNotIn("missed", result.stdout)
+
+    def test_it_does_not_repeat_a_question_a_watcher_reported_before_the_full_list_check(self):
+        asking = self.session("greenfield-9-ask", "waiting", "coding", question="Rebase?")
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "sessions": {
+                        "s-greenfield-9-ask": {
+                            "id": "s-greenfield-9-ask",
+                            "lifecycle": "running",
+                            "state": "waiting",
+                            "branch": "greenfield/9-ask",
+                            "doing": "coding",
+                            "question": "Rebase?",
+                        }
+                    }
+                }
+            )
+        )
+        self.fake_session_lists(asking, asking)
+
+        result = self.watch(extra_arguments=("--full-list-seconds", "0.5"))
+
+        self.assertNotIn("QUESTION", result.stdout)
+
+    def test_it_reports_a_failing_full_list_check_once_not_on_every_check(self):
+        self.shim(
+            "torlek",
+            """
+case "$*" in
+"agent sessions --watch") sleep 2; exit 3 ;;
+*) echo "daemon unreachable" >&2; exit 126 ;;
+esac
+""",
+        )
+
+        result = self.watch(extra_arguments=("--full-list-seconds", "0.3"))
+
+        self.assertEqual(result.stdout.count("SESSIONS CHECK FAILED"), 1, result.stdout)
+
 
 class WatcherStateTests(FakeCommandsTestCase):
     def test_it_rewrites_the_state_file_only_when_the_state_changed(self):
@@ -771,6 +875,8 @@ class WatcherStateTests(FakeCommandsTestCase):
                 working_seconds=120,
                 idle_grace_seconds=0,
                 summary_seconds=1,
+                full_list_seconds=1,
+                stream_lag_seconds=0,
                 state_file=state_file,
             )
         )
