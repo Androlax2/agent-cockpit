@@ -16,9 +16,12 @@ use cockpit_protocol::{
 };
 use cockpit_provider_api::Capabilities;
 use cockpit_resource_admission::Backend;
-use cockpit_scheduling::{Candidate, Dispatched, Explanation, Inputs, Placement, Presence, Unit};
+use cockpit_scheduling::{
+    Candidate, Dispatched, Explanation, Inputs, Placement, Presence, Standing, Unit, UsageWindow,
+};
 use cockpit_sessions::{AgentState, Session, SessionReport, SessionState, Sessions};
 use cockpit_turso::Database;
+use cockpit_usage::{AccountQuota, QuotaPolicy, WindowState};
 
 use crate::Manager;
 use crate::approvals::{Answer, Failed, job, now};
@@ -35,6 +38,9 @@ pub(crate) struct Context {
     pub(crate) manager: Arc<Manager>,
     pub(crate) provider_capabilities: Arc<BTreeMap<String, Capabilities>>,
     pub(crate) settings: cockpit_scheduling::Settings,
+    /// How the recorded plan windows that pace queue starts are judged (#412); `None` when
+    /// this daemon reads no quota, which paces nothing.
+    pub(crate) quota_policy: Option<QuotaPolicy>,
     /// Wakes the periodic pass early: `queue explain` answers from the last pass's records,
     /// which a pause or resume makes wrong until the next one (#646).
     pub(crate) queue_changed: Arc<tokio::sync::Notify>,
@@ -339,6 +345,8 @@ async fn inputs_in(
                     .cloned()
                     .unwrap_or_else(Capabilities::none),
                 presence: presence(session, reports.get(session.id.as_str())),
+                provider: session.provider.as_str().to_owned(),
+                account: account_of(session),
             })
         })
         .collect::<Result<_, Failed>>()?;
@@ -350,8 +358,64 @@ async fn inputs_in(
             .map(|session| cockpit_authorization::SessionId::new(session.as_str()))
             .transpose()
             .map_err(|error| internal(&error))?,
+        usage: usage(context, read).await?,
         now: now(),
     })
+}
+
+/// The account whose windows pace `session`'s queue starts: its launch's, or for an agent
+/// launched on no account, the owner's own sign-in, whose windows the daemon reads as
+/// `default` (#58). `None` without a launch: nothing says where it runs.
+fn account_of(session: &Session) -> Option<String> {
+    let launch = session.launch.as_ref()?;
+    Some(
+        launch
+            .account
+            .clone()
+            .unwrap_or_else(|| cockpit_config::DEFAULT_ACCOUNT.to_owned()),
+    )
+}
+
+/// Every account's recorded plan windows, judged now under the quota policy.
+async fn usage(
+    context: &Context,
+    read: &cockpit_turso::sql::Connection,
+) -> Result<Vec<UsageWindow>, Failed> {
+    let Some(policy) = &context.quota_policy else {
+        return Ok(Vec::new());
+    };
+    let quotas = cockpit_usage::quotas(read, policy, now())
+        .await
+        .map_err(|error| internal(&error))?;
+    Ok(quotas.into_iter().flat_map(usage_windows).collect())
+}
+
+fn usage_windows(quota: AccountQuota) -> impl Iterator<Item = UsageWindow> {
+    quota.windows.into_iter().map(move |window| UsageWindow {
+        provider: quota.provider.as_str().to_owned(),
+        account: quota.account.as_str().to_owned(),
+        limit: window.limit.as_str().to_owned(),
+        scope: window.scope,
+        used_percent: window.used_percent,
+        length_seconds: window.length_seconds,
+        resets_at: window.resets_at,
+        standing: match window.state {
+            WindowState::Available | WindowState::Low | WindowState::Exhausted => Standing::Current,
+            WindowState::Blocked => Standing::Blocked,
+            WindowState::Stale => Standing::Stale,
+        },
+    })
+}
+
+/// The owner's `[usage]` pacing as scheduling applies it.
+pub(crate) fn pacing(usage: &cockpit_config::UsageSettings) -> cockpit_scheduling::Pacing {
+    match usage.pacing.value {
+        cockpit_config::Pacing::Off => cockpit_scheduling::Pacing::Off,
+        cockpit_config::Pacing::Even => cockpit_scheduling::Pacing::Even {
+            reserve_percent: usage.pacing_reserve_percent.value,
+            burst_percent: usage.pacing_burst_percent.value,
+        },
+    }
 }
 
 /// Where the session's agent is: only a report from its current launch says anything about

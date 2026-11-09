@@ -166,6 +166,42 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 CHECK ((reason = 'behind') = (behind IS NOT NULL))
             );",
         },
+        // #412: a pass may now explain `usage-paced`. Recreated, as in version 3.
+        Migration {
+            version: 4,
+            sql: "DROP TABLE scheduling_explanations;
+            CREATE TABLE scheduling_explanations (
+                item INTEGER PRIMARY KEY,
+                position INTEGER NOT NULL UNIQUE,
+                project TEXT NOT NULL CHECK (project <> ''),
+                title TEXT NOT NULL CHECK (title <> ''),
+                run INTEGER,
+                step_position INTEGER CHECK (step_position >= 1),
+                step TEXT CHECK (step <> ''),
+                reason TEXT NOT NULL CHECK (reason IN ('not-queued', 'waits-on-items',
+                    'run-blocked', 'owner-step', 'queue-paused', 'low-disk',
+                    'control-unsupported',
+                    'infeasible', 'no-room', 'behind', 'no-session', 'no-session-free',
+                    'usage-paced')),
+                why TEXT NOT NULL CHECK (why <> ''),
+                limited_by TEXT CHECK (limited_by <> ''),
+                sessions TEXT NOT NULL,
+                behind INTEGER,
+                action TEXT NOT NULL CHECK (action <> ''),
+                action_by TEXT NOT NULL CHECK (action_by IN ('owner', 'cockpit')),
+                priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 6),
+                aging_boost INTEGER NOT NULL CHECK (aging_boost >= 0),
+                cpu_millis INTEGER NOT NULL CHECK (cpu_millis >= 0),
+                memory_mib INTEGER NOT NULL CHECK (memory_mib >= 0),
+                headroom_percent INTEGER NOT NULL CHECK (headroom_percent >= 0),
+                waiting_since INTEGER,
+                evaluated_at INTEGER NOT NULL,
+                next_evaluation_at INTEGER NOT NULL,
+                CHECK ((run IS NULL) = (step_position IS NULL)),
+                CHECK ((run IS NULL) = (step IS NULL)),
+                CHECK ((reason = 'behind') = (behind IS NOT NULL))
+            );",
+        },
     ],
 };
 
@@ -215,9 +251,11 @@ pub async fn dispatch(
     }
     let ended = settled.ended;
     let candidates = idle_since(write, &inputs.candidates).await?;
+    let usage = &inputs.usage;
     let inputs = &Inputs {
         candidates,
         viewed: inputs.viewed.clone(),
+        usage: Vec::new(),
         now,
     };
     let (waiting, outside) = units(&items, &runs);
@@ -262,6 +300,7 @@ pub async fn dispatch(
             familiar_hold: admission_hold(write, turn, policy, support, now).await?,
             unfamiliar_hold: admission_hold(write, unfamiliar, policy, support, now).await?,
             free,
+            usage,
         },
     );
     let mut placed = Vec::with_capacity(plan.placements.len());

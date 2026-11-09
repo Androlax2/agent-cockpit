@@ -25,8 +25,8 @@ pub struct QueueExplanationView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<QueueStepView>,
     /// `not-queued`, `waits-on-items`, `run-blocked`, `owner-step`, `queue-paused`,
-    /// `low-disk`, `control-unsupported`, `infeasible`, `no-room`, `behind`, `no-session` or
-    /// `no-session-free`.
+    /// `low-disk`, `control-unsupported`, `infeasible`, `no-room`, `behind`, `no-session`,
+    /// `no-session-free` or `usage-paced`.
     pub reason: String,
     pub why: String,
     /// The resource and capacity, or the control, that holds it.

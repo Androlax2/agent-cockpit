@@ -66,6 +66,12 @@ impl Home {
             .reading_messages(self.path().join("messages.log"));
             let mut wiring = common::wiring_in(&self.path(), vec![Arc::new(provider)]);
             wiring.scheduling.idle_window = Duration::ZERO;
+            // The fake provider reads no quota: a test records the windows that pace it.
+            wiring.quota = Some(cockpit_daemon::QuotaPolling {
+                home: self.path().join("home"),
+                refresh: Duration::from_secs(3600),
+                policy: cockpit_usage::QuotaPolicy::default(),
+            });
             // #825: a test that kills a terminal (the delivery that never arrives) must not have
             // the exit sweep end the session between two of its passes.
             wiring.exit_sweep = Duration::from_secs(3600);
@@ -99,6 +105,38 @@ impl Home {
 
     fn database(&self) -> Arc<cockpit_turso::Database> {
         self.database.lock().unwrap().clone().unwrap()
+    }
+
+    /// Records a current reading of the fake provider's `default` account, the owner's own
+    /// sign-in an unsandboxed session runs on: a five-hour window `used_percent` used that
+    /// resets in an hour.
+    async fn record_quota(&self, used_percent: f64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let window = cockpit_provider_api::QuotaWindow::new(
+            cockpit_provider_api::LimitKey::new("five-hour").unwrap(),
+            None,
+            Some(5 * 3600),
+            used_percent,
+            Some(now + 3600),
+        )
+        .unwrap();
+        let reading = cockpit_provider_api::QuotaReading::new(None, vec![window], false).unwrap();
+        let database = self.database();
+        let write = database.write().await.unwrap();
+        cockpit_usage::record_reading(
+            &write,
+            &ProviderName::new("fake").unwrap(),
+            &cockpit_usage::AccountName::new("default").unwrap(),
+            &reading,
+            &cockpit_usage::QuotaPolicy::default(),
+            now,
+        )
+        .await
+        .unwrap();
+        write.commit().await.unwrap();
     }
 
     async fn project(&self, client: &Connection) -> PathBuf {
@@ -488,6 +526,36 @@ async fn queue_explain_names_the_working_session_that_cannot_take_the_item() {
     assert_eq!(explanation.sessions.len(), 1);
     assert_eq!(explanation.sessions[0].session, working.id);
     assert_eq!(explanation.sessions[0].why, "its agent is working");
+    assert_eq!(explanation.action_by, "cockpit");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn queue_explain_names_the_plan_window_that_paces_the_item() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    home.session_reporting(&client, &root, AgentState::Waiting)
+        .await;
+    home.record_quota(95.0).await;
+    let item = queued_item(&client, "Fix the login").await;
+
+    let dispatched = request(&client, Command::QueueDispatch).await;
+
+    let Ok(Reply::QueueDispatched { placed, .. }) = dispatched else {
+        panic!("queue-dispatch: {dispatched:?}");
+    };
+    assert!(placed.is_empty(), "{placed:?}");
+    let explained = request(&client, Command::QueueExplain { item: Some(item) }).await;
+    let Ok(Reply::QueueExplanations { explanations }) = explained else {
+        panic!("queue-explain: {explained:?}");
+    };
+    let explanation = &explanations[0];
+    assert_eq!(explanation.reason, "usage-paced");
+    assert_eq!(
+        explanation.limited_by.as_deref(),
+        Some("window five-hour of fake account default")
+    );
     assert_eq!(explanation.action_by, "cockpit");
 }
 

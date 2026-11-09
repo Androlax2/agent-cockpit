@@ -162,6 +162,7 @@ impl Routes {
                 manager: Arc::clone(&capabilities.manager),
                 provider_capabilities,
                 settings: capabilities.scheduling,
+                quota_policy: capabilities.quota_policy.clone(),
                 queue_changed: Arc::clone(&capabilities.queue_changed),
             },
             verification: verification::Context {

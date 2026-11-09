@@ -86,6 +86,8 @@ pub async fn handoff(
             familiar_hold: admission_hold(write, turn, policy, support, inputs.now).await?,
             unfamiliar_hold: admission_hold(write, unfamiliar, policy, support, inputs.now).await?,
             free: plan::minus(plan::minus(policy.budget, in_use.all), unreserved),
+            // The owner hands this item over: pacing holds back the queue, not the owner.
+            usage: &[],
         },
     );
     match plan.placements.pop() {

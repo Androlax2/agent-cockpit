@@ -24,7 +24,7 @@ pub use memory::MemorySettings;
 pub use notify::{AWAY_HOLD, NOTIFY_EVENTS, NotifyEvents, NotifySettings};
 pub use skill_pack::SkillPackSettings;
 pub use storage::StorageSettings;
-pub use usage::UsageSettings;
+pub use usage::{Pacing, UsageSettings};
 
 use std::fmt;
 use std::io::ErrorKind;

@@ -1,5 +1,6 @@
-//! The owner's quota settings (#58): defaults, provenance and what each refuses.
-use cockpit_config::{ConfigError, Environment};
+//! The owner's quota settings (#58) and pacing (#412): defaults, provenance and what each
+//! refuses.
+use cockpit_config::{ConfigError, Environment, Pacing};
 
 fn environment(home: &std::path::Path) -> Environment {
     Environment {
@@ -25,6 +26,9 @@ fn every_quota_setting_has_a_default_shown_with_its_source() {
         "usage.quota_refresh_minutes = 5  # product default",
         "usage.quota_fresh_minutes = 10  # product default",
         "usage.quota_alert_percents = [80, 95]  # product default",
+        "usage.pacing = \"even\"  # product default",
+        "usage.pacing_reserve_percent = 10  # product default",
+        "usage.pacing_burst_percent = 15  # product default",
     ] {
         assert!(shown.contains(line), "missing {line}: {shown}");
     }
@@ -98,6 +102,11 @@ fn a_quota_setting_outside_its_rules_is_refused_with_its_key() {
             "quota_alert_percents = [10, 20, 30, 40, 50, 60]",
             "usage.quota_alert_percents",
         ),
+        (
+            "pacing_reserve_percent = 91",
+            "usage.pacing_reserve_percent",
+        ),
+        ("pacing_burst_percent = 101", "usage.pacing_burst_percent"),
     ] {
         write_owner_config(home.path(), &format!("[usage]\n{setting}\n"));
 
@@ -108,4 +117,34 @@ fn a_quota_setting_outside_its_rules_is_refused_with_its_key() {
             "{setting}: {loaded:?}"
         );
     }
+}
+
+#[test]
+fn the_owner_turns_pacing_off_and_sets_its_shares() {
+    let home = tempfile::tempdir().unwrap();
+    write_owner_config(
+        home.path(),
+        "[usage]\npacing = \"off\"\npacing_reserve_percent = 20\npacing_burst_percent = 0\n",
+    );
+
+    let config = cockpit_config::load(&environment(home.path()), None, &[]).unwrap();
+
+    assert_eq!(config.usage.pacing.value, Pacing::Off);
+    assert_eq!(config.usage.pacing_reserve_percent.value, 20);
+    assert_eq!(config.usage.pacing_burst_percent.value, 0);
+    let shown = cockpit_config::render(&config);
+    assert!(
+        shown.contains("usage.pacing = \"off\"  # user config"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn an_unknown_pacing_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    write_owner_config(home.path(), "[usage]\npacing = \"fast\"\n");
+
+    let loaded = cockpit_config::load(&environment(home.path()), None, &[]);
+
+    assert!(loaded.is_err(), "{loaded:?}");
 }

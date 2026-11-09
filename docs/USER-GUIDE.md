@@ -195,6 +195,17 @@ Codex is read from its own sign-in in `~/.local/share/codex-quota`. When a windo
 `usage.quota_alert_percents` (80 and 95 by default), `torlek notify` tells you once (the
 `usage` event).
 
+The queue paces itself to these windows (`usage.pacing = "even"` by default): it starts
+queued work on a session only while each window of the session's account is used below an
+even line to its reset, the share of the window elapsed times 90 % plus 15 %, and never
+past 90 %. The last 10 % (`usage.pacing_reserve_percent`) is kept for your own sessions;
+the 15 % (`usage.pacing_burst_percent`) lets work start as a window opens. Low-priority
+items get no burst, so they wait first; high-priority items ignore the line and stop only at
+the reserve. Work already running is never paused. A held item shows `usage-paced` in
+`torlek queue explain` with the window and about when it starts. A stale reading, a window
+scoped to one model and a session on an account Torlek reads no windows for pace nothing.
+`usage.pacing = "off"` starts queued work at full speed.
+
 `torlek usage cost [--days N]` shows what your replies cost at the provider's published API
 prices (a plan is flat, so this is what the same tokens would bill on API credits): one line
 per UTC day, provider, account and project over the last N days (7 by default, up to 366),
