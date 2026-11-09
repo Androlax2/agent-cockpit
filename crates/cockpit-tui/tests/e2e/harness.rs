@@ -142,45 +142,27 @@ fn programs() -> &'static Programs {
             Some(name) => name,
             None => panic!("unexpected binary path {}", tui.display()),
         };
-        // CI's shards unpack the programs one build job made (`COCKPIT_PREBUILT_PROGRAMS`): a
-        // Cargo run here would compile the workspace again, so a missing program fails below.
-        if std::env::var_os("COCKPIT_PREBUILT_PROGRAMS").is_none() {
-            let built = Command::new(env!("CARGO"))
-                .args(["build", "--locked", "--quiet", "--profile", profile])
-                .arg("--workspace")
-                .args(["--bin", "torlek", "--bin", "torlek-daemon"])
-                .args(["--example", "cockpit-e2e-daemon"])
-                .args(["--bin", "torlek-claude-hook"])
-                .arg("--manifest-path")
-                .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml"))
-                .output()
-                .expect("cargo runs");
-            assert!(
-                built.status.success(),
-                "building the programs under test failed: {}",
-                String::from_utf8_lossy(&built.stderr)
-            );
-        }
-        let programs = Programs {
+        let built = Command::new(env!("CARGO"))
+            .args(["build", "--locked", "--quiet", "--profile", profile])
+            .arg("--workspace")
+            .args(["--bin", "torlek", "--bin", "torlek-daemon"])
+            .args(["--example", "cockpit-e2e-daemon"])
+            .args(["--bin", "torlek-claude-hook"])
+            .arg("--manifest-path")
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml"))
+            .output()
+            .expect("cargo runs");
+        assert!(
+            built.status.success(),
+            "building the programs under test failed: {}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        Programs {
             cockpit: dir.join("torlek"),
             daemon: dir.join("torlek-daemon"),
             e2e_daemon: dir.join("examples/cockpit-e2e-daemon"),
             dir,
-        };
-        let claude_hook = programs.dir.join("torlek-claude-hook");
-        for program in [
-            &programs.cockpit,
-            &programs.daemon,
-            &programs.e2e_daemon,
-            &claude_hook,
-        ] {
-            assert!(
-                program.is_file(),
-                "program under test missing: {}",
-                program.display()
-            );
         }
-        programs
     })
 }
 

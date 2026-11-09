@@ -1,5 +1,8 @@
 # The greenfield tests run in three hash-partitioned shards behind one required check
 
+Partly superseded by `2026-11-09-1261-balanced-shards.md`: the shards are cut by measured time, not by
+hash partition, and there are four.
+
 Issue #997. Theo chose sharding plus test speed-ups (option B) on 2026-11-06; the worker chose
 the job layout, the shard count and the cache keys from the measurements on the issue and the
 pull request.

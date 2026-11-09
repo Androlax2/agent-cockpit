@@ -58,24 +58,11 @@ deny: ## Check dependency advisories, licenses and sources with the reviewed pol
 crates-build: ## Build the greenfield workspace in crates/ (debug profile, into target/)
 	$(build_runner) cargo build --locked --manifest-path Cargo.toml --workspace --all-targets
 
-# TEST_PARTITION runs one CI shard (#997), for example `make crates-test TEST_PARTITION=hash:1/3`.
+# TEST_FILTER runs one CI shard (#997, #1261): a nextest filterset from tools/ci-shards.py.
 # Only a command-line value counts: one left in the environment must not shrink a full run.
-test_partition = $(if $(filter command line,$(origin TEST_PARTITION)),--partition $(TEST_PARTITION))
+test_filter = $(if $(filter command line,$(origin TEST_FILTER)),-E '$(TEST_FILTER)')
 crates-test: ## Run the greenfield workspace's tests
-	$(build_runner) cargo nextest run --locked --cargo-quiet --status-level fail --manifest-path Cargo.toml --workspace $(test_partition)
-
-# CI builds the workspace's tests once and every test job unpacks that archive (#1261).
-# `crates-test-archive` is the build job; `crates-test-from-archive` runs the tests of one
-# shard, or of a filterset (TEST_FILTER), from the archive in the workspace root.
-.PHONY: crates-test-archive crates-test-from-archive
-# Outside target/: the build cache would save it there.
-TEST_ARCHIVE ?= greenfield-tests.tar.zst
-TEST_FILTER ?= all()
-crates-test-archive: ## Build the greenfield workspace's tests into one nextest archive (CI's build job)
-	$(build_runner) cargo nextest archive --locked --cargo-quiet --manifest-path Cargo.toml --workspace --archive-file $(TEST_ARCHIVE)
-
-crates-test-from-archive: ## Run the archive's tests that match TEST_FILTER, building nothing (CI's shards)
-	COCKPIT_PREBUILT_PROGRAMS=1 $(build_runner) cargo nextest run --profile ci --status-level fail --archive-file $(TEST_ARCHIVE) --extract-to . --extract-overwrite --workspace-remap $(CURDIR) -E '$(TEST_FILTER)'
+	$(build_runner) cargo nextest run --locked --cargo-quiet --status-level fail --manifest-path Cargo.toml --workspace $(test_filter)
 
 .PHONY: provider-conformance
 

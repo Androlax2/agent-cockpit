@@ -1,4 +1,4 @@
-"""The shard plan covers every test binary of the archive exactly once (#1261)."""
+"""The shard plan covers every test binary of the workspace exactly once (#1261)."""
 
 import importlib.util
 import io
@@ -55,7 +55,8 @@ class ShardPlanTests(unittest.TestCase):
     def test_a_weight_for_a_binary_no_longer_in_the_archive_is_ignored(self):
         ci_shards = shards_module()
         plan = ci_shards.plan(nextest_list("kept"), {"kept": 3.0, "removed": 900.0}, 2)
-        self.assertEqual([ids_in(shard["filter"]) for shard in plan], [{"kept"}])
+        self.assertEqual(ids_in(plan[0]["filter"]), {"kept"})
+        self.assertEqual(plan[1]["filter"], "none()", "a shard with no binary runs nothing")
 
     def test_the_slowest_binaries_are_spread_over_the_shards(self):
         ci_shards = shards_module()
@@ -76,15 +77,29 @@ class ShardPlanTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             shards_module().plan(nextest_list(), {}, 3)
 
-    def test_the_plan_prints_one_matrix_line_for_github_output(self):
+    def test_each_shard_prints_its_own_filter_for_github_output(self):
         ci_shards = shards_module()
-        with redirect_stdout(io.StringIO()) as output:
-            stdin = io.StringIO(json.dumps(nextest_list("one::a", "two::b")))
-            with patch.object(sys, "stdin", stdin):
-                self.assertEqual(ci_shards.main(["plan", "--shards", "2"]), 0)
-        (line,) = output.getvalue().splitlines()
-        matrix = json.loads(line.removeprefix("matrix="))
-        self.assertEqual([entry["shard"] for entry in matrix["include"]], [1, 2])
+        printed = []
+        for shard in (1, 2):
+            with redirect_stdout(io.StringIO()) as output:
+                stdin = io.StringIO(json.dumps(nextest_list("one::a", "two::b")))
+                with patch.object(sys, "stdin", stdin):
+                    self.assertEqual(
+                        ci_shards.main(["plan", "--shards", "2", "--shard", str(shard)]), 0
+                    )
+            (line,) = output.getvalue().splitlines()
+            printed.append(ids_in(line.removeprefix("filter=")))
+        self.assertEqual(sorted(binary for ids in printed for binary in ids), ["one::a", "two::b"])
+
+    def test_a_shard_outside_the_plan_is_refused(self):
+        for arguments in (["plan", "--shards", "2", "--shard", "3"], ["plan", "--shards", "2"]):
+            with self.subTest(arguments=arguments), redirect_stdout(io.StringIO()):
+                with patch.object(sys, "stderr", io.StringIO()):
+                    try:
+                        status = shards_module().main(arguments)
+                    except SystemExit as refusal:
+                        status = refusal.code
+                self.assertNotEqual(status, 0)
 
     def test_the_committed_weights_are_numbers_by_binary_id(self):
         weights = json.loads((ROOT / "tools/ci-test-weights.json").read_text())

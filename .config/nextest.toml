@@ -2,8 +2,3 @@
 # test binary from it to balance the shards (tools/ci-test-weights.json, #1261).
 [profile.ci.junit]
 path = "junit.xml"
-
-# The CLI and TUI end-to-end harnesses start this example daemon; an archive carries it too, so
-# a shard that only unpacks the archive needs no build (COCKPIT_PREBUILT_PROGRAMS).
-[profile.default.archive]
-include = [{ path = "debug/examples/cockpit-e2e-daemon", relative-to = "target", on-missing = "error" }]

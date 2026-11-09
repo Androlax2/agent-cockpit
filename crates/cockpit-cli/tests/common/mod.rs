@@ -291,22 +291,11 @@ fn daemon_binary() -> PathBuf {
         Some(name) => name,
         None => panic!("unexpected binary path {}", cli.display()),
     };
-    let daemon = profile_dir.join("torlek-daemon");
-    // CI's shards unpack the programs one build job made (`COCKPIT_PREBUILT_PROGRAMS`): a
-    // Cargo run here would compile the workspace again, so a missing program fails the test.
-    if std::env::var_os("COCKPIT_PREBUILT_PROGRAMS").is_some() {
-        assert!(
-            daemon.is_file(),
-            "prebuilt program missing: {}",
-            daemon.display()
-        );
-        return daemon;
-    }
     match std::env::var("NEXTEST_RUN_ID") {
         Ok(run_id) => build_daemon_once_per_run(profile_dir, profile, &run_id),
         Err(_) => build_daemon(profile).unwrap_or_else(|failure| panic!("{failure}")),
     }
-    daemon
+    profile_dir.join("torlek-daemon")
 }
 
 fn build_daemon_once_per_run(profile_dir: &Path, profile: &str, run_id: &str) {

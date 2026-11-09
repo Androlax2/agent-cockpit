@@ -100,15 +100,19 @@ class CiBootstrapTests(unittest.TestCase):
 
     def test_cached_jobs_restore_the_pinned_rust_cache_saved_only_on_main(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        # The build job keeps the entry the single greenfield job saved before #997 and saves it
-        # on main; the shards restore it for the registry their cargo-running tests read, and
-        # the sandbox job needs none (#1261).
+        # The test shards and the sandbox job keep the entry the single greenfield job saved
+        # before #997, and only shard 1 saves it: they all build the same target.
         main_only = r"\$\{\{ github\.ref == 'refs/heads/main' \}\}"
         shared = r"          shared-key: greenfield\n"
         cases = [
             ("greenfield-lint", "", main_only, "run: make greenfield-lint"),
-            ("greenfield-build", shared, main_only, "run: make crates-test-archive"),
-            ("greenfield-test", shared, "false", "run: make crates-test-from-archive"),
+            (
+                "greenfield-test",
+                shared,
+                r"\$\{\{ github\.ref == 'refs/heads/main' && matrix\.shard == 1 \}\}",
+                "run: make crates-test",
+            ),
+            ("greenfield-sandbox", shared, "false", "run: cargo test --no-run"),
         ]
         for job, shared_key, save_if, first_build in cases:
             with self.subTest(job=job):
