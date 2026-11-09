@@ -39,7 +39,7 @@ FAILURE_REPORT_SECONDS = 1800
 DEFAULT_WORKING_SECONDS = 120
 # A worker that started a background review or command is woken by it; an idle that ends
 # within this period is harmless, so only a longer one is reported.
-DEFAULT_IDLE_GRACE_SECONDS = 180
+DEFAULT_IDLE_GRACE_SECONDS = 600
 # How often the full session list is compared with the questions already reported.
 DEFAULT_FULL_LIST_SECONDS = 180
 # The watch polls every 2 seconds: a question it has not delivered this long after the full
