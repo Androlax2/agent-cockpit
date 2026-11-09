@@ -346,7 +346,7 @@ async fn inputs_in(
                     .unwrap_or_else(Capabilities::none),
                 presence: presence(session, reports.get(session.id.as_str())),
                 provider: session.provider.as_str().to_owned(),
-                account: Some(account_of(session)),
+                account: account_of(session),
             })
         })
         .collect::<Result<_, Failed>>()?;
@@ -363,14 +363,17 @@ async fn inputs_in(
     })
 }
 
-/// The account whose windows pace `session`'s queue starts: its launch's, or for an agent on
-/// no account, the owner's own sign-in, whose windows the daemon reads as `default` (#58).
-fn account_of(session: &Session) -> String {
-    session
-        .launch
-        .as_ref()
-        .and_then(|launch| launch.account.clone())
-        .unwrap_or_else(|| cockpit_config::DEFAULT_ACCOUNT.to_owned())
+/// The account whose windows pace `session`'s queue starts: its launch's, or for an agent
+/// launched on no account, the owner's own sign-in, whose windows the daemon reads as
+/// `default` (#58). `None` without a launch: nothing says where it runs.
+fn account_of(session: &Session) -> Option<String> {
+    let launch = session.launch.as_ref()?;
+    Some(
+        launch
+            .account
+            .clone()
+            .unwrap_or_else(|| cockpit_config::DEFAULT_ACCOUNT.to_owned()),
+    )
 }
 
 /// Every account's recorded plan windows, judged now under the quota policy.

@@ -79,8 +79,9 @@ line = min(elapsed share of the window × (100 − reserve) + burst, 100 − res
 | priority 2 | the line above |
 | priority 3 and up | `100 − reserve` only |
 
-A window the provider blocks holds every priority; a stale window, one scoped to a model and
-one of another account pace nothing. Of several windows holding a session, the one that
+A window the provider blocks, scoped or not, holds every priority; a stale window, one scoped
+to a model and one of another account pace nothing. Aging orders the queue, but pacing reads
+the item's own priority: an aged low-priority item never earns the burst. Of several windows holding a session, the one that
 holds it longest explains it; of several paced sessions, the one that frees first names the
 reason and when the line reaches the window's share (or the reset, at the reserve). Each
 paced session is noted with its own window. Running work is never paused, so what it spends

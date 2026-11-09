@@ -251,10 +251,11 @@ pub async fn dispatch(
     }
     let ended = settled.ended;
     let candidates = idle_since(write, &inputs.candidates).await?;
+    let usage = &inputs.usage;
     let inputs = &Inputs {
         candidates,
         viewed: inputs.viewed.clone(),
-        usage: inputs.usage.clone(),
+        usage: Vec::new(),
         now,
     };
     let (waiting, outside) = units(&items, &runs);
@@ -299,7 +300,7 @@ pub async fn dispatch(
             familiar_hold: admission_hold(write, turn, policy, support, now).await?,
             unfamiliar_hold: admission_hold(write, unfamiliar, policy, support, now).await?,
             free,
-            usage: &inputs.usage,
+            usage,
         },
     );
     let mut placed = Vec::with_capacity(plan.placements.len());

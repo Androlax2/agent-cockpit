@@ -172,6 +172,17 @@ async fn a_blocked_account_holds_even_the_highest_priority() {
 }
 
 #[tokio::test]
+async fn a_blocked_window_scoped_to_one_model_still_holds_the_account() {
+    let blocked = UsageWindow {
+        scope: Some("opus".to_owned()),
+        standing: Standing::Blocked,
+        ..window(10.0, 60)
+    };
+
+    assert!(!is_placed(Priority::HIGHEST, vec![blocked]).await);
+}
+
+#[tokio::test]
 async fn windows_that_cannot_pace_this_session_leave_it_free() {
     let cases = [
         (

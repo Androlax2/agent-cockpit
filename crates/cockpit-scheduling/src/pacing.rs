@@ -2,6 +2,8 @@
 //! each of its plan windows, so a window that full speed would spend early lasts until its
 //! reset. Running work is never paused; only what the queue starts waits.
 
+use cockpit_tasks::Priority;
+
 /// How queue starts follow the plan windows of the account a session runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pacing {
@@ -31,7 +33,8 @@ impl Pacing {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Standing {
     Current,
-    /// The provider refuses ordinary use on the account, whatever the window says.
+    /// The provider refuses ordinary use on the account, whatever the window says. It holds
+    /// every priority.
     Blocked,
     /// No current reading: it paces nothing, since an old share says nothing of now.
     Stale,
@@ -44,7 +47,8 @@ pub struct UsageWindow {
     pub account: String,
     pub limit: String,
     /// What a scoped window counts (one model, one feature); `None` for the whole account.
-    /// Only whole-account windows pace: scheduling cannot tell which model a turn will use.
+    /// Only whole-account windows pace by their share: scheduling cannot tell which model a
+    /// turn will use. Any blocked window holds the account.
     pub scope: Option<String>,
     pub used_percent: f64,
     pub length_seconds: Option<u32>,
@@ -62,11 +66,8 @@ pub(crate) struct Paced {
     pub(crate) resumes_at: Option<i64>,
 }
 
-const HIGH_PRIORITY: i64 = 3;
-const LOW_PRIORITY: i64 = 1;
-
 /// Why a turn of `priority` waits on `provider`'s `account` at `now`; `None` when it may
-/// start. Of several windows holding it, the one that holds it longest explains it.
+/// start. `priority` is the item's own: aging orders the queue but never earns a burst. Of several windows holding it, the one that holds it longest explains it.
 pub(crate) fn paced(
     pacing: Pacing,
     windows: &[UsageWindow],
@@ -83,27 +84,27 @@ pub(crate) fn paced(
         return None;
     };
     let usable = 100.0 - f64::from(reserve_percent);
-    let burst = if priority <= LOW_PRIORITY {
+    let burst = if priority <= Priority::LOW.level() {
         0.0
     } else {
         f64::from(burst_percent)
     };
     windows
         .iter()
-        .filter(|window| {
-            window.provider == provider && window.account == account && window.scope.is_none()
-        })
+        .filter(|window| window.provider == provider && window.account == account)
         .filter_map(|window| {
-            let name = format!("window {} of {provider} account {account}", window.limit);
+            let name = || format!("window {} of {provider} account {account}", window.limit);
             match window.standing {
                 Standing::Stale => None,
                 Standing::Blocked => Some(Paced {
                     why: format!(
                         "the provider refuses ordinary use of {provider} account {account}"
                     ),
-                    limited_by: name,
+                    limited_by: name(),
                     resumes_at: None,
                 }),
+                // A block refuses every model, so a scoped window says it as well as any.
+                Standing::Current if window.scope.is_some() => None,
                 Standing::Current => held(window, usable, burst, priority, now, name),
             }
         })
@@ -116,10 +117,11 @@ fn held(
     burst: f64,
     priority: i64,
     now: i64,
-    name: String,
+    name: impl Fn() -> String,
 ) -> Option<Paced> {
     let used = window.used_percent;
     if used >= usable {
+        let name = name();
         return Some(Paced {
             why: format!(
                 "{name} is {used:.0} % used, at the {usable:.0} % the queue may use; the rest \
@@ -132,7 +134,7 @@ fn held(
     let (Some(length), Some(resets_at)) = (window.length_seconds, window.resets_at) else {
         return None;
     };
-    if priority >= HIGH_PRIORITY {
+    if priority >= Priority::HIGH.level() {
         return None;
     }
     let length = f64::from(length);
@@ -142,6 +144,7 @@ fn held(
     if used < line {
         return None;
     }
+    let name = name();
     // The time the line rises to `used`.
     let resumes_at = (opened_at + length * (used - burst) / usable).ceil() as i64;
     Some(Paced {
