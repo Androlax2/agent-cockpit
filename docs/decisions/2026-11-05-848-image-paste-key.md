@@ -66,4 +66,3 @@ a session that has no display either.
   `-desktop-import` is refused, as for `-notify`. Proof: `crates/cockpit-cli/tests/profiles.rs`.
 - **Rejected:** the daemon reading `systemctl --user show-environment` (option A) and keeping
   the import manual (option C).
-
