@@ -43,8 +43,8 @@ Decisions for the owner, one at a time ([details](#decisions-for-the-owner)):
 
 - [x] D1: control reviews on 1 in 4 default PRs (A, recommended) or trial PRs only (B).
   **Decided 2026-11-09: A.**
-- [ ] D2: a second reviewer from another family on 1 in 4 reviewed PRs once Codex trials start
-  (A, recommended) or one Claude reviewer only (B).
+- [x] D2: a second reviewer from another family on 1 in 4 reviewed PRs once Codex trials start
+  (A, recommended) or one Claude reviewer only (B). **Decided 2026-11-09: A.**
 - [ ] D3: a 4-issue replay before a new model's first live trial (A, recommended) or live
   rotation only (B).
 
@@ -438,7 +438,7 @@ on [#1264](https://github.com/Androlax2/agent-cockpit/issues/1264) when it arriv
 - **D2, second reviewer from another family.** A (recommended): once Codex trials start, a Codex
   reviewer at `high` also reviews 1 in 4 reviewed PRs with the same checklist, to measure
   family bias; about 1 hour per alpha. B: one Claude reviewer only; Codex authors may be judged
-  more harshly than Claude authors and we would not know.
+  more harshly than Claude authors and we would not know. **Owner chose A on 2026-11-09.**
 - **D3, replay set.** A (recommended): before a new model's first live trial, run it on four
   fixed past issues, paired against the merged result; about 4 hours per new configuration. B:
   live rotation only; cheaper, and a weak new model is found only after it has written live PRs.
