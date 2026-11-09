@@ -45,6 +45,8 @@ pub fn session(id: &str, checkout: i64, created_at: i64) -> SessionView {
         holds_checkout: false,
         working_dir: "/p/app".to_owned(),
         conversation: Some("c-1".to_owned()),
+        model: None,
+        effort: None,
         design_link: None,
         state: SessionStateView::Running,
         reason: None,

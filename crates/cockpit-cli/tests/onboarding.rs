@@ -199,6 +199,8 @@ fn session() -> SessionView {
         holds_checkout: false,
         working_dir: "/home/me/code/my app".to_owned(),
         conversation: None,
+        model: None,
+        effort: None,
         design_link: None,
         state: SessionStateView::Ended,
         reason: None,

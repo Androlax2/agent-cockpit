@@ -183,6 +183,23 @@ pub fn render(config: &EffectiveConfig) -> String {
             &share.source,
         ));
     }
+    for (project, economy) in &usage.economy {
+        let fields: Vec<String> = [
+            ("model", &economy.value.model),
+            ("effort", &economy.value.effort),
+        ]
+        .into_iter()
+        .filter_map(|(field, word)| {
+            word.as_ref()
+                .map(|word| format!("{field} = {}", Value::from(word.as_str())))
+        })
+        .collect();
+        lines.push(line(
+            &format!("usage.economy.{project}"),
+            &format!("{{ {} }}", fields.join(", ")),
+            &economy.source,
+        ));
+    }
     for provider in crate::KNOWN_PROVIDERS {
         let accounts = config.accounts.sourced(provider);
         lines.push(line(

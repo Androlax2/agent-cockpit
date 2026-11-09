@@ -74,6 +74,8 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
         holds_checkout: false,
         working_dir: "/p/app".to_owned(),
         conversation: Some("c-1".to_owned()),
+        model: None,
+        effort: None,
         design_link: None,
         state,
         reason: None,
@@ -441,6 +443,30 @@ async fn session_show_prints_the_chosen_compaction_threshold() {
     assert_eq!(
         text(&output.stdout),
         "s0123456789ab\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\ncompaction threshold: 75\n"
+    );
+}
+
+#[tokio::test]
+async fn session_show_prints_the_model_and_effort_it_was_started_with() {
+    let home = Home::new();
+    let mut shown = view("s0123456789ab", SessionStateView::Running);
+    shown.model = Some("haiku".to_owned());
+    shown.effort = Some("low".to_owned());
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Session {
+            session: Box::new(shown),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "show", "s0123456789ab"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "s0123456789ab\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\nmodel: haiku\neffort: low\n"
     );
 }
 

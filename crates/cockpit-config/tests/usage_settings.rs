@@ -123,6 +123,19 @@ fn a_quota_setting_outside_its_rules_is_refused_with_its_key() {
             "[usage.project_shares]\n\".hidden\" = 20",
             "usage.project_shares..hidden",
         ),
+        ("[usage.economy.app]", "usage.economy.app"),
+        (
+            "[usage.economy.app]\nmodel = \"\"",
+            "usage.economy.app.model",
+        ),
+        (
+            "[usage.economy.app]\neffort = \"very low\"",
+            "usage.economy.app.effort",
+        ),
+        (
+            "[usage.economy.\"my app\"]\nmodel = \"haiku\"",
+            "usage.economy.my app",
+        ),
     ] {
         write_owner_config(home.path(), &format!("[usage]\n{setting}\n"));
 
@@ -194,4 +207,36 @@ fn the_owner_caps_a_projects_share_of_each_window_and_show_names_the_line() {
         "{shown}"
     );
     assert!(shown.contains("config.toml:3"), "{shown}");
+}
+
+#[test]
+fn no_project_runs_economy_until_the_owner_sets_it() {
+    let home = tempfile::tempdir().unwrap();
+
+    let config = cockpit_config::load(&environment(home.path()), None, &[]).unwrap();
+
+    assert!(config.usage.economy.is_empty());
+}
+
+#[test]
+fn the_owner_sets_a_projects_economy_and_show_names_the_line() {
+    let home = tempfile::tempdir().unwrap();
+    write_owner_config(
+        home.path(),
+        "[usage.economy.app]\nmodel = \"haiku\"\neffort = \"low\"\n\n[usage.economy.docs]\neffort = \"medium\"\n",
+    );
+
+    let config = cockpit_config::load(&environment(home.path()), None, &[]).unwrap();
+
+    let app = &config.usage.economy["app"].value;
+    assert_eq!(app.model.as_deref(), Some("haiku"));
+    assert_eq!(app.effort.as_deref(), Some("low"));
+    assert_eq!(config.usage.economy["docs"].value.model, None);
+    let shown = cockpit_config::render(&config);
+    for line in [
+        "usage.economy.app = { model = \"haiku\", effort = \"low\" }  # user config",
+        "usage.economy.docs = { effort = \"medium\" }  # user config",
+    ] {
+        assert!(shown.contains(line), "missing {line}: {shown}");
+    }
 }

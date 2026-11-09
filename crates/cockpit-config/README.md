@@ -76,6 +76,10 @@ pacing_burst_percent = 15          # 0 to 100: how far ahead of the even line wo
 
 [usage.project_shares]             # none by default: no project is capped
 app = 30                           # 1 to 100: the share of each window the queue starts app's work in
+
+[usage.economy.app]                # none by default: no project runs economy
+model = "haiku"                    # model, effort or both, 1 to 64 characters without spaces:
+effort = "low"                     # an item marked economy goes only to a session started with them
 ```
 
 A failed reading waits twice as long before the next, up to an hour, and the last good one

@@ -146,6 +146,10 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
             item: item_id(id)?,
             budget: budget(minutes)?,
         },
+        ("economy", [id, mark]) => Command::TaskEconomy {
+            item: item_id(id)?,
+            economy: economy(mark)?,
+        },
         ("queue", [id]) => Command::TaskQueue {
             item: item_id(id)?,
             queued: true,
@@ -345,6 +349,9 @@ fn details(task: &TaskView) -> String {
     if let Some(minutes) = task.budget_minutes {
         text.push_str(&format!("budget: {minutes} min of agent time\n"));
     }
+    if task.is_economy {
+        text.push_str("economy: on, only for a session started with its project's economy\n");
+    }
     if let Some(why) = &task.why {
         text.push_str(&format!("why: {why}\n"));
     }
@@ -431,6 +438,14 @@ fn budget(text: &str) -> Result<TaskBudgetView, String> {
     text.parse()
         .map(TaskBudgetView::Minutes)
         .map_err(|_| format!("{text} is not a number of minutes or `none`"))
+}
+
+fn economy(text: &str) -> Result<bool, String> {
+    match text {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => Err(format!("{text} is not `on` or `off`")),
+    }
 }
 
 pub(crate) fn number(text: &str, what: &str) -> Result<i64, String> {

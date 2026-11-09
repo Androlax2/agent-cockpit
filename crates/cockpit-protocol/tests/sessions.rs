@@ -71,6 +71,8 @@ fn a_session_view_names_its_state_and_latest_launch_on_the_wire() {
         holds_checkout: true,
         working_dir: "/p/.parallel/app/feature-x".to_owned(),
         conversation: Some("c-1".to_owned()),
+        model: None,
+        effort: None,
         design_link: None,
         state: SessionStateView::Stopping {
             to: StopTargetView::Restart,

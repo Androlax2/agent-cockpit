@@ -164,6 +164,7 @@ impl Routes {
                 settings: capabilities.scheduling,
                 quota_policy: capabilities.quota_policy.clone(),
                 project_shares: capabilities.project_shares.clone(),
+                economy: capabilities.economy.clone(),
                 queue_changed: Arc::clone(&capabilities.queue_changed),
             },
             verification: verification::Context {
@@ -537,6 +538,7 @@ impl Handler for Routes {
             (
                 command @ (Command::TaskPriority { .. }
                 | Command::TaskBudget { .. }
+                | Command::TaskEconomy { .. }
                 | Command::TaskQueue { .. }
                 | Command::TaskApprove { .. }
                 | Command::TaskDecline { .. }

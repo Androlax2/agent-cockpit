@@ -139,7 +139,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek todo handoff ID SESSION --revision R --state-revision R --launch N
        torlek todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]
        torlek todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID
-       torlek todo budget ID MINUTES|none
+       torlek todo budget ID MINUTES|none | economy ID on|off
        torlek todo after ID ON... | unwait ID ON...
        torlek todo image add ID FILE | image get ID NUMBER FILE
        torlek todo draft save (ID | --new PROJECT) [--title T] [--notes TEXT] [--revision R]

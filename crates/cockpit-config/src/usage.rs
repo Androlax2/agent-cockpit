@@ -33,6 +33,15 @@ impl Pacing {
     }
 }
 
+/// The model and effort a project's economy sessions start with (#412), in the provider's own
+/// words: an item marked economy goes only to a session of the project started with them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Economy {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct UsageSettings {
     /// Minutes between two readings of one provider's windows while they succeed.
@@ -50,6 +59,9 @@ pub struct UsageSettings {
     /// The most of each plan window a project's queued work may use, in percent, by project
     /// name; a project not listed has no cap of its own (#412).
     pub project_shares: BTreeMap<String, Sourced<u8>>,
+    /// Each project's economy model and effort, by project name; a project not listed runs
+    /// no economy, and its items marked economy wait (#412).
+    pub economy: BTreeMap<String, Sourced<Economy>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +74,7 @@ pub(super) struct UsageTable {
     pacing_reserve_percent: Option<Spanned<u8>>,
     pacing_burst_percent: Option<Spanned<u8>>,
     project_shares: Option<BTreeMap<String, Spanned<u8>>>,
+    economy: Option<BTreeMap<String, Spanned<Economy>>>,
 }
 
 pub(super) fn settings(layers: &[Layer]) -> Result<UsageSettings, ConfigError> {
@@ -74,6 +87,7 @@ pub(super) fn settings(layers: &[Layer]) -> Result<UsageSettings, ConfigError> {
         pacing_reserve_percent: Sourced::new(10, Source::ProductDefault),
         pacing_burst_percent: Sourced::new(15, Source::ProductDefault),
         project_shares: BTreeMap::new(),
+        economy: BTreeMap::new(),
     };
     for layer in layers {
         let Some(table) = &layer.settings.usage else {
@@ -107,6 +121,12 @@ pub(super) fn settings(layers: &[Layer]) -> Result<UsageSettings, ConfigError> {
             result
                 .project_shares
                 .insert(project.clone(), percent(share));
+        }
+        for (project, economy) in table.economy.iter().flatten() {
+            result.economy.insert(
+                project.clone(),
+                Sourced::new(economy.get_ref().clone(), layer.source_at(economy.span())),
+            );
         }
     }
     let invalid = |key: &str, source: &Source, reason: String| ConfigError::Invalid {
@@ -175,9 +195,7 @@ pub(super) fn settings(layers: &[Layer]) -> Result<UsageSettings, ConfigError> {
             return Err(invalid(
                 &format!("project_shares.{project}"),
                 &share.source,
-                "is not a project name: 1 to 64 ASCII letters, digits, `.`, `_` and `-`, not \
-                 starting with `.` or `-`"
-                    .to_owned(),
+                NOT_A_PROJECT_NAME.to_owned(),
             ));
         }
         if !(1..=100).contains(&share.value) {
@@ -188,11 +206,49 @@ pub(super) fn settings(layers: &[Layer]) -> Result<UsageSettings, ConfigError> {
             ));
         }
     }
+    for (project, economy) in &result.economy {
+        let key = format!("economy.{project}");
+        if !is_project_name(project) {
+            return Err(invalid(
+                &key,
+                &economy.source,
+                NOT_A_PROJECT_NAME.to_owned(),
+            ));
+        }
+        let Economy { model, effort } = &economy.value;
+        if model.is_none() && effort.is_none() {
+            return Err(invalid(
+                &key,
+                &economy.source,
+                "names a `model`, an `effort` or both".to_owned(),
+            ));
+        }
+        for (field, word) in [("model", model), ("effort", effort)] {
+            if word.as_deref().is_some_and(|word| !is_provider_word(word)) {
+                return Err(invalid(
+                    &format!("{key}.{field}"),
+                    &economy.source,
+                    "must be 1 to 64 characters, no spaces or control characters".to_owned(),
+                ));
+            }
+        }
+    }
     Ok(result)
 }
 
-/// `cockpit-projects`' rule for a project's name, so a share no project could carry is refused
-/// instead of capping nothing.
+const NOT_A_PROJECT_NAME: &str = "is not a project name: 1 to 64 ASCII letters, digits, `.`, `_` \
+     and `-`, not starting with `.` or `-`";
+
+/// A model or effort as a session's start takes it: the economy matches it word for word.
+fn is_provider_word(word: &str) -> bool {
+    (1..=64).contains(&word.chars().count())
+        && !word
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+}
+
+/// `cockpit-projects`' rule for a project's name, so a setting no project could carry is
+/// refused instead of applying to nothing.
 fn is_project_name(name: &str) -> bool {
     let is_plain =
         |character: char| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-');

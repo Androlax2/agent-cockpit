@@ -171,6 +171,9 @@ async fn dispatch(
                 .map_err(|error| internal(&error))?;
             item
         }
+        Command::TaskEconomy { item, economy } => {
+            cockpit_tasks::set_economy(write, actor, ItemId(item), economy, now).await?
+        }
         Command::TaskQueue { item, queued } => {
             cockpit_tasks::set_queued(write, actor, ItemId(item), queued, now).await?
         }
@@ -499,6 +502,7 @@ pub(crate) fn task_view(item: Item) -> TaskView {
         changed_at: item.changed_at,
         next,
         budget_minutes: item.budget_minutes,
+        is_economy: item.is_economy,
     }
 }
 

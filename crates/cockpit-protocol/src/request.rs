@@ -604,6 +604,13 @@ pub enum Command {
         item: i64,
         budget: TaskBudgetView,
     },
+    /// Owner only: mark the item to run economy, or unmark it (#412). Marked, the queue
+    /// places it only on a session of its project started with each of the project's economy
+    /// model and effort that is set.
+    TaskEconomy {
+        item: i64,
+        economy: bool,
+    },
     /// Owner only: make a `todo` item available for a session to take, or take it back.
     TaskQueue {
         item: i64,

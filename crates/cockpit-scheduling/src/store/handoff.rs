@@ -45,6 +45,8 @@ pub async fn handoff(
     // Selecting an item is the owner's explicit opt-in, without changing its queue flag
     // if eligibility or admission refuses the placement.
     item.is_queued = true;
+    // The owner picks the session: an economy mark holds back the queue, not the owner (#412).
+    item.is_economy = false;
     // Handing it over is the owner's answer to a spent budget, so none holds it (#412).
     let (waiting, outside) = units(std::slice::from_ref(&item), &[], &BTreeMap::new());
     if let Some(outside) = outside.into_iter().next() {
@@ -89,6 +91,7 @@ pub async fn handoff(
             free: plan::minus(plan::minus(policy.budget, in_use.all), unreserved),
             // The owner hands this item over: pacing holds back the queue, not the owner.
             usage: &[],
+            economy: &BTreeMap::new(),
         },
     );
     match plan.placements.pop() {

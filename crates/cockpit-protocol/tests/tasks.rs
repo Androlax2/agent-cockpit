@@ -115,6 +115,30 @@ fn a_task_budget_without_its_budget_is_refused_rather_than_lifting_one() {
 }
 
 #[test]
+fn a_task_economy_names_whether_the_item_runs_economy() {
+    for economy in [true, false] {
+        let wire = json!({
+            "id": 4,
+            "command": {"kind": "task-economy", "item": 7, "economy": economy}
+        });
+
+        let request = decode_request(&wire.to_string()).unwrap();
+
+        assert_eq!(request.command, Command::TaskEconomy { item: 7, economy });
+        assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    }
+}
+
+#[test]
+fn a_task_economy_without_its_mark_is_refused() {
+    let wire = json!({"id": 5, "command": {"kind": "task-economy", "item": 7}});
+
+    let rejection = decode_request(&wire.to_string()).unwrap_err();
+
+    assert_eq!(rejection.error.code, ErrorCode::InvalidRequest);
+}
+
+#[test]
 fn malformed_hex_is_an_invalid_request() {
     for data in ["abc", "zz", "AB"] {
         let wire = json!({
@@ -153,6 +177,7 @@ fn a_task_view_says_what_it_waits_for_next() {
         changed_at: 10,
         next: TaskNextView::FinishDependencies { items: vec![1] },
         budget_minutes: None,
+        is_economy: false,
     };
 
     let wire = serde_json::to_value(Reply::Task {

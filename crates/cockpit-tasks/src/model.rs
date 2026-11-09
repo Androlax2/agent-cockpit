@@ -175,6 +175,9 @@ pub struct Item {
     /// The agent minutes the owner allows it (#412): once its sessions have worked it that
     /// long, the queue places none of it until the owner raises the budget. `None`: no limit.
     pub budget_minutes: Option<u32>,
+    /// The owner marked it to run economy (#412): the queue places it only on a session of its
+    /// project started with each of the project's economy model and effort that is set.
+    pub is_economy: bool,
 }
 
 /// One session's items: how many it is doing, and when it last finished one it was doing.
