@@ -795,3 +795,75 @@ fn each_new_line_for_a_command_starts_masked() {
 
     assert!(!screen.contains(PASSWORD), "{screen}");
 }
+
+#[test]
+fn x_then_y_stops_a_command_waiting_for_input() {
+    let now = Instant::now();
+    let (mut app, ready) = app_at_sudo_prompt(now);
+
+    let steps = press(&mut app, &[Key::Char('x'), Key::Char('y')], ready);
+
+    assert_eq!(sent(&steps), [Command::ApprovalStop { request: 5 }]);
+}
+
+#[test]
+fn x_on_a_waiting_command_asks_before_it_stops_anything() {
+    let now = Instant::now();
+    let (mut app, ready) = app_at_sudo_prompt(now);
+
+    let asked = app.key(Key::Char('x'), ready);
+
+    assert!(asked.send.is_empty(), "{:?}", asked.send);
+    let screen = screen_text(&app, ready);
+    assert!(
+        screen.contains("stop it and every process it started? y to confirm"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn any_other_key_after_x_keeps_the_command_running() {
+    let now = Instant::now();
+    let (mut app, ready) = app_at_sudo_prompt(now);
+
+    let steps = press(
+        &mut app,
+        &[Key::Char('x'), Key::Char('n'), Key::Char('y')],
+        ready,
+    );
+
+    assert_eq!(sent(&steps), []);
+}
+
+#[test]
+fn a_stop_asked_for_one_command_never_stops_the_next() {
+    let now = Instant::now();
+    let (mut app, ready) = app_at_sudo_prompt(now);
+    app.key(Key::Char('x'), ready);
+    shown_with_keys(&mut app, vec![waiting_run(6, SESSION)], Vec::new(), ready);
+
+    let confirmed = app.key(Key::Char('y'), after_grace(ready));
+
+    assert!(confirmed.send.is_empty(), "{:?}", confirmed.send);
+}
+
+#[test]
+fn the_keys_of_a_waiting_command_offer_to_stop_it() {
+    let now = Instant::now();
+    let (app, ready) = app_at_sudo_prompt(now);
+
+    let screen = screen_text(&app, ready);
+
+    assert!(screen.contains("x stop it"), "{screen}");
+}
+
+#[test]
+fn a_stop_asked_for_before_the_pane_lost_focus_is_asked_for_again() {
+    let now = Instant::now();
+    let (mut app, ready) = app_at_sudo_prompt(now);
+    press(&mut app, &[Key::Char('x'), Key::Tab, Key::Tab], ready);
+
+    let confirmed = app.key(Key::Char('y'), after_grace(ready));
+
+    assert!(confirmed.send.is_empty(), "{:?}", confirmed.send);
+}

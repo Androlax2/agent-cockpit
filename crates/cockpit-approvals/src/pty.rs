@@ -15,10 +15,13 @@ use std::os::fd::OwnedFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cockpit_processes::{EndReason, ExecutionId, LaunchSpec, Phase, Supervisor, Terminal};
+use cockpit_processes::{
+    EndReason, Escalation, ExecutionId, LaunchSpec, Phase, Supervisor, Terminal, Termination,
+};
 use cockpit_turso::Database;
 use rustix::fs::{Mode, OFlags};
 use rustix::io::FdFlags;
@@ -38,6 +41,12 @@ const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
 /// input (a prompt).
 const PROMPT_IDLE: Duration = Duration::from_millis(1500);
 const SYNTAX_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+/// How the owner's stop ends a run (#1301): a prompt ends at `SIGTERM`; whatever ignores it
+/// gets `SIGKILL` soon after, so the owner's request is not held long.
+const OWNER_STOP: Escalation = Escalation {
+    grace: Duration::from_secs(3),
+    kill_wait: Duration::from_secs(5),
+};
 /// The programs whose `-n` reads commands without running them (POSIX `set -n`, fish's
 /// `--no-execute`), by the name of the file a shell path resolves to. Elsewhere `-n` may
 /// mean something else: nushell's is `--no-config-file`, so it would run the command.
@@ -166,8 +175,10 @@ pub struct Runner {
 
 #[derive(Debug)]
 struct LiveRun {
+    execution: ExecutionId,
     input: Mutex<File>,
     output: Mutex<Kept>,
+    is_stopped_by_owner: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -277,12 +288,14 @@ impl Runner {
             NoResult::NotStarted(format!("the run could not be marked running: {error}"))
         })?;
         let live = Arc::new(LiveRun {
+            execution,
             input: Mutex::new(master),
             output: Mutex::new(Kept {
                 bytes: Vec::new(),
                 total: 0,
                 last_output: Instant::now(),
             }),
+            is_stopped_by_owner: AtomicBool::new(false),
         });
         self.live
             .lock()
@@ -292,6 +305,8 @@ impl Runner {
         let exited = self
             .launch(database, run, execution, terminal, git_config)
             .await;
+        // Read as the exit is observed: a stop sent after it did not end the command.
+        let is_stopped_by_owner = live.is_stopped_by_owner.load(Ordering::SeqCst);
         let terminal_held_open = tokio::time::timeout(DRAIN_AFTER_EXIT, drained)
             .await
             .is_err();
@@ -321,6 +336,7 @@ impl Runner {
                 exit_code,
                 output: present(tail, kept.total, self.settings.answer_lines),
                 output_retired: false,
+                stopped_by_owner: is_stopped_by_owner,
             },
             terminal_held_open,
             leftover: is_left_running.then_some(execution),
@@ -418,12 +434,46 @@ impl Runner {
             .ok_or(Refusal::NotRunning)?;
         let mut input = live.input.lock().expect("the input lock is never poisoned");
         if !is_shown && let Some(why) = input_would_show(&input) {
-            return Err(Refusal::InputWouldShow { why });
+            return Err(Refusal::InputWouldShow { request: id.0, why });
         }
         input
             .write_all(text.as_bytes())
             .and_then(|()| input.write_all(b"\r"))
             .map_err(|_| Refusal::NotRunning)
+    }
+
+    /// The owner's stop of a running command (#1301): `SIGTERM`, then `SIGKILL`, to its whole
+    /// execution, so a helper it waits on (`git-remote-https` under `git push`) ends with it.
+    /// Answers how the termination went; once its processes were observed gone,
+    /// [`Runner::run`] answers the run's result `stopped_by_owner`. Only a run this daemon
+    /// started has a handle to stop: one that outlived a restart is refused.
+    pub async fn stop(&self, database: &Database, id: RunId) -> Result<Termination, Error> {
+        let live = self
+            .live
+            .lock()
+            .expect("the live runs lock is never poisoned")
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| Refusal::NotStoppable {
+                why: "the command did not start under this daemon: it outlived a daemon \
+                      restart, or it ended"
+                    .to_owned(),
+            })?;
+        // Set before the signal, so the run never reads its end without the owner's stop.
+        live.is_stopped_by_owner.store(true, Ordering::SeqCst);
+        let terminated = self
+            .supervisor
+            .terminate(database, live.execution, OWNER_STOP)
+            .await;
+        let has_signalled = match &terminated {
+            Ok(Termination::Confirmed { after }) => after.is_some(),
+            Ok(Termination::Unconfirmed { diagnostics }) => diagnostics.term.is_some(),
+            Err(_) => false,
+        };
+        if !has_signalled {
+            live.is_stopped_by_owner.store(false, Ordering::SeqCst);
+        }
+        Ok(terminated?)
     }
 
     /// The runs silent a while with their output ending mid-line: prompts. Read at one

@@ -167,6 +167,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE approvals_runs ADD COLUMN output_retired_at INTEGER
                 CHECK (output_retired_at IS NULL OR (state = 'finished' AND output = ''));",
         },
+        // #1301: when the owner stopped a running command, which then finished with the exit
+        // status the stop left. Earlier rows keep NULL.
+        Migration {
+            version: 10,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN stopped_by_owner_at INTEGER
+                CHECK (stopped_by_owner_at IS NULL OR state = 'finished');",
+        },
     ],
 };
 pub use runs::maintenance_runs;

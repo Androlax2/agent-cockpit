@@ -34,6 +34,7 @@ fn result(exit_code: i32) -> RunResult {
             redacted: 0,
         },
         output_retired: false,
+        stopped_by_owner: false,
     }
 }
 

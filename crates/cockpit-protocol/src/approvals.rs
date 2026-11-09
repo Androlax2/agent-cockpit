@@ -153,6 +153,10 @@ pub struct RunResultView {
     /// (#1160); `output` is empty.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub output_retired: bool,
+    /// The owner stopped the command (#1301); `exit_code` is what the stop left, 143 after
+    /// `SIGTERM`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped_by_owner: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -361,6 +361,12 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         shown: bool,
     },
+    /// Owner only: stop a running approved command, ending every process in its execution
+    /// (#1301). The run finishes with the exit status the stop left and the note that the
+    /// owner stopped it.
+    ApprovalStop {
+        request: i64,
+    },
     /// Owner only: clear a finished command run's stored output now, as database retention
     /// does once it is old (#1160).
     ApprovalPurgeOutput {

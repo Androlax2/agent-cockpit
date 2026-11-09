@@ -50,6 +50,9 @@ pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, Strin
                 shown: true,
             }
         }
+        ("approval", ["stop", id]) => Command::ApprovalStop {
+            request: id_of(id)?,
+        },
         ("approval", ["purge-output", id]) => Command::ApprovalPurgeOutput {
             request: id_of(id)?,
         },
@@ -274,11 +277,15 @@ fn run_detail(run: &RunRequestView) -> String {
         let _ = writeln!(
             text,
             "waiting for input: torlek approval input {} (reads one line from standard input, \
-             typed only while the terminal hides it; --shown answers a visible prompt)",
-            run.id
+             typed only while the terminal hides it; --shown answers a visible prompt), or \
+             stop it: torlek approval stop {}",
+            run.id, run.id
         );
     }
     if let Some(result) = &run.result {
+        if result.stopped_by_owner {
+            let _ = writeln!(text, "stopped by the owner");
+        }
         if result.output_retired {
             let _ = writeln!(
                 text,

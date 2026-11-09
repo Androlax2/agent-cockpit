@@ -396,6 +396,7 @@ impl Handler for Routes {
                 | Command::ApprovalDecline { .. }
                 | Command::ApprovalEdit { .. }
                 | Command::ApprovalInput { .. }
+                | Command::ApprovalStop { .. }
                 | Command::ApprovalPurgeOutput { .. }
                 | Command::GuideShow { .. }
                 | Command::GuideAnswer { .. }

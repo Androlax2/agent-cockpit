@@ -100,6 +100,9 @@ Provider-native permission dialogs are separate and remain in the provider termi
 A running command that waits at a prompt shows in the queue. Type into it with `torlek approval input ID`, which reads one line from standard input, or `i` in the TUI pane.
 The line is typed only while the command's terminal hides what is typed, as at a `sudo`, `ssh` or `gpg` password prompt (echo off, the line read whole); otherwise it is refused, because an echoed line lands in the output the agent reads and Torlek stores.
 To answer a visible prompt (`y`, `[Y/n]`, `read`) on purpose, use `torlek approval input ID --shown`, or Tab in the TUI to show the line before Enter; that answer appears in the output.
+To end a running command instead, such as `git push` waiting for a username it will never get, run `torlek approval stop ID`, or, while it waits for input in the TUI pane, press `x` and confirm with `y`.
+The stop sends `SIGTERM`, then `SIGKILL` after 3 seconds, to every process the command started; the agent reads that the owner stopped it, with the exit status the stop left (143 after `SIGTERM`).
+A command that outlived a daemon restart cannot be stopped this way: end it on the host.
 
 To remove a finished run's stored output, run `torlek approval purge-output ID`; database retention does the same after `[storage] database_retention_days`.
 The daily database backups still hold it until they age out (`[storage] database_backups_kept`, 7 by default, in the state directory's `backups` folder); delete the copies taken after the run to remove it sooner.

@@ -12,6 +12,8 @@
 //! - While the owner types into the pane, the request shown stays, whatever arrives.
 //! - A line typed for a running command is drawn masked: it may be a password (#1010). Tab
 //!   reveals it, and hides it again; each new line starts masked.
+//! - `x` on a running command asks to stop it; only `y` then stops it, any other key keeps it
+//!   running (#1301).
 
 use std::time::{Duration, Instant};
 
@@ -95,6 +97,8 @@ pub struct Pane {
     is_input_revealed: bool,
     /// The whole command instead of its folded start.
     expanded: bool,
+    /// `x` asked to stop the running command shown; `y` confirms.
+    is_confirming_stop: bool,
 }
 
 impl Pane {
@@ -108,6 +112,11 @@ impl Pane {
 
     pub fn is_expanded(&self) -> bool {
         self.expanded
+    }
+
+    /// Whether the pane waits for `y` to stop the running command it shows.
+    pub fn is_confirming_stop(&self) -> bool {
+        self.is_confirming_stop
     }
 
     /// Whether the line typed for a command is drawn in clear rather than masked.
@@ -146,12 +155,15 @@ impl Pane {
             self.typing = None;
             self.typed.clear();
             self.expanded = false;
+            self.is_confirming_stop = false;
             self.accepts_input_at = self.shown.as_ref().map(|_| now + INPUT_GRACE);
         }
     }
 
     /// The pane took focus: input waits out the grace again.
     pub fn focus(&mut self, now: Instant) {
+        // A stop asked for before the pane lost focus is asked for again.
+        self.is_confirming_stop = false;
         if self.shown.is_some() {
             self.accepts_input_at = Some(now + INPUT_GRACE);
         }
@@ -180,6 +192,9 @@ impl Pane {
         if let Some(typing) = self.typing {
             return self.typing_key(&shown, typing, key);
         }
+        if self.is_confirming_stop {
+            return self.stop_key(&shown, key);
+        }
         match (&shown, key) {
             (_, Key::Char('m')) => {
                 self.expanded = !self.expanded;
@@ -195,6 +210,16 @@ impl Pane {
                 self.typing = Some(Typing::Input);
                 self.is_input_revealed = false;
                 handled("approval-type-input", None)
+            }
+            (
+                Shown::Run {
+                    waiting_for_input: true,
+                    ..
+                },
+                Key::Char('x'),
+            ) => {
+                self.is_confirming_stop = true;
+                handled("approval-stop-ask", None)
             }
             (
                 Shown::Run {
@@ -266,6 +291,17 @@ impl Pane {
                 }),
             ),
             _ => PaneOutcome::NotMine,
+        }
+    }
+
+    fn stop_key(&mut self, shown: &Shown, key: Key) -> PaneOutcome {
+        self.is_confirming_stop = false;
+        match (shown, key) {
+            (Shown::Run { id, .. }, Key::Char('y')) => handled(
+                "approval-stop",
+                Some(Command::ApprovalStop { request: *id }),
+            ),
+            _ => handled("approval-stop-cancel", None),
         }
     }
 

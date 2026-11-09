@@ -18,7 +18,7 @@ use crate::app::{App, Confirm, Focus, Overlay};
 use crate::board::{Board, Idle};
 use crate::bug_form::{BugField, BugForm};
 use crate::form::{Field, Form, Place};
-use crate::pane::{Shown, Typing};
+use crate::pane::{Pane, Shown, Typing};
 
 /// The help overlay's text: every key the basic TUI has.
 pub const HELP: &str = "\
@@ -50,6 +50,8 @@ Approval pane (Tab moves between the list and the pane)
   x                  decline the command / close the guide
   m                  show the whole command, or fold it again
   i                  type a line for a command waiting for input; Enter sends it
+  x                  on a command waiting for input: stop it and every process it
+                     started (confirm with y)
   Tab                while typing that line: show it, or mask it again (masked first)
   s                  stuck on the guide step: type why, Enter sends it
   Keys are ignored for a moment after a request appears or the pane takes focus.
@@ -567,7 +569,7 @@ fn draw_pane(app: &App, frame: &mut Frame<'_>, area: Rect, now: Instant) {
     } else if pane.in_grace(now) {
         lines.push("Read it first: keys work again in a moment.".to_owned());
     } else {
-        lines.push(pane_keys(pane.shown()).to_owned());
+        lines.push(pane_keys(pane).to_owned());
     }
     let title = if app.focus() == Focus::Pane {
         "Waiting on you *"
@@ -611,12 +613,15 @@ pub(crate) fn reveal_hint(is_input_revealed: bool) -> &'static str {
     }
 }
 
-pub(crate) fn pane_keys(shown: Option<&Shown>) -> &'static str {
-    match shown {
+pub(crate) fn pane_keys(pane: &Pane) -> &'static str {
+    if pane.is_confirming_stop() {
+        return "stop it and every process it started? y to confirm, any other key keeps it";
+    }
+    match pane.shown() {
         Some(Shown::Run {
             waiting_for_input: true,
             ..
-        }) => "i type a line   m more",
+        }) => "i type a line   x stop it   m more",
         Some(Shown::Run { .. }) => "y approve   x decline   m more",
         Some(Shown::Guide { asks: true, .. }) => "y answer   s stuck   x close",
         Some(Shown::Guide { .. }) => "y done   s stuck   x close",

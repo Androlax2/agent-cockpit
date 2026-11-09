@@ -115,6 +115,10 @@ fn each_owner_decision_has_its_kebab_case_kind() {
             },
         ),
         (
+            json!({"kind": "approval-stop", "request": 4}),
+            Command::ApprovalStop { request: 4 },
+        ),
+        (
             json!({"kind": "approval-purge-output", "request": 4}),
             Command::ApprovalPurgeOutput { request: 4 },
         ),
@@ -180,6 +184,7 @@ fn a_finished_run_request_reply_round_trips() {
                 truncated_bytes: 0,
                 redacted: 1,
                 output_retired: false,
+                stopped_by_owner: false,
             }),
             note: None,
         }),
@@ -263,4 +268,17 @@ fn a_run_result_marks_retired_output_and_reads_without_the_mark() {
     let result: RunResultView = serde_json::from_value(retired.clone()).unwrap();
     assert!(result.output_retired);
     assert_eq!(serde_json::to_value(&result).unwrap(), retired);
+}
+
+#[test]
+fn a_run_result_marks_the_owners_stop_and_reads_without_the_mark() {
+    let older = json!({"exit_code":143,"output":"","omitted_lines":0,"truncated_bytes":0,
+        "redacted":0});
+    let result: RunResultView = serde_json::from_value(older).unwrap();
+    assert!(!result.stopped_by_owner);
+    let stopped = json!({"exit_code":143,"output":"","omitted_lines":0,"truncated_bytes":0,
+        "redacted":0,"stopped_by_owner":true});
+    let result: RunResultView = serde_json::from_value(stopped.clone()).unwrap();
+    assert!(result.stopped_by_owner);
+    assert_eq!(serde_json::to_value(&result).unwrap(), stopped);
 }
