@@ -162,3 +162,4 @@ merged,issue,pr,harness,model,effort,kind,trial,lines_added,ci_fix_rounds,ci_cau
 2026-11-09,#412,1254,claude,Opus,high,contained,default,297,0,,0,0,,,,,,session budget notice; #412 scope done pending close
 2026-11-09,#1257,1258,claude,Sonnet,medium,docs,default,2,0,,0,0,,,,0.3,,"KNOWN-GAPS relink, unblocked alpha 7 dry run"
 2026-11-09,#1260,1263,claude,Opus,high,risky,default,299,0,,0,0,,,,0.2,,release precheck on proposals + approval-free dry run (A+B); clean
+2026-11-09,#1264,1267,claude,Opus,high,research,default,830,0,,1,0,,,,0.7,,"asked D1-D3 one at a time (all A); two GitHub-side CI failures (abandoned changes job, then zero-job runs), fixed by a rerun and an empty commit; D2, D3 and replay set in #1272"
