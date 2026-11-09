@@ -1447,6 +1447,9 @@ impl Sessions {
             return Ok(false);
         };
         let provider = Arc::clone(self.provider(Some(session.provider.as_str()))?);
+        if !provider.capabilities().supports(Capability::ScreenReading) {
+            return Ok(false);
+        }
         let tmux = self.tmux.clone();
         let name = terminal_name(&session.id)?;
         let is_suspended = self
@@ -1458,11 +1461,22 @@ impl Sessions {
         if !is_suspended {
             return Ok(false);
         }
-        let sent = self
+        self.send_continue(launch.execution).await
+    }
+
+    /// Sends `SIGCONT` to the agent's execution: whether a live process was signalled.
+    async fn send_continue(&self, execution: ExecutionId) -> Result<bool, Error> {
+        let outcome = self
             .processes
-            .send_continue(&self.database, launch.execution)
+            .send_continue(&self.database, execution)
             .await?;
-        Ok(sent.is_some())
+        Ok(matches!(
+            outcome,
+            Some(
+                cockpit_processes::SignalOutcome::Sent
+                    | cockpit_processes::SignalOutcome::CommandAccepted
+            )
+        ))
     }
 
     /// The session, when it runs, with its agent's latest report.
@@ -3272,7 +3286,12 @@ impl Sessions {
             let _counted = counted;
             close_if_open(&tmux, &terminal.name)?;
             let pane = tmux.new_session(&terminal)?;
-            tmux.drop_suspend_key(&pane).map_err(Error::from)
+            // The agent runs once released whatever this answers: a failure only leaves Ctrl+Z
+            // to the periodic pass's resume, never fails the launch.
+            if let Err(error) = tmux.drop_suspend_key(&pane) {
+                tracing::warn!(%error, "Ctrl+Z still reaches a new agent's pane");
+            }
+            Ok(())
         })
         .await
     }

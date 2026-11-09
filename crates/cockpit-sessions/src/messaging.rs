@@ -191,7 +191,7 @@ impl Sessions {
             };
             match provider.deliver(&action, &target, &conversation) {
                 Ok(Delivered::Unsupported) => {}
-                Ok(_) => return Ok(()),
+                Ok(_) => return Ok(Typing::Done),
                 Err(error) => {
                     return Err(Error::DeliveryUnconfirmed {
                         session: session_id,
@@ -205,10 +205,7 @@ impl Sessions {
             // Typed into a released terminal, the text would sit at a prompt nobody reads,
             // or reach the harness as one stale burst once it resumes (#1271).
             if shows_suspended(&tmux, &pane, provider.as_ref())? {
-                return Err(Error::AgentSuspended {
-                    session: session_id,
-                    is_resumed: false,
-                });
+                return Ok(Typing::AgentSuspended);
             }
             let keys: Vec<Keystroke> = input
                 .iter()
@@ -220,19 +217,24 @@ impl Sessions {
                 })
                 .collect();
             refuse_before_typing(&keys).map_err(Error::Tmux)?;
-            type_in_separate_writes(&tmux, &pane, &keys).map_err(|failure| match failure {
-                (0, error @ cockpit_tmux::Error::CommandFailed { .. })
-                | (0, error @ cockpit_tmux::Error::InvalidArgument { .. }) => Error::Tmux(error),
-                (_, other) => Error::TypingUnconfirmed {
-                    session: session_id,
-                    reason: format!("tmux: {other}"),
-                },
-            })
+            type_in_separate_writes(&tmux, &pane, &keys)
+                .map(|()| Typing::Done)
+                .map_err(|failure| match failure {
+                    (0, error @ cockpit_tmux::Error::CommandFailed { .. })
+                    | (0, error @ cockpit_tmux::Error::InvalidArgument { .. }) => {
+                        Error::Tmux(error)
+                    }
+                    (_, other) => Error::TypingUnconfirmed {
+                        session: session_id,
+                        reason: format!("tmux: {other}"),
+                    },
+                })
         });
         match delivered.await {
-            Err(Error::AgentSuspended { session, .. }) => Err(Error::AgentSuspended {
-                is_resumed: self.continue_suspended(&session, launch.execution).await,
-                session,
+            Ok(Typing::Done) => Ok(()),
+            Ok(Typing::AgentSuspended) => Err(Error::AgentSuspended {
+                session: id.clone(),
+                is_resumed: self.continue_suspended(id, launch.execution).await,
             }),
             Err(error @ (Error::StepTimedOut { .. } | Error::Blocking(_))) => {
                 Err(Error::DeliveryUnconfirmed {
@@ -240,25 +242,28 @@ impl Sessions {
                     reason: error.to_string(),
                 })
             }
-            other => other,
+            Err(other) => Err(other),
         }
     }
 
     /// Sends `SIGCONT` to a suspended agent found by a delivery, which is refused all the
     /// same: whether it was sent. A failure is logged, the delivery's refusal says it.
     async fn continue_suspended(&self, id: &SessionId, execution: ExecutionId) -> bool {
-        match self
-            .processes
-            .send_continue(&self.database, execution)
-            .await
-        {
-            Ok(sent) => sent.is_some(),
+        match self.send_continue(execution).await {
+            Ok(is_sent) => is_sent,
             Err(error) => {
                 tracing::warn!(session = %id, %error, "a suspended agent could not be resumed");
                 false
             }
         }
     }
+}
+
+/// What a delivery that reached the agent's terminal found there.
+enum Typing {
+    Done,
+    /// The agent released its terminal (#1271): nothing was typed.
+    AgentSuspended,
 }
 
 /// How long typed text settles before the keys after it are written. Claude Code reads a
