@@ -6,7 +6,8 @@ Usage: git diff --name-only BASE...HEAD | codeql-languages.py
 
 `actions` is always scanned: the `main: CodeQL merge protection` ruleset waits for CodeQL results,
 and the Actions scan is what produces them for a change that touches no Rust. `rust` is scanned
-only when the change touches Rust code, a Cargo or toolchain file, or the CodeQL workflow itself
+only when the change touches Rust code, anything under crates/ that is not Markdown (Rust pulls
+fixtures in with `include_str!`), a Cargo or toolchain file, or the CodeQL workflow itself
 (#1261, decided by Theo). An empty change set scans both: a gap must show up as extra work.
 """
 
@@ -17,6 +18,7 @@ from pathlib import PurePosixPath
 ALWAYS = ["actions"]
 RUST_PATHS = [
     "**/*.rs",
+    "crates/**",
     "**/Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
@@ -27,6 +29,8 @@ RUST_PATHS = [
 
 
 def touches_rust(path):
+    if path.endswith(".md"):
+        return False
     return any(PurePosixPath(path).full_match(pattern) for pattern in RUST_PATHS)
 
 

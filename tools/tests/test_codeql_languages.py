@@ -29,6 +29,7 @@ class CodeqlLanguageSelectionTests(unittest.TestCase):
             "tools/ci-jobs.py",
             "apps/cockpit/script.sh",
             "crates/cockpit-daemon/README.md",
+            "apps/cockpit/NOTES.md",
         ):
             with self.subTest(path=path):
                 self.assertEqual(scanned_languages(changed_paths=[path]), ["actions"])
@@ -37,6 +38,7 @@ class CodeqlLanguageSelectionTests(unittest.TestCase):
         for path in (
             "crates/cockpit-daemon/src/main.rs",
             "crates/cockpit-tui/tests/e2e/harness.rs",
+            "crates/cockpit-turso/tests/fixtures/schema.sql",
             "apps/cockpit/src/lib.rs",
             "Cargo.toml",
             "Cargo.lock",
