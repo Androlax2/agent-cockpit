@@ -1,5 +1,8 @@
 # Worker trials log
 
+Frozen at 34 rows. New rows go to the trials database,
+[`docs/research/1264/`](../../../docs/research/1264/README.md).
+
 One row per merged worker PR, added by the coordinator when it ends the worker. The rotation
 rule and the model and effort rule are in [SKILL.md](SKILL.md#model-and-effort).
 
