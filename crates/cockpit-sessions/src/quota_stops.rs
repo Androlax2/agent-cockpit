@@ -41,12 +41,6 @@ pub enum QuotaStopResolution {
     Dropped { at: i64, reason: String },
 }
 
-impl QuotaStop {
-    pub fn is_open(&self) -> bool {
-        self.resolution.is_none()
-    }
-}
-
 const SELECT_STOP: &str = "SELECT id, session_id, launch_id, provider, account, stopped_at,
     confirmed_at, resets_at, switched_at, resumed_at, dropped_at, dropped_reason
     FROM session_quota_stops AS q";

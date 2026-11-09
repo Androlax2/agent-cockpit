@@ -219,6 +219,31 @@ async fn a_reading_taken_before_the_stop_neither_confirms_nor_resumes_it() {
 }
 
 #[tokio::test]
+async fn a_spent_reading_just_before_the_stop_confirms_it_so_the_next_room_resumes_it() {
+    let home = Home::new();
+    let _daemon = start(&home).await;
+    let client = home.connect().await;
+    home.project(&client).await;
+    let root = home.path().join("project");
+    let session = home.session(&client, &root, "fake").await;
+    let launch = common::once_logged(1, || launches(&home)).await[0].clone();
+    report_as(&home, &launch, waiting()).await;
+    let resets_at = unix_now() + 60;
+    record_reading(&home, 100.0, resets_at).await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    report_as(&home, &launch, quota_stopped()).await;
+    let stop = quota_stop_once(&client, &session.id, |stop| stop.resets_at.is_some()).await;
+    assert_eq!(stop.resets_at, Some(resets_at));
+
+    record_reading(&home, 2.0, unix_now() + i64::from(FIVE_HOURS)).await;
+
+    assert_eq!(
+        common::once_logged(1, || messages(&home)).await,
+        vec![(session.id.clone(), CONTINUE.to_owned())]
+    );
+}
+
+#[tokio::test]
 async fn a_quota_stop_whose_windows_show_room_is_handed_to_the_owner() {
     let home = Home::new();
     let _daemon = start(&home).await;
