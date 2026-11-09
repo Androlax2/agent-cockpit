@@ -732,7 +732,7 @@ fn a_thread_runs_in_the_sandbox_a_launch_sets() {
 /// the network, Codex refused the `connect` (`EPERM`).
 #[test]
 #[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM) and python3"]
-fn a_command_in_a_launchs_sandbox_reaches_a_socket_outside_its_workspace() {
+fn a_command_in_the_sandbox_a_launch_sets_reaches_a_socket_outside_its_workspace() {
     let home = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
