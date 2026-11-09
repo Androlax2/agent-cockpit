@@ -245,6 +245,14 @@ so no new scan starts while two such threads are still blocked. At start the wor
 could not. `usage-cost`, the owner's alone, answers the archive's totals for the last 1 to
 366 UTC days (`torlek usage cost`).
 
+Time with the agent (#700): `turns.rs` is a supervised task (`turn-time`) that, after every
+commit, opens a turn in `cockpit-usage` for each running session whose agent reports `working`
+and ends it when the agent reports anything else or the session stops (the pass takes no write
+when nothing changed, so it never wakes itself); `approvals.rs` counts each approval the owner
+grants in the approval's own transaction. `usage-digest`, the owner's alone, answers each of the
+last 1 to 366 UTC days (`digest.rs`: time with the agent, turns, approvals, cost, projects,
+incidents) for `torlek usage digest`.
+
 ## Requests
 
 - Peers are served only when the kernel's peer credentials name the daemon's own user.
@@ -281,6 +289,10 @@ builds it only when asked and no release installs it.
   against bills worked out by hand, later replies added without recounting, a restart not
   counting twice, a fake provider asked from its cursor, and a day count outside 1 to 366
   refused.
+- `tests/usage_digest_turns.rs`: issue #700: a fake agent's `working` and `waiting` reports
+  through a real session recorded as a turn under its project, a turn cut by the session's end,
+  and one that survives a daemon restart; `tests/approvals.rs` counts a granted approval under
+  its project in the digest and not a declined one.
 - `tests/startup.rs`: the binary on a clean home, the second daemon, private modes, the
   macOS layout, a stale socket after `kill -9`, reconcile before accept.
 - `tests/coordinator_kit.rs`: issue #410's acceptance with the fake provider: every

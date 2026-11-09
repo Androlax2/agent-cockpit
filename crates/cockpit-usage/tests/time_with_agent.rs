@@ -245,3 +245,77 @@ async fn a_turn_before_the_year_2000_is_refused() {
         })
     ));
 }
+
+#[tokio::test]
+async fn a_turn_that_began_and_ended_is_time_from_its_start_to_its_end() {
+    let fixture = Fixture::new().await;
+
+    let opened = fixture.began("s1", "app", clock(0, 10, 0)).await;
+    let ended = fixture.ended("s1", clock(0, 10, 20)).await.unwrap();
+
+    assert!((opened, ended) == (true, true));
+    assert_eq!(only_day(&fixture, "2026-11-02").await.seconds, 20 * 60);
+    assert!(fixture.open_turns().await.is_empty());
+}
+
+#[tokio::test]
+async fn working_again_while_a_turn_is_open_keeps_its_start() {
+    let fixture = Fixture::new().await;
+    fixture.began("s1", "app", clock(0, 10, 0)).await;
+
+    let reopened = fixture.began("s1", "app", clock(0, 10, 7)).await;
+    fixture.ended("s1", clock(0, 10, 20)).await.unwrap();
+
+    assert!(!reopened);
+    assert_eq!(only_day(&fixture, "2026-11-02").await.seconds, 20 * 60);
+}
+
+#[tokio::test]
+async fn ending_a_session_with_no_open_turn_records_nothing() {
+    let fixture = Fixture::new().await;
+
+    let ended = fixture.ended("s1", clock(0, 10, 20)).await.unwrap();
+
+    assert!(!ended);
+    assert_eq!(only_day(&fixture, "2026-11-02").await.seconds, 0);
+}
+
+#[tokio::test]
+async fn an_open_turn_is_listed_with_its_project_until_it_ends() {
+    let fixture = Fixture::new().await;
+    fixture.began("s1", "app", clock(0, 10, 0)).await;
+
+    let open = fixture.open_turns().await;
+
+    assert_eq!(open.len(), 1);
+    assert_eq!(
+        (
+            open[0].session.as_str(),
+            open[0].project.as_str(),
+            open[0].started_at
+        ),
+        ("s1", "app", clock(0, 10, 0))
+    );
+}
+
+#[tokio::test]
+async fn an_end_before_the_start_is_the_start() {
+    let fixture = Fixture::new().await;
+    fixture.began("s1", "app", clock(0, 10, 0)).await;
+
+    fixture.ended("s1", clock(0, 9, 0)).await.unwrap();
+
+    assert_eq!(only_day(&fixture, "2026-11-02").await.seconds, 0);
+    assert!(fixture.open_turns().await.is_empty());
+}
+
+#[tokio::test]
+async fn an_open_turn_over_a_week_is_refused_and_dropped() {
+    let fixture = Fixture::new().await;
+    fixture.began("s1", "app", clock(0, 10, 0)).await;
+
+    let result = fixture.ended("s1", clock(9, 10, 0)).await;
+
+    assert!(matches!(result, Err(Error::Invalid { field: "turn", .. })));
+    assert!(fixture.open_turns().await.is_empty());
+}

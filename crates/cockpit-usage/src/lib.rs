@@ -12,8 +12,9 @@ mod quota;
 use cockpit_turso::{Migration, MigrationSet};
 
 pub use activity::{
-    Approval, DayTime, Incident, JOIN_GAP_SECONDS, MAX_TURN_SECONDS, ProjectTime, Turn,
-    record_approval, record_incident, record_turn, time_with_agent,
+    Approval, DayTime, Incident, JOIN_GAP_SECONDS, MAX_TURN_SECONDS, OpenTurn, ProjectTime, Turn,
+    open_turns, record_approval, record_incident, record_turn, time_with_agent, turn_began,
+    turn_ended,
 };
 pub use cost::{DayCost, Recorded, costs, cursors, forget_home, price_unpriced, record_replies};
 pub use day::{Day, MAX_RANGE_DAYS};
@@ -128,6 +129,16 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             started_at INTEGER NOT NULL,
             resolved_at INTEGER CHECK (resolved_at >= started_at),
             PRIMARY KEY (provider, key)
+        );",
+        },
+        // #700: the turn a session is in now, kept until its end is known, so a restart
+        // closes it from the session's own record and none is lost or counted twice.
+        Migration {
+            version: 4,
+            sql: "CREATE TABLE usage_open_turns (
+            session TEXT PRIMARY KEY CHECK (session <> ''),
+            project TEXT NOT NULL CHECK (project <> ''),
+            started_at INTEGER NOT NULL
         );",
         },
     ],

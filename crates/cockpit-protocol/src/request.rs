@@ -915,6 +915,12 @@ pub enum Command {
     UsageCost {
         days: u32,
     },
+    /// Owner only: the daily digest's data (sessions, turns, approvals, time with the agent,
+    /// cost, projects and incidents) for each of the last `days` UTC days, today included
+    /// (#700). 1 to 366.
+    UsageDigest {
+        days: u32,
+    },
     /// Both sockets: the instruction bundle's topics, each with when to read it (#49).
     InstructionCatalog,
     /// Both sockets: one topic of the instruction bundle, or every topic at once (the one-read
@@ -1343,6 +1349,9 @@ pub enum Reply {
     },
     UsageCost {
         cost: crate::CostArchiveView,
+    },
+    UsageDigest {
+        digest: crate::DigestView,
     },
     /// The running release's instruction topics; `manifest` is its instruction-manifest id.
     InstructionCatalog {

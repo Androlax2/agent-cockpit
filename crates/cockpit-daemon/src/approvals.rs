@@ -620,6 +620,10 @@ async fn approve(
         cockpit_approvals::approve_run(&write, through, RunId(request), revision, digest, now())
             .await?;
     crate::coordination::record_decision(&write, &run).await?;
+    // Statistics never stand between the owner and a run: a failure is logged, not returned.
+    if let Err(Failed(error)) = record_granted_approval(&write, &run, request).await {
+        tracing::warn!(request, error = %error.message, "the approval was not counted in the digest");
+    }
     write.commit().await?;
     tracing::info!(request, revision, "the owner approved a run");
     let reply = run_reply(&run, &runner);
@@ -636,6 +640,27 @@ async fn approve(
         tokio::spawn(execute(database, runner, approved));
     }
     Ok(reply)
+}
+
+/// Counts the approval the owner just granted in the digest (#700), under the project the
+/// request named, in the approval's own transaction: an approval is counted once, whatever
+/// happens to its run.
+async fn record_granted_approval(
+    write: &cockpit_turso::WriteTransaction<'_>,
+    run: &cockpit_approvals::RunRequest,
+    request: i64,
+) -> Result<(), Failed> {
+    let project = run
+        .project
+        .as_ref()
+        .map_or_else(|| "unknown".to_owned(), |project| project.name.to_string());
+    let at = run.decision.map_or_else(now, |decision| decision.at);
+    let approval = cockpit_usage::Approval::new(format!("run-{request}"), project, at)
+        .map_err(|error| Failed(ProtocolError::new(ErrorCode::Internal, error.to_string())))?;
+    cockpit_usage::record_approval(write, &approval)
+        .await
+        .map_err(|error| Failed(ProtocolError::new(ErrorCode::Internal, error.to_string())))?;
+    Ok(())
 }
 
 async fn execute(database: Arc<Database>, runner: Runner, approved: Approved) {

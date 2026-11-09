@@ -258,7 +258,7 @@ impl Archivist {
         if scan.replies.is_empty() && scan.cursors.is_empty() && after == After::Scan {
             return Ok(Recorded::default());
         }
-        let projects = self.project_folders().await?;
+        let projects = project_folders(&self.database).await?;
         let project_of = |working_dir: Option<&str>| project_of(&projects, working_dir);
         let write = self
             .database
@@ -282,24 +282,6 @@ impl Archivist {
         }
         write.commit().await.map_err(|error| error.to_string())?;
         Ok(recorded)
-    }
-
-    /// Every checkout's folder with its project, the longest folder first, so a clone inside
-    /// another checkout's folder is the clone's project.
-    async fn project_folders(&self) -> Result<Vec<(PathBuf, String)>, String> {
-        let read = self
-            .database
-            .read()
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut folders: Vec<(PathBuf, String)> = cockpit_projects::checkouts(&read, None)
-            .await
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .map(|checkout| (checkout.path, checkout.project.as_str().to_owned()))
-            .collect();
-        folders.sort_by_key(|(path, _)| std::cmp::Reverse(path.as_os_str().len()));
-        Ok(folders)
     }
 }
 
@@ -380,9 +362,23 @@ async fn read_home(
     }
 }
 
+/// Every checkout's folder with its project, the longest folder first, so a clone inside
+/// another checkout's folder is the clone's project.
+pub(crate) async fn project_folders(database: &Database) -> Result<Vec<(PathBuf, String)>, String> {
+    let read = database.read().await.map_err(|error| error.to_string())?;
+    let mut folders: Vec<(PathBuf, String)> = cockpit_projects::checkouts(&read, None)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|checkout| (checkout.path, checkout.project.as_str().to_owned()))
+        .collect();
+    folders.sort_by_key(|(path, _)| std::cmp::Reverse(path.as_os_str().len()));
+    Ok(folders)
+}
+
 /// The project a reply belongs to: the checkout folder its agent ran in, else the name of the
 /// folder it ran in.
-fn project_of(folders: &[(PathBuf, String)], working_dir: Option<&str>) -> String {
+pub(crate) fn project_of(folders: &[(PathBuf, String)], working_dir: Option<&str>) -> String {
     let in_checkout = working_dir.and_then(|working_dir| {
         folders
             .iter()

@@ -10,8 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod scripted;
 
 use cockpit_protocol::{
-    Command, CostArchiveView, CostRowView, ErrorCode, Outcome, ProtocolError, QuotaAccountView,
-    QuotaFailureView, QuotaWindowStateView, QuotaWindowView, Reply,
+    Command, CostArchiveView, CostRowView, DayDigestView, DigestView, ErrorCode, IncidentView,
+    Outcome, ProjectDayView, ProtocolError, QuotaAccountView, QuotaFailureView,
+    QuotaWindowStateView, QuotaWindowView, Reply,
 };
 use scripted::{scripted_daemon, text};
 
@@ -380,4 +381,184 @@ async fn usage_cost_refuses_a_day_count_outside_one_to_366_without_asking_the_da
             text(&output.stderr)
         );
     }
+}
+
+fn quiet_day(day: &str) -> DayDigestView {
+    DayDigestView {
+        day: day.to_owned(),
+        sessions: 0,
+        turns: 0,
+        approvals: 0,
+        seconds_with_agent: 0,
+        replies: 0,
+        unpriced_replies: 0,
+        cost_nanos: 0,
+        projects: Vec::new(),
+        incidents: Vec::new(),
+    }
+}
+
+fn project_day(project: &str, seconds_with_agent: u64) -> ProjectDayView {
+    ProjectDayView {
+        project: project.to_owned(),
+        sessions: 1,
+        turns: 2,
+        approvals: 1,
+        seconds_with_agent,
+        replies: 4,
+        unpriced_replies: 0,
+        cost_nanos: 122_000_000,
+    }
+}
+
+#[tokio::test]
+async fn usage_digest_prints_each_day_its_projects_and_incidents() {
+    let home = Home::new();
+    let busy_day = DayDigestView {
+        sessions: 2,
+        turns: 3,
+        approvals: 1,
+        seconds_with_agent: 3_900,
+        replies: 5,
+        unpriced_replies: 1,
+        cost_nanos: 244_000_000,
+        projects: vec![project_day("app", 3_600), project_day("tools", 720)],
+        incidents: vec![
+            IncidentView {
+                provider: "claude".to_owned(),
+                title: "Elevated errors".to_owned(),
+                started_at: 1_794_129_120,
+                resolved_at: Some(1_794_132_000),
+            },
+            IncidentView {
+                provider: "codex".to_owned(),
+                title: "Slow replies".to_owned(),
+                started_at: 1_794_129_120,
+                resolved_at: None,
+            },
+        ],
+        ..quiet_day("2026-11-08")
+    };
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::UsageDigest {
+            digest: DigestView {
+                first_day: "2026-11-07".to_owned(),
+                last_day: "2026-11-08".to_owned(),
+                days: vec![quiet_day("2026-11-07"), busy_day],
+            },
+        }),
+    );
+
+    let output = home.cockpit(&["usage", "digest"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "2026-11-07 to 2026-11-08 (UTC days)\n\
+         2026-11-07\tnothing recorded\n\
+         2026-11-08\t1 h 05 min with the agent\t2 sessions\t3 turns\t1 approval\t$0.2440, 1 with no known price, not in the cost\n\
+         \x20 app\t1 h 00 min\t1 session\t2 turns\t1 approval\t$0.1220\n\
+         \x20 tools\t12 min\t1 session\t2 turns\t1 approval\t$0.1220\n\
+         \x20 incident\tclaude\tElevated errors\tfrom 2026-11-08 09:12 UTC, resolved 2026-11-08 10:00 UTC\n\
+         \x20 incident\tcodex\tSlow replies\tfrom 2026-11-08 09:12 UTC, not resolved\n"
+    );
+    assert_eq!(daemon.await.unwrap(), Command::UsageDigest { days: 7 });
+}
+
+#[tokio::test]
+async fn usage_digest_asks_for_the_days_it_is_given() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::UsageDigest {
+            digest: DigestView {
+                first_day: "2026-11-08".to_owned(),
+                last_day: "2026-11-08".to_owned(),
+                days: vec![quiet_day("2026-11-08")],
+            },
+        }),
+    );
+
+    let output = home.cockpit(&["usage", "digest", "--days", "1"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(daemon.await.unwrap(), Command::UsageDigest { days: 1 });
+}
+
+#[tokio::test]
+async fn usage_digest_shows_seconds_under_a_minute_and_escapes_the_providers_words() {
+    let home = Home::new();
+    let day = DayDigestView {
+        turns: 1,
+        sessions: 1,
+        seconds_with_agent: 45,
+        incidents: vec![IncidentView {
+            provider: "claude".to_owned(),
+            title: "down\u{1b}[2J\nfake line".to_owned(),
+            started_at: 1_794_129_120,
+            resolved_at: None,
+        }],
+        ..quiet_day("2026-11-08")
+    };
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::UsageDigest {
+            digest: DigestView {
+                first_day: "2026-11-08".to_owned(),
+                last_day: "2026-11-08".to_owned(),
+                days: vec![day],
+            },
+        }),
+    );
+
+    let output = home.cockpit(&["usage", "digest", "--days", "1"]).await;
+
+    let printed = text(&output.stdout);
+    assert!(printed.contains("\t45 s with the agent\t"), "{printed}");
+    assert!(printed.contains("down\\u{1b}[2J\\nfake line"), "{printed}");
+    assert_eq!(printed.lines().count(), 3, "{printed}");
+    drop(daemon);
+}
+
+#[tokio::test]
+async fn usage_digest_refuses_a_day_count_outside_one_to_366_without_asking_the_daemon() {
+    let home = Home::new();
+
+    for days in ["0", "367", "many", "-1"] {
+        let output = home.cockpit(&["usage", "digest", "--days", days]).await;
+
+        assert!(!output.status.success(), "{days}");
+        assert!(
+            text(&output.stderr).contains("--days is a number from 1 to 366"),
+            "{days}: {}",
+            text(&output.stderr)
+        );
+    }
+}
+
+#[tokio::test]
+async fn usage_digest_does_not_call_a_day_quiet_when_a_turn_from_the_day_before_ran_into_it() {
+    let home = Home::new();
+    let day = DayDigestView {
+        seconds_with_agent: 600,
+        ..quiet_day("2026-11-08")
+    };
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::UsageDigest {
+            digest: DigestView {
+                first_day: "2026-11-08".to_owned(),
+                last_day: "2026-11-08".to_owned(),
+                days: vec![day],
+            },
+        }),
+    );
+
+    let output = home.cockpit(&["usage", "digest", "--days", "1"]).await;
+
+    let printed = text(&output.stdout);
+    assert!(!printed.contains("nothing recorded"), "{printed}");
+    assert!(printed.contains("10 min with the agent"), "{printed}");
+    drop(daemon);
 }
