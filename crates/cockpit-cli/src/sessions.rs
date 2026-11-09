@@ -6,8 +6,8 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 use cockpit_protocol::{
-    Command, CoordinatorAuditView, CoordinatorGrantView, QuotaStopStatusView, Reply,
-    SessionFailure, SessionView,
+    Command, CoordinatorAuditView, CoordinatorGrantView, QuotaStopCauseView, QuotaStopStatusView,
+    Reply, SessionFailure, SessionView,
 };
 
 use crate::daemon::{
@@ -394,12 +394,23 @@ fn exit_lines(session: &SessionView) -> String {
 }
 
 /// What `session show` says of the session's latest quota stop (#158): when it stopped, on
-/// which account, and its one resume at the reset, or why nothing resumes it.
+/// which account, and its one resume at the reset, or why nothing resumes it. A turn the
+/// network ended (#718) says when, and its one resume once the provider answers again.
 fn quota_stop_lines(session: &SessionView) -> String {
     let Some(stop) = &session.quota_stop else {
         return String::new();
     };
     let time = crate::approvals::local_time;
+    if stop.cause == QuotaStopCauseView::Network {
+        let resolution = match &stop.status {
+            QuotaStopStatusView::Waiting => "resumes once its provider answers again".to_owned(),
+            QuotaStopStatusView::Resumed { at } => {
+                format!("resumed at {} once its provider answered again", time(*at))
+            }
+            QuotaStopStatusView::Dropped { reason, .. } => format!("not resumed: {reason}"),
+        };
+        return format!("network lost: {}; {resolution}\n", time(stop.stopped_at));
+    }
     let account = stop.account.as_deref().map_or_else(
         || "the owner's sign-in".to_owned(),
         |account| format!("account {account}"),

@@ -180,9 +180,10 @@ fn a_turn_that_failed_rings_once() {
     assert!(app.take_bell());
 }
 
-/// #718: nothing resumes a turn the network ended yet, so it rings as a failure does.
+/// #718: Torlek resumes a turn the network ended by itself, and asks the owner only when it
+/// cannot, as a question.
 #[test]
-fn a_turn_the_network_ended_rings_once() {
+fn a_turn_the_network_ended_does_not_ring() {
     let now = Instant::now();
     let mut app = running_app(now);
 
@@ -197,7 +198,7 @@ fn a_turn_the_network_ended_rings_once() {
         now,
     );
 
-    assert!(app.take_bell());
+    assert!(!app.take_bell());
 }
 
 #[test]

@@ -232,11 +232,7 @@ impl Board {
             cues.push(Cue::NeedsYou { what });
         }
         let exited_by_itself = session.state.is_over() && session.exit.is_some();
-        // A turn the network ended rings too: nothing resumes it yet (#718).
-        let turn_failed = matches!(
-            outcome,
-            Some(TurnOutcome::Failed { .. } | TurnOutcome::NetworkLost { .. })
-        );
+        let turn_failed = matches!(outcome, Some(TurnOutcome::Failed { .. }));
         if session.state == SessionStateView::Failed || exited_by_itself || turn_failed {
             cues.push(Cue::Failed);
         }

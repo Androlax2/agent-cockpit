@@ -10,9 +10,9 @@ mod scripted;
 
 use cockpit_protocol::{
     AgentExitView, Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, ExitStatusView,
-    HeldMessageView, LaunchKindView, LaunchView, Outcome, ProtocolError, QuotaStopStatusView,
-    QuotaStopView, Reply, SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView,
-    SessionFailure, SessionStateView, SessionView, StopTargetView,
+    HeldMessageView, LaunchKindView, LaunchView, Outcome, ProtocolError, QuotaStopCauseView,
+    QuotaStopStatusView, QuotaStopView, Reply, SandboxEnforcementView, SandboxEvidenceView,
+    SandboxRuleView, SessionFailure, SessionStateView, SessionView, StopTargetView,
 };
 use scripted::{scripted_daemon, text};
 
@@ -348,6 +348,7 @@ async fn session_show_prints_each_quota_stop_with_where_its_resume_stands() {
     ];
     for (account, resets_at, switched_at, status, line) in cases {
         let stop = QuotaStopView {
+            cause: QuotaStopCauseView::Quota,
             stopped_at: STOPPED_AT,
             account: account.map(str::to_owned),
             resets_at,
@@ -363,6 +364,7 @@ async fn session_show_prints_each_quota_stop_with_where_its_resume_stands() {
 #[tokio::test]
 async fn session_show_prints_what_a_quota_stop_was_inferred_from() {
     let shown = shown_quota_stop(QuotaStopView {
+        cause: QuotaStopCauseView::Quota,
         stopped_at: STOPPED_AT,
         account: None,
         resets_at: None,
@@ -379,6 +381,44 @@ async fn session_show_prints_what_a_quota_stop_was_inferred_from() {
         ),
         "{shown}"
     );
+}
+
+#[tokio::test]
+async fn session_show_prints_a_turn_the_network_ended_with_where_its_resume_stands() {
+    let cases = [
+        (
+            QuotaStopStatusView::Waiting,
+            "network lost: 2026-11-09 14:00:00 +00:00; resumes once its provider answers again\n",
+        ),
+        (
+            QuotaStopStatusView::Resumed {
+                at: STOPPED_AT + 600,
+            },
+            "network lost: 2026-11-09 14:00:00 +00:00; resumed at 2026-11-09 14:10:00 +00:00 \
+             once its provider answered again\n",
+        ),
+        (
+            QuotaStopStatusView::Dropped {
+                at: STOPPED_AT + 600,
+                reason: "the agent worked again before the reset".to_owned(),
+            },
+            "network lost: 2026-11-09 14:00:00 +00:00; not resumed: the agent worked again \
+             before the reset\n",
+        ),
+    ];
+    for (status, line) in cases {
+        let shown = shown_quota_stop(QuotaStopView {
+            cause: QuotaStopCauseView::Network,
+            stopped_at: STOPPED_AT,
+            account: None,
+            resets_at: None,
+            switched_at: None,
+            inferred_from: None,
+            status,
+        })
+        .await;
+        assert!(shown.contains(line), "expected {line:?} in:\n{shown}");
+    }
 }
 
 #[tokio::test]

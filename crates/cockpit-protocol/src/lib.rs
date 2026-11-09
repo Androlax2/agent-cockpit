@@ -74,9 +74,9 @@ pub use resources::{
 };
 pub use sessions::{
     AgentExitView, AppliedSettingView, DESKTOP_SESSION_VARIABLES, ExitStatusView, LaunchKindView,
-    LaunchView, ManagerPaneView, ProviderView, QuotaStopStatusView, QuotaStopView,
-    SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure, SessionStateView,
-    SessionView, StopTargetView,
+    LaunchView, ManagerPaneView, ProviderView, QuotaStopCauseView, QuotaStopStatusView,
+    QuotaStopView, SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure,
+    SessionStateView, SessionView, StopTargetView,
 };
 pub use storage::{
     BackupView, CloneStorageView, DatabaseStorageView, EndSweepView, LogFolderStorageView,

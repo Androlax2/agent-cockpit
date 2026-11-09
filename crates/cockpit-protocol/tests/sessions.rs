@@ -1,7 +1,7 @@
 //! The wire form of the session commands and views (#31).
 use cockpit_protocol::{
-    Command, LaunchKindView, LaunchView, Reply, SessionStateView, SessionView, StopTargetView,
-    decode_request,
+    Command, LaunchKindView, LaunchView, QuotaStopCauseView, QuotaStopStatusView, QuotaStopView,
+    Reply, SessionStateView, SessionView, StopTargetView, decode_request,
 };
 use serde_json::json;
 
@@ -135,4 +135,36 @@ fn a_session_state_or_launch_kind_from_a_newer_daemon_reads_as_unknown() {
         (state, kind),
         (SessionStateView::Unknown, LaunchKindView::Unknown)
     );
+}
+
+#[test]
+fn a_turn_the_network_ended_is_a_stop_whose_cause_is_network() {
+    let stop = QuotaStopView {
+        cause: QuotaStopCauseView::Network,
+        stopped_at: 100,
+        account: None,
+        resets_at: None,
+        switched_at: None,
+        inferred_from: None,
+        status: QuotaStopStatusView::Waiting,
+    };
+
+    assert_eq!(
+        serde_json::to_value(&stop).unwrap()["cause"],
+        json!("network")
+    );
+}
+
+#[test]
+fn a_stop_from_a_daemon_that_sends_no_cause_is_a_quota_stop() {
+    let stop: QuotaStopView = serde_json::from_value(json!({
+        "stopped_at": 100,
+        "account": null,
+        "resets_at": null,
+        "switched_at": null,
+        "status": {"kind": "waiting"}
+    }))
+    .unwrap();
+
+    assert_eq!(stop.cause, QuotaStopCauseView::Quota);
 }

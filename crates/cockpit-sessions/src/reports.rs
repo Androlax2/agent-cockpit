@@ -7,7 +7,7 @@ use cockpit_provider_api::{CompactionMoment, ContextUsage, ConversationId, TurnO
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 
-use crate::quota_stops::TransientLimits;
+use crate::quota_stops::{StopCause, TransientLimits};
 use crate::store::now;
 use crate::{Error, compactions, conversations, quota_stops};
 
@@ -223,6 +223,7 @@ pub async fn report_counting_limits(
         report.outcome = Some(TurnOutcome::QuotaStopped);
     }
     let is_quota_stop = report.outcome == Some(TurnOutcome::QuotaStopped);
+    let is_network_lost = matches!(report.outcome, Some(TurnOutcome::NetworkLost { .. }));
     let ends_turn = report.outcome.is_some();
     let merged = merge(&session, previous, report, launch, is_new_conversation);
     store_report(write, &merged).await?;
@@ -230,7 +231,19 @@ pub async fn report_counting_limits(
     // and the session relaunches on another account (#59) or resumes at the reset (#158).
     if is_quota_stop && let Some(launch) = launch {
         crate::store::record_quota_stop(write, launch).await?;
-        quota_stops::record(write, session.as_str(), launch, inferred_from.as_deref()).await?;
+        let cause = StopCause::Quota;
+        quota_stops::record(
+            write,
+            session.as_str(),
+            launch,
+            cause,
+            inferred_from.as_deref(),
+        )
+        .await?;
+    } else if is_network_lost && let Some(launch) = launch {
+        // The account is not spent: no relaunch moves the session, the same pass resumes it
+        // once the provider answers again (#718).
+        quota_stops::record(write, session.as_str(), launch, StopCause::Network, None).await?;
     } else if ends_turn || merged.state == Some(AgentState::Working) {
         let reason = "the agent worked again before the reset";
         quota_stops::drop_open(write, session.as_str(), reason, now()).await?;

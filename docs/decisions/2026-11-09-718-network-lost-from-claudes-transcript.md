@@ -29,8 +29,17 @@ daemon notices the network is back (A, 2026-11-09).
 - **No protocol version.** `ProtocolVersion` is for changes an older peer would misread; an
   older peer refuses the unknown outcome kind instead, and helpers install as one bundle
   with the daemon.
-- **Until the resume (#718 part 2), a `network-lost` turn rings and notifies as a failure**,
-  with "the network was lost (connection_failed)": nothing continues it yet.
+- **The network is back once a plan-window reading of the stop's provider succeeds after
+  it** (owner choice A): the reading already reaches the provider's API host, so no new host
+  or traffic. While such a stop is open, a failed reading is retried at the refresh instead
+  of backing off. A provider whose windows are not read hands the session to the owner.
+- **One resume pass for both stops.** A `network-lost` turn is a row of
+  `session_quota_stops` with `cause = 'network'`, claimed, dropped, ordered (coordinators
+  first) and shown as a quota stop is. It never marks the account spent, so no relaunch
+  moves the session. `QuotaStopView.cause` defaults to `quota`; an older CLI would show a
+  network stop as a quota stop, and it installs with the daemon.
+- **No bell.** A `network-lost` turn neither rings nor notifies; Torlek asks the owner, as a
+  question, only when it cannot resume it.
 - **Rejected:** matching `last_assistant_message` ("API Error: Can't reach the API server…",
   display text that changes between releases and modes); counting repeated `server_error`
   failures, which would resume a server's real failure.
