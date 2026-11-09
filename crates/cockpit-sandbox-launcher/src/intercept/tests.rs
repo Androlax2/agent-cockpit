@@ -256,6 +256,10 @@ fn a_push_upload_is_refused_however_its_path_is_spelled() {
             panic!("{target}: {:?}", relayed.ended);
         };
         assert!(reason.contains("`torlek ask run`"), "{target}: {reason}");
+        assert!(
+            reason.contains("`torlek todo blocked`"),
+            "{target}: {reason}"
+        );
         assert_eq!(relayed.sent, "", "{target}");
     }
 }
