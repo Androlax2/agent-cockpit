@@ -19,6 +19,7 @@ cockpit-authorization = { path = "../cockpit-authorization" }
 cockpit-claude = { path = "../cockpit-claude" }
 cockpit-codex = { path = "../cockpit-codex" }
 cockpit-config = { path = "../cockpit-config" }
+cockpit-containers = { path = "../cockpit-containers" }
 cockpit-diagnostics = { path = "../cockpit-diagnostics" }
 cockpit-messaging = { path = "../cockpit-messaging" }
 cockpit-opencode = { path = "../cockpit-opencode" }

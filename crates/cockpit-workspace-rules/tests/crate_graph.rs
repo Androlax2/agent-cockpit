@@ -288,6 +288,13 @@ const ALLOW_LISTS: &[AllowList] = &[
         from: &["cockpit-readiness"],
         allowed: &["cockpit-config"],
     },
+    // #390: containers verify a project's engine and keep the one the owner recorded; the
+    // daemon finds the project and its checkouts and passes them in, never the reverse.
+    AllowList {
+        rule: "containers -> the database only",
+        from: &["cockpit-containers"],
+        allowed: &["cockpit-turso"],
+    },
     // #427: a bug report is a draft about Cockpit itself; the daemon gathers the facts it
     // carries (version, platform, providers) and writes the support bundle through
     // diagnostics, so the drafts reach no capability and grant nothing.
@@ -719,6 +726,16 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-provider-api",
         ),
         (
+            "containers -> the database only",
+            "cockpit-containers",
+            "cockpit-projects",
+        ),
+        (
+            "containers -> the database only",
+            "cockpit-containers",
+            "cockpit-sandbox",
+        ),
+        (
             "usage -> provider-api/database only",
             "cockpit-usage",
             "cockpit-protocol",
@@ -853,6 +870,8 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-sandbox", "cockpit-config"),
         ("cockpit-sandbox", "cockpit-turso"),
         ("cockpit-sessions", "cockpit-sandbox"),
+        ("cockpit-containers", "cockpit-turso"),
+        ("cockpit-daemon", "cockpit-containers"),
     ] {
         let manifest_path = fixture_workspace(
             &format!("allowed_{source}_to_{target}"),

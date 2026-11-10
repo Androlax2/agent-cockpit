@@ -74,6 +74,13 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
             },
         ),
         (
+            "containers (routes.rs:457)",
+            Command::ContainersRecord {
+                project: "app".to_owned(),
+                through: None,
+            },
+        ),
+        (
             "account (routes.rs:415)",
             Command::AccountSignIn {
                 provider: "codex".to_owned(),

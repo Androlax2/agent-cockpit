@@ -6,9 +6,9 @@ use std::path::PathBuf;
 
 use cockpit_config::{AgentSandbox, EffectiveConfig, Environment};
 use cockpit_readiness::{
-    CheckoutFacts, ControlFacts, DockerEngine, HostFacts, Platform, PresetFacts, ProjectFacts,
-    ProjectNeeds, ProviderFacts, ProviderFound, ProviderUnusable, Report, Requirement, Status,
-    Trust, assess, needs_docker,
+    CheckoutFacts, ControlFacts, DockerEngine, EngineRemedy, EngineState, HostFacts, Platform,
+    PresetFacts, ProjectEngine, ProjectFacts, ProjectNeeds, ProviderFacts, ProviderFound,
+    ProviderUnusable, Report, Requirement, Status, Trust, assess, needs_docker,
 };
 use tempfile::TempDir;
 
@@ -124,6 +124,7 @@ impl Fixture {
                 memory_mib: 16_384,
             },
             docker: None,
+            engine: None,
             launch: None,
         }
     }
@@ -1081,6 +1082,93 @@ fn a_docker_engine_is_identified_and_its_isolation_reported() {
             assert!(docker.detail.contains(&engine.id), "{docker:#?}");
         }
     }
+}
+
+/// Each case: where the project's own engine stands (#390), the status of `docker`, and what
+/// its next action names.
+#[test]
+fn a_projects_own_engine_reports_each_state_with_its_next_step() {
+    let script = PathBuf::from("/state/containers/torlek-e3-setup.sh");
+    let cases = [
+        (
+            EngineState::NotSetUp {
+                reason: "there is no user torlek-e3 on this host".to_owned(),
+                setup: Ok(script.clone()),
+            },
+            Status::MissingPrerequisite,
+            "run `sudo sh /state/containers/torlek-e3-setup.sh`, then `torlek containers record project`",
+        ),
+        (
+            EngineState::Unrecorded(engine(true)),
+            Status::MissingPrerequisite,
+            "`torlek containers record project` records it",
+        ),
+        (
+            EngineState::Refused {
+                reason: "your own user (uid 1000) listens on the engine's socket".to_owned(),
+                remedy: EngineRemedy::Setup(Ok(script.clone())),
+            },
+            Status::MissingPrerequisite,
+            "run `sudo sh /state/containers/torlek-e3-setup.sh` again",
+        ),
+        (
+            EngineState::Refused {
+                reason: "the recorded engine does not answer".to_owned(),
+                remedy: EngineRemedy::Start {
+                    unit: "torlek-engine@torlek-e3.service".to_owned(),
+                },
+            },
+            Status::MissingPrerequisite,
+            "`sudo systemctl start torlek-engine@torlek-e3.service`",
+        ),
+        (
+            EngineState::Refused {
+                reason: "engine B answers, not the recorded A".to_owned(),
+                remedy: EngineRemedy::Record,
+            },
+            Status::MissingPrerequisite,
+            "`torlek containers record project` records it",
+        ),
+        (
+            EngineState::Verified(engine(true)),
+            Status::Unsupported,
+            "`torlek ask run`",
+        ),
+    ];
+    for (state, status, next) in cases {
+        let fixture = Fixture::new();
+        fixture.configure("[execution]\nenvironment = \"docker\"\n", None);
+        let mut project = fixture.facts();
+        project.engine = Some(Ok(ProjectEngine {
+            project: "project".to_owned(),
+            user: "torlek-e3".to_owned(),
+            record_command: "torlek containers record project".to_owned(),
+            state: state.clone(),
+        }));
+
+        let report = fixture.report(&ready_host(), &project);
+
+        let docker = requirement(&report, "docker");
+        assert_eq!(docker.status, status, "{state:?}: {docker:#?}");
+        let shown_next = docker.next.as_deref().unwrap_or_default();
+        assert!(shown_next.contains(next), "{state:?}: {docker:#?}");
+    }
+}
+
+#[test]
+fn a_project_engine_that_could_not_be_examined_is_unknown() {
+    let fixture = Fixture::new();
+    fixture.configure("[execution]\nenvironment = \"docker\"\n", None);
+    let mut project = fixture.facts();
+    project.engine = Some(Err(
+        "the engine user torlek-x is longer than 32 characters".to_owned()
+    ));
+
+    let report = fixture.report(&ready_host(), &project);
+
+    let docker = requirement(&report, "docker");
+    assert_eq!(docker.status, Status::Unknown);
+    assert!(docker.detail.contains("longer than 32"), "{docker:#?}");
 }
 
 #[test]

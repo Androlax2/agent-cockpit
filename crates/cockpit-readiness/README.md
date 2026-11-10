@@ -7,7 +7,7 @@ is not available names the action that makes it so. It assesses facts; it decide
 grants nothing.
 
 **Depends on:** `cockpit-config` (the effective configuration, owner and project, with each
-value's source), and `serde_json` to read a Docker engine's answer. The
+value's source). The
 `readiness -> config only` rule of `cockpit-workspace-rules/tests/crate_graph.rs` keeps every
 other Cockpit crate out: the daemon gathers each fact from its owner (tmux, the sandbox setting,
 the providers, resource admission, the workflow presets, the project registry) and passes it in.
@@ -53,10 +53,16 @@ value, the line is `missing-prerequisite`: it names both values, what still happ
 and `torlek config reload` (or a daemon restart) as the next action (#963). A configuration that
 does not read has nothing to compare; `config` blocks on it.
 
-Docker is probed only then, with `docker info` (10 s at most): a `docker` program is not an
-engine. The engine's ID, name and version identify it, and a rootful engine on Linux is
-`missing-prerequisite`: whoever reaches its socket is root on the host (report 11). The probe
-moves to `cockpit-containers` when that crate exists (#390).
+Docker is probed only then, by the daemon with `cockpit-containers`: a `docker` program is not
+an engine. The engine's ID, name and version identify it, and a rootful engine on Linux is
+`missing-prerequisite`: whoever reaches its socket is root on the host (report 11).
+
+Under `agents.sandbox = "required"` sandboxed sessions never reach the owner's engine, so
+`docker` reports the project's own instead (#390): rootless Docker under a system user of
+its own, which the daemon verifies through its socket against the engine the owner
+recorded. Not set up, not recorded and refused are `missing-prerequisite`, each with its
+next step (the setup script to review and run, `torlek containers record`, starting the
+unit). A verified engine is `unsupported` until sessions can reach it.
 
 Provider sign-in comes from the adapter on each readiness request (#443): signed in is
 `available`, explicitly signed out is `needs-authorization` with the provider's next step,

@@ -7,8 +7,8 @@ use cockpit_config::{AgentSandbox, EffectiveConfig, ExecutionEnvironment};
 
 use crate::host::listed;
 use crate::{
-    CheckoutFacts, DockerEngine, HostFacts, Platform, PresetFacts, ProjectFacts, ProviderFound,
-    Requirement, Status, Trust,
+    CheckoutFacts, DockerEngine, EngineRemedy, EngineState, HostFacts, Platform, PresetFacts,
+    ProjectEngine, ProjectFacts, ProviderFound, Requirement, Status, Trust,
 };
 
 /// Whether the project or one of its checks runs in Docker, so the daemon probes the engine.
@@ -38,6 +38,9 @@ pub(crate) fn requirements(
     requirements.extend(checks(config, &project.dir));
     if let Some(docker) = &project.docker {
         requirements.push(self::docker(docker, &host.platform));
+    }
+    if let Some(engine) = &project.engine {
+        requirements.push(project_engine(engine));
     }
     match &project.launch {
         Some(Ok(all)) => requirements.extend(crate::launch::launch_summary(all, &project.dir)),
@@ -307,10 +310,7 @@ fn docker(docker: &Result<DockerEngine, String>, platform: &Platform) -> Require
             );
         }
     };
-    let identity = format!(
-        "engine {} on {} (Docker {})",
-        engine.id, engine.name, engine.server_version
-    );
+    let identity = identity(engine);
     if engine.rootless {
         return Requirement::available("docker", format!("{identity}, rootless"));
     }
@@ -326,5 +326,93 @@ fn docker(docker: &Result<DockerEngine, String>, platform: &Platform) -> Require
         Status::MissingPrerequisite,
         format!("{identity} is rootful: whoever reaches its socket is root on this host"),
         "set up rootless Docker for this user (https://docs.docker.com/engine/security/rootless/), set DOCKER_HOST to its socket in the daemon's environment, then restart the daemon",
+    )
+}
+
+/// The project's own engine under `agents.sandbox = "required"` (#390, #856's table). A
+/// verified engine is still `unsupported`: sandboxed sessions do not reach it yet.
+fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
+    let engine = match engine {
+        Ok(engine) => engine,
+        Err(reason) => {
+            return Requirement::needs(
+                "docker",
+                Status::Unknown,
+                format!("the project's engine could not be examined: {reason}"),
+                "fix what it names, then run `torlek doctor` again",
+            );
+        }
+    };
+    let ProjectEngine {
+        user,
+        record_command,
+        state,
+        ..
+    } = engine;
+    let record = format!("`{record_command}`");
+    match state {
+        EngineState::NotSetUp { reason, setup } => Requirement::needs(
+            "docker",
+            Status::MissingPrerequisite,
+            format!(
+                "no Torlek-run engine for this project ({reason}); sandboxed sessions never \
+                 reach your own engine"
+            ),
+            match setup {
+                Ok(script) => format!(
+                    "review {}, run `sudo sh {}`, then {record}",
+                    script.display(),
+                    script.display()
+                ),
+                Err(reason) => format!("the setup script could not be written: {reason}"),
+            },
+        ),
+        EngineState::Unrecorded(found) => Requirement::needs(
+            "docker",
+            Status::MissingPrerequisite,
+            format!(
+                "{} answers as {user}, rootless, and is not recorded",
+                identity(found)
+            ),
+            format!("if you set it up, {record} records it"),
+        ),
+        EngineState::Refused { reason, remedy } => Requirement::needs(
+            "docker",
+            Status::MissingPrerequisite,
+            format!("the engine of {user} is refused: {reason}"),
+            match remedy {
+                EngineRemedy::Setup(Ok(script)) => format!(
+                    "review {}, run `sudo sh {}` again, then {record}",
+                    script.display(),
+                    script.display()
+                ),
+                EngineRemedy::Setup(Err(reason)) => {
+                    format!("the setup script could not be written: {reason}")
+                }
+                EngineRemedy::Start { unit } => format!(
+                    "`sudo systemctl start {unit}`; `journalctl -u {unit}` says why it stopped"
+                ),
+                EngineRemedy::Record => {
+                    format!("if you set up the engine that answers now, {record} records it")
+                }
+            },
+        ),
+        EngineState::Verified(found) => Requirement::needs(
+            "docker",
+            Status::Unsupported,
+            format!(
+                "{} runs as {user}, rootless, recorded; sandboxed sessions do not reach it yet \
+                 in this release (#390)",
+                identity(found)
+            ),
+            "`torlek ask run` asks you to run a container command on the host",
+        ),
+    }
+}
+
+fn identity(engine: &DockerEngine) -> String {
+    format!(
+        "engine {} on {} (Docker {})",
+        engine.id, engine.name, engine.server_version
     )
 }

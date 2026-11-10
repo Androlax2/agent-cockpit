@@ -145,6 +145,8 @@ mod tests {
         "checkout_occupancy",
         "project_checkouts",
         "cockpit_database",
+        // Readiness reads the recorded engines when the owner asks; no view polls them (#390).
+        "container_engines",
         "cockpit_migrations",
         "messaging_entities",
         "messaging_envelopes",

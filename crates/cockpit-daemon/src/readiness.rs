@@ -36,6 +36,8 @@ pub(crate) struct Context {
     /// They are then outside that report's bulk lane place, so only one report's may be: a
     /// report that finds this taken waits for its own.
     pub(crate) early_answer: Arc<tokio::sync::Semaphore>,
+    /// The owner and the folder a project's engine is checked and set up with (#390).
+    pub(crate) containers: crate::containers::Host,
 }
 
 impl Context {
@@ -227,11 +229,27 @@ async fn report(
         (Ok(config), Some(checkout)) => Some(checkout_facts(config, checkout)),
         _ => None,
     };
-    let docker = match &config {
-        Ok(config) if cockpit_readiness::needs_docker(config) => Some(
+    let needs_docker = matches!(&config, Ok(config) if cockpit_readiness::needs_docker(config));
+    // Sandboxed sessions never reach the owner's engine (#856's table): under `required` the
+    // project's own engine is the one that counts, and an unregistered directory has none.
+    let is_sandboxed = host.sandbox_setting == cockpit_config::AgentSandbox::Required;
+    let docker = if needs_docker && !is_sandboxed {
+        Some(
             tokio::task::spawn_blocking(probe_docker)
                 .await
                 .map_err(|error| error.to_string())?,
+        )
+    } else {
+        None
+    };
+    let engine = match &checkout {
+        Some(checkout) if needs_docker && is_sandboxed => Some(
+            crate::containers::project_engine(
+                &context.database,
+                &context.containers,
+                &checkout.project,
+            )
+            .await,
         ),
         _ => None,
     };
@@ -250,6 +268,7 @@ async fn report(
             memory_mib: capacity.memory_mib,
         },
         docker,
+        engine,
         launch,
     };
     Ok(with_daemon_lines(
@@ -480,7 +499,20 @@ fn presets() -> Vec<PresetFacts> {
 
 /// The `docker` on the daemon's `PATH`, asked for its engine.
 fn probe_docker() -> Result<cockpit_readiness::DockerEngine, String> {
-    cockpit_readiness::probe_docker(Path::new("docker"), cockpit_readiness::DOCKER_DEADLINE)
+    cockpit_containers::probe_docker(Path::new("docker"), cockpit_containers::DOCKER_DEADLINE)
+        .map(docker_engine)
+}
+
+pub(crate) fn docker_engine(
+    engine: cockpit_containers::EngineInfo,
+) -> cockpit_readiness::DockerEngine {
+    cockpit_readiness::DockerEngine {
+        id: engine.id,
+        name: engine.name,
+        server_version: engine.server_version,
+        rootless: engine.rootless,
+        in_desktop_vm: engine.in_desktop_vm,
+    }
 }
 
 /// The launch gates of a session of each wired provider in `dir` (#1250): a session names

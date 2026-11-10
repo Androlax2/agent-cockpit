@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use cockpit_readiness::probe_docker;
+use cockpit_containers::probe_docker;
 use tempfile::TempDir;
 
 fn fake_docker(dir: &Path, script: &str) -> PathBuf {

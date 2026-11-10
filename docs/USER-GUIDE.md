@@ -143,6 +143,20 @@ torlek network grant PROJECT github.com   # all of github.com:443 for the projec
 Fetches then work from the first launch. Pushes stay refused, and `torlek network revoke GRANT` takes the grant back.
 github.com is the only host granted without a request.
 
+### A project's container engine
+
+Sandboxed sessions never reach your own Docker engine. Under `agents.sandbox = "required"`, a project that runs in Docker gets its own: rootless Docker under a system user named after the project's id (`torlek-e3`), shared by its clones (#390).
+`torlek doctor --project DIR` writes the script that sets it up and names it; review it, then run it as root:
+
+```sh
+sudo sh ~/.local/state/torlek/containers/torlek-e3-setup.sh
+torlek containers record PROJECT   # records the engine that now answers as the project's
+```
+
+The engine sees only the project's checkout and clones folder, and no network yet.
+Recording again replaces the recorded engine: do it after reinstalling one, and only for an engine you set up.
+Sessions do not reach the engine yet in this release; `torlek doctor` says `unsupported` once it is verified.
+
 ## Phone status page
 
 `torlek status serve` shows your sessions on your phone, read-only: each session's project, state, label, what it is doing and its open question (flagged), the approvals waiting for you (reason and age, never the command), the daemon's readiness with the low-disk guard, and when the page was generated, so a stalled daemon shows.
