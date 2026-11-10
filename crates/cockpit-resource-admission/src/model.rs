@@ -37,8 +37,9 @@ impl Workload {
         Workload::Container,
     ];
 
-    /// Heavy local jobs. The foreground profile limits these and never the others: agent
-    /// turns, deliveries and approvals keep going while Theo games (decided 2026-10-31).
+    /// Heavy local jobs. The foreground profile holds these beyond its share and never the
+    /// others: agent turns, deliveries and approvals keep going while Theo games (decided
+    /// 2026-10-31). A session's processes only yield to the game ([`Policy::session_limits`]).
     pub fn is_heavy(self) -> bool {
         matches!(self, Workload::Build | Workload::Test | Workload::Container)
     }
@@ -131,17 +132,20 @@ pub enum Control {
     TasksMax,
     IdleScheduling,
     Nice,
+    /// The idle IO scheduling class: disk access only when no one else needs the disk.
+    IdleIo,
     Freeze,
 }
 
 impl Control {
-    pub const ALL: [Control; 7] = [
+    pub const ALL: [Control; 8] = [
         Control::CpuWeight,
         Control::CpuQuota,
         Control::MemoryMax,
         Control::TasksMax,
         Control::IdleScheduling,
         Control::Nice,
+        Control::IdleIo,
         Control::Freeze,
     ];
 
@@ -153,6 +157,7 @@ impl Control {
             Control::TasksMax => "tasks-max",
             Control::IdleScheduling => "idle-scheduling",
             Control::Nice => "nice",
+            Control::IdleIo => "idle-io",
             Control::Freeze => "freeze",
         }
     }
@@ -177,6 +182,8 @@ pub struct Limits {
     pub idle_scheduling: bool,
     /// Niceness, 0 to 19.
     pub nice: Option<u64>,
+    /// Run in the idle IO scheduling class.
+    pub idle_io: bool,
 }
 
 pub(crate) const MAX_CPU_WEIGHT: u64 = 10_000;
@@ -192,6 +199,7 @@ impl Limits {
             Control::TasksMax => self.tasks_max.map(|tasks| tasks.to_string()),
             Control::IdleScheduling => self.idle_scheduling.then(|| "idle".to_owned()),
             Control::Nice => self.nice.map(|nice| nice.to_string()),
+            Control::IdleIo => self.idle_io.then(|| "idle".to_owned()),
             Control::Freeze => None,
         }
     }
@@ -302,7 +310,7 @@ impl Policy {
 
     /// The limits to enforce on `workload` in `profile`. The foreground profile adds
     /// ceilings to heavy jobs: lowest weight, a quota no larger than the reservation, idle
-    /// scheduling and nice 19. A stricter request is kept.
+    /// scheduling, nice 19 and idle IO. A stricter request is kept.
     pub fn enforced_limits(
         &self,
         workload: Workload,
@@ -325,7 +333,38 @@ impl Policy {
             tasks_max: requested.tasks_max,
             idle_scheduling: true,
             nice: Some(MAX_NICE),
+            idle_io: true,
         }
+    }
+
+    /// The limits on every process an agent session runs, its agent included, in `profile`
+    /// (#1351, owner's decision of 2026-11-10). In every profile they run at nice 19 in the
+    /// idle IO class: on an idle host they lose nothing. The foreground profile adds the heavy
+    /// jobs' ceilings: the lowest weight, idle scheduling and a quota of the foreground share
+    /// of the budget. A session is never held: it only yields the CPU and the disk.
+    pub fn session_limits(&self, profile: Profile) -> Limits {
+        let always = Limits {
+            nice: Some(MAX_NICE),
+            idle_io: true,
+            ..Limits::default()
+        };
+        match profile {
+            Profile::Normal => always,
+            Profile::Foreground => Limits {
+                cpu_weight: Some(1),
+                cpu_quota_percent: Some(self.foreground_quota_percent()),
+                idle_scheduling: true,
+                ..always
+            },
+        }
+    }
+
+    fn foreground_quota_percent(&self) -> u64 {
+        self.budget
+            .scaled(self.foreground_heavy_percent)
+            .cpu_millis
+            .div_ceil(10)
+            .max(1)
     }
 }
 

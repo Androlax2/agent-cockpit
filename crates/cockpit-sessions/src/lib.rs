@@ -24,9 +24,9 @@ pub use home_observer::{HomeChange, HomeObserver};
 pub use lifecycle::visible_line;
 pub use lifecycle::{HarnessTrust, SandboxPreflight, Sessions, SignInPlan};
 pub use model::{
-    Addressed, AgentExit, Ender, ExitStatus, Launch, LaunchBundle, LaunchKind, RestartAll,
-    Restored, Session, SessionBundle, SessionId, SessionState, Settings, SleepRefusal,
-    StartRequest, StopTarget, TickReport, WakeCause,
+    Addressed, AgentExit, AgentRunsFuture, BeforeAgentRuns, Ender, ExitStatus, Launch,
+    LaunchBundle, LaunchKind, RestartAll, Restored, Session, SessionBundle, SessionId,
+    SessionState, Settings, SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,
 };
 pub use questions::{
     QUESTION_HOLD_SECONDS, answer_question, coordinator_scope, escalate_question, question_holder,

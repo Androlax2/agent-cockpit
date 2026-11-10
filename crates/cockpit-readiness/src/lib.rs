@@ -213,6 +213,8 @@ pub struct HostFacts {
     pub shared_desktop_refusal: Option<String>,
     pub providers: Vec<ProviderFacts>,
     pub controls: Vec<ControlFacts>,
+    /// What the daemon sets on running sessions' processes (#1351).
+    pub session_controls: Vec<ControlFacts>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,6 +289,7 @@ pub fn assess(
     });
     requirements.extend(host::providers(&host.providers));
     requirements.push(host::resource_controls(&host.controls));
+    requirements.push(host::session_controls(&host.session_controls));
     if let (Some(project), Ok(config)) = (project, config) {
         requirements.extend(project::requirements(host, config, project));
     }

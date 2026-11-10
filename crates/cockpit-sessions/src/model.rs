@@ -2,6 +2,8 @@ use std::ffi::OsString;
 use std::fmt;
 use std::io::Read;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_processes::{Escalation, ExecutionId};
@@ -560,6 +562,25 @@ pub struct Settings {
     /// What every launch records it ran with. `None` records nothing, which `version --all`
     /// shows as not recorded.
     pub bundle: Option<LaunchBundle>,
+    /// Run on each agent's execution once confirmed, before its program starts, so all it
+    /// starts inherits what this sets: the daemon's session ceilings (#1351). It cannot
+    /// fail the launch, and is cut off after `step_timeout`. `None` runs nothing.
+    pub before_agent_runs: Option<BeforeAgentRuns>,
+}
+
+/// See [`Settings::before_agent_runs`].
+#[derive(Clone)]
+pub struct BeforeAgentRuns(
+    pub Arc<dyn Fn(cockpit_processes::Execution) -> AgentRunsFuture + Send + Sync>,
+);
+
+/// What a [`BeforeAgentRuns`] step returns: the work done before the agent's program starts.
+pub type AgentRunsFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+impl fmt::Debug for BeforeAgentRuns {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("BeforeAgentRuns")
+    }
 }
 
 impl Default for Settings {
@@ -596,6 +617,7 @@ impl Default for Settings {
             owner_environment: cockpit_config::Environment::default(),
             accounts: cockpit_config::AccountSettings::default(),
             bundle: None,
+            before_agent_runs: None,
         }
     }
 }

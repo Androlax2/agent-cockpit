@@ -182,6 +182,7 @@ fn the_foreground_profile_adds_ceilings_to_heavy_jobs_and_leaves_the_others_alon
             tasks_max: None,
             idle_scheduling: true,
             nice: Some(19),
+            idle_io: true,
         }
     );
     assert_eq!(turn, asked);
@@ -252,6 +253,27 @@ async fn a_check_answers_without_reserving_anything() {
 
     assert_eq!(first, Verdict::Fits);
     assert_eq!(reservations, vec![]);
+}
+
+#[tokio::test]
+async fn the_limits_a_request_asks_for_are_stored_with_its_reservation() {
+    let home = Home::new();
+    let database = home.open_database().await;
+    let mut build = request(Workload::Build, 1000, 1024);
+    build.limits = Limits {
+        idle_scheduling: true,
+        nice: Some(10),
+        idle_io: true,
+        ..Limits::default()
+    };
+    let id = admitted(&database, &build).await;
+
+    let read = database.read().await.unwrap();
+    let stored = cockpit_resource_admission::reservation(&read, id)
+        .await
+        .unwrap();
+
+    assert_eq!(stored.limits, build.limits);
 }
 
 #[tokio::test]

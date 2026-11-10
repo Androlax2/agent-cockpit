@@ -56,6 +56,10 @@ fn ready_host() -> HostFacts {
             control: "memory-max".to_owned(),
             enforced: Ok("systemd scope".to_owned()),
         }],
+        session_controls: vec![ControlFacts {
+            control: "nice".to_owned(),
+            enforced: Ok("setpriority".to_owned()),
+        }],
     }
 }
 
@@ -158,7 +162,8 @@ fn a_ready_host_reports_every_host_requirement_available() {
             "sandbox",
             "provider claude",
             "provider claude sign-in",
-            "resource controls"
+            "resource controls",
+            "session ceilings"
         ]
     );
     assert!(report.is_ready(), "{report:#?}");
@@ -182,6 +187,7 @@ fn every_requirement_that_is_not_available_names_its_next_action() {
             found: Err(ProviderUnusable::NotOnPath),
         }],
         controls: Vec::new(),
+        session_controls: Vec::new(),
     };
     let mut project = fixture.facts();
     project.checkout = None;
@@ -343,6 +349,14 @@ fn a_host_fact_decides_its_requirement_status() {
                 ..ready_host()
             },
             "resource controls",
+            Status::Unknown,
+        ),
+        (
+            HostFacts {
+                session_controls: Vec::new(),
+                ..ready_host()
+            },
+            "session ceilings",
             Status::Unknown,
         ),
     ];
@@ -675,6 +689,34 @@ fn controls_the_host_cannot_enforce_are_named_as_requested_only() {
             .detail
             .contains("requested only, not enforced here: freeze (no cgroup freezer)"),
         "{controls:#?}"
+    );
+}
+
+#[test]
+fn session_ceilings_the_host_cannot_take_off_again_are_named_as_never_set() {
+    let host = HostFacts {
+        session_controls: vec![
+            ControlFacts {
+                control: "idle-io".to_owned(),
+                enforced: Ok("ionice -c 3 -p".to_owned()),
+            },
+            ControlFacts {
+                control: "idle-scheduling".to_owned(),
+                enforced: Err("RLIMIT_NICE is 0".to_owned()),
+            },
+        ],
+        ..ready_host()
+    };
+
+    let report = assess(&host, &Ok(owner_only_config()), None);
+
+    let ceilings = requirement(&report, "session ceilings");
+    assert_eq!(ceilings.status, Status::Available, "{ceilings:#?}");
+    assert!(
+        ceilings
+            .detail
+            .contains("never set on sessions here: idle-scheduling (RLIMIT_NICE is 0)"),
+        "{ceilings:#?}"
     );
 }
 

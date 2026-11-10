@@ -3,6 +3,7 @@
 //! that start a program idle or niced. A control is reported supported only with the
 //! mechanism that enforces it, and unsupported with the missing piece.
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -10,12 +11,24 @@ use std::time::Duration;
 use cockpit_processes::{Containment, Execution, LaunchContainment, LaunchSpec, SystemdTools};
 use rustix::process::{Pid, Signal};
 
+use crate::model::MAX_NICE;
 use crate::{Availability, Control, ControlSupport, Demand, DiskSpace, Error, Limits, Policy};
 
 /// How long a host query (`systemctl`, `ps`, `sysctl`) may take before it counts as failed.
 const HOST_COMMAND_DEADLINE: Duration = Duration::from_secs(5);
 /// `SCHED_IDLE` in `/proc/<pid>/stat` field 41.
 const SCHED_IDLE: &str = "5";
+/// The controls the daemon sets on a running session's processes (#1351).
+const SESSION_CONTROLS: [Control; 5] = [
+    Control::CpuWeight,
+    Control::CpuQuota,
+    Control::IdleScheduling,
+    Control::Nice,
+    Control::IdleIo,
+];
+/// How many times the ceilings walk a running tree: a process that forked between the read
+/// of its tasks and their change has a child the next walk finds.
+const TREE_WALKS: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
@@ -47,8 +60,15 @@ pub struct HostTools {
     /// `chrt` (util-linux), which starts a program under `SCHED_IDLE`; `None` when missing.
     pub chrt: Option<PathBuf>,
     pub nice: Option<PathBuf>,
+    /// `ionice` (util-linux), which starts a program in, or moves a task to, an IO class;
+    /// `None` when missing or not on Linux.
+    pub ionice: Option<PathBuf>,
     /// The niceness the daemon runs at, which its executions inherit: `nice -n` adds to it.
     pub own_niceness: i32,
+    /// `RLIMIT_NICE`: how far below 20 an unprivileged daemon may lower a niceness, which
+    /// it must to undo nice 19 and `SCHED_IDLE` on a running session. `None` when nothing
+    /// limits it (root, or an unlimited soft limit).
+    pub nice_rlimit: Option<u64>,
 }
 
 impl HostTools {
@@ -64,11 +84,31 @@ impl HostTools {
                 None
             },
             nice: find_program("nice"),
+            ionice: if cfg!(target_os = "linux") {
+                find_program("ionice")
+            } else {
+                None
+            },
             // getpriority on the calling process has no failure case short of a broken libc;
             // 0 is the niceness every process starts from.
             own_niceness: rustix::process::getpriority_process(None).unwrap_or(0),
+            nice_rlimit: own_nice_rlimit(),
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn own_nice_rlimit() -> Option<u64> {
+    if rustix::process::geteuid().is_root() {
+        return None;
+    }
+    rustix::process::getrlimit(rustix::process::Resource::Nice).current
+}
+
+/// macOS has no `RLIMIT_NICE`, and Torlek changes a running tree only on Linux.
+#[cfg(not(target_os = "linux"))]
+fn own_nice_rlimit() -> Option<u64> {
+    Some(0)
 }
 
 /// The daemon's `PATH`, then the system directories: an execution's environment is cleared,
@@ -256,6 +296,13 @@ impl Backend {
                 )),
                 None => unsupported("nice is not installed".to_owned()),
             },
+            Control::IdleIo => match self.ionice() {
+                Ok(ionice) => supported(format!(
+                    "{} -c 3 starts the program; its children inherit the idle IO class",
+                    ionice.display()
+                )),
+                Err(why) => unsupported(why),
+            },
             Control::Freeze if !in_scope => supported(
                 "SIGSTOP to the process group; a descendant that left it with setsid keeps \
                  running"
@@ -311,6 +358,82 @@ impl Backend {
         }
     }
 
+    fn ionice(&self) -> Result<&Path, String> {
+        match (&self.tools.ionice, self.platform) {
+            (_, Platform::MacOs) => Err("macOS has no IO scheduling classes".to_owned()),
+            (Some(ionice), _) => Ok(ionice),
+            (None, _) => Err("ionice (util-linux) is not installed".to_owned()),
+        }
+    }
+
+    /// What the daemon can set on a running session's processes, live and both ways (#1351).
+    /// A ceiling that could not be taken off again is reported unsupported and never set.
+    pub fn session_support(&self) -> Vec<ControlSupport> {
+        SESSION_CONTROLS
+            .into_iter()
+            .map(|control| ControlSupport {
+                control,
+                availability: self.session_availability(control),
+            })
+            .collect()
+    }
+
+    fn session_availability(&self, control: Control) -> Availability {
+        let supported = |how: String| Availability::Supported { how };
+        let unsupported = |why: String| Availability::Unsupported { why };
+        if self.platform == Platform::MacOs {
+            return unsupported(
+                "Torlek changes a running session's processes only on Linux".to_owned(),
+            );
+        }
+        let in_scope = self.launch_containment == LaunchContainment::SystemdScope;
+        match control {
+            Control::CpuWeight => self.cgroup_availability(in_scope, "cpu", "CPUWeight"),
+            Control::CpuQuota => self.cgroup_availability(in_scope, "cpu", "CPUQuota"),
+            Control::IdleScheduling => match (&self.tools.chrt, self.leaves_idle_scheduling()) {
+                (None, _) => unsupported("chrt (util-linux) is not installed".to_owned()),
+                (_, Err(why)) => unsupported(why),
+                (Some(chrt), Ok(())) => supported(format!(
+                    "{} --idle -p on every task of the running session; --other undoes it",
+                    chrt.display()
+                )),
+            },
+            Control::Nice => supported(
+                "setpriority on every task of the running session, in every profile".to_owned(),
+            ),
+            Control::IdleIo => match self.ionice() {
+                Ok(ionice) => supported(format!(
+                    "{} -c 3 -p on every task of the running session, in every profile",
+                    ionice.display()
+                )),
+                Err(why) => unsupported(why),
+            },
+            other => unsupported(format!("{} is not a session ceiling", other.as_str())),
+        }
+    }
+
+    /// Whether the daemon may move a session off `SCHED_IDLE` when the profile returns to
+    /// normal: an unprivileged process may do so only within `RLIMIT_NICE`, which must allow
+    /// the session's nice 19 (`20 - 19`).
+    fn leaves_idle_scheduling(&self) -> Result<(), String> {
+        let needed = 20 - MAX_NICE;
+        match self.tools.nice_rlimit {
+            Some(limit) if limit < needed => Err(format!(
+                "RLIMIT_NICE is {limit}: the daemon could not take a running session off \
+                 SCHED_IDLE when the profile returns to normal (it needs {needed}; raise the \
+                 nice limit in limits.conf)"
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    fn supports_in_sessions(&self, control: Control) -> bool {
+        matches!(
+            self.session_availability(control),
+            Availability::Supported { .. }
+        )
+    }
+
     fn supports(&self, control: Control, in_scope: bool) -> bool {
         matches!(
             self.availability(control, in_scope),
@@ -318,8 +441,9 @@ impl Backend {
         )
     }
 
-    /// `spec` started through the shims `limits` asks for and this host has: `nice` and
-    /// `chrt --idle`. Both act before the program runs, so every child inherits them.
+    /// `spec` started through the shims `limits` asks for and this host has: `nice`,
+    /// `chrt --idle` and `ionice -c 3`. They act before the program runs, so every child
+    /// inherits them.
     pub fn wrap(&self, spec: LaunchSpec, limits: &Limits) -> LaunchSpec {
         let mut prefix: Vec<OsString> = Vec::new();
         if let (Some(nice), Some(increment)) = (
@@ -339,6 +463,11 @@ impl Backend {
             && let Some(chrt) = &self.tools.chrt
         {
             prefix.extend([chrt.clone().into_os_string(), "--idle".into(), "0".into()]);
+        }
+        if limits.idle_io
+            && let Ok(ionice) = self.ionice()
+        {
+            prefix.extend([ionice.as_os_str().to_owned(), "-c".into(), "3".into()]);
         }
         let Some((program, shim_arguments)) = prefix.split_first() else {
             return spec;
@@ -360,6 +489,16 @@ impl Backend {
     /// host does not enforce are skipped: [`Backend::inspect`] reports them. A process group
     /// has no cgroup limits to apply.
     pub async fn enforce(&self, execution: &Execution, limits: &Limits) -> Result<(), Error> {
+        self.set_properties(execution, limits, &Control::ALL).await
+    }
+
+    /// Sets `controls`' cgroup properties on `execution`'s scope; nothing for a process group.
+    async fn set_properties(
+        &self,
+        execution: &Execution,
+        limits: &Limits,
+        controls: &[Control],
+    ) -> Result<(), Error> {
         let Containment::SystemdScope { unit } = &execution.containment else {
             return Ok(());
         };
@@ -372,7 +511,7 @@ impl Backend {
             (Control::TasksMax, "TasksMax", "infinity"),
         ]
         .into_iter()
-        .filter(|(control, _, _)| self.supports(*control, true))
+        .filter(|(control, _, _)| controls.contains(control) && self.supports(*control, true))
         .map(|(control, property, default)| {
             let value = limits
                 .requested(control)
@@ -386,6 +525,265 @@ impl Backend {
         let mut arguments = vec!["--user", "set-property", "--runtime", unit.as_str()];
         arguments.extend(properties.iter().map(String::as_str));
         self.systemctl(&arguments).await.map(drop)
+    }
+
+    /// Sets `limits` on a running session's whole tree (#1351), live and both ways: its
+    /// scope's CPU weight and quota, and on every task its niceness, scheduling policy and IO
+    /// class. A control off undoes what the foreground profile set: weight 100, no quota,
+    /// `SCHED_OTHER` for an idle task, IO class none. A niceness is only ever raised, never
+    /// lowered. Controls [`Backend::session_support`] reports unsupported are left alone. A
+    /// task that ended meanwhile is skipped; every other failure is returned, after the rest
+    /// of the tree changed.
+    pub async fn apply_to_session(
+        &self,
+        execution: &Execution,
+        limits: &Limits,
+    ) -> Result<(), Error> {
+        let mut failures = Vec::new();
+        let cgroup_controls: Vec<Control> = [Control::CpuWeight, Control::CpuQuota]
+            .into_iter()
+            .filter(|control| self.supports_in_sessions(*control))
+            .collect();
+        if let Err(error) = self
+            .set_properties(execution, limits, &cgroup_controls)
+            .await
+        {
+            failures.push(error.to_string());
+        }
+        if self.platform == Platform::MacOs {
+            return unapplied(execution, failures);
+        }
+        let source = match self.task_source(execution).await {
+            Ok(source) => source,
+            Err(error) => {
+                failures.push(error.to_string());
+                return unapplied(execution, failures);
+            }
+        };
+        let mut changed = HashSet::new();
+        for _ in 0..TREE_WALKS {
+            let tasks = match self.tasks_in(&source).await {
+                Ok(tasks) => tasks,
+                Err(error) => {
+                    failures.push(error.to_string());
+                    break;
+                }
+            };
+            let new: Vec<i32> = tasks
+                .into_iter()
+                .filter(|task| changed.insert(*task))
+                .collect();
+            if new.is_empty() {
+                break;
+            }
+            self.set_tasks(&new, limits, &mut failures).await;
+        }
+        unapplied(execution, failures)
+    }
+
+    async fn set_tasks(&self, tasks: &[i32], limits: &Limits, failures: &mut Vec<String>) {
+        for &task in tasks {
+            let Some(now) = self.task_priority(task).await else {
+                continue;
+            };
+            if let Some(niceness) = limits.nice.and_then(|nice| i32::try_from(nice).ok())
+                && niceness > now.niceness
+                && let Some(pid) = Pid::from_raw(task)
+                && let Err(errno) = rustix::process::setpriority_process(Some(pid), niceness)
+                && errno != rustix::io::Errno::SRCH
+            {
+                failures.push(format!("setpriority({task}, {niceness}): {errno}"));
+            }
+            if self.supports_in_sessions(Control::IdleScheduling)
+                && let Some(chrt) = &self.tools.chrt
+                && let Some(policy) = match (limits.idle_scheduling, now.idle) {
+                    (true, false) => Some("--idle"),
+                    (false, true) => Some("--other"),
+                    _ => None,
+                }
+            {
+                if policy == "--idle" && !self.task_leaves_idle_scheduling(task).await {
+                    failures.push(format!(
+                        "task {task} was left off SCHED_IDLE: its RLIMIT_NICE would keep it there"
+                    ));
+                } else if let Err(error) =
+                    host_command(chrt, &[policy, "-p", "0", &task.to_string()]).await
+                    && self.task_priority(task).await.is_some()
+                {
+                    failures.push(error.to_string());
+                }
+            }
+        }
+        if self.supports_in_sessions(Control::IdleIo)
+            && let Ok(ionice) = self.ionice()
+        {
+            self.set_io_class(ionice, tasks, limits.idle_io, failures)
+                .await;
+        }
+    }
+
+    /// One `ionice` for the whole batch; when it fails (it stops at the first task that
+    /// ended), one per task, skipping those that ended.
+    async fn set_io_class(
+        &self,
+        ionice: &Path,
+        tasks: &[i32],
+        is_idle: bool,
+        failures: &mut Vec<String>,
+    ) {
+        let class = if is_idle { "3" } else { "0" };
+        let task_names: Vec<String> = tasks.iter().map(i32::to_string).collect();
+        let mut arguments = vec!["-c", class, "-p"];
+        arguments.extend(task_names.iter().map(String::as_str));
+        if host_command(ionice, &arguments).await.is_ok() {
+            return;
+        }
+        for (task, name) in tasks.iter().zip(&task_names) {
+            if let Err(error) = host_command(ionice, &["-c", class, "-p", name]).await
+                && self.task_priority(*task).await.is_some()
+            {
+                failures.push(error.to_string());
+            }
+        }
+    }
+
+    /// Whether the daemon could take `task` off `SCHED_IDLE` again: the kernel checks the
+    /// task's own `RLIMIT_NICE`, which a process may lower below the daemon's.
+    async fn task_leaves_idle_scheduling(&self, task: i32) -> bool {
+        if self.tools.nice_rlimit.is_none() {
+            return true;
+        }
+        let limits = self.tools.proc_root.join(task.to_string()).join("limits");
+        let Ok(limits) = tokio::fs::read_to_string(limits).await else {
+            return false;
+        };
+        limits
+            .lines()
+            .find_map(|line| line.strip_prefix("Max nice priority"))
+            .and_then(|values| values.split_whitespace().next())
+            .is_some_and(|soft| {
+                soft == "unlimited" || soft.parse::<u64>().is_ok_and(|soft| soft >= 20 - MAX_NICE)
+            })
+    }
+
+    /// The niceness and policy of one task, from `/proc/<task>/stat`; `None` once it ended.
+    async fn task_priority(&self, task: i32) -> Option<TaskPriority> {
+        let stat =
+            tokio::fs::read_to_string(self.tools.proc_root.join(task.to_string()).join("stat"))
+                .await
+                .ok()?;
+        let fields = stat_fields(&stat);
+        Some(TaskPriority {
+            niceness: fields.get(19 - 3)?.parse().ok()?,
+            idle: *fields.get(41 - 3)? == SCHED_IDLE,
+        })
+    }
+
+    /// Where the tasks of a running execution are listed, resolved once per change.
+    async fn task_source(&self, execution: &Execution) -> Result<TaskSource, Error> {
+        if let Containment::SystemdScope { unit } = &execution.containment {
+            let dir = self
+                .scope_dir(unit)
+                .await
+                .map_err(|reason| Error::HostCommand {
+                    command: format!("systemctl --user show {unit}"),
+                    reason,
+                })?;
+            return Ok(TaskSource::Threads(dir.join("cgroup.threads")));
+        }
+        let group = execution.process_group.ok_or(Error::NotStarted {
+            execution: execution.id,
+        })?;
+        Ok(TaskSource::Tree {
+            group: group.to_string(),
+        })
+    }
+
+    /// Every task (thread) of a running execution: its scope's `cgroup.threads`, or for a
+    /// process group every task of a process in that group or session, or descended from
+    /// one (a child that called `setsid` stays in the tree).
+    async fn tasks_in(&self, source: &TaskSource) -> Result<Vec<i32>, Error> {
+        let group = match source {
+            TaskSource::Threads(listed) => {
+                let threads = tokio::fs::read_to_string(listed)
+                    .await
+                    .map_err(Error::io("read", listed))?;
+                return Ok(threads
+                    .split_whitespace()
+                    .filter_map(|task| task.parse().ok())
+                    .collect());
+            }
+            TaskSource::Tree { group } => group,
+        };
+        let mut members = HashSet::new();
+        let mut parents = Vec::new();
+        let mut entries = tokio::fs::read_dir(&self.tools.proc_root)
+            .await
+            .map_err(Error::io("list", &self.tools.proc_root))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(Error::io("list", &self.tools.proc_root))?
+        {
+            let Some(process) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<i32>().ok())
+            else {
+                continue;
+            };
+            let Ok(stat) = tokio::fs::read_to_string(entry.path().join("stat")).await else {
+                continue;
+            };
+            let fields = stat_fields(&stat);
+            if [5, 6]
+                .into_iter()
+                .any(|field| fields.get(field - 3) == Some(&group.as_str()))
+            {
+                members.insert(process);
+            } else if let Some(parent) = fields.get(4 - 3).and_then(|parent| parent.parse().ok()) {
+                parents.push((process, parent));
+            }
+        }
+        while let Some(found) = parents
+            .iter()
+            .position(|(_, parent)| members.contains(parent))
+        {
+            members.insert(parents.swap_remove(found).0);
+        }
+        let mut tasks = Vec::new();
+        for process in members {
+            let threads_dir = self.tools.proc_root.join(process.to_string()).join("task");
+            let Ok(mut threads) = tokio::fs::read_dir(threads_dir).await else {
+                continue;
+            };
+            let before = tasks.len();
+            while let Ok(Some(thread)) = threads.next_entry().await {
+                tasks.extend(
+                    thread
+                        .file_name()
+                        .to_str()
+                        .and_then(|name| name.parse::<i32>().ok()),
+                );
+            }
+            if tasks.len() == before {
+                tasks.push(process);
+            }
+        }
+        Ok(tasks)
+    }
+
+    /// Requested, supported and effective for the controls a running session gets: what
+    /// `resources status` shows for each session (#1351).
+    pub async fn inspect_session(&self, execution: &Execution, limits: &Limits) -> ExecutionReport {
+        let mut report = self.inspect(execution, limits).await;
+        report
+            .limits
+            .retain(|line| SESSION_CONTROLS.contains(&line.control));
+        for line in &mut report.limits {
+            line.availability = self.session_availability(line.control);
+        }
+        report
     }
 
     /// The report for work this backend cannot look at (not started, or its execution
@@ -421,7 +819,7 @@ impl Backend {
         let mut reports = Vec::new();
         for control in Control::ALL {
             let effective = match (&scope_dir, control) {
-                (_, Control::IdleScheduling | Control::Nice) => {
+                (_, Control::IdleScheduling | Control::Nice | Control::IdleIo) => {
                     self.leader_effective(execution, control).await
                 }
                 (None, Control::Freeze) => self.leader_effective(execution, control).await,
@@ -505,9 +903,18 @@ impl Backend {
                 why: "the execution has not started".to_owned(),
             };
         };
-        match self.platform {
-            Platform::MacOs => macos_leader_effective(group, control).await,
-            Platform::Linux | Platform::Wsl => {
+        match (self.platform, control) {
+            (Platform::MacOs, _) => macos_leader_effective(group, control).await,
+            (Platform::Linux | Platform::Wsl, Control::IdleIo) => match self.ionice() {
+                Ok(ionice) => match host_command(ionice, &["-p", &group.to_string()]).await {
+                    Ok(class) => Effective::Value(class.trim().to_owned()),
+                    Err(error) => Effective::Unknown {
+                        why: error.to_string(),
+                    },
+                },
+                Err(why) => Effective::Unknown { why },
+            },
+            (Platform::Linux | Platform::Wsl, _) => {
                 linux_leader_effective(&self.tools.proc_root, group, control).await
             }
         }
@@ -578,7 +985,9 @@ async fn cgroup_effective(dir: &Path, control: Control) -> Effective {
         Control::MemoryMax => "memory.max",
         Control::TasksMax => "pids.max",
         Control::Freeze => "cgroup.freeze",
-        Control::IdleScheduling | Control::Nice => unreachable!("read from the leader"),
+        Control::IdleScheduling | Control::Nice | Control::IdleIo => {
+            unreachable!("read from the leader")
+        }
     };
     let text = match tokio::fs::read_to_string(dir.join(file)).await {
         Ok(text) => text,
@@ -642,11 +1051,7 @@ async fn linux_leader_effective(proc_root: &Path, leader: i32, control: Control)
             };
         }
     };
-    // Field 2 (the command) may hold spaces and parentheses; it ends at the last `)`.
-    let fields: Vec<&str> = stat
-        .rsplit_once(") ")
-        .map(|(_, rest)| rest.split_whitespace().collect())
-        .unwrap_or_default();
+    let fields = stat_fields(&stat);
     let field = |number: usize| fields.get(number - 3).copied();
     let value = match control {
         Control::Nice => field(19).map(str::to_owned),
@@ -674,10 +1079,47 @@ async fn linux_leader_effective(proc_root: &Path, leader: i32, control: Control)
     )
 }
 
+/// The fields of a `/proc/<pid>/stat` from field 3 on: field 2 (the command) may hold
+/// spaces and parentheses, and ends at the last `)`.
+fn stat_fields(stat: &str) -> Vec<&str> {
+    stat.rsplit_once(") ")
+        .map(|(_, rest)| rest.split_whitespace().collect())
+        .unwrap_or_default()
+}
+
+/// One task's CPU priority as `/proc` shows it.
+enum TaskSource {
+    /// A scope's `cgroup.threads`.
+    Threads(PathBuf),
+    /// The processes of a process group or session, and their descendants.
+    Tree { group: String },
+}
+
+struct TaskPriority {
+    niceness: i32,
+    idle: bool,
+}
+
+/// `Ok` when nothing failed, or every failure of one change of a running tree.
+fn unapplied(execution: &Execution, failures: Vec<String>) -> Result<(), Error> {
+    if failures.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Unapplied {
+        execution: execution.id,
+        failures,
+    })
+}
+
 async fn macos_leader_effective(leader: i32, control: Control) -> Effective {
     let column = match control {
         Control::Nice => "nice=",
         Control::Freeze => "stat=",
+        Control::IdleIo => {
+            return Effective::Unknown {
+                why: "macOS has no IO scheduling classes".to_owned(),
+            };
+        }
         _ => {
             return Effective::Unknown {
                 why: "macOS has no SCHED_IDLE".to_owned(),

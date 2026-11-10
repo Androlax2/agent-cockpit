@@ -474,11 +474,29 @@ fn variable_names(files: &[std::path::PathBuf]) -> Vec<String> {
 /// Admission works on every host; the controls it cannot enforce are requested only, which
 /// the detail names (report 10).
 pub(crate) fn resource_controls(controls: &[ControlFacts]) -> Requirement {
+    controls_requirement(
+        "resource controls",
+        "requested only, not enforced here",
+        controls,
+    )
+}
+
+/// The limits the daemon sets on running sessions' processes (#1351); one this host could
+/// not take off again is never set, which the detail names.
+pub(crate) fn session_controls(controls: &[ControlFacts]) -> Requirement {
+    controls_requirement("session ceilings", "never set on sessions here", controls)
+}
+
+fn controls_requirement(
+    name: &'static str,
+    unsupported: &str,
+    controls: &[ControlFacts],
+) -> Requirement {
     if controls.is_empty() {
         return Requirement::needs(
-            "resource controls",
+            name,
             Status::Unknown,
-            "the daemon reported no resource controls",
+            format!("the daemon reported no {name}"),
             format!("check the daemon's log for its resource probe, {RESTART}"),
         );
     }
@@ -498,12 +516,9 @@ pub(crate) fn resource_controls(controls: &[ControlFacts]) -> Requirement {
         .collect();
     let mut detail = format!("enforced: {}", listed(&enforced));
     if !requested_only.is_empty() {
-        detail.push_str(&format!(
-            "; requested only, not enforced here: {}",
-            requested_only.join(", ")
-        ));
+        detail.push_str(&format!("; {unsupported}: {}", requested_only.join(", ")));
     }
-    Requirement::available("resource controls", detail)
+    Requirement::available(name, detail)
 }
 
 pub(crate) fn listed(items: &[String]) -> String {

@@ -148,6 +148,7 @@ async fn the_status_reports_every_control_of_this_host_with_its_evidence() {
             "tasks-max",
             "idle-scheduling",
             "nice",
+            "idle-io",
             "freeze"
         ]
     );

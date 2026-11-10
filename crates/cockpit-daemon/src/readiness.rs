@@ -11,7 +11,7 @@ use cockpit_readiness::{
     CheckoutFacts, ControlFacts, HostFacts, PresetFacts, ProjectFacts, ProjectNeeds, ProviderFacts,
     ProviderFound, Report, SignInFacts, Status, Trust,
 };
-use cockpit_resource_admission::{Availability, Backend};
+use cockpit_resource_admission::{Availability, Backend, ControlSupport};
 
 use crate::routes::{Route, WorkClass, refusal};
 
@@ -382,19 +382,22 @@ fn host_facts(context: &Context) -> HostFacts {
         },
         shared_desktop_refusal: context.sessions.shared_desktop_refusal(),
         providers: context.providers.clone(),
-        controls: context
-            .admission
-            .support()
-            .into_iter()
-            .map(|support| ControlFacts {
-                control: support.control.as_str().to_owned(),
-                enforced: match support.availability {
-                    Availability::Supported { how } => Ok(how),
-                    Availability::Unsupported { why } => Err(why),
-                },
-            })
-            .collect(),
+        controls: control_facts(context.admission.support()),
+        session_controls: control_facts(context.admission.session_support()),
     }
+}
+
+fn control_facts(support: Vec<ControlSupport>) -> Vec<ControlFacts> {
+    support
+        .into_iter()
+        .map(|support| ControlFacts {
+            control: support.control.as_str().to_owned(),
+            enforced: match support.availability {
+                Availability::Supported { how } => Ok(how),
+                Availability::Unsupported { why } => Err(why),
+            },
+        })
+        .collect()
 }
 
 fn platform(platform: &cockpit_sandbox::Platform) -> cockpit_readiness::Platform {

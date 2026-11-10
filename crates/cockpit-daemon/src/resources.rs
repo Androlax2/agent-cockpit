@@ -1,19 +1,22 @@
 //! Routes the resource commands to `cockpit-resource-admission`, converts its types to the
-//! wire at this boundary, applies a profile change to running heavy executions, stops an
-//! execution through `cockpit-processes`, and runs the periodic sweep. The rules live in
-//! the admission crate; this file maps.
+//! wire at this boundary, applies a profile change to running heavy executions and running
+//! sessions, stops an execution through `cockpit-processes`, and runs the periodic sweep.
+//! The rules live in the admission crate; this file maps.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_processes::{Escalation, Supervisor, Termination};
+use cockpit_processes::{Execution, Phase};
 use cockpit_protocol::{
     Command, ControlSupportView, DemandView, EffectiveView, ErrorCode, LimitView, ObservedView,
-    Outcome, ProfileView, ProtocolError, Reply, ReservationView, ResourceStatusView, VerdictView,
+    Outcome, ProfileView, ProtocolError, Reply, ReservationView, ResourceStatusView,
+    SessionLimitsView, VerdictView,
 };
 use cockpit_resource_admission::{
-    AdmissionRequest, Availability, Backend, Control, Demand, Effective, Error, Limits, Policy,
-    Profile, Reservation, ReservationId, ReservationState, Verdict, Workload,
+    AdmissionRequest, Availability, Backend, Control, ControlSupport, Demand, Effective, Error,
+    ExecutionReport, Limits, Policy, Profile, Reservation, ReservationId, ReservationState,
+    Verdict, Workload,
 };
 use cockpit_turso::Database;
 
@@ -33,7 +36,8 @@ pub(crate) struct Resources {
     pub(crate) backend: Arc<Backend>,
     pub(crate) supervisor: Supervisor,
     /// Held from a profile's commit until its limits are applied, so two concurrent changes
-    /// cannot leave running work under the limits of the profile that lost.
+    /// cannot leave running work under the limits of the profile that lost; a session's
+    /// launch holds it while it reads the profile and limits its agent.
     pub(crate) profile_change: Arc<tokio::sync::Mutex<()>>,
     /// Wakes the scheduling pass that rewrites what `queue explain` says (#646).
     pub(crate) queue_changed: Arc<tokio::sync::Notify>,
@@ -180,10 +184,102 @@ pub(crate) fn route(command: Command, resources: Resources) -> Route {
     Route::Run { class, job }
 }
 
-/// Re-applies the limits of `profile` to every running heavy execution, so switching to the
-/// foreground profile adds ceilings to builds already running and switching back removes
-/// them. A failure on one execution is logged and the others still change.
+/// Re-applies the limits of `profile` to every running heavy execution and every running
+/// session, so switching to the foreground profile adds ceilings to builds already running
+/// and to what agents run in their sessions, and switching back removes them (sessions keep
+/// nice 19 and the idle IO class). A failure on
+/// one execution is logged and the others still change.
 async fn apply_profile(resources: &Resources, profile: Profile) -> Result<(), Error> {
+    apply_to_heavy_work(resources, profile).await?;
+    let limits = resources.policy().session_limits(profile);
+    for (session, execution) in running_sessions(&resources.database).await {
+        if let Err(error) = resources
+            .backend
+            .apply_to_session(&execution, &limits)
+            .await
+        {
+            tracing::warn!(
+                session = %session,
+                %error,
+                "could not apply the profile's limits to a running session"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The step every session launch runs before its agent's program starts (#1351): the agent's
+/// first process gets the session limits of the current profile, so all it starts inherits
+/// them. Never fails the launch: a turn is never held, only made to yield.
+pub(crate) fn before_agent_runs(
+    database: Arc<Database>,
+    backend: Arc<Backend>,
+    profile_change: Arc<tokio::sync::Mutex<()>>,
+) -> cockpit_sessions::BeforeAgentRuns {
+    cockpit_sessions::BeforeAgentRuns(Arc::new(move |execution: Execution| {
+        let database = Arc::clone(&database);
+        let backend = Arc::clone(&backend);
+        let profile_change = Arc::clone(&profile_change);
+        Box::pin(async move {
+            let _unchanged = profile_change.lock().await;
+            let profile = async {
+                let read = database.read().await?;
+                Ok::<_, Error>(cockpit_resource_admission::settings(&read).await?.profile)
+            };
+            let limited = match profile.await {
+                Ok(profile) => {
+                    backend
+                        .apply_to_session(&execution, &backend.policy().session_limits(profile))
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = limited {
+                tracing::warn!(
+                    execution = execution.id.0,
+                    %error,
+                    "a session's agent starts without its profile's session limits"
+                );
+            }
+        })
+    }))
+}
+
+/// Every session whose agent runs now, with its execution. Sessions that cannot be read are
+/// logged and left out: they must not hide the heavy work, or stop the others changing.
+async fn running_sessions(database: &Database) -> Vec<(String, Execution)> {
+    let sessions = match database.read().await {
+        Ok(read) => cockpit_sessions::sessions(&read, false).await,
+        Err(error) => Err(error.into()),
+    };
+    let sessions = match sessions {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            tracing::warn!(%error, "could not read the sessions to limit");
+            return Vec::new();
+        }
+    };
+    let mut running = Vec::new();
+    for session in sessions {
+        let Some(launch) = session.launch else {
+            continue;
+        };
+        match cockpit_processes::execution(database, launch.execution).await {
+            Ok(execution) if execution.phase == Phase::Running => {
+                running.push((session.id.as_str().to_owned(), execution));
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(
+                session = %session.id,
+                %error,
+                "could not read a session's execution"
+            ),
+        }
+    }
+    running
+}
+
+async fn apply_to_heavy_work(resources: &Resources, profile: Profile) -> Result<(), Error> {
     let read = resources.database.read().await?;
     let reservations = cockpit_resource_admission::reservations(&read).await?;
     drop(read);
@@ -232,6 +328,19 @@ async fn status(resources: &Resources) -> Result<Reply, Error> {
     for reservation in &reservations {
         views.push(reservation_view(resources, reservation, settings.profile).await?);
     }
+    let session_limits = policy.session_limits(settings.profile);
+    let mut sessions = Vec::new();
+    for (session, execution) in running_sessions(&resources.database).await {
+        let report = resources
+            .backend
+            .inspect_session(&execution, &session_limits)
+            .await;
+        sessions.push(SessionLimitsView {
+            session,
+            execution: execution.id.0,
+            limits: limit_views(report),
+        });
+    }
     Ok(Reply::ResourceStatus {
         status: Box::new(ResourceStatusView {
             platform: resources.backend.platform().as_str().to_owned(),
@@ -245,20 +354,10 @@ async fn status(resources: &Resources) -> Result<Reply, Error> {
             budget: demand_view(policy.budget),
             in_use: demand_view(in_use.all),
             foreground_heavy_percent: policy.foreground_heavy_percent,
-            controls: resources
-                .backend
-                .support()
-                .into_iter()
-                .map(|support| {
-                    let (supported, detail) = availability_parts(support.availability);
-                    ControlSupportView {
-                        control: support.control.as_str().to_owned(),
-                        supported,
-                        detail,
-                    }
-                })
-                .collect(),
+            controls: control_views(resources.backend.support()),
+            session_controls: control_views(resources.backend.session_support()),
             reservations: views,
+            sessions,
         }),
     })
 }
@@ -299,19 +398,10 @@ async fn reservation_view(
         ReservationState::Running { execution } => Some(execution.0),
         _ => None,
     };
-    let limit_views = report
-        .limits
-        .into_iter()
-        .map(|line| LimitView {
-            control: line.control.as_str().to_owned(),
-            requested: line.requested,
-            supported: availability_parts(line.availability).0,
-            effective: match line.effective {
-                Effective::Value(value) => EffectiveView::Value { value },
-                Effective::Unknown { why } => EffectiveView::Unknown { why },
-            },
-        })
-        .collect();
+    let observed = ObservedView {
+        memory_bytes: report.observed.memory_bytes,
+        tasks: report.observed.tasks,
+    };
     Ok(ReservationView {
         id: reservation.id.0,
         label: reservation.label.clone(),
@@ -325,12 +415,39 @@ async fn reservation_view(
             .map(|control| control.as_str().to_owned())
             .collect(),
         checkpoint_requested: reservation.checkpoint_requested,
-        limits: limit_views,
-        observed: ObservedView {
-            memory_bytes: report.observed.memory_bytes,
-            tasks: report.observed.tasks,
-        },
+        limits: limit_views(report),
+        observed,
     })
+}
+
+fn limit_views(report: ExecutionReport) -> Vec<LimitView> {
+    report
+        .limits
+        .into_iter()
+        .map(|line| LimitView {
+            control: line.control.as_str().to_owned(),
+            requested: line.requested,
+            supported: availability_parts(line.availability).0,
+            effective: match line.effective {
+                Effective::Value(value) => EffectiveView::Value { value },
+                Effective::Unknown { why } => EffectiveView::Unknown { why },
+            },
+        })
+        .collect()
+}
+
+fn control_views(support: Vec<ControlSupport>) -> Vec<ControlSupportView> {
+    support
+        .into_iter()
+        .map(|support| {
+            let (supported, detail) = availability_parts(support.availability);
+            ControlSupportView {
+                control: support.control.as_str().to_owned(),
+                supported,
+                detail,
+            }
+        })
+        .collect()
 }
 
 fn availability_parts(availability: Availability) -> (bool, String) {
