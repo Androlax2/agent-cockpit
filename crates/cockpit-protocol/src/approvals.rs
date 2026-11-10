@@ -103,7 +103,7 @@ pub struct RunRequestView {
     /// Seconds since 1970.
     pub asked_at: i64,
     pub expires_at: i64,
-    /// A running command whose output stopped mid-line: it probably waits for input.
+    /// A running command idle at a prompt-like unfinished line: it probably waits for input.
     pub waiting_for_input: bool,
     /// While `waiting_for_input`: what the command asks (#1010), the output's last line as a
     /// terminal shows it, terminal controls stripped, secrets redacted, its end when long, and
