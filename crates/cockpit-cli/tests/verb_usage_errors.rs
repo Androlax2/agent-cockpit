@@ -115,8 +115,16 @@ fn an_unknown_first_word_prints_one_line_and_no_usage_block() {
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(
         stderr(&output),
-        "torlek: unknown verb `frobnicate`; `torlek` alone lists the verbs, `torlek version` the release\n"
+        "torlek: unknown verb \"frobnicate\"; `torlek` alone lists the verbs, `torlek version` the release\n"
     );
+}
+
+#[test]
+fn an_unknown_first_word_after_the_profile_flag_prints_one_line() {
+    let output = torlek(&["--profile", "torlek", "frobnicate"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stderr(&output).lines().count(), 1);
 }
 
 #[test]

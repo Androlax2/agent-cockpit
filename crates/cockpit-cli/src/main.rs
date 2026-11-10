@@ -374,17 +374,24 @@ fn usage_error(problem: Option<String>) -> ExitCode {
 /// pays about 1.5k tokens for on each such mistake (#1337).
 fn unknown_verb_error(word: &str) -> ExitCode {
     eprintln!(
-        "torlek: unknown verb `{word}`; `torlek` alone lists the verbs, `torlek version` the release"
+        "torlek: unknown verb {word:?}; `torlek` alone lists the verbs, `torlek version` the release"
     );
     ExitCode::from(2)
 }
 
-/// Whether `word` starts a line of `USAGE`: a verb whose arguments did not match any arm above.
-fn is_verb_of_usage(word: &str) -> bool {
+/// The lines of `USAGE` that belong to `verb`, indented text trimmed.
+fn usage_lines_of(verb: &str) -> Vec<&'static str> {
     USAGE
         .lines()
         .skip(1)
-        .any(|line| line.split_whitespace().nth(1) == Some(word))
+        .filter(|line| line.split_whitespace().nth(1) == Some(verb))
+        .map(str::trim_start)
+        .collect()
+}
+
+/// Whether `word` is a verb of `USAGE` whose arguments did not match any arm above.
+fn is_verb_of_usage(word: &str) -> bool {
+    !usage_lines_of(word).is_empty()
 }
 
 /// Exit 2 naming the rejected argument, then only the lines of `USAGE` for `verb` and a pointer
@@ -392,12 +399,7 @@ fn is_verb_of_usage(word: &str) -> bool {
 /// A verb with no line of its own prints the whole usage, the safe default a human will notice.
 fn verb_usage_error(verb: &str, problem: String) -> ExitCode {
     eprintln!("torlek: {problem}");
-    let verb_lines: Vec<&str> = USAGE
-        .lines()
-        .skip(1)
-        .filter(|line| line.split_whitespace().nth(1) == Some(verb))
-        .map(str::trim_start)
-        .collect();
+    let verb_lines = usage_lines_of(verb);
     if verb_lines.is_empty() {
         eprintln!("{USAGE}");
     } else {
