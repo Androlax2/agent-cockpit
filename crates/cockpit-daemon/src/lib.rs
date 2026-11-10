@@ -183,6 +183,9 @@ pub struct Capabilities {
     pub runner: cockpit_approvals::Runner,
     /// What this host enforces, probed at start.
     pub admission: Arc<cockpit_resource_admission::Backend>,
+    /// Held while the profile changes and while a session's launch limits its agent, so a
+    /// launch never keeps the limits of a profile switched away from meanwhile (#1351).
+    pub profile_change: Arc<tokio::sync::Mutex<()>>,
     /// Stops the execution of a reservation (stop execution, report 10).
     pub processes: cockpit_processes::Supervisor,
     /// The manager tmux session's handle on the same private server.
@@ -453,6 +456,7 @@ impl Instance {
         let sign_in_providers = wiring.providers.clone();
         let quota_providers = wiring.providers.clone();
         let cost_providers = wiring.providers.clone();
+        let profile_change = Arc::new(tokio::sync::Mutex::new(()));
         let sessions = Arc::new(cockpit_sessions::Sessions::new(
             Arc::clone(&database),
             processes,
@@ -461,6 +465,11 @@ impl Instance {
             wiring.providers,
             cockpit_sessions::Settings {
                 owner_environment: wiring.environment.clone(),
+                before_agent_runs: Some(resources::before_agent_runs(
+                    Arc::clone(&database),
+                    Arc::clone(&admission),
+                    Arc::clone(&profile_change),
+                )),
                 ..wiring.sessions
             },
             options.session_dirs(),
@@ -523,6 +532,7 @@ impl Instance {
                 sessions: Arc::clone(&sessions),
                 runner,
                 admission: Arc::clone(&admission),
+                profile_change,
                 processes: stopper,
                 manager: Arc::clone(&manager),
                 providers,

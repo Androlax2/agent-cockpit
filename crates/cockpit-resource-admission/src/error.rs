@@ -38,6 +38,11 @@ pub enum Error {
         command: String,
         reason: String,
     },
+    /// Part of a change of a running tree's limits failed; the rest of it was made.
+    Unapplied {
+        execution: cockpit_processes::ExecutionId,
+        failures: Vec<String>,
+    },
     Io {
         action: &'static str,
         path: PathBuf,
@@ -85,6 +90,14 @@ impl fmt::Display for Error {
                 write!(formatter, "the stored resource state is invalid: {reason}")
             }
             Error::HostCommand { command, reason } => write!(formatter, "`{command}`: {reason}"),
+            Error::Unapplied {
+                execution,
+                failures,
+            } => write!(
+                formatter,
+                "{execution}'s limits were changed only in part: {}",
+                failures.join("; ")
+            ),
             Error::Io {
                 action,
                 path,

@@ -189,7 +189,7 @@ impl Routes {
                 database: Arc::clone(&capabilities.database),
                 backend: capabilities.admission,
                 supervisor: capabilities.processes,
-                profile_change: Arc::default(),
+                profile_change: capabilities.profile_change,
                 queue_changed: capabilities.queue_changed,
             },
             database: capabilities.database,

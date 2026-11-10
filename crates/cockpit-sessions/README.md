@@ -22,7 +22,9 @@ stopped in the middle of one finishes or repairs it at its next start.
   its provider's variables, `TORLEK_SESSION` and a one-use `TORLEK_LAUNCH_TOKEN`, and only
   `TERM` and `COLORTERM` from tmux. The pane's program waits until the launch recorded its
   root (the agent's process identity) and released it, so the agent's first request is
-  identified (#316). Each launch gets the session's own directory, `sessions/<id>` in the
+  identified (#316). Between the two, `Settings::before_agent_runs` runs on the waiting
+  execution, within the step timeout: the daemon sets the profile's session limits there,
+  so the agent's first process already has them (#1351). Each launch gets the session's own directory, `sessions/<id>` in the
   daemon's socket directory, made 0700 before the agent runs; an adapter keeps what it needs
   to reach the running agent there (Codex's app-server socket, #407). Ending removes it
   after outstanding launch steps finish; periodic passes retry removal for ended sessions.

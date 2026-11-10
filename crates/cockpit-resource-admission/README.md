@@ -34,9 +34,21 @@ charged; `Backend::inspect` reads what the execution uses and what the kernel en
 The owner's profile is `normal` or `foreground` (gaming). Under `foreground`, heavy local jobs
 (builds, tests, containers) together get at most a share of the budget (25 % by default),
 and each gets ceilings: the lowest CPU weight, a CPU quota no larger than its reservation,
-`SCHED_IDLE` and nice 19. Agent turns, deliveries and approvals are never held or limited by
-the profile (decided 2026-10-31; the legacy cockpit's Option C stays legacy-only). Only the
-owner's socket changes the profile: agents cannot award themselves foreground priority.
+`SCHED_IDLE`, nice 19 and the idle IO class. Agent turns, deliveries and approvals are never
+held by the profile (decided 2026-10-31; the legacy cockpit's Option C stays legacy-only).
+Only the owner's socket changes the profile: agents cannot award themselves foreground
+priority.
+
+What agents run inside their sessions is not a reservation, so it gets its own limits
+(#1351, owner's decision of 2026-11-10), `Policy::session_limits`: nice 19 and the idle IO
+class in every profile, so on an idle host a session loses nothing; under `foreground` also
+the lowest CPU weight, `SCHED_IDLE` and a CPU quota of the foreground share of the budget. A
+session is never held. `Backend::apply_to_session` sets them on every thread of a running
+session's scope or process group, live and both ways; the daemon calls it on each profile
+change and before a new session's launcher releases its agent. `Backend::inspect_session`
+reads them back. A niceness is only ever raised. `SCHED_IDLE` is set on a running session
+only where the daemon could take it off again (`RLIMIT_NICE` of at least 1); otherwise
+`Backend::session_support` reports it unsupported and it is never set.
 
 ## Low-disk guard (#406)
 
@@ -72,8 +84,9 @@ Nothing is claimed without evidence. `Backend::detect` probes the host once:
   set-property --runtime` once the scope runs, and read back from the scope's cgroup files.
 - **Process groups** (macOS, or Linux without a reachable user manager): no cgroup limit;
   `freeze` is `SIGSTOP` to the group.
-- **Shims**, wherever the program exists: `nice -n` and, on Linux, `chrt --idle 0` start the
-  program, so every child inherits them. macOS has no `SCHED_IDLE`.
+- **Shims**, wherever the program exists: `nice -n` and, on Linux, `chrt --idle 0` and
+  `ionice -c 3` start the program, so every child inherits them. macOS has no `SCHED_IDLE`
+  and no IO classes.
 
 A control a request requires but the backend cannot enforce holds the work with the
 backend's reason.
@@ -95,5 +108,7 @@ backend's reason.
 - `tests/held.rs`: held reservations charge every decision until their holder releases them.
 - `tests/backend.rs`: the Linux backend through a fake `systemctl` and a fake cgroup tree,
   the shims, and freeze/thaw of a real process group.
+- `tests/sessions.rs`: session limits on a real process group, set and taken off again,
+  and `SCHED_IDLE` never set where it could not be undone.
 - `tests/host.rs`: this host's own report, run on Linux, macOS and WSL 2 in CI.
 - `tests/crate_graph.rs`: no Cockpit dependency but `cockpit-turso` and `cockpit-processes`.

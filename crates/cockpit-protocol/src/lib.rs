@@ -74,7 +74,7 @@ pub use request::{
 };
 pub use resources::{
     ControlSupportView, DemandView, EffectiveView, LimitView, ObservedView, ProfileView,
-    ReservationView, ResourceStatusView, VerdictView,
+    ReservationView, ResourceStatusView, SessionLimitsView, VerdictView,
 };
 pub use sessions::{
     AgentExitView, AppliedSettingView, DESKTOP_SESSION_VARIABLES, ExitStatusView, LaunchKindView,

@@ -10,7 +10,7 @@ mod scripted;
 
 use cockpit_protocol::{
     Command, ControlSupportView, DemandView, EffectiveView, LimitView, ObservedView, Outcome,
-    ProfileView, Reply, ReservationView, ResourceStatusView, VerdictView,
+    ProfileView, Reply, ReservationView, ResourceStatusView, SessionLimitsView, VerdictView,
 };
 use scripted::{scripted_daemon, text};
 
@@ -88,6 +88,63 @@ fn running_build() -> ReservationView {
 }
 
 #[tokio::test]
+async fn resources_status_prints_each_session_ceiling_and_each_running_sessions_limits() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::ResourceStatus {
+            status: Box::new(ResourceStatusView {
+                platform: "linux".to_owned(),
+                containment: "systemd-scope".to_owned(),
+                profile: ProfileView::Foreground,
+                queue_paused: false,
+                budget: DemandView {
+                    cpu_millis: 8000,
+                    memory_mib: 16384,
+                },
+                in_use: DemandView {
+                    cpu_millis: 0,
+                    memory_mib: 0,
+                },
+                foreground_heavy_percent: 25,
+                controls: vec![],
+                session_controls: vec![ControlSupportView {
+                    control: "idle-scheduling".to_owned(),
+                    supported: false,
+                    detail: "RLIMIT_NICE is 0".to_owned(),
+                }],
+                reservations: vec![],
+                sessions: vec![SessionLimitsView {
+                    session: "s0123456789ab".to_owned(),
+                    execution: 7,
+                    limits: vec![LimitView {
+                        control: "idle-io".to_owned(),
+                        requested: Some("idle".to_owned()),
+                        supported: true,
+                        effective: EffectiveView::Value {
+                            value: "idle".to_owned(),
+                        },
+                    }],
+                }],
+            }),
+        }),
+    );
+
+    let output = home.cockpit(&["resources", "status"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "platform linux\tcontainment systemd-scope\tprofile foreground\tqueue running\n\
+         budget 8000 millicores 16384 MiB\tin use 0 millicores 0 MiB\tforeground heavy share 25%\n\
+         session ceiling idle-scheduling\tno\tRLIMIT_NICE is 0\n\
+         session s0123456789ab\texecution 7\n\
+         \x20 idle-io\trequested idle\tsupported yes\teffective idle\n"
+    );
+    assert_eq!(daemon.await.unwrap(), Command::ResourceStatus);
+}
+
+#[tokio::test]
 async fn resources_status_prints_the_host_each_control_and_each_reservations_limits() {
     let home = Home::new();
     let daemon = scripted_daemon(
@@ -112,7 +169,9 @@ async fn resources_status_prints_the_host_each_control_and_each_reservations_lim
                     supported: false,
                     detail: "macOS has no SCHED_IDLE; nice is its subset".to_owned(),
                 }],
+                session_controls: vec![],
                 reservations: vec![running_build()],
+                sessions: vec![],
             }),
         }),
     );
@@ -257,7 +316,9 @@ async fn each_settings_verb_sends_its_command() {
                     },
                     foreground_heavy_percent: 25,
                     controls: vec![],
+                    session_controls: vec![],
                     reservations: vec![],
+                    sessions: vec![],
                 }),
             }),
         );

@@ -3523,6 +3523,16 @@ impl Sessions {
             .await?;
         self.record_agent_root(session, execution.id, execution.process_group)
             .await?;
+        if let Some(before) = &self.settings.before_agent_runs
+            && tokio::time::timeout(self.settings.step_timeout, (before.0)(execution.clone()))
+                .await
+                .is_err()
+        {
+            tracing::warn!(
+                execution = execution.id.0,
+                "the step before the agent runs timed out; the agent runs without it"
+            );
+        }
         // Only now may the agent run: its first request finds its root recorded (#316).
         self.processes
             .release_hosted(&self.database, execution.id)

@@ -5,7 +5,8 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 use cockpit_protocol::{
-    Command, EffectiveView, ProfileView, Reply, ReservationView, ResourceStatusView, VerdictView,
+    Command, EffectiveView, LimitView, ProfileView, Reply, ReservationView, ResourceStatusView,
+    VerdictView,
 };
 
 use crate::daemon::{BULK_DEADLINE, CONTROL_DEADLINE, request, unexpected, utf8_words};
@@ -112,7 +113,8 @@ pub fn run(command: Command) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The host and settings, one line per control, then each reservation with its limits.
+/// The host and settings, one line per control and per session ceiling, then each
+/// reservation and each running session with its limits.
 fn status_text(status: &ResourceStatusView) -> String {
     let mut text = format!(
         "platform {}\tcontainment {}\tprofile {}\tqueue {}\n\
@@ -139,8 +141,23 @@ fn status_text(status: &ResourceStatusView) -> String {
             control.detail
         ));
     }
+    for control in &status.session_controls {
+        text.push_str(&format!(
+            "session ceiling {}\t{}\t{}\n",
+            control.control,
+            yes_no(control.supported),
+            control.detail
+        ));
+    }
     for reservation in &status.reservations {
         text.push_str(&reservation_text(reservation));
+    }
+    for session in &status.sessions {
+        text.push_str(&format!(
+            "session {}\texecution {}\n",
+            session.session, session.execution
+        ));
+        text.push_str(&limits_text(&session.limits));
     }
     text
 }
@@ -165,7 +182,14 @@ fn reservation_text(reservation: &ReservationView) -> String {
         reservation.reserved.memory_mib,
         reservation.label,
     );
-    for limit in &reservation.limits {
+    text.push_str(&limits_text(&reservation.limits));
+    text
+}
+
+/// One indented line per control: requested, supported, effective.
+fn limits_text(limits: &[LimitView]) -> String {
+    let mut text = String::new();
+    for limit in limits {
         let effective = match &limit.effective {
             EffectiveView::Value { value } => value.clone(),
             EffectiveView::Unknown { why } => format!("unknown ({why})"),

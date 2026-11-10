@@ -99,6 +99,12 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             CREATE INDEX resource_reservations_occupying
                 ON resource_reservations (id) WHERE state <> 'released';",
         },
+        // #1351: the idle IO class, beside idle CPU scheduling.
+        Migration {
+            version: 3,
+            sql: "ALTER TABLE resource_reservations
+                ADD COLUMN idle_io INTEGER NOT NULL DEFAULT 0 CHECK (idle_io IN (0, 1));",
+        },
     ],
 };
 
@@ -162,8 +168,8 @@ async fn reserve(
         .execute(
             "INSERT INTO resource_reservations (id, label, workload, cpu_millis, memory_mib,
                  cpu_weight, cpu_quota_percent, memory_max_mib, tasks_max, idle_scheduling, nice,
-                 required, state, reserved_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                 required, state, reserved_at, expires_at, idle_io)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             cockpit_turso::sql::params![
                 id.0,
                 request.label.as_str(),
@@ -180,6 +186,7 @@ async fn reserve(
                 state,
                 now,
                 expires_at,
+                i64::from(limits.idle_io),
             ],
         )
         .await?;
@@ -494,7 +501,7 @@ pub async fn in_use(connection: &Connection, now: i64) -> Result<InUse, Error> {
 
 const COLUMNS: &str = "id, label, workload, cpu_millis, memory_mib, cpu_weight, cpu_quota_percent,
     memory_max_mib, tasks_max, idle_scheduling, nice, required, state, execution, expires_at,
-    released_reason, checkpoint_requested_at";
+    released_reason, checkpoint_requested_at, idle_io";
 
 fn reservation_from_row(row: &Row) -> Result<Reservation, Error> {
     let id = ReservationId(row.get(0)?);
@@ -551,6 +558,7 @@ fn reservation_from_row(row: &Row) -> Result<Reservation, Error> {
             tasks_max: optional(8)?,
             idle_scheduling: row.get::<i64>(9)? != 0,
             nice: optional(10)?,
+            idle_io: row.get::<i64>(17)? != 0,
         },
         required,
         state,

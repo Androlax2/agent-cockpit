@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 pub enum ProfileView {
     Normal,
-    /// Heavy local jobs get a smaller share and ceilings; agent turns, deliveries and
-    /// approvals are never held by it.
+    /// Heavy local jobs get a smaller share and ceilings, and the processes of running
+    /// sessions get the same ceilings on top of the nice 19 and idle IO they always have
+    /// (#1351); agent turns, deliveries and approvals are never held by it.
     Foreground,
     #[serde(other)]
     Unknown,
@@ -48,7 +49,23 @@ pub struct ResourceStatusView {
     pub foreground_heavy_percent: u64,
     /// Every control, for new executions.
     pub controls: Vec<ControlSupportView>,
+    /// The controls the daemon sets on running sessions' processes (#1351); empty from a
+    /// daemon before them.
+    #[serde(default)]
+    pub session_controls: Vec<ControlSupportView>,
     pub reservations: Vec<ReservationView>,
+    /// Every session whose agent runs, with its limits read back (#1351).
+    #[serde(default)]
+    pub sessions: Vec<SessionLimitsView>,
+}
+
+/// A running session's limits: requested in the current profile, supported, and in force
+/// on its agent's process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionLimitsView {
+    pub session: String,
+    pub execution: i64,
+    pub limits: Vec<LimitView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

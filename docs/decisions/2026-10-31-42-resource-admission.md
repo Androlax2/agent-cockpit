@@ -42,3 +42,26 @@ Rejected:
   heavy jobs): it stays legacy-only; the foreground profile replaces it.
 - Pinning heavy work to cores (the legacy game guard's core pinning): not in this issue;
   left for a follow-up.
+
+## Revisited 2026-11-10 (#1351)
+
+Theo's decision: what agents run inside their sessions always yields, and yields harder under
+`foreground`. Builds and tests an agent runs in its session are not heavy reservations, so
+the 2026-10-31 rule left them unlimited while the owner played. Sessions are still never held.
+
+- **Every session process runs at nice 19 in the idle IO class, in every profile.** On an
+  idle host they lose nothing; they yield only when something else wants the CPU or disk.
+  Torlek does not detect gaming or watch CPU load.
+- **Under `foreground`, sessions also get the heavy jobs' hard ceilings:** `SCHED_IDLE`, CPU
+  weight 1 and a CPU quota of the foreground share of the budget (25 % by default). The
+  daemon walks the session's scope or process group and sets each thread live, so neither
+  switch needs a relaunch; a new session gets its profile's limits before its launcher
+  releases the agent.
+- **`SCHED_IDLE` is never set where the daemon could not take it off.** An unprivileged
+  process leaves SCHED_IDLE only within `RLIMIT_NICE` (at least 1 for nice 19). Without it
+  `doctor` and `resources status` name it as never set on sessions here, rather than leaving
+  a session slowed after the game ends. Nice 19 is never undone, so it needs no such limit.
+- **Rejected:** the daemon watching CPU pressure and switching the profile itself (it cannot
+  tell the owner's game from its own builds, and it flaps); a launcher hook alone (running
+  sessions would keep their priority); re-launching sessions in shims (loses the agent's
+  turn and terminal).
