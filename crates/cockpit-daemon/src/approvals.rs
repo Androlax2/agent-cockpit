@@ -459,7 +459,10 @@ pub(crate) fn route_decision(
                 let read = database.read().await?;
                 let runs = cockpit_approvals::decided_runs(&read, since, now()).await?;
                 Ok(Reply::ApprovalDecided {
-                    runs: runs.iter().map(decided_run_view).collect(),
+                    runs: runs
+                        .iter()
+                        .map(decided_run_view)
+                        .collect::<Result<_, _>>()?,
                 })
             }
             Command::ApprovalShow { request } => {
@@ -982,8 +985,6 @@ pub(crate) fn shown(text: &str) -> ShownText {
     }
 }
 
-/// `waiting_for_input`: the runs the runner sees waiting at a prompt. `changed_build_files`:
-/// see [`CheckoutChanges::build_files_run`]; agents' views leave it out.
 fn run_state_view(state: RunState) -> RunStateView {
     match state {
         RunState::Asking => RunStateView::Asking,
@@ -997,6 +998,8 @@ fn run_state_view(state: RunState) -> RunStateView {
     }
 }
 
+/// `waiting_for_input`: the runs the runner sees waiting at a prompt. `changed_build_files`:
+/// see [`CheckoutChanges::build_files_run`]; agents' views leave it out.
 fn run_view(
     run: &RunRequest,
     runner: &Runner,
@@ -1058,11 +1061,14 @@ fn run_view(
 
 /// A decided request in the list `approval list --all` prints. Every run in it has a
 /// decision: the table refuses one that left `asking` without.
-fn decided_run_view(run: &RunRequest) -> DecidedRunView {
-    let decision = run
-        .decision
-        .expect("a decided run has a decision: decided_runs selects on decided_at");
-    DecidedRunView {
+fn decided_run_view(run: &RunRequest) -> Result<DecidedRunView, Failed> {
+    let decision = run.decision.ok_or_else(|| {
+        internal(&format!(
+            "run request {} is listed as decided but has no decision",
+            run.id.0
+        ))
+    })?;
+    Ok(DecidedRunView {
         id: run.id.0,
         session: run.session.as_str().to_owned(),
         state: run_state_view(run.state),
@@ -1075,7 +1081,7 @@ fn decided_run_view(run: &RunRequest) -> DecidedRunView {
             through: decision.through.map(through_view),
         },
         exit_code: run.result.as_ref().map(|result| result.exit_code),
-    }
+    })
 }
 
 fn guide_view(guide: &GuideRequest) -> GuideView {

@@ -105,7 +105,7 @@ fn id_of(text: &str) -> Result<i64, String> {
 
 /// `--since`'s value as seconds since 1970: a time ago (`2h`, `7d`) or an RFC 3339 time.
 fn since_of(text: &str) -> Result<i64, String> {
-    let seconds = crate::bug_report::since_seconds(text)?;
+    let seconds = crate::bug_report::since_seconds(text, "no decision is that recent")?;
     i64::try_from(seconds).map_err(|_| format!("--since {text} is out of range"))
 }
 
