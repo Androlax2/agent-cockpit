@@ -106,6 +106,33 @@ while :; do
 done
 "#;
 
+/// The host directories the programs below are taken from. `/usr/local/bin` comes last: it is
+/// where a developer's own shim of `git` or `tmux` would shadow the system's.
+const SYSTEM_DIRECTORIES: [&str; 3] = ["/usr/bin", "/bin", "/usr/local/bin"];
+
+/// What the daemon, the fake agent and the tests' shell commands run: `sh`, `tmux`, `git` and
+/// the coreutils. Only these are linked into the daemon's `PATH` (#932): a system directory
+/// can hold a package-installed `codex` or `opencode` too, and a second agent there makes
+/// `session new` without `--agent` ambiguous, so the directories themselves stay off it.
+const SYSTEM_PROGRAMS: [&str; 23] = [
+    "sh", "tmux", "git", "env", "cat", "head", "tail", "wc", "tr", "seq", "sleep", "mkdir", "rm",
+    "cp", "mv", "ls", "touch", "sed", "grep", "date", "kill", "dirname", "basename",
+];
+
+/// Links each of [`SYSTEM_PROGRAMS`] into `directory`, from the first system directory that
+/// has it. A missing program fails here, not as an obscure error inside a test.
+fn link_system_programs(directory: &Path) {
+    std::fs::create_dir(directory).unwrap();
+    for program in SYSTEM_PROGRAMS {
+        let installed = SYSTEM_DIRECTORIES
+            .iter()
+            .map(|system| Path::new(system).join(program))
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| panic!("`{program}` is in none of {SYSTEM_DIRECTORIES:?}"));
+        std::os::unix::fs::symlink(installed, directory.join(program)).unwrap();
+    }
+}
+
 /// The test terminal's tmux configuration: no status bar, and a pane that outlives
 /// `cockpit tui` so a failure still shows its last screen. The size is pinned on the one
 /// window once it exists (`resize-window`): a global `window-size manual` made tmux 3.6's
@@ -225,6 +252,7 @@ impl Cockpit {
             "[agents]\nsandbox = \"off\"\n",
         )
         .unwrap();
+        link_system_programs(&root.join("system"));
         let utf8 = |path: PathBuf| path.to_str().expect("a UTF-8 path").to_owned();
         let fake = root.join("bin/claude");
         std::fs::write(
@@ -261,9 +289,7 @@ impl Cockpit {
     /// The scratch layout every program here runs with, and nothing of the caller's.
     fn environment(&self) -> Vec<(&'static str, std::ffi::OsString)> {
         let mut path = vec![self.root.join("bin"), programs().dir.clone()];
-        path.extend(std::env::split_paths(
-            &std::env::var_os("PATH").unwrap_or_default(),
-        ));
+        path.push(self.root.join("system"));
         vec![
             ("HOME", self.root.clone().into()),
             ("PATH", std::env::join_paths(path).unwrap()),
