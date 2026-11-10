@@ -99,12 +99,19 @@ pub fn launch_gates(facts: &LaunchFacts) -> Vec<Requirement> {
 
 /// The gates that depend on the provider; the others are the host's and the project's, the
 /// same for every provider.
-const PROVIDER_GATES: [&str; 3] = ["launch command", "launch sign-in", "launch profile"];
+const PROVIDER_GATES: [&str; 5] = [
+    "launch command",
+    "launch sign-in",
+    "launch toolchains",
+    "launch folder trust",
+    "launch profile",
+];
 
 /// The gates to show beside a project's readiness, for a session of each provider in `all`:
 /// each one that is not available, once, with the provider in its name when it depends on it
-/// and there are several; or one `launch` line when every launch passes them all. A profile
-/// that was not built is left out: the gate that refused it is listed.
+/// and there are several; or one `launch` line when every launch passes them all, unknown
+/// when there is no provider to launch. A profile that was not built is left out: the gate
+/// that refused it is listed.
 pub fn launch_summary(all: &[LaunchFacts], dir: &std::path::Path) -> Vec<Requirement> {
     let mut open: Vec<Requirement> = Vec::new();
     for facts in all {
@@ -125,6 +132,14 @@ pub fn launch_summary(all: &[LaunchFacts], dir: &std::path::Path) -> Vec<Require
     }
     if !open.is_empty() {
         return open;
+    }
+    if all.is_empty() {
+        return vec![Requirement::needs(
+            "launch",
+            Status::Unknown,
+            "not checked: no provider is wired, so there is no launch to check",
+            "`torlek doctor` shows each provider's state",
+        )];
     }
     let providers: Vec<&str> = all.iter().map(|facts| facts.provider.as_str()).collect();
     vec![Requirement::available(

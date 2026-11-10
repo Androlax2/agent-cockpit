@@ -629,8 +629,14 @@ fn session_step(daemon: &DaemonFacts, available: &[&str], is_host_ready: bool) -
                 .filter(|gate| gate.status != ReadinessStatusView::Available)
                 .map(requirement_line),
         );
+        // The gates were read for the first available provider, which need not be the
+        // daemon's default.
+        let agent = match available {
+            [] | [_] => String::new(),
+            several => format!(" --agent {}", several[0]),
+        };
         lines.push(format!(
-            "`{} sandbox show {}` lists every launch gate",
+            "`{} sandbox show {}{agent}` lists every launch gate",
             crate::profile::command(),
             shell_word(&project.root)
         ));

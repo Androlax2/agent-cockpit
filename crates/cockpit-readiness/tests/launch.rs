@@ -204,7 +204,7 @@ fn a_summary_of_passing_launches_is_one_line_naming_each_provider() {
     );
 }
 
-/// A host's gate is listed once; a provider's names its provider; a profile the refusal
+/// A host's gate is listed once; a provider's names its provider, each time; a profile the refusal
 /// kept from being built is left out.
 #[test]
 fn a_summary_of_several_providers_lists_each_open_gate_once() {
@@ -228,8 +228,18 @@ fn a_summary_of_several_providers_lists_each_open_gate_once() {
         [
             "launch backend",
             "launch claude sign-in",
-            "launch toolchains",
+            "launch claude toolchains",
             "launch codex sign-in",
+            "launch codex toolchains",
         ]
     );
+}
+
+#[test]
+fn a_summary_without_a_provider_is_unknown_rather_than_passing() {
+    let summary = launch_summary(&[], Path::new("/home/me/app"));
+
+    assert_eq!(summary.len(), 1, "{summary:#?}");
+    assert_eq!(summary[0].name, "launch");
+    assert_eq!(summary[0].status, Status::Unknown);
 }
