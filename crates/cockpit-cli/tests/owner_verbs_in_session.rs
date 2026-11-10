@@ -64,7 +64,7 @@ fn inside_a_session_each_owner_verb_is_refused_on_the_agent_socket() {
         let stderr = text(&output.stderr);
         assert_eq!(output.status.code(), Some(1), "{verb:?}: {stderr}");
         assert!(
-            stderr.contains("not-authorized: this command is the owner's alone"),
+            stderr.contains("refused [not-authorized]: this command is the owner's alone"),
             "{verb:?}: {stderr}"
         );
         assert!(
@@ -89,7 +89,7 @@ fn inside_a_session_each_network_verb_is_refused_on_the_agent_socket() {
         let stderr = text(&output.stderr);
         assert_eq!(output.status.code(), Some(1), "{verb:?}: {stderr}");
         assert!(
-            stderr.contains("refused: this command is the owner's alone"),
+            stderr.contains("refused [not-authorized]: this command is the owner's alone"),
             "{verb:?}: {stderr}"
         );
     }
@@ -113,7 +113,7 @@ fn inside_a_session_the_account_verbs_are_refused_on_the_agent_socket() {
         let stderr = text(&output.stderr);
         assert_eq!(output.status.code(), Some(1), "{verb:?}: {stderr}");
         assert!(
-            stderr.contains("refused: this command is the owner's alone"),
+            stderr.contains("refused [not-authorized]: this command is the owner's alone"),
             "{verb:?}: {stderr}"
         );
     }

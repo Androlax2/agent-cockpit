@@ -68,7 +68,9 @@ release bundle, `dev` for any other build. A development build reaches `torlek` 
 server.
 
 Usage errors exit 2; configuration errors exit 1 with the file and line at fault. A daemon
-verb's refusal exits 1 as `torlek: <code>: <message>`.
+verb's refusal prints `torlek: refused [<code>]: <message>` and says when nothing changed. It exits
+75 (sysexits' `EX_TEMPFAIL`) for `busy`, the one code worth retrying later, and 1 for every other
+code, a code this version does not know included (#1336).
 
 `torlek ask run` and `torlek ask guide` keep `ask-to-run`'s exit codes: the command's own
 once it ran, 125 declined or the guide closed, 124 still pending after

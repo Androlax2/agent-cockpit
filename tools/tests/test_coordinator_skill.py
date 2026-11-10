@@ -877,6 +877,23 @@ esac
             "WATCH ENDED: torlek agent sessions --watch exited 3: no grant", result.stdout
         )
 
+    def test_it_says_to_retry_later_when_the_session_watch_ends_busy(self):
+        self.shim(
+            "torlek",
+            """
+case "$*" in
+"agent sessions --watch") echo "refused [busy]: saturated" >&2; exit 75 ;;
+esac
+""",
+        )
+
+        result = self.watch(self.session("greenfield-8-gone", "working", "coding"))
+
+        self.assertEqual(result.returncode, 75)
+        self.assertIn(
+            "exited 75 (retry later: the daemon was busy, re-arm in a minute)", result.stdout
+        )
+
     def test_it_reports_a_question_from_a_worker_that_was_already_waiting(self):
         result = self.watch(
             self.session("greenfield-9-ask", "waiting", "waiting on CI"),

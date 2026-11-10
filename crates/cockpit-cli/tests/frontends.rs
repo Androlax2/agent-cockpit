@@ -157,6 +157,88 @@ async fn session_show_asks_the_daemon_to_show_the_session_and_prints_it() {
     );
 }
 
+/// Every known code but `busy` is final; so is a code this version does not know.
+fn final_refusal_codes() -> Vec<ErrorCode> {
+    vec![
+        ErrorCode::InvalidRequest,
+        ErrorCode::UnknownCommand,
+        ErrorCode::NotAuthorized,
+        ErrorCode::UnidentifiedPeer,
+        ErrorCode::InvalidArgument,
+        ErrorCode::NotNegotiated,
+        ErrorCode::NotFound,
+        ErrorCode::Conflict,
+        ErrorCode::Refused,
+        ErrorCode::StaleRevision,
+        ErrorCode::ResnapshotRequired,
+        ErrorCode::Internal,
+        ErrorCode::Unknown("from-a-newer-daemon".to_owned()),
+    ]
+}
+
+#[tokio::test]
+async fn a_busy_refusal_prints_its_code_and_exits_75() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Error(ProtocolError::new(
+            ErrorCode::Busy,
+            "the daemon is saturated",
+        )),
+    );
+
+    let output = home.cockpit(&["session", "show", "s0123456789ab"]).await;
+
+    assert_eq!(output.status.code(), Some(75));
+    assert_eq!(
+        text(&output.stderr),
+        "torlek: refused [busy]: the daemon is saturated (nothing changed; retry later)\n"
+    );
+}
+
+#[tokio::test]
+async fn a_final_refusal_prints_its_code_and_never_exits_75() {
+    for code in final_refusal_codes() {
+        let home = Home::new();
+        let _daemon = scripted_daemon(
+            &home.daemon_socket(),
+            Outcome::Error(ProtocolError::new(code.clone(), "no")),
+        );
+
+        let output = home.cockpit(&["session", "show", "s0123456789ab"]).await;
+
+        assert_eq!(output.status.code(), Some(1), "{code:?}");
+        let stderr = text(&output.stderr);
+        assert!(
+            stderr.contains(&format!("[{}]: no", code.as_str())),
+            "{stderr}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_refusal_that_changed_nothing_says_so_and_a_failure_that_may_have_does_not() {
+    for (code, changed_nothing) in [
+        (ErrorCode::Conflict, true),
+        (ErrorCode::Internal, false),
+        (ErrorCode::Unknown("from-a-newer-daemon".to_owned()), false),
+    ] {
+        let home = Home::new();
+        let _daemon = scripted_daemon(
+            &home.daemon_socket(),
+            Outcome::Error(ProtocolError::new(code.clone(), "no")),
+        );
+
+        let output = home.cockpit(&["session", "show", "s0123456789ab"]).await;
+
+        assert_eq!(
+            text(&output.stderr).contains("nothing changed"),
+            changed_nothing,
+            "{code:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn session_show_without_a_manager_exits_1_with_the_daemons_fix() {
     let home = Home::new();
@@ -173,7 +255,7 @@ async fn session_show_without_a_manager_exits_1_with_the_daemons_fix() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "torlek: not-found: no manager session is open: run `torlek tui`\n"
+        "torlek: refused [not-found]: no manager session is open: run `torlek tui` (nothing changed)\n"
     );
 }
 

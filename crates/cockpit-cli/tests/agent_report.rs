@@ -139,6 +139,28 @@ async fn without_a_launch_token_the_report_carries_none() {
 }
 
 #[tokio::test]
+async fn an_agent_verb_exits_75_for_busy_and_1_for_a_final_refusal() {
+    for (code, status) in [(ErrorCode::Busy, 75), (ErrorCode::Conflict, 1)] {
+        let home = Home::new();
+        let _daemon = scripted_daemon(
+            &home.socket("agent/agent.sock"),
+            Outcome::Error(ProtocolError::new(code.clone(), "not now")),
+        );
+
+        let output = home
+            .cockpit(&["agent", "report", "--doing", "writing the tests"], &[])
+            .await;
+
+        assert_eq!(output.status.code(), Some(status), "{code:?}");
+        let stderr = text(&output.stderr);
+        assert!(
+            stderr.contains(&format!("refused [{}]: not now", code.as_str())),
+            "{stderr}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_refusal_exits_1_saying_what_unblocks_it() {
     let home = Home::new();
     let socket = home.socket("agent/agent.sock");
@@ -161,7 +183,7 @@ async fn a_refusal_exits_1_saying_what_unblocks_it() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "torlek: refused: the session holds no change-state grant for this\n\
+        "torlek: refused [not-authorized]: the session holds no change-state grant for this (nothing changed)\n\
          torlek: to unblock (the owner): the owner grants change-state over session s1\n"
     );
 }

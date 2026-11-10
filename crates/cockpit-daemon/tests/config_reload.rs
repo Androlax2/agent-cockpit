@@ -120,7 +120,8 @@ async fn an_invalid_owner_file_is_refused_and_the_settings_in_force_stay() {
 
     assert_eq!(refused.status.code(), Some(1), "{}", text(&refused.stdout));
     assert!(
-        text(&refused.stderr).contains("invalid-argument: the owner configuration is invalid"),
+        text(&refused.stderr)
+            .contains("refused [invalid-argument]: the owner configuration is invalid"),
         "{}",
         text(&refused.stderr)
     );
