@@ -380,6 +380,15 @@ async fn a_task_whose_own_nice_limit_would_keep_it_idle_is_left_off_sched_idle()
         .await;
     let leader = execution.process_group.unwrap();
     let child = children_of(leader).await[0];
+    // Until it runs `sleep`, the child may not have lowered its limit yet.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::fs::read_to_string(format!("/proc/{child}/comm")).unwrap_or_default() != "sleep\n" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{child} never ran sleep"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 
     let applied = backend
         .apply_to_session(&execution, &policy().session_limits(Profile::Foreground))
@@ -390,11 +399,9 @@ async fn a_task_whose_own_nice_limit_would_keep_it_idle_is_left_off_sched_idle()
     let Err(cockpit_resource_admission::Error::Unapplied { failures, .. }) = applied else {
         panic!("{applied:?}");
     };
-    assert_eq!(
-        failures,
-        [format!(
-            "task {child} was left off SCHED_IDLE: its RLIMIT_NICE would keep it there"
-        )]
-    );
+    // The shell keeps the runner's own nice limit, which may be 0 too (WSL 2 in CI).
+    let child_left_off =
+        format!("task {child} was left off SCHED_IDLE: its RLIMIT_NICE would keep it there");
+    assert!(failures.contains(&child_left_off), "{failures:?}");
     assert!(!child_is_idle);
 }
