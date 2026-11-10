@@ -80,6 +80,10 @@ prints nothing (`--summary-seconds N` opts in to a `SUMMARY` line every N second
 | `PR POLL FAILED` | `gh` cannot list PRs (network, login, rate limit), so no CI or merge line can arrive. Reported once, then every 30 minutes; check `gh auth status` and the network |
 | `WATCH ENDED` | The monitor exited non-zero (the status of `torlek agent sessions --watch`, else 1) after killing its watch. The text after the colon says why (a missing grant, a crash). Fix that, then re-arm; the state file keeps what was reported. Status 75 (`retry later`) means the daemon answered `busy`: re-arm after a minute without changing anything; any other status is final until its cause is fixed |
 
+Only one watcher runs per state file: a second exits with `WATCH ENDED: could not start: another
+watcher already uses ...`. A watcher whose output nobody reads exits at its next write, without
+saving the events it could not deliver, so the re-armed watcher reports them.
+
 State survives a re-arm; keep the state file in your session temp folder, which may be swept
 when your session ends. After a reboot Torlek resumes workers; on alpha 2 each sat idle until
 messaged (not verified on alpha 3): re-arm the watcher, check which PRs merged meanwhile, and

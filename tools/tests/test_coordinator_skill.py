@@ -996,6 +996,59 @@ esac
 
         self.assertEqual(result.stdout.count("SESSIONS CHECK FAILED"), 1, result.stdout)
 
+    def watcher_command(self):
+        return [
+            sys.executable, str(WATCHER), str(self.state_file),
+            "--repo", "example/shop", "--worker-root", str(self.worker_root),
+            "--since", "2026-01-01", "--seed-seconds", "0", "--poll-seconds", "0.2",
+            "--summary-seconds", "1000", "--idle-grace-seconds", "0",
+        ]  # fmt: skip
+
+    def start_watcher(self):
+        watcher = subprocess.Popen(
+            self.watcher_command(), env=self.environment, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True,
+        )  # fmt: skip
+        self.addCleanup(watcher.wait)
+        self.addCleanup(watcher.kill)
+        self.assertIn("WATCHING", watcher.stdout.readline())
+        return watcher
+
+    def test_it_refuses_to_start_while_another_watcher_holds_the_state_file(self):
+        self.shim("torlek", 'cat "$FAKE_SESSIONS"; exec sleep 30')
+        self.sessions_file.write_text("")
+        self.start_watcher()
+
+        result = self.watch(self.session("greenfield-8-x", "working", "coding"), timeout=10)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("another watcher already uses", result.stdout)
+
+    def test_it_reports_a_merge_the_previous_watcher_could_not_deliver(self):
+        self.shim("torlek", 'cat "$FAKE_SESSIONS"; exec sleep 30')
+        self.sessions_file.write_text("")
+        pull = {"number": 8, "state": "OPEN", "headRefName": "greenfield/8-x", "headRefOid": "1" * 16}
+        self.state_file.write_text(
+            json.dumps({"polled": True, "prs": {"greenfield/8-x": {"number": 8, "state": "OPEN"}}})
+        )
+        self.pulls_file.write_text(json.dumps([pull]))
+        abandoned = self.start_watcher()
+        abandoned.stdout.close()
+        self.pulls_file.write_text(json.dumps([{**pull, "state": "MERGED"}]))
+
+        self.assertIsNotNone(self.wait_for_exit(abandoned))
+        self.shim("torlek", 'cat "$FAKE_SESSIONS"; sleep 1.5; exit 3')
+        result = self.watch(self.session("greenfield-8-x", "working", "coding"), timeout=10)
+
+        self.assertIn("PR #8 MERGED (greenfield/8-x)", result.stdout)
+
+    def wait_for_exit(self, process, seconds=10):
+        try:
+            return process.wait(timeout=seconds)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            return None
+
 
 class WatcherStateTests(FakeCommandsTestCase):
     def test_it_rewrites_the_state_file_only_when_the_state_changed(self):
