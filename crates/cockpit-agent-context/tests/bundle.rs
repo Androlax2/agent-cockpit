@@ -133,6 +133,27 @@ fn the_manifest_id_changes_with_any_document() {
     );
 }
 
+/// #1248: an agent that meets `EROFS` or `command not found` cannot tell a deliberate limit
+/// from a broken setup unless the manual says which symptoms are deliberate.
+#[test]
+fn the_sandbox_topic_says_which_symptoms_are_deliberate_and_what_to_do() {
+    let body = document("sandbox").expect("the sandbox topic ships").body;
+
+    assert!(
+        body.contains("| What you see | What it means | The one action |"),
+        "{body}"
+    );
+    for row in [
+        "| `~` is empty at the start of a session, or its files are gone at the next one | The session home survives relaunches and is removed when the session ends. | Keep what must outlive the session in the checkout, not in `~`. |",
+        "| `Read-only file system` (`EROFS`) writing `.git/config`, `.git/hooks`, `.torlek` or `.cockpit` | These paths are read-only on purpose: Git hooks and config run on the owner's host. | Do not retry. `torlek todo blocked TITLE --why TEXT`, naming the path. |",
+        "| A `.env` file reads as empty or is missing | `.env` files are hidden on purpose. | Use the references the environment gives you. If the task needs the values, `torlek todo blocked TITLE --why TEXT`. |",
+        "| `command not found` for a tool in `~/.local/bin`, or in another folder outside the toolchain table | That folder is outside the toolchain roots, so it is not mounted. | `torlek todo blocked TITLE --why TEXT`, naming the tool. |",
+        "| `git push` over HTTPS is refused by the session proxy | The session has no push route; the owner pushes. | Stop pushing. `torlek todo blocked TITLE --why TEXT`, naming the branch. |",
+    ] {
+        assert!(body.contains(row), "missing {row:?} in\n{body}");
+    }
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
     sha2::Sha256::digest(bytes)
