@@ -803,3 +803,48 @@ async fn an_envelope_no_longer_queued_is_never_marked_overtaken() {
 
     assert_eq!(overtaken_at(database, id).await, None);
 }
+
+async fn note_of(database: &Database, id: EnvelopeId) -> Option<String> {
+    let read = database.read().await.unwrap();
+    cockpit_messaging::envelope(&read, id)
+        .await
+        .unwrap()
+        .unwrap()
+        .note
+}
+
+async fn record_note(database: &Database, id: EnvelopeId, note: &str) {
+    let write = database.write().await.unwrap();
+    cockpit_messaging::record_note(&write, id, note)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+}
+
+/// #1326: a queued envelope keeps why it waits, found outside a delivery attempt.
+#[tokio::test]
+async fn a_queued_envelope_records_why_it_waits() {
+    let fixture = Fixture::new().await;
+    let database = &fixture.database;
+    let id = queued_id(enqueue(database, &envelope("first", "s1", "A")).await);
+
+    record_note(database, id, "s1 could not be woken").await;
+
+    assert_eq!(
+        note_of(database, id).await.as_deref(),
+        Some("s1 could not be woken")
+    );
+}
+
+/// #1326: an envelope already handed over keeps the note its delivery left.
+#[tokio::test]
+async fn an_envelope_no_longer_queued_keeps_its_note() {
+    let fixture = Fixture::new().await;
+    let database = &fixture.database;
+    let id = queued_id(enqueue(database, &envelope("first", "s1", "A")).await);
+    claim_next_for(database, "teams", "s1").await;
+
+    record_note(database, id, "s1 could not be woken").await;
+
+    assert_eq!(note_of(database, id).await, None);
+}

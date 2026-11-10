@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
     Command, CoordinatorAuditView, DecidedThroughView, ErrorCode, HeldMessageView, Reply,
-    RunRequestView, RunStateView, SessionView,
+    RunRequestView, RunStateView, SessionStateView, SessionView,
 };
 use real_daemon::{
     ASKED_QUESTION, COMMANDED_PROJECT, Daemon, GENEROUS, Home, NEW_EFFORT_LEVEL, QUESTION_PROJECT,
@@ -989,24 +989,17 @@ async fn a_message_that_cannot_be_collected_yet_says_why_to_the_sender_and_on_th
     .await;
 }
 
-/// #656: when the target's state already rules delivery out, the sender is told why at once.
+/// #1326: a message from a session holding `message-sessions` over an asleep worker wakes it,
+/// recorded as woken by a message, and is handed over once the woken agent waits.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_message_to_an_asleep_session_tells_the_sender_why_it_waits() {
+async fn a_message_wakes_its_asleep_target_and_is_delivered() {
     assert_the_cli_is_built();
     let home = Home::new();
-    let _daemon = home.start();
+    let daemon = home.start();
     let owner = home.connect().await;
     let pair = coordinator_and_worker(&home, &owner).await;
     grant(&owner, &pair.coordinator.id, "message-sessions").await;
-    let slept = owner
-        .request(
-            Command::SessionSleep {
-                session: pair.worker.id.clone(),
-            },
-            GENEROUS,
-        )
-        .await;
-    assert!(slept.is_ok(), "{slept:?}");
+    put_to_sleep(&owner, &pair.worker.id).await;
 
     let printed = as_coordinator(
         &home,
@@ -1017,9 +1010,115 @@ async fn a_message_to_an_asleep_session_tells_the_sender_why_it_waits() {
 
     assert!(printed.ends_with("exit=0\n"), "{printed}");
     assert!(
-        printed.contains(&format!("held: session {} is asleep", pair.worker.id)),
+        printed.contains(&format!("session {} is waking from sleep", pair.worker.id)),
         "{printed}"
     );
+    wait_until(
+        "the woken worker's card shows the message received",
+        || async {
+            listed(&owner, &pair.worker.id)
+                .await
+                .inbound_message
+                .is_some_and(|message| message.delivery == "received")
+        },
+    )
+    .await;
+    drop(owner);
+    daemon.kill();
+    assert_eq!(
+        latest_launching_reason(&home, &pair.worker.id)
+            .await
+            .as_deref(),
+        Some("woken by a message")
+    );
+}
+
+/// #1326: waking is the message's: a sender without `message-sessions` is refused and the
+/// asleep target stays asleep.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sender_without_the_grant_cannot_wake_an_asleep_target() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let pair = coordinator_and_worker(&home, &owner).await;
+    put_to_sleep(&owner, &pair.worker.id).await;
+
+    let printed = as_coordinator(
+        &home,
+        &pair.coordinator_root,
+        &["agent", "message", &pair.worker.id, "Base it on main."],
+    )
+    .await;
+
+    assert!(printed.ends_with("exit=1\n"), "{printed}");
+    assert!(
+        printed.contains("holds no message-sessions grant"),
+        "{printed}"
+    );
+    assert_eq!(
+        listed(&owner, &pair.worker.id).await.state,
+        SessionStateView::Asleep
+    );
+}
+
+/// #1326: a message still held when its target falls asleep says so on the card, not that
+/// its hook collects it within seconds.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_message_whose_target_falls_asleep_says_so_on_the_card() {
+    let pair = commanded_pair().await;
+    let printed = as_coordinator(
+        &pair.home,
+        &pair.coordinator_root,
+        &["agent", "message", &pair.target.id, "Base it on main."],
+    )
+    .await;
+    assert!(printed.ends_with("exit=0\n"), "{printed}");
+
+    put_to_sleep(&pair.owner, &pair.target.id).await;
+
+    let message = listed(&pair.owner, &pair.target.id)
+        .await
+        .inbound_message
+        .unwrap();
+    assert_eq!(message.delivery, "queued", "{message:?}");
+    assert_eq!(
+        message.note,
+        Some(format!("held: session {} is asleep", pair.target.id))
+    );
+}
+
+async fn put_to_sleep(owner: &Connection, session: &str) {
+    let slept = owner
+        .request(
+            Command::SessionSleep {
+                session: session.to_owned(),
+            },
+            GENEROUS,
+        )
+        .await;
+    assert!(slept.is_ok(), "{slept:?}");
+    wait_for_state(owner, session, |state| *state == SessionStateView::Asleep).await;
+}
+
+/// Why session `session` last moved to launching, read once no daemon runs.
+async fn latest_launching_reason(home: &Home, session: &str) -> Option<String> {
+    let database = cockpit_turso::Database::open(
+        &home.state_dir().join("state.db"),
+        &cockpit_daemon::MIGRATION_SETS,
+    )
+    .await
+    .unwrap();
+    let read = database.read().await.unwrap();
+    let mut rows = read
+        .query(
+            "SELECT reason FROM session_transitions
+             WHERE session_id = ?1 AND to_state = 'launching' ORDER BY id DESC LIMIT 1",
+            [session],
+        )
+        .await
+        .unwrap();
+    rows.next().await.unwrap().unwrap().get(0).unwrap()
 }
 
 /// A coordinator and a second commanded agent it holds `observe-sessions` and

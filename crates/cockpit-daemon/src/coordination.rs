@@ -24,7 +24,7 @@ use cockpit_authorization::{
     SessionId as Holder, StartAllowance, StartTerms,
 };
 use cockpit_messaging::{
-    Claim, Coalescing, Deliverer, Delivery, DeliveryState, Envelope, EnvelopeId, Failure,
+    Claim, Coalescing, Deliverer, Delivery, DeliveryState, Enqueued, Envelope, EnvelopeId, Failure,
     Redelivery,
 };
 use cockpit_protocol::{
@@ -34,7 +34,7 @@ use cockpit_protocol::{
 use cockpit_provider_api::Capability;
 use cockpit_sessions::{
     Addressed, AgentState, Ender, QuestionSource, Session, SessionId, SessionReport, SessionState,
-    Sessions, StartRequest,
+    Sessions, StartRequest, WakeCause,
 };
 use cockpit_tasks::SessionWork;
 use cockpit_turso::Database;
@@ -52,6 +52,9 @@ const INBOX_PRODUCER: &str = "coordinator-inbox";
 /// How long a collected message may wait while its target's agent waits at its prompt before
 /// the sender is told it is stuck: the hook polls every two seconds.
 const STUCK_AFTER_SECONDS: i64 = 60;
+/// How long a message's sender waits for the wake of its asleep target before it is told the
+/// wake is under way: well within the CLI's 10 s request deadline.
+const WAKE_ANSWER_WITHIN: Duration = Duration::from_secs(5);
 /// Longest message, in characters: a line an agent reads, not a document.
 const MESSAGE_MAX_CHARS: usize = 2000;
 /// A message not delivered within a day is stale; the sender learns so from the card.
@@ -413,7 +416,7 @@ async fn message(
         },
     )
     .await?;
-    cockpit_messaging::enqueue(
+    let enqueued = cockpit_messaging::enqueue(
         &write,
         &Envelope {
             effect_key: message_key(entry),
@@ -435,6 +438,12 @@ async fn message(
     )
     .await?;
     write.commit().await?;
+    let waits = match enqueued {
+        Enqueued::Queued { id, .. } if target_session.state == SessionState::Asleep => {
+            Some(wake_for_message(context, target_id, id).await)
+        }
+        _ => waits,
+    };
     if !is_collected {
         context.queued.notify_one();
     }
@@ -451,6 +460,65 @@ async fn message(
         waits,
         collected: is_collected,
     })
+}
+
+/// Wakes `target`, asleep, for a message whose sender the grant check let through (#1326):
+/// the message is handed over once the woken agent waits at its prompt. What the sender is
+/// told: the wake's outcome, or that it is still under way after [`WAKE_ANSWER_WITHIN`], so
+/// a slow launch never outlasts the sender's request. A wake that fails is kept on the
+/// message's card while the session sleeps.
+async fn wake_for_message(context: &Context, target: SessionId, envelope: EnvelopeId) -> String {
+    let waking = format!(
+        "session {target} is waking from sleep; the message is handed over once its agent \
+         waits at its prompt"
+    );
+    let still_waking = format!(
+        "session {target} is waking from sleep; its card says if the wake fails, otherwise the \
+         message is handed over once its agent waits at its prompt"
+    );
+    let database = Arc::clone(&context.database);
+    let sessions = Arc::clone(&context.sessions);
+    let wake = tokio::spawn(async move {
+        let error = match sessions.ensure_awake(&target, WakeCause::Message).await {
+            Ok(_) => {
+                tracing::info!(
+                    session = target.as_str(),
+                    "a message woke its asleep target"
+                );
+                return None;
+            }
+            Err(error) => error,
+        };
+        let reason = format!(
+            "session {target} is asleep, and waking it for the message failed: {error}; the \
+             owner wakes it with `torlek session wake {target}`"
+        );
+        tracing::warn!(session = target.as_str(), %error, "a message could not wake its target");
+        if let Err(Failed(failed)) = record_note(&database, envelope, &reason).await {
+            tracing::error!(
+                session = target.as_str(),
+                error = failed.message,
+                "recording why a message waits failed"
+            );
+        }
+        Some(reason)
+    });
+    match tokio::time::timeout(WAKE_ANSWER_WITHIN, wake).await {
+        Ok(Ok(None)) => waking,
+        Ok(Ok(Some(failure))) => failure,
+        Ok(Err(error)) => {
+            tracing::error!(%error, "waking a message's target stopped");
+            still_waking
+        }
+        Err(_) => still_waking,
+    }
+}
+
+async fn record_note(database: &Database, envelope: EnvelopeId, note: &str) -> Result<(), Failed> {
+    let write = database.write().await?;
+    cockpit_messaging::record_note(&write, envelope, note).await?;
+    write.commit().await?;
+    Ok(())
 }
 
 /// `agent-inbox` (#703): hands the sender's agent its oldest message still queued, recorded
@@ -1491,7 +1559,14 @@ pub(crate) async fn notes(connection: &Connection) -> Result<Notes, Failed> {
             continue;
         };
         let is_collected = envelope.producer == INBOX_PRODUCER;
-        let note = if is_collected && envelope.state == DeliveryState::Queued {
+        let is_collected_waiting = is_collected && envelope.state == DeliveryState::Queued;
+        let note = if is_collected_waiting && is_asleep(connection, target.as_str()).await {
+            // Its hook collects nothing while its agent sleeps; a wake that failed says why.
+            Some(envelope.note.as_deref().map_or_else(
+                || format!("held: session {} is asleep", target.as_str()),
+                cockpit_sessions::visible_line,
+            ))
+        } else if is_collected_waiting {
             let reports = match reports {
                 Some(ref reports) => reports,
                 None => reports.insert(
@@ -1544,6 +1619,24 @@ pub(crate) async fn notes(connection: &Connection) -> Result<Notes, Failed> {
         );
     }
     Ok(notes)
+}
+
+/// Whether `session` sleeps; a session that cannot be read is logged and taken as awake, as
+/// a card note never stops session control.
+async fn is_asleep(connection: &Connection, session: &str) -> bool {
+    let state = match SessionId::parse(session) {
+        Ok(id) => cockpit_sessions::session(connection, &id)
+            .await
+            .map(|session| session.state),
+        Err(error) => Err(error),
+    };
+    match state {
+        Ok(state) => state == SessionState::Asleep,
+        Err(error) => {
+            tracing::error!(session, %error, "reading a messaged session's state failed");
+            false
+        }
+    }
 }
 
 /// A coordinator message to a session still waiting, and its outbox envelope.
