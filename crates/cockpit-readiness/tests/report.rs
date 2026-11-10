@@ -1142,6 +1142,7 @@ fn a_projects_own_engine_reports_each_state_with_its_next_step() {
         project.engine = Some(Ok(ProjectEngine {
             project: "project".to_owned(),
             user: "torlek-e3".to_owned(),
+            record_command: "torlek containers record project".to_owned(),
             state: state.clone(),
         }));
 

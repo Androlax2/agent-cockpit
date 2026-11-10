@@ -344,11 +344,12 @@ fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
         }
     };
     let ProjectEngine {
-        project,
         user,
+        record_command,
         state,
+        ..
     } = engine;
-    let record = format!("`torlek containers record {project}`");
+    let record = format!("`{record_command}`");
     match state {
         EngineState::NotSetUp { reason, setup } => Requirement::needs(
             "docker",

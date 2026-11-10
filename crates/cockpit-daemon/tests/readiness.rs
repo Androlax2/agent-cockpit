@@ -543,7 +543,7 @@ async fn a_sandboxed_docker_project_without_its_engine_gets_the_setup_script() {
     let next = next.unwrap();
     assert!(
         next.contains(&format!("`sudo sh {}`", script.display()))
-            && next.contains("`torlek containers record app`"),
+            && next.contains("`torlek-dev containers record app`"),
         "{next}"
     );
     let written = std::fs::read_to_string(&script).unwrap();

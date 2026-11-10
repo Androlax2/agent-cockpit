@@ -136,6 +136,8 @@ pub struct ProjectEngine {
     pub project: String,
     /// The engine's system user: `torlek-e3`.
     pub user: String,
+    /// The command that records it, in this profile: `torlek containers record shop`.
+    pub record_command: String,
     pub state: EngineState,
 }
 

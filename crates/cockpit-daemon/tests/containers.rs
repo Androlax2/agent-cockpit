@@ -25,7 +25,7 @@ async fn recording_a_project_without_its_engine_is_refused_naming_the_setup_step
     assert!(!record.status.success(), "{stderr}");
     assert!(stderr.contains("no engine to record"), "{stderr}");
     assert!(
-        stderr.contains(&format!("`torlek doctor --project {}`", root.display())),
+        stderr.contains(&format!("`torlek-dev doctor --project {}`", root.display())),
         "{stderr}"
     );
 }

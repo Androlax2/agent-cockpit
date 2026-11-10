@@ -9,7 +9,8 @@
 
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{Account, EngineUser};
 
@@ -89,7 +90,14 @@ pub fn write_setup_script(dir: &Path, user: &EngineUser, script: &str) -> Result
     std::fs::create_dir_all(dir)
         .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
     let path = dir.join(format!("{}-setup.sh", user.name()));
-    let partial = dir.join(format!(".{}-setup.sh.{}", user.name(), std::process::id()));
+    // Two reports may write the same script at once, from the same daemon process.
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let partial = dir.join(format!(
+        ".{}-setup.sh.{}.{}",
+        user.name(),
+        std::process::id(),
+        WRITES.fetch_add(1, Ordering::Relaxed)
+    ));
     let written = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -108,8 +116,9 @@ pub fn write_setup_script(dir: &Path, user: &EngineUser, script: &str) -> Result
     Ok(path)
 }
 
-/// `path` as a unit file and the script take it: absolute UTF-8 without whitespace, quotes,
-/// backslashes, `$`, `%` (a unit specifier) or `:` (`BindPaths=`' separator).
+/// `path` as a unit file and the script take it: absolute UTF-8 without `..` (which would
+/// escape the home check), whitespace, quotes, backslashes, `$`, `%` (a unit specifier)
+/// or `:` (`BindPaths=`' separator).
 fn unit_path(role: &str, path: &Path) -> Result<String, String> {
     let shown = path.display();
     let text = path
@@ -117,6 +126,12 @@ fn unit_path(role: &str, path: &Path) -> Result<String, String> {
         .ok_or_else(|| format!("{role} {shown} is not UTF-8"))?;
     if !path.is_absolute() {
         return Err(format!("{role} {shown} is not absolute"));
+    }
+    let is_normal = path
+        .components()
+        .all(|component| matches!(component, Component::RootDir | Component::Normal(_)));
+    if !is_normal {
+        return Err(format!("{role} {shown} holds `..`"));
     }
     if !is_plain(text) {
         return Err(format!(
@@ -169,6 +184,8 @@ if ! id -u "$user" >/dev/null 2>&1; then
     useradd --system --user-group --create-home --home-dir "/var/lib/$user" \
         --shell "$nologin" "$user"
 fi
+# Each engine's images and containers stay its own, whatever mode useradd gave the home.
+chmod 0700 "/var/lib/$user"
 
 # Rootless Docker maps its containers' users onto 65,536 subordinate ids of its own, after
 # every range already given out.
@@ -177,8 +194,10 @@ next_range() {
         awk -F: '{ end = $2 + $3; if (end > max) max = end } END { print (max < 200000 ? 200000 : max) }')
     echo "$start-$((start + 65535))"
 }
-grep -q "^$user:" /etc/subuid 2>/dev/null || usermod --add-subuids "$(next_range)" "$user"
-grep -q "^$user:" /etc/subgid 2>/dev/null || usermod --add-subgids "$(next_range)" "$user"
+# One range for both, taken before either is added, so the uids and gids match.
+range=$(next_range)
+grep -q "^$user:" /etc/subuid 2>/dev/null || usermod --add-subuids "$range" "$user"
+grep -q "^$user:" /etc/subgid 2>/dev/null || usermod --add-subgids "$range" "$user"
 
 # The engine's user writes the checkouts; what its containers create there stays yours to
 # change and delete (the default entries).
@@ -307,6 +326,27 @@ mod tests {
 
             assert!(error.contains("cannot bind"), "{root}: {error}");
         }
+    }
+
+    #[test]
+    fn a_path_that_climbs_out_of_the_home_is_refused() {
+        let error = script_for(
+            &owner(),
+            "/home/theo/../../srv/shop",
+            "/home/theo/.parallel/shop",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("holds `..`"), "{error}");
+    }
+
+    #[test]
+    fn the_engine_home_is_its_own_and_both_id_ranges_match() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+
+        assert!(script.contains("chmod 0700 \"/var/lib/$user\""), "{script}");
+        assert!(script.contains("--add-subuids \"$range\""), "{script}");
+        assert!(script.contains("--add-subgids \"$range\""), "{script}");
     }
 
     #[test]

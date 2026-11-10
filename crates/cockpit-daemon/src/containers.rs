@@ -65,7 +65,7 @@ pub(crate) fn route(command: Command, database: Arc<Database>, host: Host) -> Ro
         // The record is not consulted: recording again is how the owner accepts a new engine.
         let state = examine(&host, &user, &passwd, None).await;
         let EngineState::Unrecorded(info) = state else {
-            return Err(not_recordable(&state, &user, &found));
+            return Err(not_recordable(&state, &user, &found, &host));
         };
         let engine = RecordedEngine {
             project: project.clone(),
@@ -117,11 +117,27 @@ pub(crate) async fn project_engine(
     let passwd = read_passwd().await?;
     let user = EngineUser::for_project(&host.qualified_profile, found.id.0)?;
     let state = examine(host, &user, &passwd, recorded.as_ref()).await;
-    let setup = || write_setup(host, &found, &user, &passwd);
+    let record_command = record_command(host, &found);
+    let setup = || {
+        let (host, found, user, passwd, record_command) = (
+            host.clone(),
+            found.clone(),
+            user.clone(),
+            passwd.clone(),
+            record_command.clone(),
+        );
+        async move {
+            tokio::task::spawn_blocking(move || {
+                write_setup(&host, &found, &user, &passwd, &record_command)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+        }
+    };
     let state = match state {
         EngineState::NotSetUp { reason } => cockpit_readiness::EngineState::NotSetUp {
             reason,
-            setup: setup(),
+            setup: setup().await,
         },
         EngineState::Unrecorded(info) => {
             cockpit_readiness::EngineState::Unrecorded(crate::readiness::docker_engine(info))
@@ -132,7 +148,7 @@ pub(crate) async fn project_engine(
         EngineState::Refused(refusal) => cockpit_readiness::EngineState::Refused {
             reason: refusal.to_string(),
             remedy: match refusal.remedy() {
-                Remedy::Setup => EngineRemedy::Setup(setup()),
+                Remedy::Setup => EngineRemedy::Setup(setup().await),
                 Remedy::Start => EngineRemedy::Start { unit: user.unit() },
                 Remedy::Record => EngineRemedy::Record,
             },
@@ -141,6 +157,7 @@ pub(crate) async fn project_engine(
     Ok(ProjectEngine {
         project: found.name.as_str().to_owned(),
         user: user.name().to_owned(),
+        record_command,
         state,
     })
 }
@@ -165,12 +182,22 @@ async fn examine(
     )
 }
 
+/// `torlek containers record NAME`, under this profile's command name.
+fn record_command(host: &Host, project: &Project) -> String {
+    format!(
+        "{} containers record {}",
+        host.qualified_profile, project.name
+    )
+}
+
 /// Writes the setup script for `project`'s engine; its path, or why it was not written.
+/// Blocks on the file system.
 fn write_setup(
     host: &Host,
     project: &Project,
     user: &EngineUser,
     passwd: &str,
+    record_command: &str,
 ) -> Result<PathBuf, String> {
     let mut owner = cockpit_containers::account_with_uid(passwd, host.owner_uid)
         .ok_or_else(|| format!("uid {} has no account in {PASSWD_FILE}", host.owner_uid))?;
@@ -179,17 +206,13 @@ fn write_setup(
     }
     let clones_dir = cockpit_projects::clones_dir(&project.root, &project.name)
         .map_err(|error| error.to_string())?;
-    let record_command = format!(
-        "{} containers record {}",
-        host.qualified_profile, project.name
-    );
     let script = cockpit_containers::setup_script(&SetupPlan {
         project: project.name.as_str(),
         user,
         owner: &owner,
         project_root: &project.root,
         clones_dir: &clones_dir,
-        record_command: &record_command,
+        record_command,
     })?;
     cockpit_containers::write_setup_script(&host.scripts_dir, user, &script)
 }
@@ -221,9 +244,15 @@ async fn registered(connection: &Connection, project: &str) -> Result<Project, F
 }
 
 /// Why an engine that is not the project's own, rootless and answering is not recorded.
-fn not_recordable(state: &EngineState, user: &EngineUser, project: &Project) -> Failed {
+fn not_recordable(
+    state: &EngineState,
+    user: &EngineUser,
+    project: &Project,
+    host: &Host,
+) -> Failed {
     let doctor = format!(
-        "`torlek doctor --project {}` writes the setup script to review and run",
+        "`{} doctor --project {}` writes the setup script to review and run",
+        host.qualified_profile,
         project.root.display()
     );
     let (message, action) = match state {
