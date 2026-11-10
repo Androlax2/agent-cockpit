@@ -277,14 +277,19 @@ async fn ask_run(
         reason,
         project,
     };
-    let run = cockpit_approvals::ask_run(&write, &session, ask, now()).await?;
+    let filed = cockpit_approvals::ask_run_unless_pending(&write, &session, ask, now()).await?;
     write.commit().await?;
     tracing::info!(
-        request = run.id.0,
+        request = filed.run.id.0,
         session = session.as_str(),
+        already_pending = filed.already_pending,
         "an agent asked to run"
     );
-    Ok(run_reply(&run, runner))
+    let mut request = run_view(&filed.run, runner, &runner.waiting_for_input(), None);
+    request.already_asked = filed.already_pending;
+    Ok(Reply::RunRequest {
+        request: Box::new(request),
+    })
 }
 
 async fn ask_guide(
@@ -1036,6 +1041,7 @@ fn run_view(
             stopped_by_owner: result.stopped_by_owner,
         }),
         note: run.note.clone(),
+        already_asked: false,
     }
 }
 

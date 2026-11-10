@@ -104,6 +104,7 @@ pub fn run(id: i64, session: &str, command: &str) -> RunRequestView {
         decision: None,
         result: None,
         note: None,
+        already_asked: false,
     }
 }
 

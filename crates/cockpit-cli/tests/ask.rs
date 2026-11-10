@@ -136,6 +136,7 @@ fn request(state: RunStateView) -> RunRequestView {
         decision: None,
         result: None,
         note: None,
+        already_asked: false,
     }
 }
 
@@ -735,6 +736,67 @@ async fn ask_run_no_wait_files_the_request_and_returns_at_once_with_how_to_wait(
         "no status poll after the ask: {received:?}"
     );
     assert!(matches!(received[0], Command::AskRun { .. }));
+}
+
+#[tokio::test]
+async fn a_repeated_ask_says_it_was_already_asked_and_that_its_reason_was_dropped() {
+    let home = Home::new();
+    let daemon = scripted_conversation(
+        &home.agent_socket(),
+        vec![run_reply(RunRequestView {
+            already_asked: true,
+            reason: "the first reason".to_owned(),
+            ..request(RunStateView::Asking)
+        })],
+    );
+
+    let output = home
+        .cockpit(
+            &[
+                "ask",
+                "run",
+                "--no-wait",
+                "--reason",
+                "another reason",
+                "make test",
+            ],
+            "",
+        )
+        .await;
+
+    assert_eq!(output.status.code(), Some(124), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stderr),
+        "torlek: already asked (request 7); this reason was dropped, the first one stands; \
+         wait with: torlek ask run --wait 7\n"
+    );
+    assert_eq!(daemon.await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_repeated_ask_with_the_same_reason_does_not_claim_to_drop_one() {
+    let home = Home::new();
+    let _daemon = scripted_conversation(
+        &home.agent_socket(),
+        vec![run_reply(RunRequestView {
+            already_asked: true,
+            reason: "tests".to_owned(),
+            ..request(RunStateView::Asking)
+        })],
+    );
+
+    let output = home
+        .cockpit(
+            &["ask", "run", "--no-wait", "--reason", "tests", "make test"],
+            "",
+        )
+        .await;
+
+    assert!(
+        !text(&output.stderr).contains("dropped"),
+        "{}",
+        text(&output.stderr)
+    );
 }
 
 async fn queue_line(shown_command: ShownText, folded_command: Option<FoldedView>) -> String {

@@ -831,3 +831,86 @@ async fn a_poll_of_an_ask_whose_session_may_no_longer_ask_reads_expired_and_writ
     );
     assert_eq!(fixture.revision().await, before);
 }
+
+mod repeated_asks {
+    use super::*;
+    use cockpit_approvals::ask_run_unless_pending;
+
+    async fn ask_once(
+        fixture: &Fixture,
+        who: &str,
+        command: &str,
+        now: i64,
+    ) -> cockpit_approvals::FiledRun {
+        let write = fixture.database.write().await.unwrap();
+        let filed = ask_run_unless_pending(&write, &session(who), fixture.ask(command), now)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+        filed
+    }
+
+    #[tokio::test]
+    async fn an_identical_pending_ask_is_returned_and_files_nothing() {
+        let fixture = Fixture::new().await;
+        fixture.grant(&session("s1")).await;
+        let first = ask_once(&fixture, "s1", "ls", NOW).await;
+        let revision = fixture.revision().await;
+
+        let repeat = ask_once(&fixture, "s1", "ls", NOW + 1).await;
+
+        assert!(!first.already_pending);
+        assert!(repeat.already_pending);
+        assert_eq!(repeat.run.id, first.run.id);
+        assert_eq!(fixture.revision().await, revision);
+    }
+
+    #[tokio::test]
+    async fn another_session_or_command_files_a_new_ask() {
+        let fixture = Fixture::new().await;
+        fixture.grant(&session("s1")).await;
+        fixture.grant(&session("s2")).await;
+        let first = ask_once(&fixture, "s1", "ls", NOW).await;
+
+        let other_command = ask_once(&fixture, "s1", "pwd", NOW).await;
+        let other_session = ask_once(&fixture, "s2", "ls", NOW).await;
+
+        for filed in [&other_command, &other_session] {
+            assert!(!filed.already_pending);
+            assert_ne!(filed.run.id, first.run.id);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_decided_or_expired_ask_is_never_matched() {
+        let fixture = Fixture::new().await;
+        fixture.grant(&session("s1")).await;
+        let declined = ask_once(&fixture, "s1", "ls", NOW).await;
+        let write = fixture.database.write().await.unwrap();
+        decline_run(&write, None, declined.run.id, NOW)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+
+        let after_decline = ask_once(&fixture, "s1", "ls", NOW).await;
+        let after_expiry = ask_once(&fixture, "s1", "ls", NOW + EXPIRES_AFTER_SECONDS + 1).await;
+
+        assert!(!after_decline.already_pending);
+        assert!(!after_expiry.already_pending);
+        assert_ne!(after_expiry.run.id, after_decline.run.id);
+    }
+
+    #[tokio::test]
+    async fn a_session_without_the_grant_is_refused_even_for_a_repeat() {
+        let fixture = Fixture::new().await;
+        fixture.grant(&session("s1")).await;
+        ask_once(&fixture, "s1", "ls", NOW).await;
+        fixture.revoke_all(&session("s1")).await;
+        let write = fixture.database.write().await.unwrap();
+
+        let refused =
+            ask_run_unless_pending(&write, &session("s1"), fixture.ask("ls"), NOW + 1).await;
+
+        assert!(matches!(refused, Err(Error::Refused(_))), "{refused:?}");
+    }
+}
