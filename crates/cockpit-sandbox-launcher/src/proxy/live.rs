@@ -29,8 +29,25 @@ impl LiveListener {
 
 impl<U: Upstream> Proxy<U> {
     /// Opens the live forwards of every later decision through `binder`.
-    pub fn open_live_through(&self, binder: Binder) {
-        let _ = self.binder.set(binder);
+    pub fn open_live_through(&self, binder: Binder) -> Result<(), String> {
+        self.binder
+            .set(binder)
+            .map_err(|_| "the launcher took the sandbox's binder twice".to_owned())
+    }
+
+    /// Opens again the live forwards the current decisions allow and a failed bind left
+    /// closed: a port taken a moment opens once it is free, without a new decision.
+    pub(super) fn retry_live_forwards(self: &Arc<Self>) {
+        if !self.live_pending.load(Ordering::SeqCst) {
+            return;
+        }
+        let decided = Arc::clone(
+            &self
+                .decided
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        self.open_live_forwards(&decided.decisions.services);
     }
 
     /// Opens a listener for each live forward `services` allows and has none, and closes
@@ -55,6 +72,7 @@ impl<U: Upstream> Proxy<U> {
             }
             is_wanted
         });
+        let mut is_pending = false;
         for (record, forward) in wanted {
             if live.contains_key(&record) {
                 continue;
@@ -66,10 +84,28 @@ impl<U: Upstream> Proxy<U> {
                 Ok(open) => {
                     live.insert(record, open);
                 }
-                Err(reason) => self.count_forward(&forward.service, |counters| {
-                    counters.last_reason = Some(reason);
-                }),
+                Err(reason) => {
+                    is_pending = true;
+                    self.note_live_failure(&forward.service, reason);
+                }
             }
+        }
+        self.live_pending.store(is_pending, Ordering::SeqCst);
+    }
+
+    /// Records why a live forward did not open, once while the reason lasts: it is retried
+    /// at every decisions poll.
+    fn note_live_failure(&self, service: &str, reason: String) {
+        let is_new = self
+            .report
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .forwards
+            .get(service)
+            .and_then(|counters| counters.last_reason.as_ref())
+            != Some(&reason);
+        if is_new {
+            self.count_forward(service, |counters| counters.last_reason = Some(reason));
         }
     }
 

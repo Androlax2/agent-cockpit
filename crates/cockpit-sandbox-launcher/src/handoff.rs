@@ -49,6 +49,12 @@ const REFUSED_BYTE: u8 = b'E';
 /// The verb stage 2 starts the binder with. Never run by hand.
 pub const BINDER_VERB: &str = "stage2-binder";
 
+/// The binder's argument once it left stage 2's children, as it serves.
+pub const BINDER_SERVES: &str = "serve";
+
+/// How long the binder has to answer one request.
+const BINDER_DEADLINE: Duration = Duration::from_secs(10);
+
 /// The longest reason a binder sends.
 const MAX_REASON: usize = 512;
 
@@ -128,41 +134,64 @@ pub struct Received {
     pub binder: Binder,
 }
 
-/// The launcher's end of the binder's connection.
+/// The launcher's end of the binder's connection; none once the binder failed to answer,
+/// which a later request could misread.
 pub struct Binder {
-    stream: std::sync::Mutex<UnixStream>,
+    stream: std::sync::Mutex<Option<UnixStream>>,
 }
 
 impl Binder {
     /// A listener on the sandbox's `127.0.0.1:port`, bound by the binder; why not when the
     /// port is taken or the binder is gone.
     pub fn listen(&self, port: u16) -> Result<TcpListener, String> {
-        let stream = self
+        let mut stream = self
             .stream
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let failed = |error: std::io::Error| format!("the sandbox's binder is gone: {error}");
-        let [high, low] = port.to_be_bytes();
-        (&*stream)
-            .write_all(&[BIND_BYTE, high, low])
-            .map_err(failed)?;
-        let (byte, mut descriptors) = receive(&stream, 1).map_err(failed)?;
-        match (byte, descriptors.pop()) {
-            (LISTENER_BYTE, Some(descriptor)) if descriptors.is_empty() => {
-                let listener = TcpListener::from(descriptor);
-                check_address(&listener, forward_address(port))?;
-                Ok(listener)
+        let Some(connection) = stream.as_ref() else {
+            return Err("the sandbox's binder is gone".to_owned());
+        };
+        match ask_binder(connection, port) {
+            Ok(answer) => answer,
+            Err(error) => {
+                // Dropping the connection ends the binder.
+                *stream = None;
+                Err(format!("the sandbox's binder stopped answering: {error}"))
             }
-            (REFUSED_BYTE, None) => {
-                let mut length = [0_u8; 2];
-                (&*stream).read_exact(&mut length).map_err(failed)?;
-                let mut reason =
-                    vec![0_u8; usize::from(u16::from_be_bytes(length)).min(MAX_REASON)];
-                (&*stream).read_exact(&mut reason).map_err(failed)?;
-                Err(String::from_utf8_lossy(&reason).into_owned())
-            }
-            _ => Err(format!("the sandbox's binder answered {byte:?}")),
         }
+    }
+}
+
+/// The binder's answer for `port`; an error when it broke the protocol or missed
+/// [`BINDER_DEADLINE`].
+fn ask_binder(stream: &UnixStream, port: u16) -> std::io::Result<Result<TcpListener, String>> {
+    let [high, low] = port.to_be_bytes();
+    let mut writer = stream;
+    writer.write_all(&[BIND_BYTE, high, low])?;
+    let (byte, mut descriptors) = receive(stream, 1)?;
+    match (byte, descriptors.pop()) {
+        (LISTENER_BYTE, Some(descriptor)) if descriptors.is_empty() => {
+            let listener = TcpListener::from(descriptor);
+            Ok(check_address(&listener, forward_address(port)).map(|()| listener))
+        }
+        (REFUSED_BYTE, None) => {
+            let mut reader = stream;
+            let mut length = [0_u8; 2];
+            reader.read_exact(&mut length)?;
+            let length = usize::from(u16::from_be_bytes(length));
+            if length > MAX_REASON {
+                return Err(std::io::Error::other(format!(
+                    "a reason of {length} bytes, not at most {MAX_REASON}"
+                )));
+            }
+            let mut reason = vec![0_u8; length];
+            reader.read_exact(&mut reason)?;
+            Ok(Err(String::from_utf8_lossy(&reason).into_owned()))
+        }
+        (byte, descriptor) => Err(std::io::Error::other(format!(
+            "it answered {byte:?} with {} descriptors",
+            usize::from(descriptor.is_some()) + descriptors.len()
+        ))),
     }
 }
 
@@ -232,12 +261,18 @@ fn take_listeners(mut stream: UnixStream, forward_ports: &[u16]) -> Result<Recei
         check_address(listener, forward_address(*port))?;
     }
     stream.write_all(&[RECEIVED_BYTE]).map_err(failed)?;
-    stream.set_read_timeout(None).map_err(failed)?;
+    // A binder the program stopped must not hold the owner's decisions for good.
+    stream
+        .set_read_timeout(Some(BINDER_DEADLINE))
+        .map_err(failed)?;
+    stream
+        .set_write_timeout(Some(BINDER_DEADLINE))
+        .map_err(failed)?;
     Ok(Received {
         proxy,
         forwards,
         binder: Binder {
-            stream: std::sync::Mutex::new(stream),
+            stream: std::sync::Mutex::new(Some(stream)),
         },
     })
 }
@@ -331,7 +366,11 @@ pub fn serve_binds(stream: &UnixStream) -> Result<(), String> {
             Ok(listener) => send_listener(stream, &listener),
             Err(error) => {
                 let mut reason = format!("cannot listen on {address} in the sandbox: {error}");
-                reason.truncate(MAX_REASON);
+                let mut kept = reason.len().min(MAX_REASON);
+                while !reason.is_char_boundary(kept) {
+                    kept -= 1;
+                }
+                reason.truncate(kept);
                 let length = u16::try_from(reason.len()).unwrap_or(0).to_be_bytes();
                 (&*stream)
                     .write_all(&[REFUSED_BYTE, length[0], length[1]])

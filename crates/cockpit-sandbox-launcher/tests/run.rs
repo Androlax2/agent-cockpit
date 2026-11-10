@@ -905,3 +905,13 @@ fn the_program_holds_no_connection_to_the_launcher() {
 
     assert_eq!(printed, "0 1 2 exit=0\n");
 }
+
+/// #390: a program that waits for every child of its own does not wait for the binder.
+#[test]
+fn the_binder_is_not_a_child_of_the_program() {
+    let fixture = Fixture::new();
+
+    let printed = fixture.run("read -r children < /proc/$$/task/$$/children; echo \"[$children]\"");
+
+    assert_eq!(printed, "[]\nexit=0\n");
+}

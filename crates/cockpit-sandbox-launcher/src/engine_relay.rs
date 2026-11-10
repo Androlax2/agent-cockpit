@@ -29,18 +29,10 @@ pub fn request(mut stream: UnixStream, engine_uid: u32, port: u16) -> std::io::R
             "uid {listener} listens on the engine's relay, not the engine's uid {engine_uid}"
         )));
     }
-    stream.set_read_timeout(Some(DEADLINE))?;
+    stream.set_read_timeout(Some(ANSWER_DEADLINE))?;
     stream.write_all(format!("{port}\n").as_bytes())?;
-    let mut answer = Vec::new();
-    let mut byte = [0_u8; 1];
-    while answer.last() != Some(&b'\n') {
-        if answer.len() == MAX_ANSWER {
-            return Err(std::io::Error::other("the engine's relay answered no line"));
-        }
-        stream.read_exact(&mut byte)?;
-        answer.push(byte[0]);
-    }
-    let answer = String::from_utf8_lossy(&answer[..answer.len() - 1]).into_owned();
+    let answer = read_line(&mut stream, MAX_ANSWER)?;
+    let answer = String::from_utf8_lossy(&answer);
     if answer != "ok" {
         return Err(std::io::Error::other(format!(
             "the engine's relay answered: {answer}"
@@ -52,6 +44,29 @@ pub fn request(mut stream: UnixStream, engine_uid: u32, port: u16) -> std::io::R
 
 /// The longest answer the launcher reads from a relay.
 const MAX_ANSWER: usize = 512;
+
+/// How long the launcher waits for the relay's answer: longer than the relay waits for the
+/// engine's port, so the relay's reason arrives.
+const ANSWER_DEADLINE: Duration = Duration::from_secs(15);
+
+/// One line of at most `most` bytes with its newline, read a byte at a time so none of the
+/// relayed bytes after it is taken; without the newline. `InvalidData` when it is longer.
+fn read_line(stream: &mut UnixStream, most: usize) -> std::io::Result<Vec<u8>> {
+    let mut line = Vec::with_capacity(most);
+    let mut byte = [0_u8; 1];
+    while line.last() != Some(&b'\n') {
+        if line.len() == most {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                format!("no line within {most} bytes"),
+            ));
+        }
+        stream.read_exact(&mut byte)?;
+        line.push(byte[0]);
+    }
+    line.pop();
+    Ok(line)
+}
 
 /// Serves `socket` until the process ends, one thread per connection.
 pub fn run(socket: &Path, owner_uid: &std::ffi::OsStr) -> Result<std::convert::Infallible, String> {
@@ -114,23 +129,16 @@ fn serve(mut client: UnixStream, owner_uid: u32) {
     splice(client, target);
 }
 
-/// The port the client names, read a byte at a time so none of the relayed bytes is taken.
+/// The port the client names.
 fn read_port(client: &mut UnixStream) -> Result<u16, String> {
     client
         .set_read_timeout(Some(DEADLINE))
         .map_err(|error| format!("cannot set a deadline: {error}"))?;
-    let mut request = Vec::with_capacity(MAX_REQUEST);
-    let mut byte = [0_u8; 1];
-    while request.last() != Some(&b'\n') {
-        if request.len() == MAX_REQUEST {
-            return Err("the request is not a port and a newline".to_owned());
-        }
-        client
-            .read_exact(&mut byte)
-            .map_err(|error| format!("no port named: {error}"))?;
-        request.push(byte[0]);
-    }
-    parse_port(&request[..request.len() - 1])
+    let request = read_line(client, MAX_REQUEST).map_err(|error| match error.kind() {
+        ErrorKind::InvalidData => "the request is not a port and a newline".to_owned(),
+        _ => format!("no port named: {error}"),
+    })?;
+    parse_port(&request)
 }
 
 fn parse_port(digits: &[u8]) -> Result<u16, String> {
