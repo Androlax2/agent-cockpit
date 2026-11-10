@@ -80,6 +80,18 @@ pub(crate) fn holds_github_grant(grants: &[NetworkGrantView], project: &str) -> 
     })
 }
 
+/// Whether the owner's configuration may sandbox sessions, so a network grant matters: not
+/// under `agents.sandbox = "off"`. A configuration that cannot be read counts as may: `init`
+/// names that error, and an offer shown in vain beats one hidden.
+pub(crate) fn sessions_may_be_sandboxed() -> bool {
+    let config = cockpit_config::load(&crate::profile::environment(), None, &[]);
+    may_be_sandboxed(&config.map_err(|error| error.to_string()))
+}
+
+pub(crate) fn may_be_sandboxed(config: &Result<cockpit_config::EffectiveConfig, String>) -> bool {
+    !matches!(config, Ok(config) if config.agents_sandbox.value == cockpit_config::AgentSandbox::Off)
+}
+
 /// The offer `project add` and `init` make to a project without the github.com grant.
 pub(crate) fn github_grant_offer(project: &str) -> String {
     format!(

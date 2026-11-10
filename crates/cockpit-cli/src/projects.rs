@@ -120,38 +120,41 @@ pub fn run(command: Command, deadline: Duration) -> ExitCode {
         return unexpected(&reply);
     };
     out!("{text}");
-    if let Reply::ProjectAdded { project, .. } = &reply {
-        offer_github_grant(&project.name);
+    match &reply {
+        Reply::ProjectAdded { project, .. } if crate::network::sessions_may_be_sandboxed() => {
+            offer_github_grant(&project.name)
+        }
+        _ => ExitCode::SUCCESS,
     }
-    ExitCode::SUCCESS
 }
 
 /// #1256: offers the project's github.com grant once, while the owner is adding it, so its
 /// GitHub token binds at the first sandboxed launch. Asked on a terminal, where declining is
 /// the default; elsewhere only named, so a script never grants. The project is registered
-/// either way: a failure here is reported on stderr, not as the verb's failure.
-fn offer_github_grant(project: &str) {
+/// either way, so only a grant the owner said yes to and that failed exits 1.
+fn offer_github_grant(project: &str) -> ExitCode {
     let Ok(reply) = request(
         Command::NetworkGrants {
             project: Some(project.to_owned()),
         },
         CONTROL_DEADLINE,
     ) else {
-        eprintln!("the github.com grant was not offered: its grants could not be read");
-        return;
+        eprintln!("{project} is added; the github.com grant was not offered");
+        return ExitCode::SUCCESS;
     };
     let Reply::NetworkGrants { grants } = &reply else {
         unexpected(&reply);
-        return;
+        eprintln!("{project} is added; the github.com grant was not offered");
+        return ExitCode::SUCCESS;
     };
     if crate::network::holds_github_grant(grants, project) {
-        return;
+        return ExitCode::SUCCESS;
     }
     let offer = crate::network::github_grant_offer(project);
     let is_interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     if !is_interactive {
         eprintln!("{offer}");
-        return;
+        return ExitCode::SUCCESS;
     }
     eprint!(
         "Allow github.com:443 always for {project}'s sandboxed sessions? Fetches work from \
@@ -162,13 +165,13 @@ fn offer_github_grant(project: &str) {
     let mut answer = String::new();
     if let Err(error) = std::io::stdin().read_line(&mut answer) {
         eprintln!("no answer read ({error}): not granted. {offer}");
-        return;
+        return ExitCode::SUCCESS;
     }
     if !is_yes(&answer) {
         eprintln!("not granted. {offer}");
-        return;
+        return ExitCode::SUCCESS;
     }
-    crate::network::run(crate::network::github_grant_command(project));
+    crate::network::run(crate::network::github_grant_command(project))
 }
 
 /// Only `y` or `yes`, in any case, grants; an empty line or anything else declines.

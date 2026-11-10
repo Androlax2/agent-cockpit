@@ -597,12 +597,14 @@ async fn with_a_project_the_next_action_starts_a_session_there() {
     );
 }
 
+const REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
+
 /// #1256: a project without the github.com grant is offered it as a line under the done
 /// step, so declining it keeps the setup complete.
 #[tokio::test]
 async fn a_project_without_the_github_grant_is_offered_it_without_holding_the_setup() {
     let home = Home::new();
-    home.accept_sandbox();
+    home.write_owner_config(REQUIRED);
 
     let output = home
         .against(&Daemon::ready().with_project().with_session(), &["init"])
@@ -623,9 +625,26 @@ async fn a_project_without_the_github_grant_is_offered_it_without_holding_the_se
 }
 
 #[tokio::test]
-async fn a_project_holding_the_github_grant_is_not_offered_it_again() {
+async fn under_an_unsandboxed_setting_no_github_grant_is_offered() {
     let home = Home::new();
     home.accept_sandbox();
+
+    let output = home
+        .against(&Daemon::ready().with_project(), &["init"])
+        .await;
+
+    let checklist = text(&output.stdout);
+    assert!(
+        step(&checklist, "Add a project").starts_with("[done"),
+        "{checklist}"
+    );
+    assert!(!checklist.contains("network grant"), "{checklist}");
+}
+
+#[tokio::test]
+async fn a_project_holding_the_github_grant_is_not_offered_it_again() {
+    let home = Home::new();
+    home.write_owner_config(REQUIRED);
 
     let output = home
         .against(
@@ -801,6 +820,7 @@ async fn init_takes_no_arguments() {
 #[test]
 fn against_the_real_daemon_adding_a_project_completes_that_step() {
     let home = common::TestHome::new();
+    home.require_sandbox();
     let _daemon = home.start();
     let project = home.project("app");
 

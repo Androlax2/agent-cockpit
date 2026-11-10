@@ -127,7 +127,7 @@ In the pane, `y` allows once, `a` allows always and `x` denies.
 "Allow always" covers only that host and port. Only names are asked about: IP addresses and names that resolve to private or loopback addresses stay refused.
 
 github.com is not allowed by default, and a project's GitHub token binds only to a host the launch reaches: allowed after the launch, it takes a relaunch.
-So `torlek project add` offers the project's github.com grant once, on a terminal (`y` grants, Enter declines), and `torlek init` names it for each project without it:
+So, unless `agents.sandbox = "off"`, `torlek project add` offers the project's github.com grant once, on a terminal (`y` grants, Enter declines), and `torlek init` names it for each project without it:
 
 ```sh
 torlek network grant PROJECT github.com   # all of github.com:443 for the project's sessions

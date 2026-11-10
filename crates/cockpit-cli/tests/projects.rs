@@ -1238,6 +1238,7 @@ fn removing_a_project_with_a_running_workflow_refuses_naming_it() {
 #[test]
 fn project_add_without_a_terminal_names_the_github_grant_and_grants_nothing() {
     let home = TestHome::new();
+    home.require_sandbox();
     let _daemon = home.start();
     let root = home.project("app");
 
@@ -1252,6 +1253,20 @@ fn project_add_without_a_terminal_names_the_github_grant_and_grants_nothing() {
         "{stderr}"
     );
     assert_eq!(home.cockpit_ok(&["network", "grants"]), "");
+}
+
+/// Under `agents.sandbox = "off"` no session is sandboxed, so a grant would change nothing.
+#[test]
+fn project_add_under_an_unsandboxed_setting_offers_no_github_grant() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+
+    let added = home.cockpit(&["project", "add", root.to_str().unwrap()]);
+
+    assert!(added.status.success(), "{added:?}");
+    let stderr = String::from_utf8(added.stderr).unwrap();
+    assert!(!stderr.contains("network grant"), "{stderr}");
 }
 
 #[test]
@@ -1285,6 +1300,7 @@ fn network_grant_gives_the_project_github_without_a_request_once() {
 #[test]
 fn project_add_offers_nothing_to_a_project_that_holds_the_github_grant() {
     let home = TestHome::new();
+    home.require_sandbox();
     let _daemon = home.start();
     let root = home.project("app");
     home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);

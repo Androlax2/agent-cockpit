@@ -275,7 +275,8 @@ fn steps(facts: &Facts) -> Vec<Step> {
     } else {
         sign_in_step(&daemon.requirements, &available)
     };
-    let project = project_step(&daemon.projects, &daemon.grants);
+    let offered_grants = crate::network::may_be_sandboxed(&facts.config).then_some(&daemon.grants);
+    let project = project_step(&daemon.projects, offered_grants);
     let session = session_step(daemon, &available, readiness.state == State::Done);
     vec![readiness, sandbox, provider, sign_in, project, session]
 }
@@ -554,8 +555,9 @@ fn sign_in_step(requirements: &[RequirementView], available: &[&str]) -> Step {
 }
 
 /// Done once a project is registered. Each project without the github.com grant gets the
-/// offer as a line, not a step to do (#1256): declining it keeps the setup complete.
-fn project_step(projects: &[ProjectView], grants: &[NetworkGrantView]) -> Step {
+/// offer as a line, not a step to do (#1256): declining it keeps the setup complete. `grants`
+/// is `None` when no session is sandboxed, so no grant is offered.
+fn project_step(projects: &[ProjectView], grants: Option<&Vec<NetworkGrantView>>) -> Step {
     if projects.is_empty() {
         return Step {
             title: PROJECT,
@@ -570,7 +572,9 @@ fn project_step(projects: &[ProjectView], grants: &[NetworkGrantView]) -> Step {
     let mut lines = Vec::new();
     for project in projects {
         lines.push(format!("{} ({})", project.name, project.root));
-        if !crate::network::holds_github_grant(grants, &project.name) {
+        if let Some(grants) = grants
+            && !crate::network::holds_github_grant(grants, &project.name)
+        {
             lines.push(crate::network::github_grant_offer(&project.name));
         }
     }
