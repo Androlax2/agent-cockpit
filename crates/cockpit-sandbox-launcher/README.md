@@ -20,6 +20,13 @@ start and runs it in the agent's place under `agents.sandbox = "required"`.
   the plan pinned is still the one it saw (device and inode), applies Landlock at the probed
   ABI with `HardRequirement`, installs the seccomp filters, then runs the program in its
   place.
+- `torlek-sandbox stage2-binder` (internal): started by stage 2 once Landlock and seccomp
+  hold, on the hand-off socket. It binds the sandbox's `127.0.0.1` ports the launcher asks for
+  (a live container port, below) and hands each listener back; the program keeps no
+  descriptor to it.
+- `torlek-sandbox engine-relay SOCKET OWNER_UID`: run by a project engine's relay unit (#390)
+  in the engine's network namespace; serves only `OWNER_UID`, which names one port per
+  connection and gets that port's bytes (`engine_relay.rs`).
 - `torlek-sandbox probe BWRAP`: the daemon's start-up probe. Prints
   `{"bubblewrap":"<version>","landlock_abi":<n>}`; a failure is the reason every launch under
   `required` is refused.
@@ -92,6 +99,20 @@ target.
   it allowed. The proxy's loopback refusal is unchanged: a forward is never a `CONNECT`.
 - Each service's counters (connections, bytes, refusals, unreachable targets) are under
   `forwards` in `egress.json`.
+
+### Live container ports
+
+Issue #390. A container port opens while the session runs, with nothing in the spec: the
+owner's decisions carry it as `AllowedService::live`, a forward of the `containers` service
+from the sandbox's `127.0.0.1:P` to `engine:USER:P` (`Forward::container_port`, P at least
+1024 and not the proxy's), and `ServiceDecisions::engine` names the engine's verified user,
+uid and relay socket. At each decisions change the launcher asks the binder for each newly
+allowed port, checks the listener it gets back is on the sandbox's loopback at that port,
+and serves it like a declared forward; a refused bind is recorded as the service's last
+reason. A connection goes to the engine's relay socket only when the socket's peer is the
+engine's uid, then names the port (`engine_relay::request`). A revoked port's listener is
+shut and its relays closed; a connection reaching it meanwhile is closed without filing a
+request.
 
 ## Credential hosts
 

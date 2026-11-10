@@ -40,6 +40,7 @@ use crate::client_hello::{self, ServerName};
 use crate::intercept::{self, Direction, Ended, Event, Wire};
 
 mod forward;
+mod live;
 
 pub use forward::{Listener, bind_sockets};
 
@@ -104,6 +105,10 @@ pub struct Proxy<U> {
     tunnels: Mutex<HashMap<u64, OpenTunnel>>,
     /// The forwards' relays open now, numbered beside the tunnels (#880).
     relays: Mutex<HashMap<u64, forward::OpenRelay>>,
+    /// Binds the listeners of forwards opened live (#390); unset in tests that open none.
+    binder: OnceLock<crate::handoff::Binder>,
+    /// The forwards open live now, by record.
+    live: Mutex<HashMap<String, live::LiveListener>>,
     next_tunnel: AtomicU64,
     subject: Subject,
     upstream: U,
@@ -249,6 +254,8 @@ impl<U: Upstream> Proxy<U> {
             }),
             tunnels: Mutex::new(HashMap::new()),
             relays: Mutex::new(HashMap::new()),
+            binder: OnceLock::new(),
+            live: Mutex::new(HashMap::new()),
             next_tunnel: AtomicU64::new(0),
             report: Mutex::new(EgressReport::new(subject.clone())),
             subject,
@@ -299,7 +306,7 @@ impl<U: Upstream> Proxy<U> {
 
     /// Decides on the spec's allowlist with `decisions` from now on, and closes every open
     /// tunnel whose entry neither the spec nor `decisions` holds any more.
-    pub fn apply_decisions(&self, decisions: EgressDecisions) {
+    pub fn apply_decisions(self: &Arc<Self>, decisions: EgressDecisions) {
         let decided = Arc::new(Decided {
             allowlist: self.allowlist.with_decisions(&decisions),
             decisions,
@@ -324,6 +331,7 @@ impl<U: Upstream> Proxy<U> {
                 .retain(|asked| !decided.decisions.services.covers_record(asked));
         }
         self.close_revoked_relays(&decided.decisions.services);
+        self.open_live_forwards(&decided.decisions.services);
         let tunnels = self
             .tunnels
             .lock()

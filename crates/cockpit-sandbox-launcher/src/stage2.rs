@@ -39,14 +39,34 @@ pub fn run(policy_argument: &OsString, arguments: &[OsString]) -> Result<Infalli
     let policy: Policy = serde_json::from_str(policy_text)
         .map_err(|error| format!("stage 2's policy is malformed: {error}"))?;
     verify_mounts(&policy)?;
-    crate::handoff::hand_over(&policy.proxy_handoff, &policy.forward_ports)?;
+    let handoff = crate::handoff::hand_over(&policy.proxy_handoff, &policy.forward_ports)?;
     restrict_files(&policy)?;
     restrict_system_calls()?;
+    start_binder(handoff)?;
     let error = std::process::Command::new(&policy.program)
         .arg0(&policy.program_name)
         .args(arguments)
         .exec();
     Err(format!("cannot run {}: {error}", policy.program.display()))
+}
+
+/// Starts the binder beside the program, under the same restrictions, with the hand-off
+/// connection as its standard input; the program does not inherit it.
+fn start_binder(handoff: std::os::unix::net::UnixStream) -> Result<(), String> {
+    let launcher = std::env::current_exe()
+        .map_err(|error| format!("cannot find the launcher in the sandbox: {error}"))?;
+    let binder = std::process::Command::new(&launcher)
+        .arg(crate::handoff::BINDER_VERB)
+        .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+            handoff,
+        )))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| format!("cannot start the sandbox's binder: {error}"))?;
+    // It ends when the launcher closes the connection, or with the sandbox's PID namespace.
+    drop(binder);
+    Ok(())
 }
 
 /// The probe launch's stage 2: Landlock with every right this launcher knows, best effort,

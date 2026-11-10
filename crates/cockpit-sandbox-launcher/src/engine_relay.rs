@@ -20,6 +20,39 @@ const DEADLINE: Duration = Duration::from_secs(10);
 /// The longest request: `65535\n`.
 const MAX_REQUEST: usize = 6;
 
+/// The launcher's side: asks the relay on `stream` for `port`, once the kernel says
+/// `engine_uid` listens there. The stream then carries that port's bytes.
+pub fn request(mut stream: UnixStream, engine_uid: u32, port: u16) -> std::io::Result<UnixStream> {
+    let listener = rustix::net::sockopt::socket_peercred(&stream)?.uid.as_raw();
+    if listener != engine_uid {
+        return Err(std::io::Error::other(format!(
+            "uid {listener} listens on the engine's relay, not the engine's uid {engine_uid}"
+        )));
+    }
+    stream.set_read_timeout(Some(DEADLINE))?;
+    stream.write_all(format!("{port}\n").as_bytes())?;
+    let mut answer = Vec::new();
+    let mut byte = [0_u8; 1];
+    while answer.last() != Some(&b'\n') {
+        if answer.len() == MAX_ANSWER {
+            return Err(std::io::Error::other("the engine's relay answered no line"));
+        }
+        stream.read_exact(&mut byte)?;
+        answer.push(byte[0]);
+    }
+    let answer = String::from_utf8_lossy(&answer[..answer.len() - 1]).into_owned();
+    if answer != "ok" {
+        return Err(std::io::Error::other(format!(
+            "the engine's relay answered: {answer}"
+        )));
+    }
+    stream.set_read_timeout(None)?;
+    Ok(stream)
+}
+
+/// The longest answer the launcher reads from a relay.
+const MAX_ANSWER: usize = 512;
+
 /// Serves `socket` until the process ends, one thread per connection.
 pub fn run(socket: &Path, owner_uid: &std::ffi::OsStr) -> Result<std::convert::Infallible, String> {
     let owner_uid: u32 = owner_uid

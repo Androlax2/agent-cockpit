@@ -17,6 +17,14 @@ use crate::egress::{AllowSource, PROXY_ADDRESS};
 /// The most forwards one launch serves: each is a listener handed out of the sandbox.
 pub const MAX_FORWARDS: usize = 32;
 
+/// The service of a project engine's published ports (#860 Q4, #390): opened live, one
+/// listener per port the owner allowed, never declared.
+pub const CONTAINERS_SERVICE: &str = "containers";
+
+/// The lowest port a forward listens on: stage 2 binds without privileges, where the
+/// kernel's `ip_unprivileged_port_start` keeps lower ports from it.
+pub(crate) const FIRST_UNPRIVILEGED_PORT: u16 = 1024;
+
 /// One end of a forward: a loopback port, or a named Unix socket.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -27,6 +35,9 @@ pub enum Endpoint {
     /// A named Unix socket. As a `listen`, the launcher creates it in a folder of its own,
     /// bound read-only at the path's folder, so the program cannot replace it.
     Socket { path: PathBuf },
+    /// A port the project engine run by `user` published, reached through that engine's
+    /// relay (#390); a live `containers` forward's target only.
+    Engine { user: String, port: u16 },
 }
 
 impl fmt::Display for Endpoint {
@@ -34,6 +45,7 @@ impl fmt::Display for Endpoint {
         match self {
             Endpoint::Port { port } => write!(formatter, "127.0.0.1:{port}"),
             Endpoint::Socket { path } => write!(formatter, "unix:{}", path.display()),
+            Endpoint::Engine { user, port } => write!(formatter, "engine:{user}:{port}"),
         }
     }
 }
@@ -64,9 +76,63 @@ impl Forward {
     pub fn listen_port(&self) -> Option<u16> {
         match self.listen {
             Endpoint::Port { port } => Some(port),
-            Endpoint::Socket { .. } => None,
+            Endpoint::Socket { .. } | Endpoint::Engine { .. } => None,
         }
     }
+
+    /// A [`CONTAINERS_SERVICE`] forward the launcher opens live: the sandbox's `port`
+    /// relayed to the same port of the engine `user` runs.
+    pub fn container_port(user: &str, port: u16) -> Forward {
+        Forward {
+            service: CONTAINERS_SERVICE.to_owned(),
+            listen: Endpoint::Port { port },
+            target: Endpoint::Engine {
+                user: user.to_owned(),
+                port,
+            },
+        }
+    }
+
+    /// Why the launcher does not open this forward live, if it does not: only
+    /// [`Forward::container_port`]'s shape is opened, on a port the sandbox may bind.
+    pub fn live_problem(&self) -> Option<String> {
+        let (Endpoint::Port { port }, Endpoint::Engine { user, port: target }) =
+            (&self.listen, &self.target)
+        else {
+            return Some(format!("{} is not a container port", self.record()));
+        };
+        if self.service != CONTAINERS_SERVICE || port != target {
+            return Some(format!("{} is not a container port", self.record()));
+        }
+        if *port < FIRST_UNPRIVILEGED_PORT || *port == proxy_port() {
+            return Some(format!(
+                "port {port} is the session proxy's or below {FIRST_UNPRIVILEGED_PORT}"
+            ));
+        }
+        if !is_engine_user(user) {
+            return Some(format!("{user:?} is not an engine user"));
+        }
+        None
+    }
+}
+
+/// A name `useradd` takes and a record reads one way: lower-case letters, digits and `-`.
+fn is_engine_user(user: &str) -> bool {
+    !user.is_empty()
+        && user.len() <= 32
+        && user.starts_with(|first: char| first.is_ascii_lowercase())
+        && user
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+/// A project engine's relay, as the daemon found it verified (#390): its socket, and the
+/// engine user's uid, which must be the one listening there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineRelay {
+    pub user: String,
+    pub uid: u32,
+    pub socket: PathBuf,
 }
 
 /// A lower-case ASCII letter, then letters, digits and `-`, at most 64 bytes: a service name
@@ -98,6 +164,10 @@ pub struct ServiceDecisions {
     pub denied: Vec<DecidedService>,
     /// The records asked of the owner and not yet decided.
     pub asking: Vec<DecidedService>,
+    /// The session's project engine, which [`CONTAINERS_SERVICE`] forwards reach; None when
+    /// the daemon verified none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<EngineRelay>,
 }
 
 /// A record the owner allowed, and why.
@@ -106,6 +176,10 @@ pub struct AllowedService {
     pub service: String,
     pub record: String,
     pub source: AllowSource,
+    /// The forward the launcher opens live while this allows it, when no spec declared it:
+    /// a [`CONTAINERS_SERVICE`] port (#390). Its record is `record`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<Forward>,
 }
 
 /// A record the owner denied, or is asked about, and its request.
@@ -150,6 +224,18 @@ impl ServiceDecisions {
         self.allowing_record(&asked.service, &asked.record)
             .is_some()
             || find(&self.denied, &asked.service, &asked.record).is_some()
+    }
+}
+
+impl ServiceDecisions {
+    /// The forwards to open live now: each allowed one whose record is its own.
+    pub fn live_forwards(&self) -> impl Iterator<Item = &Forward> {
+        self.allowed.iter().filter_map(|allowed| {
+            allowed
+                .live
+                .as_ref()
+                .filter(|live| live.record() == allowed.record)
+        })
     }
 }
 

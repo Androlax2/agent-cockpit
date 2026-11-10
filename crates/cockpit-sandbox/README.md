@@ -33,6 +33,10 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   connection files a request (`file_service_request`); `ask_service` files an agent's
   `torlek ask service` ahead, with its reason (migration 6), or returns the standing request
   or grant.
+- Live container ports (#390, `forwards.rs`): `Endpoint::Engine` names an engine's port, a
+  target only `Forward::container_port` builds; a spec forward naming one is refused.
+  `AllowedService::live` carries the forward the launcher opens while the session runs, and
+  `ServiceDecisions::engine` (`EngineRelay`) the verified engine it reaches.
 - Toolchains and caches (#859): the caller resolves `ToolNeeds` from the toolchain table of
   `cockpit-provider-api`. The install roots `PATH` resolves the checkout's ecosystems in are
   bound read-only; every cache variable points into `caches/` of the session's temp folder;

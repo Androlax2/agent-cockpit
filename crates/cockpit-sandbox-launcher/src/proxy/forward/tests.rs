@@ -79,6 +79,7 @@ fn allowing(forward: &Forward, source: AllowSource) -> EgressDecisions {
                 service: forward.service.clone(),
                 record: forward.record(),
                 source,
+                live: None,
             }],
             ..ServiceDecisions::default()
         },

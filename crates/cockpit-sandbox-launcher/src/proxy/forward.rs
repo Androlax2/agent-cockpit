@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use cockpit_sandbox::{AskedService, EgressCounters, Endpoint, Forward};
+use cockpit_sandbox::{AskedService, EgressCounters, Endpoint, EngineRelay, Forward};
 
 use rustix::net::sockopt::{Timeout, set_socket_timeout};
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with};
@@ -167,11 +167,24 @@ pub fn bind_sockets(mount_dir: &Path, forwards: &[Forward]) -> Result<BoundSocke
 impl<U: Upstream> Proxy<U> {
     /// Serves `forward` on `listener` until the process ends: one thread per connection.
     pub fn serve_forward(self: &Arc<Self>, forward: Forward, listener: Listener) {
+        self.serve_forward_until(forward, &listener, &|| false);
+    }
+
+    /// Serves `forward` on `listener` until `is_closed` holds once its accept fails.
+    pub(super) fn serve_forward_until(
+        self: &Arc<Self>,
+        forward: Forward,
+        listener: &Listener,
+        is_closed: &dyn Fn() -> bool,
+    ) {
         // Listed in the evidence from the start, connected or not.
         self.count_forward(&forward.service, |_| {});
         let forward = Arc::new(forward);
         loop {
             let Ok(client) = listener.accept() else {
+                if is_closed() {
+                    return;
+                }
                 std::thread::sleep(super::ACCEPT_RETRY);
                 continue;
             };
@@ -193,13 +206,17 @@ impl<U: Upstream> Proxy<U> {
         let Some(allowed) = services.allowing(forward) else {
             let reason = match services.denial(forward) {
                 Some(request) => format!("the owner denied service request {request}"),
+                // Opened by a decision, so asked of the owner already: its listener closes.
+                None if forward.live_problem().is_none() => {
+                    format!("the owner's decisions no longer allow {}", forward.record())
+                }
                 None => self.ask_service(forward),
             };
             self.refuse_forward(forward, &client, reason);
             return;
         };
         let source = allowed.source.to_string();
-        let target = match self.connect_target(&forward.target) {
+        let target = match self.connect_target(&forward.target, services.engine.as_ref()) {
             Ok(target) => target,
             Err(error) => {
                 client.shutdown(Shutdown::Both);
@@ -269,13 +286,24 @@ impl<U: Upstream> Proxy<U> {
         }
     }
 
-    fn connect_target(&self, target: &Endpoint) -> std::io::Result<Stream> {
+    fn connect_target(
+        &self,
+        target: &Endpoint,
+        engine: Option<&EngineRelay>,
+    ) -> std::io::Result<Stream> {
         match target {
             Endpoint::Port { port } => self
                 .upstream
                 .connect(SocketAddr::from(([127, 0, 0, 1], *port)), CONNECT_TIMEOUT)
                 .map(Stream::Tcp),
             Endpoint::Socket { path } => connect_socket(path).map(Stream::Unix),
+            Endpoint::Engine { user, port } => {
+                let relay = engine.filter(|relay| &relay.user == user).ok_or_else(|| {
+                    std::io::Error::other(format!("the daemon verified no engine run by {user}"))
+                })?;
+                let stream = connect_socket(&relay.socket)?;
+                crate::engine_relay::request(stream, relay.uid, *port).map(Stream::Unix)
+            }
         }
     }
 
@@ -373,7 +401,7 @@ impl<U: Upstream> Proxy<U> {
         }
     }
 
-    fn count_forward(&self, service: &str, update: impl FnOnce(&mut EgressCounters)) {
+    pub(super) fn count_forward(&self, service: &str, update: impl FnOnce(&mut EgressCounters)) {
         let mut report = self
             .report
             .lock()

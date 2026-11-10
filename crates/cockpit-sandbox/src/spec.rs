@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::credentials::{CredentialScheme, Interception};
 use crate::egress::{Allowlist, EgressDecisions, TLS_PORT, Target, normalized_name};
-use crate::forwards::{Endpoint, Forward, MAX_FORWARDS, is_service_name, proxy_port};
+use crate::forwards::{
+    Endpoint, FIRST_UNPRIVILEGED_PORT, Forward, MAX_FORWARDS, is_service_name, proxy_port,
+};
 
 /// Bumped when a field changes meaning; the launcher refuses any other version, so a launcher
 /// left from an older install never half-reads a newer daemon's spec. 3: bound credentials
@@ -25,10 +27,6 @@ pub const SPEC_FILE: &str = "launch-spec.json";
 /// The lowest Landlock ABI the launcher enforces (#546 M2): under ABI 1 every rename or link
 /// across folders is denied, which breaks build tools.
 pub const LANDLOCK_ABI_FLOOR: u8 = 2;
-
-/// The lowest port a forward listens on: stage 2 binds without privileges, where the
-/// kernel's `ip_unprivileged_port_start` keeps lower ports from it.
-const FIRST_UNPRIVILEGED_PORT: u16 = 1024;
 
 /// Folders of the host every launch reads, never writes: programs, libraries and system
 /// configuration. Bound when present. Nothing under `/run`, `/var` or `/home`: container
@@ -328,6 +326,11 @@ impl LaunchSpec {
                 Endpoint::Socket { path } => {
                     check_socket_listen(service, path, &bound, earlier)?;
                 }
+                Endpoint::Engine { .. } => {
+                    return Err(InvalidSpec(format!(
+                        "service {service} listens on an engine's port, which is a target"
+                    )));
+                }
             }
             match &forward.target {
                 Endpoint::Port { port: 0 } => {
@@ -337,6 +340,13 @@ impl LaunchSpec {
                 Endpoint::Socket { path } => {
                     check_plain(path)?;
                     check_record_path(service, path)?;
+                }
+                // Opened live from the owner's decisions, never declared (#390).
+                Endpoint::Engine { .. } => {
+                    return Err(InvalidSpec(format!(
+                        "service {service} targets an engine's port, which only the owner's \
+                         decisions open"
+                    )));
                 }
             }
         }
@@ -382,7 +392,7 @@ fn check_socket_listen(
                     && (folder.starts_with(other_folder) || other_folder.starts_with(folder))
             })
             .map(|other_folder| (other, other_folder)),
-        Endpoint::Port { .. } => None,
+        Endpoint::Port { .. } | Endpoint::Engine { .. } => None,
     });
     if let Some((other, other_folder)) = nested {
         return Err(InvalidSpec(format!(
