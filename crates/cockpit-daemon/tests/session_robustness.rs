@@ -5,7 +5,8 @@
 //!
 //! Same setting as `sessions.rs`: the daemon runs in this process with the fake provider
 //! (baseline contract only), a real state database, real processes and a private tmux
-//! server. The periodic pass is left at the fixture's hour, so it never runs mid-test.
+//! server. The periodic pass and the exit sweep are left at the fixture's hour, so neither
+//! runs mid-test; a test about what the sweep does starts the daemon with a fast one.
 #![cfg(target_os = "linux")]
 
 mod candidate;
@@ -22,6 +23,8 @@ use cockpit_protocol::{Command, ErrorCode, LaunchKindView, Reply, SessionStateVi
 use cockpit_provider_api::ProviderName;
 use cockpit_provider_api::fake::{FakeLaunch as AgentLaunch, FakeProvider};
 use common::GENEROUS;
+
+const HELD_SWEEP: Duration = Duration::from_secs(3600);
 
 struct Home {
     dir: tempfile::TempDir,
@@ -57,6 +60,12 @@ impl Home {
     }
 
     async fn start(&self) -> Daemon {
+        self.start_sweeping_every(HELD_SWEEP).await
+    }
+
+    /// A daemon whose exit sweep runs every `exit_sweep`. [`Self::start`] holds it: a test
+    /// that kills an agent on purpose must not have the sweep end the session first (#1159).
+    async fn start_sweeping_every(&self, exit_sweep: Duration) -> Daemon {
         let deadline = Instant::now() + GENEROUS;
         loop {
             let provider = FakeProvider::new(
@@ -71,6 +80,7 @@ impl Home {
                 },
                 ..common::unsandboxed_settings()
             };
+            wiring.exit_sweep = exit_sweep;
             let options = Options {
                 runtime_dir: self.path().join("run/cockpit"),
                 state_dir: self.path().join("state/cockpit"),
@@ -438,6 +448,39 @@ async fn restart_of_a_session_whose_agent_died_unnoticed_relaunches_it() {
     assert_eq!(restarted.state, SessionStateView::Running);
     let launches = home.launches_of(&started.id, 2).await;
     assert!(is_alive(launches[1].pid));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_of_a_session_whose_death_the_sweep_noticed_is_refused() {
+    let home = Home::new();
+    let daemon = home.start_sweeping_every(Duration::from_millis(100)).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&home, &client, &root).await;
+    Process::new("kill")
+        .arg(home.launches_of(&started.id, 1).await[0].pid.to_string())
+        .status()
+        .unwrap();
+    let deadline = Instant::now() + GENEROUS;
+    while listed(&client, &started.id).await.state != SessionStateView::Ended {
+        assert!(
+            Instant::now() < deadline,
+            "the sweep never ended the session"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let refused = common::refused(
+        request(
+            &client,
+            Command::SessionRestart {
+                session: started.id.clone(),
+            },
+        )
+        .await,
+    );
+
+    assert_eq!(refused.code, ErrorCode::Conflict);
 }
 
 #[tokio::test(flavor = "multi_thread")]
