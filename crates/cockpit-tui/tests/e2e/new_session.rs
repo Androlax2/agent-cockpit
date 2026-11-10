@@ -3,7 +3,7 @@
 
 use cockpit_protocol::SessionStateView;
 
-use crate::harness::{Cockpit, FIRST_MESSAGE, PROJECT, session_ids, viewer_rows};
+use crate::harness::{Cockpit, DaemonKind, FIRST_MESSAGE, PROJECT, session_ids, viewer_rows};
 
 /// Opens the form and waits for the daemon's agents in it.
 fn open_form(cockpit: &Cockpit) {
@@ -125,4 +125,54 @@ fn a_session_started_from_the_cli_appears_by_itself() {
     let session = cockpit.session_from_cli();
     let screen = cockpit.wait_for(&session);
     assert_eq!(session_ids(&screen), vec![session]);
+}
+
+const CODEX_DIRECTORY_VARIABLE: &str = "COCKPIT_E2E_HOST_CODEX_DIRECTORY";
+const HOST_PATH_TEST: &str =
+    "new_session::a_codex_on_the_host_path_does_not_change_the_agent_session_new_picks";
+
+/// #932: with a second agent installed, `session new` without `--agent` would be ambiguous.
+/// The harness gives the daemon its own `PATH`, so the host's `codex` stays out of it. The
+/// host's `PATH` belongs to this process and cannot change under tests running beside it, so
+/// the test runs itself again in a process that has a `codex` on its `PATH`.
+#[test]
+fn a_codex_on_the_host_path_does_not_change_the_agent_session_new_picks() {
+    match std::env::var_os(CODEX_DIRECTORY_VARIABLE) {
+        Some(_) => session_new_picks_claude(),
+        None => rerun_with_codex_on_the_host_path(),
+    }
+}
+
+fn session_new_picks_claude() {
+    let cockpit = Cockpit::start_without_tui(DaemonKind::Product);
+    let session = cockpit.session_from_cli();
+    let view = cockpit.wait_for_session(&session, "runs", |view| {
+        view.state == SessionStateView::Running
+    });
+    assert_eq!(view.agent, "claude");
+}
+
+fn rerun_with_codex_on_the_host_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let codex_directory = tempfile::tempdir().expect("a directory for the host's codex");
+    let codex = codex_directory.path().join("codex");
+    std::fs::write(&codex, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut host_path = vec![codex_directory.path().to_path_buf()];
+    host_path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let rerun = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", HOST_PATH_TEST, "--nocapture"])
+        .env("PATH", std::env::join_paths(host_path).unwrap())
+        .env(CODEX_DIRECTORY_VARIABLE, codex_directory.path())
+        .output()
+        .expect("the test binary runs again");
+    let stdout = String::from_utf8_lossy(&rerun.stdout);
+    assert!(
+        rerun.status.success() && stdout.contains("1 passed"),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&rerun.stderr)
+    );
 }
