@@ -109,19 +109,35 @@ fn a_verb_family_error_is_much_shorter_than_the_whole_usage() {
 }
 
 #[test]
-fn an_unknown_verb_still_prints_the_whole_usage() {
-    let message = stderr(&torlek(&["bogus"]));
+fn an_unknown_first_word_prints_one_line_and_no_usage_block() {
+    let output = torlek(&["frobnicate"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        stderr(&output),
+        "torlek: unknown verb `frobnicate`; `torlek` alone lists the verbs, `torlek version` the release\n"
+    );
+}
+
+#[test]
+fn a_known_verb_with_no_matching_subcommand_still_prints_the_whole_usage() {
+    let message = stderr(&torlek(&["config"]));
 
     assert!(
         message.starts_with("usage: torlek [--profile NAME] VERB ...\n"),
         "{message}"
     );
     assert!(message.contains("\n       torlek todo add "), "{message}");
-    assert!(
-        message.contains("\n       torlek config show "),
-        "{message}"
-    );
-    assert!(!message.contains(POINTER), "{message}");
+}
+
+#[test]
+fn help_prints_the_whole_usage_exiting_2() {
+    for flag in ["--help", "-h"] {
+        let output = torlek(&[flag]);
+
+        assert_eq!(output.status.code(), Some(2), "{flag}");
+        assert!(stderr(&output).len() > 4_000, "{flag}");
+    }
 }
 
 #[test]

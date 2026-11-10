@@ -335,7 +335,9 @@ fn main() -> ExitCode {
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("notify"), ..] => notify::run(&arguments[1..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
-        _ => usage_error(None),
+        [Some("--help" | "-h"), ..] => usage_error(None),
+        _ if is_verb_of_usage(&verb_name) => usage_error(None),
+        _ => unknown_verb_error(&verb_name),
     }
 }
 
@@ -366,6 +368,23 @@ fn usage_error(problem: Option<String>) -> ExitCode {
     }
     eprintln!("{USAGE}");
     ExitCode::from(2)
+}
+
+/// Exit 2 with one line for a first word that is no verb, instead of the whole usage an agent
+/// pays about 1.5k tokens for on each such mistake (#1337).
+fn unknown_verb_error(word: &str) -> ExitCode {
+    eprintln!(
+        "torlek: unknown verb `{word}`; `torlek` alone lists the verbs, `torlek version` the release"
+    );
+    ExitCode::from(2)
+}
+
+/// Whether `word` starts a line of `USAGE`: a verb whose arguments did not match any arm above.
+fn is_verb_of_usage(word: &str) -> bool {
+    USAGE
+        .lines()
+        .skip(1)
+        .any(|line| line.split_whitespace().nth(1) == Some(word))
 }
 
 /// Exit 2 naming the rejected argument, then only the lines of `USAGE` for `verb` and a pointer
