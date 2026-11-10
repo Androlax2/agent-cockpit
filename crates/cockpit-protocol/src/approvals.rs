@@ -116,6 +116,10 @@ pub struct RunRequestView {
     /// The owner's decision, once made (#657); `None` while asking or once expired.
     #[serde(default)]
     pub decision: Option<RunDecisionView>,
+    /// Only on the answer to an `AskRun`: the session already had an identical ask pending
+    /// (#1335), so this is that request, nothing new was filed and the new reason was dropped.
+    #[serde(default)]
+    pub already_asked: bool,
 }
 
 /// The owner's decision on a run request (#657): only the owner decides, on the host-only

@@ -210,6 +210,7 @@ impl Agent {
 
     fn ask_run(&self, asked: RunAsked) -> ExitCode {
         let waits = asked.waits;
+        let reason = asked.reason.clone();
         let asked = self.request(Command::AskRun {
             launch_token: crate::agent::launch_token(),
             command: asked.command,
@@ -217,6 +218,23 @@ impl Agent {
             reason: asked.reason,
         });
         match asked {
+            Ok(Reply::RunRequest { request }) if request.already_asked => {
+                let id = request.id;
+                let dropped = if request.reason == reason {
+                    ""
+                } else {
+                    "; this reason was dropped, the first one stands"
+                };
+                if waits {
+                    eprintln!("torlek: already asked (request {id}){dropped}; waiting");
+                    return self.wait_for_run(id);
+                }
+                eprintln!(
+                    "torlek: already asked (request {id}){dropped}; wait with: \
+                     torlek ask run --wait {id}"
+                );
+                ExitCode::from(PENDING)
+            }
             Ok(Reply::RunRequest { request }) if waits => {
                 eprintln!("torlek: asked the owner (request {}); waiting", request.id);
                 self.wait_for_run(request.id)

@@ -187,6 +187,7 @@ fn a_finished_run_request_reply_round_trips() {
                 stopped_by_owner: false,
             }),
             note: None,
+            already_asked: false,
         }),
     });
 

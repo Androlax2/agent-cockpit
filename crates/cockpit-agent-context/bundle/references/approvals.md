@@ -8,6 +8,8 @@ exactly what you ask.
   the host. The reason says what it does, why now and what to expect. The owner approves the
   exact command (its digest), edits it or declines; you get its output and exit status.
   `torlek ask run --wait ID` waits again for an answer.
+  Asking again while the same command in the same directory is still pending files nothing:
+  you get the pending id and `--wait ID`, and the new reason is dropped.
 - `torlek ask guide [--cwd DIR] < GUIDE` hands the owner manual steps (a browser, a
   console) one at a time and returns their answers or the step they got stuck on.
   Prefer `ask run` whenever a command can do the step.
