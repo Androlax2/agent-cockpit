@@ -499,10 +499,23 @@ async fn refuse_handshake(home: &TestHome) {
         .write_all(b"{\"protocol_versions\":[99]}\n")
         .await
         .unwrap();
+    let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    tokio::time::timeout(GENEROUS, BufReader::new(stream).read_line(&mut line))
+    tokio::time::timeout(GENEROUS, reader.read_line(&mut line))
         .await
         .unwrap()
         .unwrap();
     assert!(line.contains("refused"), "{line}");
+    // The daemon writes its reply before it logs the refusal, then closes the connection. Reading
+    // to the close orders the log event before this function returns; without it, a refusal made
+    // under one filter could be logged after the test has already switched to the next (#1187).
+    let mut after_reply = String::new();
+    let closed = tokio::time::timeout(GENEROUS, reader.read_line(&mut after_reply))
+        .await
+        .expect("the daemon did not close the connection after refusing the handshake")
+        .unwrap();
+    assert_eq!(
+        closed, 0,
+        "the daemon sent more after refusing: {after_reply}"
+    );
 }

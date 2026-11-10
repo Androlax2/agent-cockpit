@@ -59,6 +59,22 @@ fn unix_now() -> i64 {
     i64::try_from(since_epoch.as_secs()).unwrap()
 }
 
+/// Asserts `stdout` is what the CLI prints for some second between `before` and `after`, the
+/// test's reads of the clock around the run. The CLI counts "N s ago" from its own clock read,
+/// which falls anywhere in that span, so a second ticking over must not fail the test (#1208).
+fn assert_printed_at_some_second(
+    stdout: &str,
+    before: i64,
+    after: i64,
+    printed_at: impl Fn(i64) -> String,
+) {
+    let possible: Vec<String> = (before..=after).map(printed_at).collect();
+    assert!(
+        possible.iter().any(|expected| expected == stdout),
+        "the CLI printed {stdout:?}, expected one of {possible:?}"
+    );
+}
+
 fn window(limit: &str, used_percent: u32, resets_at: Option<i64>) -> QuotaWindowView {
     QuotaWindowView {
         limit: limit.to_owned(),
@@ -221,6 +237,7 @@ async fn each_window_shows_the_queue_pace_and_how_long_queued_work_waits() {
 async fn a_blocked_account_says_so_and_a_failure_before_the_reading_is_labelled() {
     let home = Home::new();
     let now = unix_now();
+    let observed_at = now - 60;
     let daemon = scripted_daemon(
         &home.daemon_socket(),
         Outcome::Ok(Reply::UsageQuota {
@@ -229,7 +246,7 @@ async fn a_blocked_account_says_so_and_a_failure_before_the_reading_is_labelled(
                 account: "default".to_owned(),
                 plan: Some("plus".to_owned()),
                 is_blocked: true,
-                observed_at: Some(now - 60),
+                observed_at: Some(observed_at),
                 is_current: true,
                 failure: Some(QuotaFailureView {
                     at: now - 3 * 86_400,
@@ -240,21 +257,25 @@ async fn a_blocked_account_says_so_and_a_failure_before_the_reading_is_labelled(
         }),
     );
 
+    let before = unix_now();
     let output = home.cockpit(&["usage", "quota"]).await;
+    let after = unix_now();
 
     assert!(output.status.success(), "{}", text(&output.stderr));
-    assert_eq!(
-        text(&output.stdout),
-        "codex\tdefault\tplan plus\tread 60 s ago\tcurrent\tblocked\n\
-         \x20 refresh failed 3 days ago, before the last reading: did not answer within 12000 ms\n"
-    );
+    assert_printed_at_some_second(&text(&output.stdout), before, after, |cli_now| {
+        format!(
+            "codex\tdefault\tplan plus\tread {} s ago\tcurrent\tblocked\n\
+             \x20 refresh failed 3 days ago, before the last reading: did not answer within 12000 ms\n",
+            cli_now - observed_at
+        )
+    });
     daemon.await.unwrap();
 }
 
 #[tokio::test]
 async fn the_providers_words_are_printed_escaped() {
     let home = Home::new();
-    let now = unix_now();
+    let failed_at = unix_now() - 60;
     let daemon = scripted_daemon(
         &home.daemon_socket(),
         Outcome::Ok(Reply::UsageQuota {
@@ -266,7 +287,7 @@ async fn the_providers_words_are_printed_escaped() {
                 observed_at: None,
                 is_current: false,
                 failure: Some(QuotaFailureView {
-                    at: now - 60,
+                    at: failed_at,
                     reason: "refused\nclaude\tdefault\tplan max".to_owned(),
                 }),
                 windows: Vec::new(),
@@ -274,14 +295,18 @@ async fn the_providers_words_are_printed_escaped() {
         }),
     );
 
+    let before = unix_now();
     let output = home.cockpit(&["usage", "quota"]).await;
+    let after = unix_now();
 
     assert!(output.status.success(), "{}", text(&output.stderr));
-    assert_eq!(
-        text(&output.stdout),
-        "codex\tdefault\tplan plus\\u{1b}[2J\tnever read\tstale\n\
-         \x20 refresh failed 60 s ago: refused\\nclaude\\tdefault\\tplan max\n"
-    );
+    assert_printed_at_some_second(&text(&output.stdout), before, after, |cli_now| {
+        format!(
+            "codex\tdefault\tplan plus\\u{{1b}}[2J\tnever read\tstale\n\
+             \x20 refresh failed {} s ago: refused\\nclaude\\tdefault\\tplan max\n",
+            cli_now - failed_at
+        )
+    });
     daemon.await.unwrap();
 }
 
