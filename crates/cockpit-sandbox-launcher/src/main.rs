@@ -12,11 +12,16 @@
 //!   travels on its own, so each keeps the kernel's per-argument limit it has unsandboxed.
 //! - `torlek-sandbox probe BWRAP`: a short probe launch the daemon runs at its start; prints
 //!   the bubblewrap version and the Landlock ABI the kernel gives a sandboxed process.
+//! - `torlek-sandbox engine-relay SOCKET OWNER_UID`: run by a project engine's relay unit
+//!   inside the engine's network namespace (#390); relays the owner's connections to the
+//!   ports that engine published.
 
 #[cfg(target_os = "linux")]
 mod authority;
 #[cfg(target_os = "linux")]
 mod client_hello;
+#[cfg(target_os = "linux")]
+mod engine_relay;
 #[cfg(target_os = "linux")]
 mod handoff;
 #[cfg(target_os = "linux")]
@@ -60,8 +65,12 @@ fn main() -> ExitCode {
         Some((verb, [])) if verb == stage2::PROBE_VERB => {
             stage2::probe().map(|()| ExitCode::SUCCESS)
         }
+        Some((verb, [socket, owner_uid])) if verb == "engine-relay" => {
+            engine_relay::run(std::path::Path::new(socket), owner_uid).map(|never| match never {})
+        }
         _ => Err(
-            "usage: torlek-sandbox run SPEC | torlek-sandbox probe BWRAP (stage2 is internal)"
+            "usage: torlek-sandbox run SPEC | torlek-sandbox probe BWRAP | torlek-sandbox \
+             engine-relay SOCKET OWNER_UID (stage2 is internal)"
                 .to_owned(),
         ),
     };

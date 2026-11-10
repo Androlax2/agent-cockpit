@@ -548,6 +548,12 @@ async fn a_sandboxed_docker_project_without_its_engine_gets_the_setup_script() {
     );
     let written = std::fs::read_to_string(&script).unwrap();
     assert!(written.contains("user='torlek-dev-e1'"), "{written}");
+    // The relay unit runs the sandbox launcher installed beside the daemon.
+    assert!(
+        written.contains("/torlek-sandbox'\n")
+            && written.contains("engine-relay /run/torlek-dev-e1/relay.sock "),
+        "{written}"
+    );
     assert!(!probed.exists(), "the owner's own docker was asked");
 }
 

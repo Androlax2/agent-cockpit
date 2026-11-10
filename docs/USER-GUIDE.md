@@ -154,6 +154,9 @@ torlek containers record PROJECT   # records the engine that now answers as the 
 ```
 
 The engine sees only the project's checkout and clones folder, and no network yet.
+Beside it, `torlek-engine-relay@<user>.service` runs your installed `torlek-sandbox` as the engine's user, inside the engine's network namespace, to relay you to the ports the engine published; it serves your user alone.
+It runs the program from your install, read-only, so an upgrade applies when the engine restarts; the trade-off is that whatever can write your Torlek install can run as the project's engine user.
+Run the setup script again if Torlek's programs move.
 Recording again replaces the recorded engine: do it after reinstalling one, and only for an engine you set up.
 Sessions do not reach the engine yet in this release; `torlek doctor` says `unsupported` once it is verified.
 

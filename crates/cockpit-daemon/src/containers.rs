@@ -32,6 +32,9 @@ pub(crate) struct Host {
     pub(crate) qualified_profile: String,
     /// Where setup scripts are written for the owner to review.
     pub(crate) scripts_dir: PathBuf,
+    /// The installed `torlek-sandbox` the engine's relay unit runs; the setup script checks
+    /// the engine's user can run it.
+    pub(crate) relay_program: PathBuf,
 }
 
 impl Host {
@@ -39,12 +42,14 @@ impl Host {
         owner_uid: u32,
         state_dir: &Path,
         environment: &cockpit_config::Environment,
+        sandbox_launcher: &Path,
     ) -> Host {
         Host {
             owner_uid,
             owner_home: environment.home.as_ref().map(PathBuf::from),
             qualified_profile: environment.profile.value.qualified_name(),
             scripts_dir: state_dir.join("containers"),
+            relay_program: sandbox_launcher.to_path_buf(),
         }
     }
 }
@@ -213,6 +218,7 @@ fn write_setup(
         project_root: &project.root,
         clones_dir: &clones_dir,
         record_command,
+        relay_program: &host.relay_program,
     })?;
     cockpit_containers::write_setup_script(&host.scripts_dir, user, &script)
 }
