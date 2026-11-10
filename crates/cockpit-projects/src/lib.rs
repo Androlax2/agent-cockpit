@@ -44,7 +44,7 @@ pub use sweep::{Kept, SweepReport, sweep, sweep_clone};
 
 /// Where a project's clones live: `<parent of the root>/.parallel/<project>/`, beside the
 /// project, as the current `cockpit` script lays out `~/IdeaProjects/.parallel`.
-pub(crate) fn clones_dir(project_root: &Path, project: &ProjectName) -> Result<PathBuf, Error> {
+pub fn clones_dir(project_root: &Path, project: &ProjectName) -> Result<PathBuf, Error> {
     let parent = project_root.parent().ok_or_else(|| Error::InvalidPath {
         path: project_root.to_path_buf(),
         reason: "a project root has a parent directory to hold its clones".to_owned(),

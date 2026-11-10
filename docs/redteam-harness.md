@@ -27,6 +27,7 @@ fields, decides the refusal, so every command in a group takes the identical cod
 | 347 | `ProjectAdd`, `ProjectList`, `ProjectRemove`, `CheckoutList`, `CheckoutClone`, `CheckoutReview`, `CheckoutClaim`, `CheckoutRelease`, `CheckoutSweep`, `CheckoutPush` | `project add\|list\|remove`, `checkout list\|clone\|review\|claim\|release\|sweep\|push` |
 | 389 | `ApprovalQueue`, `ApprovalDecided`, `ApprovalShow`, `ApprovalApprove`, `ApprovalDecline`, `ApprovalEdit`, `ApprovalInput`, `GuideShow`, `GuideAnswer`, `GuideStuck`, `GuideClose` | `approval list [--all]\|show\|approve\|decline\|edit\|input`, `guide show\|answer\|stuck\|close` |
 | 406 | `NetworkList`, `NetworkDecided`, `NetworkAllow`, `NetworkDeny`, `NetworkGrants`, `NetworkGrantGithub`, `NetworkRevoke` | `network list [--all]\|allow\|deny\|grants\|grant\|revoke` |
+| 457 | `ContainersRecord` | `containers record` |
 | 415 | `AccountSignIn`, `AccountSignedIn`, `AccountSignInDiscard`, `AccountGrant`, `AccountGrants`, `AccountRevoke` | `account sign-in\|grant\|grants\|revoke` |
 | 441 | `SessionGrant`, `SessionRevoke`, `SessionGrants` | `session grant\|revoke\|grants` |
 | 465 | `SessionNew`, `SessionList`, `SessionRestart`, `SessionRestartAll`, `SessionSleep`, `SessionWake`, `SessionResume`, `SessionSend`, `SessionCancel`, `SessionEnd`, `SessionEndFinished`, `SessionLink`, `SessionSandbox`, `SessionSandboxRecord`, `SandboxShow` | `session new\|list\|restart\|sleep\|wake\|resume\|send\|cancel\|end\|link\|sandbox\|sandbox-record`, `sandbox show` |

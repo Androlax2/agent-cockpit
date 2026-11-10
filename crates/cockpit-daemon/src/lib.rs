@@ -8,6 +8,7 @@ mod budgets;
 mod bug_report_feed;
 mod bug_reports;
 mod clipboard;
+mod containers;
 mod coordination;
 mod coordinator_workers;
 mod cost;
@@ -65,7 +66,7 @@ pub use session_sockets::SessionTreeSockets;
 pub use usage::QuotaPolling;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 15] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 16] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
@@ -81,6 +82,7 @@ pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 15] = [
     cockpit_scheduling::MIGRATIONS,
     cockpit_bug_reports::MIGRATIONS,
     cockpit_usage::MIGRATIONS,
+    cockpit_containers::MIGRATIONS,
 ];
 
 /// Names the directory holding the instruction bundle in every agent's environment.
@@ -220,6 +222,8 @@ pub struct Capabilities {
     pub bug_report_facts: Arc<cockpit_bug_reports::Facts>,
     /// `$XDG_STATE_HOME/cockpit`, where bug report bundles are written beside the logs.
     pub state_dir: PathBuf,
+    /// The user this daemon runs as: no project's engine may run as it (#390).
+    pub owner_uid: u32,
     /// The optional skill pack as this start delivered it (#786).
     pub skill_pack: Arc<DeliveredSkillPack>,
     /// The policy the quota worker judges readings under; `None` when it reads none (#58).
@@ -512,6 +516,11 @@ impl Instance {
             environment: wiring.environment.clone(),
             manager: Arc::clone(&manager),
             early_answer: readiness::Context::early_answer(),
+            containers: containers::Host::new(
+                self.owner_uid,
+                &options.state_dir,
+                &wiring.environment,
+            ),
         };
         let is_restoring = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let shared = Arc::new(server::Shared {
@@ -550,6 +559,7 @@ impl Instance {
                 network_decided: Arc::clone(&network_decided),
                 bug_report_facts: Arc::clone(&bug_report_facts),
                 state_dir: options.state_dir.clone(),
+                owner_uid: self.owner_uid,
                 skill_pack,
                 quota_policy: wiring.quota.as_ref().map(|polling| polling.policy.clone()),
                 project_shares: project_shares(wiring.quota.as_ref()),

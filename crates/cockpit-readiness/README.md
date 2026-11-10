@@ -57,6 +57,13 @@ Docker is probed only then, by the daemon with `cockpit-containers`: a `docker` 
 an engine. The engine's ID, name and version identify it, and a rootful engine on Linux is
 `missing-prerequisite`: whoever reaches its socket is root on the host (report 11).
 
+Under `agents.sandbox = "required"` sandboxed sessions never reach the owner's engine, so
+`docker` reports the project's own instead (#390): rootless Docker under a system user of
+its own, which the daemon verifies through its socket against the engine the owner
+recorded. Not set up, not recorded and refused are `missing-prerequisite`, each with its
+next step (the setup script to review and run, `torlek containers record`, starting the
+unit). A verified engine is `unsupported` until sessions can reach it.
+
 Provider sign-in comes from the adapter on each readiness request (#443): signed in is
 `available`, explicitly signed out is `needs-authorization` with the provider's next step,
 and an unavailable or failed probe is `unknown`. Its detail names the probe's own provenance.

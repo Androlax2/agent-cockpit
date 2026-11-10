@@ -12,9 +12,9 @@ use tokio::sync::mpsc;
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::{
-    Capabilities, Manager, accounts, agent, agent_context, approvals, bug_reports, coordination,
-    credentials, feed, manager, network, projects, readiness, resources, scheduling, sessions,
-    tasks, verification, workflows,
+    Capabilities, Manager, accounts, agent, agent_context, approvals, bug_reports, containers,
+    coordination, credentials, feed, manager, network, projects, readiness, resources, scheduling,
+    sessions, tasks, verification, workflows,
 };
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
@@ -138,6 +138,11 @@ impl Routes {
             environment: environment.clone(),
             manager: Arc::clone(&capabilities.manager),
             early_answer: readiness::Context::early_answer(),
+            containers: containers::Host::new(
+                capabilities.owner_uid,
+                &capabilities.state_dir,
+                &environment,
+            ),
         };
         Routes {
             is_restoring: capabilities.is_restoring,
@@ -447,6 +452,15 @@ impl Handler for Routes {
                     command,
                     Arc::clone(&self.database),
                     Arc::clone(&self.network_decided),
+                ),
+            },
+            (command @ Command::ContainersRecord { .. }, peer) => match peer {
+                // The owner alone decides which engine a project's sessions will use (#390).
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => containers::route(
+                    command,
+                    Arc::clone(&self.database),
+                    self.readiness.containers.clone(),
                 ),
             },
             (

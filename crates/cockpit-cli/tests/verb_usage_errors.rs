@@ -26,6 +26,7 @@ const MISTAKES: &[(&[&str], &str)] = &[
     (&["account", "grant", "app", "codex"], "account"),
     (&["account", "revoke", "first"], "account"),
     (&["network", "allow"], "network"),
+    (&["containers", "record"], "containers"),
     (&["session", "send"], "session"),
     (&["sandbox", "show"], "sandbox"),
     (&["provider", "bogus"], "provider"),

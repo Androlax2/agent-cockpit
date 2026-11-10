@@ -27,6 +27,7 @@ mod approvals;
 mod ask;
 mod bug_report;
 mod check;
+mod containers;
 mod coordination;
 mod credentials;
 mod daemon;
@@ -111,6 +112,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek account sign-in PROVIDER ACCOUNT | grant PROJECT PROVIDER ACCOUNT | grants [PROJECT] | revoke GRANT
        torlek network list [--all] | allow ID [--always] | deny ID | grants [PROJECT] | revoke GRANT
        torlek network grant PROJECT github.com
+       torlek containers record PROJECT
        torlek session send ID MESSAGE | cancel ID
        torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL] [--compaction-threshold VALUE]
        torlek session list [--ended]
@@ -251,6 +253,10 @@ fn main() -> ExitCode {
         },
         [Some("network"), ..] => match network::parse(&arguments[1..]) {
             Ok(command) => network::run(command),
+            Err(problem) => verb_usage_error(&verb_name, problem),
+        },
+        [Some("containers"), ..] => match containers::parse(&arguments[1..]) {
+            Ok(command) => containers::run(command),
             Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("project"), Some("token")] => credentials::project_token(&arguments[2..])

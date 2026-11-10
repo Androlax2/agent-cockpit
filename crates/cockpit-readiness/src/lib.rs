@@ -128,6 +128,46 @@ pub struct DockerEngine {
     pub in_desktop_vm: bool,
 }
 
+/// A project's own engine under `agents.sandbox = "required"` (#390): rootless Docker under
+/// a user of its own, which the daemon verified through its socket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectEngine {
+    /// The registered project's name, as `torlek containers record` takes it.
+    pub project: String,
+    /// The engine's system user: `torlek-e3`.
+    pub user: String,
+    pub state: EngineState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineState {
+    /// No engine answers as the project's and none is recorded, with why.
+    NotSetUp {
+        reason: String,
+        /// The setup script the owner reviews and runs, or why it was not written.
+        setup: Result<PathBuf, String>,
+    },
+    /// The project's engine answers, rootless, as its user; the owner has not recorded it.
+    Unrecorded(DockerEngine),
+    /// The recorded engine answers as the project's own, rootless.
+    Verified(DockerEngine),
+    /// What failed, by name, and what makes it usable.
+    Refused {
+        reason: String,
+        remedy: EngineRemedy,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineRemedy {
+    /// Run the setup script again, or why it was not written.
+    Setup(Result<PathBuf, String>),
+    /// Start the engine's unit.
+    Start { unit: String },
+    /// Record the engine that answers now.
+    Record,
+}
+
 /// The platform as the sandbox detected it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Platform {
@@ -268,8 +308,12 @@ pub struct ProjectFacts {
     pub presets: Vec<PresetFacts>,
     /// The host's budget, in the units of [`ProjectNeeds`].
     pub capacity: ProjectNeeds,
-    /// The probed engine, when [`needs_docker`] said to probe one.
+    /// The engine the owner's `docker` reaches, when [`needs_docker`] said to probe one and
+    /// agents run unsandboxed.
     pub docker: Option<Result<DockerEngine, String>>,
+    /// The project's own engine, when [`needs_docker`] said to probe one and agents run
+    /// sandboxed (#390), or why it could not be examined.
+    pub engine: Option<Result<ProjectEngine, String>>,
     /// The gates a session of each wired provider in `dir` would pass (#1250), when `dir` is
     /// a registered checkout, or why one could not be read.
     pub launch: Option<Result<Vec<LaunchFacts>, String>>,

@@ -525,8 +525,10 @@ dependencies = [
 name = "cockpit-containers"
 version = "0.1.0"
 dependencies = [
+ "cockpit-turso",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

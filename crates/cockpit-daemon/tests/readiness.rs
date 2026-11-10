@@ -508,6 +508,49 @@ async fn a_project_that_does_not_need_docker_never_runs_it() {
     assert!(!probed.exists());
 }
 
+/// #390, #856's table: sandboxed sessions never reach the owner's engine, so under
+/// `required` a Docker project needs its own, and doctor writes the script that sets it up.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_docker_project_without_its_engine_gets_the_setup_script() {
+    let home = Home::new();
+    home.write_owner_config("[agents]\nsandbox = \"required\"\n");
+    let probed = home.path().join("docker-ran");
+    let program = home.path().join("bin/docker");
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\ntouch '{}'\n", probed.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+    declare_docker(&root);
+
+    let doctor = home
+        .cockpit(&["doctor", "--project", root.to_str().unwrap()], &[])
+        .await;
+
+    let report = text(&doctor.stdout);
+    assert_eq!(doctor.status.code(), Some(1), "{report}");
+    let (docker, next) = requirement(&report, "docker");
+    assert_eq!(status(docker), "missing-prerequisite", "{docker}");
+    assert!(
+        docker.contains("no Torlek-run engine for this project"),
+        "{docker}"
+    );
+    let script = home.state_dir().join("containers/torlek-dev-e1-setup.sh");
+    let next = next.unwrap();
+    assert!(
+        next.contains(&format!("`sudo sh {}`", script.display()))
+            && next.contains("`torlek containers record app`"),
+        "{next}"
+    );
+    let written = std::fs::read_to_string(&script).unwrap();
+    assert!(written.contains("user='torlek-dev-e1'"), "{written}");
+    assert!(!probed.exists(), "the owner's own docker was asked");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_relative_project_directory_is_refused_on_the_wire() {
     let home = Home::new();

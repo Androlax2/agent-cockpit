@@ -424,6 +424,14 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         through: Option<DecidedThroughView>,
     },
+    /// Owner only: verify `project`'s own container engine (#390) and record its ID as the
+    /// one the project uses, replacing the one recorded before. Refused unless the engine
+    /// answers rootless as the project's own user. `through` names the client.
+    ContainersRecord {
+        project: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<DecidedThroughView>,
+    },
     /// Owner only: prepare a fresh home to sign `account` of `provider` in (#59); the answer
     /// is the harness's sign-in, which the owner's terminal runs with that home.
     AccountSignIn {
@@ -1199,6 +1207,15 @@ pub enum Reply {
     },
     Guide {
         guide: Box<GuideView>,
+    },
+    /// The engine `containers-record` recorded for `project` (#390), and the ID it replaced.
+    ContainerEngineRecorded {
+        project: String,
+        /// The engine's system user: `torlek-e3`.
+        user: String,
+        engine_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replaced: Option<String>,
     },
     /// Network requests, oldest first (#674): the ones still asking for `NetworkList`, the
     /// decided ones for `NetworkDecided`.
