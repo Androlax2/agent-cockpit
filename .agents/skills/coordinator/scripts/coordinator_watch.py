@@ -9,6 +9,9 @@ opts in to one `SUMMARY` line of those changes every N seconds.
 Every few minutes the full `torlek agent sessions` list is read too, and a question the watch
 stream never delivered is printed then (#1298).
 State persists in the state file so a re-armed monitor does not repeat what it already reported.
+One watcher at a time holds the state file (a `.lock` beside it); a second refuses to start. A
+watcher whose output nobody reads exits at its next write without saving the events it could not
+deliver, so the next watcher reports them.
 
 When `torlek agent sessions --watch` ends, or a helper thread dies, it prints `WATCH ENDED`, kills
 the watch it started and exits non-zero (torlek's own status when that was non-zero, else 1;
@@ -19,6 +22,7 @@ Usage: coordinator_watch.py STATE_FILE [--repo OWNER/NAME] [--worker-root DIR]
 """
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -87,6 +91,7 @@ class Watcher:
         self.full_list_seconds = arguments.full_list_seconds
         self.stream_lag_seconds = arguments.stream_lag_seconds
         self.state_path = arguments.state_file
+        self.lock_file = self.take_state_lock()
         self.is_first_run = not self.state_path.exists()
         self.state = {} if self.is_first_run else json.loads(self.state_path.read_text())
         self.started_at = time.monotonic()
@@ -120,6 +125,29 @@ class Watcher:
         self.process = None
         # failure kind -> when it was last printed; cleared once that kind succeeds again.
         self.last_failure_reports = {}
+
+    def take_state_lock(self):
+        """Holds an exclusive lock for the life of the process; the OS frees it when we die."""
+        lock_path = self.state_path.with_name(self.state_path.name + ".lock")
+        lock_file = open(lock_path, "w")
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock_file.close()
+            raise OSError(f"another watcher already uses {self.state_path}") from None
+        return lock_file
+
+    def emit(self, text):
+        """Prints one event. If nobody reads the output, exits before anything more is saved.
+
+        Callers hold `lock` around the state change and its save, so no other thread can persist
+        the state of an event this exit leaves undelivered.
+        """
+        try:
+            print(text, flush=True)
+        except (OSError, ValueError):
+            self.stop_child()
+            os._exit(1)
 
     def save(self):
         """Writes the state only when it changed, atomically (a kill mid-write keeps the old file)."""
@@ -217,7 +245,7 @@ class Watcher:
                 current["dialog"] != (previous or {}).get("dialog")
             )
             if reported_dialog:
-                print(f"DIALOG {tag}: {current['dialog']}", flush=True)
+                self.emit(f"DIALOG {tag}: {current['dialog']}")
                 self.save()
             if reported_question or reported_dialog:
                 return
@@ -243,7 +271,7 @@ class Watcher:
 
     def report_question(self, session_id, tag, question, how=""):
         """Prints the question once per text. Call holding the lock."""
-        print(f"QUESTION {tag}{how}: {question}", flush=True)
+        self.emit(f"QUESTION {tag}{how}: {question}")
         self.reported_questions[session_id] = question
         self.save()
 
@@ -286,10 +314,10 @@ class Watcher:
                 return
             if merged is None:
                 reason = f"IDLE, merge state unknown (gh failed) {tag}: doing={current['doing']!r}"
-                print(reason, flush=True)
+                self.emit(reason)
             elif not merged:
                 self.reported_idle[session_id] = current["doing"]
-                print(f"IDLE without merged PR {tag}: doing={current['doing']!r}", flush=True)
+                self.emit(f"IDLE without merged PR {tag}: doing={current['doing']!r}")
             elif not seeding:
                 self.batch(previous, current, tag)
             self.save()
@@ -336,15 +364,14 @@ class Watcher:
                 if exit_status == TORLEK_RETRY_LATER_STATUS
                 else ""
             )
-            print(
+            self.emit(
                 "WATCH ENDED: torlek agent sessions --watch "
-                f"exited {exit_status}{retry_hint}: {reason}",
-                flush=True,
+                f"exited {exit_status}{retry_hint}: {reason}"
             )
             return exit_status or 1
         except Exception as error:
             traceback.print_exc()
-            print(f"WATCH ENDED: {type(error).__name__}: {error}", flush=True)
+            self.emit(f"WATCH ENDED: {type(error).__name__}: {error}")
             return 1
         finally:
             self.stop_child()
@@ -354,7 +381,7 @@ class Watcher:
         with lock:
             last = self.last_failure_reports.get(kind)
             if last is None or now - last >= FAILURE_REPORT_SECONDS:
-                print(f"{kind} (repeats are not reported for 30 minutes): {error}", flush=True)
+                self.emit(f"{kind} (repeats are not reported for 30 minutes): {error}")
                 self.last_failure_reports[kind] = now
 
     def check_full_list(self):
@@ -417,7 +444,7 @@ class Watcher:
             known = self.pr_states.get(branch, {}).get("state")
             self.pr_states[branch] = {"number": pull["number"], "state": pull["state"]}
             if not first_poll and known != pull["state"] and pull["state"] in ("MERGED", "CLOSED"):
-                print(f"PR #{pull['number']} {pull['state']} ({branch})", flush=True)
+                self.emit(f"PR #{pull['number']} {pull['state']} ({branch})")
             elif not first_poll and known is None and pull["state"] == "OPEN":
                 self.add_to_summary(f"PR #{pull['number']} opened ({branch})")
             if pull["state"] != "OPEN":
@@ -433,10 +460,9 @@ class Watcher:
                 self.reported_failures.add(key)
                 if self.is_first_run and first_poll:
                     continue
-                print(
+                self.emit(
                     f"CI {check['conclusion']} PR #{pull['number']} ({branch}) "
-                    f"head {pull['headRefOid'][:8]}: {check.get('name')} {check.get('detailsUrl', '')}",
-                    flush=True,
+                    f"head {pull['headRefOid'][:8]}: {check.get('name')} {check.get('detailsUrl', '')}"
                 )
 
     def summarize(self):
@@ -444,7 +470,7 @@ class Watcher:
             time.sleep(self.summary_seconds)
             with lock:
                 if batched:
-                    print("SUMMARY (no action needed): " + " | ".join(batched), flush=True)
+                    self.emit("SUMMARY (no action needed): " + " | ".join(batched))
                     batched.clear()
 
 
@@ -511,7 +537,7 @@ def run_or_exit(watcher, target):
         target()
     except BaseException:
         traceback.print_exc()
-        print(f"WATCH ENDED: {target.__name__} crashed", flush=True)
+        watcher.emit(f"WATCH ENDED: {target.__name__} crashed")
         watcher.stop_child()
         os._exit(1)
 
@@ -524,7 +550,7 @@ def main(argv):
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError) as error:
         print(f"WATCH ENDED: could not start: {error}", flush=True)
         return 1
-    print(f"WATCHING {watcher.repo}, workers under {watcher.worker_root}", flush=True)
+    watcher.emit(f"WATCHING {watcher.repo}, workers under {watcher.worker_root}")
     helpers = [watcher.poll_prs, watcher.check_full_list]
     if watcher.summary_seconds > 0:
         helpers.append(watcher.summarize)
