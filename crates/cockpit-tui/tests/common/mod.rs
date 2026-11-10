@@ -107,7 +107,7 @@ pub fn run(id: i64, session: &str, command: &str) -> RunRequestView {
     }
 }
 
-/// A run that started and stopped mid-line: it waits for a line of input.
+/// A running command whose idle output ends like a prompt for a line of input.
 pub fn waiting_run(id: i64, session: &str) -> RunRequestView {
     RunRequestView {
         state: RunStateView::Running,

@@ -40,9 +40,15 @@ use crate::{Error, Refusal};
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
 /// How long a run's prompt-like output must have been silent to count as waiting for input.
 const PROMPT_IDLE: Duration = Duration::from_millis(1500);
+/// Prompt punctuation, short textual choices, or a field's parenthesized default.
 static PROMPT_END: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:[:?>]|\[(?:y|yes)/(?:n|no)\]|\((?:y|yes)/(?:n|no)\))\s*\z")
-        .expect("the pattern compiles")
+    Regex::new(concat!(
+        r"(?i)(?:[:?>]",
+        r"|\[[a-z?][a-z?,/ ]{0,63}\]",
+        r"|\([a-z?][a-z?,/ \[\]]{0,63}\)",
+        r"|:\s*\([a-z0-9_][a-z0-9 ._-]{0,63}\))\s*\z",
+    ))
+    .expect("the pattern compiles")
 });
 /// A carriage return or a move to the first column starts a new drawn frame.
 static LINE_RESTARTS: LazyLock<Regex> =
@@ -533,8 +539,9 @@ impl Runner {
     }
 }
 
-/// Silence alone also matches progress bars and spinners (#1262). Prefer missing an unusual
-/// prompt to interrupting the owner for ordinary output; input remains available either way.
+/// An unfinished line idle for 1.5 s with prompt punctuation, choices or a field default.
+/// Silence alone also matches progress bars and spinners (#1262); unusual prompts can still
+/// be answered through CLI input when their shape is not recognized.
 fn is_at_prompt(kept: &Kept, now: Instant) -> bool {
     if kept.total == 0 || now.duration_since(kept.last_output) < PROMPT_IDLE {
         return false;
@@ -710,4 +717,57 @@ fn is_withheld_variable(name: &OsStr) -> bool {
         ]
         .iter()
         .any(|withheld| name == *withheld)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn common_choices_and_defaults_are_prompts_but_progress_frames_are_not() {
+        let now = Instant::now();
+        for (line, expected) in [
+            ("Password: ", true),
+            ("Continue? [y/N] ", true),
+            ("Ok to proceed? (y) ", true),
+            ("Trust this plugin? [y,n,d,?] ", true),
+            ("Continue? [Y/n/q] ", true),
+            ("package name: (review) ", true),
+            ("package name: (review-web) ", true),
+            ("entry point: (index.js) ", true),
+            ("version: (1.0.0) ", true),
+            ("Continue (yes/no/[fingerprint])? ", true),
+            ("Continue (yes/no/[fingerprint]) ", true),
+            ("[====>   ]", false),
+            ("[####  ]", false),
+            ("[        ]", false),
+            ("[74/192]", false),
+            ("(74/192)", false),
+            ("Progress: (74/192)", false),
+            ("Progress: (38%)", false),
+            ("Downloading: ([====>   ])", false),
+            ("38% 74/192", false),
+            ("⠋ Working", false),
+            ("|", false),
+            ("abc123 Waiting", false),
+        ] {
+            let kept = Kept {
+                bytes: line.as_bytes().to_vec(),
+                total: line.len() as u64,
+                last_output: now - Duration::from_secs(2),
+            };
+            assert_eq!(is_at_prompt(&kept, now), expected, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn column_resets_use_only_the_new_frame_for_prompt_redaction() {
+        for line in [
+            b"token=\rprivate-value ok? ".as_slice(),
+            b"token=\x1b[1Gprivate-value ok? ".as_slice(),
+        ] {
+            // A cursor reset discards the previous frame, including its secret label.
+            assert_eq!(prompt_line(line).as_deref(), Some("private-value ok? "));
+        }
+    }
 }

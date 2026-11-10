@@ -36,7 +36,7 @@ async fn a_prompt_after_cursor_control_redraws_shows_only_the_latest_frame() {
     let asking = started(true).await;
     let request = asking
         .waiting_at_a_prompt(
-            "printf 'Downloading 100%%\\033[1G\\033[2KContinue? [y/N] '; read -r answer",
+            "printf 'Downloading 100%%\\033[1G\\033[2KOk to proceed? (y) '; read -r answer",
         )
         .await;
 
@@ -44,7 +44,7 @@ async fn a_prompt_after_cursor_control_redraws_shows_only_the_latest_frame() {
 
     assert_eq!(
         queue[0].waiting_prompt.as_ref().unwrap().text,
-        "Continue? [y/N] "
+        "Ok to proceed? (y) "
     );
     asking.answer_shown(request.id, "n").await;
     asking.ended(request.id).await;
