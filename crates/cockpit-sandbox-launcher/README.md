@@ -60,7 +60,7 @@ host's network, one thread per connection (`proxy.rs`). Clients find it through
   closes the tunnels it carried. See `docs/decisions/2026-11-05-674-network-requests.md`.
 - IP literals and names resolving to loopback, private, link-local, metadata or other
   non-public addresses are refused unless an entry grants that address (no owner decision
-  does: only names are asked about; a host-service forward, #860, is never one); one such address
+  does: only names are asked about; a host-service forward, #880, is never one); one such address
   among a name's answers refuses the connection, and the proxy connects only to the
   addresses it checked.
 - On port 443 the ClientHello's server name must match the `CONNECT` host; a missing or
@@ -68,6 +68,30 @@ host's network, one thread per connection (`proxy.rs`). Clients find it through
 - The counters (`cockpit_sandbox::EgressReport`) go to `egress.json` in the session's
   mount-source folder, at most once a second and at exit; `torlek session sandbox` shows
   them under the evidence.
+
+## Host-service forwards
+
+Issue #880, from [#860's report](../../docs/research/2026-11-05-860-host-service-forwards.md).
+Each of the spec's `forwards` is a declared service: a `listen` inside the sandbox and a
+`target` on the host, each a loopback port or a Unix socket (`cockpit_sandbox::Forward`). A
+port listen is bound by stage 2 on the sandbox's `127.0.0.1` and handed over with the proxy
+listener; a port below 1024, or one another forward or the proxy holds, refuses the launch
+naming the service. A socket listen is created by the launcher in a folder of its own under
+`forward-sockets/` beside the spec, bound read-only at the listen path's folder, so the
+program can neither remove the socket nor add one; a listen folder overlapping a folder the
+view binds or another listen's folder is refused, as is a socket path that is not UTF-8 or
+holds a space or control character, which would make two records read alike
+(`proxy/forward.rs`). A socket target is connected within the same 10 seconds as a port
+target.
+
+- A connection is relayed only while the owner's decisions allow the forward's whole record
+  (`Forward::record`: name, listen and target). Otherwise it is closed at once, and the
+  record is listed under `services` in `egress-requests.json`; a denied record is closed
+  naming the request and asks no more.
+- The relay copies bytes both ways and parses nothing; a revoked decision closes the relays
+  it allowed. The proxy's loopback refusal is unchanged: a forward is never a `CONNECT`.
+- Each service's counters (connections, bytes, refusals, unreachable targets) are under
+  `forwards` in `egress.json`.
 
 ## Credential hosts
 

@@ -10,12 +10,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::credentials::{CredentialScheme, Interception};
 use crate::egress::{Allowlist, EgressDecisions, TLS_PORT, Target, normalized_name};
+use crate::forwards::{Endpoint, Forward, MAX_FORWARDS, is_service_name, proxy_port};
 
 /// Bumped when a field changes meaning; the launcher refuses any other version, so a launcher
 /// left from an older install never half-reads a newer daemon's spec. 3: bound credentials
 /// (#832), which an older launcher would leave unadded. 4: a login account's sign-in bound
-/// in the session's home (#59).
-pub const SPEC_VERSION: u32 = 4;
+/// in the session's home (#59). 5: host-service forwards (#880), which an older launcher
+/// refuses.
+pub const SPEC_VERSION: u32 = 5;
 
 /// The file name of the spec in the session's mount folder.
 pub const SPEC_FILE: &str = "launch-spec.json";
@@ -23,6 +25,10 @@ pub const SPEC_FILE: &str = "launch-spec.json";
 /// The lowest Landlock ABI the launcher enforces (#546 M2): under ABI 1 every rename or link
 /// across folders is denied, which breaks build tools.
 pub const LANDLOCK_ABI_FLOOR: u8 = 2;
+
+/// The lowest port a forward listens on: stage 2 binds without privileges, where the
+/// kernel's `ip_unprivileged_port_start` keeps lower ports from it.
+const FIRST_UNPRIVILEGED_PORT: u16 = 1024;
 
 /// Folders of the host every launch reads, never writes: programs, libraries and system
 /// configuration. Bound when present. Nothing under `/run`, `/var` or `/home`: container
@@ -65,14 +71,6 @@ impl NeedsSource {
             NeedsSource::Floor => "none declared: the floor".to_owned(),
         }
     }
-}
-
-/// A listener the launcher would create inside the sandbox and serve from outside (#860).
-/// Always empty until host-service forwards exist; the launcher refuses a spec that has one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Forward {
-    pub listen: String,
-    pub target: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +118,8 @@ pub struct LaunchSpec {
     /// that starts with the rest. Absent ones stay absent.
     pub hidden: Vec<PathBuf>,
     pub needs_source: NeedsSource,
+    /// The declared services the launcher serves inside the sandbox (#880); each relays only
+    /// while the owner's decisions allow its record.
     pub forwards: Vec<Forward>,
     /// What the session proxy lets out of the sandbox (#831).
     pub egress: Allowlist,
@@ -170,9 +170,10 @@ impl std::error::Error for InvalidSpec {}
 impl LaunchSpec {
     /// Refuses a spec the launcher cannot enforce as written: another version, a relative
     /// path, a Landlock ABI below the floor, a protected or hidden path outside every bound
-    /// folder, a working directory outside the writable ones, a forward, or an allowlist entry
-    /// that is no host name or address and a port, or a credential bound to a host neither
-    /// the allowlist nor the owner's `decisions` at launch (#674) let through.
+    /// folder, a working directory outside the writable ones, a forward the launcher cannot
+    /// serve as written, an allowlist entry that is no host name or address and a port, or a
+    /// credential bound to a host neither the allowlist nor the owner's `decisions` at launch
+    /// (#674) let through.
     pub fn validate(&self, decisions: &EgressDecisions) -> Result<(), InvalidSpec> {
         if self.version != SPEC_VERSION {
             return Err(InvalidSpec(format!(
@@ -249,14 +250,166 @@ impl LaunchSpec {
         if let Some(interception) = &self.interception {
             check_interception(interception, &self.egress.with_decisions(decisions))?;
         }
-        if let Some(forward) = self.forwards.first() {
+        self.check_forwards()
+    }
+
+    /// Every path the view binds, at its destination: what a forward's socket folder may
+    /// neither lie inside nor contain, since the launcher binds that folder of its own there.
+    pub fn bound_destinations(&self) -> Vec<PathBuf> {
+        let fixed = ["/proc", "/dev", "/tmp"].iter().chain(SYSTEM_READ_ONLY);
+        fixed
+            .map(PathBuf::from)
+            .chain([self.home.clone(), self.program.clone()])
+            .chain(
+                [
+                    &self.read_only,
+                    &self.read_only_declared,
+                    &self.sockets,
+                    &self.read_write,
+                ]
+                .into_iter()
+                .flatten()
+                .cloned(),
+            )
+            .chain(self.folders.iter().map(|folder| folder.destination.clone()))
+            .collect()
+    }
+
+    /// Only a session's launch forwards; each service once, by a lower-case name; each
+    /// listen once, a port the sandbox can bind other than the proxy's or a socket whose
+    /// folder the launcher can bind; each target a port or a plain path.
+    fn check_forwards(&self) -> Result<(), InvalidSpec> {
+        if self.forwards.is_empty() {
+            return Ok(());
+        }
+        if !matches!(self.subject, Subject::Session { .. }) {
+            return Err(InvalidSpec(
+                "only a session's launch serves forwards".to_owned(),
+            ));
+        }
+        if self.forwards.len() > MAX_FORWARDS {
             return Err(InvalidSpec(format!(
-                "forward {} to {}: host-service forwards do not exist yet (#860)",
-                forward.listen, forward.target
+                "{} forwards; a launch serves at most {MAX_FORWARDS}",
+                self.forwards.len()
             )));
+        }
+        let bound = self.bound_destinations();
+        for (index, forward) in self.forwards.iter().enumerate() {
+            let service = &forward.service;
+            if !is_service_name(service) {
+                return Err(InvalidSpec(format!(
+                    "service name {service:?} is not a lower-case letter, then letters, digits \
+                     and `-`"
+                )));
+            }
+            let earlier = &self.forwards[..index];
+            if earlier.iter().any(|other| &other.service == service) {
+                return Err(InvalidSpec(format!("service {service} is forwarded twice")));
+            }
+            if let Some(other) = earlier.iter().find(|other| other.listen == forward.listen) {
+                return Err(InvalidSpec(format!(
+                    "service {service} listens on {}, which service {} listens on already",
+                    forward.listen, other.service
+                )));
+            }
+            match &forward.listen {
+                Endpoint::Port { port } if *port < FIRST_UNPRIVILEGED_PORT => {
+                    return Err(InvalidSpec(format!(
+                        "service {service} listens on port {port}; the sandbox binds ports from \
+                         {FIRST_UNPRIVILEGED_PORT} up"
+                    )));
+                }
+                Endpoint::Port { port } if *port == proxy_port() => {
+                    return Err(InvalidSpec(format!(
+                        "service {service} listens on {port}, the session proxy's port"
+                    )));
+                }
+                Endpoint::Port { .. } => {}
+                Endpoint::Socket { path } => {
+                    check_socket_listen(service, path, &bound, earlier)?;
+                }
+            }
+            match &forward.target {
+                Endpoint::Port { port: 0 } => {
+                    return Err(InvalidSpec(format!("service {service} targets port 0")));
+                }
+                Endpoint::Port { .. } => {}
+                Endpoint::Socket { path } => {
+                    check_plain(path)?;
+                    check_record_path(service, path)?;
+                }
+            }
         }
         Ok(())
     }
+}
+
+/// A socket listen is a plain path with a file name, in a folder other than `/` that holds
+/// no folder the view binds, or another listen's, and lies in none: the launcher binds a
+/// read-only folder of its own there, which would hide or be hidden by them.
+fn check_socket_listen(
+    service: &str,
+    path: &Path,
+    bound: &[PathBuf],
+    earlier: &[Forward],
+) -> Result<(), InvalidSpec> {
+    check_plain(path)?;
+    check_record_path(service, path)?;
+    let folder = match path.parent() {
+        Some(folder) if folder != Path::new("/") && path.file_name().is_some() => folder,
+        _ => {
+            return Err(InvalidSpec(format!(
+                "service {service} listens on {}, which is in no folder of its own",
+                path.display()
+            )));
+        }
+    };
+    if let Some(clash) = bound
+        .iter()
+        .find(|bound| folder.starts_with(bound) || bound.starts_with(folder))
+    {
+        return Err(InvalidSpec(format!(
+            "service {service} listens in {}, which overlaps {}, a folder the sandbox binds",
+            folder.display(),
+            clash.display()
+        )));
+    }
+    let nested = earlier.iter().find_map(|other| match &other.listen {
+        Endpoint::Socket { path: other_path } => other_path
+            .parent()
+            .filter(|other_folder| {
+                *other_folder != folder
+                    && (folder.starts_with(other_folder) || other_folder.starts_with(folder))
+            })
+            .map(|other_folder| (other, other_folder)),
+        Endpoint::Port { .. } => None,
+    });
+    if let Some((other, other_folder)) = nested {
+        return Err(InvalidSpec(format!(
+            "service {service} listens in {}, which overlaps {}, where service {} listens",
+            folder.display(),
+            other_folder.display(),
+            other.service
+        )));
+    }
+    Ok(())
+}
+
+/// A socket path in a forward's record is UTF-8 without spaces or control characters, so
+/// two forwards never print one record, which one grant would cover.
+fn check_record_path(service: &str, path: &Path) -> Result<(), InvalidSpec> {
+    let is_printable = path.to_str().is_some_and(|text| {
+        !text
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    });
+    if is_printable {
+        return Ok(());
+    }
+    Err(InvalidSpec(format!(
+        "service {service} names {path:?}, which is not UTF-8 without spaces or control \
+         characters"
+    )))
 }
 
 /// Every entry names a port, and a name entry a lower-case DNS name of at least two labels,

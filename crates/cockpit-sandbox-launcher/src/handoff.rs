@@ -1,7 +1,8 @@
 //! The proxy listener's way out of the sandbox (#546 M4 A): stage 2 creates it on the
 //! loopback of the sandbox's empty network namespace, then passes it to the launcher, which
 //! serves it from the host's network. The agent connects to an address inside its own
-//! namespace; nothing of the host's network is in there.
+//! namespace; nothing of the host's network is in there. Each port forward's listener
+//! (#880) travels with it, in the spec's order.
 //!
 //! The hand-off goes through a named Unix socket in a folder of the launcher's own, bound
 //! read-only into the view and never granted by Landlock: stage 2 connects before the
@@ -18,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::{Duration, Instant};
 
-use cockpit_sandbox::PROXY_ADDRESS;
+use cockpit_sandbox::{MAX_FORWARDS, PROXY_ADDRESS};
 use rustix::net::{
     RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendAncillaryBuffer,
     SendAncillaryMessage, SendFlags, recvmsg, sendmsg,
@@ -56,7 +57,7 @@ impl Waiting {
             .create(&folder)
             .map_err(|error| format!("cannot create {}: {error}", folder.display()))?;
         let socket = folder.join(SOCKET_NAME);
-        let listener = in_folder(&folder, UnixListener::bind)
+        let listener = in_folder(&folder, SOCKET_NAME, UnixListener::bind)
             .map_err(|error| format!("cannot listen on {}: {error}", socket.display()))?;
         Ok(Waiting { folder, listener })
     }
@@ -65,9 +66,14 @@ impl Waiting {
         self.folder.join(SOCKET_NAME)
     }
 
-    /// Stage 2's listener, once it sent it; None when `child` ended first, so the launcher
-    /// reports the child's own failure.
-    pub fn receive(self, child: &mut Child) -> Result<Option<TcpListener>, String> {
+    /// Stage 2's proxy listener and one listener per port of `forward_ports`, in their order,
+    /// once it sent them; None when `child` ended first, so the launcher reports the child's
+    /// own failure.
+    pub fn receive(
+        self,
+        child: &mut Child,
+        forward_ports: &[u16],
+    ) -> Result<Option<Received>, String> {
         self.listener
             .set_nonblocking(true)
             .map_err(|error| format!("cannot wait for the proxy listener: {error}"))?;
@@ -92,8 +98,15 @@ impl Waiting {
             }
             std::thread::sleep(Duration::from_millis(5));
         };
-        take_listener(stream).map(Some)
+        take_listeners(stream, forward_ports).map(Some)
     }
+}
+
+/// What stage 2 handed over.
+pub struct Received {
+    pub proxy: TcpListener,
+    /// One per forward port, in the order the launcher asked for them.
+    pub forwards: Vec<TcpListener>,
 }
 
 impl Drop for Waiting {
@@ -103,14 +116,14 @@ impl Drop for Waiting {
     }
 }
 
-fn take_listener(mut stream: UnixStream) -> Result<TcpListener, String> {
+fn take_listeners(mut stream: UnixStream, forward_ports: &[u16]) -> Result<Received, String> {
     let failed = |error: std::io::Error| format!("cannot take the proxy listener: {error}");
     stream.set_nonblocking(false).map_err(failed)?;
     stream
         .set_read_timeout(Some(HANDOFF_TIMEOUT))
         .map_err(failed)?;
     let mut byte = [0_u8; 1];
-    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1 + MAX_FORWARDS))];
     let mut control = RecvAncillaryBuffer::new(&mut space);
     recvmsg(
         &stream,
@@ -125,41 +138,83 @@ fn take_listener(mut stream: UnixStream) -> Result<TcpListener, String> {
             received.extend(descriptors);
         }
     }
-    let (Some(descriptor), true, [LISTENER_BYTE]) = (received.pop(), received.is_empty(), byte)
-    else {
-        return Err("stage 2 sent something other than one proxy listener".to_owned());
-    };
-    let listener = TcpListener::from(descriptor);
+    if byte != [LISTENER_BYTE] {
+        return Err(format!(
+            "stage 2 sent {byte:?} with its listeners, not {:?}",
+            [LISTENER_BYTE]
+        ));
+    }
+    if received.len() != 1 + forward_ports.len() {
+        return Err(format!(
+            "stage 2 sent {} listeners, not the proxy's and {} forwards'",
+            received.len(),
+            forward_ports.len()
+        ));
+    }
+    let mut listeners = received.into_iter().map(TcpListener::from);
+    let proxy = listeners.next().expect("counted above");
     let expected: SocketAddr = PROXY_ADDRESS
         .parse()
         .expect("the proxy address is a socket address");
-    match listener.local_addr() {
-        Ok(address) if address == expected => {}
-        other => {
-            return Err(format!(
-                "stage 2 sent a listener on {other:?}, not on {PROXY_ADDRESS}"
-            ));
-        }
+    check_address(&proxy, expected)?;
+    let forwards: Vec<TcpListener> = listeners.collect();
+    for (listener, port) in forwards.iter().zip(forward_ports) {
+        check_address(listener, forward_address(*port))?;
     }
     stream.write_all(&[RECEIVED_BYTE]).map_err(failed)?;
-    Ok(listener)
+    Ok(Received { proxy, forwards })
+}
+
+/// A listener on `expected`, which stage 2 bound inside the sandbox; one on another address
+/// is refused.
+fn check_address(listener: &TcpListener, expected: SocketAddr) -> Result<(), String> {
+    match listener.local_addr() {
+        Ok(address) if address == expected => Ok(()),
+        other => Err(format!(
+            "stage 2 sent a listener on {other:?}, not on {expected}"
+        )),
+    }
+}
+
+/// Where a port forward listens inside the sandbox: its own loopback.
+fn forward_address(port: u16) -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], port))
+}
+
+/// One port forward stage 2 listens for, as its policy names it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ForwardPort {
+    pub service: String,
+    pub port: u16,
 }
 
 /// Stage 2's side, before Landlock and before the program: listens on the proxy address of
-/// the sandbox's loopback and sends the listener to the launcher on `socket`. Stage 2 keeps
-/// no copy: the program never holds it.
-pub fn hand_over(socket: &Path) -> Result<(), String> {
+/// the sandbox's loopback and on each of `forward_ports`, and sends the listeners to the
+/// launcher on `socket`. A port taken already refuses the launch naming its service. Stage 2
+/// keeps no copy: the program never holds them.
+pub fn hand_over(socket: &Path, forward_ports: &[ForwardPort]) -> Result<(), String> {
     let listener = TcpListener::bind(PROXY_ADDRESS)
         .map_err(|error| format!("cannot listen on {PROXY_ADDRESS} in the sandbox: {error}"))?;
+    let mut forwards = Vec::with_capacity(forward_ports.len());
+    for ForwardPort { service, port } in forward_ports {
+        let address = forward_address(*port);
+        let bound = TcpListener::bind(address).map_err(|error| {
+            format!("service {service} cannot listen on {address} in the sandbox: {error}")
+        })?;
+        forwards.push(bound);
+    }
     let folder = socket.parent().unwrap_or(Path::new("/"));
-    let mut stream = in_folder(folder, UnixStream::connect)
+    let mut stream = in_folder(folder, SOCKET_NAME, UnixStream::connect)
         .map_err(|error| format!("cannot reach the launcher on {}: {error}", socket.display()))?;
     let failed = |error: std::io::Error| format!("cannot hand the proxy listener over: {error}");
     stream
         .set_read_timeout(Some(HANDOFF_TIMEOUT))
         .map_err(failed)?;
-    let descriptors = [listener.as_fd()];
-    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let descriptors: Vec<_> = std::iter::once(&listener)
+        .chain(&forwards)
+        .map(AsFd::as_fd)
+        .collect();
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1 + MAX_FORWARDS))];
     let mut control = SendAncillaryBuffer::new(&mut space);
     if !control.push(SendAncillaryMessage::ScmRights(&descriptors)) {
         return Err("cannot hand the proxy listener over: no room for it".to_owned());
@@ -179,16 +234,13 @@ pub fn hand_over(socket: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// `act` on the hand-off socket's name in `folder`, reached through the folder's open
-/// descriptor: a socket's path is limited to 107 bytes, and the state folders of a long
-/// home are longer.
-fn in_folder<T>(
+/// `act` on the socket `name` in `folder`, reached through the folder's open descriptor: a
+/// socket's path is limited to 107 bytes, and the state folders of a long home are longer.
+pub fn in_folder<T>(
     folder: &Path,
+    name: impl AsRef<std::ffi::OsStr>,
     act: impl FnOnce(PathBuf) -> std::io::Result<T>,
 ) -> std::io::Result<T> {
     let opened = File::open(folder)?;
-    act(PathBuf::from(format!(
-        "/proc/self/fd/{}/{SOCKET_NAME}",
-        opened.as_raw_fd()
-    )))
+    act(PathBuf::from(format!("/proc/self/fd/{}", opened.as_raw_fd())).join(name.as_ref()))
 }

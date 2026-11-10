@@ -15,6 +15,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 
+use crate::forwards::{AskedService, ServiceDecisions};
 use crate::spec::Subject;
 
 /// Where the session proxy listens inside the sandbox's network namespace: each namespace
@@ -60,6 +61,10 @@ pub struct EgressDecisions {
     /// It allows nothing. Absent from a daemon before it: none.
     #[serde(default)]
     pub asking: Vec<AskingDestination>,
+    /// The owner's decisions on the subject's declared services (#880). Absent from a
+    /// daemon before them: none, so every service is refused.
+    #[serde(default)]
+    pub services: ServiceDecisions,
 }
 
 /// A destination asked of the owner, and the request that asks.
@@ -115,6 +120,10 @@ pub struct EgressRequests {
     #[serde(default)]
     pub revision: u64,
     pub asked: Vec<AskedDestination>,
+    /// The service records refused for want of a decision (#880), at most one per forward.
+    /// Absent from a launcher before them: none.
+    #[serde(default)]
+    pub services: Vec<AskedService>,
 }
 
 /// Whether a refused `host` on `port` is asked of the owner: a lower-case DNS name of at least
@@ -139,6 +148,10 @@ pub struct EgressReport {
     pub destinations: BTreeMap<String, Counters>,
     /// Destinations past [`MAX_REPORTED_DESTINATIONS`].
     pub other: Counters,
+    /// Each forward's counters (#880), by service name: `allowed` counts the connections
+    /// relayed. Absent from a launcher before them: none.
+    #[serde(default)]
+    pub forwards: BTreeMap<String, Counters>,
 }
 
 /// One destination's counters. A refusal is policy's answer (`403`); an unreachable upstream
@@ -198,6 +211,7 @@ impl EgressReport {
             subject,
             destinations: BTreeMap::new(),
             other: Counters::default(),
+            forwards: BTreeMap::new(),
         }
     }
 
@@ -224,6 +238,11 @@ impl EgressReport {
                 self.other.describe()
             ));
         }
+        lines.extend(
+            self.forwards
+                .iter()
+                .map(|(service, counters)| format!("forward {service}: {}", counters.describe())),
+        );
         lines
     }
 }

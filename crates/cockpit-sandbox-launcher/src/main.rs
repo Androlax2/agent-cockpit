@@ -4,7 +4,8 @@
 //!   program under bubblewrap (new user, mount, PID, network, IPC, UTS and cgroup
 //!   namespaces, a mount view of only what the spec names) through stage 2, serves the
 //!   session proxy on the listener stage 2 hands it (#831) with the owner's decisions on
-//!   its network requests (#674), and waits.
+//!   its network requests (#674), relays each declared service the owner granted (#880),
+//!   and waits.
 //! - `torlek-sandbox stage2 POLICY ARGUMENT...`: inside the namespaces, checks the folders the launcher
 //!   pinned are the ones it saw, applies Landlock and the seccomp filter from memory, then
 //!   runs the program in its place with the arguments. Never run by hand. Each argument
@@ -103,7 +104,9 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
         .and_then(|path| path.canonicalize())
         .map_err(|error| format!("cannot find the launcher's own program: {error}"))?;
     let waiting = handoff::Waiting::open(mount_dir.join(HANDOFF_FOLDER))?;
-    let plan = plan::plan(&spec, &launcher, &waiting.socket())?;
+    // Before the sandbox starts: bubblewrap binds the folders the sockets are in.
+    let sockets = proxy::bind_sockets(&mount_dir, &spec.forwards)?;
+    let plan = plan::plan(&spec, &launcher, &waiting.socket(), &sockets.folders)?;
     let mut child = std::process::Command::new(&spec.bubblewrap)
         .args(&plan.bubblewrap_arguments)
         .arg("--")
@@ -118,8 +121,14 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
                 spec.bubblewrap.display()
             )
         })?;
-    let listener = match waiting.receive(&mut child) {
-        Ok(Some(listener)) => listener,
+    let forward_ports: Vec<u16> = plan
+        .policy
+        .forward_ports
+        .iter()
+        .map(|forward| forward.port)
+        .collect();
+    let received = match waiting.receive(&mut child, &forward_ports) {
+        Ok(Some(received)) => received,
         // Stage 2 failed before the hand-off and said why.
         Ok(None) => return wait(&mut child),
         Err(reason) => {
@@ -144,10 +153,36 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
         proxy.ask_through(mount_dir.join(cockpit_sandbox::REQUESTS_FILE));
     }
     let serving = std::sync::Arc::clone(&proxy);
+    let proxy_listener = received.proxy;
     std::thread::Builder::new()
         .name("egress-listener".to_owned())
-        .spawn(move || serving.serve(listener))
+        .spawn(move || serving.serve(proxy_listener))
         .map_err(|error| format!("cannot start the session proxy: {error}"))?;
+    // Keyed by what each listener is bound to, so no forward is served on another's.
+    let mut port_listeners: std::collections::HashMap<u16, std::net::TcpListener> = received
+        .forwards
+        .into_iter()
+        .filter_map(|listener| Some((listener.local_addr().ok()?.port(), listener)))
+        .collect();
+    let mut socket_listeners: std::collections::HashMap<usize, _> =
+        sockets.listeners.into_iter().collect();
+    for (index, forward) in spec.forwards.iter().enumerate() {
+        let listener = match forward.listen_port() {
+            Some(port) => port_listeners.remove(&port).map(proxy::Listener::Port),
+            None => socket_listeners.remove(&index).map(proxy::Listener::Socket),
+        };
+        let Some(listener) = listener else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("service {} has no listener", forward.service));
+        };
+        let serving = std::sync::Arc::clone(&proxy);
+        let served = forward.clone();
+        std::thread::Builder::new()
+            .name("forward-listener".to_owned())
+            .spawn(move || serving.serve_forward(served, listener))
+            .map_err(|error| format!("cannot serve service {}: {error}", forward.service))?;
+    }
     let exit = wait(&mut child);
     // The last counters; the report thread may not have written them yet.
     let _ = proxy.write_report(&report);

@@ -705,6 +705,7 @@ fn staging_a_launch_while_its_decisions_are_rewritten_succeeds() {
             request,
         }],
         asking: Vec::new(),
+        services: Default::default(),
     };
     let both_started = std::sync::Barrier::new(2);
 
