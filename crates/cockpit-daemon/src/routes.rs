@@ -131,7 +131,7 @@ impl Routes {
             capabilities.owner_uid,
             &capabilities.state_dir,
             &environment,
-            capabilities.sandbox.backend(),
+            &capabilities.sandbox_launcher,
         );
         let readiness = readiness::Context {
             database: Arc::clone(&capabilities.database),

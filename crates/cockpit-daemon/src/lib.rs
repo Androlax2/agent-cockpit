@@ -110,6 +110,9 @@ pub struct Wiring {
     /// The program that reads the owner's desktop clipboard for CMD+V's image paste in the
     /// viewer (#848): `wl-paste`, found on `PATH` when it runs.
     pub clipboard_reader: std::path::PathBuf,
+    /// `torlek-sandbox` as installed beside the daemon: each project engine's relay unit runs
+    /// it (#390), whether or not this host can sandbox agents with it.
+    pub sandbox_launcher: std::path::PathBuf,
     /// How often the sessions' periodic pass (exits, idle sleep, expiry) runs.
     pub session_tick: Duration,
     /// How often the exits alone are looked at between ticks (#632): a dead agent shows as
@@ -224,6 +227,8 @@ pub struct Capabilities {
     pub state_dir: PathBuf,
     /// The user this daemon runs as: no project's engine may run as it (#390).
     pub owner_uid: u32,
+    /// What each project engine's relay unit runs (#390).
+    pub sandbox_launcher: PathBuf,
     /// The optional skill pack as this start delivered it (#786).
     pub skill_pack: Arc<DeliveredSkillPack>,
     /// The policy the quota worker judges readings under; `None` when it reads none (#58).
@@ -520,7 +525,7 @@ impl Instance {
                 self.owner_uid,
                 &options.state_dir,
                 &wiring.environment,
-                sandbox.backend(),
+                &wiring.sandbox_launcher,
             ),
         };
         let is_restoring = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -561,6 +566,7 @@ impl Instance {
                 bug_report_facts: Arc::clone(&bug_report_facts),
                 state_dir: options.state_dir.clone(),
                 owner_uid: self.owner_uid,
+                sandbox_launcher: wiring.sandbox_launcher.clone(),
                 skill_pack,
                 quota_policy: wiring.quota.as_ref().map(|polling| polling.policy.clone()),
                 project_shares: project_shares(wiring.quota.as_ref()),

@@ -19,6 +19,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{Account, EngineUser};
 
+/// Folders both units make inaccessible.
+const HIDDEN_FOLDERS: [&str; 7] = [
+    "/root", "/mnt", "/media", "/srv", "/opt", "/var/log", "/boot",
+];
+
 /// What the script sets up.
 #[derive(Debug, Clone, Copy)]
 pub struct SetupPlan<'a> {
@@ -51,6 +56,20 @@ pub fn setup_script(plan: &SetupPlan<'_>) -> Result<String, String> {
     let clones = unit_path("the project's clones folder", plan.clones_dir)?;
     let home_text = unit_path("your home", home)?;
     let relay_program = unit_path("the sandbox launcher", plan.relay_program)?;
+    if let Some(hidden) = HIDDEN_FOLDERS
+        .iter()
+        .find(|folder| plan.relay_program.starts_with(folder))
+    {
+        return Err(format!(
+            "the sandbox launcher {relay_program} is under {hidden}, which the engine's units \
+             hide: install Torlek elsewhere"
+        ));
+    }
+    let inaccessible = HIDDEN_FOLDERS
+        .iter()
+        .map(|folder| format!("-{folder}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     let relay_socket = plan.user.relay_socket();
     let relay_socket = unit_path("the relay's socket", &relay_socket)?;
     for (role, path) in [
@@ -94,6 +113,7 @@ pub fn setup_script(plan: &SetupPlan<'_>) -> Result<String, String> {
         .replace("{relay_program}", &relay_program)
         .replace("{relay_socket}", &relay_socket)
         .replace("{owner_uid}", &plan.owner.uid.to_string())
+        .replace("{inaccessible}", &inaccessible)
         .replace("{record}", plan.record_command))
 }
 
@@ -191,7 +211,10 @@ for program in dockerd-rootless.sh rootlesskit slirp4netns newuidmap newgidmap s
         fail "$program is missing: install rootless Docker (dockerd-rootless.sh, rootlesskit, slirp4netns), newuidmap and newgidmap, and setfacl"
 done
 [ -d "$project_root" ] || fail "no folder $project_root"
-[ -x "$relay_program" ] || fail "no program $relay_program: install Torlek first"
+[ -f "$relay_program" ] || fail "no program $relay_program: install Torlek first"
+# The relay runs it as $user, not as root.
+[ -n "$(find "$relay_program" -maxdepth 0 -perm -0001)" ] ||
+    fail "$user cannot run $relay_program: make it executable by others (chmod o+rx)"
 dockerd_rootless=$(command -v dockerd-rootless.sh)
 setfacl_program=$(command -v setfacl)
 nologin=$(command -v nologin || echo /bin/false)
@@ -238,11 +261,13 @@ PrivateNetwork=yes
 PrivateTmp=yes
 # No home but the project's checkouts, which the instance's drop-in binds.
 TemporaryFileSystem=/home:ro
-InaccessiblePaths=-/root -/mnt -/media -/srv -/opt -/var/log -/boot
+InaccessiblePaths={inaccessible}
 Delegate=yes
 KillMode=mixed
 Restart=on-failure
 RestartSec=2
+# Its relay runs whenever it does, after its own restarts too.
+Upholds=torlek-engine-relay@%i.service
 
 [Install]
 WantedBy=multi-user.target
@@ -273,13 +298,10 @@ Group=%i
 PrivateNetwork=yes
 PrivateTmp=yes
 TemporaryFileSystem=/home:ro
-InaccessiblePaths=-/root -/mnt -/media -/srv -/opt -/var/log -/boot
+InaccessiblePaths={inaccessible}
 NoNewPrivileges=yes
 Restart=on-failure
 RestartSec=2
-
-[Install]
-WantedBy=torlek-engine@%i.service
 UNIT
 
 mkdir -p "$unit_dir/torlek-engine-relay@$user.service.d"
@@ -293,9 +315,9 @@ ExecStart=$relay_program engine-relay {relay_socket} {owner_uid}
 UNIT
 
 systemctl daemon-reload
-systemctl enable "torlek-engine@$user.service" "torlek-engine-relay@$user.service"
+systemctl enable "torlek-engine@$user.service"
+# Restarts the relay too: it stops with the engine, which upholds it.
 systemctl restart "torlek-engine@$user.service"
-systemctl restart "torlek-engine-relay@$user.service"
 echo "torlek engine setup: the engine of {project} runs as $user; now record it: {record}"
 "#;
 
@@ -356,7 +378,9 @@ mod tests {
             script
                 .contains("ExecStart=$relay_program engine-relay /run/torlek-e3/relay.sock 1000\n")
         );
-        assert!(script.contains("systemctl restart \"torlek-engine-relay@$user.service\""));
+        assert!(script.contains("Upholds=torlek-engine-relay@%i.service\n"));
+        assert!(script.contains("BindsTo=torlek-engine@%i.service\n"));
+        assert!(script.contains("-perm -0001"));
     }
 
     #[test]
@@ -375,6 +399,37 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("the sandbox launcher"), "{error}");
+    }
+
+    #[test]
+    fn a_relay_program_in_a_folder_the_units_hide_is_refused() {
+        let user = EngineUser::for_project("torlek", 3).unwrap();
+
+        let error = setup_script(&SetupPlan {
+            project: "shop",
+            user: &user,
+            owner: &owner(),
+            project_root: Path::new("/home/theo/shop"),
+            clones_dir: Path::new("/home/theo/.parallel/shop"),
+            record_command: "torlek containers record shop",
+            relay_program: Path::new("/opt/torlek/bin/torlek-sandbox"),
+        })
+        .unwrap_err();
+
+        assert!(error.contains("is under /opt"), "{error}");
+    }
+
+    #[test]
+    fn both_units_hide_the_same_folders() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+
+        assert_eq!(
+            script
+                .matches("InaccessiblePaths=-/root -/mnt -/media -/srv -/opt -/var/log -/boot\n")
+                .count(),
+            2,
+            "{script}"
+        );
     }
 
     #[test]

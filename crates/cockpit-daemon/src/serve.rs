@@ -149,10 +149,11 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     // The plugin folder exists only once OpenCode was found and its plugin written: a missing
     // path handed to the sandbox would fail every launch, OpenCode or not.
     let opencode_plugin_dir = plugin_dir.is_dir().then_some(plugin_dir);
+    let sandbox_launcher = serve.programs_dir.join("torlek-sandbox");
     let sandbox = sandbox(
         &instance,
         &environment,
-        &serve.programs_dir,
+        &sandbox_launcher,
         &[
             Some(serve.programs_dir.clone()),
             opencode_plugin_dir,
@@ -203,6 +204,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             desktop_environment: own_variables(&cockpit_protocol::DESKTOP_SESSION_VARIABLES)
                 .collect(),
             clipboard_reader: "wl-paste".into(),
+            sandbox_launcher,
             session_tick: serve.session_tick,
             exit_sweep: EXIT_SWEEP,
             run_settings,
@@ -259,20 +261,17 @@ const STOP_WAIT: Duration = Duration::from_secs(5);
 /// The sandbox every launch goes through (#61), with the paths the daemon's layout gives
 /// every agent and keeps from it; `bridge_dirs` hold what the adapters' bridges run and load
 /// inside it, and the instruction bundle. The native backend is `torlek-sandbox` in
-/// `programs_dir`, probed once here, before the runtime, since it starts a process (#829);
+/// `programs_dir` (`launcher`), probed once here, before the runtime, since it starts a process (#829);
 /// the start says how the owner's setting treats launches.
 fn sandbox(
     instance: &Instance,
     environment: &cockpit_config::Environment,
-    programs_dir: &Path,
+    launcher: &Path,
     bridge_dirs: &[PathBuf],
     config: &cockpit_config::EffectiveConfig,
 ) -> cockpit_sandbox::Sandbox {
     let options = instance.options();
-    let backend = cockpit_sandbox::Backend::probe(
-        &programs_dir.join("torlek-sandbox"),
-        std::env::var_os("PATH").as_deref(),
-    );
+    let backend = cockpit_sandbox::Backend::probe(launcher, std::env::var_os("PATH").as_deref());
     log_sandbox_setting(&config.agents_sandbox, &backend);
     let layout_config_dir = environment
         .home_dir()
