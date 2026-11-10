@@ -118,6 +118,7 @@ pub(crate) fn run(command: Command) -> ExitCode {
         Ok(Reply::NetworkRequests { requests }) => {
             for request in &requests {
                 outln!("{}", request_line(request));
+                out!("{}", reason_lines(request));
             }
             ExitCode::SUCCESS
         }
@@ -149,6 +150,19 @@ pub(crate) fn request_line(request: &NetworkRequestView) -> String {
         subject(&request.subject),
         request.project,
         request.target
+    )
+}
+
+/// The agent's reason for a service it asked for ahead, indented under its request's line
+/// with the display rules' warnings, so the owner reads it before deciding; empty otherwise.
+pub(crate) fn reason_lines(request: &NetworkRequestView) -> String {
+    let Some(reason) = &request.shown_reason else {
+        return String::new();
+    };
+    format!(
+        "  reason: {}\n{}",
+        reason.text,
+        crate::approvals::warnings(reason)
     )
 }
 

@@ -3641,8 +3641,8 @@ async fn ask_service_in_agent(home: &Home, root: &Path, service: &str) -> String
     .await
 }
 
-/// #880: `torlek ask service` asks ahead. The owner reads why and allows it, and the agent's
-/// first connection is relayed: none was closed to ask.
+/// #880: `torlek ask service` asks ahead. The owner reads why in the list before deciding and
+/// allows it, and the agent's first connection is relayed: none was closed to ask.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_service_asked_ahead_relays_the_first_connection_once_allowed() {
     let home = Home::new();
@@ -3657,13 +3657,12 @@ async fn a_service_asked_ahead_relays_the_first_connection_once_allowed() {
     );
     let listed = owner_network(&home, &["list"]).await;
     let asking = asking_line_for(&agent.session, &echo_record(target));
-    assert!(listed.contains(&asking), "{listed}");
-    tokio::time::sleep(Duration::from_millis(2_100)).await;
-    let allowed = owner_network(&home, &["allow", "1"]).await;
     assert!(
-        allowed.contains("reason: the tests read the echo"),
-        "{allowed}"
+        listed.contains(&format!("{asking}\n  reason: the tests read the echo\n")),
+        "{listed}"
     );
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+    owner_network(&home, &["allow", "1"]).await;
     let printed = service_until(&home, &agent.root, is_relayed).await;
     assert!(is_relayed(&printed), "{printed}");
 }

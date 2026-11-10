@@ -1086,3 +1086,19 @@ async fn an_ask_for_a_service_without_its_reason_is_a_usage_error() {
         text(&output.stderr)
     );
 }
+
+#[tokio::test]
+async fn an_option_in_place_of_the_service_is_a_usage_error() {
+    let home = Home::new();
+
+    let output = home
+        .cockpit(&["ask", "service", "--wait", "3", "--reason", "r"], "")
+        .await;
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        text(&output.stderr).contains("unknown ask service option --wait"),
+        "{}",
+        text(&output.stderr)
+    );
+}

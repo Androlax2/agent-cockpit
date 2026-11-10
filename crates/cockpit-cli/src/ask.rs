@@ -88,6 +88,8 @@ fn parse_ask_service(words: &[&str]) -> Result<(String, String), String> {
             if reason.replace((*value).to_owned()).is_some() {
                 return Err("--reason given twice".to_owned());
             }
+        } else if word.starts_with('-') {
+            return Err(format!("unknown ask service option {word}"));
         } else if service.is_none() {
             service = Some((*word).to_owned());
         } else {

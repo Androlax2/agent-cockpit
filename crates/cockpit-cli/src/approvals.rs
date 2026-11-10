@@ -125,6 +125,7 @@ pub(crate) fn run(command: Command) -> ExitCode {
                 Ok(Reply::NetworkRequests { requests }) => {
                     for request in &requests {
                         outln!("{}", crate::network::request_line(request));
+                        out!("{}", crate::network::reason_lines(request));
                     }
                     ExitCode::SUCCESS
                 }
