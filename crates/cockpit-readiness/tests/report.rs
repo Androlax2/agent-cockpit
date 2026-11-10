@@ -120,6 +120,7 @@ impl Fixture {
                 memory_mib: 16_384,
             },
             docker: None,
+            launch: None,
         }
     }
 

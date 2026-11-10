@@ -70,19 +70,24 @@ impl Home {
         let conversation = scripted_conversation(&self.daemon_socket(), daemon.outcomes());
         let output = self.cockpit(arguments).await;
         let conversation = finished(conversation, &output).await;
-        assert_eq!(
-            conversation,
-            vec![
-                // `torlek` alone needs one signed-in provider, not each one's answer (#1048).
-                Command::Readiness {
-                    project: None,
-                    is_one_sign_in_enough: arguments.is_empty(),
-                },
-                Command::ProjectList,
-                Command::SessionList { ended: true },
-                Command::NetworkGrants { project: None },
-            ]
-        );
+        let mut expected = vec![
+            // `torlek` alone needs one signed-in provider, not each one's answer (#1048).
+            Command::Readiness {
+                project: None,
+                is_one_sign_in_enough: arguments.is_empty(),
+            },
+            Command::ProjectList,
+            Command::SessionList { ended: true },
+            Command::NetworkGrants { project: None },
+        ];
+        // The launch gates of the session the checklist offers (#1250).
+        if let (Some(project), Some(agent)) = (daemon.projects.first(), daemon.offered_agent()) {
+            expected.push(Command::SandboxShow {
+                dir: project.root.clone(),
+                agent: Some(agent),
+            });
+        }
+        assert_eq!(conversation, expected);
         output
     }
 }
@@ -115,6 +120,8 @@ struct Daemon {
     projects: Vec<ProjectView>,
     sessions: Vec<SessionView>,
     grants: Vec<NetworkGrantView>,
+    /// What `sandbox show` answers for the first project.
+    launch_gates: Vec<RequirementView>,
 }
 
 impl Daemon {
@@ -135,6 +142,10 @@ impl Daemon {
             projects: Vec::new(),
             sessions: Vec::new(),
             grants: Vec::new(),
+            launch_gates: vec![available(
+                "launch backend",
+                "none: agents.sandbox = \"off\"",
+            )],
         }
     }
 
@@ -184,7 +195,31 @@ impl Daemon {
             Outcome::Ok(Reply::NetworkGrants {
                 grants: self.grants.clone(),
             }),
+            Outcome::Ok(Reply::SandboxProfile {
+                gates: self.launch_gates.clone(),
+                evidence: None,
+                command: Vec::new(),
+            }),
         ]
+    }
+
+    /// The first provider readiness lists as available with a sign-in row: the one the
+    /// session step offers.
+    fn offered_agent(&self) -> Option<String> {
+        self.requirements.iter().find_map(|requirement| {
+            let name = requirement.name.strip_prefix("provider ")?;
+            let has_sign_in = self
+                .requirements
+                .iter()
+                .any(|other| other.name == format!("provider {name} sign-in"));
+            (requirement.status == ReadinessStatusView::Available && has_sign_in)
+                .then(|| name.to_owned())
+        })
+    }
+
+    fn with_launch_gate(mut self, gate: RequirementView) -> Daemon {
+        self.launch_gates.push(gate);
+        self
     }
 
     fn replace(mut self, replacement: RequirementView) -> Daemon {
@@ -764,6 +799,65 @@ async fn once_a_session_started_init_says_the_setup_is_done() {
     );
     assert!(
         final_next(&checklist).starts_with("Torlek is set up"),
+        "{checklist}"
+    );
+}
+
+/// #965, #1250: init never says the setup is done while the next session would be refused.
+#[tokio::test]
+async fn a_launch_gate_that_refuses_holds_the_session_step_with_its_fix() {
+    let home = Home::new();
+    home.accept_sandbox();
+    let daemon = Daemon::ready()
+        .with_project()
+        .with_session()
+        .with_launch_gate(requirement(
+            "launch desktop session",
+            ReadinessStatusView::MissingPrerequisite,
+            "set agents.desktop_session = \"withheld\"",
+        ));
+
+    let output = home.against(&daemon, &["init"]).await;
+
+    let checklist = text(&output.stdout);
+    assert!(
+        step(&checklist, "Start a session").starts_with("[todo"),
+        "{checklist}"
+    );
+    assert!(
+        checklist.contains(
+            "launch desktop session: launch desktop session is not available (missing-prerequisite)"
+        ),
+        "{checklist}"
+    );
+    assert!(
+        final_next(&checklist).starts_with("next: set agents.desktop_session = \"withheld\""),
+        "{checklist}"
+    );
+}
+
+/// #968, #1178: what the first session will ask of the owner is said before it starts.
+#[tokio::test]
+async fn a_launch_gate_that_needs_the_owner_is_named_in_the_session_step() {
+    let home = Home::new();
+    home.accept_sandbox();
+    let daemon = Daemon::ready().with_project().with_launch_gate(requirement(
+        "launch folder trust",
+        ReadinessStatusView::NeedsAuthorization,
+        "add its main checkout to projects.trusted",
+    ));
+
+    let output = home.against(&daemon, &["init"]).await;
+
+    let checklist = text(&output.stdout);
+    assert!(
+        checklist.contains(
+            "launch folder trust: launch folder trust is not available (needs-authorization)"
+        ),
+        "{checklist}"
+    );
+    assert!(
+        final_next(&checklist).starts_with("next: `torlek session new '/home/me/code/my app'`"),
         "{checklist}"
     );
 }

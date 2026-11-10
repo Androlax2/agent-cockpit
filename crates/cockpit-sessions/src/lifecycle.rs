@@ -2311,15 +2311,8 @@ impl Sessions {
                 .await;
         }
         // Kept for the harness's trust of the checkout, recorded once the launch passed its
-        // gates: a parallel clone's (#702), and under `"required"` the main checkout's too,
-        // since the agent's home is then the session's own, which holds no earlier answer
-        // (#968).
-        let records_trust = match checkout.kind {
-            CheckoutKind::Parallel { .. } => true,
-            CheckoutKind::Main => setting == cockpit_config::AgentSandbox::Required,
-            CheckoutKind::Review { .. } => false,
-        };
-        let harness_trust = records_trust.then(|| {
+        // gates.
+        let harness_trust = records_harness_trust(&checkout.kind, setting).then(|| {
             (
                 checkout.clone(),
                 with_github_token(environment.clone(), None),
@@ -3172,37 +3165,180 @@ impl Sessions {
         self.session_temps.join(DRY_RUN_SESSION)
     }
 
-    /// `cockpit sandbox show`: the sandbox a new session of `provider` in `dir` would get,
-    /// without launching anything. The agent's own program and arguments are the provider's
-    /// at launch; the dry run shows `<agent>` in their place.
-    pub async fn sandbox_dry_run(
+    /// `torlek sandbox show`: each gate a new session of `provider` in `dir` would pass, read
+    /// with the launch's own code, and the sandbox it would get, without launching anything
+    /// or writing a file (#1250). A gate that refuses is reported beside the others rather
+    /// than ending the read; the profile is built only when none refuses.
+    pub async fn sandbox_preflight(
         &self,
         dir: PathBuf,
         provider: Option<&str>,
-    ) -> Result<cockpit_sandbox::Prepared, Error> {
-        let provider = self.provider(provider)?.name().as_str().to_owned();
+    ) -> Result<SandboxPreflight, Error> {
+        let provider = Arc::clone(self.provider(provider)?);
+        let provider_name = provider.name().as_str().to_owned();
         let dir = self
             .blocking("resolve the directory", move || canonical_dir(dir))
             .await?;
         let (checkout, _) = self.checkout_containing(&dir).await?;
         let setting = self.owner_settings().sandbox;
-        let github = self
-            .github_access(setting, checkout.project.as_str())
-            .await?;
+        let session_dir = self.session_dirs.join(DRY_RUN_SESSION);
+        let trust = self.harness_trust(setting, &checkout).await;
+        // As at launch, a parallel clone's command carries what it inherits from the checkout
+        // its trust is recorded from (#1279).
+        let inherited_from = match (&checkout.kind, &trust) {
+            (CheckoutKind::Parallel { .. }, HarnessTrust::Recorded { from }) => Some(from.clone()),
+            _ => None,
+        };
+        let command = {
+            let provider = Arc::clone(&provider);
+            let working_dir = dir.clone();
+            let session_dir = session_dir.clone();
+            let workspace = checkout.path.clone();
+            let owner_environment = self.launch_environment();
+            self.blocking("build the provider's command", move || {
+                Ok(provider.launch(&LaunchRequest {
+                    working_dir: &working_dir,
+                    session_dir: &session_dir,
+                    conversation: &Conversation::New,
+                    first_message: None,
+                    effort: None,
+                    model: None,
+                    remote_control: false,
+                    compaction_threshold: None,
+                    inherited_trust: inherited_from.as_deref().map(|trusted_checkout| {
+                        InheritedTrust {
+                            workspace: &workspace,
+                            trusted_checkout,
+                            owner_environment: &owner_environment,
+                        }
+                    }),
+                })?)
+            })
+            .await
+        };
+        let backend = match self.settings.sandbox.backend() {
+            cockpit_sandbox::Backend::Native(native) => Ok(native.describe()),
+            cockpit_sandbox::Backend::Missing { reason } => Err(reason.clone()),
+        };
+        let shared_desktop_refusal = self.shared_desktop_refusal();
         let account = self
             .launch_account(
                 setting,
-                &provider,
+                &provider_name,
                 checkout.project.as_str(),
                 None,
                 AccountRoute::Pick,
             )
-            .await?;
-        let environment = with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir());
-        let tools = self
-            .sandbox_tools(setting, &checkout.path, &checkout.path, &environment)
-            .await?;
-        let needs = provider_needs(self.provider(Some(&provider))?.as_ref(), &tools.ecosystems)?;
+            .await
+            .map_err(|error| error.to_string());
+        let binds_sign_in = setting == cockpit_config::AgentSandbox::Required
+            && (matches!(&account, Ok(found) if found.name.is_some())
+                || credential_variables(provider.as_ref())
+                    .is_ok_and(|variables| !variables.is_empty()));
+        let account_name = account
+            .as_ref()
+            .map(|found| found.name.clone())
+            .map_err(Clone::clone);
+        let passed_over = account
+            .as_ref()
+            .map(|found| found.passed_over.clone())
+            .unwrap_or_default();
+        let github = self
+            .github_access(setting, checkout.project.as_str())
+            .await
+            .map_err(|error| error.to_string());
+        let mut environment = self.launch_environment();
+        if let Ok(command) = &command {
+            environment.extend(command.environment.iter().cloned());
+        }
+        let mut environment = with_temp_dir(environment, &self.dry_run_temp_dir());
+        environment.push(("TORLEK_SESSION".into(), DRY_RUN_SESSION.into()));
+        let reads_tools = setting == cockpit_config::AgentSandbox::Required && backend.is_ok();
+        let tools = if reads_tools {
+            Some(
+                self.sandbox_tools(setting, &checkout.path, &dir, &environment)
+                    .await
+                    .map_err(|error| error.to_string()),
+            )
+        } else {
+            None
+        };
+        let is_refused = command.is_err()
+            || (setting == cockpit_config::AgentSandbox::Required
+                && (backend.is_err() || shared_desktop_refusal.is_some()))
+            || account.is_err()
+            || github.is_err()
+            || matches!(tools, Some(Err(_)));
+        let has_github_token = match &github {
+            Ok(github) => Ok(match setting {
+                cockpit_config::AgentSandbox::Required => github.api_token.is_some(),
+                cockpit_config::AgentSandbox::Off => github.token.is_some(),
+            }),
+            Err(reason) => Err(reason.clone()),
+        };
+        let profile = match (&command, account, github) {
+            (Ok(command), Ok(account), Ok(github)) if !is_refused => Some(
+                self.dry_run_profile(
+                    setting,
+                    provider.as_ref(),
+                    &checkout,
+                    &dir,
+                    environment,
+                    github,
+                    account,
+                    tools
+                        .as_ref()
+                        .and_then(|tools| tools.as_ref().ok())
+                        .cloned()
+                        .unwrap_or_else(cockpit_sandbox::ToolNeeds::none),
+                    command,
+                )
+                .await?,
+            ),
+            _ => None,
+        };
+        Ok(SandboxPreflight {
+            provider: provider_name,
+            setting,
+            desktop: self.desktop_session(),
+            command: command
+                .map(|command| command.program)
+                .map_err(|error| error.to_string()),
+            backend,
+            shared_desktop_refusal,
+            account: account_name,
+            passed_over,
+            binds_sign_in,
+            has_github_token,
+            toolchains: tools,
+            trust,
+            profile,
+        })
+    }
+
+    /// The profile of [`Sessions::sandbox_preflight`] once every gate before it passes: what
+    /// the launch's own [`Sessions::prepare_sandbox`] builds, or why it refuses. Only a
+    /// failure to read the owner's network decisions is an error.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the gates' facts, each passed straight into the launch's preparation"
+    )]
+    async fn dry_run_profile(
+        &self,
+        setting: cockpit_config::AgentSandbox,
+        provider: &dyn Provider,
+        checkout: &Checkout,
+        start_dir: &Path,
+        environment: Vec<(OsString, OsString)>,
+        github: GithubAccess,
+        account: LaunchAccount,
+        tools: cockpit_sandbox::ToolNeeds,
+        command: &cockpit_provider_api::LaunchCommand,
+    ) -> Result<Result<cockpit_sandbox::Prepared, String>, Error> {
+        let needs = match provider_needs(provider, &tools.ecosystems) {
+            Ok(needs) => needs,
+            Err(error) => return Ok(Err(error.to_string())),
+        };
         let decisions = self
             .launch_decisions(
                 setting,
@@ -3212,24 +3348,54 @@ impl Sessions {
                 },
             )
             .await?;
-        self.prepare_sandbox(
-            setting,
-            DRY_RUN_SESSION,
-            &provider,
-            checkout.path.clone(),
-            checkout.path,
-            self.session_dirs.join(DRY_RUN_SESSION),
-            self.dry_run_temp_dir(),
-            environment,
-            github,
-            account.credential,
-            account.login,
-            needs,
-            decisions,
-            tools,
-            PathBuf::from("<agent>"),
-            Vec::new(),
-        )
+        Ok(self
+            .prepare_sandbox(
+                setting,
+                DRY_RUN_SESSION,
+                provider.name().as_str(),
+                checkout.path.clone(),
+                start_dir.to_path_buf(),
+                self.session_dirs.join(DRY_RUN_SESSION),
+                self.dry_run_temp_dir(),
+                environment,
+                github,
+                account.credential,
+                account.login,
+                needs,
+                decisions,
+                tools,
+                command.program.clone(),
+                command.arguments.clone(),
+            )
+            .map_err(|error| error.to_string()))
+    }
+
+    /// Whether a launch in `checkout` under `setting` has the harness's folder trust before
+    /// its agent starts: the check of [`Sessions::trust_checkout`], without its write.
+    async fn harness_trust(
+        &self,
+        setting: cockpit_config::AgentSandbox,
+        checkout: &Checkout,
+    ) -> HarnessTrust {
+        if !records_harness_trust(&checkout.kind, setting) {
+            return match checkout.kind {
+                CheckoutKind::Review { .. } => HarnessTrust::NeverForReview,
+                _ => HarnessTrust::OwnersHome,
+            };
+        }
+        let owner_environment = self.settings.owner_environment.clone();
+        let git = self.git.clone();
+        let checkout = checkout.clone();
+        let source = self
+            .blocking("read the checkout's trust", move || {
+                Ok(trusted_checkout(&owner_environment, &git, &checkout))
+            })
+            .await
+            .unwrap_or_else(|error| Err(error.to_string()));
+        match source {
+            Ok(from) => HarnessTrust::Recorded { from },
+            Err(reason) => HarnessTrust::Refused { reason },
+        }
     }
 
     /// Record the owner's measurements for the exact latest sandbox launch, serialized
@@ -4164,6 +4330,54 @@ impl Drop for StagedCredentials {
     }
 }
 
+/// What each gate of a launch of `provider` found, in launch order, without launching
+/// (#1250): what [`Sessions::sandbox_preflight`] reads with the launch's own code.
+#[derive(Debug, Clone)]
+pub struct SandboxPreflight {
+    pub provider: String,
+    pub setting: cockpit_config::AgentSandbox,
+    pub desktop: crate::DesktopSession,
+    /// The program the provider's adapter starts, or why it refused to build the command.
+    pub command: Result<PathBuf, String>,
+    /// The native sandbox the daemon's start probed, or why there is none.
+    pub backend: Result<String, String>,
+    /// Why the native sandbox refuses the desktop session the launch would share (#965).
+    pub shared_desktop_refusal: Option<String>,
+    /// The account a sandboxed launch runs on, with its credential or signed-in login (#968,
+    /// #59): `None` when it runs on none; `Err` when an account's credential or login refuses
+    /// the launch.
+    pub account: Result<Option<String>, String>,
+    /// The login accounts the launch passes over, each with why and the grant that lets it.
+    pub passed_over: Vec<String>,
+    /// Whether the launch binds a sign-in at all: not under `"off"`, nor for a provider that
+    /// declares no credential variable.
+    pub binds_sign_in: bool,
+    /// Whether the project keeps the GitHub token this launch uses: the API token the session
+    /// proxy adds under `"required"`, the project's own token under `"off"`.
+    pub has_github_token: Result<bool, String>,
+    /// What the checkout's toolchains ask (#859); `None` when the launch reads none: under
+    /// `"off"`, and without a backend.
+    pub toolchains: Option<Result<cockpit_sandbox::ToolNeeds, String>>,
+    pub trust: HarnessTrust,
+    /// The launch's command and evidence, or why the sandbox refuses its profile; `None` when
+    /// an earlier gate refuses, so it was not built.
+    pub profile: Option<Result<cockpit_sandbox::Prepared, String>>,
+}
+
+/// Whether the harness's folder-trust question is answered before the agent starts (#702,
+/// #968).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HarnessTrust {
+    /// Recorded at launch from `from`, a checkout in the owner's `projects.trusted`.
+    Recorded { from: PathBuf },
+    /// The agent runs in the owner's own home, which keeps the owner's earlier answer.
+    OwnersHome,
+    /// Not recorded, for `reason`: the harness asks at the agent's first start.
+    Refused { reason: String },
+    /// A review clone holds someone else's changes: never trusted.
+    NeverForReview,
+}
+
 /// What a launch in one project gets of GitHub (#754).
 #[derive(Debug, Default)]
 struct GithubAccess {
@@ -4714,6 +4928,18 @@ fn create_session_dir(dir: &Path) -> Result<(), Error> {
         .create(dir)
         .map_err(failed)?;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(failed)
+}
+
+/// Whether a launch in a checkout of `kind` under `setting` records the harness's trust of
+/// it once the launch passed its gates: a parallel clone's (#702), and under `"required"` the
+/// main checkout's too, since the agent's home is then the session's own, which holds no
+/// earlier answer (#968).
+fn records_harness_trust(kind: &CheckoutKind, setting: cockpit_config::AgentSandbox) -> bool {
+    match kind {
+        CheckoutKind::Parallel { .. } => true,
+        CheckoutKind::Main => setting == cockpit_config::AgentSandbox::Required,
+        CheckoutKind::Review { .. } => false,
+    }
 }
 
 /// The checkout whose harness trust `checkout` inherits: itself for a main checkout in the

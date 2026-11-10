@@ -235,6 +235,11 @@ async fn report(
         ),
         _ => None,
     };
+    // An unregistered directory has no launch to read; the `project` line says so.
+    let launch = match &checkout {
+        Some(_) => Some(launches(&context, &dir).await),
+        None => None,
+    };
     let capacity = context.admission.capacity();
     let project = ProjectFacts {
         dir,
@@ -245,6 +250,7 @@ async fn report(
             memory_mib: capacity.memory_mib,
         },
         docker,
+        launch,
     };
     Ok(with_daemon_lines(
         cockpit_readiness::assess(&host, &config, Some(&project)),
@@ -474,7 +480,80 @@ fn probe_docker() -> Result<cockpit_readiness::DockerEngine, String> {
     cockpit_readiness::probe_docker(Path::new("docker"), cockpit_readiness::DOCKER_DEADLINE)
 }
 
-fn requirement_view(requirement: cockpit_readiness::Requirement) -> RequirementView {
+/// The launch gates of a session of each wired provider in `dir` (#1250): a session names
+/// its provider, so each one's launch is what a session could get.
+async fn launches(
+    context: &Context,
+    dir: &Path,
+) -> Result<Vec<cockpit_readiness::LaunchFacts>, String> {
+    let mut all = Vec::new();
+    for provider in &context.sign_in_providers {
+        let preflight = context
+            .sessions
+            .sandbox_preflight(dir.to_path_buf(), Some(provider.name().as_str()))
+            .await
+            .map_err(|error| format!("{}: {error}", provider.name()))?;
+        all.push(launch_facts(&preflight));
+    }
+    Ok(all)
+}
+
+/// The launch gates' facts as `cockpit-readiness` assesses them (#1250).
+pub(crate) fn launch_facts(
+    preflight: &cockpit_sessions::SandboxPreflight,
+) -> cockpit_readiness::LaunchFacts {
+    cockpit_readiness::LaunchFacts {
+        provider: preflight.provider.clone(),
+        setting: preflight.setting,
+        desktop: preflight.desktop,
+        command: preflight.command.clone(),
+        backend: preflight.backend.clone(),
+        shared_desktop_refusal: preflight.shared_desktop_refusal.clone(),
+        account: preflight.account.clone(),
+        passed_over: preflight.passed_over.clone(),
+        binds_sign_in: preflight.binds_sign_in,
+        github: preflight.has_github_token.clone(),
+        toolchains: preflight.toolchains.as_ref().map(|tools| {
+            tools
+                .as_ref()
+                .map(|tools| cockpit_readiness::Toolchains {
+                    ecosystems: tools.ecosystems.clone(),
+                    install_roots: tools.install_roots.clone(),
+                })
+                .map_err(Clone::clone)
+        }),
+        trust: match &preflight.trust {
+            cockpit_sessions::HarnessTrust::Recorded { from } => {
+                cockpit_readiness::HarnessTrust::Recorded { from: from.clone() }
+            }
+            cockpit_sessions::HarnessTrust::OwnersHome => {
+                cockpit_readiness::HarnessTrust::OwnersHome
+            }
+            cockpit_sessions::HarnessTrust::Refused { reason } => {
+                cockpit_readiness::HarnessTrust::Refused {
+                    reason: reason.clone(),
+                }
+            }
+            cockpit_sessions::HarnessTrust::NeverForReview => {
+                cockpit_readiness::HarnessTrust::NeverForReview
+            }
+        },
+        profile: preflight.profile.as_ref().map(|profile| {
+            profile
+                .as_ref()
+                .map(|prepared| {
+                    crate::sessions::evidence_view(prepared.evidence.clone())
+                        .lines()
+                        .into_iter()
+                        .next()
+                        .expect("evidence lines start with its enforcement")
+                })
+                .map_err(Clone::clone)
+        }),
+    }
+}
+
+pub(crate) fn requirement_view(requirement: cockpit_readiness::Requirement) -> RequirementView {
     RequirementView {
         name: requirement.name,
         status: match requirement.status {

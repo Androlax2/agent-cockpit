@@ -168,7 +168,7 @@ fn config_file(role: &str, file: &cockpit_config::ConfigFile) -> String {
     format!("{role} {} ({presence})", file.path.display())
 }
 
-fn render(requirement: &RequirementView) {
+pub(crate) fn render(requirement: &RequirementView) {
     outln!(
         "{:<20}  {}: {}",
         requirement.status.as_str(),

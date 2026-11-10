@@ -325,6 +325,8 @@ Use the paths printed by your binary; keep private state and provider credential
 
 Where no sandbox backend exists, `sandbox = "required"` under `[agents]` refuses every agent launch and names the missing backend. It never runs an agent unsandboxed.
 
+Before a first sandboxed session, `torlek sandbox show DIR [--agent NAME]` runs the checks a launch in `DIR` runs, without launching anything or writing a file: the provider's command, the backend, the desktop session, the provider's sign-in, the project's GitHub token, the checkout's toolchains, the folder trust and the profile. It prints one line per check, with its fix when it fails, then the sandbox and the command the launch would get, and exits 1 when a check refuses the launch. `torlek doctor --project DIR` lists the checks that fail for each provider, and `torlek init` holds its session step on one that refuses.
+
 A sandboxed session never reads your own provider sign-in, such as `~/.claude/.credentials.json`.
 Give each provider one account for its sandboxed sessions instead: `torlek provider credential
 set PROVIDER --variable VARIABLE` asks for one credential without showing it (or reads it from

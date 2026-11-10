@@ -189,15 +189,28 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
             })
         }),
         Command::SandboxShow { dir, agent } => job(async move {
-            let prepared = sessions
-                .sandbox_dry_run(dir.into(), agent.as_deref())
+            let preflight = sessions
+                .sandbox_preflight(dir.into(), agent.as_deref())
                 .await?;
+            let gates =
+                cockpit_readiness::launch_gates(&crate::readiness::launch_facts(&preflight))
+                    .into_iter()
+                    .map(crate::readiness::requirement_view)
+                    .collect();
+            let Some(Ok(prepared)) = preflight.profile else {
+                return Ok(Reply::SandboxProfile {
+                    gates,
+                    evidence: None,
+                    command: Vec::new(),
+                });
+            };
             let command = std::iter::once(prepared.program.into_os_string())
                 .chain(prepared.arguments)
                 .map(|word| word.to_string_lossy().into_owned())
                 .collect();
             Ok(Reply::SandboxProfile {
-                evidence: Box::new(evidence_view(prepared.evidence)),
+                gates,
+                evidence: Some(Box::new(evidence_view(prepared.evidence))),
                 command,
             })
         }),
@@ -513,7 +526,7 @@ fn error_code(error: &Error) -> ErrorCode {
     }
 }
 
-fn evidence_view(evidence: cockpit_sandbox::Evidence) -> SandboxEvidenceView {
+pub(crate) fn evidence_view(evidence: cockpit_sandbox::Evidence) -> SandboxEvidenceView {
     SandboxEvidenceView {
         enforcement: match evidence.enforcement {
             cockpit_sandbox::Enforcement::Sandboxed {

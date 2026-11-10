@@ -11,8 +11,9 @@ mod scripted;
 use cockpit_protocol::{
     AgentExitView, Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, ExitStatusView,
     HeldMessageView, LaunchKindView, LaunchView, Outcome, ProtocolError, QuotaStopCauseView,
-    QuotaStopStatusView, QuotaStopView, Reply, SandboxEnforcementView, SandboxEvidenceView,
-    SandboxRuleView, SessionFailure, SessionStateView, SessionView, StopTargetView, TaskBudgetView,
+    QuotaStopStatusView, QuotaStopView, ReadinessStatusView, Reply, RequirementView,
+    SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure, SessionStateView,
+    SessionView, StopTargetView, TaskBudgetView,
 };
 use scripted::{scripted_daemon, text};
 
@@ -975,17 +976,27 @@ async fn session_sandbox_says_when_no_launch_is_recorded() {
     assert_eq!(text(&output.stdout), "sandbox: no launch recorded yet\n");
 }
 
+fn gate(name: &str, status: ReadinessStatusView, next: Option<&str>) -> RequirementView {
+    RequirementView {
+        name: name.to_owned(),
+        status,
+        detail: format!("{name} found"),
+        next: next.map(str::to_owned),
+    }
+}
+
 #[tokio::test]
-async fn sandbox_show_sends_an_absolute_dir_and_prints_the_profile_and_command() {
+async fn sandbox_show_sends_an_absolute_dir_and_prints_each_gate_then_the_profile_and_command() {
     let home = Home::new();
     let daemon = scripted_daemon(
         &home.daemon_socket(),
         Outcome::Ok(Reply::SandboxProfile {
-            evidence: Box::new(evidence()),
+            gates: vec![gate("launch backend", ReadinessStatusView::Available, None)],
+            evidence: Some(Box::new(evidence())),
             command: vec![
                 "/usr/bin/fixture-backend".to_owned(),
                 "--".to_owned(),
-                "<agent>".to_owned(),
+                "/usr/bin/codex".to_owned(),
             ],
         }),
     );
@@ -996,11 +1007,16 @@ async fn sandbox_show_sends_an_absolute_dir_and_prints_the_profile_and_command()
         .await;
 
     assert!(output.status.success(), "{}", text(&output.stderr));
+    let printed = text(&output.stdout);
     assert!(
-        text(&output.stdout)
-            .ends_with("observed: landlock: yes\ncommand: /usr/bin/fixture-backend -- <agent>\n"),
-        "{}",
-        text(&output.stdout)
+        printed.starts_with("available             launch backend: launch backend found\n"),
+        "{printed}"
+    );
+    assert!(
+        printed.ends_with(
+            "observed: landlock: yes\ncommand: /usr/bin/fixture-backend -- /usr/bin/codex\n"
+        ),
+        "{printed}"
     );
     assert_eq!(
         daemon.await.unwrap(),
@@ -1008,6 +1024,44 @@ async fn sandbox_show_sends_an_absolute_dir_and_prints_the_profile_and_command()
             dir: cwd.join("app").display().to_string(),
             agent: Some("codex".to_owned()),
         }
+    );
+}
+
+/// #1250: a gate that refuses is printed with its fix beside the others, and no profile.
+#[tokio::test]
+async fn a_sandbox_show_whose_gate_refuses_prints_its_fix_and_exits_1() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::SandboxProfile {
+            gates: vec![
+                gate(
+                    "launch desktop session",
+                    ReadinessStatusView::MissingPrerequisite,
+                    Some("set agents.desktop_session = \"withheld\""),
+                ),
+                gate(
+                    "launch profile",
+                    ReadinessStatusView::Unknown,
+                    Some("fix the gates above, then run this again"),
+                ),
+            ],
+            evidence: None,
+            command: Vec::new(),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["sandbox", "show", "/p/app"])
+        .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stdout),
+        "missing-prerequisite  launch desktop session: launch desktop session found\n\
+         \x20                       next: set agents.desktop_session = \"withheld\"\n\
+         unknown               launch profile: launch profile found\n\
+         \x20                       next: fix the gates above, then run this again\n"
     );
 }
 
