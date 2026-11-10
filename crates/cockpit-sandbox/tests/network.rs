@@ -770,3 +770,30 @@ async fn a_closed_service_carries_no_reason() {
         .unwrap();
     assert_eq!(filed.reason, None);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_decided_list_holds_every_decision_oldest_first_and_no_asking_request() {
+    let store = store().await;
+    let denied = store.file("s1", "app").await.unwrap();
+    store.file("s2", "app").await.unwrap();
+    let allowed = store.file("s3", "app").await.unwrap();
+    store.deny(denied).await;
+    store.allow(allowed, true, DECIDED_AT + 10).await.unwrap();
+    let read = store.database.read().await.unwrap();
+
+    let decided = cockpit_sandbox::decided_network_requests(&read)
+        .await
+        .unwrap();
+
+    let states: Vec<(i64, NetworkRequestState)> = decided
+        .iter()
+        .map(|request| (request.id, request.state))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            (denied, NetworkRequestState::Denied),
+            (allowed, NetworkRequestState::AllowedAlways),
+        ]
+    );
+}

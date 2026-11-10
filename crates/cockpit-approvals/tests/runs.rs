@@ -6,9 +6,9 @@ mod common;
 use cockpit_approvals::{
     Approved, DecidedThrough, EXPIRES_AFTER_SECONDS, Error, Interrupted, Output, Refusal,
     RunDecision, RunId, RunRequest, RunResult, RunState, action_digest, approve_run, ask_run,
-    decline_run, edit_run, finish_run, interrupted_runs, open_runs, queue_order, reconcile_run,
-    record_not_run, record_outcome_unknown, resolve_cwd, run_request, run_status, shown_run,
-    start_run,
+    decided_runs, decline_run, edit_run, finish_run, interrupted_runs, open_runs, queue_order,
+    reconcile_run, record_not_run, record_outcome_unknown, resolve_cwd, run_request, run_status,
+    shown_run, start_run,
 };
 use cockpit_authorization::Permission;
 use cockpit_processes::{EndReason, ExecutionId, Phase};
@@ -930,4 +930,62 @@ mod repeated_asks {
 
         assert!(matches!(refused, Err(Error::Refused(_))), "{refused:?}");
     }
+}
+
+/// An approved-and-finished request at `AFTER_GRACE`, a declined one 50 s later and one still
+/// asking: the owner's list of decisions.
+async fn two_decided_and_one_asking(fixture: &Fixture) -> (RunId, RunId) {
+    let finished = fixture.asked(&session("s1"), "ls").await;
+    let declined = fixture.asked(&session("s2"), "rm -rf target").await;
+    fixture.asked(&session("s3"), "pwd").await;
+    let write = fixture.database.write().await.unwrap();
+    let (approved, _) = approve_run(
+        &write,
+        None,
+        finished.id,
+        1,
+        &finished.digest(),
+        AFTER_GRACE,
+    )
+    .await
+    .unwrap();
+    start_run(&write, &approved, EXECUTION).await.unwrap();
+    finish_run(&write, &approved, &result(3), AFTER_GRACE + 1)
+        .await
+        .unwrap();
+    decline_run(&write, None, declined.id, AFTER_GRACE + 50)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    (finished.id, declined.id)
+}
+
+#[tokio::test]
+async fn the_decided_list_holds_every_decision_oldest_first_and_no_asking_request() {
+    let fixture = Fixture::new().await;
+    let (finished, declined) = two_decided_and_one_asking(&fixture).await;
+    let read = fixture.database.read().await.unwrap();
+
+    let decided = decided_runs(&read, None, AFTER_GRACE + 100).await.unwrap();
+
+    let ids: Vec<RunId> = decided.iter().map(|run| run.id).collect();
+    assert_eq!(ids, [finished, declined]);
+    assert_eq!(decided[0].state, RunState::Finished);
+    assert_eq!(decided[0].result.as_ref().unwrap().exit_code, 3);
+    assert_eq!(decided[1].state, RunState::Declined);
+    assert_eq!(decided[1].result, None);
+}
+
+#[tokio::test]
+async fn the_decided_list_since_a_time_keeps_the_decisions_made_from_then_on() {
+    let fixture = Fixture::new().await;
+    let (_, declined) = two_decided_and_one_asking(&fixture).await;
+    let read = fixture.database.read().await.unwrap();
+
+    let decided = decided_runs(&read, Some(AFTER_GRACE + 50), AFTER_GRACE + 100)
+        .await
+        .unwrap();
+
+    let ids: Vec<RunId> = decided.iter().map(|run| run.id).collect();
+    assert_eq!(ids, [declined]);
 }

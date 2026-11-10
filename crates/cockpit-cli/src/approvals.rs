@@ -8,8 +8,8 @@ use std::process::ExitCode;
 
 use chrono::{DateTime, Local};
 use cockpit_protocol::{
-    Command, DecidedThroughView, GuideStateView, GuideView, HiddenView, Reply, RunDecisionView,
-    RunRequestView, RunStateView, ShownText,
+    Command, DecidedRunView, DecidedThroughView, GuideStateView, GuideView, HiddenView, Reply,
+    RunDecisionView, RunRequestView, RunStateView, ShownText,
 };
 
 /// The command a verb sends, or the usage problem that stops it.
@@ -17,6 +17,12 @@ pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, Strin
     let words = crate::ask::utf8(arguments)?;
     let command = match (verb, words.as_slice()) {
         ("approval", ["list"]) => Command::ApprovalQueue,
+        ("approval", ["list", "--all"]) => Command::ApprovalDecided { since: None },
+        ("approval", ["list", "--all", "--since", since] | ["list", "--since", since, "--all"]) => {
+            Command::ApprovalDecided {
+                since: Some(since_of(since)?),
+            }
+        }
         ("approval", ["show", id]) => Command::ApprovalShow {
             request: id_of(id)?,
         },
@@ -97,6 +103,12 @@ fn id_of(text: &str) -> Result<i64, String> {
     text.parse().map_err(|_| format!("{text} is not a number"))
 }
 
+/// `--since`'s value as seconds since 1970: a time ago (`2h`, `7d`) or an RFC 3339 time.
+fn since_of(text: &str) -> Result<i64, String> {
+    let seconds = crate::bug_report::since_seconds(text, "no decision is that recent")?;
+    i64::try_from(seconds).map_err(|_| format!("--since {text} is out of range"))
+}
+
 /// Steps count from 1 here, from 0 on the wire.
 fn step_of(text: &str) -> Result<usize, String> {
     match text.parse::<usize>() {
@@ -132,6 +144,12 @@ pub(crate) fn run(command: Command) -> ExitCode {
                 other => crate::agent::failed(&socket, other),
             }
         }
+        Ok(Reply::ApprovalDecided { runs }) => {
+            for run in &runs {
+                outln!("{}", decided_run_line(run));
+            }
+            ExitCode::SUCCESS
+        }
         Ok(Reply::RunRequest { request }) => {
             out!("{}", run_detail(&request));
             ExitCode::SUCCESS
@@ -166,6 +184,37 @@ fn run_line(run: &RunRequestView) -> String {
         "{line}{preview} [more: {more}; torlek approval show {}]",
         run.id
     )
+}
+
+/// `run  id  state  session  digest  waited  exit  command`, tab-separated, for `approval
+/// list --all`: `waited` is the seconds from the ask to the owner's decision, `exit` the
+/// command's exit status or `-` when it never ran.
+fn decided_run_line(run: &DecidedRunView) -> String {
+    let exit = run
+        .exit_code
+        .map_or_else(|| "-".to_owned(), |code| code.to_string());
+    let shown = run.shown_command.text.trim_end_matches('\n');
+    let command = match shown.split_once('\n') {
+        Some((first_line, rest)) => format!(
+            "{first_line} [more: {} lines; torlek approval show {}]",
+            rest.lines().count(),
+            run.id
+        ),
+        None => shown.to_owned(),
+    };
+    format!(
+        "run\t{}\t{}\t{}\t{}\t{}\t{exit}\t{command}",
+        run.id,
+        crate::ask::state_name(run.state),
+        run.session,
+        run.digest,
+        seconds_between(run.asked_at, run.decision.at)
+    )
+}
+
+/// The seconds from an ask to the owner's decision on it.
+pub(crate) fn seconds_between(asked_at: i64, decided_at: i64) -> String {
+    format!("{}s", decided_at - asked_at)
 }
 
 fn guide_line(guide: &GuideView) -> String {

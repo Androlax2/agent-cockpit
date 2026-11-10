@@ -29,9 +29,9 @@ pub use rows::{EXPIRES_AFTER_SECONDS, Project, REFRESH_AFTER_SECONDS};
 pub use runs::{
     APPROVAL_GRACE_SECONDS, Approved, DecidedThrough, FiledRun, Interrupted, RunAsk, RunDecision,
     RunId, RunRequest, RunResult, RunState, StartAsk, StartSession, action_digest, approve_run,
-    ask_run, ask_run_unless_pending, ask_start, decline_run, edit_run, finish_run, finish_start,
-    interrupted_runs, may_ask, open_runs, purge_run_output, queue_order, reconcile_run,
-    record_not_run, record_outcome_unknown, resolve_cwd, run_request, run_status,
+    ask_run, ask_run_unless_pending, ask_start, decided_runs, decline_run, edit_run, finish_run,
+    finish_start, interrupted_runs, may_ask, open_runs, purge_run_output, queue_order,
+    reconcile_run, record_not_run, record_outcome_unknown, resolve_cwd, run_request, run_status,
     run_status_if_fresh, shown_run, start_run, validate_start,
 };
 

@@ -104,6 +104,10 @@ To end a running command instead, such as `git push` waiting for a username it w
 The stop sends `SIGTERM`, then `SIGKILL` after 3 seconds, to every process the command started; the agent reads that the owner stopped it, with the exit status the stop left (143 after `SIGTERM`).
 A command that outlived a daemon restart cannot be stopped this way: end it on the host.
 
+`torlek approval list --all [--since 2h|RFC3339]` lists the requests you decided instead, oldest decision first, one line each:
+`run`, id, state, session, command digest, the seconds from the ask to your decision, the command's exit status (`-` when it never ran) and the command.
+`--since` keeps the decisions made from that time on, a time ago (`90s`, `30m`, `2h`, `1d`) or an RFC 3339 time.
+
 To remove a finished run's stored output, run `torlek approval purge-output ID`; database retention does the same after `[storage] database_retention_days`.
 The daily database backups still hold it until they age out (`[storage] database_backups_kept`, 7 by default, in the state directory's `backups` folder); delete the copies taken after the run to remove it sooner.
 The cleared text can stay in the database file's unused pages until SQLite reuses them, and what the agent already received stays in its own conversation.
@@ -121,6 +125,9 @@ torlek network deny ID             # refused at once from now on, without asking
 torlek network grants [PROJECT]
 torlek network revoke GRANT        # closes the tunnels it carried
 ```
+
+`torlek network list --all` lists the requests you decided instead, oldest decision first: `network`, id, state (`allowed-once`, `allowed-always` or `denied`), session, project, `host:port` and the seconds from the request to your decision.
+Like the approval list, it is read-only and only the owner's socket answers it.
 
 In the pane, `y` allows once, `a` allows always and `x` denies.
 "Allow once" lasts the rest of the asking session, not one connection; a new session asks again.

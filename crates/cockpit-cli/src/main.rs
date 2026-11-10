@@ -103,13 +103,13 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check
        torlek ask guide [--cwd DIR] < GUIDE | --wait ID
        torlek ask service NAME --reason TEXT
-       torlek approval list | show ID | decline ID | input ID [--shown] < LINE
+       torlek approval list [--all [--since 2h|RFC3339]] | show ID | decline ID | input ID [--shown] < LINE
        torlek approval stop ID | purge-output ID
        torlek approval approve ID --revision REVISION --digest DIGEST
        torlek approval edit ID --revision REVISION COMMAND
        torlek guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID
        torlek account sign-in PROVIDER ACCOUNT | grant PROJECT PROVIDER ACCOUNT | grants [PROJECT] | revoke GRANT
-       torlek network list | allow ID [--always] | deny ID | grants [PROJECT] | revoke GRANT
+       torlek network list [--all] | allow ID [--always] | deny ID | grants [PROJECT] | revoke GRANT
        torlek network grant PROJECT github.com
        torlek session send ID MESSAGE | cancel ID
        torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL] [--compaction-threshold VALUE]

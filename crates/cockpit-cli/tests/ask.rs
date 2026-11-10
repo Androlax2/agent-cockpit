@@ -11,10 +11,11 @@ use std::process::{Output, Stdio};
 mod scripted;
 
 use cockpit_protocol::{
-    Command, DecidedThroughView, ErrorCode, FoldedView, GuideStateView, GuideStepView, GuideView,
-    HiddenView, NetworkDecisionView, NetworkGrantView, NetworkRequestStateView, NetworkRequestView,
-    NetworkSubjectView, NetworkTargetView, Outcome, ProtocolError, Reply, RunDecisionView,
-    RunRequestView, RunResultView, RunStateView, ShownText, Unblock, UnblockedBy,
+    Command, DecidedRunView, DecidedThroughView, ErrorCode, FoldedView, GuideStateView,
+    GuideStepView, GuideView, HiddenView, NetworkDecisionView, NetworkGrantView,
+    NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, NetworkTargetView, Outcome,
+    ProtocolError, Reply, RunDecisionView, RunRequestView, RunResultView, RunStateView, ShownText,
+    Unblock, UnblockedBy,
 };
 use scripted::{scripted_conversation, text};
 
@@ -1101,4 +1102,153 @@ async fn an_option_in_place_of_the_service_is_a_usage_error() {
         "{}",
         text(&output.stderr)
     );
+}
+
+fn decided_run(id: i64, state: RunStateView, exit_code: Option<i32>) -> DecidedRunView {
+    DecidedRunView {
+        id,
+        session: "s1".to_owned(),
+        state,
+        digest: "d".repeat(64),
+        shown_command: shown("make test"),
+        asked_at: 100,
+        decision: RunDecisionView {
+            approved: state != RunStateView::Declined,
+            at: 112,
+            through: Some(DecidedThroughView::Cli),
+        },
+        exit_code,
+    }
+}
+
+#[tokio::test]
+async fn the_decided_list_shows_state_digest_wait_and_exit_status_per_request() {
+    let home = Home::new();
+    let daemon = scripted_conversation(
+        &home.owner_socket(),
+        vec![Outcome::Ok(Reply::ApprovalDecided {
+            runs: vec![
+                decided_run(7, RunStateView::Finished, Some(2)),
+                decided_run(8, RunStateView::Declined, None),
+                DecidedRunView {
+                    shown_command: shown("echo 1\necho 2\necho 3"),
+                    ..decided_run(9, RunStateView::NotRun, None)
+                },
+            ],
+        })],
+    );
+
+    let output = home
+        .cockpit_as_owner(&["approval", "list", "--all"], "")
+        .await;
+
+    let digest = "d".repeat(64);
+    assert_eq!(
+        text(&output.stdout),
+        format!(
+            "run\t7\tfinished\ts1\t{digest}\t12s\t2\tmake test\n\
+             run\t8\tdeclined\ts1\t{digest}\t12s\t-\tmake test\n\
+             run\t9\tnot run\ts1\t{digest}\t12s\t-\techo 1 [more: 2 lines; torlek approval show 9]\n"
+        )
+    );
+    assert_eq!(
+        daemon.await.unwrap(),
+        [Command::ApprovalDecided { since: None }]
+    );
+}
+
+#[tokio::test]
+async fn the_decided_list_since_a_time_asks_for_the_decisions_from_then_on() {
+    for arguments in [
+        [
+            "approval",
+            "list",
+            "--all",
+            "--since",
+            "2026-01-02T03:04:05Z",
+        ],
+        [
+            "approval",
+            "list",
+            "--since",
+            "2026-01-02T03:04:05Z",
+            "--all",
+        ],
+    ] {
+        let home = Home::new();
+        let daemon = scripted_conversation(
+            &home.owner_socket(),
+            vec![Outcome::Ok(Reply::ApprovalDecided { runs: Vec::new() })],
+        );
+
+        let output = home.cockpit_as_owner(&arguments, "").await;
+
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert_eq!(
+            daemon.await.unwrap(),
+            [Command::ApprovalDecided {
+                since: Some(1_767_323_045)
+            }],
+            "{arguments:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn since_without_all_is_a_usage_error() {
+    let home = Home::new();
+
+    let output = home
+        .cockpit_as_owner(&["approval", "list", "--since", "2h"], "")
+        .await;
+
+    assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
+}
+
+fn decided_network_request(id: i64, state: NetworkRequestStateView) -> NetworkRequestView {
+    NetworkRequestView {
+        id,
+        subject: NetworkSubjectView::Session {
+            id: "s1".to_owned(),
+        },
+        project: "app".to_owned(),
+        asks: NetworkTargetView::Host {
+            host: "crates.io".to_owned(),
+            port: 443,
+        },
+        target: "crates.io:443".to_owned(),
+        state,
+        asked_at: 100,
+        decision: Some(NetworkDecisionView {
+            at: 145,
+            through: Some(DecidedThroughView::Cli),
+        }),
+        grant: None,
+        shown_reason: None,
+    }
+}
+
+#[tokio::test]
+async fn the_decided_network_list_shows_host_decision_and_wait() {
+    let home = Home::new();
+    let daemon = scripted_conversation(
+        &home.owner_socket(),
+        vec![Outcome::Ok(Reply::NetworkRequests {
+            requests: vec![
+                decided_network_request(3, NetworkRequestStateView::AllowedAlways),
+                decided_network_request(4, NetworkRequestStateView::Denied),
+            ],
+        })],
+    );
+
+    let output = home
+        .cockpit_as_owner(&["network", "list", "--all"], "")
+        .await;
+
+    assert_eq!(
+        text(&output.stdout),
+        "network\t3\tallowed-always\ts1\tapp\tcrates.io:443\t45s\n\
+         network\t4\tdenied\ts1\tapp\tcrates.io:443\t45s\n"
+    );
+    assert_eq!(daemon.await.unwrap(), [Command::NetworkDecided]);
 }

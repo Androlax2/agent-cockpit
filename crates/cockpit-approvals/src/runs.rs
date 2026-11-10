@@ -705,6 +705,30 @@ pub async fn open_runs(connection: &Connection, now: i64) -> Result<Vec<RunReque
     Ok(open)
 }
 
+/// Requests the owner decided, whatever became of them since, oldest decision first (#1252).
+/// `since` keeps those decided at or after that time.
+pub async fn decided_runs(
+    connection: &Connection,
+    since: Option<i64>,
+    now: i64,
+) -> Result<Vec<RunRequest>, Error> {
+    let mut rows = connection
+        .query(
+            &format!(
+                "SELECT {RUN_COLUMNS} FROM approvals_runs
+                 WHERE decided_at IS NOT NULL AND decided_at >= ?1
+                 ORDER BY decided_at, id"
+            ),
+            [since.unwrap_or(0)],
+        )
+        .await?;
+    let mut runs = Vec::new();
+    while let Some(row) = rows.next().await? {
+        runs.push(run_from(&row, now)?);
+    }
+    Ok(runs)
+}
+
 /// Report 17's queue: one approval asks at a time per owner. A running command that waits
 /// for input comes to the front, then asking requests oldest first; approved commands keep
 /// running behind them. `waiting_for_input` is one reading of the runner

@@ -2990,6 +2990,34 @@ async fn a_denied_host_keeps_being_refused_at_once() {
     assert_eq!(owner_network(&home, &["list"]).await, "");
 }
 
+/// #1252: the open list drops a decided request; `list --all` keeps it with the owner's
+/// decision and the seconds the session waited.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_decided_list_keeps_a_denied_request_the_open_list_dropped() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    asked_and_listed(&home, &agent).await;
+    owner_network(&home, &["deny", "1"]).await;
+
+    let decided = owner_network(&home, &["list", "--all"]).await;
+
+    let prefix = format!(
+        "network\t1\tdenied\t{}\t{COMMANDED_PROJECT}\t{ASKED_HOST}\t",
+        agent.session
+    );
+    let waited = decided
+        .strip_prefix(&prefix)
+        .unwrap_or_else(|| panic!("{decided}"));
+    assert!(
+        waited
+            .trim_end()
+            .strip_suffix('s')
+            .is_some_and(|seconds| seconds.parse::<u32>().is_ok()),
+        "{decided}"
+    );
+    assert_eq!(owner_network(&home, &["list"]).await, "");
+}
+
 /// #674 regression: no path adds an entry without the owner. Every network verb is refused
 /// on the agents' socket; the request still asks, no grant is made, the host stays refused.
 #[tokio::test(flavor = "multi_thread")]
@@ -3003,6 +3031,7 @@ async fn no_network_verb_on_the_agent_socket_allows_a_host() {
 
     for command in [
         Command::NetworkList,
+        Command::NetworkDecided,
         Command::NetworkAllow {
             request: 1,
             always: true,

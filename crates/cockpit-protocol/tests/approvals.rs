@@ -283,3 +283,27 @@ fn a_run_result_marks_the_owners_stop_and_reads_without_the_mark() {
     assert!(result.stopped_by_owner);
     assert_eq!(serde_json::to_value(&result).unwrap(), stopped);
 }
+
+#[test]
+fn the_decided_lists_round_trip_through_their_wire_forms() {
+    for (command, wire) in [
+        (
+            Command::ApprovalDecided { since: None },
+            json!({"kind": "approval-decided"}),
+        ),
+        (
+            Command::ApprovalDecided {
+                since: Some(1_767_323_045),
+            },
+            json!({"kind": "approval-decided", "since": 1_767_323_045}),
+        ),
+        (Command::NetworkDecided, json!({"kind": "network-decided"})),
+    ] {
+        let wire = json!({"id": 1, "command": wire});
+
+        let request = decode_request(&wire.to_string()).unwrap();
+
+        assert_eq!(request.command, command);
+        assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    }
+}

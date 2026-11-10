@@ -122,6 +122,24 @@ pub struct RunRequestView {
     pub already_asked: bool,
 }
 
+/// One decided run request as `approval list --all` reads it (#1252): what it was, how long
+/// the owner took and how it ended, without the output `approval show` carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecidedRunView {
+    pub id: i64,
+    pub session: String,
+    pub state: RunStateView,
+    /// SHA-256 of the decided revision's directory and command, as an approval names it.
+    pub digest: String,
+    /// The decided revision's command under the display rules.
+    pub shown_command: ShownText,
+    /// Seconds since 1970.
+    pub asked_at: i64,
+    pub decision: RunDecisionView,
+    /// `None` when the command never ran or its outcome is unknown.
+    pub exit_code: Option<i32>,
+}
+
 /// The owner's decision on a run request (#657): only the owner decides, on the host-only
 /// socket; `through` is the client the owner used, as that client named itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
