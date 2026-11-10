@@ -394,6 +394,13 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
     },
+    /// Owner only: grant `project` github.com:443 always without a request (#1256), as
+    /// `project add` and `init` offer, so its GitHub token binds at the next launch.
+    NetworkGrantGithub {
+        project: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<DecidedThroughView>,
+    },
     /// Owner only: revoke a network grant; its open tunnels close.
     NetworkRevoke {
         grant: i64,

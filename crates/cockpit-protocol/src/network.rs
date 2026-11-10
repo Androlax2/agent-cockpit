@@ -74,8 +74,9 @@ pub struct NetworkGrantView {
     pub host: String,
     pub port: u16,
     pub target: String,
-    /// The request whose decision created it.
-    pub request: i64,
+    /// The request whose decision created it; `None` for the github.com grant the owner made
+    /// without a request (#1256).
+    pub request: Option<i64>,
     pub granted: NetworkDecisionView,
     pub revoked: Option<NetworkDecisionView>,
 }

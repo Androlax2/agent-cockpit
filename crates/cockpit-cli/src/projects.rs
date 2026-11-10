@@ -1,6 +1,7 @@
 //! `cockpit project` and `cockpit checkout`: verbs served by the daemon over the socket.
 
 use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -115,13 +116,64 @@ pub fn run(command: Command, deadline: Duration) -> ExitCode {
         Ok(reply) => reply,
         Err(code) => return code,
     };
-    match render(&reply) {
-        Some(text) => {
-            out!("{text}");
-            ExitCode::SUCCESS
-        }
-        None => unexpected(&reply),
+    let Some(text) = render(&reply) else {
+        return unexpected(&reply);
+    };
+    out!("{text}");
+    if let Reply::ProjectAdded { project, .. } = &reply {
+        offer_github_grant(&project.name);
     }
+    ExitCode::SUCCESS
+}
+
+/// #1256: offers the project's github.com grant once, while the owner is adding it, so its
+/// GitHub token binds at the first sandboxed launch. Asked on a terminal, where declining is
+/// the default; elsewhere only named, so a script never grants. The project is registered
+/// either way: a failure here is reported on stderr, not as the verb's failure.
+fn offer_github_grant(project: &str) {
+    let Ok(reply) = request(
+        Command::NetworkGrants {
+            project: Some(project.to_owned()),
+        },
+        CONTROL_DEADLINE,
+    ) else {
+        eprintln!("the github.com grant was not offered: its grants could not be read");
+        return;
+    };
+    let Reply::NetworkGrants { grants } = &reply else {
+        unexpected(&reply);
+        return;
+    };
+    if crate::network::holds_github_grant(grants, project) {
+        return;
+    }
+    let offer = crate::network::github_grant_offer(project);
+    let is_interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    if !is_interactive {
+        eprintln!("{offer}");
+        return;
+    }
+    eprint!(
+        "Allow github.com:443 always for {project}'s sandboxed sessions? Fetches work from \
+         their first launch, pushes stay refused, and `{} network revoke GRANT` takes it \
+         back. [y/N] ",
+        crate::profile::command()
+    );
+    let mut answer = String::new();
+    if let Err(error) = std::io::stdin().read_line(&mut answer) {
+        eprintln!("no answer read ({error}): not granted. {offer}");
+        return;
+    }
+    if !is_yes(&answer) {
+        eprintln!("not granted. {offer}");
+        return;
+    }
+    crate::network::run(crate::network::github_grant_command(project));
+}
+
+/// Only `y` or `yes`, in any case, grants; an empty line or anything else declines.
+fn is_yes(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// The reply as printed, or `None` when it is not one a project verb gets.
@@ -204,5 +256,20 @@ fn kept_reason(reason: &KeptReason) -> String {
         }
         KeptReason::Replaced { reason } => format!("replaced: {reason}"),
         KeptReason::Unreadable { reason } => format!("unreadable: {reason}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_yes;
+
+    #[test]
+    fn only_y_or_yes_accepts_the_github_grant() {
+        for accepted in ["y\n", "Y\n", "yes\n", " YES \r\n"] {
+            assert!(is_yes(accepted), "{accepted:?}");
+        }
+        for declined in ["\n", "", "n\n", "no\n", "yep\n", "y es\n"] {
+            assert!(!is_yes(declined), "{declined:?}");
+        }
     }
 }

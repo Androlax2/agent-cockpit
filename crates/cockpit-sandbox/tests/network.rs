@@ -2,8 +2,8 @@
 
 use cockpit_sandbox::{
     AllowEntry, AllowSource, AskedDestination, AskingDestination, DeniedDestination,
-    EgressDecisions, MIGRATIONS, NETWORK_ALLOW_GRACE_SECONDS, NetworkError, NetworkRefusal,
-    NetworkRequestState, OwnerClient, OwnerDecision, Subject, Target,
+    EgressDecisions, GITHUB_HOST, MIGRATIONS, NETWORK_ALLOW_GRACE_SECONDS, NetworkError,
+    NetworkGrant, NetworkRefusal, NetworkRequestState, OwnerClient, OwnerDecision, Subject, Target,
 };
 use cockpit_turso::Database;
 
@@ -61,6 +61,15 @@ impl Store {
             .await?;
         write.commit().await.unwrap();
         Ok(())
+    }
+
+    async fn grant_github(&self, project: &str) -> Result<NetworkGrant, NetworkError> {
+        let write = self.database.write().await.unwrap();
+        let granted =
+            cockpit_sandbox::grant_github(&write, project, Some(OwnerClient::Cli), DECIDED_AT)
+                .await?;
+        write.commit().await.unwrap();
+        Ok(granted)
     }
 
     async fn deny(&self, request: i64) {
@@ -163,7 +172,7 @@ async fn allow_always_grants_the_project_and_no_other() {
         .unwrap();
     drop(read);
     assert_eq!(grants.len(), 1);
-    assert_eq!(grants[0].request, request);
+    assert_eq!(grants[0].request, Some(request));
     let granted = entry(AllowSource::Grant {
         grant: grants[0].id.to_string(),
     });
@@ -305,4 +314,114 @@ async fn allow_always_of_a_host_the_project_was_granted_since_joins_that_grant()
     assert_eq!(grants.len(), 1);
     assert_eq!(joined.state, NetworkRequestState::AllowedAlways);
     assert_eq!(joined.grant, Some(grants[0].id));
+}
+
+/// #1256: the owner grants a project github.com without a request; its sessions are let
+/// through and file no request for it, another project's are not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_github_grant_without_a_request_allows_the_projects_sessions_only() {
+    let store = store().await;
+
+    let granted = store.grant_github("app").await.unwrap();
+
+    assert_eq!(granted.project, "app");
+    assert_eq!((granted.host.as_str(), granted.port), (GITHUB_HOST, 443));
+    assert_eq!(granted.request, None);
+    assert_eq!(
+        granted.granted,
+        OwnerDecision {
+            at: DECIDED_AT,
+            through: Some(OwnerClient::Cli),
+        }
+    );
+    let github = AllowEntry {
+        target: Target::Name(GITHUB_HOST.to_owned()),
+        port: 443,
+        source: AllowSource::Grant {
+            grant: granted.id.to_string(),
+        },
+    };
+    assert_eq!(store.decisions("s1", "app").await.allowed, vec![github]);
+    assert_eq!(
+        store.decisions("s2", "other").await,
+        EgressDecisions::default()
+    );
+    let write = store.database.write().await.unwrap();
+    let asked = AskedDestination {
+        host: GITHUB_HOST.to_owned(),
+        port: 443,
+    };
+    let filed = cockpit_sandbox::file_network_request(&write, &session("s1"), "app", &asked, 1)
+        .await
+        .unwrap();
+    assert_eq!(filed, None, "the grant covers it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_github_grant_of_the_project_is_refused_naming_the_first() {
+    let store = store().await;
+    let first = store.grant_github("app").await.unwrap();
+
+    let again = store.grant_github("app").await;
+
+    assert!(
+        matches!(
+            &again,
+            Err(NetworkError::Refused(NetworkRefusal::AlreadyGranted { grant })) if *grant == first.id
+        ),
+        "{again:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_github_grant_can_be_granted_again() {
+    let store = store().await;
+    let first = store.grant_github("app").await.unwrap();
+    let write = store.database.write().await.unwrap();
+    cockpit_sandbox::revoke_network_grant(&write, first.id, None, DECIDED_AT)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let again = store.grant_github("app").await.unwrap();
+
+    assert_ne!(again.id, first.id);
+    let read = store.database.read().await.unwrap();
+    let active = cockpit_sandbox::network_grants(&read, Some("app"))
+        .await
+        .unwrap();
+    assert_eq!(active, vec![again]);
+}
+
+/// #1256: the migration that lets a grant have no request keeps the grants made before it,
+/// each still naming its request.
+#[tokio::test(flavor = "multi_thread")]
+async fn grants_made_before_direct_grants_keep_their_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let before_direct_grants = cockpit_turso::MigrationSet {
+        owner: MIGRATIONS.owner,
+        migrations: &MIGRATIONS.migrations[..3],
+    };
+    let database = Database::open(&path, &[before_direct_grants])
+        .await
+        .unwrap();
+    let old = Store {
+        _dir: tempfile::tempdir().unwrap(),
+        database,
+    };
+    let request = old.file("s1", "app").await.unwrap();
+    old.allow(request, true, DECIDED_AT).await.unwrap();
+    drop(old);
+
+    let database = Database::open(&path, &[MIGRATIONS]).await.unwrap();
+
+    let read = database.read().await.unwrap();
+    let grants = cockpit_sandbox::network_grants(&read, None).await.unwrap();
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0].request, Some(request));
+    let decided = cockpit_sandbox::network_request(&read, request)
+        .await
+        .unwrap();
+    assert_eq!(decided.grant, Some(grants[0].id));
 }

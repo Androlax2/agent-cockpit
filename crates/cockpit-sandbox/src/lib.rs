@@ -45,10 +45,10 @@ pub use native::{
 };
 #[cfg(feature = "persistence")]
 pub use network::{
-    NETWORK_ALLOW_GRACE_SECONDS, NetworkError, NetworkGrant, NetworkRefusal, NetworkRequest,
-    NetworkRequestState, OwnerClient, OwnerDecision, allow_network_request,
+    GITHUB_HOST, NETWORK_ALLOW_GRACE_SECONDS, NetworkError, NetworkGrant, NetworkRefusal,
+    NetworkRequest, NetworkRequestState, OwnerClient, OwnerDecision, allow_network_request,
     asking_network_requests, deny_network_request, egress_decisions, file_network_request,
-    network_grants, network_request, revoke_network_grant,
+    grant_github, network_grants, network_request, revoke_network_grant,
 };
 #[cfg(feature = "persistence")]
 pub use observations::{ObservationError, record_observations};

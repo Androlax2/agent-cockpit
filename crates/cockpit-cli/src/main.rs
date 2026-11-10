@@ -109,6 +109,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID
        torlek account sign-in PROVIDER ACCOUNT | grant PROJECT PROVIDER ACCOUNT | grants [PROJECT] | revoke GRANT
        torlek network list | allow ID [--always] | deny ID | grants [PROJECT] | revoke GRANT
+       torlek network grant PROJECT github.com
        torlek session send ID MESSAGE | cancel ID
        torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL] [--compaction-threshold VALUE]
        torlek session list [--ended]

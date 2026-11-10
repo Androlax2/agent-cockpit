@@ -1,6 +1,6 @@
 //! The first-run flow (#100): `cockpit init`, and `cockpit` alone until the setup is done,
 //! driven as a process through a clean home, step by step, against a scripted daemon that
-//! answers the readiness report, the projects and the sessions.
+//! answers the readiness report, the projects, the sessions and the network grants.
 
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
@@ -10,8 +10,9 @@ mod common;
 mod scripted;
 
 use cockpit_protocol::{
-    Command, ErrorCode, LaunchKindView, LaunchView, Outcome, ProjectView, ProtocolError,
-    ReadinessStatusView, Reply, RequirementView, SessionStateView, SessionView,
+    Command, DecidedThroughView, ErrorCode, LaunchKindView, LaunchView, NetworkDecisionView,
+    NetworkGrantView, Outcome, ProjectView, ProtocolError, ReadinessStatusView, Reply,
+    RequirementView, SessionStateView, SessionView,
 };
 use scripted::{scripted_conversation, text};
 
@@ -79,6 +80,7 @@ impl Home {
                 },
                 Command::ProjectList,
                 Command::SessionList { ended: true },
+                Command::NetworkGrants { project: None },
             ]
         );
         output
@@ -112,6 +114,7 @@ struct Daemon {
     requirements: Vec<RequirementView>,
     projects: Vec<ProjectView>,
     sessions: Vec<SessionView>,
+    grants: Vec<NetworkGrantView>,
 }
 
 impl Daemon {
@@ -131,6 +134,7 @@ impl Daemon {
             ],
             projects: Vec::new(),
             sessions: Vec::new(),
+            grants: Vec::new(),
         }
     }
 
@@ -139,6 +143,24 @@ impl Daemon {
             name: "app".to_owned(),
             root: "/home/me/code/my app".to_owned(),
             github_token: None,
+        });
+        self
+    }
+
+    /// The `app` project's github.com grant, made without a request (#1256).
+    fn with_github_grant(mut self) -> Daemon {
+        self.grants.push(NetworkGrantView {
+            id: 1,
+            project: "app".to_owned(),
+            host: "github.com".to_owned(),
+            port: 443,
+            target: "github.com:443".to_owned(),
+            request: None,
+            granted: NetworkDecisionView {
+                at: 1_000,
+                through: Some(DecidedThroughView::Cli),
+            },
+            revoked: None,
         });
         self
     }
@@ -158,6 +180,9 @@ impl Daemon {
             }),
             Outcome::Ok(Reply::Sessions {
                 sessions: self.sessions.clone(),
+            }),
+            Outcome::Ok(Reply::NetworkGrants {
+                grants: self.grants.clone(),
             }),
         ]
     }
@@ -572,6 +597,51 @@ async fn with_a_project_the_next_action_starts_a_session_there() {
     );
 }
 
+/// #1256: a project without the github.com grant is offered it as a line under the done
+/// step, so declining it keeps the setup complete.
+#[tokio::test]
+async fn a_project_without_the_github_grant_is_offered_it_without_holding_the_setup() {
+    let home = Home::new();
+    home.accept_sandbox();
+
+    let output = home
+        .against(&Daemon::ready().with_project().with_session(), &["init"])
+        .await;
+
+    let checklist = text(&output.stdout);
+    assert!(
+        checklist.contains(
+            "app: its sandboxed sessions reach github.com only after you allow a network \
+             request, then a relaunch; `torlek network grant app github.com` allows it always"
+        ),
+        "{checklist}"
+    );
+    assert!(
+        checklist.contains("Torlek is set up: `torlek tui` opens the manager"),
+        "{checklist}"
+    );
+}
+
+#[tokio::test]
+async fn a_project_holding_the_github_grant_is_not_offered_it_again() {
+    let home = Home::new();
+    home.accept_sandbox();
+
+    let output = home
+        .against(
+            &Daemon::ready().with_project().with_github_grant(),
+            &["init"],
+        )
+        .await;
+
+    let checklist = text(&output.stdout);
+    assert!(
+        step(&checklist, "Add a project").starts_with("[done"),
+        "{checklist}"
+    );
+    assert!(!checklist.contains("network grant"), "{checklist}");
+}
+
 #[tokio::test]
 async fn with_several_providers_the_session_action_picks_one_with_agent() {
     let home = Home::new();
@@ -747,4 +817,11 @@ fn against_the_real_daemon_adding_a_project_completes_that_step() {
         "{after}"
     );
     assert!(after.contains(project.to_str().unwrap()), "{after}");
+    assert!(
+        after.contains("`torlek network grant app github.com` allows it always"),
+        "{after}"
+    );
+    home.cockpit_ok(&["network", "grant", "app", "github.com"]);
+    let granted = home.cockpit_ok(&["init"]);
+    assert!(!granted.contains("network grant"), "{granted}");
 }
