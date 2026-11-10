@@ -901,6 +901,23 @@ mod repeated_asks {
     }
 
     #[tokio::test]
+    async fn an_ask_the_owner_edited_is_not_matched() {
+        let fixture = Fixture::new().await;
+        fixture.grant(&session("s1")).await;
+        let first = ask_once(&fixture, "s1", "ls", NOW).await;
+        let write = fixture.database.write().await.unwrap();
+        edit_run(&write, first.run.id, 1, "ls -a", NOW)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+
+        let repeat = ask_once(&fixture, "s1", "ls", NOW + 1).await;
+
+        assert!(!repeat.already_pending);
+        assert_ne!(repeat.run.id, first.run.id);
+    }
+
+    #[tokio::test]
     async fn a_session_without_the_grant_is_refused_even_for_a_repeat() {
         let fixture = Fixture::new().await;
         fixture.grant(&session("s1")).await;

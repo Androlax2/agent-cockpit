@@ -324,10 +324,20 @@ pub async fn ask_run(
     ask: RunAsk,
     now: i64,
 ) -> Result<RunRequest, Error> {
+    let grant = authorized_ask(write, session, &ask).await?;
+    insert_run(write, session, &ask, grant, now).await
+}
+
+/// The checks every agent ask passes: a valid command and reason, and a session that may ask.
+/// Returns the grant it asks under.
+async fn authorized_ask(
+    write: &WriteTransaction<'_>,
+    session: &SessionId,
+    ask: &RunAsk,
+) -> Result<Option<i64>, Error> {
     validate_command("command", &ask.command)?;
     validate_reason(&ask.reason)?;
-    let grant = asking_grant(write, session).await?;
-    insert_run(write, session, &ask, grant, now).await
+    asking_grant(write, session).await
 }
 
 /// What [`ask_run_unless_pending`] answers.
@@ -342,16 +352,14 @@ pub struct FiledRun {
 /// [`ask_run`], unless `session` has an ask pending for the same command in the same directory
 /// (#1335): that one is returned and nothing is filed, so the owner sees one prompt. Pending
 /// means asking and not expired; a decided ask is never matched, so a real rerun asks again.
-/// The command compared is the one the agent asked, not an owner's edit of it.
+/// An ask the owner has edited is not matched either: it no longer says what the agent asked.
 pub async fn ask_run_unless_pending(
     write: &WriteTransaction<'_>,
     session: &SessionId,
     ask: RunAsk,
     now: i64,
 ) -> Result<FiledRun, Error> {
-    validate_command("command", &ask.command)?;
-    validate_reason(&ask.reason)?;
-    let grant = asking_grant(write, session).await?;
+    let grant = authorized_ask(write, session, &ask).await?;
     if let Some(run) = pending_identical(write, session, &ask, now).await? {
         return Ok(FiledRun {
             run,
@@ -375,7 +383,8 @@ async fn pending_identical(
         .query(
             &format!(
                 "SELECT {RUN_COLUMNS} FROM approvals_runs
-                 WHERE session = ?1 AND kind = 'command' AND asked_command = ?2 AND cwd = ?3
+                 WHERE session = ?1 AND kind = 'command' AND asked_command = ?2 AND command = asked_command
+                    AND cwd = ?3
                     AND state = 'asking' AND expires_at > ?4
                  ORDER BY id LIMIT 1"
             ),
