@@ -19,8 +19,10 @@ use real_daemon::{GENEROUS, Home, REPORT_PROJECT, REPORTED_LABEL, cockpit_progra
 /// Agents launched at once, each of which reports as the first thing it does.
 const AGENTS: usize = 3;
 
-/// Far below the 5 s #279 held such a request for.
-const AT_ONCE: Duration = Duration::from_secs(1);
+/// Under the 5 s #279 held such a request for, so the wait coming back fails the test, and well
+/// above the scheduling noise of a loaded runner, which took 1.08 s to open the socket and
+/// answer (#1315). A bound tighter than that noise tests the runner, not the daemon.
+const AT_ONCE: Duration = Duration::from_secs(3);
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agents_first_report_lands_without_a_retry() {
