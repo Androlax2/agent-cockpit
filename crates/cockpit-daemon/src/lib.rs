@@ -520,6 +520,7 @@ impl Instance {
                 self.owner_uid,
                 &options.state_dir,
                 &wiring.environment,
+                sandbox.backend(),
             ),
         };
         let is_restoring = Arc::new(std::sync::atomic::AtomicBool::new(true));

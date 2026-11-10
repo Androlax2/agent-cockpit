@@ -64,6 +64,12 @@ impl EngineUser {
         self.runtime_dir().join("docker.sock")
     }
 
+    /// Where the engine's relay (`torlek-sandbox engine-relay`) listens for the owner, inside
+    /// the engine's network namespace.
+    pub fn relay_socket(&self) -> PathBuf {
+        self.runtime_dir().join("relay.sock")
+    }
+
     /// The user's home, which holds the engine's images and containers.
     pub fn home(&self) -> PathBuf {
         Path::new("/var/lib").join(&self.0)

@@ -25,7 +25,9 @@ system user of its own, shared by its clones:
 - `setup_script` writes a POSIX `sh` script the owner reviews and runs with `sudo`: the
   system user, its subordinate ids, access to the project's checkout and clones folder, and
   the unit. The unit hides the owner's home but for those folders and has no network until
-  the egress proxy exists.
+  the egress proxy exists. A second unit, `torlek-engine-relay@`, joins the engine's network
+  namespace and runs the owner's installed `torlek-sandbox engine-relay`, bound read-only,
+  on `EngineUser::relay_socket`: it relays the owner to one port the engine published.
 
 The daemon finds the project, its clones folder and the owner, and passes them in.
 
