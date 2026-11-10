@@ -15,7 +15,7 @@ pub use outbox::{
     Claim, Coalescing, Deliverer, Delivery, DeliveryState, Enqueued, Envelope, EnvelopeId, Failure,
     Redelivery, Resolution, StoredEnvelope, claim_due, claim_next_for, deliver_due, enqueue,
     envelope, envelope_by_key, has_earlier_queued, has_queued_for, queued_for,
-    reconcile_deliveries, record_delivery, record_overtaken, resolve_uncertain,
+    reconcile_deliveries, record_delivery, record_note, record_overtaken, resolve_uncertain,
     uncertain_envelopes,
 };
 pub use receipts::{ReceiptId, Received, receive};

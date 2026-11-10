@@ -689,6 +689,23 @@ pub async fn record_overtaken(
     Ok(())
 }
 
+/// Records why `envelope` still waits, found outside a delivery attempt, such as a
+/// destination that could not be woken for it (#1326). An envelope no longer `queued` keeps
+/// the note it has.
+pub async fn record_note(
+    write: &WriteTransaction<'_>,
+    envelope: EnvelopeId,
+    note: &str,
+) -> Result<(), Error> {
+    write
+        .execute(
+            "UPDATE messaging_envelopes SET note = ?2 WHERE id = ?1 AND state = 'queued'",
+            (envelope.0, note),
+        )
+        .await?;
+    Ok(())
+}
+
 /// The envelope of `effect_key`, in whatever state it is.
 pub async fn envelope_by_key(
     connection: &Connection,

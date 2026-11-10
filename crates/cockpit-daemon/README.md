@@ -128,6 +128,11 @@ not share code.
   transaction. A newer waiter supersedes an older one. `observe-sessions` shows each
   session's inbound message with why it waits, `stuck` after 60 s idle. Decided in
   `docs/decisions/2026-11-04-703-claude-message-inbox.md`.
+- A message to an asleep session wakes it once queued, recorded `woken by a message`
+  (#1326): only a sender the grant check let through wakes anything. The sender waits at
+  most 5 s for the wake's outcome. A failed wake is logged and kept on a collected message
+  while its session sleeps; a typed message's card says the session is asleep, as the
+  delivery loop's next try records.
 - A start that needs confirmation joins the `ask run` queue; approving it starts the session
   and records it. One without confirmation starts at once, within the grant's hourly cap.
 - Decided in `docs/decisions/2026-11-01-410-coordinator-kit.md`; proven end to end by
