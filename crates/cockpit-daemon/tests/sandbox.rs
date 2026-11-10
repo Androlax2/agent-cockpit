@@ -3626,3 +3626,106 @@ async fn an_edited_target_is_asked_about_again_at_the_next_launch() {
     let listed = network_list_once_it_contains(&home, &asking).await;
     assert!(listed.contains(&asking), "{listed}");
 }
+
+/// What the sandboxed agent's `torlek ask service SERVICE` printed, ending `exit=<code>`.
+async fn ask_service_in_agent(home: &Home, root: &Path, service: &str) -> String {
+    let torlek = candidate::program("torlek");
+    run_in_agent(
+        home,
+        root,
+        &format!(
+            "'{}' ask service {service} --reason 'the tests read the echo' 2>&1",
+            torlek.display()
+        ),
+    )
+    .await
+}
+
+/// #880: `torlek ask service` asks ahead. The owner reads why in the list before deciding and
+/// allows it, and the agent's first connection is relayed: none was closed to ask.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_service_asked_ahead_relays_the_first_connection_once_allowed() {
+    let home = Home::new();
+    let target = host_service().await;
+    let agent = agent_declaring_echo(&home, target).await;
+
+    let asked = ask_service_in_agent(&home, &agent.root, "echo").await;
+
+    assert!(
+        asked.contains("network request 1") && asked.ends_with("exit=124\n"),
+        "{asked}"
+    );
+    let listed = owner_network(&home, &["list"]).await;
+    let asking = asking_line_for(&agent.session, &echo_record(target));
+    assert!(
+        listed.contains(&format!("{asking}\n  reason: the tests read the echo\n")),
+        "{listed}"
+    );
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+    owner_network(&home, &["allow", "1"]).await;
+    let printed = service_until(&home, &agent.root, is_relayed).await;
+    assert!(is_relayed(&printed), "{printed}");
+}
+
+/// #880: once allowed, asking again answers with the decision instead of a second request.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_service_asked_again_once_allowed_exits_zero_without_a_second_request() {
+    let home = Home::new();
+    let target = host_service().await;
+    let agent = agent_declaring_echo(&home, target).await;
+    ask_service_in_agent(&home, &agent.root, "echo").await;
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+    owner_network(&home, &["allow", "1", "--always"]).await;
+
+    let again = ask_service_in_agent(&home, &agent.root, "echo").await;
+
+    assert!(
+        again.contains("allowed: network grant 1") && again.ends_with("exit=0\n"),
+        "{again}"
+    );
+    assert_eq!(owner_network(&home, &["list"]).await, "");
+}
+
+/// #880: only a service the project declares is asked for; the refusal names those it does.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ask_for_an_undeclared_service_is_refused_naming_the_declared_ones() {
+    let home = Home::new();
+    let target = host_service().await;
+    let agent = agent_declaring_echo(&home, target).await;
+
+    let refused = ask_service_in_agent(&home, &agent.root, "figma").await;
+
+    assert!(
+        refused.contains("no declared service figma; the project declares echo")
+            && refused.ends_with("exit=1\n"),
+        "{refused}"
+    );
+    assert_eq!(owner_network(&home, &["list"]).await, "");
+}
+
+/// #880: asking is an agent's request. The owner's socket refuses `ask service` and files
+/// nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owner_socket_refuses_an_ask_for_a_service() {
+    let home = Home::new();
+    let target = host_service().await;
+    let _agent = agent_declaring_echo(&home, target).await;
+    let owner = home.connect().await;
+
+    let refused = owner
+        .request(
+            Command::AskService {
+                launch_token: None,
+                service: "echo".to_owned(),
+                reason: "the owner tries".to_owned(),
+            },
+            GENEROUS,
+        )
+        .await;
+
+    assert!(
+        matches!(&refused, Err(ClientError::Daemon(error)) if error.code == ErrorCode::NotAuthorized),
+        "{refused:?}"
+    );
+    assert_eq!(owner_network(&home, &["list"]).await, "");
+}

@@ -643,7 +643,7 @@ pub(crate) fn network_lines(request: &NetworkRequestView) -> Vec<String> {
             request.target
         ),
     };
-    vec![
+    let mut lines = vec![
         format!(
             "Network request {} from {} (project {})",
             request.id,
@@ -651,10 +651,20 @@ pub(crate) fn network_lines(request: &NetworkRequestView) -> Vec<String> {
             request.project
         ),
         asked,
+    ];
+    if let Some(reason) = &request.shown_reason {
+        lines.push(format!("Reason: {}", reason.text));
+        let warnings = warnings(&[reason]);
+        if !warnings.is_empty() {
+            lines.push(format!("Warning: {warnings}"));
+        }
+    }
+    lines.push(
         "Allow once: for the rest of this session. Allow always: every session of the \
          project, until `torlek network revoke`."
             .to_owned(),
-    ]
+    );
+    lines
 }
 
 /// A run request's lines; `is_expanded` shows the whole command instead of its folded start.

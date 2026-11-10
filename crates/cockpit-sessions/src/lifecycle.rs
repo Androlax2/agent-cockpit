@@ -3164,6 +3164,18 @@ impl Sessions {
         .await
     }
 
+    /// The forwards session `id`'s next launch serves (#880): its project's declared
+    /// services, read now as that launch reads them. None while its launches are unsandboxed.
+    pub async fn declared_services(
+        &self,
+        id: &SessionId,
+    ) -> Result<Vec<cockpit_sandbox::Forward>, Error> {
+        let session = self.get(id).await?;
+        let (checkout, _) = self.checkout_containing(&session.working_dir).await?;
+        self.declared_forwards(self.owner_settings().sandbox, &checkout.path)
+            .await
+    }
+
     /// The services the project file in `checkout` declares (#880), as the forwards its
     /// launcher serves. None under `"off"`, whose agent reaches the host's services itself.
     /// A project file that cannot be read refuses the launch: a declared service silently

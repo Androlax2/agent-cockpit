@@ -1,10 +1,12 @@
-//! `cockpit ask run` and `cockpit ask guide`: an agent asks the owner, on the agent socket,
-//! to run a command on the host or to do steps by hand, and waits for the answer (report
-//! 17). The daemon identifies the sender; nothing here names a session.
+//! `cockpit ask run`, `cockpit ask guide` and `cockpit ask service`: an agent asks the owner,
+//! on the agent socket, to run a command on the host, to do steps by hand, or to let it reach
+//! a service its project declares (#880), and waits for the answer to a run or a guide
+//! (report 17). The daemon identifies the sender; nothing here names a session.
 //!
 //! Exit codes keep `ask-to-run`'s meaning: a run's own exit code once it ran, 125 declined
 //! (or the guide closed), 124 still pending (`--wait <id>` goes on waiting), 126 the daemon
 //! cannot be reached (with the fix), 3 the owner is stuck on a guide step, 1 anything else.
+//! A service asked for exits 0 once allowed, 124 while the owner is asked, 125 denied.
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -13,7 +15,10 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
-use cockpit_protocol::{Command, GuideStateView, GuideView, Reply, RunRequestView, RunStateView};
+use cockpit_protocol::{
+    Command, GuideStateView, GuideView, NetworkRequestStateView, NetworkRequestView, Reply,
+    RunRequestView, RunStateView,
+};
 
 const PENDING: u8 = 124;
 const DECLINED: u8 = 125;
@@ -62,6 +67,38 @@ pub(crate) fn guide(arguments: &[OsString]) -> Result<ExitCode, String> {
         .read_to_string(&mut guide)
         .map_err(|error| format!("cannot read the guide from standard input: {error}"))?;
     Ok(Agent::connect().map_or_else(|code| code, |agent| agent.ask_guide(guide, cwd)))
+}
+
+/// `cockpit ask service NAME --reason TEXT`: asks ahead for a service the project declares,
+/// without waiting: the owner's decision reaches the session's launcher, and the agent
+/// connects once it allows the service.
+pub(crate) fn service(arguments: &[OsString]) -> Result<ExitCode, String> {
+    let words = utf8(arguments)?;
+    let (service, reason) = parse_ask_service(&words)?;
+    Ok(Agent::connect().map_or_else(|code| code, |agent| agent.ask_service(service, reason)))
+}
+
+fn parse_ask_service(words: &[&str]) -> Result<(String, String), String> {
+    let mut service = None;
+    let mut reason = None;
+    let mut words = words.iter();
+    while let Some(word) = words.next() {
+        if *word == "--reason" {
+            let value = words.next().ok_or("--reason needs a value")?;
+            if reason.replace((*value).to_owned()).is_some() {
+                return Err("--reason given twice".to_owned());
+            }
+        } else if word.starts_with('-') {
+            return Err(format!("unknown ask service option {word}"));
+        } else if service.is_none() {
+            service = Some((*word).to_owned());
+        } else {
+            return Err(format!("unknown ask service argument {word}"));
+        }
+    }
+    let service = service.ok_or("name the declared service to ask for")?;
+    let reason = reason.ok_or("--reason is required: what the service is for and why")?;
+    Ok((service, reason))
 }
 
 pub(crate) fn utf8(arguments: &[OsString]) -> Result<Vec<&str>, String> {
@@ -251,6 +288,27 @@ impl Agent {
         }
     }
 
+    fn ask_service(&self, service: String, reason: String) -> ExitCode {
+        let asked = self.request(Command::AskService {
+            launch_token: crate::agent::launch_token(),
+            service,
+            reason,
+        });
+        match asked {
+            Ok(Reply::NetworkRequest { request }) => service_answer(&request),
+            Ok(Reply::NetworkGrant { grant }) => {
+                outln!(
+                    "allowed: network grant {} lets project {} reach {}",
+                    grant.id,
+                    grant.project,
+                    grant.target
+                );
+                ExitCode::SUCCESS
+            }
+            other => self.failed(other),
+        }
+    }
+
     pub(crate) fn wait_for_run(&self, id: i64) -> ExitCode {
         let deadline = Instant::now() + wait_time();
         loop {
@@ -335,6 +393,35 @@ fn wait_time() -> Duration {
         .ok()
         .and_then(|seconds| seconds.parse().ok())
         .map_or(DEFAULT_WAIT, Duration::from_secs)
+}
+
+/// The exit for the session's request for a service, as the owner decided it so far.
+fn service_answer(request: &NetworkRequestView) -> ExitCode {
+    let id = request.id;
+    match request.state {
+        NetworkRequestStateView::Asking => {
+            eprintln!(
+                "torlek: asked the owner for {} (network request {id}); tell them why, and \
+                 connect again once they allow it (`torlek network allow {id}` is theirs)",
+                request.target
+            );
+            ExitCode::from(PENDING)
+        }
+        NetworkRequestStateView::AllowedOnce | NetworkRequestStateView::AllowedAlways => {
+            outln!(
+                "allowed: network request {id} lets this session reach {}",
+                request.target
+            );
+            ExitCode::SUCCESS
+        }
+        NetworkRequestStateView::Denied => {
+            eprintln!(
+                "torlek: the owner denied {} (network request {id})",
+                request.target
+            );
+            ExitCode::from(DECLINED)
+        }
+    }
 }
 
 /// The exit the agent gets for `request`, or `None` while it is undecided or running.

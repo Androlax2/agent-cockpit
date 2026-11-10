@@ -157,6 +157,11 @@ pub(crate) const SERVICES_MIGRATION_SQL: &str = "CREATE TABLE sandbox_network_gr
         ON sandbox_network_requests (subject_kind, subject, service, record)
         WHERE kind = 'service' AND state IN ('asking', 'allowed-once', 'denied');";
 
+/// The `sandbox` migration set's version 6 (#880): a request an agent filed ahead with
+/// `torlek ask service` carries the agent's reason; a launcher's request carries none.
+pub(crate) const REASON_MIGRATION_SQL: &str =
+    "ALTER TABLE sandbox_network_requests ADD COLUMN reason TEXT CHECK (reason <> '');";
+
 /// What a request asks for and a grant allows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkTarget {
@@ -280,6 +285,21 @@ pub struct NetworkRequest {
     pub decision: Option<OwnerDecision>,
     /// The grant an "allow always" created.
     pub grant: Option<i64>,
+    /// Why the agent asked, for a service it asked for ahead ([`ask_service`]); `None` for
+    /// what a launcher refused.
+    pub reason: Option<String>,
+}
+
+/// What an agent's ask for a declared service met ([`ask_service`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServiceAsk {
+    /// A new request, waiting on the owner.
+    Filed(NetworkRequest),
+    /// The session's request for the record already stands: asking, allowed for the session,
+    /// or denied.
+    Standing(NetworkRequest),
+    /// The project's grant already allows the record.
+    Granted(NetworkGrant),
 }
 
 /// One project's "allow always" of a destination or a service's record.
@@ -386,7 +406,7 @@ impl From<NetworkRefusal> for NetworkError {
 }
 
 const REQUEST_COLUMNS: &str = "id, subject_kind, subject, project, kind, host, port, service,
-    record, state, asked_at, decided_at, decided_through, grant_id";
+    record, state, asked_at, decided_at, decided_through, grant_id, reason";
 const GRANT_COLUMNS: &str = "id, project, kind, host, port, service, record, request,
     granted_at, granted_through, revoked_at, revoked_through";
 
@@ -425,6 +445,34 @@ pub async fn file_service_request(
     file_request(write, subject, project, &target, now).await
 }
 
+/// An agent of `subject` asks ahead for `forward`, a service its project declares (#880),
+/// saying why in `reason`, so the owner decides before the first connection is closed. A
+/// grant or a standing request for the record is returned instead of a second request.
+/// Only asks: the caller checks the agent may ask, and no entry is added until the owner
+/// decides.
+pub async fn ask_service(
+    write: &WriteTransaction<'_>,
+    subject: &Subject,
+    project: &str,
+    forward: &crate::Forward,
+    reason: &str,
+    now: i64,
+) -> Result<ServiceAsk, NetworkError> {
+    let target = NetworkTarget::Service {
+        service: forward.service.clone(),
+        record: forward.record(),
+    };
+    if let Some(grant) = active_grant(write, project, &target).await? {
+        return Ok(ServiceAsk::Granted(network_grant(write, grant).await?));
+    }
+    if let Some(request) = standing_request(write, subject, &target).await? {
+        return Ok(ServiceAsk::Standing(request));
+    }
+    insert_request(write, subject, project, &target, Some(reason), now)
+        .await
+        .map(ServiceAsk::Filed)
+}
+
 async fn file_request(
     write: &WriteTransaction<'_>,
     subject: &Subject,
@@ -432,41 +480,58 @@ async fn file_request(
     target: &NetworkTarget,
     now: i64,
 ) -> Result<Option<NetworkRequest>, NetworkError> {
-    let (subject_kind, subject_id) = subject_columns(subject)?;
-    let (kind, host, port, service, record) = target.columns();
-    let mut standing = write
-        .query(
-            "SELECT 1 FROM sandbox_network_requests
-             WHERE subject_kind = ?1 AND subject = ?2 AND kind = ?3
-                AND host IS ?4 AND port IS ?5 AND service IS ?6 AND record IS ?7
-                AND state IN ('asking', 'allowed-once', 'denied')
-             UNION ALL
-             SELECT 1 FROM sandbox_network_grants
-             WHERE project = ?8 AND kind = ?3
-                AND host IS ?4 AND port IS ?5 AND service IS ?6 AND record IS ?7
-                AND revoked_at IS NULL",
-            (
-                subject_kind,
-                subject_id,
-                kind,
-                host,
-                port,
-                service,
-                record,
-                project,
-            ),
-        )
-        .await?;
-    if standing.next().await?.is_some() {
+    if active_grant(write, project, target).await?.is_some()
+        || standing_request(write, subject, target).await?.is_some()
+    {
         return Ok(None);
     }
-    drop(standing);
+    insert_request(write, subject, project, target, None, now)
+        .await
+        .map(Some)
+}
+
+/// `subject`'s request for `target` that still decides it: asking, allowed for the session,
+/// or denied.
+async fn standing_request(
+    connection: &Connection,
+    subject: &Subject,
+    target: &NetworkTarget,
+) -> Result<Option<NetworkRequest>, NetworkError> {
+    let (subject_kind, subject_id) = subject_columns(subject)?;
+    let (kind, host, port, service, record) = target.columns();
+    let mut standing = connection
+        .query(
+            &format!(
+                "SELECT {REQUEST_COLUMNS} FROM sandbox_network_requests
+                 WHERE subject_kind = ?1 AND subject = ?2 AND kind = ?3
+                    AND host IS ?4 AND port IS ?5 AND service IS ?6 AND record IS ?7
+                    AND state IN ('asking', 'allowed-once', 'denied')"
+            ),
+            (subject_kind, subject_id, kind, host, port, service, record),
+        )
+        .await?;
+    match standing.next().await? {
+        Some(row) => request_from(&row).map(Some),
+        None => Ok(None),
+    }
+}
+
+async fn insert_request(
+    write: &WriteTransaction<'_>,
+    subject: &Subject,
+    project: &str,
+    target: &NetworkTarget,
+    reason: Option<&str>,
+    now: i64,
+) -> Result<NetworkRequest, NetworkError> {
+    let (subject_kind, subject_id) = subject_columns(subject)?;
+    let (kind, host, port, service, record) = target.columns();
     let row = write
         .prepare(&format!(
             "INSERT INTO sandbox_network_requests
                 (subject_kind, subject, project, kind, host, port, service, record, state,
-                 asked_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'asking', ?9)
+                 asked_at, reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'asking', ?9, ?10)
              RETURNING {REQUEST_COLUMNS}"
         ))
         .await?
@@ -480,9 +545,10 @@ async fn file_request(
             service,
             record,
             now,
+            reason,
         ))
         .await?;
-    request_from(&row).map(Some)
+    request_from(&row)
 }
 
 /// Every request still asking, oldest first.
@@ -893,6 +959,7 @@ fn request_from(row: &Row) -> Result<NetworkRequest, NetworkError> {
         asked_at: row.get(10)?,
         decision: decision_from(row, 11, NetworkError::InvalidRow)?,
         grant: row.get(13)?,
+        reason: row.get(14)?,
     })
 }
 

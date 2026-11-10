@@ -2,8 +2,8 @@
 //! owner client already reads, and a service request names its kind and service.
 
 use cockpit_protocol::{
-    NetworkGrantView, NetworkRequestStateView, NetworkRequestView, NetworkSubjectView,
-    NetworkTargetView,
+    Command, NetworkGrantView, NetworkRequestStateView, NetworkRequestView, NetworkSubjectView,
+    NetworkTargetView, ShownText,
 };
 use serde_json::{Value, json};
 
@@ -38,6 +38,7 @@ fn request(asks: NetworkTargetView, target: &str) -> NetworkRequestView {
         asked_at: 1000,
         decision: None,
         grant: None,
+        shown_reason: None,
     }
 }
 
@@ -110,5 +111,45 @@ fn a_grant_carries_its_kind_like_a_request() {
             host: "github.com".to_owned(),
             port: 443
         }
+    );
+}
+
+#[test]
+fn a_service_asked_ahead_carries_the_agents_reason() {
+    let asked = NetworkRequestView {
+        shown_reason: Some(ShownText {
+            text: "read the design file".to_owned(),
+            has_hidden_characters: false,
+            non_ascii: Vec::new(),
+            warnings: Vec::new(),
+        }),
+        ..request(
+            NetworkTargetView::Service {
+                service: "figcraft".to_owned(),
+            },
+            "service figcraft listen 127.0.0.1:3845 target 127.0.0.1:3845",
+        )
+    };
+
+    let wire = serde_json::to_value(&asked).unwrap();
+
+    assert_eq!(wire["shown_reason"]["text"], json!("read the design file"));
+    assert_eq!(
+        serde_json::from_value::<NetworkRequestView>(wire).unwrap(),
+        asked
+    );
+}
+
+#[test]
+fn ask_service_names_the_service_and_the_reason() {
+    let ask = Command::AskService {
+        launch_token: None,
+        service: "figcraft".to_owned(),
+        reason: "read the design file".to_owned(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(&ask).unwrap(),
+        json!({"kind": "ask-service", "service": "figcraft", "reason": "read the design file"})
     );
 }

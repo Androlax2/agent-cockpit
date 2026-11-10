@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::DecidedThroughView;
+use crate::{DecidedThroughView, ShownText};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkRequestView {
@@ -28,6 +28,10 @@ pub struct NetworkRequestView {
     pub decision: Option<NetworkDecisionView>,
     /// The grant an "allow always" created.
     pub grant: Option<i64>,
+    /// Why the agent asked, under the display rules, for a service it asked for ahead
+    /// (#880); `None` for what its launcher refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown_reason: Option<ShownText>,
 }
 
 /// Who was refused: a session today; a check run or a project's containers later (#856,

@@ -952,7 +952,7 @@ fn guide_reply(guide: &GuideRequest) -> Reply {
     }
 }
 
-fn shown(text: &str) -> ShownText {
+pub(crate) fn shown(text: &str) -> ShownText {
     let Shown {
         text,
         has_hidden_characters,

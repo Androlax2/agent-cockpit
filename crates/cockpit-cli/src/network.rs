@@ -118,6 +118,7 @@ pub(crate) fn run(command: Command) -> ExitCode {
         Ok(Reply::NetworkRequests { requests }) => {
             for request in &requests {
                 outln!("{}", request_line(request));
+                out!("{}", reason_lines(request));
             }
             ExitCode::SUCCESS
         }
@@ -152,6 +153,19 @@ pub(crate) fn request_line(request: &NetworkRequestView) -> String {
     )
 }
 
+/// The agent's reason for a service it asked for ahead, indented under its request's line
+/// with the display rules' warnings, so the owner reads it before deciding; empty otherwise.
+pub(crate) fn reason_lines(request: &NetworkRequestView) -> String {
+    let Some(reason) = &request.shown_reason else {
+        return String::new();
+    };
+    format!(
+        "  reason: {}\n{}",
+        reason.text,
+        crate::approvals::warnings(reason)
+    )
+}
+
 /// `grant  id  project  host:port|record  request N`, tab-separated; `granted directly` in place of
 /// the request for a grant made without one.
 fn grant_line(grant: &NetworkGrantView) -> String {
@@ -180,6 +194,10 @@ fn request_detail(request: &NetworkRequestView) -> String {
         request.project,
         state_name(request.state)
     );
+    if let Some(reason) = &request.shown_reason {
+        text.push_str(&format!("reason: {}\n", reason.text));
+        text.push_str(&crate::approvals::warnings(reason));
+    }
     let verdict = match request.state {
         NetworkRequestStateView::Asking => None,
         NetworkRequestStateView::AllowedOnce => Some("allowed for the rest of this session"),

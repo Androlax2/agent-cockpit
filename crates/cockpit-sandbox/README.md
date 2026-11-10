@@ -29,8 +29,10 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   socket). `LaunchSpec::validate` refuses a malformed name, a repeated service or listen, the
   proxy's port, and a socket listen whose folder overlaps one the view binds. A forward
   relays only while `EgressDecisions::services` allows its whole `Forward::record`; nothing
-  in the spec grants one, and the daemon gives every launch none until declarations arrive
-  (#880's next part).
+  in the spec grants one. A sandboxed launch serves its project's `[[services]]`. A closed
+  connection files a request (`file_service_request`); `ask_service` files an agent's
+  `torlek ask service` ahead, with its reason (migration 6), or returns the standing request
+  or grant.
 - Toolchains and caches (#859): the caller resolves `ToolNeeds` from the toolchain table of
   `cockpit-provider-api`. The install roots `PATH` resolves the checkout's ecosystems in are
   bound read-only; every cache variable points into `caches/` of the session's temp folder;

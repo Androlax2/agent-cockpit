@@ -416,6 +416,20 @@ impl Handler for Routes {
                     Arc::clone(&self.sessions),
                 ),
             },
+            (command @ Command::AskService { .. }, peer) => match peer {
+                Peer::Agent { connector } => network::route_ask(
+                    command,
+                    connector,
+                    Arc::clone(&self.database),
+                    Arc::clone(&self.sessions),
+                    Arc::clone(&self.network_decided),
+                ),
+                Peer::Owner => Route::Answer(wrong_socket(
+                    "asking the owner is an agent's request; the owner has no session",
+                    "send it on the agent socket from a session Torlek launched",
+                    UnblockedBy::Agent,
+                )),
+            },
             (
                 command @ (Command::NetworkList
                 | Command::NetworkAllow { .. }

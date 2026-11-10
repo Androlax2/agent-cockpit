@@ -218,6 +218,7 @@ pub fn network_request(id: i64, session: &str) -> NetworkRequestView {
         asked_at: 1_000,
         decision: None,
         grant: None,
+        shown_reason: None,
     }
 }
 

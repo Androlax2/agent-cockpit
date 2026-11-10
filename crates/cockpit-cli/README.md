@@ -32,6 +32,7 @@ the capability crates whose verbs must work without the daemon, listed in
 | `torlek usage digest [--days N]`: each UTC day's time with the agent (overlapping sessions counted once), sessions, turns, approvals granted and cost, one indented line per project, and the provider incidents of the day, over the last N days (7 by default, at most 366); a day with nothing says so; owner-only (#700) | no | `cockpit-usage`, read by the daemon |
 | `torlek ask run [--cwd DIR] [--no-wait] --reason TEXT COMMAND`, `--wait ID`, `--check` (agent socket) | no | `cockpit-approvals` |
 | `torlek ask guide [--cwd DIR]` (steps on standard input), `--wait ID` (agent socket) | no | `cockpit-approvals` |
+| `torlek ask service NAME --reason TEXT` (agent socket): asks ahead for a service the project declares, #880 | no | `cockpit-sandbox` |
 | `torlek approval list`, `show ID`, `approve ID --revision R --digest D`, `decline ID`, `edit ID --revision R COMMAND`, `input ID` (the line typed comes from standard input) | no | `cockpit-approvals` |
 | `torlek guide show ID`, `answer ID STEP [ANSWER]`, `stuck ID STEP NOTE`, `close ID` | no | `cockpit-approvals` |
 | `torlek init`, and `torlek` alone until the setup is done: the first-run checklist (host readiness, sandbox and approvals, provider, sign-in, project, first session), each step `done`, `todo`, `waits` or `unknown` with its next action, and the one action to take now on the last line; writes nothing; `torlek` alone prints the usage once every step is done or `unknown` (#100) | partly: without a daemon it reads the configuration and names the daemon as the first action | `cockpit-cli`, from the daemon's readiness report, projects and sessions |
@@ -80,6 +81,8 @@ ran command's own 75 looks the same), 1 any other refusal. `--no-wait` files the
 and exits 124 at once, so the agent goes on working and collects the answer with `--wait ID`.
 An identical ask (same session, command and directory) while one is pending files nothing: it
 prints `already asked`, with the pending id and a note that the new reason was dropped (#1335).
+`torlek ask service` does not wait: it exits 124 while the owner is asked, 0 once the service is
+allowed, 125 denied.
 `approval show` lists the kinds of hidden characters escaped, the changed build files the
 command runs and the `timeout` hint; `approval list` folds a long command behind an explicit
 "more". The owner's verbs print commands,

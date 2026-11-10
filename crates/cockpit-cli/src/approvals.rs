@@ -125,6 +125,7 @@ pub(crate) fn run(command: Command) -> ExitCode {
                 Ok(Reply::NetworkRequests { requests }) => {
                     for request in &requests {
                         outln!("{}", crate::network::request_line(request));
+                        out!("{}", crate::network::reason_lines(request));
                     }
                     ExitCode::SUCCESS
                 }
@@ -179,7 +180,7 @@ fn guide_line(guide: &GuideView) -> String {
 }
 
 /// Every warning the display rules raised about `shown`, as one line or none.
-fn warnings(shown: &ShownText) -> String {
+pub(crate) fn warnings(shown: &ShownText) -> String {
     let mut notes = Vec::new();
     if shown.has_hidden_characters {
         let kinds: Vec<&str> = shown
