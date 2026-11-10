@@ -1,8 +1,8 @@
 # cockpit-containers
 
 Owns the container engines Torlek uses: what an engine says it is, and the rootless Docker
-engine each project gets under a user of its own, verified before use. Design: report 02,
-#390, decided in #856.
+engine each project gets under a user of its own, verified before use. Design: report 02
+and issue #390, decided in #856.
 
 `probe_docker` asks the engine the owner's `docker` program reaches for its identity with
 `docker info` (10 s at most): its ID, name and version, whether it is rootless, and whether
