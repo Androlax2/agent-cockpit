@@ -11,6 +11,11 @@ Torlek may run you inside a sandbox the owner configured. Its limits are deliber
   try a second later: tell the owner the host, why you need it and the request number
   (`torlek network allow N` is theirs to run), then retry after they allow it. A denial
   stays a denial. Never tunnel, proxy or mirror around the block.
+- **Host services.** A service the project declares under `[[services]]` in
+  `.torlek/config.toml` listens inside the sandbox, but its connections are closed until the
+  owner allows it. Ask ahead with `torlek ask service NAME --reason TEXT`: it prints the
+  network request number and exits 124 while the owner is asked, 0 once allowed, 125 denied.
+  Tell the owner why, then connect again after they allow it.
 - **Host commands.** Anything that must run outside the sandbox (installs, system services,
   the owner's own programs) goes through `torlek ask run`.
 - **Docker.** Use only the engine your environment provides (`DOCKER_HOST` when set), never

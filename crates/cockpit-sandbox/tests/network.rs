@@ -4,7 +4,7 @@ use cockpit_sandbox::{
     AllowEntry, AllowSource, AskedDestination, AskingDestination, DeniedDestination,
     EgressDecisions, GITHUB_HOST, MIGRATIONS, NETWORK_ALLOW_GRACE_SECONDS, NetworkError,
     NetworkGrant, NetworkRefusal, NetworkRequestState, NetworkTarget, OwnerClient, OwnerDecision,
-    Subject, Target,
+    ServiceAsk, Subject, Target,
 };
 use cockpit_sandbox::{AllowedService, AskedService, DecidedService, Endpoint, Forward};
 use cockpit_turso::Database;
@@ -676,4 +676,97 @@ async fn a_revoked_service_grant_allows_nothing_and_the_record_is_asked_about_ag
             .is_empty()
     );
     assert!(store.file_service("s2", "app", &asked).await.is_some());
+}
+
+const REASON: &str = "read the design file the task names";
+
+impl Store {
+    /// `subject`'s agent asks ahead for the `figcraft` service at `forward`.
+    async fn ask_service(&self, subject: &str, project: &str, forward: &Forward) -> ServiceAsk {
+        let write = self.database.write().await.unwrap();
+        let asked = cockpit_sandbox::ask_service(
+            &write,
+            &session(subject),
+            project,
+            forward,
+            REASON,
+            ASKED_AT,
+        )
+        .await
+        .unwrap();
+        write.commit().await.unwrap();
+        asked
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_service_asked_ahead_waits_on_the_owner_with_the_agents_reason() {
+    let store = store().await;
+
+    let ServiceAsk::Filed(filed) = store.ask_service("s1", "app", &figcraft_port()).await else {
+        panic!("the ask files a request");
+    };
+
+    assert_eq!(filed.reason.as_deref(), Some(REASON));
+    assert_eq!(filed.state, NetworkRequestState::Asking);
+    assert_eq!(
+        filed.target,
+        NetworkTarget::Service {
+            service: "figcraft".to_owned(),
+            record: figcraft_port().record(),
+        }
+    );
+    let read = store.database.read().await.unwrap();
+    let asking = cockpit_sandbox::asking_network_requests(&read)
+        .await
+        .unwrap();
+    assert_eq!(asking, [filed]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_service_asked_again_returns_the_standing_request() {
+    let store = store().await;
+    let ServiceAsk::Filed(filed) = store.ask_service("s1", "app", &figcraft_port()).await else {
+        panic!("the first ask files a request");
+    };
+
+    let again = store.ask_service("s1", "app", &figcraft_port()).await;
+
+    assert_eq!(again, ServiceAsk::Standing(filed));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_service_the_project_was_granted_is_not_asked_again() {
+    let store = store().await;
+    let asked = AskedService::of(&figcraft_port());
+    let request = store.file_service("s1", "app", &asked).await.unwrap();
+    store.allow(request, true, DECIDED_AT).await.unwrap();
+
+    let ServiceAsk::Granted(grant) = store.ask_service("s2", "app", &figcraft_port()).await else {
+        panic!("the grant answers the ask");
+    };
+
+    assert_eq!(grant.request, Some(request));
+    let read = store.database.read().await.unwrap();
+    assert!(
+        cockpit_sandbox::asking_network_requests(&read)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_service_carries_no_reason() {
+    let store = store().await;
+    let request = store
+        .file_service("s1", "app", &AskedService::of(&figcraft_port()))
+        .await
+        .unwrap();
+
+    let read = store.database.read().await.unwrap();
+    let filed = cockpit_sandbox::network_request(&read, request)
+        .await
+        .unwrap();
+    assert_eq!(filed.reason, None);
 }

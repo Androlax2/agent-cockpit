@@ -3,27 +3,31 @@
 //! keeps each launcher's decisions file current. The rules of the rows live in
 //! `cockpit-sandbox`; this file maps them to the wire and moves the files.
 //!
-//! Requests come only from launchers, through a file in the session's mount folder no agent
-//! reaches, and only ask: an entry is added by the owner's decision alone.
+//! Requests come from launchers, through a file in the session's mount folder no agent
+//! reaches, and from an agent's `torlek ask service` for a service its project declares. Both
+//! only ask: an entry is added by the owner's decision alone.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 use cockpit_protocol::{
     Command, DecidedThroughView, ErrorCode, NetworkDecisionView, NetworkGrantView,
     NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, NetworkTargetView,
     ProtocolError, Reply, Unblock, UnblockedBy,
 };
 use cockpit_sandbox::{
-    EgressDecisions, EgressRequests, NetworkError, NetworkGrant, NetworkRefusal, NetworkRequest,
-    NetworkRequestState, NetworkTarget, OwnerClient, OwnerDecision, Sandbox, Subject,
+    EgressDecisions, EgressRequests, Forward, NetworkError, NetworkGrant, NetworkRefusal,
+    NetworkRequest, NetworkRequestState, NetworkTarget, OwnerClient, OwnerDecision, Sandbox,
+    ServiceAsk, Subject,
 };
+use cockpit_sessions::Sessions;
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
 use tokio::sync::Notify;
 
-use crate::approvals::{Failed, internal, job, now};
+use crate::approvals::{Failed, Sender, internal, job, now, shown};
 use crate::routes::{Route, WorkClass};
 
 /// How often the launchers' requests files are read: a refused destination reaches the
@@ -169,6 +173,135 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
         class: WorkClass::Control,
         job: work,
     }
+}
+
+/// The most characters an agent's reason for a service holds, as for an ask to run.
+const REASON_MAX_CHARS: usize = 1000;
+
+/// The route for an agent's `torlek ask service` (#880); `routes.rs` sends only that here,
+/// from the agent socket. It asks under the agent's `run-commands` grant, like any ask, and
+/// `decided` wakes [`keep_forever`] so the launcher names the new request.
+pub(crate) fn route_ask(
+    command: Command,
+    connector: Result<ProcessIdentity, ProcessError>,
+    database: Arc<Database>,
+    sessions: Arc<Sessions>,
+    decided: Arc<Notify>,
+) -> Route {
+    let Command::AskService {
+        launch_token,
+        service,
+        reason,
+    } = command
+    else {
+        unreachable!("routes.rs sends only ask-service here, not {command:?}")
+    };
+    let work = job(async move {
+        validate_reason(&reason)?;
+        let sender = Sender::read(connector).await;
+        let write = database.write().await?;
+        let session = sender.identify(&write, launch_token.clone()).await?;
+        cockpit_approvals::may_ask(&write, &session).await?;
+        write.commit().await?;
+        let session_id = cockpit_sessions::SessionId::parse(session.as_str())
+            .map_err(|error| internal(&error))?;
+        let declared = sessions
+            .declared_services(&session_id)
+            .await
+            .map_err(|error| Failed(crate::sessions::protocol_error(&error)))?;
+        let forward = declared_service(&declared, &service)?;
+        // Again in the transaction that files: a grant revoked meanwhile asks nothing.
+        let write = database.write().await?;
+        let session = sender.identify(&write, launch_token).await?;
+        cockpit_approvals::may_ask(&write, &session).await?;
+        let project = live_sessions(&write)
+            .await
+            .map_err(|reason| internal(&reason))?
+            .remove(session.as_str())
+            .ok_or_else(|| internal(&"the asking session holds no checkout"))?;
+        let subject = Subject::Session {
+            session: session.as_str().to_owned(),
+        };
+        let asked =
+            cockpit_sandbox::ask_service(&write, &subject, &project, forward, &reason, now())
+                .await?;
+        write.commit().await?;
+        if let ServiceAsk::Filed(filed) = &asked {
+            decided.notify_one();
+            tracing::info!(
+                request = filed.id,
+                session = filed.session,
+                record = filed.target.describe(),
+                "an agent asks the owner for a service"
+            );
+        }
+        Ok(ask_reply(&asked))
+    });
+    Route::Run {
+        class: WorkClass::Bulk,
+        job: work,
+    }
+}
+
+fn ask_reply(asked: &ServiceAsk) -> Reply {
+    match asked {
+        ServiceAsk::Filed(request) | ServiceAsk::Standing(request) => request_reply(request),
+        ServiceAsk::Granted(grant) => Reply::NetworkGrant {
+            grant: Box::new(grant_view(grant)),
+        },
+    }
+}
+
+/// `service` among the services the session's next launch serves, or a refusal naming them.
+fn declared_service<'a>(declared: &'a [Forward], service: &str) -> Result<&'a Forward, Failed> {
+    if let Some(forward) = declared.iter().find(|forward| forward.service == service) {
+        return Ok(forward);
+    }
+    let names: Vec<&str> = declared
+        .iter()
+        .map(|forward| forward.service.as_str())
+        .collect();
+    let message = if names.is_empty() {
+        format!(
+            "no declared service {service}: the session's launch serves none, for its project \
+             declares no [[services]] or its launches are unsandboxed"
+        )
+    } else {
+        format!(
+            "no declared service {service}; the project declares {}",
+            names.join(", ")
+        )
+    };
+    Err(Failed(ProtocolError {
+        code: ErrorCode::NotFound,
+        message,
+        unblock: Some(Unblock {
+            action: "name a service the project's .torlek/config.toml declares under \
+                     [[services]]"
+                .to_owned(),
+            by: UnblockedBy::Agent,
+        }),
+    }))
+}
+
+fn validate_reason(reason: &str) -> Result<(), Failed> {
+    let problem = if reason.trim().is_empty() {
+        "is empty; say what the service is for and why it is needed now".to_owned()
+    } else if reason.chars().count() > REASON_MAX_CHARS {
+        format!("is longer than {REASON_MAX_CHARS} characters")
+    } else if reason.contains('\0') {
+        "contains a NUL character".to_owned()
+    } else {
+        return Ok(());
+    };
+    Err(Failed(ProtocolError {
+        code: ErrorCode::InvalidArgument,
+        message: format!("the reason {problem}"),
+        unblock: Some(Unblock {
+            action: "ask again with --reason TEXT".to_owned(),
+            by: UnblockedBy::Agent,
+        }),
+    }))
 }
 
 /// Files what the launchers refused and rewrites every live session's decisions file: at
@@ -427,6 +560,7 @@ fn request_view(request: &NetworkRequest) -> NetworkRequestView {
         asked_at: request.asked_at,
         decision: request.decision.map(decision_view),
         grant: request.grant,
+        shown_reason: request.reason.as_deref().map(shown),
     }
 }
 

@@ -321,6 +321,15 @@ pub enum Command {
         launch_token: Option<String>,
         guide: i64,
     },
+    /// Agent socket only: ask the owner ahead for `service`, one the sender's project declares
+    /// in `[[services]]` (#880), saying why in `reason`. Answered with the request the owner
+    /// decides, the sender's standing one, or the project's grant that already allows it.
+    AskService {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        service: String,
+        reason: String,
+    },
     /// Agent socket only: whether an ask from the sender would reach the owner now.
     AskCheck {
         #[serde(default, skip_serializing_if = "Option::is_none")]

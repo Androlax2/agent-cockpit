@@ -180,6 +180,10 @@ fn request_detail(request: &NetworkRequestView) -> String {
         request.project,
         state_name(request.state)
     );
+    if let Some(reason) = &request.shown_reason {
+        text.push_str(&format!("reason: {}\n", reason.text));
+        text.push_str(&crate::approvals::warnings(reason));
+    }
     let verdict = match request.state {
         NetworkRequestStateView::Asking => None,
         NetworkRequestStateView::AllowedOnce => Some("allowed for the rest of this session"),

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
     Command, DecidedThroughView, NetworkRequestStateView, NetworkRequestView, NetworkSubjectView,
-    NetworkTargetView, Reply,
+    NetworkTargetView, Reply, ShownText,
 };
 use cockpit_tui::{App, INPUT_GRACE, Key};
 use common::{answer, app_with, screen_text, session};
@@ -30,6 +30,7 @@ fn asking(id: i64) -> NetworkRequestView {
         asked_at: 1_000,
         decision: None,
         grant: None,
+        shown_reason: None,
     }
 }
 
@@ -197,5 +198,27 @@ fn a_after_the_grace_allows_the_service_always() {
             always: true,
             through: Some(DecidedThroughView::Tui),
         }]
+    );
+}
+
+#[test]
+fn the_pane_shows_why_the_agent_asked_for_a_service_ahead() {
+    let now = Instant::now();
+    let asked_ahead = NetworkRequestView {
+        shown_reason: Some(ShownText {
+            text: "read the design the task names".to_owned(),
+            has_hidden_characters: false,
+            non_ascii: Vec::new(),
+            warnings: Vec::new(),
+        }),
+        ..asking_service(8)
+    };
+    let app = app_asked_for(asked_ahead, now);
+
+    let screen = screen_text(&app, after_grace(now));
+
+    assert!(
+        screen.contains("Reason: read the design the task names"),
+        "{screen}"
     );
 }

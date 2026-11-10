@@ -64,6 +64,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 5,
             sql: crate::network::SERVICES_MIGRATION_SQL,
         },
+        // #880: a service an agent asks for ahead carries the agent's reason.
+        Migration {
+            version: 6,
+            sql: crate::network::REASON_MIGRATION_SQL,
+        },
     ],
 };
 

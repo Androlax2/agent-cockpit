@@ -102,6 +102,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek usage quota | cost [--days N] | digest [--days N]
        torlek ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check
        torlek ask guide [--cwd DIR] < GUIDE | --wait ID
+       torlek ask service NAME --reason TEXT
        torlek approval list | show ID | decline ID | input ID [--shown] < LINE
        torlek approval stop ID | purge-output ID
        torlek approval approve ID --revision REVISION --digest DIGEST
@@ -234,6 +235,8 @@ fn main() -> ExitCode {
         [Some("ask"), Some("run")] => ask::run(&arguments[2..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("ask"), Some("guide")] => ask::guide(&arguments[2..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
+        [Some("ask"), Some("service")] => ask::service(&arguments[2..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some(verb @ ("approval" | "guide")), ..] => {
             match approvals::parse(verb, &arguments[1..]) {

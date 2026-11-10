@@ -1,6 +1,7 @@
-//! `cockpit ask run`, `cockpit ask guide`, `cockpit approval` and `cockpit guide` driven as
-//! processes against a scripted daemon socket: what each sends, what it prints and the exit
-//! codes agents rely on. The daemon's side is proven in `cockpit-daemon/tests/approvals.rs`.
+//! `cockpit ask run`, `cockpit ask guide`, `cockpit ask service`, `cockpit approval` and
+//! `cockpit guide` driven as processes against a scripted daemon socket: what each sends, what
+//! it prints and the exit codes agents rely on. The daemon's side is proven in
+//! `cockpit-daemon/tests/approvals.rs` and, for a service, `cockpit-daemon/tests/sandbox.rs`.
 
 use std::io::Write;
 use std::os::unix::fs::DirBuilderExt;
@@ -11,8 +12,9 @@ mod scripted;
 
 use cockpit_protocol::{
     Command, DecidedThroughView, ErrorCode, FoldedView, GuideStateView, GuideStepView, GuideView,
-    HiddenView, Outcome, ProtocolError, Reply, RunDecisionView, RunRequestView, RunResultView,
-    RunStateView, ShownText, Unblock, UnblockedBy,
+    HiddenView, NetworkDecisionView, NetworkGrantView, NetworkRequestStateView, NetworkRequestView,
+    NetworkSubjectView, NetworkTargetView, Outcome, ProtocolError, Reply, RunDecisionView,
+    RunRequestView, RunResultView, RunStateView, ShownText, Unblock, UnblockedBy,
 };
 use scripted::{scripted_conversation, text};
 
@@ -970,4 +972,117 @@ async fn waiting_on_a_run_the_owner_stopped_says_so_with_its_exit_status() {
         text(&output.stderr)
     );
     assert!(text(&output.stdout).contains("Username for"));
+}
+
+const FIGCRAFT_RECORD: &str = "service figcraft listen 127.0.0.1:3845 target 127.0.0.1:3845";
+
+fn figcraft() -> NetworkTargetView {
+    NetworkTargetView::Service {
+        service: "figcraft".to_owned(),
+    }
+}
+
+/// The session's request 9 for the `figcraft` service, in `state`.
+fn service_request(state: NetworkRequestStateView) -> Outcome {
+    Outcome::Ok(Reply::NetworkRequest {
+        request: Box::new(NetworkRequestView {
+            id: 9,
+            subject: NetworkSubjectView::Session {
+                id: "s00000000000a".to_owned(),
+            },
+            project: "app".to_owned(),
+            asks: figcraft(),
+            target: FIGCRAFT_RECORD.to_owned(),
+            state,
+            asked_at: 1,
+            decision: None,
+            grant: None,
+            shown_reason: None,
+        }),
+    })
+}
+
+#[tokio::test]
+async fn ask_service_files_the_request_with_the_token_and_says_who_allows_it() {
+    let home = Home::new();
+    let daemon = scripted_conversation(
+        &home.agent_socket(),
+        vec![service_request(NetworkRequestStateView::Asking)],
+    );
+
+    let output = home
+        .cockpit(
+            &["ask", "service", "figcraft", "--reason", "read the design"],
+            "",
+        )
+        .await;
+
+    assert_eq!(output.status.code(), Some(124), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stderr).contains("network request 9")
+            && text(&output.stderr).contains("torlek network allow 9"),
+        "{}",
+        text(&output.stderr)
+    );
+    assert_eq!(
+        daemon.await.unwrap(),
+        [Command::AskService {
+            launch_token: Some("the-token".to_owned()),
+            service: "figcraft".to_owned(),
+            reason: "read the design".to_owned(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn each_service_answer_keeps_its_exit_code() {
+    let granted = Outcome::Ok(Reply::NetworkGrant {
+        grant: Box::new(NetworkGrantView {
+            id: 4,
+            project: "app".to_owned(),
+            allows: figcraft(),
+            target: FIGCRAFT_RECORD.to_owned(),
+            request: Some(2),
+            granted: NetworkDecisionView {
+                at: 1,
+                through: Some(DecidedThroughView::Tui),
+            },
+            revoked: None,
+        }),
+    });
+    for (outcome, expected) in [
+        (service_request(NetworkRequestStateView::AllowedOnce), 0),
+        (granted, 0),
+        (service_request(NetworkRequestStateView::Denied), 125),
+    ] {
+        let home = Home::new();
+        let daemon = scripted_conversation(&home.agent_socket(), vec![outcome]);
+
+        let output = home
+            .cockpit(&["ask", "service", "figcraft", "--reason", "design"], "")
+            .await;
+
+        assert_eq!(
+            output.status.code(),
+            Some(expected),
+            "{}",
+            text(&output.stderr)
+        );
+        daemon.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn an_ask_for_a_service_without_its_reason_is_a_usage_error() {
+    let home = Home::new();
+
+    let output = home.cockpit(&["ask", "service", "figcraft"], "").await;
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        text(&output.stderr).contains("--reason is required")
+            && text(&output.stderr).contains("torlek ask service NAME --reason TEXT"),
+        "{}",
+        text(&output.stderr)
+    );
 }

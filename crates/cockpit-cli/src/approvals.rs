@@ -179,7 +179,7 @@ fn guide_line(guide: &GuideView) -> String {
 }
 
 /// Every warning the display rules raised about `shown`, as one line or none.
-fn warnings(shown: &ShownText) -> String {
+pub(crate) fn warnings(shown: &ShownText) -> String {
     let mut notes = Vec::new();
     if shown.has_hidden_characters {
         let kinds: Vec<&str> = shown
