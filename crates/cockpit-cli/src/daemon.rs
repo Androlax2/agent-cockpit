@@ -121,7 +121,6 @@ pub(crate) fn exchange_then(
 pub(crate) type FollowedReplies =
     Result<(Vec<Reply>, Option<Result<Reply, ClientError>>), ClientError>;
 
-
 /// sysexits' `EX_TEMPFAIL`: the daemon refused for now and the same request may succeed later.
 /// Clear of `ask`'s 124 to 126; every other refusal exits 1, so a caller retries only on this.
 pub(crate) const RETRY_LATER_STATUS: u8 = 75;
