@@ -125,6 +125,7 @@ async fn a_refused_destination_is_filed_once_and_allows_nothing_until_decided() 
         store.decisions("s1", "app").await,
         EgressDecisions {
             asking: vec![asked_example(first.unwrap())],
+            services: Default::default(),
             ..EgressDecisions::default()
         }
     );
@@ -250,6 +251,7 @@ async fn a_denied_destination_stays_refused_and_is_not_asked_about_again() {
                 request,
             }],
             asking: Vec::new(),
+            services: Default::default(),
         }
     );
     assert_eq!(store.file("s1", "app").await, None);
@@ -289,6 +291,7 @@ async fn an_allow_within_the_grace_after_the_request_appeared_is_refused() {
         store.decisions("s1", "app").await,
         EgressDecisions {
             asking: vec![asked_example(request)],
+            services: Default::default(),
             ..EgressDecisions::default()
         }
     );

@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use cockpit_sandbox::{EgressDecisions, LaunchSpec, Protected, SYSTEM_READ_ONLY, WhenAbsent};
 use serde::{Deserialize, Serialize};
 
+use crate::handoff::ForwardPort;
+
 /// What stage 2 enforces inside the namespaces, passed as its one argument: paths and rules,
 /// never a secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +34,8 @@ pub struct Policy {
     /// The launcher's hand-off socket, where stage 2 sends the proxy listener before
     /// anything else (#831). Its folder is bound read-only and granted to no one.
     pub proxy_handoff: PathBuf,
+    /// The port forwards stage 2 listens for and hands over with the proxy listener (#880).
+    pub forward_ports: Vec<ForwardPort>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,11 +141,21 @@ pub fn credential_values(text: Option<Vec<u8>>, spec: &LaunchSpec) -> Result<Vec
     Ok(values)
 }
 
+/// A folder of the launcher's own holding socket forwards' listeners (#880), bound read-only
+/// at the folder their `listen` paths name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SocketFolder {
+    pub source: PathBuf,
+    pub destination: PathBuf,
+}
+
 /// One mount of the view, applied parents first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Mount {
     ReadOnly(PathBuf),
     ReadWrite(PathBuf),
+    /// A socket folder of the launcher's own, read-only at another path.
+    SocketFolder(SocketFolder),
     /// A folder of the session's own at another path: its home, a provider's fixed folder.
     Elsewhere {
         source: PathBuf,
@@ -153,7 +167,8 @@ impl Mount {
     fn destination(&self) -> &Path {
         match self {
             Mount::ReadOnly(path) | Mount::ReadWrite(path) => path,
-            Mount::Elsewhere { destination, .. } => destination,
+            Mount::Elsewhere { destination, .. }
+            | Mount::SocketFolder(SocketFolder { destination, .. }) => destination,
         }
     }
 
@@ -165,6 +180,10 @@ impl Mount {
                 source,
                 destination,
             } => words("--bind", source, destination),
+            Mount::SocketFolder(SocketFolder {
+                source,
+                destination,
+            }) => words("--ro-bind", source, destination),
         }
     }
 }
@@ -178,11 +197,31 @@ fn words(flag: &str, source: &Path, destination: &Path) -> Vec<OsString> {
 }
 
 /// The bubblewrap arguments and stage 2 policy for `spec`, run by `launcher` inside, which
-/// hands the proxy listener over on `handoff`, a socket in a folder of the launcher's own.
-pub fn plan(spec: &LaunchSpec, launcher: &Path, handoff: &Path) -> Result<Plan, String> {
+/// hands the proxy listener over on `handoff`, a socket in a folder of the launcher's own,
+/// and shows each of `socket_folders` read-only where the forwards' `listen` paths name.
+pub fn plan(
+    spec: &LaunchSpec,
+    launcher: &Path,
+    handoff: &Path,
+    socket_folders: &[SocketFolder],
+) -> Result<Plan, String> {
     let handoff_folder = handoff
         .parent()
         .ok_or("the proxy hand-off socket has no folder")?;
+    // The spec checked its own paths; the launcher's are known here only.
+    for folder in socket_folders {
+        let destination = &folder.destination;
+        if let Some(clash) = [launcher, handoff_folder]
+            .into_iter()
+            .find(|own| own.starts_with(destination) || destination.starts_with(own))
+        {
+            return Err(format!(
+                "a forward listens in {}, which overlaps the launcher's own {}",
+                destination.display(),
+                clash.display()
+            ));
+        }
+    }
     let program = spec
         .program
         .canonicalize()
@@ -211,6 +250,7 @@ pub fn plan(spec: &LaunchSpec, launcher: &Path, handoff: &Path) -> Result<Plan, 
             }),
     );
     mounts.extend(spec.read_write.iter().cloned().map(Mount::ReadWrite));
+    mounts.extend(socket_folders.iter().cloned().map(Mount::SocketFolder));
     // A provider's declared read it did not install is not there to bind.
     let declared: Vec<PathBuf> = spec
         .read_only_declared
@@ -259,17 +299,34 @@ pub fn plan(spec: &LaunchSpec, launcher: &Path, handoff: &Path) -> Result<Plan, 
             .map(|folder| folder.destination.clone()),
     );
     write.extend(spec.read_write.iter().cloned());
+    let mut sockets = spec.sockets.clone();
+    sockets.extend(
+        socket_folders
+            .iter()
+            .map(|folder| folder.destination.clone()),
+    );
+    let forward_ports = spec
+        .forwards
+        .iter()
+        .filter_map(|forward| {
+            Some(ForwardPort {
+                service: forward.service.clone(),
+                port: forward.listen_port()?,
+            })
+        })
+        .collect();
     Ok(Plan {
         bubblewrap_arguments: arguments,
         policy: Policy {
             landlock_abi: spec.landlock_abi,
             read,
-            sockets: spec.sockets.clone(),
+            sockets,
             write,
             verify: masks.verify,
             program,
             program_name: spec.program.clone(),
             proxy_handoff: handoff.to_path_buf(),
+            forward_ports,
         },
     })
 }
@@ -278,7 +335,9 @@ pub fn plan(spec: &LaunchSpec, launcher: &Path, handoff: &Path) -> Result<Plan, 
 fn require_present(mount: &Mount) -> Result<(), String> {
     let source = match mount {
         Mount::ReadOnly(path) | Mount::ReadWrite(path) => path,
-        Mount::Elsewhere { source, .. } => source,
+        Mount::Elsewhere { source, .. } | Mount::SocketFolder(SocketFolder { source, .. }) => {
+            source
+        }
     };
     std::fs::metadata(source)
         .map(drop)
@@ -399,7 +458,7 @@ fn hide(spec: &LaunchSpec, mounts: &[Mount]) -> Result<Vec<OsString>, String> {
         mounts.iter().any(|mount| match mount {
             Mount::ReadOnly(folder) | Mount::ReadWrite(folder) => path.starts_with(folder),
             // Shows the session's own folder, not the host's at that path.
-            Mount::Elsewhere { .. } => false,
+            Mount::Elsewhere { .. } | Mount::SocketFolder(_) => false,
         })
     };
     let mut masked: Vec<PathBuf> = Vec::new();

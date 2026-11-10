@@ -39,7 +39,7 @@ pub fn run(policy_argument: &OsString, arguments: &[OsString]) -> Result<Infalli
     let policy: Policy = serde_json::from_str(policy_text)
         .map_err(|error| format!("stage 2's policy is malformed: {error}"))?;
     verify_mounts(&policy)?;
-    crate::handoff::hand_over(&policy.proxy_handoff)?;
+    crate::handoff::hand_over(&policy.proxy_handoff, &policy.forward_ports)?;
     restrict_files(&policy)?;
     restrict_system_calls()?;
     let error = std::process::Command::new(&policy.program)

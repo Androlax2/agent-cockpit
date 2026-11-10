@@ -24,6 +24,13 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   credential's placeholder variable and the trust variables that name the session CA's files
   in the tool configuration folder. A host the allowlist does not let through on 443 cannot
   be bound, and an unsandboxed launch is refused any credential.
+- Host-service forwards (#880, `forwards.rs`): a spec's `forwards` name declared services,
+  each a `listen` inside and a `target` on the host (`Endpoint`: a loopback port or a Unix
+  socket). `LaunchSpec::validate` refuses a malformed name, a repeated service or listen, the
+  proxy's port, and a socket listen whose folder overlaps one the view binds. A forward
+  relays only while `EgressDecisions::services` allows its whole `Forward::record`; nothing
+  in the spec grants one, and the daemon gives every launch none until declarations arrive
+  (#880's next part).
 - Toolchains and caches (#859): the caller resolves `ToolNeeds` from the toolchain table of
   `cockpit-provider-api`. The install roots `PATH` resolves the checkout's ecosystems in are
   bound read-only; every cache variable points into `caches/` of the session's temp folder;

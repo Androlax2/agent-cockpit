@@ -3,6 +3,7 @@
 mod credentials;
 mod egress;
 mod evidence;
+mod forwards;
 mod launch;
 #[cfg(feature = "persistence")]
 mod logins;
@@ -31,6 +32,10 @@ pub use egress::{
 pub use evidence::{AppliedRule, Enforcement, Evidence};
 #[cfg(feature = "persistence")]
 pub use evidence::{MIGRATIONS, first_launch_was_sandboxed, latest_for_session, record};
+pub use forwards::{
+    AllowedService, AskedService, DecidedService, Endpoint, Forward, MAX_FORWARDS,
+    ServiceDecisions, is_service_name, proxy_port,
+};
 pub use launch::{
     AccountLogin, CheckRequest, HostPaths, LaunchRequest, LoginMount, Prepared, Sandbox,
     SessionLogin,
@@ -59,6 +64,6 @@ pub use profile::{
     Secret, SecretHandling, shared_desktop_refusal,
 };
 pub use spec::{
-    Folder, Forward, InvalidSpec, LANDLOCK_ABI_FLOOR, LaunchSpec, NeedsSource, Protected,
-    SPEC_FILE, SPEC_VERSION, SYSTEM_READ_ONLY, Subject, WhenAbsent,
+    Folder, InvalidSpec, LANDLOCK_ABI_FLOOR, LaunchSpec, NeedsSource, Protected, SPEC_FILE,
+    SPEC_VERSION, SYSTEM_READ_ONLY, Subject, WhenAbsent,
 };

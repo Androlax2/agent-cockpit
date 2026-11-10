@@ -10,9 +10,9 @@ use std::process::Command;
 
 use cockpit_sandbox::{
     AllowEntry, AllowSource, Allowlist, CA_BUNDLE_FILE, CREDENTIALS_FILE, CredentialHost,
-    CredentialScheme, DECISIONS_FILE, EGRESS_FILE, EgressDecisions, EgressReport, Interception,
-    LaunchSpec, NeedsSource, Protected, SESSION_CA_FILE, SPEC_FILE, SPEC_VERSION, SpecCredential,
-    Subject, Target, WhenAbsent,
+    CredentialScheme, DECISIONS_FILE, EGRESS_FILE, EgressDecisions, EgressReport, Endpoint,
+    Forward, Interception, LaunchSpec, NeedsSource, Protected, REQUESTS_FILE, SESSION_CA_FILE,
+    SPEC_FILE, SPEC_VERSION, SpecCredential, Subject, Target, WhenAbsent,
 };
 
 const LAUNCHER: &str = env!("CARGO_BIN_EXE_torlek-sandbox");
@@ -21,6 +21,7 @@ struct Fixture {
     root: tempfile::TempDir,
     egress: Allowlist,
     interception: Option<Interception>,
+    forwards: Vec<Forward>,
 }
 
 impl Fixture {
@@ -34,6 +35,7 @@ impl Fixture {
                 entries: Vec::new(),
             },
             interception: None,
+            forwards: Vec::new(),
         };
         for folder in ["checkout/.git/hooks", "home", "home-source", "mounts"] {
             std::fs::create_dir_all(fixture.path(folder)).unwrap();
@@ -84,7 +86,7 @@ impl Fixture {
             protected,
             hidden: vec![checkout.join(".env")],
             needs_source: NeedsSource::Floor,
-            forwards: Vec::new(),
+            forwards: self.forwards.clone(),
             login: None,
             egress: self.egress.clone(),
             interception: self.interception.clone(),
@@ -398,6 +400,7 @@ impl Fixture {
             allowed: vec![api_github_grant()],
             denied: Vec::new(),
             asking: Vec::new(),
+            services: Default::default(),
         };
         write(
             &self.path("mounts").join(DECISIONS_FILE),
@@ -519,4 +522,155 @@ fn a_refused_spec_leaves_no_credentials_file() {
 
     assert_eq!(output.status.code(), Some(125));
     assert!(!fixture.path("mounts").join(CREDENTIALS_FILE).exists());
+}
+
+/// A port forward to the host's `target` port, listening on 7979 inside.
+fn port_forward(target: u16) -> Forward {
+    Forward {
+        service: "figcraft".to_owned(),
+        listen: Endpoint::Port { port: 7979 },
+        target: Endpoint::Port { port: target },
+    }
+}
+
+impl Fixture {
+    /// The owner allowed `forward`'s record for the session, before the launch.
+    fn allow_service(&self, forward: &Forward) {
+        let decisions = EgressDecisions {
+            services: cockpit_sandbox::ServiceDecisions {
+                allowed: vec![cockpit_sandbox::AllowedService {
+                    service: forward.service.clone(),
+                    record: forward.record(),
+                    source: AllowSource::Request { request: 5 },
+                }],
+                ..Default::default()
+            },
+            ..EgressDecisions::default()
+        };
+        write(
+            &self.path("mounts").join(DECISIONS_FILE),
+            &serde_json::to_string(&decisions).unwrap(),
+        );
+    }
+
+    fn report(&self) -> EgressReport {
+        serde_json::from_slice(&std::fs::read(self.path("mounts").join(EGRESS_FILE)).unwrap())
+            .unwrap()
+    }
+}
+
+/// #880: a granted service answers at its listen port inside the sandbox, relayed to its
+/// target on the host's loopback; the target's own port is not there.
+#[test]
+fn a_granted_port_forward_answers_at_its_listen_port_inside() {
+    let mut fixture = Fixture::new();
+    let port = hello_server();
+    let forward = port_forward(port);
+    fixture.allow_service(&forward);
+    fixture.forwards.push(forward);
+
+    let printed = fixture.run(&format!(
+        "curl --silent --max-time 5 http://127.0.0.1:7979/; echo; \
+         curl --silent --max-time 5 http://127.0.0.1:{port}/; echo \" direct=$?\""
+    ));
+
+    assert!(printed.starts_with("hello\n"), "{printed}");
+    assert!(!printed.contains("direct=0"), "{printed}");
+    let counters = &fixture.report().forwards["figcraft"];
+    assert_eq!((counters.allowed, counters.refused), (1, 0));
+    assert_eq!(counters.bytes_in, 43);
+}
+
+/// #880: without a decision the connection is closed at once, and the record is listed for
+/// the daemon to ask the owner.
+#[test]
+fn an_ungranted_forward_is_closed_at_once_and_asks_the_owner() {
+    let mut fixture = Fixture::new();
+    let forward = port_forward(hello_server());
+    fixture.forwards.push(forward.clone());
+
+    let printed =
+        fixture.run("curl --silent --max-time 5 http://127.0.0.1:7979/; echo \" curl=$?\"");
+
+    assert!(!printed.contains("hello"), "{printed}");
+    assert!(!printed.contains("curl=0"), "{printed}");
+    assert!(
+        !printed.contains("curl=28"),
+        "timed out instead of closed: {printed}"
+    );
+    let requests: cockpit_sandbox::EgressRequests =
+        serde_json::from_slice(&std::fs::read(fixture.path("mounts").join(REQUESTS_FILE)).unwrap())
+            .unwrap();
+    assert_eq!(
+        requests.services,
+        vec![cockpit_sandbox::AskedService::of(&forward)]
+    );
+    assert_eq!(fixture.report().forwards["figcraft"].refused, 1);
+}
+
+/// A Unix socket server in `folder`, answering HTTP `hello`; bound through the folder's
+/// descriptor, since a test folder's path can pass the kernel's limit for a socket.
+fn socket_server(folder: &Path) -> PathBuf {
+    let opened = std::fs::File::open(folder).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(format!(
+        "/proc/self/fd/{}/hello.sock",
+        std::os::fd::AsRawFd::as_raw_fd(&opened)
+    ))
+    .unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+        }
+    });
+    folder.join("hello.sock")
+}
+
+/// #880: a socket service answers at its listen path, in a folder bound read-only, so the
+/// program can neither remove the socket nor put another beside it.
+#[test]
+fn a_socket_forward_answers_at_its_listen_path_which_the_session_cannot_replace() {
+    let mut fixture = Fixture::new();
+    std::fs::create_dir_all(fixture.path("service")).unwrap();
+    let target = socket_server(&fixture.path("service"));
+    let forward = Forward {
+        service: "engine".to_owned(),
+        listen: Endpoint::Socket {
+            path: PathBuf::from("/run/torlek/engine.sock"),
+        },
+        target: Endpoint::Socket { path: target },
+    };
+    fixture.allow_service(&forward);
+    fixture.forwards.push(forward);
+
+    let printed = fixture.run(
+        "curl --silent --max-time 5 --unix-socket /run/torlek/engine.sock http://engine/; echo; \
+         rm -f /run/torlek/engine.sock 2>/dev/null; echo rm=$?; \
+         touch /run/torlek/other 2>/dev/null; echo touch=$?; \
+         test -S /run/torlek/engine.sock && echo still-a-socket",
+    );
+
+    assert_eq!(printed, "hello\nrm=1\ntouch=1\nstill-a-socket\nexit=0\n");
+}
+
+/// #880: a socket listen inside a folder the view binds would hide part of it; the launch is
+/// refused naming the service.
+#[test]
+fn a_socket_forward_listening_in_the_checkout_is_refused() {
+    let mut fixture = Fixture::new();
+    fixture.forwards.push(Forward {
+        service: "engine".to_owned(),
+        listen: Endpoint::Socket {
+            path: fixture.path("checkout/engine.sock"),
+        },
+        target: Endpoint::Port { port: 2375 },
+    });
+
+    let printed = fixture.run("echo started");
+
+    assert!(!printed.contains("started"), "{printed}");
+    assert!(printed.contains("service engine listens in"), "{printed}");
+    assert!(printed.ends_with("exit=125\n"), "{printed}");
 }

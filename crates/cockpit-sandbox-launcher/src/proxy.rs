@@ -11,7 +11,8 @@
 //! (`cockpit_sandbox::DECISIONS_FILE`): read before serving and again each time it changes.
 //! A destination refused for want of an entry goes to a file the daemon reads
 //! (`cockpit_sandbox::REQUESTS_FILE`), which asks the owner; the refusal itself is at once. A
-//! revoked decision closes the tunnels it allowed.
+//! revoked decision closes the tunnels it allowed. The same decisions and requests files
+//! carry the declared services the launcher forwards (`forward.rs`, #880).
 //!
 //! Answers tell policy from the network (#718): `403` with `Proxy-Status` error
 //! `http_request_denied` or `destination_ip_prohibited` is a refusal; `502` (`dns_error`,
@@ -30,13 +31,17 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use cockpit_sandbox::{
-    AllowEntry, Allowlist, AskedDestination, EgressDecisions, EgressRefusal, EgressReport,
-    EgressRequests, MAX_ASKED_DESTINATIONS, Subject, destination,
+    AllowEntry, Allowlist, AskedDestination, AskedService, EgressDecisions, EgressRefusal,
+    EgressReport, EgressRequests, MAX_ASKED_DESTINATIONS, Subject, destination,
 };
 
 use crate::authority::{Authority, BoundHost};
 use crate::client_hello::{self, ServerName};
 use crate::intercept::{self, Direction, Ended, Event, Wire};
+
+mod forward;
+
+pub use forward::{Listener, bind_sockets};
 
 /// How long a client has to send its `CONNECT` request.
 const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -97,6 +102,8 @@ pub struct Proxy<U> {
     asked: Mutex<Asked>,
     /// The tunnels open now, by number, so a revoked decision closes those it allowed.
     tunnels: Mutex<HashMap<u64, OpenTunnel>>,
+    /// The forwards' relays open now, numbered beside the tunnels (#880).
+    relays: Mutex<HashMap<u64, forward::OpenRelay>>,
     next_tunnel: AtomicU64,
     subject: Subject,
     upstream: U,
@@ -165,6 +172,7 @@ impl Answer {
 #[derive(Debug)]
 struct Asked {
     destinations: BTreeSet<AskedDestination>,
+    services: BTreeSet<AskedService>,
     revision: u64,
 }
 
@@ -236,9 +244,11 @@ impl<U: Upstream> Proxy<U> {
             requests_file: OnceLock::new(),
             asked: Mutex::new(Asked {
                 destinations: BTreeSet::new(),
+                services: BTreeSet::new(),
                 revision: launch_revision(),
             }),
             tunnels: Mutex::new(HashMap::new()),
+            relays: Mutex::new(HashMap::new()),
             next_tunnel: AtomicU64::new(0),
             report: Mutex::new(EgressReport::new(subject.clone())),
             subject,
@@ -301,11 +311,19 @@ impl<U: Upstream> Proxy<U> {
         // A decided destination is asked about again if a later decision takes it back. After
         // the swap: a refusal decided on the old decisions that lists it after this sees the
         // new ones in `ask` and does not.
-        self.asked
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .destinations
-            .retain(|asked| !decided.decisions.covers(&asked.host, asked.port));
+        {
+            let mut asked = self
+                .asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            asked
+                .destinations
+                .retain(|asked| !decided.decisions.covers(&asked.host, asked.port));
+            asked
+                .services
+                .retain(|asked| !decided.decisions.services.covers_record(asked));
+        }
+        self.close_revoked_relays(&decided.decisions.services);
         let tunnels = self
             .tunnels
             .lock()
@@ -572,9 +590,9 @@ impl<U: Upstream> Proxy<U> {
     /// Lists `host` on `port` in the requests file; false when the list is full. A
     /// destination listed already is not written again.
     fn ask(&self, host: &str, port: u16) -> Result<bool, String> {
-        let Some(path) = self.requests_file.get() else {
+        if self.requests_file.get().is_none() {
             return Err("this proxy files no requests".to_owned());
-        };
+        }
         let mut asked = self
             .asked
             .lock()
@@ -592,25 +610,34 @@ impl<U: Upstream> Proxy<U> {
             return Ok(false);
         }
         asked.destinations.insert(destination.clone());
+        let written = self.write_requests(&mut asked);
+        if written.is_err() {
+            // Not listed: the next refusal tries again instead of saying the owner is asked.
+            asked.destinations.remove(&destination);
+        }
+        written.map(|()| true)
+    }
+
+    /// Writes what `asked` lists to the requests file at a new revision.
+    fn write_requests(&self, asked: &mut Asked) -> Result<(), String> {
+        let Some(path) = self.requests_file.get() else {
+            return Err("this proxy files no requests".to_owned());
+        };
         asked.revision += 1;
         let requests = EgressRequests {
             subject: self.subject.clone(),
             revision: asked.revision,
             asked: asked.destinations.iter().cloned().collect(),
+            services: asked.services.iter().cloned().collect(),
         };
-        let written = serde_json::to_vec(&requests)
+        serde_json::to_vec(&requests)
             .map_err(|error| error.to_string())
             .and_then(|text| {
                 let staged = path.with_extension("json.staged");
                 std::fs::write(&staged, text)
                     .and_then(|()| std::fs::rename(&staged, path))
                     .map_err(|error| format!("cannot write {}: {error}", path.display()))
-            });
-        if written.is_err() {
-            // Not listed: the next refusal tries again instead of saying the owner is asked.
-            asked.destinations.remove(&destination);
-        }
-        written.map(|()| true)
+            })
     }
 
     /// Decides, resolves, checks and connects: the upstream stream, the allowing entry's
@@ -1650,6 +1677,7 @@ mod tests {
             allowed: vec![decided_entry("git.example.com", 22, 7)],
             denied: Vec::new(),
             asking: Vec::new(),
+            services: Default::default(),
         });
         running.proxy.apply_decisions(EgressDecisions::default());
 
@@ -1713,6 +1741,7 @@ mod tests {
             allowed: vec![decided_entry("git.example.com", 22, 7)],
             denied: Vec::new(),
             asking: Vec::new(),
+            services: Default::default(),
         });
         let answer = connect(running.address, "git.example.com:22", b"");
 
@@ -1740,6 +1769,7 @@ mod tests {
                 request: 3,
             }],
             asking: Vec::new(),
+            services: Default::default(),
         });
         let started = Instant::now();
 
@@ -1767,6 +1797,7 @@ mod tests {
             allowed: vec![decided_entry("git.example.com", 22, 7)],
             denied: Vec::new(),
             asking: Vec::new(),
+            services: Default::default(),
         });
         let mut client = TcpStream::connect(running.address).unwrap();
         client
@@ -1804,6 +1835,7 @@ mod tests {
             allowed: vec![decided_entry("git.example.com", 22, 7)],
             denied: Vec::new(),
             asking: Vec::new(),
+            services: Default::default(),
         };
         std::fs::write(&decisions, serde_json::to_vec(&allowed).unwrap()).unwrap();
         running.proxy.apply_decisions(decisions_at(&decisions));
@@ -1829,6 +1861,7 @@ mod tests {
             allowed: vec![decided_entry("git.example.com", 22, 7)],
             denied: Vec::new(),
             asking: Vec::new(),
+            services: Default::default(),
         };
 
         std::fs::write(&decisions, serde_json::to_vec(&allowed).unwrap()).unwrap();

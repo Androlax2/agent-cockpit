@@ -274,6 +274,7 @@ fn a_credential_for_a_host_the_owners_decisions_reach_is_bound() {
         allowed: github_hosts(),
         denied: Vec::new(),
         asking: Vec::new(),
+        services: Default::default(),
     };
 
     let staged = native_launch(&request).unwrap().staged.unwrap();
