@@ -134,7 +134,8 @@ const HOST_PATH_TEST: &str =
 /// #932: with a second agent installed, `session new` without `--agent` would be ambiguous.
 /// The harness gives the daemon its own `PATH`, so the host's `codex` stays out of it. The
 /// host's `PATH` belongs to this process and cannot change under tests running beside it, so
-/// the test runs itself again in a process that has a `codex` on its `PATH`.
+/// the test runs itself again in a process that has a `codex` on its `PATH`. The `codex`
+/// answers `--version` as the real one does: the daemon skips an agent that does not.
 #[test]
 fn a_codex_on_the_host_path_does_not_change_the_agent_session_new_picks() {
     match std::env::var_os(CODEX_DIRECTORY_VARIABLE) {
@@ -157,7 +158,7 @@ fn rerun_with_codex_on_the_host_path() {
 
     let codex_directory = tempfile::tempdir().expect("a directory for the host's codex");
     let codex = codex_directory.path().join("codex");
-    std::fs::write(&codex, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::write(&codex, "#!/bin/sh\necho 'codex-cli 0.166.0'\n").unwrap();
     std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut host_path = vec![codex_directory.path().to_path_buf()];
     host_path.extend(std::env::split_paths(

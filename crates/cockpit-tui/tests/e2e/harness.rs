@@ -106,8 +106,9 @@ while :; do
 done
 "#;
 
-/// The host directories the programs below are taken from.
-const SYSTEM_DIRECTORIES: [&str; 3] = ["/usr/local/bin", "/usr/bin", "/bin"];
+/// The host directories the programs below are taken from. `/usr/local/bin` comes last: it is
+/// where a developer's own shim of `git` or `tmux` would shadow the system's.
+const SYSTEM_DIRECTORIES: [&str; 3] = ["/usr/bin", "/bin", "/usr/local/bin"];
 
 /// What the daemon, the fake agent and the tests' shell commands run: `sh`, `tmux`, `git` and
 /// the coreutils. Only these are linked into the daemon's `PATH` (#932): a system directory
