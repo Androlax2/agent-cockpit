@@ -764,7 +764,7 @@ async fn a_refused_session_verb_exits_1_with_the_daemons_reason() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "torlek: conflict: session s0123456789ab is running; wake needs asleep\n"
+        "torlek: refused [conflict]: session s0123456789ab is running; wake needs asleep (nothing changed)\n"
     );
 }
 
@@ -1083,7 +1083,7 @@ async fn a_refused_sandbox_show_exits_1_with_the_rule_and_reason() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "torlek: refused: the sandbox refuses `agents.sandbox = \"required\"`: no sandbox backend on this host\n"
+        "torlek: refused [refused]: the sandbox refuses `agents.sandbox = \"required\"`: no sandbox backend on this host (nothing changed)\n"
     );
 }
 

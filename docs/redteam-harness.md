@@ -149,7 +149,7 @@ log: `id`, `category`, `title`, `command`, `caller`, `caller_detail`, `exit_code
 session's sandbox evidence for section 1, `null` for section 2), `session` and
 `not_run_reason` (section 1 only),
 `torlek_version` and `recorded_at`. The outcome is a heuristic read of the output (a
-`torlek: not-authorized:`/`refused:` message, a blocked-network 403 or permission-denied
+`torlek: refused [CODE]:` message (`not-authorized:`/`refused:` on a guest older than #1336), a blocked-network 403 or permission-denied
 message, otherwise the exit code); a human reads the raw `stdout`/`stderr` of every
 `succeeded` or `unclear` line before deciding anything.
 

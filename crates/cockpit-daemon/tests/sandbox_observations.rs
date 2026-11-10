@@ -22,7 +22,7 @@ async fn record(
     let deadline = Instant::now() + GENEROUS;
     loop {
         let output = home.cockpit(&arguments, &[]).await;
-        if !String::from_utf8_lossy(&output.stderr).starts_with("torlek: busy:")
+        if !String::from_utf8_lossy(&output.stderr).starts_with("torlek: refused [busy]:")
             || Instant::now() >= deadline
         {
             return output;

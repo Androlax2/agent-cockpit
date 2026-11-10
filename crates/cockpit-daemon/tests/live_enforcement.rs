@@ -111,7 +111,7 @@ async fn owner_command(home: &Home, arguments: &[&str]) -> String {
     let deadline = Instant::now() + GENEROUS;
     loop {
         let output = home.cockpit(arguments, &[]).await;
-        let busy = String::from_utf8_lossy(&output.stderr).starts_with("torlek: busy:");
+        let busy = String::from_utf8_lossy(&output.stderr).starts_with("torlek: refused [busy]:");
         if !busy || Instant::now() >= deadline {
             assert!(output.status.success(), "{arguments:?}: {output:?}");
             return String::from_utf8(output.stdout).unwrap();

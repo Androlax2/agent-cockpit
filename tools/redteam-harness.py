@@ -51,10 +51,11 @@ SUCCEEDED = "succeeded"
 
 # What a refusal or a block already looks like in this project's own output (torlek docs
 # sandbox, torlek/src/cli routes.rs): matched before guessing from the exit code alone.
-# The CLI renders a refusal as `torlek: <error-code>: <reason>` with a kebab-case code; an
-# owner-only verb reached on the agent socket is `torlek: not-authorized:` or `torlek: refused:`
-# ("this command is the owner's alone"), both seen live against the real daemon.
+# The CLI renders a refusal as `torlek: refused [<error-code>]: <reason>` (#1336); an owner-only
+# verb reached on the agent socket is "this command is the owner's alone". A guest built before
+# #1336 prints `torlek: not-authorized:` or `torlek: refused:` without the bracketed code.
 REFUSAL_PATTERNS = (
+    "torlek: refused [",
     "torlek: not-authorized:",
     "this command is the owner's alone",
     "torlek: refused:",

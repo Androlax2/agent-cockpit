@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use cockpit_client::{ClientError, Connection};
-use cockpit_protocol::{Command, Reply};
+use cockpit_protocol::{Command, ErrorCode, ProtocolError, Reply};
 
 /// Control verbs answer within this; the daemon answers `busy` at once when it is saturated.
 pub(crate) const CONTROL_DEADLINE: Duration = Duration::from_secs(30);
@@ -121,17 +121,48 @@ pub(crate) fn exchange_then(
 pub(crate) type FollowedReplies =
     Result<(Vec<Reply>, Option<Result<Reply, ClientError>>), ClientError>;
 
-/// Exit 1 after saying why the request failed, and for a refusal what would lift it.
+/// sysexits' `EX_TEMPFAIL`: the daemon refused for now and the same request may succeed later.
+/// Clear of `ask`'s 124 to 126; every other refusal exits 1, so a caller retries only on this.
+pub(crate) const RETRY_LATER_STATUS: u8 = 75;
+
+/// Exit [`RETRY_LATER_STATUS`] after saying why the request failed and for a refusal what
+/// would lift it, or 1 when retrying the same request cannot help.
 pub(crate) fn failed(error: &ClientError) -> ExitCode {
     match error {
-        ClientError::Daemon(error) => {
-            let code = fail(&format!("{}: {}", error.code.as_str(), error.message));
-            if let Some(unblock) = &error.unblock {
-                crate::agent::print_unblock(unblock);
-            }
-            code
-        }
+        ClientError::Daemon(error) => report_refusal(error),
         error => fail(&error.to_string()),
+    }
+}
+
+/// Prints the refusal and its unblock, and returns the status [`refusal_status`] names.
+pub(crate) fn report_refusal(error: &ProtocolError) -> ExitCode {
+    eprintln!("torlek: {}", refusal_text(error));
+    if let Some(unblock) = &error.unblock {
+        crate::agent::print_unblock(unblock);
+    }
+    refusal_status(&error.code)
+}
+
+/// `refused [busy]: MESSAGE`, saying when the daemon changed nothing. An `internal` failure or a
+/// code this version does not know may have taken effect, so neither claims otherwise.
+fn refusal_text(error: &ProtocolError) -> String {
+    let code = error.code.as_str();
+    match error.code {
+        ErrorCode::Internal => format!("failed [{code}]: {}", error.message),
+        ErrorCode::Unknown(_) => format!("refused [{code}]: {}", error.message),
+        ErrorCode::Busy => format!(
+            "refused [{code}]: {} (nothing changed; retry later)",
+            error.message
+        ),
+        _ => format!("refused [{code}]: {} (nothing changed)", error.message),
+    }
+}
+
+/// An unknown code is final: nothing says retrying would help.
+fn refusal_status(code: &ErrorCode) -> ExitCode {
+    match code {
+        ErrorCode::Busy => ExitCode::from(RETRY_LATER_STATUS),
+        _ => ExitCode::FAILURE,
     }
 }
 

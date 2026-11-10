@@ -78,7 +78,7 @@ prints nothing (`--summary-seconds N` opts in to a `SUMMARY` line every N second
 | `IDLE, merge state unknown` | `gh` failed or timed out, so the merge could not be checked: run `gh pr list --head BRANCH --state merged` yourself, then treat it as the line above or ignore it |
 | `SESSIONS CHECK FAILED` | The full-list check cannot run `torlek agent sessions`, so a question the watch misses is not caught. Reported once, then every 30 minutes; run `torlek agent sessions` yourself to see why |
 | `PR POLL FAILED` | `gh` cannot list PRs (network, login, rate limit), so no CI or merge line can arrive. Reported once, then every 30 minutes; check `gh auth status` and the network |
-| `WATCH ENDED` | The monitor exited non-zero (the status of `torlek agent sessions --watch`, else 1) after killing its watch. The text after the colon says why (a missing grant, a crash). Fix that, then re-arm; the state file keeps what was reported |
+| `WATCH ENDED` | The monitor exited non-zero (the status of `torlek agent sessions --watch`, else 1) after killing its watch. The text after the colon says why (a missing grant, a crash). Fix that, then re-arm; the state file keeps what was reported. Status 75 (`retry later`) means the daemon answered `busy`: re-arm after a minute without changing anything; any other status is final until its cause is fixed |
 
 State survives a re-arm; keep the state file in your session temp folder, which may be swept
 when your session ends. After a reboot Torlek resumes workers; on alpha 2 each sat idle until

@@ -95,7 +95,7 @@ fn an_edit_made_on_a_stale_intent_revision_is_refused() {
 
     let refusal = home.cockpit_err(&["todo", "edit", "1", "--revision", "1", "--title", "Other"]);
 
-    assert!(refusal.contains("refused:"), "{refusal}");
+    assert!(refusal.contains("refused [stale-revision]:"), "{refusal}");
     assert!(
         home.cockpit_ok(&["todo", "show", "1"])
             .contains("title: Fix it\n")
@@ -465,7 +465,7 @@ async fn a_refused_blocker_report_says_who_unblocks_it() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "torlek: refused: no project takes blocker reports\n\
+        "torlek: refused [refused]: no project takes blocker reports (nothing changed)\n\
          torlek: to unblock (the owner): set tasks.blocker_project in the owner configuration\n"
     );
 }

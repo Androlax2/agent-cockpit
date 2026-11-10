@@ -340,15 +340,11 @@ pub(crate) fn exchange_within(
     })
 }
 
-/// Exit 1 after saying why, and for a refusal what would lift it.
+/// Exit 1 after saying why, and for a refusal what would lift it; a retry-later refusal exits
+/// [`crate::daemon::RETRY_LATER_STATUS`].
 pub(crate) fn failed(socket: &Path, outcome: Result<Reply, ClientError>) -> ExitCode {
     match outcome {
-        Err(ClientError::Daemon(error)) => {
-            eprintln!("torlek: refused: {}", error.message);
-            if let Some(unblock) = &error.unblock {
-                print_unblock(unblock);
-            }
-        }
+        Err(ClientError::Daemon(error)) => return crate::daemon::report_refusal(&error),
         Err(ClientError::Connect { source, .. }) => {
             eprintln!(
                 "torlek: cannot reach the daemon at {}: {source}",

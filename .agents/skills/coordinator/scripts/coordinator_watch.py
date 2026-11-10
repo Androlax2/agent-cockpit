@@ -11,8 +11,9 @@ stream never delivered is printed then (#1298).
 State persists in the state file so a re-armed monitor does not repeat what it already reported.
 
 When `torlek agent sessions --watch` ends, or a helper thread dies, it prints `WATCH ENDED`, kills
-the watch it started and exits non-zero (torlek's own status when that was non-zero, else 1), so
-the monitor running this script wakes the coordinator instead of going silent.
+the watch it started and exits non-zero (torlek's own status when that was non-zero, else 1;
+75 means the daemon was busy and a re-arm may succeed), so the monitor running this script wakes
+the coordinator instead of going silent.
 
 Usage: coordinator_watch.py STATE_FILE [--repo OWNER/NAME] [--worker-root DIR]
 """
@@ -47,6 +48,8 @@ DEFAULT_FULL_LIST_SECONDS = 180
 # list showed it is missed, not merely on its way.
 DEFAULT_STREAM_LAG_SECONDS = 5
 TORLEK_TIMEOUT_SECONDS = 30
+# torlek's status for a refusal worth retrying (`busy`); every other refusal is final (exit 1).
+TORLEK_RETRY_LATER_STATUS = 75
 
 lock = threading.Lock()
 batched = []
@@ -328,8 +331,14 @@ class Watcher:
             exit_status = self.process.wait()
             errors.seek(0)
             reason = errors.read().strip()
+            retry_hint = (
+                " (retry later: the daemon was busy, re-arm in a minute)"
+                if exit_status == TORLEK_RETRY_LATER_STATUS
+                else ""
+            )
             print(
-                f"WATCH ENDED: torlek agent sessions --watch exited {exit_status}: {reason}",
+                "WATCH ENDED: torlek agent sessions --watch "
+                f"exited {exit_status}{retry_hint}: {reason}",
                 flush=True,
             )
             return exit_status or 1
