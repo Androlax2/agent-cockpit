@@ -223,6 +223,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
                 interval: COST_SCAN_INTERVAL,
             }),
             economy: crate::scheduling::economy(&config.usage),
+            target_prune_minute: crate::MINUTE,
         };
         let daemon = instance
             .start(wiring, |capabilities| {

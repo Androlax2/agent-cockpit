@@ -18,6 +18,8 @@ pub(crate) struct Context {
     pub(crate) database: Arc<Database>,
     pub(crate) git: cockpit_projects::Git,
     pub(crate) policy: Arc<PrunePolicy>,
+    /// How long one minute of the policy's interval lasts ([`crate::Wiring::target_prune_minute`]).
+    pub(crate) prune_minute: std::time::Duration,
     /// `storage.sweep_on_session_end` (#767).
     pub(crate) sweeps_on_session_end: bool,
     pub(crate) stopping: Arc<AtomicBool>,
@@ -667,9 +669,7 @@ pub(crate) async fn maintain_forever(context: Context, shared: Arc<crate::server
         std::future::pending::<()>().await;
         return;
     }
-    let mut ticks = tokio::time::interval(std::time::Duration::from_secs(
-        u64::from(context.policy.interval_minutes) * 60,
-    ));
+    let mut ticks = tokio::time::interval(context.prune_minute * context.policy.interval_minutes);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut after = CheckoutId(0);
     loop {

@@ -395,6 +395,7 @@ pub fn wiring_in(
         quota: None,
         cost: None,
         economy: std::collections::BTreeMap::new(),
+        target_prune_minute: cockpit_daemon::MINUTE,
     }
 }
 
