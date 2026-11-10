@@ -90,6 +90,14 @@ class ClassifyOutcomeTests(unittest.TestCase):
             "refused",
         )
 
+    def test_a_torlek_refusal_with_its_code_is_refused(self):
+        self.assertEqual(
+            redteam_harness.classify_outcome(
+                1, "torlek: refused [conflict]: a name is taken (nothing changed)"
+            ),
+            "refused",
+        )
+
     def test_the_live_owner_only_refusal_is_refused(self):
         # The exact line the real daemon returns for an owner-only verb on the agent socket.
         self.assertEqual(

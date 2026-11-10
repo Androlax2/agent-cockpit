@@ -75,7 +75,8 @@ code, a code this version does not know included (#1336).
 `torlek ask run` and `torlek ask guide` keep `ask-to-run`'s exit codes: the command's own
 once it ran, 125 declined or the guide closed, 124 still pending after
 `TORLEK_ASK_WAIT_SECONDS` (default 540; `--wait ID` waits on), 126 the daemon unreachable
-(with the fix), 3 stuck on a guide step, 1 any other refusal. `--no-wait` files the request
+(with the fix), 3 stuck on a guide step, 75 the daemon was busy (the request was not filed; a
+ran command's own 75 looks the same), 1 any other refusal. `--no-wait` files the request
 and exits 124 at once, so the agent goes on working and collects the answer with `--wait ID`.
 `approval show` lists the kinds of hidden characters escaped, the changed build files the
 command runs and the `timeout` hint; `approval list` folds a long command behind an explicit
