@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::accounts::LoginGrantView;
 use crate::agent::{AgentReport, SessionReport};
-use crate::approvals::{DecidedThroughView, GuideView, RunRequestView};
+use crate::approvals::{DecidedRunView, DecidedThroughView, GuideView, RunRequestView};
 use crate::bug_reports::{BugFiledView, BugKindView, BugReportView};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::coordination::{
@@ -337,6 +337,12 @@ pub enum Command {
     },
     /// Owner only: what agents ask now, in the order to answer it.
     ApprovalQueue,
+    /// Owner only: the run requests the owner decided, oldest decision first (#1252). `since`
+    /// keeps those decided at or after that time, in seconds since 1970.
+    ApprovalDecided {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<i64>,
+    },
     /// Owner only: one run request, whatever its state.
     ApprovalShow {
         request: i64,
@@ -383,6 +389,8 @@ pub enum Command {
     },
     /// Owner only: the network requests still asking, oldest first (#674).
     NetworkList,
+    /// Owner only: the network requests the owner decided, oldest decision first (#1252).
+    NetworkDecided,
     /// Owner only: let the request's destination through, for the rest of its session or,
     /// `always`, for its project through a revocable grant. `through` names the client.
     NetworkAllow {
@@ -1192,7 +1200,8 @@ pub enum Reply {
     Guide {
         guide: Box<GuideView>,
     },
-    /// Network requests still asking, oldest first (#674).
+    /// Network requests, oldest first (#674): the ones still asking for `NetworkList`, the
+    /// decided ones for `NetworkDecided`.
     NetworkRequests {
         requests: Vec<NetworkRequestView>,
     },
@@ -1240,6 +1249,10 @@ pub enum Reply {
     ApprovalQueue {
         runs: Vec<RunRequestView>,
         guides: Vec<GuideView>,
+    },
+    /// The run requests the owner decided, oldest decision first.
+    ApprovalDecided {
+        runs: Vec<DecidedRunView>,
     },
     /// The provider accepted the send or cancellation action.
     SessionAction {

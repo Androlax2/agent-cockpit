@@ -571,6 +571,26 @@ pub async fn asking_network_requests(
     Ok(requests)
 }
 
+/// Every request the owner decided, oldest decision first (#1252).
+pub async fn decided_network_requests(
+    connection: &Connection,
+) -> Result<Vec<NetworkRequest>, NetworkError> {
+    let mut rows = connection
+        .query(
+            &format!(
+                "SELECT {REQUEST_COLUMNS} FROM sandbox_network_requests
+                 WHERE decided_at IS NOT NULL ORDER BY decided_at, id"
+            ),
+            (),
+        )
+        .await?;
+    let mut requests = Vec::new();
+    while let Some(row) = rows.next().await? {
+        requests.push(request_from(&row)?);
+    }
+    Ok(requests)
+}
+
 pub async fn network_request(
     connection: &Connection,
     id: i64,

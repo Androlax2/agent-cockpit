@@ -31,8 +31,8 @@ pub use agent::{
     QuestionSource, SessionReport, TurnOutcome,
 };
 pub use approvals::{
-    DecidedThroughView, FoldedView, GuideStateView, GuideStepView, GuideView, HiddenView,
-    RunDecisionView, RunRequestView, RunResultView, RunStateView, ShownText,
+    DecidedRunView, DecidedThroughView, FoldedView, GuideStateView, GuideStepView, GuideView,
+    HiddenView, RunDecisionView, RunRequestView, RunResultView, RunStateView, ShownText,
 };
 pub use bug_reports::{
     BugBundleView, BugFiledView, BugIssueView, BugKindView, BugOriginView, BugReportView,

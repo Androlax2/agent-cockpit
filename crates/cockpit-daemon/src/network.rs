@@ -93,6 +93,13 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
                         .collect(),
                 })
             }
+            Command::NetworkDecided => {
+                let read = database.read().await?;
+                let requests = cockpit_sandbox::decided_network_requests(&read).await?;
+                Ok(Reply::NetworkRequests {
+                    requests: requests.iter().map(request_view).collect(),
+                })
+            }
             Command::NetworkAllow {
                 request,
                 always,

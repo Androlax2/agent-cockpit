@@ -1131,3 +1131,49 @@ async fn a_run_that_outlives_a_daemon_restart_is_reattached_until_it_ends() {
         "{ended:?}"
     );
 }
+
+#[tokio::test]
+async fn the_owner_lists_decided_requests_with_their_wait_and_exit_status_the_agent_cannot() {
+    let asking = started(true).await;
+    let ran = asking.ran("exit 3").await;
+    let declined = asking.asked("false").await;
+    asking.asked("echo still asking").await;
+    run(asking
+        .owner
+        .request(
+            Command::ApprovalDecline {
+                request: declined.id,
+                through: None,
+            },
+            GENEROUS,
+        )
+        .await);
+
+    let Ok(Reply::ApprovalDecided { runs }) = asking
+        .owner
+        .request(Command::ApprovalDecided { since: None }, GENEROUS)
+        .await
+    else {
+        panic!("the owner reads the decided list");
+    };
+    let from_agent = refused(
+        asking
+            .agent
+            .request(Command::ApprovalDecided { since: None }, GENEROUS)
+            .await,
+    );
+
+    let listed: Vec<(i64, RunStateView, Option<i32>)> = runs
+        .iter()
+        .map(|run| (run.id, run.state, run.exit_code))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (ran.id, RunStateView::Finished, Some(3)),
+            (declined.id, RunStateView::Declined, None),
+        ]
+    );
+    assert_eq!(runs[0].digest, ran.digest);
+    assert_eq!(from_agent.code, ErrorCode::NotAuthorized);
+}

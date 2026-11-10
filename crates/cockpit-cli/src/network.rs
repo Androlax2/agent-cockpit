@@ -17,6 +17,7 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Command, String> {
     let words = crate::ask::utf8(arguments)?;
     let command = match words.as_slice() {
         ["list"] => Command::NetworkList,
+        ["list", "--all"] => Command::NetworkDecided,
         ["allow", id] => allow(id, false)?,
         ["allow", id, "--always"] | ["allow", "--always", id] => allow(id, true)?,
         ["deny", id] => Command::NetworkDeny {
@@ -110,14 +111,21 @@ fn id_of(text: &str) -> Result<i64, String> {
 /// Sends `command` on the caller's socket and prints the answer: the owner's verbs, refused
 /// inside a session so that no agent decides its own request.
 pub(crate) fn run(command: Command) -> ExitCode {
+    let is_decided_list = command == Command::NetworkDecided;
     let socket = match crate::agent::caller_socket() {
         Ok(socket) => socket,
         Err(code) => return code,
     };
     match crate::agent::exchange(&socket, command) {
         Ok(Reply::NetworkRequests { requests }) => {
+            // Only the decided list carries a wait; an asking request has none yet.
+            let line = if is_decided_list {
+                decided_request_line
+            } else {
+                request_line
+            };
             for request in &requests {
-                outln!("{}", request_line(request));
+                outln!("{}", line(request));
                 out!("{}", reason_lines(request));
             }
             ExitCode::SUCCESS
@@ -151,6 +159,16 @@ pub(crate) fn request_line(request: &NetworkRequestView) -> String {
         request.project,
         request.target
     )
+}
+
+/// `network  id  state  session  project  host:port  waited`, tab-separated: the state is the
+/// owner's decision, and `waited` the seconds from the ask to it.
+fn decided_request_line(request: &NetworkRequestView) -> String {
+    let waited = request.decision.map_or_else(
+        || "-".to_owned(),
+        |decision| crate::approvals::seconds_between(request.asked_at, decision.at),
+    );
+    format!("{}\t{waited}", request_line(request))
 }
 
 /// The agent's reason for a service it asked for ahead, indented under its request's line

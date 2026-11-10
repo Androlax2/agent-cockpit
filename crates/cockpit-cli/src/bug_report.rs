@@ -253,7 +253,7 @@ fn text_and_flags<const N: usize>(
 
 /// `--since`'s value as Unix seconds: a time ago (`90s`, `30m`, `2h`, `1d`) or an RFC 3339
 /// time (`2026-11-03T09:30:00+01:00`).
-fn since_seconds(value: &str) -> Result<u64, String> {
+pub(crate) fn since_seconds(value: &str) -> Result<u64, String> {
     let invalid = || {
         format!(
             "--since {value}: give a time ago such as 30m, 2h or 1d, or an RFC 3339 time such as 2026-11-03T09:30:00Z"
@@ -280,9 +280,7 @@ fn since_seconds(value: &str) -> Result<u64, String> {
         }
     };
     if at > chrono::Utc::now() {
-        return Err(format!(
-            "--since {value} is in the future: the bundle would carry no logs"
-        ));
+        return Err(format!("--since {value} is in the future"));
     }
     u64::try_from(at.timestamp()).map_err(|_| invalid())
 }

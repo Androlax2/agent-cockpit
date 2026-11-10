@@ -394,6 +394,7 @@ impl Handler for Routes {
             },
             (
                 command @ (Command::ApprovalQueue
+                | Command::ApprovalDecided { .. }
                 | Command::ApprovalShow { .. }
                 | Command::ApprovalApprove { .. }
                 | Command::ApprovalDecline { .. }
@@ -432,6 +433,7 @@ impl Handler for Routes {
             },
             (
                 command @ (Command::NetworkList
+                | Command::NetworkDecided
                 | Command::NetworkAllow { .. }
                 | Command::NetworkDeny { .. }
                 | Command::NetworkGrants { .. }
