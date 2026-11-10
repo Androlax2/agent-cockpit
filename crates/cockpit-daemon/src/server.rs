@@ -4,13 +4,14 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 use cockpit_protocol::{
-    Capability, ErrorCode, HandshakeReply, MAX_FRAME_BYTES, ProtocolError, Refusal, RefusalReason,
-    Response, SUPPORTED_VERSIONS, ServerFrame, Welcome, decode_hello, decode_request_with_kind,
-    negotiate,
+    Capability, Command, ErrorCode, HandshakeReply, MAX_FRAME_BYTES, ProtocolError, Refusal,
+    RefusalReason, Response, SUPPORTED_VERSIONS, ServerFrame, Welcome, decode_hello,
+    decode_request_with_kind, negotiate,
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -106,6 +107,8 @@ impl Limits {
 
 /// What every connection shares.
 pub(crate) struct Shared {
+    /// Startup hooks may report and read their context before restore permits new work.
+    pub(crate) is_restoring: Arc<AtomicBool>,
     pub(crate) owner_uid: u32,
     pub(crate) limits: Limits,
     pub(crate) lanes: Lanes,
@@ -143,15 +146,22 @@ pub(crate) fn bind(path: &Path) -> Result<UnixListener, StartError> {
 }
 
 /// Accepts connections forever, at most `connections` open at once. Each connection runs in
-/// its own task, so a panic there ends that connection only.
+/// its own task, so a panic there ends that connection only. Dropping or restarting this
+/// accept loop also closes its connections (including feeds and inbox waiters); clients
+/// reconnect. Keeping them in the loop's task group prevents failed startup leaking them.
 pub(crate) async fn accept_connections(
     listener: Arc<UnixListener>,
     shared: Arc<Shared>,
     connections: Arc<Semaphore>,
     socket: Socket,
 ) {
+    let mut serving = tokio::task::JoinSet::new();
     loop {
-        let stream = match listener.accept().await {
+        let accepted = tokio::select! {
+            accepted = listener.accept() => accepted,
+            _ = serving.join_next(), if !serving.is_empty() => continue,
+        };
+        let stream = match accepted {
             Ok((stream, _)) => stream,
             Err(error) => {
                 tracing::warn!(%error, "accepting a connection failed; retrying");
@@ -170,7 +180,7 @@ pub(crate) async fn accept_connections(
             continue;
         }
         let shared = Arc::clone(&shared);
-        tokio::spawn(async move {
+        serving.spawn(async move {
             let peer = match socket {
                 Socket::HostOnly => Peer::Owner,
                 Socket::Agent => Peer::Agent {
@@ -181,6 +191,20 @@ pub(crate) async fn accept_connections(
             drop(connection_place);
         });
     }
+}
+
+/// Startup requests from the Claude, Codex and OpenCode hook bridges and `torlek mcp`.
+/// Keep this list aligned with those clients: a new hook request must work before restore
+/// returns, while commands that can change session lifecycles must wait.
+fn serves_during_restore(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::AgentReport { .. }
+            | Command::AgentBrief { .. }
+            | Command::AgentInbox { .. }
+            | Command::InstructionCatalog
+            | Command::InstructionsRead { .. }
+    )
 }
 
 /// Whether the kernel says the peer runs as the daemon's user; payloads never say who sent them.
@@ -243,7 +267,11 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
     // A started feed's batches go to the writer apart from answers, so a client that keeps
     // every answer place busy still gets them.
     let (feeds, started_feeds) = mpsc::channel(1);
-    let writer = tokio::spawn(write_frames(write_half, frames, started_feeds));
+    let mut writer = crate::supervisor::AbortOnDrop(tokio::spawn(write_frames(
+        write_half,
+        frames,
+        started_feeds,
+    )));
     // One feed per connection: held while a `subscribe` runs, kept once its feed started.
     let feed_place = Arc::new(Semaphore::new(1));
     loop {
@@ -277,6 +305,13 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
         };
         let id = request.id;
         let respond = move |outcome| ServerFrame::Response(Response { id, outcome });
+        if shared.is_restoring.load(Ordering::Acquire) && !serves_during_restore(&request.command) {
+            answer.send(respond(refusal(
+                ErrorCode::Busy,
+                "the daemon is restoring sessions; retry this command once startup finishes",
+            )));
+            continue;
+        }
         let (class, job, stream_start) =
             match shared
                 .handler
@@ -337,7 +372,7 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
     // answers before it stops.
     drop(feeds);
     drop(outgoing);
-    let _ = writer.await;
+    let _ = (&mut writer.0).await;
 }
 
 /// Reads the `hello` and answers it, granting what both sides offer of `offered`; `None`

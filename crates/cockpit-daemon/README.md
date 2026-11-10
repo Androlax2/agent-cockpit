@@ -58,12 +58,17 @@ not share code.
    None is repeated. `cockpit-messaging` then turns every delivery a stopped daemon left in
    flight into a retry under the same key, when its receiver deduplicates, or into
    `uncertain`; each is logged.
-6. Open the private tmux server, then restore the sessions (`cockpit-sessions`): each active
+6. Open the private tmux server and bind `agent/agent.sock` (0600, stale file
+   replaced). Serve agent reports, launch briefs, inbox polls and instructions while restoring
+   the sessions (`cockpit-sessions`): each active
    session whose agent is gone is reopened, each failure logged and left `failed`. A tmux
    that cannot be run or is too old is logged instead, and the sessions are left as they
    are. The sessions' periodic pass (exits, idle sleep, expiry) starts as a supervised worker.
-7. Only then bind `daemon.sock` and `agent/agent.sock` (0600, stale files replaced) and print
-   `ready <socket>`.
+7. Once restore succeeds, bind `daemon.sock` (0600, stale file replaced), accept owner
+   commands and other agent requests, start background dispatch and print `ready <socket>`.
+   During restore, other agent requests receive `busy` with a retry instruction; owner clients
+   cannot connect until restore finishes. A failed restore closes the early listener and its
+   connections.
 
 ## Two sockets (report 17)
 

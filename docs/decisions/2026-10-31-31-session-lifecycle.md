@@ -60,3 +60,16 @@ rules.
   - Wake on open, message, todo or phone; the callers arrive with them.
   - Configuring the idle window from the owner configuration.
   - Capturing a stuck agent's screen for diagnostics.
+
+## Revisited 2026-11-09 (#1278)
+
+Restore still reconciles active sessions before new lifecycle work. The daemon now binds
+and serves the agent socket first, admitting startup reports, briefs, inbox polls and
+instructions while restore runs. Previously, restored agents' first hooks reached no
+listener and never reported, leaving a false “has not reported” dialog that blocked messages.
+
+The owner socket is bound after restore succeeds; other agent commands receive `busy` until
+then. Report-triggered quota relaunches wait for the periodic pass after restore, avoiding a
+race with restore's session snapshot. Failed startup cancels the early agent listener and
+its connections. The restore entry-point tests cover first-hook reporting, quota deferral
+and listener cleanup (`crates/cockpit-daemon/tests/session_restore_crash.rs`).

@@ -47,7 +47,8 @@ where
     }
 }
 
-struct AbortOnDrop(JoinHandle<()>);
+/// Aborts a spawned task when its owning startup or worker is dropped.
+pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
