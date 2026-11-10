@@ -5,8 +5,9 @@ mod common;
 
 use cockpit_notify::{Event, Notice, Notifier};
 use cockpit_protocol::{
-    AgentExitView, AgentState, Command, DiskView, EntityKind, ExitStatusView, QuestionSource,
-    QuotaAlertView, SessionReport, SessionStateView, SessionView, TaskBudgetSpentView, TurnOutcome,
+    AgentExitView, AgentState, Command, DiskView, EntityKind, ExitStatusView, NetworkRequestView,
+    NetworkTargetView, QuestionSource, QuotaAlertView, SessionReport, SessionStateView,
+    SessionView, TaskBudgetSpentView, TurnOutcome,
 };
 use common::{
     after_snapshot, change_session, guide, loaded, network_request, report, run, session,
@@ -575,6 +576,24 @@ fn a_refused_network_host_is_a_hold_naming_the_host() {
 
     assert_eq!(events(&told), [Event::Hold]);
     assert_eq!(told[0].detail.as_deref(), Some("unknown.example.com:443"));
+}
+
+#[test]
+fn a_closed_service_is_a_hold_naming_its_record() {
+    let mut notifier = running();
+    let record = "service figcraft listen 127.0.0.1:3845 target 127.0.0.1:3845";
+    let service = NetworkRequestView {
+        asks: NetworkTargetView::Service {
+            service: "figcraft".to_owned(),
+        },
+        target: record.to_owned(),
+        ..network_request(5, WORKER)
+    };
+
+    let told = set_network(&mut notifier, vec![service]);
+
+    assert_eq!(events(&told), [Event::Hold]);
+    assert_eq!(told[0].detail.as_deref(), Some(record));
 }
 
 #[test]

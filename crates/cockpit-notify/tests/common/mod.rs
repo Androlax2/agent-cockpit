@@ -9,7 +9,7 @@ use cockpit_protocol::{
     AgentState, Change, ChangeBatch, ChangeEvent, CheckoutKindView, CheckoutView, Command,
     CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef, EntityRevision, FeedPosition,
     GuideStateView, GuideStepView, GuideView, NetworkRequestStateView, NetworkRequestView,
-    NetworkSubjectView, NetworkTargetKindView, Reply, RunRequestView, RunStateView, SessionReport,
+    NetworkSubjectView, NetworkTargetView, Reply, RunRequestView, RunStateView, SessionReport,
     SessionStateView, SessionView, ShownText, TrustView,
 };
 
@@ -208,9 +208,10 @@ pub fn network_request(id: i64, session: &str) -> NetworkRequestView {
             id: session.to_owned(),
         },
         project: "app".to_owned(),
-        kind: NetworkTargetKindView::Host,
-        host: "unknown.example.com".to_owned(),
-        port: 443,
+        asks: NetworkTargetView::Host {
+            host: "unknown.example.com".to_owned(),
+            port: 443,
+        },
         target: "unknown.example.com:443".to_owned(),
         state: NetworkRequestStateView::Asking,
         asked_at: 1_000,

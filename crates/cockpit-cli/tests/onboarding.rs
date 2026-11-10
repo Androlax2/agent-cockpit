@@ -11,8 +11,8 @@ mod scripted;
 
 use cockpit_protocol::{
     Command, DecidedThroughView, ErrorCode, LaunchKindView, LaunchView, NetworkDecisionView,
-    NetworkGrantView, Outcome, ProjectView, ProtocolError, ReadinessStatusView, Reply,
-    RequirementView, SessionStateView, SessionView,
+    NetworkGrantView, NetworkTargetView, Outcome, ProjectView, ProtocolError, ReadinessStatusView,
+    Reply, RequirementView, SessionStateView, SessionView,
 };
 use scripted::{scripted_conversation, text};
 
@@ -163,8 +163,10 @@ impl Daemon {
         self.grants.push(NetworkGrantView {
             id: 1,
             project: "app".to_owned(),
-            host: "github.com".to_owned(),
-            port: 443,
+            allows: NetworkTargetView::Host {
+                host: "github.com".to_owned(),
+                port: 443,
+            },
             target: "github.com:443".to_owned(),
             request: None,
             granted: NetworkDecisionView {

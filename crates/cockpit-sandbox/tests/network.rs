@@ -3,8 +3,10 @@
 use cockpit_sandbox::{
     AllowEntry, AllowSource, AskedDestination, AskingDestination, DeniedDestination,
     EgressDecisions, GITHUB_HOST, MIGRATIONS, NETWORK_ALLOW_GRACE_SECONDS, NetworkError,
-    NetworkGrant, NetworkRefusal, NetworkRequestState, OwnerClient, OwnerDecision, Subject, Target,
+    NetworkGrant, NetworkRefusal, NetworkRequestState, NetworkTarget, OwnerClient, OwnerDecision,
+    Subject, Target,
 };
+use cockpit_sandbox::{AllowedService, AskedService, DecidedService, Endpoint, Forward};
 use cockpit_turso::Database;
 
 const ASKED_AT: i64 = 1_000;
@@ -328,7 +330,13 @@ async fn a_github_grant_without_a_request_allows_the_projects_sessions_only() {
     let granted = store.grant_github("app").await.unwrap();
 
     assert_eq!(granted.project, "app");
-    assert_eq!((granted.host.as_str(), granted.port), (GITHUB_HOST, 443));
+    assert_eq!(
+        granted.target,
+        NetworkTarget::Host {
+            host: GITHUB_HOST.to_owned(),
+            port: 443
+        }
+    );
     assert_eq!(granted.request, None);
     assert_eq!(
         granted.granted,
@@ -396,35 +404,276 @@ async fn a_revoked_github_grant_can_be_granted_again() {
     assert_eq!(active, vec![again]);
 }
 
+/// A database at the first `versions` of the sandbox migrations, holding a host request of
+/// `s1` in `app` its owner allowed always: request 1, grant 1, as those versions wrote them.
+async fn allowed_always_before(path: &std::path::Path, versions: usize) {
+    let earlier = cockpit_turso::MigrationSet {
+        owner: MIGRATIONS.owner,
+        migrations: &MIGRATIONS.migrations[..versions],
+    };
+    let database = Database::open(path, &[earlier]).await.unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO sandbox_network_grants
+                (id, project, host, port, request, granted_at, granted_through)
+             VALUES (1, 'app', 'unknown.example.com', 443, 1, ?1, 'cli')",
+            [DECIDED_AT],
+        )
+        .await
+        .unwrap();
+    write
+        .execute(
+            "INSERT INTO sandbox_network_requests
+                (id, subject_kind, subject, project, host, port, state, asked_at, decided_at,
+                 decided_through, grant_id)
+             VALUES (1, 'session', 's1', 'app', 'unknown.example.com', 443, 'allowed-always',
+                ?1, ?2, 'cli', 1)",
+            [ASKED_AT, DECIDED_AT],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+}
+
 /// #1256: the migration that lets a grant have no request keeps the grants made before it,
 /// each still naming its request.
 #[tokio::test(flavor = "multi_thread")]
 async fn grants_made_before_direct_grants_keep_their_request() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
-    let before_direct_grants = cockpit_turso::MigrationSet {
-        owner: MIGRATIONS.owner,
-        migrations: &MIGRATIONS.migrations[..3],
-    };
-    let database = Database::open(&path, &[before_direct_grants])
-        .await
-        .unwrap();
-    let old = Store {
-        _dir: tempfile::tempdir().unwrap(),
-        database,
-    };
-    let request = old.file("s1", "app").await.unwrap();
-    old.allow(request, true, DECIDED_AT).await.unwrap();
-    drop(old);
+    allowed_always_before(&path, 3).await;
 
     let database = Database::open(&path, &[MIGRATIONS]).await.unwrap();
 
     let read = database.read().await.unwrap();
     let grants = cockpit_sandbox::network_grants(&read, None).await.unwrap();
     assert_eq!(grants.len(), 1);
-    assert_eq!(grants[0].request, Some(request));
-    let decided = cockpit_sandbox::network_request(&read, request)
+    assert_eq!(grants[0].request, Some(1));
+    let decided = cockpit_sandbox::network_request(&read, 1).await.unwrap();
+    assert_eq!(decided.grant, Some(grants[0].id));
+}
+
+/// #880: the migration that adds service targets keeps every earlier request and grant as a
+/// host, still allowing its sessions.
+#[tokio::test(flavor = "multi_thread")]
+async fn requests_and_grants_made_before_services_stay_hosts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    allowed_always_before(&path, 4).await;
+
+    let database = Database::open(&path, &[MIGRATIONS]).await.unwrap();
+
+    let read = database.read().await.unwrap();
+    let host = NetworkTarget::Host {
+        host: "unknown.example.com".to_owned(),
+        port: 443,
+    };
+    let grants = cockpit_sandbox::network_grants(&read, None).await.unwrap();
+    assert_eq!(grants[0].target, host);
+    let decided = cockpit_sandbox::network_request(&read, 1).await.unwrap();
+    assert_eq!(decided.target, host);
+    let decisions = cockpit_sandbox::egress_decisions(&read, "app", &session("s1"))
         .await
         .unwrap();
-    assert_eq!(decided.grant, Some(grants[0].id));
+    assert_eq!(
+        decisions.allowed,
+        [entry(AllowSource::Grant {
+            grant: "1".to_owned()
+        })]
+    );
+}
+
+/// The `figcraft` service, served at port 3845 in the sandbox, relayed to `target`.
+fn figcraft_to(target: Endpoint) -> Forward {
+    Forward {
+        service: "figcraft".to_owned(),
+        listen: Endpoint::Port { port: 3845 },
+        target,
+    }
+}
+
+fn figcraft_port() -> Forward {
+    figcraft_to(Endpoint::Port { port: 3845 })
+}
+
+impl Store {
+    async fn file_service(
+        &self,
+        subject: &str,
+        project: &str,
+        asked: &AskedService,
+    ) -> Option<i64> {
+        let write = self.database.write().await.unwrap();
+        let filed = cockpit_sandbox::file_service_request(
+            &write,
+            &session(subject),
+            project,
+            asked,
+            ASKED_AT,
+        )
+        .await
+        .unwrap();
+        write.commit().await.unwrap();
+        filed.map(|request| request.id)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_service_is_filed_once_and_waits_on_the_owner_by_its_number() {
+    let store = store().await;
+    let asked = AskedService::of(&figcraft_port());
+
+    let first = store.file_service("s1", "app", &asked).await.unwrap();
+    let again = store.file_service("s1", "app", &asked).await;
+
+    assert_eq!(again, None);
+    let decisions = store.decisions("s1", "app").await;
+    assert_eq!(
+        decisions.services.asking,
+        [DecidedService {
+            service: asked.service,
+            record: asked.record,
+            request: first,
+        }]
+    );
+    assert!(decisions.services.allowed.is_empty());
+    assert!(decisions.asking.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_and_a_service_of_one_session_are_two_requests() {
+    let store = store().await;
+
+    let host = store.file("s1", "app").await.unwrap();
+    let service = store
+        .file_service("s1", "app", &AskedService::of(&figcraft_port()))
+        .await
+        .unwrap();
+
+    assert_ne!(host, service);
+    let read = store.database.read().await.unwrap();
+    let asking = cockpit_sandbox::asking_network_requests(&read)
+        .await
+        .unwrap();
+    let targets: Vec<NetworkTarget> = asking.into_iter().map(|request| request.target).collect();
+    assert_eq!(
+        targets,
+        [
+            NetworkTarget::Host {
+                host: "unknown.example.com".to_owned(),
+                port: 443
+            },
+            NetworkTarget::Service {
+                service: "figcraft".to_owned(),
+                record: AskedService::of(&figcraft_port()).record
+            }
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_always_grants_the_projects_sessions_that_one_service_record() {
+    let store = store().await;
+    let asked = AskedService::of(&figcraft_port());
+    let request = store.file_service("s1", "app", &asked).await.unwrap();
+
+    store.allow(request, true, DECIDED_AT).await.unwrap();
+
+    let read = store.database.read().await.unwrap();
+    let grant = cockpit_sandbox::network_grants(&read, None).await.unwrap()[0].id;
+    drop(read);
+    let allowed = AllowedService {
+        service: asked.service.clone(),
+        record: asked.record.clone(),
+        source: AllowSource::Grant {
+            grant: grant.to_string(),
+        },
+    };
+    assert_eq!(
+        store.decisions("s2", "app").await.services.allowed,
+        [allowed]
+    );
+    assert!(
+        store
+            .decisions("s3", "other")
+            .await
+            .services
+            .allowed
+            .is_empty()
+    );
+    assert!(store.decisions("s2", "app").await.allowed.is_empty());
+    assert_eq!(store.file_service("s2", "app", &asked).await, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_target_is_another_record_the_grant_does_not_cover() {
+    let store = store().await;
+    let request = store
+        .file_service("s1", "app", &AskedService::of(&figcraft_port()))
+        .await
+        .unwrap();
+    store.allow(request, true, DECIDED_AT).await.unwrap();
+
+    let changed = figcraft_to(Endpoint::Socket {
+        path: "/run/figcraft.sock".into(),
+    });
+    let asked = store
+        .file_service("s2", "app", &AskedService::of(&changed))
+        .await;
+
+    assert!(asked.is_some());
+    let decisions = store.decisions("s2", "app").await;
+    assert_eq!(decisions.services.allowing(&changed), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_once_and_deny_of_a_service_reach_only_the_asking_session() {
+    let store = store().await;
+    let allowed = store
+        .file_service("s1", "app", &AskedService::of(&figcraft_port()))
+        .await
+        .unwrap();
+    let denied = store
+        .file_service("s2", "app", &AskedService::of(&figcraft_port()))
+        .await
+        .unwrap();
+
+    store.allow(allowed, false, DECIDED_AT).await.unwrap();
+    store.deny(denied).await;
+
+    let forward = figcraft_port();
+    let first = store.decisions("s1", "app").await.services;
+    let second = store.decisions("s2", "app").await.services;
+    assert!(first.allowing(&forward).is_some());
+    assert_eq!(second.allowing(&forward), None);
+    assert_eq!(second.denial(&forward), Some(denied));
+    assert!(store.decisions("s3", "app").await.services == Default::default());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_service_grant_allows_nothing_and_the_record_is_asked_about_again() {
+    let store = store().await;
+    let asked = AskedService::of(&figcraft_port());
+    let request = store.file_service("s1", "app", &asked).await.unwrap();
+    store.allow(request, true, DECIDED_AT).await.unwrap();
+    let read = store.database.read().await.unwrap();
+    let grant = cockpit_sandbox::network_grants(&read, None).await.unwrap()[0].id;
+    drop(read);
+
+    let write = store.database.write().await.unwrap();
+    cockpit_sandbox::revoke_network_grant(&write, grant, None, DECIDED_AT)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert!(
+        store
+            .decisions("s1", "app")
+            .await
+            .services
+            .allowed
+            .is_empty()
+    );
+    assert!(store.file_service("s2", "app", &asked).await.is_some());
 }

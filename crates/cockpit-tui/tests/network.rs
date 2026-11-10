@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
     Command, DecidedThroughView, NetworkRequestStateView, NetworkRequestView, NetworkSubjectView,
-    NetworkTargetKindView, Reply,
+    NetworkTargetView, Reply,
 };
 use cockpit_tui::{App, INPUT_GRACE, Key};
 use common::{answer, app_with, screen_text, session};
@@ -21,9 +21,10 @@ fn asking(id: i64) -> NetworkRequestView {
             id: SESSION.to_owned(),
         },
         project: "app".to_owned(),
-        kind: NetworkTargetKindView::Host,
-        host: "unknown.example.com".to_owned(),
-        port: 443,
+        asks: NetworkTargetView::Host {
+            host: "unknown.example.com".to_owned(),
+            port: 443,
+        },
         target: "unknown.example.com:443".to_owned(),
         state: NetworkRequestStateView::Asking,
         asked_at: 1_000,
@@ -32,14 +33,29 @@ fn asking(id: i64) -> NetworkRequestView {
     }
 }
 
+/// Request `id` for the session's declared `figcraft` service (#880).
+fn asking_service(id: i64) -> NetworkRequestView {
+    NetworkRequestView {
+        asks: NetworkTargetView::Service {
+            service: "figcraft".to_owned(),
+        },
+        target: "service figcraft listen 127.0.0.1:3845 target 127.0.0.1:3845".to_owned(),
+        ..asking(id)
+    }
+}
+
 /// A network request shown, and tmux's keys for the column there at once.
 fn app_asked(now: Instant) -> App {
+    app_asked_for(asking(7), now)
+}
+
+fn app_asked_for(request: NetworkRequestView, now: Instant) -> App {
     let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
     let listed = answer(
         &mut app,
         Command::NetworkList,
         Reply::NetworkRequests {
-            requests: vec![asking(7)],
+            requests: vec![request],
         },
         now,
     );
@@ -145,4 +161,41 @@ fn a_session_with_an_asking_network_request_needs_the_owner() {
     let app = app_asked(now);
 
     assert!(app.board().needs_you(SESSION));
+}
+
+#[test]
+fn the_pane_names_a_closed_service_by_its_record() {
+    let now = Instant::now();
+    let app = app_asked_for(asking_service(8), now);
+
+    let screen = screen_text(&app, after_grace(now));
+
+    for expected in [
+        "Network request 8 from s00000000000a (project app)",
+        "Service: service figcraft listen 127.0.0.1:3845",
+        "y allow once   a allow always   x deny",
+    ] {
+        assert!(screen.contains(expected), "{expected:?} not in:\n{screen}");
+    }
+    assert!(
+        !screen.contains("Host: "),
+        "a service is shown as a host:\n{screen}"
+    );
+}
+
+#[test]
+fn a_after_the_grace_allows_the_service_always() {
+    let now = Instant::now();
+    let mut app = app_asked_for(asking_service(8), now);
+
+    let allowed = app.key(Key::Char('a'), after_grace(now));
+
+    assert_eq!(
+        allowed.send,
+        [Command::NetworkAllow {
+            request: 8,
+            always: true,
+            through: Some(DecidedThroughView::Tui),
+        }]
+    );
 }

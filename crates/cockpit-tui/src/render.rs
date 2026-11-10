@@ -5,8 +5,8 @@
 use std::time::Instant;
 
 use cockpit_protocol::{
-    CompactionStatus, GuideView, HiddenView, NetworkRequestView, RunRequestView, SessionReport,
-    SessionStateView, SessionView, ShownText,
+    CompactionStatus, GuideView, HiddenView, NetworkRequestView, NetworkTargetView, RunRequestView,
+    SessionReport, SessionStateView, SessionView, ShownText,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -631,8 +631,18 @@ pub(crate) fn pane_keys(pane: &Pane) -> &'static str {
 }
 
 /// A network request's lines (#674): "allow once" lasts the rest of the asking session,
-/// "allow always" is a grant to the project the owner can revoke.
+/// "allow always" is a grant to the project the owner can revoke. A service's request names
+/// its whole record (#880): what the grant is bound to.
 pub(crate) fn network_lines(request: &NetworkRequestView) -> Vec<String> {
+    let asked = match &request.asks {
+        NetworkTargetView::Host { .. } => {
+            format!("Host: {}  [refused: no entry allows it]", request.target)
+        }
+        NetworkTargetView::Service { .. } => format!(
+            "Service: {}  [closed: no grant allows it; the service sees a local client]",
+            request.target
+        ),
+    };
     vec![
         format!(
             "Network request {} from {} (project {})",
@@ -640,7 +650,7 @@ pub(crate) fn network_lines(request: &NetworkRequestView) -> Vec<String> {
             crate::board::network_session(request),
             request.project
         ),
-        format!("Host: {}  [refused: no entry allows it]", request.target),
+        asked,
         "Allow once: for the rest of this session. Allow always: every session of the \
          project, until `torlek network revoke`."
             .to_owned(),

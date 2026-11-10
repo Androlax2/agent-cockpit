@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use cockpit_protocol::{
     Command, DecidedThroughView, NetworkDecisionView, NetworkGrantView, NetworkRequestStateView,
-    NetworkRequestView, NetworkSubjectView, Reply,
+    NetworkRequestView, NetworkSubjectView, NetworkTargetView, Reply,
 };
 
 /// The command a `network` verb sends, or the usage problem that stops it.
@@ -73,10 +73,11 @@ pub(crate) fn github_grant_command(project: &str) -> Command {
 /// Whether `project` holds an active github.com grant among `grants`.
 pub(crate) fn holds_github_grant(grants: &[NetworkGrantView], project: &str) -> bool {
     grants.iter().any(|grant| {
-        grant.project == project
-            && grant.host == GITHUB_HOST
-            && grant.port == GITHUB_PORT
-            && grant.revoked.is_none()
+        let is_github = matches!(
+            &grant.allows,
+            NetworkTargetView::Host { host, port } if host == GITHUB_HOST && *port == GITHUB_PORT
+        );
+        grant.project == project && is_github && grant.revoked.is_none()
     })
 }
 
@@ -151,7 +152,7 @@ pub(crate) fn request_line(request: &NetworkRequestView) -> String {
     )
 }
 
-/// `grant  id  project  host:port  request N`, tab-separated; `granted directly` in place of
+/// `grant  id  project  host:port|record  request N`, tab-separated; `granted directly` in place of
 /// the request for a grant made without one.
 fn grant_line(grant: &NetworkGrantView) -> String {
     format!(
@@ -187,6 +188,9 @@ fn request_detail(request: &NetworkRequestView) -> String {
     };
     if let (Some(verdict), Some(decision)) = (verdict, request.decision) {
         text.push_str(&format!("decided: {}\n", decided(verdict, decision)));
+    }
+    if matches!(request.asks, NetworkTargetView::Service { .. }) {
+        text.push_str("the service sees a local client: the host's own, not the network\n");
     }
     if let Some(grant) = request.grant {
         text.push_str(&format!(

@@ -3316,3 +3316,313 @@ async fn a_restart_after_turning_the_sandbox_on_is_refused_and_keeps_the_agent()
     );
     assert!(is_alive(agent.pid), "the agent kept running");
 }
+
+/// #880: where the agent connects to the declared service, inside the sandbox.
+const SERVICE_LISTEN: u16 = 4100;
+
+/// A host service on a loopback port that answers each connection with `pong` and keeps it
+/// open: what a declared service's forward relays to once the owner allowed it. Only the
+/// relay closes a connection the agent holds.
+async fn host_service() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut connection, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let _ = connection.write_all(b"pong\n").await;
+                tokio::time::sleep(Duration::from_secs(120)).await;
+            });
+        }
+    });
+    port
+}
+
+/// The project file declaring the `echo` service, relayed to the host's `target` port.
+fn services_file(target: u16) -> String {
+    format!(
+        "[[services]]\nname = \"echo\"\nlisten = \"127.0.0.1:{SERVICE_LISTEN}\"\n\
+         target = \"127.0.0.1:{target}\"\n"
+    )
+}
+
+fn echo_record(target: u16) -> String {
+    format!("service echo listen 127.0.0.1:{SERVICE_LISTEN} target 127.0.0.1:{target}")
+}
+
+/// A sandboxed agent whose project declares the `echo` service relayed to `target`.
+async fn agent_declaring_echo(home: &Home, target: u16) -> Sandboxed {
+    sandboxed_agent(home, |home| {
+        let config = commanded_checkout(home).join(cockpit_config::PROJECT_CONFIG_FILE);
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(config, services_file(target)).unwrap();
+    })
+    .await
+}
+
+/// What a connection to the service inside the sandbox read first: `pong` once relayed,
+/// nothing when the launcher closed it.
+fn service_line() -> String {
+    format!(
+        "bash -c 'exec 3<>/dev/tcp/127.0.0.1/{SERVICE_LISTEN} && read -r -t 5 line <&3; \
+         echo \"read=$line;\"'"
+    )
+}
+
+fn is_relayed(printed: &str) -> bool {
+    printed.contains("read=pong")
+}
+
+/// The agent's connection to the service once `is_done` accepts what it read: a decision
+/// reaches the launcher within its poll.
+async fn service_until(home: &Home, root: &Path, is_done: impl Fn(&str) -> bool) -> String {
+    let deadline = std::time::Instant::now() + GENEROUS;
+    loop {
+        let printed = run_in_agent(home, root, &service_line()).await;
+        if is_done(&printed) || std::time::Instant::now() > deadline {
+            return printed;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Connects to the service once and waits until the owner's list shows its request, then
+/// out of the grace in which an allow is refused (#156).
+async fn service_asked_and_listed(home: &Home, agent: &Sandboxed, target: u16) {
+    let printed = run_in_agent(home, &agent.root, &service_line()).await;
+    assert!(!is_relayed(&printed), "{printed}");
+    let asking = asking_line_for(&agent.session, &echo_record(target));
+    let listed = network_list_once_it_contains(home, &asking).await;
+    assert!(listed.contains(&asking), "{listed}");
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+}
+
+/// #880: a declared service only asks. Its connection is closed, the owner's list shows
+/// the whole record, the project file made no grant, and the evidence names the forward.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_declared_service_is_closed_and_asked_of_the_owner_by_its_record() {
+    let home = Home::new();
+    let target = host_service().await;
+    let agent = agent_declaring_echo(&home, target).await;
+
+    service_asked_and_listed(&home, &agent, target).await;
+
+    assert_eq!(owner_network(&home, &["grants"]).await, "");
+    let evidence = session_sandbox(&home, &agent.session).await;
+    assert!(
+        evidence.contains(&format!("host-service forward: {}", echo_record(target))),
+        "{evidence}"
+    );
+}
+
+/// #880: "allow once" relays the session's next connection to the host's service.
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_once_relays_the_next_connection_to_the_hosts_service() {
+    let home = Home::new();
+    let target = host_service().await;
+    let agent = agent_declaring_echo(&home, target).await;
+    service_asked_and_listed(&home, &agent, target).await;
+
+    let allowed = owner_network(&home, &["allow", "1"]).await;
+    let printed = service_until(&home, &agent.root, is_relayed).await;
+
+    assert!(is_relayed(&printed), "{printed}");
+    assert!(
+        allowed.contains(&format!(
+            "network request 1: {} for session {}",
+            echo_record(target),
+            agent.session
+        )),
+        "{allowed}"
+    );
+    assert!(
+        allowed.contains("the service sees a local client"),
+        "{allowed}"
+    );
+    assert_eq!(owner_network(&home, &["list"]).await, "");
+}
+
+/// #880: a project grant of the record relays the service until the owner revokes it; the
+/// revocation closes the relay the agent holds open, and the next connection is closed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_service_grant_closes_the_open_relay_and_the_next_connection() {
+    let home = Home::new();
+    let target = host_service().await;
+    let agent = agent_declaring_echo(&home, target).await;
+    service_asked_and_listed(&home, &agent, target).await;
+    owner_network(&home, &["allow", "1", "--always"]).await;
+    let relayed = service_until(&home, &agent.root, is_relayed).await;
+    assert!(is_relayed(&relayed), "{relayed}");
+    let grants = owner_network(&home, &["grants"]).await;
+    assert!(
+        grants.contains(&format!(
+            "grant\t1\t{COMMANDED_PROJECT}\t{}\trequest 1",
+            echo_record(target)
+        )),
+        "{grants}"
+    );
+
+    let held = home.command_agent(
+        &agent.root,
+        &format!(
+            "bash -c 'exec 3<>/dev/tcp/127.0.0.1/{SERVICE_LISTEN} && read -r -t 5 line <&3 && \
+             echo $line > relay-open && timeout 60 cat <&3; echo \"closed=$?\"'"
+        ),
+    );
+    let deadline = std::time::Instant::now() + GENEROUS;
+    while !agent.root.join("relay-open").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the relay never opened"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    owner_network(&home, &["revoke", "1"]).await;
+    let open_relay = home.agent_output(&agent.root, held).await;
+    let next = service_until(&home, &agent.root, |printed| !is_relayed(printed)).await;
+
+    assert!(open_relay.contains("closed=0"), "{open_relay}");
+    assert!(!is_relayed(&next), "{next}");
+}
+
+/// #880, #71's audit M2: a project's grant reaches only its own sessions. Another project
+/// declaring the same service is closed and asked of the owner for itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn another_projects_session_does_not_reach_a_granted_service() {
+    let home = Home::new();
+    let target = host_service().await;
+    let agent = agent_declaring_echo(&home, target).await;
+    service_asked_and_listed(&home, &agent, target).await;
+    owner_network(&home, &["allow", "1", "--always"]).await;
+    let relayed = service_until(&home, &agent.root, is_relayed).await;
+    assert!(is_relayed(&relayed), "{relayed}");
+    let other_checkout = home.path().join("projects/other").join(COMMANDED_PROJECT);
+    let config = other_checkout.join(cockpit_config::PROJECT_CONFIG_FILE);
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(config, services_file(target)).unwrap();
+    let client = home.connect().await;
+    let (other_root, other) = home
+        .project_at(
+            &client,
+            &format!("other/{COMMANDED_PROJECT}"),
+            Some("other"),
+        )
+        .await;
+    let other_session = new_session(&client, &other_root).await;
+
+    let printed = run_in_agent(&home, &other_root, &service_line()).await;
+
+    assert!(!is_relayed(&printed), "{printed}");
+    let asking = format!(
+        "network\t2\tasking\t{}\t{other}\t{}",
+        other_session.id,
+        echo_record(target)
+    );
+    let listed = network_list_once_it_contains(&home, &asking).await;
+    assert!(listed.contains(&asking), "{listed}");
+}
+
+/// #880: a service whose target is a host Unix socket answers at its `listen` path, in a
+/// folder the session cannot write.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_socket_service_answers_at_its_listen_path_once_allowed() {
+    let home = Home::new();
+    let target = home.path().join("host-echo.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&target).unwrap();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for mut stream in listener.incoming().flatten() {
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+        }
+    });
+    let record = format!(
+        "service echo listen unix:/run/echo/echo.sock target unix:{}",
+        target.display()
+    );
+    let agent = sandboxed_agent(&home, |home| {
+        let config = commanded_checkout(home).join(cockpit_config::PROJECT_CONFIG_FILE);
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(
+            config,
+            format!(
+                "[[services]]\nname = \"echo\"\nlisten = \"unix:/run/echo/echo.sock\"\n\
+                 target = \"unix:{}\"\n",
+                target.display()
+            ),
+        )
+        .unwrap();
+    })
+    .await;
+    let curl = "curl --silent --noproxy '*' --max-time 5 --unix-socket /run/echo/echo.sock \
+                http://echo/; echo \";\"";
+    run_in_agent(&home, &agent.root, curl).await;
+    let asking = asking_line_for(&agent.session, &record);
+    let listed = network_list_once_it_contains(&home, &asking).await;
+    assert!(listed.contains(&asking), "{listed}");
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+
+    owner_network(&home, &["allow", "1"]).await;
+    let deadline = std::time::Instant::now() + GENEROUS;
+    let answered = loop {
+        let printed = run_in_agent(&home, &agent.root, curl).await;
+        if printed.starts_with("hello;") || std::time::Instant::now() > deadline {
+            break printed;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let replaced = run_in_agent(
+        &home,
+        &agent.root,
+        "rm -f /run/echo/echo.sock 2>/dev/null; echo rm=$?; touch /run/echo/other 2>/dev/null; \
+         echo touch=$?",
+    )
+    .await;
+
+    assert!(answered.starts_with("hello;"), "{answered}");
+    assert_eq!(replaced, "rm=1\ntouch=1\nexit=0\n");
+}
+
+/// #880: the grant is bound to the whole record. A target edited in the project file is
+/// another record: the project's next session is closed and the owner is asked again.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edited_target_is_asked_about_again_at_the_next_launch() {
+    let home = Home::new();
+    let target = host_service().await;
+    let agent = agent_declaring_echo(&home, target).await;
+    service_asked_and_listed(&home, &agent, target).await;
+    owner_network(&home, &["allow", "1", "--always"]).await;
+    let relayed = service_until(&home, &agent.root, is_relayed).await;
+    assert!(is_relayed(&relayed), "{relayed}");
+
+    let edited = host_service().await;
+    let client = home.connect().await;
+    let ended = client
+        .request(
+            Command::SessionEnd {
+                session: agent.session.clone(),
+            },
+            GENEROUS,
+        )
+        .await;
+    assert!(ended.is_ok(), "{ended:?}");
+    std::fs::remove_dir_all(agent.root.join(".agent")).unwrap();
+    std::fs::write(
+        agent.root.join(cockpit_config::PROJECT_CONFIG_FILE),
+        services_file(edited),
+    )
+    .unwrap();
+    let next = new_session(&client, &agent.root).await;
+    let printed = run_in_agent(&home, &agent.root, &service_line()).await;
+
+    assert!(!is_relayed(&printed), "{printed}");
+    let asking = format!(
+        "network\t2\tasking\t{}\t{COMMANDED_PROJECT}\t{}",
+        next.id,
+        echo_record(edited)
+    );
+    let listed = network_list_once_it_contains(&home, &asking).await;
+    assert!(listed.contains(&asking), "{listed}");
+}

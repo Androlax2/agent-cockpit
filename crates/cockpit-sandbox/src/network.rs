@@ -1,12 +1,14 @@
 //! Network requests and the owner's decisions on them (#674): a destination the session
-//! proxy refused for want of an entry becomes a request the owner allows for the rest of
-//! the session, allows always for the project (a revocable grant, #546 D4), or denies. Each
+//! proxy refused for want of an entry, or a declared service whose forward the launcher
+//! closed for want of a decision (#880), becomes a request the owner allows for the rest of
+//! the session, allows always for the project (a revocable grant, #546 D4), or denies. A
+//! service's request and grant name its whole record, so a changed declaration asks again. Each
 //! decision records when and through which owner client; only the owner decides, so who is
 //! the owner. Nothing here adds an entry without a decision: filing a request only asks.
 //!
 //! The caller owns the transaction and authorization; these functions keep the rules of
-//! the rows: one undecided or standing decision per subject and destination, one active
-//! grant per project and destination, rows never deleted.
+//! the rows: one undecided or standing decision per subject and target, one active grant per
+//! project and target, rows never deleted.
 
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row, Value};
@@ -15,6 +17,7 @@ use crate::egress::{
     AllowEntry, AllowSource, AskedDestination, AskingDestination, DeniedDestination,
     EgressDecisions, Target,
 };
+use crate::forwards::{AllowedService, AskedService, DecidedService};
 use crate::spec::Subject;
 
 /// The owner may not allow a request within this many seconds of it appearing: the
@@ -80,6 +83,119 @@ pub(crate) const DIRECT_GRANTS_MIGRATION_SQL: &str = "CREATE TABLE sandbox_netwo
     ALTER TABLE sandbox_network_grants_direct RENAME TO sandbox_network_grants;
     CREATE UNIQUE INDEX sandbox_network_grants_one_active
         ON sandbox_network_grants (project, host, port) WHERE revoked_at IS NULL;";
+
+/// The `sandbox` migration set's version 5 (#880): a request and a grant name a host and port
+/// or, by `kind`, a declared service's name and whole record; the ids stay one sequence, so
+/// the owner's verbs name either kind.
+pub(crate) const SERVICES_MIGRATION_SQL: &str = "CREATE TABLE sandbox_network_grants_kinds (
+        id INTEGER PRIMARY KEY,
+        project TEXT NOT NULL CHECK (project <> ''),
+        kind TEXT NOT NULL CHECK (kind IN ('host', 'service')),
+        host TEXT CHECK (host <> ''),
+        port INTEGER CHECK (port BETWEEN 1 AND 65535),
+        service TEXT CHECK (service <> ''),
+        record TEXT CHECK (record <> ''),
+        request INTEGER,
+        granted_at INTEGER NOT NULL,
+        granted_through TEXT CHECK (granted_through IN ('tui', 'cli')),
+        revoked_at INTEGER,
+        revoked_through TEXT CHECK (revoked_through IN ('tui', 'cli')),
+        CHECK (revoked_at IS NOT NULL OR revoked_through IS NULL),
+        CHECK ((kind = 'host') = (host IS NOT NULL)),
+        CHECK ((kind = 'host') = (port IS NOT NULL)),
+        CHECK ((kind = 'service') = (service IS NOT NULL)),
+        CHECK ((kind = 'service') = (record IS NOT NULL))
+    );
+    INSERT INTO sandbox_network_grants_kinds (id, project, kind, host, port, request,
+            granted_at, granted_through, revoked_at, revoked_through)
+        SELECT id, project, 'host', host, port, request, granted_at, granted_through,
+            revoked_at, revoked_through
+        FROM sandbox_network_grants;
+    DROP TABLE sandbox_network_grants;
+    ALTER TABLE sandbox_network_grants_kinds RENAME TO sandbox_network_grants;
+    CREATE UNIQUE INDEX sandbox_network_grants_one_active
+        ON sandbox_network_grants (project, host, port)
+        WHERE kind = 'host' AND revoked_at IS NULL;
+    CREATE UNIQUE INDEX sandbox_network_grants_one_active_service
+        ON sandbox_network_grants (project, service, record)
+        WHERE kind = 'service' AND revoked_at IS NULL;
+    CREATE TABLE sandbox_network_requests_kinds (
+        id INTEGER PRIMARY KEY,
+        subject_kind TEXT NOT NULL CHECK (subject_kind IN ('session')),
+        subject TEXT NOT NULL CHECK (subject <> ''),
+        project TEXT NOT NULL CHECK (project <> ''),
+        kind TEXT NOT NULL CHECK (kind IN ('host', 'service')),
+        host TEXT CHECK (host <> ''),
+        port INTEGER CHECK (port BETWEEN 1 AND 65535),
+        service TEXT CHECK (service <> ''),
+        record TEXT CHECK (record <> ''),
+        state TEXT NOT NULL CHECK (state IN ('asking', 'allowed-once', 'allowed-always',
+            'denied')),
+        asked_at INTEGER NOT NULL,
+        decided_at INTEGER,
+        decided_through TEXT CHECK (decided_through IN ('tui', 'cli')),
+        grant_id INTEGER REFERENCES sandbox_network_grants (id),
+        CHECK ((state = 'asking') = (decided_at IS NULL)),
+        CHECK ((state = 'allowed-always') = (grant_id IS NOT NULL)),
+        CHECK (decided_at IS NOT NULL OR decided_through IS NULL),
+        CHECK ((kind = 'host') = (host IS NOT NULL)),
+        CHECK ((kind = 'host') = (port IS NOT NULL)),
+        CHECK ((kind = 'service') = (service IS NOT NULL)),
+        CHECK ((kind = 'service') = (record IS NOT NULL))
+    );
+    INSERT INTO sandbox_network_requests_kinds (id, subject_kind, subject, project, kind, host,
+            port, state, asked_at, decided_at, decided_through, grant_id)
+        SELECT id, subject_kind, subject, project, 'host', host, port, state, asked_at,
+            decided_at, decided_through, grant_id
+        FROM sandbox_network_requests;
+    DROP TABLE sandbox_network_requests;
+    ALTER TABLE sandbox_network_requests_kinds RENAME TO sandbox_network_requests;
+    CREATE UNIQUE INDEX sandbox_network_requests_one_standing
+        ON sandbox_network_requests (subject_kind, subject, host, port)
+        WHERE kind = 'host' AND state IN ('asking', 'allowed-once', 'denied');
+    CREATE UNIQUE INDEX sandbox_network_requests_one_standing_service
+        ON sandbox_network_requests (subject_kind, subject, service, record)
+        WHERE kind = 'service' AND state IN ('asking', 'allowed-once', 'denied');";
+
+/// What a request asks for and a grant allows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetworkTarget {
+    /// A host and port the session proxy refused.
+    Host { host: String, port: u16 },
+    /// A declared service's forward (#880): its name and the whole record a grant is bound
+    /// to ([`crate::Forward::record`]).
+    Service { service: String, record: String },
+}
+
+impl NetworkTarget {
+    /// `host:port`, or the service's record, as the owner reads it.
+    pub fn describe(&self) -> String {
+        match self {
+            NetworkTarget::Host { host, port } => crate::egress::destination(host, *port),
+            NetworkTarget::Service { record, .. } => record.clone(),
+        }
+    }
+
+    /// The columns `kind, host, port, service, record` hold.
+    fn columns(
+        &self,
+    ) -> (
+        &'static str,
+        Option<&str>,
+        Option<i64>,
+        Option<&str>,
+        Option<&str>,
+    ) {
+        match self {
+            NetworkTarget::Host { host, port } => {
+                ("host", Some(host), Some(i64::from(*port)), None, None)
+            }
+            NetworkTarget::Service { service, record } => {
+                ("service", None, None, Some(service), Some(record))
+            }
+        }
+    }
+}
 
 /// The host the owner may grant a project without a request (#1256): the one its GitHub
 /// token binds to for fetches, so the token reaches the project's first sandboxed launch.
@@ -151,15 +267,14 @@ pub struct OwnerDecision {
     pub through: Option<OwnerClient>,
 }
 
-/// One destination a session was refused, and what the owner decided. Only sessions ask
-/// today; the rows name the subject's kind for #862.
+/// One destination or service a session was refused, and what the owner decided. Only
+/// sessions ask today; the rows name the subject's kind for #862.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkRequest {
     pub id: i64,
     pub session: String,
     pub project: String,
-    pub host: String,
-    pub port: u16,
+    pub target: NetworkTarget,
     pub state: NetworkRequestState,
     pub asked_at: i64,
     pub decision: Option<OwnerDecision>,
@@ -167,13 +282,12 @@ pub struct NetworkRequest {
     pub grant: Option<i64>,
 }
 
-/// One project's "allow always" of a destination.
+/// One project's "allow always" of a destination or a service's record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkGrant {
     pub id: i64,
     pub project: String,
-    pub host: String,
-    pub port: u16,
+    pub target: NetworkTarget,
     /// The request whose decision created it; `None` for the github.com grant the owner made
     /// directly ([`grant_github`]).
     pub request: Option<i64>,
@@ -271,10 +385,10 @@ impl From<NetworkRefusal> for NetworkError {
     }
 }
 
-const REQUEST_COLUMNS: &str = "id, subject_kind, subject, project, host, port, state, asked_at,
-    decided_at, decided_through, grant_id";
-const GRANT_COLUMNS: &str = "id, project, host, port, request, granted_at, granted_through,
-    revoked_at, revoked_through";
+const REQUEST_COLUMNS: &str = "id, subject_kind, subject, project, kind, host, port, service,
+    record, state, asked_at, decided_at, decided_through, grant_id";
+const GRANT_COLUMNS: &str = "id, project, kind, host, port, service, record, request,
+    granted_at, granted_through, revoked_at, revoked_through";
 
 /// Files `asked` as a request of `subject` in `project`, unless one already stands for it
 /// (asking, allowed for the session, denied) or the project holds a grant for it: the
@@ -287,17 +401,60 @@ pub async fn file_network_request(
     asked: &AskedDestination,
     now: i64,
 ) -> Result<Option<NetworkRequest>, NetworkError> {
+    let target = NetworkTarget::Host {
+        host: asked.host.clone(),
+        port: asked.port,
+    };
+    file_request(write, subject, project, &target, now).await
+}
+
+/// Files `asked`, the record of a declared service whose forward `subject`'s launcher closed
+/// (#880), as [`file_network_request`] files a host. Only asks: a project file declares a
+/// service, and no declaration grants it.
+pub async fn file_service_request(
+    write: &WriteTransaction<'_>,
+    subject: &Subject,
+    project: &str,
+    asked: &AskedService,
+    now: i64,
+) -> Result<Option<NetworkRequest>, NetworkError> {
+    let target = NetworkTarget::Service {
+        service: asked.service.clone(),
+        record: asked.record.clone(),
+    };
+    file_request(write, subject, project, &target, now).await
+}
+
+async fn file_request(
+    write: &WriteTransaction<'_>,
+    subject: &Subject,
+    project: &str,
+    target: &NetworkTarget,
+    now: i64,
+) -> Result<Option<NetworkRequest>, NetworkError> {
     let (subject_kind, subject_id) = subject_columns(subject)?;
-    let port = i64::from(asked.port);
+    let (kind, host, port, service, record) = target.columns();
     let mut standing = write
         .query(
             "SELECT 1 FROM sandbox_network_requests
-             WHERE subject_kind = ?1 AND subject = ?2 AND host = ?3 AND port = ?4
+             WHERE subject_kind = ?1 AND subject = ?2 AND kind = ?3
+                AND host IS ?4 AND port IS ?5 AND service IS ?6 AND record IS ?7
                 AND state IN ('asking', 'allowed-once', 'denied')
              UNION ALL
              SELECT 1 FROM sandbox_network_grants
-             WHERE project = ?5 AND host = ?3 AND port = ?4 AND revoked_at IS NULL",
-            (subject_kind, subject_id, asked.host.as_str(), port, project),
+             WHERE project = ?8 AND kind = ?3
+                AND host IS ?4 AND port IS ?5 AND service IS ?6 AND record IS ?7
+                AND revoked_at IS NULL",
+            (
+                subject_kind,
+                subject_id,
+                kind,
+                host,
+                port,
+                service,
+                record,
+                project,
+            ),
         )
         .await?;
     if standing.next().await?.is_some() {
@@ -307,8 +464,9 @@ pub async fn file_network_request(
     let row = write
         .prepare(&format!(
             "INSERT INTO sandbox_network_requests
-                (subject_kind, subject, project, host, port, state, asked_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'asking', ?6)
+                (subject_kind, subject, project, kind, host, port, service, record, state,
+                 asked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'asking', ?9)
              RETURNING {REQUEST_COLUMNS}"
         ))
         .await?
@@ -316,8 +474,11 @@ pub async fn file_network_request(
             subject_kind,
             subject_id,
             project,
-            asked.host.as_str(),
+            kind,
+            host,
             port,
+            service,
+            record,
             now,
         ))
         .await?;
@@ -391,31 +552,18 @@ pub async fn allow_network_request(
     }
     // Two sessions of the project asked before either was decided: the first "always" made
     // the grant, which this one joins instead of making a second.
-    let mut granted = write
-        .query(
-            "SELECT id FROM sandbox_network_grants
-             WHERE project = ?1 AND host = ?2 AND port = ?3 AND revoked_at IS NULL",
-            (
-                request.project.as_str(),
-                request.host.as_str(),
-                i64::from(request.port),
-            ),
-        )
-        .await?;
-    let active: Option<i64> = match granted.next().await? {
-        Some(row) => Some(row.get(0)?),
-        None => None,
-    };
-    drop(granted);
-    let grant: i64 = match active {
+    let grant: i64 = match active_grant(write, &request.project, &request.target).await? {
         Some(grant) => grant,
         None => {
-            let destination = Destination {
-                project: &request.project,
-                host: &request.host,
-                port: request.port,
-            };
-            new_grant(write, &destination, Some(request.id), now, through).await?
+            new_grant(
+                write,
+                &request.project,
+                &request.target,
+                Some(request.id),
+                now,
+                through,
+            )
+            .await?
         }
     };
     decided(
@@ -428,34 +576,47 @@ pub async fn allow_network_request(
     .await
 }
 
-/// Where a grant lets one project through.
-struct Destination<'a> {
-    project: &'a str,
-    host: &'a str,
-    port: u16,
+/// The project's active grant of `target`, if it holds one.
+async fn active_grant(
+    connection: &Connection,
+    project: &str,
+    target: &NetworkTarget,
+) -> Result<Option<i64>, NetworkError> {
+    let (kind, host, port, service, record) = target.columns();
+    let mut granted = connection
+        .query(
+            "SELECT id FROM sandbox_network_grants
+             WHERE project = ?1 AND kind = ?2
+                AND host IS ?3 AND port IS ?4 AND service IS ?5 AND record IS ?6
+                AND revoked_at IS NULL",
+            (project, kind, host, port, service, record),
+        )
+        .await?;
+    match granted.next().await? {
+        Some(row) => Ok(Some(row.get(0)?)),
+        None => Ok(None),
+    }
 }
 
 async fn new_grant(
     write: &WriteTransaction<'_>,
-    destination: &Destination<'_>,
+    project: &str,
+    target: &NetworkTarget,
     request: Option<i64>,
     now: i64,
     through: Option<&str>,
 ) -> Result<i64, NetworkError> {
+    let (kind, host, port, service, record) = target.columns();
     let grant: i64 = write
         .prepare(
             "INSERT INTO sandbox_network_grants
-                (project, host, port, request, granted_at, granted_through)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING id",
+                (project, kind, host, port, service, record, request, granted_at,
+                 granted_through)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id",
         )
         .await?
         .query_row((
-            destination.project,
-            destination.host,
-            i64::from(destination.port),
-            request,
-            now,
-            through,
+            project, kind, host, port, service, record, request, now, through,
         ))
         .await?
         .get(0)?;
@@ -472,25 +633,17 @@ pub async fn grant_github(
     through: Option<OwnerClient>,
     now: i64,
 ) -> Result<NetworkGrant, NetworkError> {
-    let destination = Destination {
-        project,
-        host: GITHUB_HOST,
+    let github = NetworkTarget::Host {
+        host: GITHUB_HOST.to_owned(),
         port: crate::egress::TLS_PORT,
     };
-    let mut granted = write
-        .query(
-            "SELECT id FROM sandbox_network_grants
-             WHERE project = ?1 AND host = ?2 AND port = ?3 AND revoked_at IS NULL",
-            (project, GITHUB_HOST, i64::from(destination.port)),
-        )
-        .await?;
-    if let Some(row) = granted.next().await? {
-        return Err(NetworkRefusal::AlreadyGranted { grant: row.get(0)? }.into());
+    if let Some(grant) = active_grant(write, project, &github).await? {
+        return Err(NetworkRefusal::AlreadyGranted { grant }.into());
     }
-    drop(granted);
     let id = new_grant(
         write,
-        &destination,
+        project,
+        &github,
         None,
         now,
         through.map(OwnerClient::as_str),
@@ -588,13 +741,23 @@ pub async fn egress_decisions(
     let (subject_kind, subject_id) = subject_columns(subject)?;
     let mut decisions = EgressDecisions::default();
     for grant in network_grants(connection, Some(project)).await? {
-        decisions.allowed.push(AllowEntry {
-            target: Target::Name(grant.host),
-            port: grant.port,
-            source: AllowSource::Grant {
-                grant: grant.id.to_string(),
-            },
-        });
+        let source = AllowSource::Grant {
+            grant: grant.id.to_string(),
+        };
+        match grant.target {
+            NetworkTarget::Host { host, port } => decisions.allowed.push(AllowEntry {
+                target: Target::Name(host),
+                port,
+                source,
+            }),
+            NetworkTarget::Service { service, record } => {
+                decisions.services.allowed.push(AllowedService {
+                    service,
+                    record,
+                    source,
+                });
+            }
+        }
     }
     let mut rows = connection
         .query(
@@ -609,29 +772,75 @@ pub async fn egress_decisions(
         .await?;
     while let Some(row) = rows.next().await? {
         let request = request_from(&row)?;
-        match request.state {
-            NetworkRequestState::AllowedOnce => decisions.allowed.push(AllowEntry {
-                target: Target::Name(request.host),
-                port: request.port,
-                source: AllowSource::Request {
-                    request: request.id,
-                },
-            }),
-            NetworkRequestState::Asking => decisions.asking.push(AskingDestination {
-                host: request.host,
-                port: request.port,
-                request: request.id,
-            }),
-            NetworkRequestState::Denied => decisions.denied.push(DeniedDestination {
-                host: request.host,
-                port: request.port,
-                request: request.id,
-            }),
-            // Not selected: its grant is listed above.
-            NetworkRequestState::AllowedAlways => {}
+        match request.target {
+            NetworkTarget::Host { host, port } => {
+                add_host_decision(&mut decisions, request.state, request.id, host, port);
+            }
+            NetworkTarget::Service { service, record } => {
+                add_service_decision(&mut decisions, request.state, request.id, service, record);
+            }
         }
     }
     Ok(decisions)
+}
+
+fn add_host_decision(
+    decisions: &mut EgressDecisions,
+    state: NetworkRequestState,
+    request: i64,
+    host: String,
+    port: u16,
+) {
+    match state {
+        NetworkRequestState::AllowedOnce => decisions.allowed.push(AllowEntry {
+            target: Target::Name(host),
+            port,
+            source: AllowSource::Request { request },
+        }),
+        NetworkRequestState::Asking => decisions.asking.push(AskingDestination {
+            host,
+            port,
+            request,
+        }),
+        NetworkRequestState::Denied => {
+            decisions.denied.push(DeniedDestination {
+                host,
+                port,
+                request,
+            });
+        }
+        // Not selected: its grant is listed as one.
+        NetworkRequestState::AllowedAlways => {}
+    }
+}
+
+fn add_service_decision(
+    decisions: &mut EgressDecisions,
+    state: NetworkRequestState,
+    request: i64,
+    service: String,
+    record: String,
+) {
+    let services = &mut decisions.services;
+    match state {
+        NetworkRequestState::AllowedOnce => services.allowed.push(AllowedService {
+            service,
+            record,
+            source: AllowSource::Request { request },
+        }),
+        NetworkRequestState::Asking => services.asking.push(DecidedService {
+            service,
+            record,
+            request,
+        }),
+        NetworkRequestState::Denied => services.denied.push(DecidedService {
+            service,
+            record,
+            request,
+        }),
+        // Not selected: its grant is listed as one.
+        NetworkRequestState::AllowedAlways => {}
+    }
 }
 
 async fn undecided(write: &WriteTransaction<'_>, id: i64) -> Result<NetworkRequest, NetworkError> {
@@ -672,19 +881,18 @@ fn request_from(row: &Row) -> Result<NetworkRequest, NetworkError> {
             "subject kind {subject_kind:?}"
         )));
     }
-    let state: String = row.get(6)?;
+    let state: String = row.get(9)?;
     let state = NetworkRequestState::parse(&state)
         .ok_or_else(|| NetworkError::InvalidRow(format!("request state {state:?}")))?;
     Ok(NetworkRequest {
         id: row.get(0)?,
         session: row.get(2)?,
         project: row.get(3)?,
-        host: row.get(4)?,
-        port: port_from(row, 5)?,
+        target: target_from(row, 4)?,
         state,
-        asked_at: row.get(7)?,
-        decision: decision_from(row, 8, NetworkError::InvalidRow)?,
-        grant: row.get(10)?,
+        asked_at: row.get(10)?,
+        decision: decision_from(row, 11, NetworkError::InvalidRow)?,
+        grant: row.get(13)?,
     })
 }
 
@@ -692,18 +900,32 @@ fn grant_from(row: &Row) -> Result<NetworkGrant, NetworkError> {
     Ok(NetworkGrant {
         id: row.get(0)?,
         project: row.get(1)?,
-        host: row.get(2)?,
-        port: port_from(row, 3)?,
-        request: row.get(4)?,
-        granted: decision_from(row, 5, NetworkError::InvalidRow)?
+        target: target_from(row, 2)?,
+        request: row.get(7)?,
+        granted: decision_from(row, 8, NetworkError::InvalidRow)?
             .ok_or_else(|| NetworkError::InvalidRow("a grant without its time".to_owned()))?,
-        revoked: decision_from(row, 7, NetworkError::InvalidRow)?,
+        revoked: decision_from(row, 10, NetworkError::InvalidRow)?,
     })
 }
 
-fn port_from(row: &Row, column: usize) -> Result<u16, NetworkError> {
-    let port: i64 = row.get(column)?;
-    u16::try_from(port).map_err(|_| NetworkError::InvalidRow(format!("port {port}")))
+/// The target stored in `kind, host, port, service, record` from `first`.
+fn target_from(row: &Row, first: usize) -> Result<NetworkTarget, NetworkError> {
+    let kind: String = row.get(first)?;
+    match kind.as_str() {
+        "host" => {
+            let port: i64 = row.get(first + 2)?;
+            Ok(NetworkTarget::Host {
+                host: row.get(first + 1)?,
+                port: u16::try_from(port)
+                    .map_err(|_| NetworkError::InvalidRow(format!("port {port}")))?,
+            })
+        }
+        "service" => Ok(NetworkTarget::Service {
+            service: row.get(first + 3)?,
+            record: row.get(first + 4)?,
+        }),
+        other => Err(NetworkError::InvalidRow(format!("target kind {other:?}"))),
+    }
 }
 
 /// The decision stored in `at, through` from `first`; `None` while `at` is null. `invalid`
