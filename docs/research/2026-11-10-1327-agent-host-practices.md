@@ -20,28 +20,33 @@ specific:
 2. **Do not file the same ask twice.** An identical `torlek ask run` sent while the first is
    pending becomes a second owner prompt. Beads and Agent Mail make repeats no-ops.
 3. **Make refusals machine-readable at the CLI.** The wire carries a code and an unblock hint,
-   but the CLI prints only the message and exits 1 for every refusal, so "busy, retry later"
-   and "refused, do not retry" look the same to the agent.
-4. **Hold the byte budgets.** In six days the brief grew 49 % and the manual 30 %. The
-   `coordination` topic is 5,959 bytes, mostly coordinator verbs that workers read too.
+   but the CLI prints only the message and exits 1 for every refusal outside `ask`, so "busy,
+   retry later" and "refused, do not retry" look the same to the agent.
+4. **Put a budget on the manual.** The brief and the task packet have tested 2 KiB caps; the
+   manual and its topics have none. In six days the manual grew 30 %. The `coordination`
+   topic is 5,959 bytes, 3,719 of them coordinator verbs that workers read too.
 5. **Measure cost per task.** Torlek archives cost per day, account and project. Gas Town,
    Roo Code and Agent Orchestrator attribute it to the task. Without that, no trial in #497,
    #103 or #788 can show a saving.
 
-Most of the other hosts cut owner prompts by widening authority: auto-yes, skipped permissions,
-or approving everything a hosted harness asks. Torlek should not copy that.
+Six of the seven terminals and orchestrators read cut owner prompts by widening authority:
+auto-yes, skipped permissions, or approving everything a harness asks. Torlek should not copy
+that.
 
 - [ ] Theo picks which [ranked proposals](#ranked-proposals) to file.
 
 ## Method and labels
 
-- **Projects.** 23 sources, each pinned to the commit read on 2026-11-10: seven multi-agent
+- **Projects.** 24 sources, each pinned to the commit read on 2026-11-10: seven multi-agent
   terminals and orchestrators, five coordination layers, five agent platforms, three
   harnesses (Codex, OpenCode, Claude Code's public docs) and four protocols and tools (MCP,
-  the Agent Client Protocol, Anthropic's sandbox-runtime, ccusage). The appendix lists every
+  the Agent Client Protocol, Anthropic's sandbox-runtime, ccusage). Roo Code counts with the
+  coordination layers for its orchestrator mode. The appendix lists every
   file cited. Only public repositories and documentation were read; no transcript, no private
   project and no downloaded code was run.
-- **Torlek.** Source at `c2d3ecaa`; rendered text from the installed Torlek 0.1.0-alpha.7.
+- **Torlek.** Source at `c2d3ecaa`; rendered text (the brief, the manual) from the installed
+  Torlek 0.1.0-alpha.7, which is older than that source. #619 also measured rendered text, so
+  the growth figures compare like with like.
 - **Labels.** *Measured*: bytes counted here. *Project's claim*: a number the project states
   without a method this research could check. *Est.*: tokens as bytes ÷ 4, the rate
   [#619](2026-11-04-619-agent-token-efficiency.md#method-and-labels) used, about ±25 %.
@@ -52,14 +57,16 @@ or approving everything a hosted harness asks. Torlek should not copy that.
 
 | Earlier report | Done since | Still open |
 | --- | --- | --- |
-| [#619](2026-11-04-619-agent-token-efficiency.md) token and turn efficiency | Constant stuck note (#769). A usage error prints only its verb's lines, 958 bytes measured (#770). `ask run` returns at most 16 KiB (#771). `brief --measure` counts what each harness loads (#775). | One wake per message (#772); writes echo whole records (#773); no per-pair message cap (#774); no byte-budget tests (#894); the send confirmation invites a poll (#895). |
+| [#619](2026-11-04-619-agent-token-efficiency.md) token and turn efficiency | Constant stuck note (#769). A usage error prints only its verb's lines, 958 bytes measured (#770). `ask run` returns at most 16 KiB (#771). `brief --measure` counts what each harness loads (#775). | One wake per message (#772); writes echo whole records (#773); no per-pair message cap (#774); no budget tests for the placement line, confirmations and usage errors (#894); the send confirmation invites a poll (#895). |
 | [#686](2026-11-04-686-compaction-research.md) compaction | The task packet, capped at 2,048 bytes, is re-injected with the brief at every context start (#781). Compactions are recorded (#782). The owner sets each harness's own threshold (#783). | Quality check (#784) and Torlek-sent compaction (#785), both gated on spend. |
 | [#620](2026-11-04-620-agent-workflow-conventions.md) workflow conventions | Contradictions removed (#776); `CLAUDE.md` imports `AGENTS.md` (#777). | `repo-workflow` as the issue-to-merge path (#778), research README (#779), make-command test (#780), skill trials (#788, #896). |
 | Coordinator watcher (not in the earlier reports) | Prints only lines to act on; the 10-minute summary is off by default (#1286). A full-list check every 3 minutes catches questions the watch stream missed (#1298). | |
 
-**Growth with no guard.** The brief went from 1,118 to 1,670 bytes (+49 %), the manual from
-9,862 to 12,830 (+30 %). The largest topic went from 3,270 bytes to 5,959 (`coordination`).
-Each addition was reasonable; nothing stops the next one (#894).
+**Growth.** The brief went from 1,118 to 1,670 bytes (+49 %), within its tested 2,048-byte
+target (`tests/brief.rs`). The manual went from 9,862 to 12,830 bytes (+30 %), and the source
+is larger again: its `sandbox` topic is 2,741 bytes against 1,449 installed. The largest topic
+went from 3,270 bytes to 5,959 (`coordination`). No test bounds the manual or a topic; #894
+covers the placement line, confirmations and usage errors only.
 
 **Not covered before.** Other hosts, the CLI's error codes and exit statuses, duplicate asks,
 cost per task, and harness limits that bound Torlek's text.
@@ -72,9 +79,9 @@ cost per task, and harness limits that bound Torlek's text.
 | Instructions on demand | `torlek docs TOPIC`, MCP `torlek_docs`, `torlek --skill` | Index 566; topics 1,049 to 5,959; manual 12,830 bytes (measured) |
 | MCP server | Two read-only tools (`torlek_docs`, `torlek_brief`) and the manual as resources; a refusal is an `isError` result with the unblock action | Schemas 487 bytes (#619) |
 | Hooks | Nine Claude Code events reported; `SessionStart` and `Stop` collect messages in the background and wake the model with exit status 2 | No text printed except the brief and a collected message |
-| Status | `agent report --label/--doing/--needs-input`; working, waiting, dialogs and compactions come from hooks | Per worker: 3 required calls plus one `--doing` per phase (instruction-derived) |
+| Status | `agent report --label/--doing/--needs-input`; working, waiting, dialogs and compactions come from hooks | Per worker: 2 required calls (`todo start`, `todo done`) plus one `--doing` per phase (instruction-derived) |
 | Messages | Collected at a turn end (Claude Code) or typed at the next prompt | 1 wake per message; at most 2,000 characters |
-| Refusals | Wire: `code`, `message`, `unblock {action, by}`. CLI: `refused: MESSAGE` and `to unblock (BY): ACTION`, exit 1 | The code is not printed; exit 1 for every daemon error |
+| Refusals | Wire: `code`, `message`, `unblock {action, by}`. CLI: `refused: MESSAGE` and `to unblock (BY): ACTION`, exit 1 | The code is not printed; exit 1 for every daemon refusal outside `ask` (which uses 124 pending, 125 declined, 126 unreachable) |
 | Usage errors | Inside a verb: that verb's lines. Unknown top-level word such as `--version`: the whole usage | 958 vs 6,410 bytes (measured) |
 | Approvals | Sandbox first; `ask run` approves one exact command once; network hosts per request or `--always` | No deduplication of identical pending asks |
 | Coordinator | Watch stream plus a watcher script that prints only actionable lines; workers wait on CI in a shell loop | Skill 13,608 bytes; watcher 23,123 bytes; PR poll every 120 s and full-list check every 3 min, neither wakes the model |
@@ -132,7 +139,7 @@ cost per task, and harness limits that bound Torlek's text.
   context, so the system prompt stays byte-stable between compactions. The MCP server has two
   tools.
 - **Gaps.**
-  - No budget test holds the brief, topics or packet (#894).
+  - The brief and packet have tested caps; no test bounds the manual or a topic.
   - Workers read the `coordination` topic for `agent report` and `todo`. Its coordinator
     sections ("Coordinating other sessions" and "Questions from sessions you started") are
     3,719 of its 5,959 bytes (measured).
@@ -171,14 +178,15 @@ cost per task, and harness limits that bound Torlek's text.
 **Torlek against it.**
 
 - **On the wire, Torlek is as good as any of these.** Every refusal carries a code from a
-  closed set and an unblock action naming who can lift it
+  known list (an unknown one is kept as sent) and an unblock action naming who can lift it
   (`cockpit-protocol/src/error.rs`), and the MCP server returns it as an `isError` result.
 - **The CLI, which is what agents use, drops half of it.**
   - It prints `torlek: refused: MESSAGE`, without the code, and exits 1 for every daemon error
     (`cockpit-cli/src/agent.rs`, `failed`).
   - So `busy` ("retrying later may work") and `refused` (a safety rule) differ only in prose.
 - **Asks.** `ask run` files a new request each time (`cockpit-approvals/src/runs.rs`,
-  `ask_run`). The manual's rule "never send a second one" is prose; the daemon does not
+  `ask_run`). Only this repository's coordinator skill says "never send a second one"; the
+  manual says only that `--wait ID` waits again. The daemon does not
   enforce it.
 - **Usage errors.** An unknown first word prints the whole 6,410-byte usage. `torlek --version`
   is a likely first guess, and the verb is `torlek version`.
@@ -247,13 +255,16 @@ cost per task, and harness limits that bound Torlek's text.
   - goose caches a "not read-only" verdict per tool.
   - Cline denies after 5 minutes without an answer.
 - **Counter-examples.** Six of the seven terminals and orchestrators read remove prompts by
-  widening authority:
+  widening authority; container-use is the exception:
   - Claude Squad presses Enter on any prompt.
   - Crystal defaults to skipped permissions and falls back to them silently.
-  - Gas Town sets `bypassPermissions`.
-  - OpenHands' bridge approves every request from a hosted harness.
+  - Agent Farm's setup runs Claude Code with `--dangerously-skip-permissions`.
+  - Vibe Kanban's default profiles skip permissions.
   - Sculptor auto-allows on a "sandboxed" claim the code does not back.
-  - Agent Orchestrator's Codex default bypasses the sandbox.
+  - Agent Orchestrator's Codex default bypasses approvals and the sandbox.
+
+  Elsewhere, Gas Town sets `bypassPermissions` and OpenHands' bridge approves every request
+  from a hosted harness.
 
 **Torlek against it.** Torlek's model is the strictest read: a sandbox, one exact command
 approved once, network hosts per request. The friction worth cutting is measured from real
@@ -299,16 +310,16 @@ Savings are from code paths (*est.*), not from provider usage.
 | --- | --- | --- | --- | --- | --- |
 | 1 | Deliver every message queued for a session in one wake, as Gas Town does. Lead with "Continue current work unless this changes it". Add a time-to-live and a per-recipient cap; a newer message from the same sender replaces a queued one | N wakes → 1 per burst. Each wake re-sends the whole conversation (cached) | 1 day (#619's two half-day estimates) | A wire change (`InboxView::Message` carries one message); a replaced message must stay audited | #772, #774, #895 |
 | 2 | An identical `ask run` (same session, command and directory) sent while one is pending returns the pending id and "already asked, wait with `torlek ask run --wait ID`" | 1 owner prompt per duplicate | 2–3 h | The second reason text is dropped; a decided ask is never matched, so a real rerun still asks | #1234 |
-| 3 | The CLI prints the refusal's code (`refused [busy]: …`) and a distinct exit status for "retry later" (`busy`: 75, as Agent Orchestrator and sysexits use) apart from final refusals. A refusal that changed nothing says so | One retry turn per misread refusal; scripts can branch without parsing prose | 2–3 h | Callers that test for exit 1, including the coordinator watcher, which passes Torlek's status through | #894 |
-| 4 | Enforce the byte budgets (#894) and split `coordination`: worker verbs stay; "Coordinating other sessions" and "Questions from sessions you started" become a `coordinating` topic for coordinators | 3,719 bytes (≈930 tokens est.) for each worker that reads the topic; stops the growth measured above | 3 h plus #894 | A coordinator must read two topics; the coordinator skill points to the new one | #894, #208 |
+| 3 | The CLI prints the refusal's code (`refused [busy]: …`) and a distinct exit status for "retry later" (`busy`: 75, as Agent Orchestrator and sysexits use) apart from final refusals, clear of `ask`'s 124–126. An unknown code counts as final. A refusal that changed nothing says so | One retry turn per misread refusal; scripts can branch without parsing prose | 2–3 h | Callers that test for exit 1, including the coordinator watcher, which passes Torlek's status through | None |
+| 4 | Add byte budgets for the manual and each topic, beside the brief's, and split `coordination`: worker verbs stay; "Coordinating other sessions" and "Questions from sessions you started" become a `coordinating` topic for coordinators | 3,719 bytes (≈930 tokens est.) for each worker that reads the topic; stops the growth measured above | 3 h | A coordinator must read two topics; the coordinator skill points to the new one | #894, #208 |
 | 5 | `ask run` writes the whole redacted output to a file in the session's temp folder and returns the head, the tail and "full output at PATH; do not re-run the command to see more" | 1 owner prompt each time an agent needs lines the tail cut | 3–4 h | The file needs the same redaction as the tail (#872) and the retention of run outputs (#406) | #771, #406, #1234 |
 | 6 | Attribute archived replies to the session and to the task item it started (`todo start`), and roll up per item. Mark replies with no item "unattributed" | None directly; makes every other saving and #497's trials measurable without reading transcripts | 1–2 days | Attribution is by time window; a session that switches items mid-turn splits imprecisely | #699, #497, #103, #788, #896 |
 | 7 | An actionable mode of `torlek agent sessions --watch`: print questions, dialogs, ends and idles past a grace period at once; coalesce repeats; never print `doing` changes. The watcher's session logic moves into tested code | No change in wakes today. Any coordinator, not only this repository's, gets the filter; the 3-minute full-list fallback goes once #1298's misses are fixed | 1–2 days | Fixes the policy in Torlek; the idle grace becomes configuration | #208, #1298 |
 | 8 | An unknown first word prints one line naming `torlek version` or `torlek` for the verbs, not the 6,410-byte usage | ≈1.5k tokens est. per occurrence | 1 h | None found | #770 |
-| 9 | A repeat guard: the third identical refused request from a session gets one line, "refused 3 times; stop and ask the owner" (OpenHands, Cline, Roo Code) | Bounds a refusal loop; how often loops happen is unknown | 3–4 h | Reads and `--wait` must be exempt, or legitimate polling trips it | #774 |
+| 9 | A repeat guard: the third identical refused request from a session gets one line, "refused 3 times; stop and ask the owner" (OpenHands, Cline, Roo Code) | Bounds a refusal loop; how often loops happen is unknown | 3–4 h | Reads and `--wait` must be exempt, or legitimate polling trips it | None (#774 is the same idea for messages) |
 
 **Recommendation.** File 2, 3 and 8 now: small and self-contained. 1 is already filed (#772);
-fold the time-to-live, cap and framing into its scope. 4 rides on #894. 6 before any token
+fold the time-to-live, cap and framing into its scope. 4 sits beside #894. 6 before any token
 trial. Decide 7 inside #208's design. Keep 9 until 6 shows refusal loops happen.
 
 **Not ranked: OpenCode 2.** OpenCode's V2 migration guide says "V1 plugin implementations do
