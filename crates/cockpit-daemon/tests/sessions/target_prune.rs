@@ -860,6 +860,11 @@ async fn paused_target_prune_keeps_candidate_checks_and_approvals_out_but_allows
     assert_eq!(home.launches(1).await.len(), 1);
 }
 
+/// What one configured minute of `target_prune_interval_minutes` lasts in the daemon under
+/// test: long enough that a fixture needing a second or two still recreates its target before
+/// the next automatic pass.
+const PRUNE_MINUTE: Duration = Duration::from_secs(8);
+
 #[tokio::test(flavor = "multi_thread")]
 async fn automatic_target_prune_consumes_equality_at_configured_interval_and_confirms_above_threshold()
  {
@@ -881,7 +886,14 @@ async fn automatic_target_prune_consumes_equality_at_configured_interval_and_con
         let config = home.path().join("home/.config/torlek");
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(config.join("config.toml"), "[storage]\ntarget_prune_automatic = true\ntarget_prune_projects = ['app']\ntarget_prune_confirm_above_mib = 1\ntarget_prune_interval_minutes = 1\ntarget_prune_base_ref = 'refs/heads/main'\n").unwrap();
-        let daemon = home.start(BASELINE, settings()).await;
+        let started = Instant::now();
+        let daemon = home
+            .start_wired(|| {
+                let mut wiring = home.wiring(BASELINE, settings());
+                wiring.target_prune_minute = PRUNE_MINUTE;
+                wiring
+            })
+            .await;
         let client = connect(&daemon).await;
         if extra == 0 {
             let deadline = Instant::now() + GENEROUS;
@@ -913,17 +925,21 @@ async fn automatic_target_prune_consumes_equality_at_configured_interval_and_con
                 );
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            // A newly created disposable target waits for the configured next minute;
+            // A newly created disposable target waits for the configured next interval;
             // the production timer, not a fixture-only rescan shortcut, must consume it.
             std::fs::create_dir(preview.checkout.path.join("target")).unwrap();
             std::fs::write(preview.checkout.path.join("target/next"), b"next").unwrap();
             let recreated = Instant::now();
             tokio::time::sleep(Duration::from_millis(300)).await;
+            assert!(
+                started.elapsed() < PRUNE_MINUTE,
+                "the fixture outlasted the interval, so the survival check proves nothing: raise PRUNE_MINUTE"
+            );
             assert_eq!(
                 std::fs::read(preview.checkout.path.join("target/next")).unwrap(),
                 b"next"
             );
-            let deadline = recreated + Duration::from_secs(70);
+            let deadline = recreated + GENEROUS;
             while preview.checkout.path.join("target").exists() {
                 assert!(
                     Instant::now() < deadline,
@@ -932,7 +948,7 @@ async fn automatic_target_prune_consumes_equality_at_configured_interval_and_con
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             assert!(
-                recreated.elapsed() >= Duration::from_secs(50),
+                started.elapsed() >= PRUNE_MINUTE,
                 "cleanup bypassed the configured interval"
             );
         } else {

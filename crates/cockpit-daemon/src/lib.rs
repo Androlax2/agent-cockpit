@@ -91,6 +91,9 @@ pub const INSTRUCTIONS_VARIABLE: &str = "TORLEK_INSTRUCTIONS";
 /// How often expired and ended reservations are released.
 const RESOURCE_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
+/// A minute, which the product's target-prune interval counts in ([`Wiring::target_prune_minute`]).
+pub const MINUTE: Duration = Duration::from_secs(60);
+
 /// What the daemon wires its capabilities with: the host's tools in the binary, fixtures in
 /// tests.
 pub struct Wiring {
@@ -139,6 +142,10 @@ pub struct Wiring {
     /// Each project's economy model and effort, by project name (#412): an item marked
     /// economy goes only to a session of its project started with them.
     pub economy: std::collections::BTreeMap<String, cockpit_scheduling::Economy>,
+    /// How long one minute of `storage.target_prune_interval_minutes` lasts: [`MINUTE`] in the
+    /// product. A test that waits on the automatic pass's own timer shortens it instead of
+    /// waiting a real minute.
+    pub target_prune_minute: Duration,
 }
 
 /// The sessions' settings the owner configured: the idle window and the asleep expiry
@@ -360,6 +367,7 @@ impl Instance {
             database: Arc::clone(&database),
             git: wiring.git.clone(),
             policy: Arc::new(storage::prune_policy(&storage_settings)),
+            prune_minute: wiring.target_prune_minute,
             sweeps_on_session_end: storage_settings.sweep_on_session_end.value,
             stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             supervisor: processes.clone(),
