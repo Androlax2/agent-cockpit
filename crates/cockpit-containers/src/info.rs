@@ -1,5 +1,6 @@
-//! Which Docker engine this user's `docker` reaches, and whether it is rootless (report 11):
-//! a `docker` program is not an engine. Moves to `cockpit-containers` with #390.
+//! What a Docker engine says it is (report 11): its own ID, name, version, and whether it is
+//! rootless. `probe_docker` asks the engine this user's `docker` program reaches; a `docker`
+//! program is not an engine.
 
 use std::io::Read;
 use std::path::Path;
@@ -11,7 +12,7 @@ pub const DOCKER_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The engine `docker info` answered for.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DockerEngine {
+pub struct EngineInfo {
     /// The engine's own ID.
     pub id: String,
     /// The host name the engine reports.
@@ -25,7 +26,7 @@ pub struct DockerEngine {
 
 /// Asks `program` for its engine's identity, within `deadline`. The reason when it does not
 /// answer as an engine.
-pub fn probe_docker(program: &Path, deadline: Duration) -> Result<DockerEngine, String> {
+pub fn probe_docker(program: &Path, deadline: Duration) -> Result<EngineInfo, String> {
     let shown = program.display();
     let (succeeded, stdout, stderr) = run(program, &["info", "--format", "{{json .}}"], deadline)?;
     if !succeeded {
@@ -42,7 +43,7 @@ pub fn probe_docker(program: &Path, deadline: Duration) -> Result<DockerEngine, 
 }
 
 /// `docker info --format '{{json .}}'`.
-fn parse_info(output: &str) -> Result<DockerEngine, String> {
+pub(crate) fn parse_info(output: &str) -> Result<EngineInfo, String> {
     let info: serde_json::Value = serde_json::from_str(output.trim())
         .map_err(|error| format!("not the JSON it prints: {error}"))?;
     if let Some(error) = info
@@ -69,7 +70,7 @@ fn parse_info(output: &str) -> Result<DockerEngine, String> {
                 .filter_map(serde_json::Value::as_str)
                 .any(|option| option.split(',').any(|part| part == "name=rootless"))
         });
-    Ok(DockerEngine {
+    Ok(EngineInfo {
         id: text("ID")?,
         name: text("Name")?,
         server_version: text("ServerVersion")?,

@@ -522,6 +522,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-containers"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cockpit-daemon"
 version = "0.1.0"
 dependencies = [
@@ -534,6 +542,7 @@ dependencies = [
  "cockpit-client",
  "cockpit-codex",
  "cockpit-config",
+ "cockpit-containers",
  "cockpit-diagnostics",
  "cockpit-messaging",
  "cockpit-opencode",
@@ -644,7 +653,6 @@ name = "cockpit-readiness"
 version = "0.1.0"
 dependencies = [
  "cockpit-config",
- "serde_json",
  "tempfile",
 ]
 

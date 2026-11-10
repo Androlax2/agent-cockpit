@@ -480,7 +480,18 @@ fn presets() -> Vec<PresetFacts> {
 
 /// The `docker` on the daemon's `PATH`, asked for its engine.
 fn probe_docker() -> Result<cockpit_readiness::DockerEngine, String> {
-    cockpit_readiness::probe_docker(Path::new("docker"), cockpit_readiness::DOCKER_DEADLINE)
+    cockpit_containers::probe_docker(Path::new("docker"), cockpit_containers::DOCKER_DEADLINE)
+        .map(docker_engine)
+}
+
+fn docker_engine(engine: cockpit_containers::EngineInfo) -> cockpit_readiness::DockerEngine {
+    cockpit_readiness::DockerEngine {
+        id: engine.id,
+        name: engine.name,
+        server_version: engine.server_version,
+        rootless: engine.rootless,
+        in_desktop_vm: engine.in_desktop_vm,
+    }
 }
 
 /// The launch gates of a session of each wired provider in `dir` (#1250): a session names

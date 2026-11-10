@@ -1,6 +1,5 @@
 #![doc = include_str!("../README.md")]
 
-mod docker;
 mod host;
 mod launch;
 mod project;
@@ -8,7 +7,6 @@ mod project;
 use std::path::PathBuf;
 
 pub use cockpit_config::{AgentSandbox, EffectiveConfig, ExecutionEnvironment, ProjectNeeds};
-pub use docker::{DOCKER_DEADLINE, DockerEngine, probe_docker};
 pub use launch::{HarnessTrust, LaunchFacts, Toolchains, launch_gates, launch_summary};
 pub use project::needs_docker;
 
@@ -114,6 +112,20 @@ impl Report {
             .iter()
             .any(|requirement| requirement.status.blocks())
     }
+}
+
+/// The engine a Docker probe answered for (`cockpit-containers` probes it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DockerEngine {
+    /// The engine's own ID.
+    pub id: String,
+    /// The host name the engine reports.
+    pub name: String,
+    pub server_version: String,
+    /// The engine runs as this user, not as root (its security options name `rootless`).
+    pub rootless: bool,
+    /// Docker Desktop: the engine runs in a Linux VM of its own, not on this host.
+    pub in_desktop_vm: bool,
 }
 
 /// The platform as the sandbox detected it.
