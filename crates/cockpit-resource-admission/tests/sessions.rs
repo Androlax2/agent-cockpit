@@ -389,6 +389,11 @@ async fn a_task_whose_own_nice_limit_would_keep_it_idle_is_left_off_sched_idle()
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+    // A test run that is SCHED_IDLE already (CI's build runner) leaves nothing to set.
+    if priority(child).1 {
+        home.stop(&database, &execution).await;
+        return;
+    }
 
     let applied = backend
         .apply_to_session(&execution, &policy().session_limits(Profile::Foreground))
