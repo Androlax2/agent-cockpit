@@ -553,9 +553,16 @@ impl Backend {
         if self.platform == Platform::MacOs {
             return unapplied(execution, failures);
         }
+        let source = match self.task_source(execution).await {
+            Ok(source) => source,
+            Err(error) => {
+                failures.push(error.to_string());
+                return unapplied(execution, failures);
+            }
+        };
         let mut changed = HashSet::new();
         for _ in 0..TREE_WALKS {
-            let tasks = match self.tasks_of(execution).await {
+            let tasks = match self.tasks_in(&source).await {
                 Ok(tasks) => tasks,
                 Err(error) => {
                     failures.push(error.to_string());
@@ -594,26 +601,69 @@ impl Backend {
                     (false, true) => Some("--other"),
                     _ => None,
                 }
-                && let Err(error) =
-                    host_command(chrt, &[policy, "-p", "0", &task.to_string()]).await
-                && self.task_priority(task).await.is_some()
             {
-                failures.push(error.to_string());
-            }
-        }
-        if self.supports_in_sessions(Control::IdleIo)
-            && let Ok(ionice) = self.ionice()
-        {
-            let class = if limits.idle_io { "3" } else { "0" };
-            for &task in tasks {
-                if let Err(error) =
-                    host_command(ionice, &["-c", class, "-p", &task.to_string()]).await
+                if policy == "--idle" && !self.task_leaves_idle_scheduling(task).await {
+                    failures.push(format!(
+                        "task {task} was left off SCHED_IDLE: its RLIMIT_NICE would keep it there"
+                    ));
+                } else if let Err(error) =
+                    host_command(chrt, &[policy, "-p", "0", &task.to_string()]).await
                     && self.task_priority(task).await.is_some()
                 {
                     failures.push(error.to_string());
                 }
             }
         }
+        if self.supports_in_sessions(Control::IdleIo)
+            && let Ok(ionice) = self.ionice()
+        {
+            self.set_io_class(ionice, tasks, limits.idle_io, failures)
+                .await;
+        }
+    }
+
+    /// One `ionice` for the whole batch; when it fails (it stops at the first task that
+    /// ended), one per task, skipping those that ended.
+    async fn set_io_class(
+        &self,
+        ionice: &Path,
+        tasks: &[i32],
+        is_idle: bool,
+        failures: &mut Vec<String>,
+    ) {
+        let class = if is_idle { "3" } else { "0" };
+        let task_names: Vec<String> = tasks.iter().map(i32::to_string).collect();
+        let mut arguments = vec!["-c", class, "-p"];
+        arguments.extend(task_names.iter().map(String::as_str));
+        if host_command(ionice, &arguments).await.is_ok() {
+            return;
+        }
+        for (task, name) in tasks.iter().zip(&task_names) {
+            if let Err(error) = host_command(ionice, &["-c", class, "-p", name]).await
+                && self.task_priority(*task).await.is_some()
+            {
+                failures.push(error.to_string());
+            }
+        }
+    }
+
+    /// Whether the daemon could take `task` off `SCHED_IDLE` again: the kernel checks the
+    /// task's own `RLIMIT_NICE`, which a process may lower below the daemon's.
+    async fn task_leaves_idle_scheduling(&self, task: i32) -> bool {
+        if self.tools.nice_rlimit.is_none() {
+            return true;
+        }
+        let limits = self.tools.proc_root.join(task.to_string()).join("limits");
+        let Ok(limits) = tokio::fs::read_to_string(limits).await else {
+            return false;
+        };
+        limits
+            .lines()
+            .find_map(|line| line.strip_prefix("Max nice priority"))
+            .and_then(|values| values.split_whitespace().next())
+            .is_some_and(|soft| {
+                soft == "unlimited" || soft.parse::<u64>().is_ok_and(|soft| soft >= 20 - MAX_NICE)
+            })
     }
 
     /// The niceness and policy of one task, from `/proc/<task>/stat`; `None` once it ended.
@@ -629,9 +679,8 @@ impl Backend {
         })
     }
 
-    /// Every task (thread) of a running execution: its scope's `cgroup.threads`, or for a
-    /// process group every task of a process in that group or session.
-    async fn tasks_of(&self, execution: &Execution) -> Result<Vec<i32>, Error> {
+    /// Where the tasks of a running execution are listed, resolved once per change.
+    async fn task_source(&self, execution: &Execution) -> Result<TaskSource, Error> {
         if let Containment::SystemdScope { unit } = &execution.containment {
             let dir = self
                 .scope_dir(unit)
@@ -640,19 +689,34 @@ impl Backend {
                     command: format!("systemctl --user show {unit}"),
                     reason,
                 })?;
-            let listed = dir.join("cgroup.threads");
-            let threads = tokio::fs::read_to_string(&listed)
-                .await
-                .map_err(Error::io("read", &listed))?;
-            return Ok(threads
-                .split_whitespace()
-                .filter_map(|task| task.parse().ok())
-                .collect());
+            return Ok(TaskSource::Threads(dir.join("cgroup.threads")));
         }
         let group = execution.process_group.ok_or(Error::NotStarted {
             execution: execution.id,
         })?;
-        let mut tasks = Vec::new();
+        Ok(TaskSource::Tree {
+            group: group.to_string(),
+        })
+    }
+
+    /// Every task (thread) of a running execution: its scope's `cgroup.threads`, or for a
+    /// process group every task of a process in that group or session, or descended from
+    /// one (a child that called `setsid` stays in the tree).
+    async fn tasks_in(&self, source: &TaskSource) -> Result<Vec<i32>, Error> {
+        let group = match source {
+            TaskSource::Threads(listed) => {
+                let threads = tokio::fs::read_to_string(listed)
+                    .await
+                    .map_err(Error::io("read", listed))?;
+                return Ok(threads
+                    .split_whitespace()
+                    .filter_map(|task| task.parse().ok())
+                    .collect());
+            }
+            TaskSource::Tree { group } => group,
+        };
+        let mut members = HashSet::new();
+        let mut parents = Vec::new();
         let mut entries = tokio::fs::read_dir(&self.tools.proc_root)
             .await
             .map_err(Error::io("list", &self.tools.proc_root))?;
@@ -672,13 +736,25 @@ impl Backend {
                 continue;
             };
             let fields = stat_fields(&stat);
-            let in_group = [5, 6]
+            if [5, 6]
                 .into_iter()
-                .any(|field| fields.get(field - 3) == Some(&group.to_string().as_str()));
-            if !in_group {
-                continue;
+                .any(|field| fields.get(field - 3) == Some(&group.as_str()))
+            {
+                members.insert(process);
+            } else if let Some(parent) = fields.get(4 - 3).and_then(|parent| parent.parse().ok()) {
+                parents.push((process, parent));
             }
-            let Ok(mut threads) = tokio::fs::read_dir(entry.path().join("task")).await else {
+        }
+        while let Some(found) = parents
+            .iter()
+            .position(|(_, parent)| members.contains(parent))
+        {
+            members.insert(parents.swap_remove(found).0);
+        }
+        let mut tasks = Vec::new();
+        for process in members {
+            let threads_dir = self.tools.proc_root.join(process.to_string()).join("task");
+            let Ok(mut threads) = tokio::fs::read_dir(threads_dir).await else {
                 continue;
             };
             let before = tasks.len();
@@ -1012,6 +1088,13 @@ fn stat_fields(stat: &str) -> Vec<&str> {
 }
 
 /// One task's CPU priority as `/proc` shows it.
+enum TaskSource {
+    /// A scope's `cgroup.threads`.
+    Threads(PathBuf),
+    /// The processes of a process group or session, and their descendants.
+    Tree { group: String },
+}
+
 struct TaskPriority {
     niceness: i32,
     idle: bool,

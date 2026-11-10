@@ -312,9 +312,10 @@ impl Instance {
             cockpit_processes::SystemdTools::from_path(),
         )
         .await;
-        // An agent's program waits from its start through the launch's confirm and the step
-        // that records its root; a launch slower than that has already failed (#316).
-        processes.release_window = processes.launch_timeout + 2 * wiring.sessions.step_timeout;
+        // An agent's program waits from its start through the launch's confirm, the step
+        // that records its root and the one that sets its session limits; a launch slower
+        // than that has already failed (#316, #1351).
+        processes.release_window = processes.launch_timeout + 3 * wiring.sessions.step_timeout;
         tracing::info!(
             containment = ?processes.launch_containment(),
             "new executions use this containment"

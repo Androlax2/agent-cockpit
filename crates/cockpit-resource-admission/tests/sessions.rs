@@ -294,3 +294,107 @@ async fn the_idle_io_shim_starts_the_program_in_the_idle_class() {
         ["-c", "3", "/usr/bin/make", "test"].map(OsString::from)
     );
 }
+
+/// The processes whose parent is `parent`, once there is one.
+async fn children_of(parent: i32) -> Vec<i32> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let children: Vec<i32> = std::fs::read_dir("/proc")
+            .unwrap()
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+            .filter(|pid: &i32| {
+                std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+                    stat_fields(&stat).get(4 - 3) == Some(&parent.to_string().as_str())
+                })
+            })
+            .collect();
+        if !children.is_empty() {
+            return children;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{parent} never started a child"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+fn shell(home: &Home, script: &str) -> LaunchSpec {
+    LaunchSpec {
+        arguments: ["-c", script].map(OsString::from).to_vec(),
+        ..tree(home)
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_child_that_left_the_sessions_process_group_still_gets_its_limits() {
+    let home = Home::new();
+    let database = home.open_database().await;
+    let backend = process_group_backend().await;
+    let execution = home
+        .launch(&database, &shell(&home, "setsid sleep 300 & wait"))
+        .await;
+    let leader = execution.process_group.unwrap();
+    let child = children_of(leader).await[0];
+
+    let applied = backend
+        .apply_to_session(&execution, &policy().session_limits(Profile::Normal))
+        .await;
+
+    let niceness = priority(child).0;
+    std::process::Command::new("kill")
+        .arg(child.to_string())
+        .status()
+        .unwrap();
+    home.stop(&database, &execution).await;
+    applied.expect("the limits apply");
+    assert_eq!(niceness, 19);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_whose_own_nice_limit_would_keep_it_idle_is_left_off_sched_idle() {
+    let home = Home::new();
+    let database = home.open_database().await;
+    let tools = HostTools {
+        nice_rlimit: Some(20),
+        ..HostTools::from_host(&cockpit_processes::SystemdTools::from_path())
+    };
+    let backend = Backend::detect(tools, cockpit_processes::LaunchContainment::ProcessGroup)
+        .await
+        .unwrap();
+    if !is_supported(&backend, Control::IdleScheduling)
+        || !std::process::Command::new("prlimit")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    {
+        return;
+    }
+    let execution = home
+        .launch(
+            &database,
+            &shell(&home, "prlimit --nice=0 sleep 300 & wait"),
+        )
+        .await;
+    let leader = execution.process_group.unwrap();
+    let child = children_of(leader).await[0];
+
+    let applied = backend
+        .apply_to_session(&execution, &policy().session_limits(Profile::Foreground))
+        .await;
+
+    let child_is_idle = priority(child).1;
+    home.stop(&database, &execution).await;
+    let Err(cockpit_resource_admission::Error::Unapplied { failures, .. }) = applied else {
+        panic!("{applied:?}");
+    };
+    assert_eq!(
+        failures,
+        [format!(
+            "task {child} was left off SCHED_IDLE: its RLIMIT_NICE would keep it there"
+        )]
+    );
+    assert!(!child_is_idle);
+}
