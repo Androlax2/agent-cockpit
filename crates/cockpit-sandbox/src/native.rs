@@ -468,6 +468,8 @@ pub(crate) struct Launch {
     pub decisions: EgressDecisions,
     /// The login account's sign-in a session uses (#59); a check binds none.
     pub login: Option<crate::SessionLogin>,
+    /// The declared services the launcher serves (#880); a check serves none.
+    pub forwards: Vec<crate::Forward>,
 }
 
 /// The launch of `program` with `arguments` for `launch` through `native`: the launcher in
@@ -597,7 +599,7 @@ pub(crate) fn prepare(
         protected,
         hidden,
         needs_source: launch.needs.source.clone(),
-        forwards: Vec::new(),
+        forwards: launch.forwards.clone(),
         egress: Allowlist {
             program: program_name(&launch.subject, profile),
             entries: launch.needs.egress.clone(),
@@ -1195,7 +1197,7 @@ fn evidence(
             "environment",
         ));
     }
-    rules.push(rule("host-service forwards: none".to_owned(), BACKEND_NAME));
+    rules.extend(forward_rules(&spec.forwards));
     rules.push(rule(
         format!("desktop session {}", profile.desktop.as_str()),
         "environment",
@@ -1221,6 +1223,27 @@ fn evidence(
             observed_subject,
         ],
     }
+}
+
+/// Each forward the launcher serves, by the record a grant is bound to (#880).
+fn forward_rules(forwards: &[crate::Forward]) -> Vec<AppliedRule> {
+    let launcher = format!("{BACKEND_NAME} launcher");
+    if forwards.is_empty() {
+        return vec![AppliedRule {
+            rule: "host-service forwards: none".to_owned(),
+            enforced_by: BACKEND_NAME.to_owned(),
+        }];
+    }
+    forwards
+        .iter()
+        .map(|forward| AppliedRule {
+            rule: format!(
+                "host-service forward: {}, relayed only while the owner allows that record",
+                forward.record()
+            ),
+            enforced_by: launcher.clone(),
+        })
+        .collect()
 }
 
 /// The network a launch gets: the session proxy alone, and each destination it allows.

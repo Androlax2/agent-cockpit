@@ -175,4 +175,17 @@ impl AskedService {
             record: forward.record(),
         }
     }
+
+    /// Whether the daemon files it: a service name, and a record of that service that the
+    /// owner reads on one line. The launcher writes only these; a file that differs is
+    /// refused at the daemon rather than shown to the owner.
+    pub fn is_askable(&self) -> bool {
+        const MAX_RECORD_BYTES: usize = 8192;
+        let prefix = format!("service {} listen ", self.service);
+        is_service_name(&self.service)
+            && self.record.len() <= MAX_RECORD_BYTES
+            && self.record.starts_with(&prefix)
+            && self.record.contains(" target ")
+            && !self.record.chars().any(char::is_control)
+    }
 }

@@ -121,6 +121,9 @@ pub struct LaunchRequest {
     pub decisions: crate::EgressDecisions,
     /// The login account's sign-in the session uses (#59); only a sandboxed launch binds one.
     pub login: Option<SessionLogin>,
+    /// The project's declared services the launcher serves (#880); each relays only while
+    /// the owner's decisions allow its record. Only a sandboxed launch serves one.
+    pub forwards: Vec<crate::Forward>,
 }
 
 /// One check run's facts (#862): the project's check as the program, with no provider, agent
@@ -387,6 +390,7 @@ impl Sandbox {
             credentials: Vec::new(),
             decisions: crate::EgressDecisions::default(),
             login: None,
+            forwards: Vec::new(),
         };
         crate::native::prepare(
             native,
@@ -426,6 +430,13 @@ impl Sandbox {
                      an unsandboxed launch has no proxy",
                 ));
             }
+            if let Some(forward) = request.forwards.first() {
+                return Err(Refusal::new(
+                    format!("service {}", forward.service),
+                    "only a sandboxed launch's launcher serves a declared service; an \
+                     unsandboxed launch reaches the host's services itself",
+                ));
+            }
             return Ok(self.unsandboxed(program, arguments, &request.environment));
         }
         let native = self.native()?;
@@ -445,6 +456,7 @@ impl Sandbox {
             credentials: request.credentials.clone(),
             decisions: request.decisions.clone(),
             login: request.login.clone(),
+            forwards: request.forwards.clone(),
         };
         crate::native::prepare(
             native,

@@ -1,5 +1,5 @@
-//! Network requests (#674): files the destinations each sandboxed session's launcher refused
-//! as requests for the owner, carries out the owner's decisions on the host-only socket, and
+//! Network requests (#674): files the destinations and service records (#880) each sandboxed
+//! session's launcher refused as requests for the owner, carries out the owner's decisions on the host-only socket, and
 //! keeps each launcher's decisions file current. The rules of the rows live in
 //! `cockpit-sandbox`; this file maps them to the wire and moves the files.
 //!
@@ -12,12 +12,12 @@ use std::time::Duration;
 
 use cockpit_protocol::{
     Command, DecidedThroughView, ErrorCode, NetworkDecisionView, NetworkGrantView,
-    NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, NetworkTargetKindView,
+    NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, NetworkTargetView,
     ProtocolError, Reply, Unblock, UnblockedBy,
 };
 use cockpit_sandbox::{
     EgressDecisions, EgressRequests, NetworkError, NetworkGrant, NetworkRefusal, NetworkRequest,
-    NetworkRequestState, OwnerClient, OwnerDecision, Sandbox, Subject,
+    NetworkRequestState, NetworkTarget, OwnerClient, OwnerDecision, Sandbox, Subject,
 };
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
@@ -290,8 +290,27 @@ async fn collect(
                 tracing::info!(
                     request = filed.id,
                     session,
-                    destination = %cockpit_sandbox::destination(&filed.host, filed.port),
+                    destination = filed.target.describe(),
                     "a sandboxed session asks the owner for a host"
+                );
+            }
+        }
+        for asked in requests.services.iter().take(cockpit_sandbox::MAX_FORWARDS) {
+            if !asked.is_askable() {
+                tracing::warn!(session, "a refused service names no service record");
+                continue;
+            }
+            if let Some(filed) =
+                cockpit_sandbox::file_service_request(&write, &subject, project, asked, at)
+                    .await
+                    .map_err(|error| error.to_string())?
+            {
+                is_filed = true;
+                tracing::info!(
+                    request = filed.id,
+                    session,
+                    record = filed.target.describe(),
+                    "a sandboxed session asks the owner for a service"
                 );
             }
         }
@@ -397,10 +416,8 @@ fn request_view(request: &NetworkRequest) -> NetworkRequestView {
             id: request.session.clone(),
         },
         project: request.project.clone(),
-        kind: NetworkTargetKindView::Host,
-        host: request.host.clone(),
-        port: request.port,
-        target: cockpit_sandbox::destination(&request.host, request.port),
+        asks: target_view(&request.target),
+        target: request.target.describe(),
         state: match request.state {
             NetworkRequestState::Asking => NetworkRequestStateView::Asking,
             NetworkRequestState::AllowedOnce => NetworkRequestStateView::AllowedOnce,
@@ -434,11 +451,22 @@ fn grant_view(grant: &NetworkGrant) -> NetworkGrantView {
     NetworkGrantView {
         id: grant.id,
         project: grant.project.clone(),
-        host: grant.host.clone(),
-        port: grant.port,
-        target: cockpit_sandbox::destination(&grant.host, grant.port),
+        allows: target_view(&grant.target),
+        target: grant.target.describe(),
         request: grant.request,
         granted: decision_view(grant.granted),
         revoked: grant.revoked.map(decision_view),
+    }
+}
+
+fn target_view(target: &NetworkTarget) -> NetworkTargetView {
+    match target {
+        NetworkTarget::Host { host, port } => NetworkTargetView::Host {
+            host: host.clone(),
+            port: *port,
+        },
+        NetworkTarget::Service { service, .. } => NetworkTargetView::Service {
+            service: service.clone(),
+        },
     }
 }

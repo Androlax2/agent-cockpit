@@ -59,6 +59,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 4,
             sql: crate::network::DIRECT_GRANTS_MIGRATION_SQL,
         },
+        // #880: a request and a grant name a host or a declared service's record.
+        Migration {
+            version: 5,
+            sql: crate::network::SERVICES_MIGRATION_SQL,
+        },
     ],
 };
 

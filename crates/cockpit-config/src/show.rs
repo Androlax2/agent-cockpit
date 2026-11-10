@@ -420,6 +420,22 @@ pub fn render(config: &EffectiveConfig) -> String {
             &check.source,
         ));
     }
+    for service in &config.services {
+        let mut fields = Table::new();
+        fields.insert(
+            "listen".to_string(),
+            Value::from(service.value.listen.to_string()),
+        );
+        fields.insert(
+            "target".to_string(),
+            Value::from(service.value.target.to_string()),
+        );
+        lines.push(line(
+            &format!("services.{}", Value::from(service.value.name.as_str())),
+            &Value::Table(fields).to_string(),
+            &service.source,
+        ));
+    }
     lines.join("\n") + "\n"
 }
 

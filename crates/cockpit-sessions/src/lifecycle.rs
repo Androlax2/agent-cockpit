@@ -2343,6 +2343,7 @@ impl Sessions {
                 },
             )
             .await?;
+        let forwards = self.declared_forwards(setting, &checkout.path).await?;
         let prepared = self.prepare_sandbox(
             setting,
             id.as_str(),
@@ -2357,6 +2358,7 @@ impl Sessions {
             account.login,
             needs,
             decisions,
+            forwards,
             tools,
             command.program,
             command.arguments,
@@ -3038,6 +3040,7 @@ impl Sessions {
         login: Option<cockpit_sandbox::SessionLogin>,
         needs: cockpit_sandbox::ProviderNeeds,
         decisions: cockpit_sandbox::EgressDecisions,
+        forwards: Vec<cockpit_sandbox::Forward>,
         tools: cockpit_sandbox::ToolNeeds,
         program: PathBuf,
         arguments: Vec<OsString>,
@@ -3100,6 +3103,7 @@ impl Sessions {
                         .collect(),
                     decisions,
                     login,
+                    forwards,
                 },
                 program,
                 arguments,
@@ -3156,6 +3160,38 @@ impl Sessions {
         let environment = environment.to_vec();
         self.blocking("read the checkout's toolchains", move || {
             tool_needs(&checkout, &start_dir, &environment)
+        })
+        .await
+    }
+
+    /// The services the project file in `checkout` declares (#880), as the forwards its
+    /// launcher serves. None under `"off"`, whose agent reaches the host's services itself.
+    /// A project file that cannot be read refuses the launch: a declared service silently
+    /// left out would look like a refusal of the owner's.
+    async fn declared_forwards(
+        &self,
+        setting: cockpit_config::AgentSandbox,
+        checkout: &Path,
+    ) -> Result<Vec<cockpit_sandbox::Forward>, Error> {
+        let has_backend = self.settings.sandbox.backend().missing_reason().is_none();
+        if setting == cockpit_config::AgentSandbox::Off || !has_backend {
+            return Ok(Vec::new());
+        }
+        let environment = self.settings.owner_environment.clone();
+        let checkout = checkout.to_path_buf();
+        self.blocking("read the project's declared services", move || {
+            let config =
+                cockpit_config::load(&environment, Some(&checkout), &[]).map_err(|error| {
+                    Error::Sandbox(cockpit_sandbox::Refusal {
+                        rule: "declared services".to_owned(),
+                        reason: format!("the project configuration cannot be read: {error}"),
+                    })
+                })?;
+            Ok(config
+                .services
+                .into_iter()
+                .map(|declared| forward_of(declared.value))
+                .collect())
         })
         .await
     }
@@ -3348,6 +3384,10 @@ impl Sessions {
                 },
             )
             .await?;
+        let forwards = match self.declared_forwards(setting, &checkout.path).await {
+            Ok(forwards) => forwards,
+            Err(error) => return Ok(Err(error.to_string())),
+        };
         Ok(self
             .prepare_sandbox(
                 setting,
@@ -3363,6 +3403,7 @@ impl Sessions {
                 account.login,
                 needs,
                 decisions,
+                forwards,
                 tools,
                 command.program.clone(),
                 command.arguments.clone(),
@@ -5013,6 +5054,19 @@ fn record_harness_trust(
             session_home,
         })
         .map_err(|error| format!("{}{}", error.reason, unread.unwrap_or_default()))
+}
+
+/// A declared service as the forward its launcher serves (#880).
+fn forward_of(service: cockpit_config::Service) -> cockpit_sandbox::Forward {
+    let endpoint = |declared: cockpit_config::ServiceEndpoint| match declared {
+        cockpit_config::ServiceEndpoint::Port(port) => cockpit_sandbox::Endpoint::Port { port },
+        cockpit_config::ServiceEndpoint::Socket(path) => cockpit_sandbox::Endpoint::Socket { path },
+    };
+    cockpit_sandbox::Forward {
+        service: service.name,
+        listen: endpoint(service.listen),
+        target: endpoint(service.target),
+    }
 }
 
 #[cfg(test)]

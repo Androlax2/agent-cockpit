@@ -13,6 +13,7 @@ mod memory;
 mod notify;
 mod profile;
 mod provider_credential;
+mod services;
 mod show;
 mod skill_pack;
 mod start_files;
@@ -22,6 +23,7 @@ mod usage;
 pub use accounts::{AccountSettings, DEFAULT_ACCOUNT};
 pub use memory::MemorySettings;
 pub use notify::{AWAY_HOLD, NOTIFY_EVENTS, NotifyEvents, NotifySettings};
+pub use services::{Service, ServiceEndpoint};
 pub use skill_pack::SkillPackSettings;
 pub use storage::StorageSettings;
 pub use usage::{Economy, Pacing, UsageSettings};
@@ -183,6 +185,9 @@ pub struct EffectiveConfig {
     pub tui_phone_below_columns: Sourced<u16>,
     /// The checks the project declares, in its order: what Cockpit runs and a gate requires.
     pub checks: Vec<Sourced<Check>>,
+    /// The host services the project declares (#880), in its order: what a sandboxed
+    /// session's launcher forwards once the owner allows each.
+    pub services: Vec<Sourced<Service>>,
     /// Where the project expects its work to run (`[execution] environment`); unset asks for
     /// nothing. Readiness compares it with what the owner granted and the host has (#50).
     pub execution_environment: Sourced<Option<ExecutionEnvironment>>,
@@ -379,6 +384,7 @@ struct SettingsFile {
     accounts: Option<Spanned<accounts::AccountsTable>>,
     skill_pack: Option<Spanned<skill_pack::SkillPackTable>>,
     checks: Option<Spanned<Vec<Spanned<CheckEntry>>>>,
+    services: Option<Spanned<Vec<Spanned<services::ServiceEntry>>>>,
     execution: Option<Spanned<ExecutionTable>>,
     needs: Option<Spanned<NeedsTable>>,
     results: Option<Spanned<ResultsTable>>,
@@ -559,6 +565,7 @@ pub fn load(
         agents_sandbox: agents_sandbox(&layers),
         tui_attention_bell: tui_attention_bell(&layers),
         checks: checks(&layers)?,
+        services: services::services(&layers)?,
         execution_environment: execution_environment(&layers),
         needs: needs(&layers)?,
         result_artifacts: result_artifacts(&layers)?,
@@ -622,6 +629,7 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         skill_pack,
         workflow: _,
         checks: _,
+        services: _,
         execution: _,
         needs: _,
         results: _,
@@ -707,6 +715,7 @@ fn reject_project_settings(layer: &Layer) -> Result<(), ConfigError> {
     let settings = &layer.settings;
     let declared = [
         ("checks", settings.checks.as_ref().map(Spanned::span)),
+        ("services", settings.services.as_ref().map(Spanned::span)),
         ("execution", settings.execution.as_ref().map(Spanned::span)),
         ("needs", settings.needs.as_ref().map(Spanned::span)),
         ("results", settings.results.as_ref().map(Spanned::span)),

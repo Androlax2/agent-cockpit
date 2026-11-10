@@ -60,7 +60,7 @@ pub use instructions::{
 };
 pub use network::{
     NetworkDecisionView, NetworkGrantView, NetworkRequestStateView, NetworkRequestView,
-    NetworkSubjectView, NetworkTargetKindView,
+    NetworkSubjectView, NetworkTargetView,
 };
 pub use projects::{
     CheckoutKindView, CheckoutView, GithubTokenView, KeptCheckout, KeptReason, ProjectView,

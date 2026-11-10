@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 
 use cockpit_sandbox::{
-    Allowlist, EgressDecisions, Endpoint, Forward, LaunchSpec, MAX_FORWARDS, NeedsSource,
-    SPEC_VERSION, Subject,
+    Allowlist, AskedService, EgressDecisions, Endpoint, Forward, LaunchSpec, MAX_FORWARDS,
+    NeedsSource, SPEC_VERSION, Subject,
 };
 
 fn spec(forwards: Vec<Forward>) -> LaunchSpec {
@@ -195,4 +195,36 @@ fn a_changed_target_or_listen_is_another_record() {
 
     assert!(!records.contains(&granted.record()));
     assert_eq!(granted.record(), granted.clone().record());
+}
+
+#[test]
+fn the_daemon_files_a_record_its_launcher_wrote() {
+    let asked = AskedService::of(&forward("figcraft", port(7979), socket("/run/f.sock")));
+
+    assert!(asked.is_askable());
+}
+
+/// A requests file the launcher did not write as it does is refused at the daemon rather
+/// than shown to the owner.
+#[test]
+fn a_record_of_another_service_or_on_two_lines_is_not_filed() {
+    let written = forward("figcraft", port(7979), port(7979)).record();
+    let malformed = [
+        ("Figcraft", written.clone()),
+        ("other", written.clone()),
+        ("figcraft", format!("{written}\nservice other")),
+        (
+            "figcraft",
+            "service figcraft listen 127.0.0.1:7979".to_owned(),
+        ),
+        ("figcraft", format!("{written}{}", " ".repeat(8192))),
+    ];
+
+    for (service, record) in malformed {
+        let asked = AskedService {
+            service: service.to_owned(),
+            record: record.clone(),
+        };
+        assert!(!asked.is_askable(), "{service} {record:?} was filed");
+    }
 }
