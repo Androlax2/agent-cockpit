@@ -81,6 +81,46 @@ pub(crate) fn exchange_all(
     }))
 }
 
+/// [`exchange_all`], then, on the same connection, the command `follow_up` names from those
+/// replies, if any. Its own failure is its answer; it fails none of the others.
+pub(crate) fn exchange_then(
+    socket: &std::path::Path,
+    commands: Vec<Command>,
+    follow_up: impl FnOnce(&[Reply]) -> Option<Command>,
+    deadline: Duration,
+) -> Result<FollowedReplies, ExitCode> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| fail(&format!("cannot start the client runtime: {error}")))?;
+    Ok(runtime.block_on(async {
+        let connection = Connection::open(socket, CONTROL_DEADLINE).await?;
+        let started = std::time::Instant::now();
+        let remaining = || {
+            deadline
+                .checked_sub(started.elapsed())
+                .ok_or(ClientError::DeadlineExceeded)
+        };
+        let mut replies = Vec::with_capacity(commands.len());
+        for command in commands {
+            replies.push(connection.request(command, remaining()?).await?);
+        }
+        let followed = match follow_up(&replies) {
+            Some(command) => match remaining() {
+                Ok(remaining) => Some(connection.request(command, remaining).await),
+                Err(error) => Some(Err(error)),
+            },
+            None => None,
+        };
+        Ok((replies, followed))
+    }))
+}
+
+/// What [`exchange_then`] answers: the replies, and the follow-up's answer when one was sent;
+/// or the first error of the replies.
+pub(crate) type FollowedReplies =
+    Result<(Vec<Reply>, Option<Result<Reply, ClientError>>), ClientError>;
+
 /// Exit 1 after saying why the request failed, and for a refusal what would lift it.
 pub(crate) fn failed(error: &ClientError) -> ExitCode {
     match error {

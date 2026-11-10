@@ -100,6 +100,9 @@ struct DaemonFacts {
     sessions: Vec<SessionView>,
     /// The active network grants of every project.
     grants: Vec<NetworkGrantView>,
+    /// The launch gates a session in the first project would pass (#1250), or why they could
+    /// not be read; `None` without a project.
+    launch: Option<Result<Vec<RequirementView>, String>>,
 }
 
 /// Why the daemon's facts are missing, and what fixes that.
@@ -152,8 +155,11 @@ fn ask_daemon(
         Command::NetworkGrants { project: None },
     ];
     Ok(
-        match daemon::exchange_all(socket, commands, INIT_DEADLINE)? {
-            Ok(replies) => daemon_facts(replies),
+        match daemon::exchange_then(socket, commands, launch_check, INIT_DEADLINE)? {
+            Ok((replies, launch)) => daemon_facts(replies).map(|mut facts| {
+                facts.launch = launch.map(launch_gates);
+                facts
+            }),
             Err(error @ ClientError::Connect { .. }) => Err(DaemonProblem {
                 detail: format!("not running ({error})"),
                 next: format!(
@@ -166,6 +172,34 @@ fn ask_daemon(
             Err(error) => Err(failing_daemon(&error.to_string())),
         },
     )
+}
+
+/// `sandbox show` for the first registered project and the provider the session step
+/// offers: the gates the session it offers would pass. None without both.
+fn launch_check(replies: &[Reply]) -> Option<Command> {
+    let agent = replies.iter().find_map(|reply| match reply {
+        Reply::Readiness { requirements } => available_providers(requirements).first().copied(),
+        _ => None,
+    })?;
+    let project = replies.iter().find_map(|reply| match reply {
+        Reply::Projects { projects } => projects.first(),
+        _ => None,
+    })?;
+    Some(Command::SandboxShow {
+        dir: project.root.clone(),
+        agent: Some(agent.to_owned()),
+    })
+}
+
+fn launch_gates(answer: Result<Reply, ClientError>) -> Result<Vec<RequirementView>, String> {
+    match answer {
+        Ok(Reply::SandboxProfile { gates, .. }) => Ok(gates
+            .into_iter()
+            .map(crate::profile::localize_requirement)
+            .collect()),
+        Ok(other) => Err(format!("unexpected reply {other:?}")),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn failing_daemon(detail: &str) -> DaemonProblem {
@@ -206,6 +240,7 @@ fn daemon_facts(replies: Vec<Reply>) -> Result<DaemonFacts, DaemonProblem> {
         projects,
         sessions,
         grants,
+        launch: None,
     })
 }
 
@@ -582,6 +617,36 @@ fn project_step(projects: &[ProjectView], grants: Option<&Vec<NetworkGrantView>>
 }
 
 fn session_step(daemon: &DaemonFacts, available: &[&str], is_host_ready: bool) -> Step {
+    // A launch the gates refuse holds this step even after earlier sessions started: the
+    // next one would fail (#965, #1250).
+    if let (Some(Ok(gates)), Some(project)) = (&daemon.launch, daemon.projects.first())
+        && let Some(refusing) = gates.iter().find(|gate| gate.status.blocks())
+    {
+        let mut lines = vec![format!("a new session in {} is refused:", project.root)];
+        lines.extend(
+            gates
+                .iter()
+                .filter(|gate| gate.status != ReadinessStatusView::Available)
+                .map(requirement_line),
+        );
+        // The gates were read for the first available provider, which need not be the
+        // daemon's default.
+        let agent = match available {
+            [] | [_] => String::new(),
+            several => format!(" --agent {}", several[0]),
+        };
+        lines.push(format!(
+            "`{} sandbox show {}{agent}` lists every launch gate",
+            crate::profile::command(),
+            shell_word(&project.root)
+        ));
+        return Step {
+            title: SESSION,
+            state: State::Open,
+            lines,
+            next: refusing.next.clone(),
+        };
+    }
     if !daemon.sessions.is_empty() {
         return done(
             SESSION,
@@ -605,10 +670,21 @@ fn session_step(daemon: &DaemonFacts, available: &[&str], is_host_ready: bool) -
         [_] => String::new(),
         several => format!(" --agent {}", several[0]),
     };
+    let mut lines = vec!["no session has started yet".to_owned()];
+    match &daemon.launch {
+        Some(Ok(gates)) => lines.extend(
+            gates
+                .iter()
+                .filter(|gate| gate.status != ReadinessStatusView::Available)
+                .map(requirement_line),
+        ),
+        Some(Err(reason)) => lines.push(format!("launch gates not read: {reason}")),
+        None => {}
+    }
     Step {
         title: SESSION,
         state: State::Open,
-        lines: vec!["no session has started yet".to_owned()],
+        lines,
         next: Some(format!(
             "`{command} session new {}{agent}` starts an agent there; `{command} tui` shows it",
             shell_word(&project.root),

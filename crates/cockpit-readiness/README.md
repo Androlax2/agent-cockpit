@@ -32,8 +32,20 @@ it (#50).
 Host: `config`, `platform`, `tmux`, `sandbox`, `provider <name>` and its `sign-in`,
 `resource controls`. With a project: `project`, `project trust`, `workflow preset` (its
 steps' provider capabilities against the providers available), `execution environment`,
-`needs` (against the host's budget), one `check <name>` each (its working directory), and
-`docker` when the project or one of its checks runs in Docker.
+`needs` (against the host's budget), one `check <name>` each (its working directory),
+`docker` when the project or one of its checks runs in Docker, and the launch gates of a
+registered checkout.
+
+## Launch gates
+
+`launch_gates` turns what each gate of one launch found (#1250) into one `launch <gate>`
+requirement each, in launch order: `command`, `backend`, `desktop session`, `sign-in`,
+`github`, `toolchains`, `folder trust`, `profile`. The daemon reads those facts with the
+launch's own code (`Sessions::sandbox_preflight`), which launches nothing and writes no file;
+`torlek sandbox show` prints every gate. A project's report lists, for each provider the
+daemon wired, the gates that are not available, a host's gate once and a provider's with the
+provider in its name, or one available `launch` line when every launch passes. `torlek init`
+holds its session step on a gate that blocks.
 
 `sandbox` reports the `agents.sandbox` the running daemon applies, which is what it last read
 at its start or at a `torlek config reload`. When the owner's configuration now says another

@@ -39,6 +39,16 @@ pub(crate) fn requirements(
     if let Some(docker) = &project.docker {
         requirements.push(self::docker(docker, &host.platform));
     }
+    match &project.launch {
+        Some(Ok(all)) => requirements.extend(crate::launch::launch_summary(all, &project.dir)),
+        Some(Err(reason)) => requirements.push(Requirement::needs(
+            "launch",
+            Status::Unknown,
+            format!("its gates could not be read: {reason}"),
+            format!("`torlek sandbox show {}` names them", project.dir.display()),
+        )),
+        None => {}
+    }
     requirements
 }
 

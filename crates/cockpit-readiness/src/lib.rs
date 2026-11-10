@@ -2,12 +2,14 @@
 
 mod docker;
 mod host;
+mod launch;
 mod project;
 
 use std::path::PathBuf;
 
 pub use cockpit_config::{AgentSandbox, EffectiveConfig, ExecutionEnvironment, ProjectNeeds};
 pub use docker::{DOCKER_DEADLINE, DockerEngine, probe_docker};
+pub use launch::{HarnessTrust, LaunchFacts, Toolchains, launch_gates, launch_summary};
 pub use project::needs_docker;
 
 /// One requirement's state (report 09).
@@ -254,6 +256,9 @@ pub struct ProjectFacts {
     pub capacity: ProjectNeeds,
     /// The probed engine, when [`needs_docker`] said to probe one.
     pub docker: Option<Result<DockerEngine, String>>,
+    /// The gates a session of each wired provider in `dir` would pass (#1250), when `dir` is
+    /// a registered checkout, or why one could not be read.
+    pub launch: Option<Result<Vec<LaunchFacts>, String>>,
 }
 
 /// The report for this host and, with `project`, for that project: `config` is the

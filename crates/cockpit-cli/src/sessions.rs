@@ -22,7 +22,8 @@ pub fn parse_provider(arguments: &[OsString]) -> Result<Command, String> {
     }
 }
 
-/// `sandbox show DIR [--agent NAME]`: the sandbox a new session there would get.
+/// `sandbox show DIR [--agent NAME]`: each gate a new session there would pass, and the
+/// sandbox it would get; exit 1 when a gate refuses the launch.
 pub fn parse_sandbox(arguments: &[OsString]) -> Result<Command, String> {
     match utf8_words(arguments)?.as_slice() {
         ["show", dir] => Ok(Command::SandboxShow {
@@ -260,9 +261,23 @@ pub fn run(command: Command) -> ExitCode {
         Reply::SessionSandbox {
             evidence: Some(evidence),
         } => evidence.lines().iter().for_each(|line| outln!("{line}")),
-        Reply::SandboxProfile { evidence, command } => {
-            evidence.lines().iter().for_each(|line| outln!("{line}"));
-            outln!("command: {}", command.join(" "));
+        Reply::SandboxProfile {
+            gates,
+            evidence,
+            command,
+        } => {
+            gates
+                .iter()
+                .cloned()
+                .map(crate::profile::localize_requirement)
+                .for_each(|gate| crate::doctor::render(&gate));
+            if let Some(evidence) = evidence {
+                evidence.lines().iter().for_each(|line| outln!("{line}"));
+                outln!("command: {}", command.join(" "));
+            }
+            if evidence.is_none() || gates.iter().any(|gate| gate.status.blocks()) {
+                return ExitCode::FAILURE;
+            }
         }
         Reply::RestartedAll {
             restarted,

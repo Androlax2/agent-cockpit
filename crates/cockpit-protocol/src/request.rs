@@ -897,9 +897,9 @@ pub enum Command {
         client_identity: String,
         observations: Vec<String>,
     },
-    /// Owner only: the sandbox a new session of `agent` (the default provider without one)
-    /// in `dir` (absolute) would get, without launching anything (#61). A profile this host
-    /// cannot enforce is refused with the rule and the reason.
+    /// Owner only: each gate a new session of `agent` (the default provider without one) in
+    /// `dir` (absolute) would pass, and the sandbox it would get, without launching anything
+    /// (#61, #1250). A gate that refuses is a requirement of the reply, not an error.
     SandboxShow {
         dir: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1376,10 +1376,14 @@ pub enum Reply {
     SessionSandbox {
         evidence: Option<Box<SandboxEvidenceView>>,
     },
-    /// What a launch would get, and the words it would run, with `<agent>` standing for the
-    /// provider's own program and arguments.
+    /// Each gate a launch would pass, one requirement each in launch order (#1250), and,
+    /// when none refuses, what the launch would get and the words it would run.
     SandboxProfile {
-        evidence: Box<SandboxEvidenceView>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        gates: Vec<RequirementView>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evidence: Option<Box<SandboxEvidenceView>>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         command: Vec<String>,
     },
     /// The import is recorded. `withheld`: the owner's `agents.desktop_session` keeps

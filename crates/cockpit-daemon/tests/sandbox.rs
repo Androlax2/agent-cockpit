@@ -187,8 +187,21 @@ async fn the_default_warns_at_start_and_at_each_launch_that_an_agent_can_act_as_
     }
 }
 
+/// The line `sandbox show` printed for gate `name`, and the `next:` line under it.
+fn gate<'printed>(printed: &'printed str, name: &str) -> (&'printed str, Option<&'printed str>) {
+    let mut lines = printed.lines();
+    let line = lines
+        .by_ref()
+        .find(|line| line.contains(&format!("  launch {name}: ")))
+        .unwrap_or_else(|| panic!("no launch {name} gate in:\n{printed}"));
+    let next = lines
+        .next()
+        .and_then(|line| line.trim_start().strip_prefix("next: "));
+    (line, next)
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn cockpit_sandbox_show_prints_no_sandbox_and_the_bare_command_without_launching() {
+async fn cockpit_sandbox_show_prints_no_sandbox_and_the_providers_command_without_launching() {
     let home = Home::new();
     let _daemon = home.start();
     let client = home.connect().await;
@@ -198,13 +211,53 @@ async fn cockpit_sandbox_show_prints_no_sandbox_and_the_bare_command_without_lau
 
     assert!(shown.status.success(), "{}", text(&shown.stderr));
     let printed = text(&shown.stdout);
-    assert!(printed.starts_with("sandbox: NONE on "), "{printed}");
-    assert!(printed.contains("\ncommand: <agent>\n"), "{printed}");
+    let (backend, _) = gate(&printed, "backend");
+    assert!(backend.starts_with("available "), "{printed}");
+    assert!(printed.contains("\nsandbox: NONE on "), "{printed}");
+    let claude = home.path().join("bin/claude");
+    assert!(
+        printed.contains(&format!("\ncommand: {} ", claude.display())),
+        "{printed}"
+    );
     assert!(home.launches().is_empty());
 }
 
+/// #1174: under `required` on a host with the backend, the dry run reports it and the
+/// launcher's command, instead of refusing on its own stand-in for the agent's program.
 #[tokio::test(flavor = "multi_thread")]
-async fn cockpit_sandbox_show_with_a_required_setting_without_bubblewrap_fails_naming_why() {
+async fn cockpit_sandbox_show_with_a_required_setting_reports_the_backend_ready() {
+    assert!(
+        candidate::program("torlek-sandbox").is_file(),
+        "the launcher is built beside the daemon: run the workspace's tests"
+    );
+    let home = Home::new();
+    home.write_owner_config(REQUIRED);
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+
+    let shown = sandbox_show(&home, &root).await;
+
+    let printed = text(&shown.stdout);
+    assert!(shown.status.success(), "{printed}{}", text(&shown.stderr));
+    let (backend, _) = gate(&printed, "backend");
+    assert!(
+        backend.starts_with("available ") && backend.contains("torlek-sandbox"),
+        "{printed}"
+    );
+    let (profile, _) = gate(&printed, "profile");
+    assert!(profile.starts_with("available "), "{printed}");
+    assert!(
+        printed.contains("\nsandbox: enforced by torlek-sandbox on "),
+        "{printed}"
+    );
+    assert!(home.launches().is_empty());
+}
+
+/// #1250: the gate that refuses is one line with its fix, beside the gates that pass.
+#[tokio::test(flavor = "multi_thread")]
+async fn cockpit_sandbox_show_with_a_required_setting_without_bubblewrap_names_the_gate_and_its_fix()
+ {
     let home = Home::new();
     home.write_owner_config(REQUIRED);
     let _daemon = home.start_without_bubblewrap();
@@ -213,12 +266,63 @@ async fn cockpit_sandbox_show_with_a_required_setting_without_bubblewrap_fails_n
 
     let shown = sandbox_show(&home, &root).await;
 
-    assert!(!shown.status.success());
+    assert_eq!(shown.status.code(), Some(1), "{}", text(&shown.stderr));
+    let printed = text(&shown.stdout);
+    let (backend, next) = gate(&printed, "backend");
     assert!(
-        text(&shown.stderr).contains(NO_BUBBLEWRAP),
-        "{}",
-        text(&shown.stderr)
+        backend.starts_with("missing-prerequisite ") && backend.contains(NO_BUBBLEWRAP),
+        "{printed}"
     );
+    assert!(
+        next.is_some_and(|next| next.contains("agents.sandbox = \"off\"")),
+        "{printed}"
+    );
+    let (command, _) = gate(&printed, "command");
+    assert!(command.starts_with("available "), "{printed}");
+    assert!(!printed.contains("\nsandbox: "), "{printed}");
+}
+
+/// #1250: `doctor --project` names the launch gate that refuses a session there.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_for_a_project_names_the_launch_gate_that_refuses() {
+    let home = Home::new();
+    home.write_owner_config(REQUIRED);
+    let _daemon = home.start_without_bubblewrap();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+
+    let doctor = home
+        .cockpit(&["doctor", "--project", root.to_str().unwrap()], &[])
+        .await;
+
+    let report = text(&doctor.stdout);
+    assert_eq!(doctor.status.code(), Some(1), "{report}");
+    let (backend, _) = gate(&report, "backend");
+    assert!(backend.starts_with("missing-prerequisite "), "{report}");
+}
+
+/// #1250: with every gate passing, `doctor --project` says so in one line.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_for_a_project_whose_launch_passes_says_so_in_one_line() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+
+    let doctor = home
+        .cockpit(&["doctor", "--project", root.to_str().unwrap()], &[])
+        .await;
+
+    let report = text(&doctor.stdout);
+    let line = report
+        .lines()
+        .find(|line| line.contains("  launch: "))
+        .unwrap_or_else(|| panic!("no launch line in:\n{report}"));
+    assert!(
+        line.starts_with("available ") && line.contains("passes every launch gate"),
+        "{report}"
+    );
+    assert!(!report.contains("  launch backend: "), "{report}");
 }
 
 /// #829: the evidence names the backend, bubblewrap's version and the Landlock ABI.
