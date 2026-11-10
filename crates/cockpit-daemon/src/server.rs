@@ -108,7 +108,7 @@ impl Limits {
 /// What every connection shares.
 pub(crate) struct Shared {
     /// Startup hooks may report and read their context before restore permits new work.
-    pub(crate) restoring: Arc<AtomicBool>,
+    pub(crate) is_restoring: Arc<AtomicBool>,
     pub(crate) owner_uid: u32,
     pub(crate) limits: Limits,
     pub(crate) lanes: Lanes,
@@ -146,7 +146,9 @@ pub(crate) fn bind(path: &Path) -> Result<UnixListener, StartError> {
 }
 
 /// Accepts connections forever, at most `connections` open at once. Each connection runs in
-/// its own task, so a panic there ends that connection only.
+/// its own task, so a panic there ends that connection only. Dropping or restarting this
+/// accept loop also closes its connections (including feeds and inbox waiters); clients
+/// reconnect. Keeping them in the loop's task group prevents failed startup leaking them.
 pub(crate) async fn accept_connections(
     listener: Arc<UnixListener>,
     shared: Arc<Shared>,
@@ -189,6 +191,20 @@ pub(crate) async fn accept_connections(
             drop(connection_place);
         });
     }
+}
+
+/// Startup requests from the Claude, Codex and OpenCode hook bridges and `torlek mcp`.
+/// Keep this list aligned with those clients: a new hook request must work before restore
+/// returns, while commands that can change session lifecycles must wait.
+fn serves_during_restore(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::AgentReport { .. }
+            | Command::AgentBrief { .. }
+            | Command::AgentInbox { .. }
+            | Command::InstructionCatalog
+            | Command::InstructionsRead { .. }
+    )
 }
 
 /// Whether the kernel says the peer runs as the daemon's user; payloads never say who sent them.
@@ -289,16 +305,7 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
         };
         let id = request.id;
         let respond = move |outcome| ServerFrame::Response(Response { id, outcome });
-        if shared.restoring.load(Ordering::Acquire)
-            && !matches!(
-                request.command,
-                Command::AgentReport { .. }
-                    | Command::AgentBrief { .. }
-                    | Command::AgentInbox { .. }
-                    | Command::InstructionCatalog
-                    | Command::InstructionsRead { .. }
-            )
-        {
+        if shared.is_restoring.load(Ordering::Acquire) && !serves_during_restore(&request.command) {
             answer.send(respond(refusal(
                 ErrorCode::Busy,
                 "the daemon is restoring sessions; retry this command once startup finishes",

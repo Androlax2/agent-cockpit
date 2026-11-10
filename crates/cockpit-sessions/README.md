@@ -134,16 +134,17 @@ stopped in the middle of one finishes or repairs it at its next start.
   session's lock, and the pass re-reads the session under it. The pass drops the locks
   nothing holds, so the daemon keeps one per session being worked on, not one per session
   ever touched (#406).
-- **Reboot restore** runs at daemon start, before requests are accepted. A session whose
-  agent still runs is kept; a stop under way is finished; any other active session is
+- **Reboot restore** runs at daemon start, while the agent socket serves startup reports,
+  briefs, inbox polls and instructions; other commands and background lifecycle work wait.
+  A session whose agent still runs is kept; a stop under way is finished; any other active session is
   reopened on its conversation. A reopen that fails, for any reason, leaves the session
   `failed` with the reason, and it is never retried silently: the owner resumes or ends it.
   Only a state-database error stops the daemon's start: one finishing a stop, reported by
   this crate or by the capability it called, or one that keeps a failed reopen from being
   recorded (#251). The agents of stops under way are terminated all at once, then the
-  sessions are restored one by one, so agents that ignore `SIGTERM` delay the first accepted
-  request by one stop grace, not one per agent, and terminals never race on tmux (#254). A restart whose stop committed
-  before the daemon stopped relaunches as a `restart` (#252,
+  sessions are restored one by one, so agents that ignore `SIGTERM` delay readiness for new
+  lifecycle work by one stop grace, not one per agent, and terminals never race on tmux
+  (#254). A restart whose stop committed before the daemon stopped relaunches as a `restart` (#252,
   `docs/decisions/2026-11-01-252-interrupted-restart-kind.md`).
 - **Launch records** (#256). A launch reserves its `cockpit-processes` execution in the
   transaction that records it, so a crash never leaves an execution the session does not

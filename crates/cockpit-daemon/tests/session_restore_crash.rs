@@ -11,9 +11,10 @@
 mod candidate;
 mod common;
 
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,11 +23,12 @@ use cockpit_daemon::{Daemon, Instance, Limits, Options, Routes, StartError};
 use cockpit_processes::{EndReason, ExecutionId, LaunchContainment, Phase, Supervisor};
 use cockpit_protocol::{
     AgentReport, AgentState, Command, ErrorCode, LaunchKindView, Reply, SessionStateView,
-    SessionView,
+    SessionView, TurnOutcome,
 };
 use cockpit_provider_api::fake::{FakeLaunch as AgentLaunch, FakeProvider};
 use cockpit_provider_api::{
-    Capabilities, LaunchCommand, LaunchRequest, Provider, ProviderError, ProviderName,
+    Capabilities, CredentialHeader, Credentials, InvalidValue, LaunchCommand, LaunchRequest, Needs,
+    Provider, ProviderError, ProviderName,
 };
 use common::GENEROUS;
 
@@ -35,6 +37,7 @@ struct Home {
     /// The state database of the running daemon, for the fixtures.
     database: Mutex<Option<Arc<cockpit_turso::Database>>>,
     provider: Option<Arc<dyn Provider>>,
+    settings: Option<cockpit_sessions::Settings>,
 }
 
 impl Home {
@@ -43,6 +46,7 @@ impl Home {
             dir: tempfile::tempdir().unwrap(),
             database: Mutex::new(None),
             provider: None,
+            settings: None,
         }
     }
 
@@ -95,6 +99,10 @@ impl Home {
                 ))
             });
             let mut wiring = common::wiring_in(&self.path(), vec![provider]);
+            if let Some(settings) = &self.settings {
+                wiring.sessions = settings.clone();
+                wiring.session_tick = Duration::from_millis(100);
+            }
             wiring.sessions.stop = cockpit_processes::Escalation {
                 grace: Duration::from_secs(2),
                 kill_wait: Duration::from_secs(5),
@@ -195,7 +203,12 @@ impl Home {
             &client,
             Command::SessionNew {
                 dir: root.display().to_string(),
-                agent: Some("fake".to_owned()),
+                agent: Some(
+                    self.provider
+                        .as_ref()
+                        .map_or("fake", |p| p.name().as_str())
+                        .to_owned(),
+                ),
                 prompt: None,
                 clone: None,
                 model: None,
@@ -284,8 +297,11 @@ async fn refused_start(home: &Home) -> StartError {
 struct ReportingProvider {
     inner: FakeProvider,
     socket: PathBuf,
+    owner_socket: PathBuf,
     result: PathBuf,
     launches: AtomicUsize,
+    is_restoring: AtomicBool,
+    quota_barrier: Option<PathBuf>,
 }
 
 impl Provider for ReportingProvider {
@@ -301,9 +317,34 @@ impl Provider for ReportingProvider {
         true
     }
 
+    fn needs(&self) -> Result<Needs, InvalidValue> {
+        Needs::new(&["api.example.com"], &[], &[])
+    }
+
+    fn credentials(&self) -> Result<Credentials, InvalidValue> {
+        Credentials::new(
+            &[],
+            &[(
+                "FIXTURE_TOKEN",
+                CredentialHeader::Bearer,
+                &["api.example.com"],
+            )],
+            &self.needs()?,
+        )
+    }
+
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
+        if !self.is_restoring.load(Ordering::Acquire) {
+            return self.inner.launch(request);
+        }
+        let index = self.launches.fetch_add(1, Ordering::SeqCst);
+        if index >= 2 {
+            return self.inner.launch(request);
+        }
         tokio::runtime::Handle::current()
             .block_on(async {
+                assert!(tokio::net::UnixStream::connect(&self.owner_socket).await.is_err(),
+                    "owner clients must not connect to an unserved socket during restore");
                 let connection = Connection::open(&self.socket, GENEROUS).await?;
                 let reply = connection.request(Command::AgentEnd {
                     launch_token: None,
@@ -316,13 +357,25 @@ impl Provider for ReportingProvider {
             .map_err(|error| ProviderError {
                 reason: format!("the agent socket must answer before restore launches: {error}"),
             })?;
-        if self.launches.fetch_add(1, Ordering::SeqCst) > 0 {
+        if index == 1 {
+            if let Some(barrier) = &self.quota_barrier {
+                std::fs::write(barrier.with_extension("blocked"), "restoring").unwrap();
+            }
             let deadline = Instant::now() + GENEROUS;
             while !self.result.exists() {
                 assert!(
                     Instant::now() < deadline,
                     "the first agent must report during restore"
                 );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        if index == 1
+            && let Some(barrier) = &self.quota_barrier
+        {
+            let deadline = Instant::now() + GENEROUS;
+            while !barrier.exists() {
+                assert!(Instant::now() < deadline, "restore was not released");
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
@@ -337,6 +390,13 @@ impl Provider for ReportingProvider {
             ("RESTORE_AGENT_SOCKET".into(), self.socket.clone().into()),
             ("RESTORE_REPORT_RESULT".into(), self.result.clone().into()),
         ]);
+        if index == 0
+            && let Some(barrier) = &self.quota_barrier
+        {
+            launch
+                .environment
+                .push(("RESTORE_QUOTA_BARRIER".into(), barrier.clone().into()));
+        }
         Ok(launch)
     }
 }
@@ -350,12 +410,21 @@ async fn restored_agent_reports() {
     let connection = Connection::open(Path::new(&socket), GENEROUS)
         .await
         .unwrap();
+    let quota_barrier = std::env::var_os("RESTORE_QUOTA_BARRIER");
+    if let Some(barrier) = &quota_barrier {
+        let deadline = Instant::now() + GENEROUS;
+        while !Path::new(barrier).with_extension("blocked").exists() {
+            assert!(Instant::now() < deadline, "second restore never started");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
     let reply = connection
         .request(
             Command::AgentReport {
                 launch_token: Some(std::env::var("TORLEK_LAUNCH_TOKEN").unwrap()),
                 report: AgentReport {
                     state: Some(AgentState::Waiting),
+                    outcome: quota_barrier.map(|_| TurnOutcome::QuotaStopped),
                     ..AgentReport::default()
                 },
             },
@@ -385,11 +454,10 @@ async fn restored_agent_reports() {
         )
         .await;
     assert!(matches!(inbox, Ok(Reply::AgentInbox { .. })), "{inbox:?}");
-    std::fs::write(
-        std::env::var_os("RESTORE_REPORT_RESULT").unwrap(),
-        "reported",
-    )
-    .unwrap();
+    let result = PathBuf::from(std::env::var_os("RESTORE_REPORT_RESULT").unwrap());
+    let staged = result.with_extension(format!("{}.tmp", std::process::id()));
+    std::fs::write(&staged, std::env::var("TORLEK_SESSION").unwrap()).unwrap();
+    std::fs::rename(staged, result).unwrap();
     std::future::pending::<()>().await;
 }
 
@@ -423,8 +491,11 @@ async fn a_restored_agent_can_report_on_its_first_attempt() {
         )
         .reporting_at_launch(),
         socket: home.options().agent_socket_path(),
+        owner_socket: home.options().socket_path(),
         result: result.clone(),
         launches: AtomicUsize::new(0),
+        is_restoring: AtomicBool::new(true),
+        quota_barrier: None,
     }));
 
     let daemon = home.start().await;
@@ -455,6 +526,191 @@ async fn a_restored_agent_can_report_on_its_first_attempt() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// Two real account selections, with only the sandbox launcher replaced: the test exercises
+/// restore/report/tick ordering, not namespace enforcement. No live credential is read.
+fn account_settings(home: &Home) -> cockpit_sessions::Settings {
+    let environment = cockpit_config::Environment {
+        home: Some(home.path().join("home").into()),
+        ..Default::default()
+    };
+    for account in ["work", "spare"] {
+        let dir = cockpit_config::account_credentials_dir(&environment, "claude", account).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let credential = dir.join("FIXTURE_TOKEN");
+        std::fs::write(&credential, "fixture-only-token").unwrap();
+        std::fs::set_permissions(credential, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let config = home.path().join("home/.config/torlek");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("config.toml"),
+        "[accounts]\nclaude = [\"work\", \"spare\"]\n",
+    )
+    .unwrap();
+    let accounts = cockpit_config::load(&environment, None, &[])
+        .unwrap()
+        .accounts;
+    let launcher = home.path().join("sandbox-fixture");
+    std::fs::write(
+        &launcher,
+        r#"#!/usr/bin/python3
+import json, os, sys
+assert sys.argv[1] == "run"
+with open(sys.argv[2]) as source:
+    spec = json.load(source)
+os.unlink(sys.argv[2])
+os.chdir(spec["working_dir"])
+os.execv(spec["program"], [spec["program"], *spec["arguments"]])
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let options = home.options();
+    cockpit_sessions::Settings {
+        owner: cockpit_config::SessionSettings {
+            sandbox: cockpit_config::AgentSandbox::Required,
+            ..cockpit_sessions::Settings::default().owner
+        },
+        accounts,
+        base_environment: vec![
+            ("HOME".into(), home.path().join("home").into()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ],
+        sandbox: cockpit_sandbox::Sandbox::new(
+            cockpit_sandbox::Platform::Linux,
+            cockpit_sandbox::HostPaths {
+                read_only: Vec::new(),
+                sockets: vec![options.agent_socket_path().parent().unwrap().to_path_buf()],
+                denied: Vec::new(),
+                denied_write: Vec::new(),
+                owner_uid: std::fs::metadata(home.path()).unwrap().uid(),
+                mount_sources: options.mount_sources(),
+                homes: options.session_homes(),
+                logins: options.account_logins(),
+            },
+            cockpit_sandbox::Backend::Native(cockpit_sandbox::NativeBackend {
+                launcher,
+                bubblewrap: "/unused/bwrap".into(),
+                bubblewrap_version: "fixture".to_owned(),
+                landlock_abi: 6,
+            }),
+        ),
+        ..cockpit_sessions::Settings::default()
+    }
+}
+
+/// Removing the report's restore guard must fail the held-restore assertion; removing the
+/// periodic retry must fail the eventual switch. The agent sends no second quota report.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_quota_stop_during_restore_waits_then_switches_accounts_once() {
+    let mut home = Home::new();
+    let barrier = home.path().join("finish-restore");
+    let result = home.path().join("quota-reported");
+    let provider = Arc::new(ReportingProvider {
+        inner: FakeProvider::new(
+            ProviderName::new("claude").unwrap(),
+            home.path().join("agent.log"),
+        )
+        .reporting_at_launch(),
+        socket: home.options().agent_socket_path(),
+        owner_socket: home.options().socket_path(),
+        result: result.clone(),
+        launches: AtomicUsize::new(0),
+        is_restoring: AtomicBool::new(false),
+        quota_barrier: Some(barrier.clone()),
+    });
+    home.settings = Some(account_settings(&home));
+    home.provider = Some(provider.clone());
+    let (daemon, first) = home.running_session().await;
+    let client = connect(&daemon).await;
+    let second = session_reply(
+        &client,
+        Command::SessionNew {
+            dir: first.working_dir.clone(),
+            agent: Some("claude".to_owned()),
+            prompt: None,
+            clone: None,
+            model: None,
+            effort: None,
+            compaction_threshold: None,
+        },
+    )
+    .await;
+    for session in [&first, &second] {
+        assert_eq!(
+            session.launch.as_ref().unwrap().account.as_deref(),
+            Some("work")
+        );
+    }
+    home.wait_for_launches(2).await;
+    drop(client);
+    home.stop(daemon);
+    home.lose_every_agent();
+    provider.is_restoring.store(true, Ordering::Release);
+
+    let hold_restore = async {
+        let deadline = Instant::now() + GENEROUS;
+        while !result.exists() {
+            assert!(Instant::now() < deadline, "no quota report during restore");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let id =
+            cockpit_sessions::SessionId::parse(&std::fs::read_to_string(&result).unwrap()).unwrap();
+        // A negative observation needs time for the erroneous background relaunch to run.
+        // The barrier keeps restore open for the whole interval, independent of host speed.
+        let until = Instant::now() + Duration::from_secs(1);
+        loop {
+            let database = home.database();
+            let read = database.read().await.unwrap();
+            let session = cockpit_sessions::session(&read, &id).await.unwrap();
+            assert_eq!(
+                session.state,
+                cockpit_sessions::SessionState::Running,
+                "quota report started a relaunch before restore finished: {session:?}"
+            );
+            let launch = session.launch.unwrap();
+            assert_eq!(launch.kind, cockpit_sessions::LaunchKind::Restore);
+            assert_eq!(launch.account.as_deref(), Some("work"));
+            if Instant::now() >= until {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        std::fs::write(&barrier, "finish").unwrap();
+        id
+    };
+    let (daemon, stopped) = tokio::join!(home.start(), hold_restore);
+    let client = connect(&daemon).await;
+    let deadline = Instant::now() + GENEROUS;
+    let switched = loop {
+        let session = listed(&client, stopped.as_str()).await;
+        if session.state == SessionStateView::Running
+            && session.launch.as_ref().unwrap().account.as_deref() == Some("spare")
+        {
+            break session;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "periodic pass did not switch accounts: {session:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let launch = switched.launch.unwrap();
+    assert_eq!(launch.kind, LaunchKindView::Restart);
+    assert_eq!(launch.switched_from.as_deref(), Some("work"));
+    // Several more periodic passes must not repeat the switch.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        listed(&client, stopped.as_str())
+            .await
+            .launch
+            .unwrap()
+            .number,
+        launch.number
+    );
+    assert_eq!(provider.launches.load(Ordering::SeqCst), 3);
 }
 
 /// #251: a stop left under way is finished at the next start; when the state database

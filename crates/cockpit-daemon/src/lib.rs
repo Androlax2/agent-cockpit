@@ -175,7 +175,7 @@ fn owner_session_settings(
 #[derive(Clone)]
 pub struct Capabilities {
     /// Suppresses report-triggered relaunches until restore has finished.
-    pub(crate) restoring: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) is_restoring: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) storage: storage::Context,
     pub database: Arc<cockpit_turso::Database>,
     pub git: cockpit_projects::Git,
@@ -476,7 +476,6 @@ impl Instance {
         let (faults, fault_receiver) = bug_reports::Faults::channel();
         let socket_path = options.socket_path();
         let agent_socket_path = options.agent_socket_path();
-        let listener = Arc::new(server::bind(&socket_path)?);
         let agent_listener = Arc::new(server::bind(&agent_socket_path)?);
         let limits = options.limits;
         let messages_queued = Arc::new(tokio::sync::Notify::new());
@@ -504,9 +503,9 @@ impl Instance {
             manager: Arc::clone(&manager),
             early_answer: readiness::Context::early_answer(),
         };
-        let restoring = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let is_restoring = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let shared = Arc::new(server::Shared {
-            restoring: Arc::clone(&restoring),
+            is_restoring: Arc::clone(&is_restoring),
             owner_uid: self.owner_uid,
             limits,
             lanes: lanes::Lanes::new(
@@ -517,7 +516,7 @@ impl Instance {
                 faults.clone(),
             ),
             handler: routes(Capabilities {
-                restoring,
+                is_restoring,
                 storage: storage.clone(),
                 database: Arc::clone(&database),
                 git: wiring.git,
@@ -556,6 +555,9 @@ impl Instance {
         sessions::restore(&sessions)
             .await
             .map_err(StartError::Restore)?;
+        // Owner clients must fail to connect while restore is busy, not hang on a socket
+        // whose accept loop has not started.
+        let listener = Arc::new(server::bind(&socket_path)?);
         // Marked after the last step that can fail, so a refused start is not taken for a
         // crash at the next one: from here on only a `Daemon`, whose drop clears it, exists.
         let crashed = bug_reports::mark_running(&options.state_dir).map_err(StartError::io(
@@ -567,7 +569,7 @@ impl Instance {
             faults.report(bug_reports::Fault::Crash);
         }
         shared
-            .restoring
+            .is_restoring
             .store(false, std::sync::atomic::Ordering::Release);
         let delivering = tokio::spawn(supervisor::supervise(
             "coordinator-messages",

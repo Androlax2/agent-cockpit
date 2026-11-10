@@ -22,7 +22,7 @@ use crate::routes::refusal;
 /// transaction. A refusal changes nothing, so a token is spent only by a recorded report.
 /// A recorded quota stop relaunches the session on its next account once answered (#59).
 pub(crate) async fn report(
-    restoring: Arc<std::sync::atomic::AtomicBool>,
+    is_restoring: Arc<std::sync::atomic::AtomicBool>,
     database: Arc<Database>,
     sessions: Arc<cockpit_sessions::Sessions>,
     connector: Result<ProcessIdentity, ProcessError>,
@@ -59,7 +59,7 @@ pub(crate) async fn report(
             Ok(()) => {
                 // The periodic pass retries quota stops after startup; relaunching now
                 // could race restore's snapshot of sessions still to reconcile.
-                if is_quota_stop && !restoring.load(std::sync::atomic::Ordering::Acquire) {
+                if is_quota_stop && !is_restoring.load(std::sync::atomic::Ordering::Acquire) {
                     relaunch_quota_stopped(sessions, &recorded.session);
                 }
                 Outcome::Ok(Reply::AgentReported {
