@@ -561,8 +561,8 @@ fn a_non_utf8_project_path_is_reported_not_a_crash() {
 }
 
 #[test]
-fn an_unknown_verb_prints_usage_and_exits_2() {
-    for arguments in [&["config"][..], &["configure", "show"][..]] {
+fn a_known_verb_with_no_subcommand_prints_usage_and_exits_2() {
+    for arguments in [&["config"][..], &["config", "bogus"][..]] {
         let output = Command::new(env!("CARGO_BIN_EXE_torlek"))
             .args(arguments)
             .env_clear()

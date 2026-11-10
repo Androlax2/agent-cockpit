@@ -335,7 +335,9 @@ fn main() -> ExitCode {
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("notify"), ..] => notify::run(&arguments[1..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
-        _ => usage_error(None),
+        [Some("--help" | "-h"), ..] => usage_error(None),
+        _ if is_verb_of_usage(&verb_name) => usage_error(None),
+        _ => unknown_verb_error(&verb_name),
     }
 }
 
@@ -368,17 +370,36 @@ fn usage_error(problem: Option<String>) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// Exit 2 with one line for a first word that is no verb, instead of the whole usage an agent
+/// pays about 1.5k tokens for on each such mistake (#1337).
+fn unknown_verb_error(word: &str) -> ExitCode {
+    eprintln!(
+        "torlek: unknown verb {word:?}; `torlek` alone lists the verbs, `torlek version` the release"
+    );
+    ExitCode::from(2)
+}
+
+/// The lines of `USAGE` that belong to `verb`, indented text trimmed.
+fn usage_lines_of(verb: &str) -> Vec<&'static str> {
+    USAGE
+        .lines()
+        .skip(1)
+        .filter(|line| line.split_whitespace().nth(1) == Some(verb))
+        .map(str::trim_start)
+        .collect()
+}
+
+/// Whether `word` is a verb of `USAGE` whose arguments did not match any arm above.
+fn is_verb_of_usage(word: &str) -> bool {
+    !usage_lines_of(word).is_empty()
+}
+
 /// Exit 2 naming the rejected argument, then only the lines of `USAGE` for `verb` and a pointer
 /// to the whole list: the whole usage is about 5 KB an agent pays for on every mistake (#770).
 /// A verb with no line of its own prints the whole usage, the safe default a human will notice.
 fn verb_usage_error(verb: &str, problem: String) -> ExitCode {
     eprintln!("torlek: {problem}");
-    let verb_lines: Vec<&str> = USAGE
-        .lines()
-        .skip(1)
-        .filter(|line| line.split_whitespace().nth(1) == Some(verb))
-        .map(str::trim_start)
-        .collect();
+    let verb_lines = usage_lines_of(verb);
     if verb_lines.is_empty() {
         eprintln!("{USAGE}");
     } else {
