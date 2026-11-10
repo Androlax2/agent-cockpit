@@ -57,6 +57,34 @@ pub(crate) const MIGRATION_SQL: &str = "CREATE TABLE sandbox_network_grants (
         ON sandbox_network_requests (subject_kind, subject, host, port)
         WHERE state IN ('asking', 'allowed-once', 'denied');";
 
+/// The `sandbox` migration set's version 3 (#1256): a grant's `request` may be null, for the
+/// github.com grant the owner makes directly, without a request.
+pub(crate) const DIRECT_GRANTS_MIGRATION_SQL: &str = "CREATE TABLE sandbox_network_grants_direct (
+        id INTEGER PRIMARY KEY,
+        project TEXT NOT NULL CHECK (project <> ''),
+        host TEXT NOT NULL CHECK (host <> ''),
+        port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+        request INTEGER,
+        granted_at INTEGER NOT NULL,
+        granted_through TEXT CHECK (granted_through IN ('tui', 'cli')),
+        revoked_at INTEGER,
+        revoked_through TEXT CHECK (revoked_through IN ('tui', 'cli')),
+        CHECK (revoked_at IS NOT NULL OR revoked_through IS NULL)
+    );
+    INSERT INTO sandbox_network_grants_direct (id, project, host, port, request, granted_at,
+            granted_through, revoked_at, revoked_through)
+        SELECT id, project, host, port, request, granted_at, granted_through, revoked_at,
+            revoked_through
+        FROM sandbox_network_grants;
+    DROP TABLE sandbox_network_grants;
+    ALTER TABLE sandbox_network_grants_direct RENAME TO sandbox_network_grants;
+    CREATE UNIQUE INDEX sandbox_network_grants_one_active
+        ON sandbox_network_grants (project, host, port) WHERE revoked_at IS NULL;";
+
+/// The host the owner may grant a project without a request (#1256): the one its GitHub
+/// token binds to for fetches, so the token reaches the project's first sandboxed launch.
+pub const GITHUB_HOST: &str = "github.com";
+
 /// Where a request stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkRequestState {
@@ -146,8 +174,9 @@ pub struct NetworkGrant {
     pub project: String,
     pub host: String,
     pub port: u16,
-    /// The request whose decision created it.
-    pub request: i64,
+    /// The request whose decision created it; `None` for the github.com grant the owner made
+    /// directly ([`grant_github`]).
+    pub request: Option<i64>,
     pub granted: OwnerDecision,
     pub revoked: Option<OwnerDecision>,
 }
@@ -163,6 +192,10 @@ pub enum NetworkRefusal {
         state: &'static str,
     },
     AlreadyRevoked,
+    /// The project already holds an active grant of the destination.
+    AlreadyGranted {
+        grant: i64,
+    },
     TooSoon {
         wait_seconds: i64,
     },
@@ -182,6 +215,9 @@ impl std::fmt::Display for NetworkRefusal {
             }
             NetworkRefusal::AlreadyRevoked => {
                 formatter.write_str("the network grant was revoked already")
+            }
+            NetworkRefusal::AlreadyGranted { grant } => {
+                write!(formatter, "network grant {grant} already allows it")
             }
             NetworkRefusal::TooSoon { wait_seconds } => write!(
                 formatter,
@@ -373,7 +409,14 @@ pub async fn allow_network_request(
     drop(granted);
     let grant: i64 = match active {
         Some(grant) => grant,
-        None => new_grant(write, &request, now, through).await?,
+        None => {
+            let destination = Destination {
+                project: &request.project,
+                host: &request.host,
+                port: request.port,
+            };
+            new_grant(write, &destination, Some(request.id), now, through).await?
+        }
     };
     decided(
         write,
@@ -385,9 +428,17 @@ pub async fn allow_network_request(
     .await
 }
 
+/// Where a grant lets one project through.
+struct Destination<'a> {
+    project: &'a str,
+    host: &'a str,
+    port: u16,
+}
+
 async fn new_grant(
     write: &WriteTransaction<'_>,
-    request: &NetworkRequest,
+    destination: &Destination<'_>,
+    request: Option<i64>,
     now: i64,
     through: Option<&str>,
 ) -> Result<i64, NetworkError> {
@@ -399,16 +450,70 @@ async fn new_grant(
         )
         .await?
         .query_row((
-            request.project.as_str(),
-            request.host.as_str(),
-            i64::from(request.port),
-            request.id,
+            destination.project,
+            destination.host,
+            i64::from(destination.port),
+            request,
             now,
             through,
         ))
         .await?
         .get(0)?;
     Ok(grant)
+}
+
+/// The owner grants `project` [`GITHUB_HOST`] on 443 always, without a request: the offer
+/// `project add` and `init` make (#1256), so the project's GitHub token binds at its
+/// sessions' next launch instead of after a refusal, a request and a relaunch. The caller
+/// checks that `project` is registered. Refused when an active grant already allows it.
+pub async fn grant_github(
+    write: &WriteTransaction<'_>,
+    project: &str,
+    through: Option<OwnerClient>,
+    now: i64,
+) -> Result<NetworkGrant, NetworkError> {
+    let destination = Destination {
+        project,
+        host: GITHUB_HOST,
+        port: crate::egress::TLS_PORT,
+    };
+    let mut granted = write
+        .query(
+            "SELECT id FROM sandbox_network_grants
+             WHERE project = ?1 AND host = ?2 AND port = ?3 AND revoked_at IS NULL",
+            (project, GITHUB_HOST, i64::from(destination.port)),
+        )
+        .await?;
+    if let Some(row) = granted.next().await? {
+        return Err(NetworkRefusal::AlreadyGranted { grant: row.get(0)? }.into());
+    }
+    drop(granted);
+    let id = new_grant(
+        write,
+        &destination,
+        None,
+        now,
+        through.map(OwnerClient::as_str),
+    )
+    .await?;
+    network_grant(write, id).await
+}
+
+async fn network_grant(connection: &Connection, id: i64) -> Result<NetworkGrant, NetworkError> {
+    let mut rows = connection
+        .query(
+            &format!("SELECT {GRANT_COLUMNS} FROM sandbox_network_grants WHERE id = ?1"),
+            [id],
+        )
+        .await?;
+    match rows.next().await? {
+        Some(row) => grant_from(&row),
+        None => Err(NetworkRefusal::NotFound {
+            kind: "network grant",
+            id,
+        }
+        .into()),
+    }
 }
 
 /// The owner denies request `id`: its session keeps being refused that destination, now
@@ -457,23 +562,7 @@ pub async fn revoke_network_grant(
     through: Option<OwnerClient>,
     now: i64,
 ) -> Result<NetworkGrant, NetworkError> {
-    let mut rows = write
-        .query(
-            &format!("SELECT {GRANT_COLUMNS} FROM sandbox_network_grants WHERE id = ?1"),
-            [id],
-        )
-        .await?;
-    let grant = match rows.next().await? {
-        Some(row) => grant_from(&row)?,
-        None => {
-            return Err(NetworkRefusal::NotFound {
-                kind: "network grant",
-                id,
-            }
-            .into());
-        }
-    };
-    drop(rows);
+    let grant = network_grant(write, id).await?;
     if grant.revoked.is_some() {
         return Err(NetworkRefusal::AlreadyRevoked.into());
     }

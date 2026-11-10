@@ -1232,3 +1232,116 @@ fn removing_a_project_with_a_running_workflow_refuses_naming_it() {
     assert!(refused.contains("workflow 1 is running"), "{refused}");
     assert!(refused.contains("workflow cancel"), "{refused}");
 }
+
+/// #1256: `project add` without a terminal only names the github.com grant on stderr, so a
+/// script never grants it; its output stays the checkout line.
+#[test]
+fn project_add_without_a_terminal_names_the_github_grant_and_grants_nothing() {
+    let home = TestHome::new();
+    home.require_sandbox();
+    let _daemon = home.start();
+    let root = home.project("app");
+
+    let added = home.cockpit(&["project", "add", root.to_str().unwrap()]);
+
+    assert!(added.status.success(), "{added:?}");
+    let stdout = String::from_utf8(added.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    let stderr = String::from_utf8(added.stderr).unwrap();
+    assert!(
+        stderr.contains("`torlek network grant app github.com` allows it always"),
+        "{stderr}"
+    );
+    assert_eq!(home.cockpit_ok(&["network", "grants"]), "");
+}
+
+/// Under `agents.sandbox = "off"` no session is sandboxed, so a grant would change nothing.
+#[test]
+fn project_add_under_an_unsandboxed_setting_offers_no_github_grant() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+
+    let added = home.cockpit(&["project", "add", root.to_str().unwrap()]);
+
+    assert!(added.status.success(), "{added:?}");
+    let stderr = String::from_utf8(added.stderr).unwrap();
+    assert!(!stderr.contains("network grant"), "{stderr}");
+}
+
+#[test]
+fn network_grant_gives_the_project_github_without_a_request_once() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+
+    let granted = home.cockpit_ok(&["network", "grant", "app", "github.com"]);
+    let again = home.cockpit_err(&["network", "grant", "app", "github.com"]);
+
+    assert!(
+        granted.starts_with(
+            "network grant 1: github.com:443 for project app (granted directly)\n\
+             granted: allowed always by the owner through the CLI at "
+        ),
+        "{granted}"
+    );
+    assert_eq!(
+        home.cockpit_ok(&["network", "grants"]),
+        "grant\t1\tapp\tgithub.com:443\tgranted directly\n"
+    );
+    assert!(
+        again.contains("network grant 1 already allows it"),
+        "{again}"
+    );
+}
+
+/// A project added again under a name that kept its grant is not offered it a second time.
+#[test]
+fn project_add_offers_nothing_to_a_project_that_holds_the_github_grant() {
+    let home = TestHome::new();
+    home.require_sandbox();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+    home.cockpit_ok(&["network", "grant", "app", "github.com"]);
+    home.cockpit_ok(&["project", "remove", "app"]);
+
+    let added = home.cockpit(&["project", "add", root.to_str().unwrap()]);
+
+    assert!(added.status.success(), "{added:?}");
+    let stderr = String::from_utf8(added.stderr).unwrap();
+    assert!(!stderr.contains("network grant"), "{stderr}");
+}
+
+#[test]
+fn network_grant_refuses_an_unregistered_project() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+
+    let refused = home.cockpit_err(&["network", "grant", "nowhere", "github.com"]);
+
+    assert!(
+        refused.contains("no registered project nowhere"),
+        "{refused}"
+    );
+    assert_eq!(home.cockpit_ok(&["network", "grants"]), "");
+}
+
+#[test]
+fn network_grant_takes_no_host_but_github() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+
+    let refused = home.cockpit(&["network", "grant", "app", "example.com"]);
+
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("only github.com is granted without a request, not example.com"),
+        "{refused:?}"
+    );
+    assert_eq!(home.cockpit_ok(&["network", "grants"]), "");
+}

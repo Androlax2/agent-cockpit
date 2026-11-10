@@ -1348,6 +1348,37 @@ async fn an_api_token_is_added_on_a_github_host_the_owner_allowed_always() {
     );
 }
 
+/// #1256: the github.com grant the owner makes while adding the project, before any session
+/// asked, is reached at the project's first launch, so the API token is bound there with no
+/// request and no relaunch.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_github_grant_made_before_the_first_launch_binds_the_token_on_github_at_once() {
+    let home = Home::new();
+    home.write_owner_config(REQUIRED);
+    home.write_github_api_token(COMMANDED_PROJECT, "github_pat_api_token\n", 0o600);
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    owner_network(&home, &["grant", COMMANDED_PROJECT, "github.com"]).await;
+
+    let session = new_session(&client, &root).await;
+
+    let printed = run_in_agent(&home, &root, "echo \"${GH_TOKEN-unset}\"").await;
+    let shown = home
+        .cockpit(&["session", "sandbox", &session.id], &[])
+        .await;
+    assert_eq!(
+        printed,
+        format!("{}\nexit=0\n", cockpit_sandbox::PLACEHOLDER)
+    );
+    let evidence = text(&shown.stdout);
+    assert!(
+        evidence.contains("credential: the project's GitHub API token added on github.com:443"),
+        "{evidence}"
+    );
+    assert_eq!(owner_network(&home, &["list"]).await, "");
+}
+
 /// A `claude setup-token` token's shape; a fixture, never a real one.
 const SETUP_TOKEN: &str = "sk-ant-oat01-fixture_value";
 
@@ -2878,6 +2909,10 @@ async fn no_network_verb_on_the_agent_socket_allows_a_host() {
             through: None,
         },
         Command::NetworkGrants { project: None },
+        Command::NetworkGrantGithub {
+            project: COMMANDED_PROJECT.to_owned(),
+            through: None,
+        },
         Command::NetworkRevoke {
             grant: 1,
             through: None,

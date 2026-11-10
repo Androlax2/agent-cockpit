@@ -126,6 +126,16 @@ In the pane, `y` allows once, `a` allows always and `x` denies.
 "Allow once" lasts the rest of the asking session, not one connection; a new session asks again.
 "Allow always" covers only that host and port. Only names are asked about: IP addresses and names that resolve to private or loopback addresses stay refused.
 
+github.com is not allowed by default, and a project's GitHub token binds only to a host the launch reaches: allowed after the launch, it takes a relaunch.
+So, unless `agents.sandbox = "off"`, `torlek project add` offers the project's github.com grant once, on a terminal (`y` grants, Enter declines), and `torlek init` names it for each project without it:
+
+```sh
+torlek network grant PROJECT github.com   # all of github.com:443 for the project's sessions
+```
+
+Fetches then work from the first launch. Pushes stay refused, and `torlek network revoke GRANT` takes the grant back.
+github.com is the only host granted without a request.
+
 ## Phone status page
 
 `torlek status serve` shows your sessions on your phone, read-only: each session's project, state, label, what it is doing and its open question (flagged), the approvals waiting for you (reason and age, never the command), the daemon's readiness with the low-disk guard, and when the page was generated, so a stalled daemon shows.

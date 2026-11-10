@@ -12,7 +12,8 @@ use std::process::ExitCode;
 use cockpit_client::ClientError;
 use cockpit_config::{AgentSandbox, EffectiveConfig, Source};
 use cockpit_protocol::{
-    Command, ProjectView, ReadinessStatusView, Reply, RequirementView, SessionView,
+    Command, NetworkGrantView, ProjectView, ReadinessStatusView, Reply, RequirementView,
+    SessionView,
 };
 
 use crate::daemon;
@@ -97,6 +98,8 @@ struct DaemonFacts {
     projects: Vec<ProjectView>,
     /// Running and ended ones: one launched session is enough to have started.
     sessions: Vec<SessionView>,
+    /// The active network grants of every project.
+    grants: Vec<NetworkGrantView>,
 }
 
 /// Why the daemon's facts are missing, and what fixes that.
@@ -146,6 +149,7 @@ fn ask_daemon(
         },
         Command::ProjectList,
         Command::SessionList { ended: true },
+        Command::NetworkGrants { project: None },
     ];
     Ok(
         match daemon::exchange_all(socket, commands, INIT_DEADLINE)? {
@@ -193,10 +197,15 @@ fn daemon_facts(replies: Vec<Reply>) -> Result<DaemonFacts, DaemonProblem> {
         Some(Reply::Sessions { sessions }) => sessions,
         other => return Err(unexpected(other)),
     };
+    let grants = match replies.next() {
+        Some(Reply::NetworkGrants { grants }) => grants,
+        other => return Err(unexpected(other)),
+    };
     Ok(DaemonFacts {
         requirements,
         projects,
         sessions,
+        grants,
     })
 }
 
@@ -266,7 +275,8 @@ fn steps(facts: &Facts) -> Vec<Step> {
     } else {
         sign_in_step(&daemon.requirements, &available)
     };
-    let project = project_step(&daemon.projects);
+    let offered_grants = crate::network::may_be_sandboxed(&facts.config).then_some(&daemon.grants);
+    let project = project_step(&daemon.projects, offered_grants);
     let session = session_step(daemon, &available, readiness.state == State::Done);
     vec![readiness, sandbox, provider, sign_in, project, session]
 }
@@ -544,7 +554,10 @@ fn sign_in_step(requirements: &[RequirementView], available: &[&str]) -> Step {
     }
 }
 
-fn project_step(projects: &[ProjectView]) -> Step {
+/// Done once a project is registered. Each project without the github.com grant gets the
+/// offer as a line, not a step to do (#1256): declining it keeps the setup complete. `grants`
+/// is `None` when no session is sandboxed, so no grant is offered.
+fn project_step(projects: &[ProjectView], grants: Option<&Vec<NetworkGrantView>>) -> Step {
     if projects.is_empty() {
         return Step {
             title: PROJECT,
@@ -556,13 +569,16 @@ fn project_step(projects: &[ProjectView]) -> Step {
             )),
         };
     }
-    done(
-        PROJECT,
-        projects
-            .iter()
-            .map(|project| format!("{} ({})", project.name, project.root))
-            .collect(),
-    )
+    let mut lines = Vec::new();
+    for project in projects {
+        lines.push(format!("{} ({})", project.name, project.root));
+        if let Some(grants) = grants
+            && !crate::network::holds_github_grant(grants, &project.name)
+        {
+            lines.push(crate::network::github_grant_offer(&project.name));
+        }
+    }
+    done(PROJECT, lines)
 }
 
 fn session_step(daemon: &DaemonFacts, available: &[&str], is_host_ready: bool) -> Step {

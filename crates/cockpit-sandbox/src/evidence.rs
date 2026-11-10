@@ -54,6 +54,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 3,
             sql: crate::logins::MIGRATION_SQL,
         },
+        // #1256: the github.com grant the owner makes without a request.
+        Migration {
+            version: 4,
+            sql: crate::network::DIRECT_GRANTS_MIGRATION_SQL,
+        },
     ],
 };
 

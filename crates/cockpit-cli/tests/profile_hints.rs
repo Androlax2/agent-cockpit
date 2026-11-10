@@ -170,6 +170,7 @@ async fn init_names_the_profiles_commands_for_a_project_and_a_session() {
                     Outcome::Ok(Reply::Sessions {
                         sessions: Vec::new(),
                     }),
+                    Outcome::Ok(Reply::NetworkGrants { grants: Vec::new() }),
                 ],
             );
 
@@ -196,6 +197,7 @@ async fn a_hint_the_daemon_wrote_names_the_profiles_command() {
             Outcome::Ok(Reply::Sessions {
                 sessions: Vec::new(),
             }),
+            Outcome::Ok(Reply::NetworkGrants { grants: Vec::new() }),
         ],
     );
 

@@ -48,6 +48,10 @@ impl From<NetworkError> for Failed {
                 ErrorCode::Conflict,
                 "nothing to do: it was decided".to_owned(),
             ),
+            NetworkRefusal::AlreadyGranted { grant } => (
+                ErrorCode::Conflict,
+                format!("nothing to do; `torlek network revoke {grant}` takes it back"),
+            ),
             NetworkRefusal::TooSoon { wait_seconds } => (
                 ErrorCode::Refused,
                 format!("read the request, then allow it again in {wait_seconds} s"),
@@ -123,6 +127,23 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
                 let grants = cockpit_sandbox::network_grants(&read, project.as_deref()).await?;
                 Ok(Reply::NetworkGrants {
                     grants: grants.iter().map(grant_view).collect(),
+                })
+            }
+            Command::NetworkGrantGithub { project, through } => {
+                let write = database.write().await?;
+                registered(&write, &project).await?;
+                let granted = cockpit_sandbox::grant_github(
+                    &write,
+                    &project,
+                    through.map(owner_client),
+                    now(),
+                )
+                .await?;
+                write.commit().await?;
+                decided.notify_one();
+                tracing::info!(grant = granted.id, %project, "the owner granted github.com");
+                Ok(Reply::NetworkGrant {
+                    grant: Box::new(grant_view(&granted)),
                 })
             }
             Command::NetworkRevoke { grant, through } => {
@@ -389,6 +410,23 @@ fn request_view(request: &NetworkRequest) -> NetworkRequestView {
         asked_at: request.asked_at,
         decision: request.decision.map(decision_view),
         grant: request.grant,
+    }
+}
+
+/// Refuses a name no registered project holds: a grant keyed by a mistyped name would sit
+/// unseen until a project of that name is added.
+async fn registered(connection: &Connection, project: &str) -> Result<(), Failed> {
+    match cockpit_projects::project_named(connection, project).await {
+        Ok(_) => Ok(()),
+        Err(cockpit_projects::Error::UnknownProject { .. }) => Err(Failed(ProtocolError {
+            code: ErrorCode::NotFound,
+            message: format!("no registered project {project}"),
+            unblock: Some(Unblock {
+                action: "name a project `torlek project list` shows".to_owned(),
+                by: UnblockedBy::Owner,
+            }),
+        })),
+        Err(error) => Err(internal(&error)),
     }
 }
 

@@ -151,6 +151,19 @@ impl TestHome {
         .unwrap();
     }
 
+    /// `agents.sandbox = "required"` in the owner's configuration, under which a network
+    /// grant matters (#1256).
+    #[allow(dead_code, reason = "not every test binary sandboxes")]
+    pub fn require_sandbox(&self) {
+        let config = self.home().join("config/torlek-dev");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("config.toml"),
+            "[agents]\nsandbox = \"required\"\n",
+        )
+        .unwrap();
+    }
+
     pub fn base_command(&self, program: &Path) -> Command {
         let mut command = Command::new(program);
         command
