@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::time::{Duration, Instant};
 
-use cockpit_protocol::{CheckOutcomeView, CheckReceiptView, Command, Reply};
+use cockpit_protocol::{CheckOutcomeView, CheckReceiptView, CheckStatusView, Command, Reply};
 use real_daemon::{GENEROUS, Home};
 
 const REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
@@ -50,7 +50,8 @@ fn declare_probe(home: &Home, root: &Path) {
     std::fs::create_dir_all(root.join(".torlek")).unwrap();
     std::fs::write(
         root.join(".torlek/config.toml"),
-        "[[checks]]\nname = \"probe\"\ncommand = \"sh probe.sh\"\nenvironment = \"sandbox\"\n",
+        "[[checks]]\nname = \"probe\"\ncommand = \"sh probe.sh\"\nenvironment = \"sandbox\"\n\n\
+         [[checks]]\nname = \"reads\"\ncommand = \"test -f probe.sh\"\nenvironment = \"sandbox\"\n",
     )
     .unwrap();
     std::fs::write(
@@ -85,12 +86,17 @@ fn marker(home: &Home) -> PathBuf {
 
 /// Runs `probe` as the owner and waits for its receipt.
 async fn run_probe(home: &Home) -> CheckReceiptView {
+    run_check(home, "probe").await
+}
+
+/// Runs `check` as the owner and waits for its receipt.
+async fn run_check(home: &Home, check: &str) -> CheckReceiptView {
     let client = home.connect().await;
     let run = match client
         .request(
             Command::CheckRun {
                 project: "app".to_owned(),
-                check: "probe".to_owned(),
+                check: check.to_owned(),
                 checkout: None,
             },
             GENEROUS,
@@ -239,4 +245,42 @@ async fn a_check_runs_on_the_host_when_the_owner_turns_the_sandbox_off() {
     );
     assert!(printed(&receipt).contains(&"ssh_key=read"), "{receipt:?}");
     assert!(marker(&home).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_check_that_passes_in_the_sandbox_passes_the_gate() {
+    let (home, _daemon) = started(REQUIRED, Home::start).await;
+
+    let receipt = run_check(&home, "reads").await;
+
+    assert_eq!(receipt.outcome, CheckOutcomeView::Passed, "{receipt:?}");
+    assert_eq!(receipt.ran_environment.as_deref(), Some("sandbox"));
+    let gate = match home
+        .connect()
+        .await
+        .request(
+            Command::CheckGate {
+                launch_token: None,
+                project: Some("app".to_owned()),
+                checkout: None,
+            },
+            GENEROUS,
+        )
+        .await
+    {
+        Ok(Reply::CheckGate { gate }) => *gate,
+        other => panic!("expected a gate, got {other:?}"),
+    };
+    let reads = gate
+        .checks
+        .iter()
+        .find(|check| check.name == "reads")
+        .expect("the check is in the gate");
+    assert_eq!(
+        reads.status,
+        CheckStatusView::Checked {
+            outcome: CheckOutcomeView::Passed
+        }
+    );
+    assert_eq!(reads.receipt, Some(receipt.id));
 }
