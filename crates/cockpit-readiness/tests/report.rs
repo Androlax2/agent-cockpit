@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use cockpit_config::{AgentSandbox, EffectiveConfig, Environment};
 use cockpit_readiness::{
-    CheckoutFacts, ControlFacts, DockerEngine, EngineRemedy, EngineState, HostFacts, Platform,
-    PresetFacts, ProjectEngine, ProjectFacts, ProjectNeeds, ProviderFacts, ProviderFound,
+    CheckoutFacts, ComposeFile, ControlFacts, DockerEngine, EngineRemedy, EngineState, HostFacts,
+    Platform, PresetFacts, ProjectEngine, ProjectFacts, ProjectNeeds, ProviderFacts, ProviderFound,
     ProviderUnusable, Report, Requirement, Status, Trust, assess, needs_docker,
 };
 use tempfile::TempDir;
@@ -126,6 +126,7 @@ impl Fixture {
             docker: None,
             engine: None,
             launch: None,
+            compose: Vec::new(),
         }
     }
 
@@ -1169,6 +1170,103 @@ fn a_project_engine_that_could_not_be_examined_is_unknown() {
     let docker = requirement(&report, "docker");
     assert_eq!(docker.status, Status::Unknown);
     assert!(docker.detail.contains("longer than 32"), "{docker:#?}");
+}
+
+fn compose_file(name: &str, text: &str) -> ComposeFile {
+    ComposeFile {
+        name: name.to_owned(),
+        text: Ok(text.to_owned()),
+    }
+}
+
+/// #1371: a literal host port keeps a second session's `up` from binding it.
+#[test]
+fn a_compose_files_literal_host_port_is_reported_with_its_line_and_the_variable_that_fixes_it() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let mut project = fixture.facts();
+    project.compose = vec![compose_file(
+        "compose.yaml",
+        "services:\n  web:\n    ports:\n      - \"8080:80\"\n",
+    )];
+
+    let report = fixture.report(&ready_host(), &project);
+
+    let line = requirement(&report, "compose compose.yaml:4");
+    assert!(!line.status.blocks(), "{line:#?}");
+    assert!(line.detail.contains("literal host port 8080"), "{line:#?}");
+    assert!(
+        line.next
+            .as_deref()
+            .is_some_and(|next| next.contains("`${TORLEK_PORT_0:-8080}` in place of 8080")),
+        "{line:#?}"
+    );
+}
+
+/// #1371: each literal port across the files gets a port of the block of its own.
+#[test]
+fn literal_ports_across_compose_files_take_successive_ports_of_the_block() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let mut project = fixture.facts();
+    project.compose = vec![
+        compose_file(
+            "compose.yaml",
+            "services:\n  web:\n    ports: [\"8080:80\"]\n",
+        ),
+        compose_file(
+            "compose.override.yaml",
+            "services:\n  db:\n    ports:\n      - \"5432:5432\"\n",
+        ),
+    ];
+
+    let report = fixture.report(&ready_host(), &project);
+
+    let override_line = requirement(&report, "compose compose.override.yaml:4");
+    assert!(
+        override_line
+            .next
+            .as_deref()
+            .is_some_and(|next| next.contains("${TORLEK_PORT_1:-5432}")),
+        "{override_line:#?}"
+    );
+}
+
+#[test]
+fn a_compose_file_that_runs_in_parallel_sessions_says_so_in_one_line() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let mut project = fixture.facts();
+    project.compose = vec![compose_file(
+        "compose.yaml",
+        "services:\n  web:\n    ports:\n      - \"${TORLEK_PORT_0:-8080}:80\"\n",
+    )];
+
+    let report = fixture.report(&ready_host(), &project);
+
+    let line = requirement(&report, "compose compose.yaml");
+    assert_eq!(line.status, Status::Available);
+    assert!(
+        line.detail.starts_with("runs in parallel sessions"),
+        "{line:#?}"
+    );
+}
+
+#[test]
+fn a_compose_file_not_read_is_unknown_naming_why() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let mut project = fixture.facts();
+    project.compose = vec![ComposeFile {
+        name: "compose.yaml".to_owned(),
+        text: Err("it is a symbolic link or not a file".to_owned()),
+    }];
+
+    let report = fixture.report(&ready_host(), &project);
+
+    let line = requirement(&report, "compose compose.yaml");
+    assert_eq!(line.status, Status::Unknown);
+    assert!(line.detail.contains("symbolic link"), "{line:#?}");
 }
 
 #[test]

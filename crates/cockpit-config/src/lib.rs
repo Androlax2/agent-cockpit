@@ -7,6 +7,7 @@
 //! requirements, owner settings grant.
 
 mod accounts;
+mod container_ports;
 mod github_token;
 mod layout;
 mod memory;
@@ -21,6 +22,11 @@ mod storage;
 mod token_file;
 mod usage;
 pub use accounts::{AccountSettings, DEFAULT_ACCOUNT};
+pub use container_ports::{
+    COMPOSE_PROJECT_VARIABLE, PORT_BASE_VARIABLE, PORT_BLOCK_SIZE, PORT_BLOCKS,
+    PORT_COUNT_VARIABLE, PORT_VARIABLE_PREFIX, PortBlock, compose_project_name,
+    is_container_port_variable, port_variable,
+};
 pub use memory::MemorySettings;
 pub use notify::{AWAY_HOLD, NOTIFY_EVENTS, NotifyEvents, NotifySettings};
 pub use services::{Service, ServiceEndpoint};

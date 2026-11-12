@@ -27,6 +27,13 @@ Torlek may run you inside a sandbox the owner configured. Its limits are deliber
 - **Docker.** Use only the engine your environment provides (`DOCKER_HOST` when set), never
   the owner's main one. In a sandboxed session that is the project's own engine, which
   `torlek doctor` describes. Without one, say so and ask; do not start a daemon yourself.
+- **Compose beside other sessions.** Every session of the project shares its engine. Yours
+  launches with its own `COMPOSE_PROJECT_NAME` and a block of host ports, `TORLEK_PORT_0` to
+  `TORLEK_PORT_9` (`TORLEK_PORT_BASE` is the first, `TORLEK_PORT_COUNT` how many). Write
+  compose files that run beside another session's: publish `"${TORLEK_PORT_0:-8080}:80"`,
+  never a literal host port (`- "80"` lets the engine pick one), and write no
+  `container_name:` and no fixed `name:` on a volume or network. Ask for ports of your own
+  block: one of another session's block is refused, naming that session.
 - **Secrets.** Never print, copy or commit credentials. Use the references the environment
   gives you.
 

@@ -44,7 +44,8 @@ pub use reports::{
     latest_reports, report, report_counting_limits,
 };
 pub use store::{
-    MIGRATIONS, checkout_sessions, maintenance_sessions, mark_budget_spent, session, sessions,
+    HeldPortBlock, MIGRATIONS, checkout_sessions, live_port_blocks, maintenance_sessions,
+    mark_budget_spent, session, sessions,
 };
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

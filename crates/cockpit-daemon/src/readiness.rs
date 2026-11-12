@@ -258,6 +258,15 @@ async fn report(
         Some(_) => Some(launches(&context, &dir).await),
         None => None,
     };
+    // Only sandboxed sessions launch with a compose project name and port block (#1371).
+    let compose = if is_sandboxed {
+        let reading = dir.clone();
+        tokio::task::spawn_blocking(move || compose_files(&reading))
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
     let capacity = context.admission.capacity();
     let project = ProjectFacts {
         dir,
@@ -270,12 +279,55 @@ async fn report(
         docker,
         engine,
         launch,
+        compose,
     };
     Ok(with_daemon_lines(
         cockpit_readiness::assess(&host, &config, Some(&project)),
         &context,
         clipboard,
     ))
+}
+
+/// The largest compose file readiness reads.
+const MAX_COMPOSE_BYTES: u64 = 1024 * 1024;
+
+/// Each of [`cockpit_readiness::COMPOSE_FILES`] in `dir`. An agent writes the checkout, so a
+/// file is read only as a plain file of its own, never through a symbolic link. Blocks.
+fn compose_files(dir: &Path) -> Vec<cockpit_readiness::ComposeFile> {
+    cockpit_readiness::COMPOSE_FILES
+        .iter()
+        .filter_map(|name| {
+            let path = dir.join(name);
+            let found = std::fs::symlink_metadata(&path).ok()?;
+            Some(cockpit_readiness::ComposeFile {
+                name: (*name).to_owned(),
+                text: plain_file_text(&path, &found),
+            })
+        })
+        .collect()
+}
+
+/// The text of `path`, which `found` describes, when it is still that plain file.
+fn plain_file_text(path: &Path, found: &std::fs::Metadata) -> Result<String, String> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    if !found.is_file() {
+        return Err("it is a symbolic link or not a file".to_owned());
+    }
+    if found.len() > MAX_COMPOSE_BYTES {
+        return Err(format!("it is larger than {MAX_COMPOSE_BYTES} bytes"));
+    }
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let opened = file.metadata().map_err(|error| error.to_string())?;
+    // Replaced between the two looks: what was opened is not the plain file examined.
+    if (opened.dev(), opened.ino()) != (found.dev(), found.ino()) {
+        return Err("it changed while it was read".to_owned());
+    }
+    let mut text = String::new();
+    file.take(MAX_COMPOSE_BYTES)
+        .read_to_string(&mut text)
+        .map_err(|error| error.to_string())?;
+    Ok(text)
 }
 
 /// `report` with what only the daemon knows: the disk guard's reading and `clipboard`.

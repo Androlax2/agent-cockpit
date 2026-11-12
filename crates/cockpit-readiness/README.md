@@ -64,6 +64,14 @@ recorded. Not set up, not recorded and refused are `missing-prerequisite`, each 
 next step (the setup script to review and run, `torlek containers record`, starting the
 unit). A verified engine is `unsupported` until sessions can reach it.
 
+Under `agents.sandbox = "required"` each compose file in the project's folder (`compose.yaml`,
+`docker-compose.yml` and their overrides) gets a line too (#1371). Parallel sessions share
+the project's engine, each under its own `COMPOSE_PROJECT_NAME` and port block, so a fixed
+`container_name:`, a fixed volume or network `name:` and a literal host port each get a line
+naming the file and line, with the variable form that fixes it (`${TORLEK_PORT_0:-8080}`).
+None blocks. The daemon reads each file only as a plain file of the checkout, never through a
+symbolic link, and the scan reads lines, not YAML.
+
 Provider sign-in comes from the adapter on each readiness request (#443): signed in is
 `available`, explicitly signed out is `needs-authorization` with the provider's next step,
 and an unavailable or failed probe is `unknown`. Its detail names the probe's own provenance.

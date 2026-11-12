@@ -42,6 +42,7 @@ pub(crate) fn requirements(
     if let Some(engine) = &project.engine {
         requirements.push(project_engine(engine));
     }
+    requirements.extend(crate::compose::requirements(&project.compose));
     match &project.launch {
         Some(Ok(all)) => requirements.extend(crate::launch::launch_summary(all, &project.dir)),
         Some(Err(reason)) => requirements.push(Requirement::needs(

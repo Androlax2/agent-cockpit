@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod compose;
 mod host;
 mod launch;
 mod project;
@@ -7,6 +8,7 @@ mod project;
 use std::path::PathBuf;
 
 pub use cockpit_config::{AgentSandbox, EffectiveConfig, ExecutionEnvironment, ProjectNeeds};
+pub use compose::{COMPOSE_FILES, ComposeFile, ComposeFinding, ComposeProblem, scan};
 pub use launch::{HarnessTrust, LaunchFacts, Toolchains, launch_gates, launch_summary};
 pub use project::needs_docker;
 
@@ -319,6 +321,9 @@ pub struct ProjectFacts {
     /// The gates a session of each wired provider in `dir` would pass (#1250), when `dir` is
     /// a registered checkout, or why one could not be read.
     pub launch: Option<Result<Vec<LaunchFacts>, String>>,
+    /// The compose files in `dir`, read when agents run sandboxed: whether each runs in
+    /// parallel sessions on the project's engine (#1371).
+    pub compose: Vec<ComposeFile>,
 }
 
 /// The report for this host and, with `project`, for that project: `config` is the

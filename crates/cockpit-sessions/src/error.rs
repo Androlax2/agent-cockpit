@@ -126,6 +126,10 @@ pub enum Error {
         account: String,
         session: String,
     },
+    /// Every port block of the project's engine is held by a session not ended (#1371).
+    NoPortBlock {
+        project: String,
+    },
     /// `torlek account sign-in` cannot sign this account in, or kept nothing (#59).
     SignIn {
         provider: String,
@@ -312,6 +316,12 @@ impl fmt::Display for Error {
                 formatter,
                 "the {provider} provider's account {account} {reason}, so its sandboxed sessions \
                  do not launch: {remedy}"
+            ),
+            Error::NoPortBlock { project } => write!(
+                formatter,
+                "every one of the {} port blocks of project {project}'s engine is held by a \
+                 session not ended: end one to free its block",
+                cockpit_config::PORT_BLOCKS
             ),
             Error::LoginInUse {
                 provider,

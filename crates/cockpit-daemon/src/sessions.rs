@@ -515,6 +515,7 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::AccountUnavailable { .. }
         | Error::AccountUnusable { .. }
         | Error::LoginInUse { .. }
+        | Error::NoPortBlock { .. }
         | Error::SignIn { .. }
         | Error::LoginGrantRefused { .. } => ErrorCode::Refused,
         Error::LoginGrantStore(cockpit_sandbox::LoginGrantError::Refused(
