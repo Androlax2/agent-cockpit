@@ -25,7 +25,7 @@ fn a_port_in_another_sessions_block_names_that_session() {
 }
 
 #[test]
-fn a_port_of_the_sessions_own_block_another_project_or_no_block_is_not_anothers() {
+fn a_port_of_its_own_block_another_project_or_no_block_is_in_no_other_sessions_block() {
     let blocks = [held(FIRST, "app", 0), held(SECOND, "web", 1)];
 
     for (case, session, port) in [
