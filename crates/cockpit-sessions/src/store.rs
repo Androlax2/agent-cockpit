@@ -423,6 +423,18 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE session_launches ADD COLUMN harness_trust TEXT
                 CHECK (harness_trust <> '');",
         },
+        // The block of host ports each sandboxed session holds in its project engine's
+        // namespace (#1371), from its first launch until it ends. A row of an ended session
+        // holds nothing; the next launch of the project that needs its block deletes it.
+        Migration {
+            version: 28,
+            sql: "CREATE TABLE session_port_blocks (
+                session_id TEXT PRIMARY KEY,
+                project TEXT NOT NULL CHECK (project <> ''),
+                block INTEGER NOT NULL CHECK (block >= 0),
+                UNIQUE (project, block)
+            );",
+        },
     ],
 };
 

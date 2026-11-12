@@ -258,6 +258,15 @@ async fn report(
         Some(_) => Some(launches(&context, &dir).await),
         None => None,
     };
+    // Only sandboxed sessions launch with a compose project name and port block (#1371).
+    let compose = if is_sandboxed {
+        let reading = dir.clone();
+        tokio::task::spawn_blocking(move || compose_files(&reading))
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
     let capacity = context.admission.capacity();
     let project = ProjectFacts {
         dir,
@@ -270,12 +279,32 @@ async fn report(
         docker,
         engine,
         launch,
+        compose,
     };
     Ok(with_daemon_lines(
         cockpit_readiness::assess(&host, &config, Some(&project)),
         &context,
         clipboard,
     ))
+}
+
+/// The largest compose file readiness reads.
+const MAX_COMPOSE_BYTES: u64 = 1024 * 1024;
+
+/// Each of [`cockpit_readiness::COMPOSE_FILES`] in `dir`. An agent writes the checkout, so a
+/// file is read only as a plain file of its own, never through a symbolic link. Blocks.
+fn compose_files(dir: &Path) -> Vec<cockpit_readiness::ComposeFile> {
+    cockpit_readiness::COMPOSE_FILES
+        .iter()
+        .filter_map(|name| {
+            let text =
+                cockpit_projects::read_checkout_file(dir, name, MAX_COMPOSE_BYTES).transpose()?;
+            Some(cockpit_readiness::ComposeFile {
+                name: (*name).to_owned(),
+                text,
+            })
+        })
+        .collect()
 }
 
 /// `report` with what only the daemon knows: the disk guard's reading and `clipboard`.

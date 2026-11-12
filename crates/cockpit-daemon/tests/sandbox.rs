@@ -3813,3 +3813,202 @@ async fn the_owner_socket_refuses_an_ask_for_a_service() {
     );
     assert_eq!(owner_network(&home, &["list"]).await, "");
 }
+
+/// What the agent sees of its compose project and port block (#1371), sorted.
+const CONTAINER_PORT_VARIABLES: &str = "env | grep -E \
+    '^(COMPOSE_PROJECT_NAME|TORLEK_PORT_(BASE|COUNT|0|9))=' | LC_ALL=C sort";
+
+/// What [`CONTAINER_PORT_VARIABLES`] prints for `session` holding the block from `base`.
+fn container_port_variables(session: &str, base: u16) -> String {
+    format!(
+        "COMPOSE_PROJECT_NAME={COMMANDED_PROJECT}-{session}\nTORLEK_PORT_0={base}\n\
+         TORLEK_PORT_9={}\nTORLEK_PORT_BASE={base}\nTORLEK_PORT_COUNT=10\nexit=0\n",
+        base + 9
+    )
+}
+
+/// A second session of the [`COMMANDED_PROJECT`] in a clone of its own, whose directory's
+/// name keeps the fake agent commanded; its working directory and id.
+async fn clone_session(client: &Connection, root: &Path) -> (PathBuf, String) {
+    let answer = client
+        .request(
+            Command::SessionNew {
+                dir: root.display().to_string(),
+                agent: Some("claude".to_owned()),
+                prompt: None,
+                clone: Some(COMMANDED_PROJECT.to_owned()),
+                model: None,
+                effort: None,
+                compaction_threshold: None,
+            },
+            Duration::from_secs(60),
+        )
+        .await;
+    let Ok(Reply::Session { session }) = answer else {
+        panic!("session-new in a clone: {answer:?}");
+    };
+    assert_eq!(
+        Path::new(&session.working_dir).file_name(),
+        Some(std::ffi::OsStr::new(COMMANDED_PROJECT)),
+        "{session:?}"
+    );
+    (PathBuf::from(&session.working_dir), session.id)
+}
+
+/// #1371: parallel sessions of one project run one compose file on its engine, each under a
+/// compose project name and in a port block of its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn parallel_sessions_of_one_project_get_their_own_compose_project_and_port_block() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    let client = home.connect().await;
+    let (clone, second) = clone_session(&client, &agent.root).await;
+
+    let first_sees = run_in_agent(&home, &agent.root, CONTAINER_PORT_VARIABLES).await;
+    let second_sees = run_in_agent(&home, &clone, CONTAINER_PORT_VARIABLES).await;
+
+    assert_eq!(first_sees, container_port_variables(&agent.session, 20_000));
+    assert_eq!(second_sees, container_port_variables(&second, 20_010));
+}
+
+/// #1371: `torlek session end` frees the session's block for the project's next session.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_port_block_is_free_again_once_its_session_ends() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    let client = home.connect().await;
+    let (clone, second) = clone_session(&client, &agent.root).await;
+    client
+        .request(
+            Command::SessionEnd {
+                session: agent.session.clone(),
+            },
+            GENEROUS,
+        )
+        .await
+        .expect("the owner ends the session");
+
+    let third = new_session(&client, &agent.root).await;
+
+    let third_sees = run_in_agent(&home, &agent.root, CONTAINER_PORT_VARIABLES).await;
+    let second_sees = run_in_agent(&home, &clone, CONTAINER_PORT_VARIABLES).await;
+    assert_eq!(third_sees, container_port_variables(&third.id, 20_000));
+    assert_eq!(second_sees, container_port_variables(&second, 20_010));
+}
+
+/// #1371: a container port in another session's block is that session's; asking for it is
+/// refused naming the session, and nothing is filed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_container_port_in_another_sessions_block_is_refused_naming_that_session() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    let client = home.connect().await;
+    let (clone, _) = clone_session(&client, &agent.root).await;
+
+    let refused = ask_service_in_agent(&home, &clone, "containers --port 20005").await;
+
+    assert!(
+        refused.contains(&format!(
+            "port 20005 is in session {}'s port block (20000-20009)",
+            agent.session
+        )) && refused.ends_with("exit=1\n"),
+        "{refused}"
+    );
+    assert_eq!(owner_network(&home, &["list"]).await, "");
+}
+
+/// #1371: `doctor --project` names the line of a literal host port and the variable that
+/// lets parallel sessions publish it.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_names_a_compose_files_literal_host_port_and_its_fix() {
+    let home = Home::new();
+    home.write_owner_config(REQUIRED);
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+    std::fs::write(
+        root.join("compose.yaml"),
+        "services:\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n",
+    )
+    .unwrap();
+
+    let doctor = home
+        .cockpit(&["doctor", "--project", root.to_str().unwrap()], &[])
+        .await;
+
+    let report = text(&doctor.stdout);
+    let line = report
+        .lines()
+        .find(|line| line.contains("compose compose.yaml:5: "))
+        .unwrap_or_else(|| panic!("no compose line in:\n{report}"));
+    assert!(line.contains("literal host port 8080"), "{report}");
+    assert!(report.contains("${TORLEK_PORT_0:-8080}"), "{report}");
+}
+
+/// #1371: an agent writes the checkout, so doctor never follows a compose file that is a
+/// symbolic link.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_does_not_follow_a_compose_file_that_is_a_symbolic_link() {
+    let home = Home::new();
+    home.write_owner_config(REQUIRED);
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+    let outside = home.path().join("outside.yaml");
+    std::fs::write(
+        &outside,
+        "services:\n  web:\n    ports:\n      - \"8080:80\"\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("compose.yaml")).unwrap();
+
+    let doctor = home
+        .cockpit(&["doctor", "--project", root.to_str().unwrap()], &[])
+        .await;
+
+    let report = text(&doctor.stdout);
+    let line = report
+        .lines()
+        .find(|line| line.contains("compose compose.yaml: "))
+        .unwrap_or_else(|| panic!("no compose line in:\n{report}"));
+    assert!(
+        line.starts_with("unknown ") && line.contains("symbolic link"),
+        "{report}"
+    );
+    assert!(!report.contains("8080"), "{report}");
+}
+
+/// #1371: an unsandboxed agent uses the owner's own engine, where Torlek hands out no ports.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unsandboxed_session_launches_with_no_compose_project_or_port_block() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
+    new_session(&client, &root).await;
+
+    let sees = run_in_agent(&home, &root, CONTAINER_PORT_VARIABLES).await;
+
+    // Nothing printed; the exit is `sort`'s.
+    assert_eq!(sees, "exit=0\n");
+}
+
+/// #1371: a session keeps its block across relaunches, so its running containers keep
+/// their ports.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_session_keeps_its_port_block() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    let client = home.connect().await;
+    clone_session(&client, &agent.root).await;
+    restart(&home, &agent.session).await.unwrap();
+    let launch = listed(&client, &agent.session).await.launch;
+    assert_eq!(
+        launch.map(|launch| launch.kind),
+        Some(LaunchKindView::Restart)
+    );
+
+    let sees = run_in_agent(&home, &agent.root, CONTAINER_PORT_VARIABLES).await;
+
+    assert_eq!(sees, container_port_variables(&agent.session, 20_000));
+}

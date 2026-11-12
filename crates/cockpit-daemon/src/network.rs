@@ -216,8 +216,14 @@ pub(crate) fn route_ask(
         let forward = if service == CONTAINERS_SERVICE {
             let port = port.ok_or_else(needs_port)?;
             // Outside a transaction: the engine may take its whole deadline to answer.
-            crate::containers::container_port(&database, &containers, &session_project, port)
-                .await?
+            crate::containers::container_port(
+                &database,
+                &containers,
+                &session_project,
+                session.as_str(),
+                port,
+            )
+            .await?
         } else {
             if port.is_some() {
                 return Err(port_for_containers_only(&service));
@@ -548,6 +554,9 @@ async fn decisions_of_live_sessions(
 ) -> Result<Vec<(String, EgressDecisions)>, String> {
     let read = database.read().await.map_err(|error| error.to_string())?;
     let live = live_sessions(&read).await?;
+    let held = cockpit_sessions::live_port_blocks(&read)
+        .await
+        .map_err(|error| format!("the sessions' port blocks could not be read: {error}"))?;
     let mut all = Vec::with_capacity(live.len());
     let passwd = tokio::sync::OnceCell::new();
     // A project's sessions share its engine: looked up once a pass.
@@ -564,6 +573,14 @@ async fn decisions_of_live_sessions(
                 continue;
             }
         };
+        // A port always allowed for the project opens in the session whose block holds it,
+        // not in the others (#1371).
+        cockpit_sessions::keep_own_container_ports(
+            &mut decisions.services,
+            &held,
+            &project,
+            &session,
+        );
         if decisions.services.live_forwards().next().is_some() {
             // Without it the launcher refuses each container port, naming the engine.
             if !relays.contains_key(&project) {

@@ -161,6 +161,9 @@ Recording again replaces the recorded engine: do it after reinstalling one, and 
 A sandboxed session reaches the engine at `DOCKER_HOST` once the engine is verified and sees the session's checkout masked: its Git hooks and configuration, `.torlek`, `.env` and the session's other denials hidden. The masks are not built yet in this release, so no session reaches it and `torlek doctor` says `unsupported` once it is verified. When a session does, its launcher binds the engine's socket only after checking the engine's user listens on it.
 A session reaches a port a container publishes once you allow it: the agent asks with `torlek ask service containers --port PORT --reason TEXT`, which is refused until the engine answers as the one you recorded (the launcher then checks the relay runs as the engine's user at each connection), and the request reads `service containers listen 127.0.0.1:PORT target engine:torlek-e3:PORT` in `torlek network list`.
 `torlek network allow ID` opens it for that session, `--always` for the project's sessions; the port opens inside the session's sandbox while it runs, and `torlek network revoke GRANT` closes it and its connections.
+Sessions of one project run its compose files side by side on that one engine. Each sandboxed session launches with `COMPOSE_PROJECT_NAME=<project>-<session>` and a block of 10 host ports in the engine's namespace, `TORLEK_PORT_0` to `TORLEK_PORT_9` (`TORLEK_PORT_BASE` and `TORLEK_PORT_COUNT` name the block), which it holds until it ends.
+A compose file runs in parallel sessions when it publishes host ports from those variables (`"${TORLEK_PORT_0:-8080}:80"`) and leaves container, volume and network names to compose; `torlek doctor --project DIR` names each line that does not, with its fix.
+A request for a port of another session's block is refused, naming that session, and a port you allowed `--always` opens only in the session whose block holds it.
 
 ## Phone status page
 

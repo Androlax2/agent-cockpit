@@ -167,6 +167,13 @@ stopped in the middle of one finishes or repairs it at its next start.
   so the cost archive reads what the home still holds under the account that paid for it.
   The observer is best effort and bounds its own time; nothing it does refuses the end or
   the relaunch.
+- **Port blocks** (#1371). A sandboxed launch holds a block of host ports in its project
+  engine's namespace (`session_port_blocks`): the block its session took at an earlier
+  launch, or the lowest no session of the project holds. It launches with
+  `COMPOSE_PROJECT_NAME=<project>-<session>` and the block's `TORLEK_PORT_*` variables, in
+  place of any the owner's environment carries. A session that ended holds none:
+  `live_port_blocks` leaves it out, and the next launch deletes its row. An unsandboxed
+  launch holds no block.
 - Nothing is imported from the current cockpit's state.
 
 ## Dependency edges

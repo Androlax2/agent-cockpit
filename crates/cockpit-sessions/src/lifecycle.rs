@@ -249,23 +249,47 @@ impl Sessions {
         );
     }
 
-    /// The project engine a launch of `project` in `checkout` under `setting` reaches: none
-    /// under `"off"`, whose agent uses the owner's own engine, nor without a backend, whose
-    /// launch is refused.
+    /// The project engine a launch of `project` in `checkout` under `setting` reaches, where
+    /// [`Self::is_sandboxed_launch`].
     async fn launch_engine(
         &self,
         setting: cockpit_config::AgentSandbox,
         project: &str,
         checkout: &Path,
     ) -> Option<cockpit_sandbox::EngineSocket> {
-        let has_backend = self.settings.sandbox.backend().missing_reason().is_none();
-        if setting == cockpit_config::AgentSandbox::Off || !has_backend {
+        if !self.is_sandboxed_launch(setting) {
             return None;
         }
         self.project_engines
             .get()?
             .reachable(project, checkout)
             .await
+    }
+
+    /// The port block a launch of `session` in `project` under `setting` holds in the
+    /// project engine's namespace (#1371), engine reached or not, so a `containers` forward
+    /// is checked against it either way; none where [`Self::launch_engine`] finds none.
+    async fn launch_port_block(
+        &self,
+        setting: cockpit_config::AgentSandbox,
+        session: &SessionId,
+        project: &str,
+    ) -> Result<Option<cockpit_config::PortBlock>, Error> {
+        if !self.is_sandboxed_launch(setting) {
+            return Ok(None);
+        }
+        let write = self.database.write().await?;
+        let block = crate::port_blocks::hold_port_block(&write, session, project).await?;
+        write.commit().await?;
+        Ok(Some(block))
+    }
+
+    /// Whether a launch under `setting` runs in the sandbox: not under `"off"`, whose agent
+    /// uses the owner's own caches, services and engine, nor without a backend, whose launch
+    /// is refused.
+    fn is_sandboxed_launch(&self, setting: cockpit_config::AgentSandbox) -> bool {
+        setting != cockpit_config::AgentSandbox::Off
+            && self.settings.sandbox.backend().missing_reason().is_none()
     }
 
     async fn tell_home_observer(&self, session: &Session, change: crate::HomeChange) {
@@ -2379,6 +2403,10 @@ impl Sessions {
         let engine = self
             .launch_engine(setting, &output_project, &checkout.path)
             .await;
+        let environment = match self.launch_port_block(setting, id, &output_project).await? {
+            Some(block) => with_container_ports(environment, &output_project, id, block),
+            None => environment,
+        };
         let prepared = self.prepare_sandbox(
             setting,
             id.as_str(),
@@ -3169,14 +3197,25 @@ impl Sessions {
             return Ok(cockpit_sandbox::EgressDecisions::default());
         }
         let read = self.database.read().await?;
-        cockpit_sandbox::egress_decisions(&read, project, subject)
+        let mut decisions = cockpit_sandbox::egress_decisions(&read, project, subject)
             .await
             .map_err(|error| match error {
                 cockpit_sandbox::NetworkError::Sql(source) => Error::Sql(source),
                 other => Error::InvalidStoredRow {
                     reason: other.to_string(),
                 },
-            })
+            })?;
+        // As the daemon writes them while the session runs (#1371).
+        if let cockpit_sandbox::Subject::Session { session } = subject {
+            let held = crate::port_blocks::live_port_blocks(&read).await?;
+            crate::port_blocks::keep_own_container_ports(
+                &mut decisions.services,
+                &held,
+                project,
+                session,
+            );
+        }
+        Ok(decisions)
     }
 
     /// [`tool_needs`] for a launch in `checkout`, started in `start_dir`, with `environment`
@@ -3189,8 +3228,7 @@ impl Sessions {
         start_dir: &Path,
         environment: &[(OsString, OsString)],
     ) -> Result<cockpit_sandbox::ToolNeeds, Error> {
-        let has_backend = self.settings.sandbox.backend().missing_reason().is_none();
-        if setting == cockpit_config::AgentSandbox::Off || !has_backend {
+        if !self.is_sandboxed_launch(setting) {
             return Ok(cockpit_sandbox::ToolNeeds::none());
         }
         let checkout = checkout.to_path_buf();
@@ -3223,8 +3261,7 @@ impl Sessions {
         setting: cockpit_config::AgentSandbox,
         checkout: &Path,
     ) -> Result<Vec<cockpit_sandbox::Forward>, Error> {
-        let has_backend = self.settings.sandbox.backend().missing_reason().is_none();
-        if setting == cockpit_config::AgentSandbox::Off || !has_backend {
+        if !self.is_sandboxed_launch(setting) {
             return Ok(Vec::new());
         }
         let environment = self.settings.owner_environment.clone();
@@ -4106,6 +4143,33 @@ fn with_temp_dir(
     if !environment.iter().any(|(name, _)| name == "DOCKER_CONFIG") {
         environment.push(("DOCKER_CONFIG".into(), docker_config_dir(temp_dir).into()));
     }
+    environment
+}
+
+/// `environment` with the compose project name and port block of `session` (#1371), in
+/// place of any the owner's environment carries: parallel sessions of `project` run one
+/// compose file on its engine without sharing a name or a published port.
+fn with_container_ports(
+    mut environment: Vec<(OsString, OsString)>,
+    project: &str,
+    session: &SessionId,
+    block: cockpit_config::PortBlock,
+) -> Vec<(OsString, OsString)> {
+    environment.retain(|(name, _)| {
+        !name
+            .to_str()
+            .is_some_and(cockpit_config::is_container_port_variable)
+    });
+    environment.push((
+        cockpit_config::COMPOSE_PROJECT_VARIABLE.into(),
+        cockpit_config::compose_project_name(project, session.as_str()).into(),
+    ));
+    environment.extend(
+        block
+            .variables()
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into())),
+    );
     environment
 }
 

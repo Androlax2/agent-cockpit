@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use cockpit_config::PORT_BASE_VARIABLE;
 use cockpit_containers::{
     EngineState, EngineUser, Expected, PASSWD_FILE, RecordedEngine, Remedy, SOCKET_DEADLINE,
     SetupPlan,
@@ -16,6 +17,7 @@ use cockpit_protocol::{
 };
 use cockpit_readiness::{EngineRemedy, ProjectEngine};
 use cockpit_sandbox::{EngineRelay, EngineSocket, Forward};
+use cockpit_sessions::HeldPortBlock;
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
 
@@ -247,17 +249,26 @@ fn masked(checkout: &Path) -> Result<(), String> {
     ))
 }
 
-/// The forward for `port` of `project`'s engine (#390), once that engine answers as the one
-/// the owner recorded: an agent asks for a port of a verified engine only.
+/// The forward `session` asks for, of `port` of `project`'s engine (#390), once that engine
+/// answers as the one the owner recorded: an agent asks for a port of a verified engine
+/// only, and never for one in another session's port block (#1371).
 pub(crate) async fn container_port(
     database: &Database,
     host: &Host,
     project: &str,
+    session: &str,
     port: u16,
 ) -> Result<Forward, Failed> {
     let (found, recorded) = {
         let read = database.read().await?;
         let found = registered(&read, project).await?;
+        let held = cockpit_sessions::live_port_blocks(&read)
+            .await
+            .map_err(|error| internal(&error))?;
+        if let Some(holder) = cockpit_sessions::other_sessions_block(&held, project, session, port)
+        {
+            return Err(in_another_sessions_block(port, holder));
+        }
         let recorded = cockpit_containers::recorded_engine(&read, project).await?;
         (found, recorded)
     };
@@ -281,6 +292,23 @@ pub(crate) async fn container_port(
         }));
     }
     Ok(forward)
+}
+
+fn in_another_sessions_block(port: u16, holder: &HeldPortBlock) -> Failed {
+    Failed(ProtocolError {
+        code: ErrorCode::InvalidArgument,
+        message: format!(
+            "port {port} is in session {}'s port block ({}), where only its containers publish",
+            holder.session, holder.block
+        ),
+        unblock: Some(Unblock {
+            action: format!(
+                "publish your container on a port of your own block, ${PORT_BASE_VARIABLE} \
+                 and up, and ask for that one"
+            ),
+            by: UnblockedBy::Agent,
+        }),
+    })
 }
 
 /// The project user's engine, as the decisions name it to the launcher (#390): the user the
