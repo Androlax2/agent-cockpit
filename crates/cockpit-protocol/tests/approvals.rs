@@ -176,6 +176,7 @@ fn a_finished_run_request_reply_round_trips() {
             expires_at: 901,
             waiting_for_input: false,
             waiting_prompt: None,
+            sudo_ask: None,
             decision: None,
             result: Some(RunResultView {
                 exit_code: 2,

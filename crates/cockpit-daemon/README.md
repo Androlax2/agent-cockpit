@@ -70,7 +70,7 @@ not share code.
    cannot connect until restore finishes. A failed restore closes the early listener and its
    connections.
 
-## Two sockets (report 17)
+## Sockets (report 17)
 
 - `daemon.sock` is host-only: no sandbox may reach it, and its peers are the owner.
 - `agent/agent.sock` sits in a 0700 directory of its own, so a sandbox can be given that
@@ -91,6 +91,12 @@ not share code.
 - OpenCode delivery receives its original launch's port and password from the host-owned
   sessions database, never from an agent-written endpoint file (#416). The same endpoint
   is retained when the daemon restarts; provider acceptance is not task completion.
+
+- `askpass.sock` (#1374), in the private runtime directory beside `daemon.sock`, is where
+  sudo's askpass helper in an approved run asks for the owner's password. The helper is
+  `torlek-daemon --sudo-askpass <socket> <prompt>`; the daemon answers only peers running as
+  the owner, and `cockpit-approvals` decides whether the helper's parent is the trusted
+  sudo inside a live run. The password goes back on the same connection, never into a log.
 
 ## Approvals (#34)
 

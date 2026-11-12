@@ -324,8 +324,18 @@ pub async fn ask_run(
     ask: RunAsk,
     now: i64,
 ) -> Result<RunRequest, Error> {
+    let ask = asking_sudo_every_time(ask);
     let grant = authorized_ask(write, session, &ask).await?;
     insert_run(write, session, &ask, grant, now).await
+}
+
+/// The ask as the owner reads it: each leading or `&&`-chained `sudo` asks through Torlek
+/// and reuses no unlock (#1374).
+fn asking_sudo_every_time(ask: RunAsk) -> RunAsk {
+    RunAsk {
+        command: crate::sudo_asks_every_time(&ask.command),
+        ..ask
+    }
 }
 
 /// The checks every agent ask passes: a valid command and reason, and a session that may ask.
@@ -359,6 +369,7 @@ pub async fn ask_run_unless_pending(
     ask: RunAsk,
     now: i64,
 ) -> Result<FiledRun, Error> {
+    let ask = asking_sudo_every_time(ask);
     let grant = authorized_ask(write, session, &ask).await?;
     if let Some(run) = pending_identical(write, session, &ask, now).await? {
         return Ok(FiledRun {
@@ -859,12 +870,13 @@ pub async fn edit_run(
         )
         .into());
     }
-    validate_command("command", command)?;
+    let command = crate::sudo_asks_every_time(command);
+    validate_command("command", &command)?;
     stored_run(
         write,
         "UPDATE approvals_runs SET command = ?2, revision = revision + 1, revised_at = ?3
              WHERE id = ?1",
-        (id.0, command, now),
+        (id.0, command.as_str(), now),
         now,
     )
     .await

@@ -31,6 +31,11 @@ pub enum Refusal {
     /// The command's terminal may show what is typed, so the text could land in its output
     /// (#1160); `why` says what it does. `request` is the run, for the next step it names.
     InputWouldShow { request: i64, why: String },
+    /// The password names a sudo ask of the run that no longer waits (#1374): sudo ended, or
+    /// the ask has its answer.
+    NoSudoAsk { request: i64, ask: u64 },
+    /// The sudo or helper behind the ask changed before the owner's answer (#1374): `why`.
+    SudoStoppedAsking { request: i64, ask: u64, why: String },
     /// Only a command running under this daemon can be stopped (#1301); `why` says what the
     /// request is instead.
     NotStoppable { why: String },
@@ -104,6 +109,13 @@ impl Refusal {
                      --shown` (Tab in the TUI); type a secret only at a prompt that hides it"
                 ),
             ),
+            Refusal::NoSudoAsk { request, .. } | Refusal::SudoStoppedAsking { request, .. } => (
+                UnblockedBy::Owner,
+                format!(
+                    "nothing to send: read the request again with `torlek approval show \
+                     {request}` and answer the sudo ask it shows, if any"
+                ),
+            ),
             Refusal::NotStoppable { .. } => (
                 UnblockedBy::Owner,
                 "nothing to stop from Torlek: decline a request that still asks, or end a command \
@@ -174,6 +186,14 @@ impl fmt::Display for Refusal {
                 "the command's terminal {why}: what is typed could show in the output the agent \
                  reads, so nothing was typed; stop it with x (`torlek approval stop {request}`), \
                  or answer a visible prompt on purpose with Tab (`--shown`)"
+            ),
+            Refusal::NoSudoAsk { request, ask } => write!(
+                formatter,
+                "sudo's ask {ask} for request {request} no longer waits: nothing was sent"
+            ),
+            Refusal::SudoStoppedAsking { request, ask, why } => write!(
+                formatter,
+                "sudo's ask {ask} for request {request} was not answered: {why}"
             ),
             Refusal::NotStoppable { why } => write!(formatter, "nothing was stopped: {why}"),
             Refusal::StopUnconfirmed { .. } => formatter.write_str(

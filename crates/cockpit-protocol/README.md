@@ -39,7 +39,8 @@ the wire. Report 14 treats this contract as stable from the first release.
    `ask-run-status` / `ask-guide-status` read the sender's own; `ask-check` says whether an
    ask would reach the owner. The owner reads `approval-queue` and decides with
    `approval-approve`, which names the `revision` and `digest` it read, `approval-decline`,
-   `approval-edit` (a new revision) and `approval-input`; guides with `guide-answer` and
+   `approval-edit` (a new revision), `approval-input` and `approval-sudo-password` (the
+   `password` for a running request's open `sudo_ask`, a `SecretText`, #1374); guides with `guide-answer` and
    `guide-stuck` (naming the step shown) and `guide-close`. Views carry the display rules'
    `ShownText` beside the exact text, with the kinds escaped as `warnings`; a run request
    carries `folded_command`, `timeout_without_foreground`, `unchecked_shell` (#494) and,

@@ -408,6 +408,7 @@ impl Handler for Routes {
                 | Command::ApprovalDecline { .. }
                 | Command::ApprovalEdit { .. }
                 | Command::ApprovalInput { .. }
+                | Command::ApprovalSudoPassword { .. }
                 | Command::ApprovalStop { .. }
                 | Command::ApprovalPurgeOutput { .. }
                 | Command::GuideShow { .. }

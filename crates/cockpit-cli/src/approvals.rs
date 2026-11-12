@@ -4,12 +4,13 @@
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
+use std::io::IsTerminal as _;
 use std::process::ExitCode;
 
 use chrono::{DateTime, Local};
 use cockpit_protocol::{
     Command, DecidedRunView, DecidedThroughView, GuideStateView, GuideView, HiddenView, Reply,
-    RunDecisionView, RunRequestView, RunStateView, ShownText,
+    RunDecisionView, RunRequestView, RunStateView, SecretText, ShownText,
 };
 
 /// The command a verb sends, or the usage problem that stops it.
@@ -56,6 +57,13 @@ pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, Strin
                 shown: true,
             }
         }
+        ("approval", ["sudo-password", id, ask]) => Command::ApprovalSudoPassword {
+            request: id_of(id)?,
+            ask: ask
+                .parse()
+                .map_err(|_| format!("{ask} is not a sudo ask number"))?,
+            password: sudo_password()?,
+        },
         ("approval", ["stop", id]) => Command::ApprovalStop {
             request: id_of(id)?,
         },
@@ -97,6 +105,21 @@ fn input_line() -> Result<String, String> {
     }
     let line = line.strip_suffix('\n').unwrap_or(&line);
     Ok(line.strip_suffix('\r').unwrap_or(line).to_owned())
+}
+
+/// sudo's password (#1374): read with the echo off from a terminal, else one line from
+/// standard input; never an argument, which would sit in the shell's history.
+fn sudo_password() -> Result<SecretText, String> {
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() {
+        return input_line().map(SecretText::new);
+    }
+    let line = crate::terminal::read_hidden_line(&stdin, "sudo's password (not shown): ")
+        .map_err(|error| format!("cannot read the password from the terminal: {error}"))?;
+    let line = line.strip_suffix('\n').unwrap_or(&line);
+    Ok(SecretText::new(
+        line.strip_suffix('\r').unwrap_or(line).to_owned(),
+    ))
 }
 
 fn id_of(text: &str) -> Result<i64, String> {
@@ -323,7 +346,15 @@ fn run_detail(run: &RunRequestView) -> String {
     let _ = writeln!(text, "reason: {}", run.shown_reason.text);
     text.push_str(&warnings(&run.shown_reason));
     let _ = writeln!(text, "digest: {}", run.digest);
-    if run.waiting_for_input {
+    if let Some(sudo) = &run.sudo_ask {
+        let _ = writeln!(
+            text,
+            "sudo asks for your password (ask {}): {}\nanswer it: torlek approval sudo-password \
+             {} {} (reads it from standard input; it reaches sudo alone, never the command's \
+             terminal or output), or stop the command: torlek approval stop {}",
+            sudo.ask, sudo.prompt.text, run.id, sudo.ask, run.id
+        );
+    } else if run.waiting_for_input {
         let _ = writeln!(
             text,
             "waiting for input: torlek approval input {} (reads one line from standard input, \

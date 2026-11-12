@@ -17,6 +17,8 @@ const MOUNT_SOURCES: &str = "mounts";
 const SESSION_TEMPS: &str = "tmp";
 const SESSION_HOMES: &str = "homes";
 const ACCOUNT_LOGINS: &str = "account-logins";
+const ASKPASS_SOCKET: &str = "askpass.sock";
+const SUDO_LAUNCHERS: &str = "sudo";
 /// Only the owner may enter the socket directory.
 const PRIVATE_DIR_MODE: u32 = 0o700;
 
@@ -49,6 +51,17 @@ impl Options {
     /// The host-only socket: its peers are the owner. No sandbox may reach it.
     pub fn socket_path(&self) -> PathBuf {
         self.runtime_dir.join(cockpit_config::DAEMON_SOCKET)
+    }
+
+    /// The socket sudo's askpass helper asks on in an approved run (#1374). Host-only, as
+    /// the owner's socket is: no sandbox reaches the runtime directory.
+    pub fn askpass_socket_path(&self) -> PathBuf {
+        self.runtime_dir.join(ASKPASS_SOCKET)
+    }
+
+    /// Where each approved run's `sudo` and `askpass` launchers are written (#1374).
+    pub fn sudo_launchers(&self) -> PathBuf {
+        self.runtime_dir.join(SUDO_LAUNCHERS)
     }
 
     /// The socket sandboxed agents reach; its peers are never the owner.

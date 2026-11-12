@@ -523,7 +523,7 @@ pub async fn answer_step(
     let run_request = match &shown.run {
         Some(command) => {
             let ask = RunAsk {
-                command: command.clone(),
+                command: crate::sudo_asks_every_time(command),
                 cwd: guide.cwd.clone(),
                 reason: run_reason(&guide, step),
                 project: guide.project.clone(),

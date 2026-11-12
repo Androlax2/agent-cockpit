@@ -97,12 +97,17 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         source = %environment.profile.source,
         "the daemon serves its profile"
     );
-    let run_settings =
+    let mut run_settings =
         crate::run_settings(std::env::vars_os().collect()).map_err(|source| StartError::Io {
             action: "find the daemon's own program",
             path: "/proc/self/exe".into(),
             source,
         })?;
+    run_settings.sudo = crate::sudo_askpass(
+        &run_settings.leader,
+        &instance.options().askpass_socket_path(),
+        instance.options().sudo_launchers(),
+    );
     // Read once: a start file declared or a session setting changed later counts from the
     // next daemon start. The log runs already, so a detached daemon records the refusal.
     let config = cockpit_config::load(&environment, None, &[]).map_err(|error| {
