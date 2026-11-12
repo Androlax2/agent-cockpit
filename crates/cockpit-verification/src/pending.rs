@@ -168,7 +168,7 @@ pub async fn seal_result(
         return Err(changed());
     }
     let never_ran = result.ran.is_none() && pending.receipt.ran.is_some();
-    if never_ran && !matches!(result.outcome, Outcome::Unavailable | Outcome::Unknown) {
+    if never_ran && result.outcome != Outcome::Unavailable {
         return Err(changed());
     }
     let mut input = result.clone();

@@ -4843,8 +4843,6 @@ fn provider_needs(
     })
 }
 
-/// A declared host, `name` or `name:port` as [`cockpit_provider_api::Host`] validated it,
-/// as the proxy's entry: port 443 when it names none.
 /// The registry hosts `ecosystems` fetch dependencies from (#859), each entry naming its
 /// ecosystem as its source: what a session's adapter hosts and a check run's proxy (#862)
 /// add. An ecosystem the toolchain table does not hold, or an invalid host in it, is refused
@@ -4869,6 +4867,8 @@ pub fn registry_entries(ecosystems: &[String]) -> Result<Vec<cockpit_sandbox::Al
     Ok(entries)
 }
 
+/// A declared host, `name` or `name:port` as [`cockpit_provider_api::Host`] validated it,
+/// as the proxy's entry: port 443 when it names none.
 fn allow_entry(host: &str, source: cockpit_sandbox::AllowSource) -> cockpit_sandbox::AllowEntry {
     let (name, port) = match host.rsplit_once(':') {
         Some((name, port)) => (name, port.parse().unwrap_or(0)),

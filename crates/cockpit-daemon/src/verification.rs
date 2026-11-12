@@ -406,6 +406,8 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
         }
         environment::Placement::Host | environment::Placement::Unavailable(_) => None,
     };
+    // The sandbox sets Git's configuration itself; only a host run applies the daemon's.
+    let is_host = placement == environment::Placement::Host;
     let source = source(&context.git, &target.path).await?;
     let (artifacts, git_config) = {
         let git = context.git.clone();
@@ -414,7 +416,12 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
         tokio::task::spawn_blocking(move || {
             let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
             let artifacts = cockpit_verification::fingerprint(&checkout, &paths);
-            (artifacts, git.safe_config(&checkout))
+            let git_config = if is_host {
+                git.safe_config(&checkout)
+            } else {
+                Ok(Vec::new())
+            };
+            (artifacts, git_config)
         })
         .await
         .map_err(|error| internal(&error))?
@@ -447,7 +454,7 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
     let run_id = format!("execution-{}-{}", context.database.epoch(), execution.0);
     // Prepared under the writer, since its folders are named for the run; it writes nothing.
     let launch = match (placement, sandboxed) {
-        (environment::Placement::Unavailable(reason), _) => Err(reason.to_owned()),
+        (environment::Placement::Unavailable(unplaced), _) => Err(unplaced.reason.to_owned()),
         (environment::Placement::Sandbox, Some(inputs)) => {
             sandboxed_launch(context, &run_id, &definition, &target, start_dir, inputs)
         }
@@ -516,6 +523,7 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
         if let Err(error) = written {
             // Nothing started, and this run's own collector is the only one: dropped first.
             drop(collector);
+            remove_run_folders(launch.cleanup).await;
             let write = context.database.write().await?;
             seal_never_started(
                 &write,
@@ -524,7 +532,6 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
             )
             .await?;
             write.commit().await?;
-            remove_run_folders(launch.cleanup).await;
             return Ok(Reply::CheckRunStarted { run: run_id });
         }
     }
@@ -558,24 +565,8 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
             if observed.phase
                 == cockpit_processes::Phase::Ended(cockpit_processes::EndReason::NeverStarted)
             {
-                let mut result = pending.receipt.clone();
-                result.outcome = Outcome::Unavailable;
-                result.ran = None;
-                result.finished_at = now().max(result.started_at);
-                result.output = format!("check could not start: {error}");
-                let bytes = result.output.len() as u64;
-                cockpit_verification::seal_result(
-                    &write,
-                    &pending,
-                    result,
-                    bytes,
-                    now().max(pending.receipt.started_at),
-                    false,
-                )
-                .await?;
-                cockpit_processes::seal_output_result(&write, execution, &pending.origin_epoch)
-                    .await
-                    .map_err(|e| internal(&e))?;
+                seal_unavailable(&write, &pending, &format!("check could not start: {error}"))
+                    .await?;
                 write.commit().await?;
                 remove_run_folders(launch.cleanup).await;
                 return Err(refused(
@@ -626,7 +617,7 @@ fn host_launch(
         },
         ran: environment::ran_on_host(),
         enforcement: cockpit_sandbox::Enforcement::Unsandboxed {
-            reason: "no sandbox: agents.sandbox = \"off\"".to_owned(),
+            reason: environment::HOST_ISOLATION.to_owned(),
         },
         staged: None,
         folder: None,
@@ -753,6 +744,17 @@ async fn seal_never_started(
     if !ended {
         return Err(internal(&"a check run that never launched was not ended"));
     }
+    seal_unavailable(write, pending, reason).await
+}
+
+/// Seals `pending`, whose execution ended without starting, as `unavailable` with `reason` as
+/// its output and nowhere as where it ran, in the caller's transaction.
+async fn seal_unavailable(
+    write: &cockpit_turso::WriteTransaction<'_>,
+    pending: &cockpit_verification::PendingResult,
+    reason: &str,
+) -> Result<(), Failed> {
+    let execution = ExecutionId(pending.execution);
     let mut result = pending.receipt.clone();
     result.outcome = Outcome::Unavailable;
     result.ran = None;
@@ -978,13 +980,16 @@ async fn gate(context: &Context, target: Target, refusal: Option<RunRefusal>) ->
         .map_err(|error| internal(&error))??;
     // A check placed nowhere is not lifted by running it again: its next action says what is.
     let setting = context.sessions.owner_settings().sandbox;
-    let unplaced: Vec<&str> = checks
+    let unplaced: Vec<(&str, environment::Unplaced)> = checks
         .iter()
-        .filter(|check| {
-            environment::placement(setting, &check.environment)
-                == environment::Placement::Unavailable(environment::NATIVE_UNDER_REQUIRED)
-        })
-        .map(|check| check.name.as_str())
+        .filter_map(
+            |check| match environment::placement(setting, &check.environment) {
+                environment::Placement::Unavailable(unplaced) => {
+                    Some((check.name.as_str(), unplaced))
+                }
+                environment::Placement::Host | environment::Placement::Sandbox => None,
+            },
+        )
         .collect();
     Ok(Reply::CheckGate {
         gate: Box::new(gate_view(&target, &source, &report, refusal, &unplaced)),
@@ -1090,14 +1095,13 @@ fn claim_view(project: &str, claim: &Claim) -> CheckClaimView {
     }
 }
 
-/// `native_under_required` names the checks that declare `native` under `agents.sandbox =
-/// "required"`, whose next action is to declare another environment or turn the sandbox off.
+/// `unplaced` names the checks the owner's setting runs nowhere, whose next action is theirs.
 fn gate_view(
     target: &Target,
     source: &Source,
     report: &GateReport,
     refusal: Option<RunRefusal>,
-    native_under_required: &[&str],
+    unplaced: &[(&str, environment::Unplaced)],
 ) -> GateView {
     GateView {
         project: target.project.clone(),
@@ -1119,11 +1123,10 @@ fn gate_view(
                 next_action: check
                     .next_action()
                     .map(|action| {
-                        if native_under_required.contains(&check.name.as_str()) {
-                            environment::NATIVE_NEXT_ACTION.to_owned()
-                        } else {
-                            action
-                        }
+                        unplaced
+                            .iter()
+                            .find(|(name, _)| *name == check.name)
+                            .map_or(action, |(_, unplaced)| unplaced.next_action.to_owned())
                     })
                     .map(|action| match refusal {
                         Some(refusal) => refusal.before(&action),

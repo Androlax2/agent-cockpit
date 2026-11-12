@@ -11,19 +11,31 @@ use std::path::{Path, PathBuf};
 use cockpit_config::{AgentSandbox, ExecutionEnvironment};
 use cockpit_verification::Ran;
 
-/// Why a `native` check under `agents.sandbox = "required"` has no run.
-pub(super) const NATIVE_UNDER_REQUIRED: &str =
-    "native checks run only with `agents.sandbox = \"off\"`";
+/// Where a check that runs nowhere stands: why, and what lifts it. Running it again does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Unplaced {
+    pub(super) reason: &'static str,
+    pub(super) next_action: &'static str,
+}
 
-/// The gate's next action for a `native` check under `agents.sandbox = "required"`.
-pub(super) const NATIVE_NEXT_ACTION: &str =
-    "declare `environment = \"sandbox\"`, or set `agents.sandbox = \"off\"`";
+const NATIVE_UNDER_REQUIRED: Unplaced = Unplaced {
+    reason: "native checks run only with `agents.sandbox = \"off\"`",
+    next_action: "declare `environment = \"sandbox\"`, or set `agents.sandbox = \"off\"`",
+};
 
-const DOCKER_NOT_RUN: &str = "docker checks run in a container of the project's Torlek-run \
-    engine (#390), which this daemon does not start checks in yet";
+const DOCKER_NOT_RUN: Unplaced = Unplaced {
+    reason: "docker checks run in a container of the project's Torlek-run engine (#390), \
+        which this daemon does not start checks in yet",
+    next_action: "declare `environment = \"sandbox\"` until Torlek runs docker checks (#856)",
+};
+
+const UNKNOWN_ENVIRONMENT: Unplaced = Unplaced {
+    reason: "the check declares an environment Torlek does not know",
+    next_action: "declare `environment = \"sandbox\"`",
+};
 
 /// How a host run is isolated: not at all, by the owner's own setting.
-const HOST_ISOLATION: &str = "no sandbox: agents.sandbox = \"off\"";
+pub(super) const HOST_ISOLATION: &str = "no sandbox: agents.sandbox = \"off\"";
 
 /// Where a check runs under the owner's setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,8 +44,8 @@ pub(super) enum Placement {
     Host,
     /// Through `torlek-sandbox`.
     Sandbox,
-    /// Nowhere: the receipt is `unavailable` with this reason, and no process starts.
-    Unavailable(&'static str),
+    /// Nowhere: the receipt is `unavailable` with the reason, and no process starts.
+    Unavailable(Unplaced),
 }
 
 /// Where a check that declares `declared` runs under `setting`.
@@ -43,7 +55,7 @@ pub(super) fn placement(setting: AgentSandbox, declared: &str) -> Placement {
         .find(|known| known.as_str() == declared)
     else {
         // The configuration refuses any other name; a check is never run on a guess.
-        return Placement::Unavailable("the check declares an environment Torlek does not know");
+        return Placement::Unavailable(UNKNOWN_ENVIRONMENT);
     };
     match (declared, setting) {
         (ExecutionEnvironment::Docker, _) => Placement::Unavailable(DOCKER_NOT_RUN),
@@ -192,10 +204,10 @@ mod tests {
 
     #[test]
     fn an_unknown_environment_runs_nowhere() {
-        assert!(matches!(
+        assert_eq!(
             placement(AgentSandbox::Off, "vm"),
-            Placement::Unavailable(_)
-        ));
+            Placement::Unavailable(UNKNOWN_ENVIRONMENT)
+        );
     }
 
     #[test]

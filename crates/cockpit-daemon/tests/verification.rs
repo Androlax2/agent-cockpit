@@ -416,6 +416,24 @@ async fn the_gate_tells_the_owner_how_a_native_check_can_run_under_a_required_sa
 }
 
 #[tokio::test]
+async fn the_gate_tells_the_owner_a_docker_check_waits_for_torlek_to_run_it() {
+    let verification = started().await;
+    verification.run("contained").await;
+
+    let gate = verification.owner_gate().await;
+
+    let contained = gate
+        .checks
+        .iter()
+        .find(|check| check.name == "contained")
+        .expect("the docker check is in the gate");
+    assert_eq!(
+        contained.next_action.as_deref(),
+        Some("declare `environment = \"sandbox\"` until Torlek runs docker checks (#856)")
+    );
+}
+
+#[tokio::test]
 async fn a_check_in_a_checkout_the_owner_does_not_trust_is_refused_before_it_runs() {
     let verification = started_with(false).await;
 
