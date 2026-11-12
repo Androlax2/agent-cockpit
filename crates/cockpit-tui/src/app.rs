@@ -871,6 +871,7 @@ impl App {
                 self.taken_keys = TakenKeys::NotTaken;
             }
         }
+        self.pane.input_refused(command, &problem);
         if let Some(tasks) = &mut self.tasks {
             tasks.failed(command, &problem);
         }

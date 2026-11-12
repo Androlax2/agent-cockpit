@@ -550,6 +550,31 @@ fn a_line_typed_on_the_phone_card_for_a_command_is_masked() {
 }
 
 #[test]
+fn a_refused_line_on_the_phone_card_says_it_was_not_sent() {
+    let now = Instant::now();
+    let mut app = phone_app(40, 30, now);
+    let sudo = RunRequestView {
+        waiting_prompt: Some(shown("[sudo] password for theo: ")),
+        ..waiting_run(3, SESSION)
+    };
+    asking(&mut app, vec![sudo], now);
+    let later = after_grace(now);
+    press(&mut app, &[Key::Char('i')], later);
+    typing(&mut app, "hunter2", later);
+    let line = sent(&press(&mut app, &[Key::Enter], later));
+    let refusal = "conflict: the command's terminal reads keys one at a time";
+    app.answer(&line[0], Err(refusal.to_owned()), later);
+
+    let rows = squeezed(&sized_screen(&app, later, 40, 30));
+
+    assert!(
+        rows.contains(&format!("Notsent:{refusal}").replace(' ', "")),
+        "{rows}"
+    );
+    assert!(!rows.contains("hunter2"), "{rows}");
+}
+
+#[test]
 fn help_from_the_open_session_goes_back_to_the_list_and_shows_full_screen() {
     let now = Instant::now();
     let mut app = phone_app(40, 20, now);

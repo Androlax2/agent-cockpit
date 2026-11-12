@@ -14,11 +14,13 @@
 //!   reveals it, and hides it again; each new line starts masked.
 //! - `x` on a running command asks to stop it; only `y` then stops it, any other key keeps it
 //!   running (#1301).
+//! - A line the daemon refused comes back into the input as it was typed, masked or not, with
+//!   why it was not sent (#1372): it never vanishes behind a status line.
 
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
-    Command, DecidedThroughView, GuideStateView, GuideView, NetworkRequestStateView,
+    Command, DecidedThroughView, ErrorCode, GuideStateView, GuideView, NetworkRequestStateView,
     RunRequestView, RunStateView,
 };
 
@@ -95,6 +97,8 @@ pub struct Pane {
     /// The line typed for a command drawn in clear: only after the owner's Tab. A line sent
     /// revealed is a visible answer, typed even while the command's terminal echoes (#1160).
     is_input_revealed: bool,
+    /// Why the daemon did not type the last line sent to the command shown (#1372).
+    input_refusal: Option<String>,
     /// The whole command instead of its folded start.
     expanded: bool,
     /// `x` asked to stop the running command shown; `y` confirms.
@@ -122,6 +126,39 @@ impl Pane {
     /// Whether the line typed for a command is drawn in clear rather than masked.
     pub fn is_input_revealed(&self) -> bool {
         self.is_input_revealed
+    }
+
+    /// Why the last line sent to the command shown was not typed into it, while the owner has
+    /// not sent another or cancelled.
+    pub fn input_refusal(&self) -> Option<&str> {
+        self.input_refusal.as_deref()
+    }
+
+    /// `command` failed with `problem`: a line the daemon refused for the command still shown
+    /// comes back into the input, as it was typed, with why. Only a daemon's conflict says
+    /// nothing was typed; a lost connection or a passed deadline may have typed the line, which
+    /// then stays on the status line alone, as does a refusal arriving after the owner started
+    /// another line.
+    pub(crate) fn input_refused(&mut self, command: &Command, problem: &str) {
+        let Command::ApprovalInput {
+            request,
+            text,
+            shown,
+        } = command
+        else {
+            return;
+        };
+        let is_refused_by_daemon = problem
+            .strip_prefix(ErrorCode::Conflict.as_str())
+            .is_some_and(|rest| rest.starts_with(": "));
+        let is_shown = matches!(self.shown, Some(Shown::Run { id, .. }) if id == *request);
+        if !is_refused_by_daemon || !is_shown || self.typing.is_some() {
+            return;
+        }
+        self.typing = Some(Typing::Input);
+        self.typed = text.clone();
+        self.is_input_revealed = *shown;
+        self.input_refusal = Some(problem.to_owned());
     }
 
     /// Whether a key now would be ignored.
@@ -154,6 +191,7 @@ impl Pane {
             self.shown = head;
             self.typing = None;
             self.typed.clear();
+            self.input_refusal = None;
             self.expanded = false;
             self.is_confirming_stop = false;
             self.accepts_input_at = self.shown.as_ref().map(|_| now + INPUT_GRACE);
@@ -322,11 +360,13 @@ impl Pane {
             Key::Esc => {
                 self.typing = None;
                 self.typed.clear();
+                self.input_refusal = None;
                 handled("approval-typing-cancel", None)
             }
             Key::Enter => {
                 let text = std::mem::take(&mut self.typed);
                 self.typing = None;
+                self.input_refusal = None;
                 let (used, send) = match (shown, typing) {
                     (Shown::Run { id, .. }, Typing::Input) => (
                         "approval-input",

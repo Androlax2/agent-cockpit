@@ -20,6 +20,21 @@ fn fake_sudo(dir: &std::path::Path) {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// `sudo` with `Defaults pwfeedback` at `<dir>/sudo` (#1372): echo off and keys read one at a
+/// time, as sudo's `sudo_term_cbreak` sets them, each key answered with a `*`.
+fn fake_sudo_with_pwfeedback(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("sudo");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '[sudo] password for owner: '\nstty -echo -icanon min 1 time 0\n\
+         while key=$(dd bs=1 count=1 2>/dev/null) && [ -n \"$key\" ]; do printf '*'; done\n\
+         stty echo icanon\nprintf '\\n'\nexec \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 /// The run as the agent reads it and as the owner reads it, both from the stored row.
 async fn outputs_after_the_end(asking: &Asking, request: i64) -> [String; 2] {
     let to_agent = asking.ended(request).await.result.expect("a result").output;
@@ -134,6 +149,38 @@ async fn input_to_a_terminal_reading_keys_one_at_a_time_is_refused() {
         "{}",
         refusal.message
     );
+}
+
+/// #1372: sudo's `pwfeedback` prompt reads keys one at a time, so the typed line is refused
+/// on purpose rather than typed, the refusal says so, and the prompt keeps waiting.
+#[tokio::test]
+async fn a_line_for_sudos_pwfeedback_prompt_is_refused_and_not_typed() {
+    let asking = started(true).await;
+    fake_sudo_with_pwfeedback(asking.cwd.path());
+    let request = asking.waiting_at_a_prompt("./sudo true").await;
+
+    let refusal = refused(
+        asking
+            .owner
+            .request(
+                Command::ApprovalInput {
+                    request: request.id,
+                    text: TYPED_SECRET.to_owned(),
+                    shown: false,
+                },
+                GENEROUS,
+            )
+            .await,
+    );
+
+    assert_eq!(refusal.code, ErrorCode::Conflict);
+    assert!(
+        refusal.message.contains("sudo's pwfeedback prompt"),
+        "{}",
+        refusal.message
+    );
+    let still = asking.status(request.id).await;
+    assert!(still.waiting_for_input, "{still:?}");
 }
 
 async fn purge_output(asking: &Asking, request: i64) -> Result<Reply, ClientError> {
