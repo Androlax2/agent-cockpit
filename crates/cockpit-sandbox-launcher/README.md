@@ -105,7 +105,7 @@ target.
 Issue #390. A container port opens while the session runs, with nothing in the spec: the
 owner's decisions carry it as `AllowedService::live`, a forward of the `containers` service
 from the sandbox's `127.0.0.1:P` to `engine:USER:P` (`Forward::container_port`, P at least
-1024 and not the proxy's), and `ServiceDecisions::engine` names the engine's verified user,
+1024 and not the proxy's), and `ServiceDecisions::engine` names the engine's recorded user,
 uid and relay socket. At each decisions change the launcher asks the binder for each newly
 allowed port, checks the listener it gets back is on the sandbox's loopback at that port,
 and serves it like a declared forward; a refused bind is recorded as the service's last

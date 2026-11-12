@@ -89,6 +89,11 @@ fn each_malformed_forward_is_refused_naming_why() {
             "service one is forwarded twice",
         ),
         (
+            vec![forward("containers", port(2001), port(2))],
+            "service containers is the project engine's ports, which only the owner's \
+             decisions open",
+        ),
+        (
             vec![
                 forward("one", port(2001), port(2)),
                 forward("two", port(2001), port(4)),
@@ -239,8 +244,8 @@ fn engine(port: u16) -> Endpoint {
 /// #390: an engine's port is opened live from the owner's decisions, never declared.
 #[test]
 fn a_declared_forward_to_or_on_an_engines_port_is_refused() {
-    let targeting = spec(vec![forward("containers", port(8080), engine(8080))]);
-    let listening = spec(vec![forward("containers", engine(8080), port(8080))]);
+    let targeting = spec(vec![forward("web", port(8080), engine(8080))]);
+    let listening = spec(vec![forward("web", engine(8080), port(8080))]);
 
     assert!(
         refusal(&targeting).contains("targets an engine's port"),

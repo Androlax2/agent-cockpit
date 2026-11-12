@@ -53,6 +53,12 @@ impl Host {
             relay_program: sandbox_launcher.to_path_buf(),
         }
     }
+
+    /// The user `project`'s engine runs as in this profile: what asks, records and the
+    /// launchers' decisions all name.
+    fn engine_user(&self, project: &Project) -> Result<EngineUser, String> {
+        EngineUser::for_project(&self.qualified_profile, project.id.0)
+    }
 }
 
 /// The route for `containers-record`; `routes.rs` sends only that here, from the host-only
@@ -121,7 +127,7 @@ pub(crate) async fn project_engine(
         (found, recorded)
     };
     let passwd = read_passwd().await?;
-    let user = EngineUser::for_project(&host.qualified_profile, found.id.0)?;
+    let user = host.engine_user(&found)?;
     let state = examine(host, &user, &passwd, recorded.as_ref()).await;
     let record_command = record_command(host, &found);
     let setup = || {
@@ -205,17 +211,19 @@ pub(crate) async fn container_port(
 }
 
 /// The project user's engine, as the decisions name it to the launcher (#390): the user the
-/// owner recorded, its uid and its relay's socket. None when the owner recorded none.
+/// owner recorded, its uid and its relay's socket. None when the owner recorded none. The
+/// engine's identity was verified when the agent asked; the launcher checks the relay's
+/// listener is that user at each connection.
 pub(crate) async fn engine_relay(
     connection: &Connection,
-    qualified_profile: &str,
+    host: &Host,
     passwd: &str,
     project: &str,
 ) -> Result<Option<EngineRelay>, String> {
     let found = cockpit_projects::project_named(connection, project)
         .await
         .map_err(|error| error.to_string())?;
-    let user = EngineUser::for_project(qualified_profile, found.id.0)?;
+    let user = host.engine_user(&found)?;
     let recorded = cockpit_containers::recorded_engine(connection, project)
         .await
         .map_err(|error| error.to_string())?;
@@ -302,7 +310,7 @@ pub(crate) async fn read_passwd() -> Result<String, String> {
 }
 
 fn engine_user(host: &Host, project: &Project) -> Result<EngineUser, Failed> {
-    EngineUser::for_project(&host.qualified_profile, project.id.0)
+    host.engine_user(project)
         .map_err(|reason| Failed(ProtocolError::new(ErrorCode::Refused, reason)))
 }
 

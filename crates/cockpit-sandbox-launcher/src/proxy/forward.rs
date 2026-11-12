@@ -299,7 +299,7 @@ impl<U: Upstream> Proxy<U> {
             Endpoint::Socket { path } => connect_socket(path).map(Stream::Unix),
             Endpoint::Engine { user, port } => {
                 let relay = engine.filter(|relay| &relay.user == user).ok_or_else(|| {
-                    std::io::Error::other(format!("the daemon verified no engine run by {user}"))
+                    std::io::Error::other(format!("the owner recorded no engine run by {user}"))
                 })?;
                 let stream = connect_socket(&relay.socket)?;
                 crate::engine_relay::request(stream, relay.uid, *port).map(Stream::Unix)

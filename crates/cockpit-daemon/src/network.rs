@@ -18,9 +18,9 @@ use cockpit_protocol::{
     ProtocolError, Reply, Unblock, UnblockedBy,
 };
 use cockpit_sandbox::{
-    CONTAINERS_SERVICE, EgressDecisions, EgressRequests, Forward, NetworkError, NetworkGrant,
-    NetworkRefusal, NetworkRequest, NetworkRequestState, NetworkTarget, OwnerClient, OwnerDecision,
-    Sandbox, ServiceAsk, Subject,
+    CONTAINERS_SERVICE, EgressDecisions, EgressRequests, EngineRelay, Forward, NetworkError,
+    NetworkGrant, NetworkRefusal, NetworkRequest, NetworkRequestState, NetworkTarget, OwnerClient,
+    OwnerDecision, Sandbox, ServiceAsk, Subject,
 };
 use cockpit_sessions::Sessions;
 use cockpit_turso::Database;
@@ -369,7 +369,7 @@ pub(crate) async fn keep_forever(
     database: Arc<Database>,
     sandbox: Sandbox,
     decided: Arc<Notify>,
-    qualified_profile: String,
+    containers: crate::containers::Host,
 ) {
     let mut seen = HashMap::new();
     // At the start: a decision committed just before a crash may not have reached its file.
@@ -377,7 +377,7 @@ pub(crate) async fn keep_forever(
     let mut passes: u32 = 0;
     loop {
         if is_decided || passes.is_multiple_of(RESYNC_PASSES) {
-            write_decisions(&database, &sandbox, &qualified_profile).await;
+            write_decisions(&database, &sandbox, &containers).await;
         }
         let is_filed = match collect(&database, &sandbox, &mut seen).await {
             Ok(is_filed) => is_filed,
@@ -516,8 +516,12 @@ async fn collect(
 
 /// Rewrites the decisions file of every live session that has a sandbox folder. A session
 /// whose decisions cannot be read or written is logged and the others still get theirs.
-async fn write_decisions(database: &Database, sandbox: &Sandbox, qualified_profile: &str) {
-    let all = match decisions_of_live_sessions(database, qualified_profile).await {
+async fn write_decisions(
+    database: &Database,
+    sandbox: &Sandbox,
+    containers: &crate::containers::Host,
+) {
+    let all = match decisions_of_live_sessions(database, containers).await {
         Ok(all) => all,
         Err(error) => {
             tracing::warn!(%error, "the owner's network decisions were not read");
@@ -540,12 +544,14 @@ async fn write_decisions(database: &Database, sandbox: &Sandbox, qualified_profi
 
 async fn decisions_of_live_sessions(
     database: &Database,
-    qualified_profile: &str,
+    containers: &crate::containers::Host,
 ) -> Result<Vec<(String, EgressDecisions)>, String> {
     let read = database.read().await.map_err(|error| error.to_string())?;
     let live = live_sessions(&read).await?;
     let mut all = Vec::with_capacity(live.len());
     let passwd = tokio::sync::OnceCell::new();
+    // A project's sessions share its engine: looked up once a pass.
+    let mut relays: HashMap<String, Result<Option<EngineRelay>, String>> = HashMap::new();
     for (session, project) in live {
         let subject = Subject::Session {
             session: session.clone(),
@@ -560,15 +566,17 @@ async fn decisions_of_live_sessions(
         };
         if decisions.services.live_forwards().next().is_some() {
             // Without it the launcher refuses each container port, naming the engine.
-            let found = match passwd.get_or_try_init(crate::containers::read_passwd).await {
-                Ok(accounts) => {
-                    crate::containers::engine_relay(&read, qualified_profile, accounts, &project)
-                        .await
-                }
-                Err(error) => Err(error.clone()),
-            };
-            match found {
-                Ok(engine) => decisions.services.engine = engine,
+            if !relays.contains_key(&project) {
+                let found = match passwd.get_or_try_init(crate::containers::read_passwd).await {
+                    Ok(accounts) => {
+                        crate::containers::engine_relay(&read, containers, accounts, &project).await
+                    }
+                    Err(error) => Err(error),
+                };
+                relays.insert(project.clone(), found);
+            }
+            match &relays[&project] {
+                Ok(engine) => decisions.services.engine.clone_from(engine),
                 Err(error) => {
                     tracing::warn!(session, %error, "the project's engine was not found");
                 }

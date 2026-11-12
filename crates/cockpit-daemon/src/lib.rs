@@ -536,8 +536,8 @@ impl Instance {
                 &wiring.sandbox_launcher,
             ),
         };
-        // The prefix of every project's engine user, which the launchers' decisions name.
-        let network_profile = detected_readiness.containers.qualified_profile.clone();
+        // The launchers' decisions name each project's engine (#390).
+        let network_containers = detected_readiness.containers.clone();
         let is_restoring = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let shared = Arc::new(server::Shared {
             is_restoring: Arc::clone(&is_restoring),
@@ -699,7 +699,7 @@ impl Instance {
                     Arc::clone(&network_database),
                     network_sandbox.clone(),
                     Arc::clone(&network_decided),
-                    network_profile.clone(),
+                    network_containers.clone(),
                 )
             },
         ));

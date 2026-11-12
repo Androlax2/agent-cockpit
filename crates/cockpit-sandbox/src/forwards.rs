@@ -137,7 +137,7 @@ fn is_engine_user(user: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-/// A project engine's relay, as the daemon found it verified (#390): its socket, and the
+/// A project engine's relay, as the daemon found it recorded (#390): its socket, and the
 /// engine user's uid, which must be the one listening there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineRelay {
@@ -176,7 +176,7 @@ pub struct ServiceDecisions {
     /// The records asked of the owner and not yet decided.
     pub asking: Vec<DecidedService>,
     /// The session's project engine, which [`CONTAINERS_SERVICE`] forwards reach; None when
-    /// the daemon verified none.
+    /// the owner recorded none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engine: Option<EngineRelay>,
 }
