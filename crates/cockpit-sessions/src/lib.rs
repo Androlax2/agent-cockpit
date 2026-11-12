@@ -9,6 +9,7 @@ mod exits;
 mod home_observer;
 mod lifecycle;
 mod model;
+mod project_engines;
 mod questions;
 mod quota_stops;
 mod reports;
@@ -28,6 +29,7 @@ pub use model::{
     LaunchBundle, LaunchKind, RestartAll, Restored, Session, SessionBundle, SessionId,
     SessionState, Settings, SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,
 };
+pub use project_engines::{EngineAnswer, ProjectEngines};
 pub use questions::{
     QUESTION_HOLD_SECONDS, answer_question, coordinator_scope, escalate_question, question_holder,
 };

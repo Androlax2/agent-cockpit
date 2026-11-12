@@ -413,6 +413,26 @@ impl<U: Upstream> Proxy<U> {
 
 /// Connects to the socket at `path`, through its folder's descriptor when the path is too
 /// long for the kernel.
+/// Refuses the project engine's socket unless the kernel says the engine user's uid listens
+/// there (#390). Until bubblewrap binds it, only that user or root can replace it: the
+/// engine's socket folder, `/run/<user>`, is theirs.
+pub fn check_engine_socket(engine: &cockpit_sandbox::EngineSocket) -> Result<(), String> {
+    let socket = engine.socket.display();
+    let stream = connect_socket(&engine.socket)
+        .map_err(|error| format!("cannot reach the project engine's socket {socket}: {error}"))?;
+    let listener = rustix::net::sockopt::socket_peercred(&stream)
+        .map_err(|error| format!("cannot tell who listens on {socket}: {error}"))?
+        .uid
+        .as_raw();
+    if listener != engine.uid {
+        return Err(format!(
+            "uid {listener} listens on the project engine's socket {socket}, not {}'s uid {}",
+            engine.user, engine.uid
+        ));
+    }
+    Ok(())
+}
+
 fn connect_socket(path: &Path) -> std::io::Result<UnixStream> {
     if path.as_os_str().len() <= MAX_SOCKET_PATH {
         return connect_socket_within(path, CONNECT_TIMEOUT);

@@ -158,7 +158,7 @@ Beside it, `torlek-engine-relay@<user>.service` runs your installed `torlek-sand
 It runs the program from your install, read-only, so an upgrade applies when the engine restarts; the trade-off is that whatever can write your Torlek install can run as the project's engine user.
 Run the setup script again if Torlek's programs move.
 Recording again replaces the recorded engine: do it after reinstalling one, and only for an engine you set up.
-Sessions do not run containers in the engine yet in this release; `torlek doctor` says `unsupported` once it is verified.
+A sandboxed session reaches the engine at `DOCKER_HOST` once the engine is verified and sees the session's checkout masked: its Git hooks and configuration, `.torlek`, `.env` and the session's other denials hidden. The masks are not built yet in this release, so no session reaches it and `torlek doctor` says `unsupported` once it is verified. When a session does, its launcher binds the engine's socket only after checking the engine's user listens on it.
 A session reaches a port a container publishes once you allow it: the agent asks with `torlek ask service containers --port PORT --reason TEXT`, which is refused until the engine answers as the one you recorded (the launcher then checks the relay runs as the engine's user at each connection), and the request reads `service containers listen 127.0.0.1:PORT target engine:torlek-e3:PORT` in `torlek network list`.
 `torlek network allow ID` opens it for that session, `--always` for the project's sessions; the port opens inside the session's sandbox while it runs, and `torlek network revoke GRANT` closes it and its connections.
 

@@ -161,6 +161,11 @@ enum Mount {
         source: PathBuf,
         destination: PathBuf,
     },
+    /// The project engine's socket, read-only at [`cockpit_sandbox::ENGINE_SOCKET_INSIDE`].
+    EngineSocket {
+        source: PathBuf,
+        destination: PathBuf,
+    },
 }
 
 impl Mount {
@@ -168,6 +173,7 @@ impl Mount {
         match self {
             Mount::ReadOnly(path) | Mount::ReadWrite(path) => path,
             Mount::Elsewhere { destination, .. }
+            | Mount::EngineSocket { destination, .. }
             | Mount::SocketFolder(SocketFolder { destination, .. }) => destination,
         }
     }
@@ -183,7 +189,11 @@ impl Mount {
             Mount::SocketFolder(SocketFolder {
                 source,
                 destination,
-            }) => words("--ro-bind", source, destination),
+            })
+            | Mount::EngineSocket {
+                source,
+                destination,
+            } => words("--ro-bind", source, destination),
         }
     }
 }
@@ -251,6 +261,10 @@ pub fn plan(
     );
     mounts.extend(spec.read_write.iter().cloned().map(Mount::ReadWrite));
     mounts.extend(socket_folders.iter().cloned().map(Mount::SocketFolder));
+    mounts.extend(spec.engine.iter().map(|engine| Mount::EngineSocket {
+        source: engine.socket.clone(),
+        destination: PathBuf::from(cockpit_sandbox::ENGINE_SOCKET_INSIDE),
+    }));
     // A provider's declared read it did not install is not there to bind.
     let declared: Vec<PathBuf> = spec
         .read_only_declared
@@ -283,6 +297,16 @@ pub fn plan(
     let masks = protect(spec)?;
     arguments.extend(masks.arguments);
     arguments.extend(hide(spec, &mounts)?);
+    if spec.engine.is_some() {
+        arguments.extend(
+            [
+                "--setenv",
+                "DOCKER_HOST",
+                &format!("unix://{}", cockpit_sandbox::ENGINE_SOCKET_INSIDE),
+            ]
+            .map(OsString::from),
+        );
+    }
     arguments.push("--chdir".into());
     arguments.push(spec.working_dir.as_os_str().to_owned());
     let mut read: Vec<PathBuf> = system;
@@ -304,6 +328,11 @@ pub fn plan(
         socket_folders
             .iter()
             .map(|folder| folder.destination.clone()),
+    );
+    sockets.extend(
+        spec.engine
+            .iter()
+            .map(|_| cockpit_sandbox::engine_folder_inside()),
     );
     let forward_ports = spec
         .forwards
@@ -335,9 +364,9 @@ pub fn plan(
 fn require_present(mount: &Mount) -> Result<(), String> {
     let source = match mount {
         Mount::ReadOnly(path) | Mount::ReadWrite(path) => path,
-        Mount::Elsewhere { source, .. } | Mount::SocketFolder(SocketFolder { source, .. }) => {
-            source
-        }
+        Mount::Elsewhere { source, .. }
+        | Mount::EngineSocket { source, .. }
+        | Mount::SocketFolder(SocketFolder { source, .. }) => source,
     };
     std::fs::metadata(source)
         .map(drop)
@@ -458,7 +487,7 @@ fn hide(spec: &LaunchSpec, mounts: &[Mount]) -> Result<Vec<OsString>, String> {
         mounts.iter().any(|mount| match mount {
             Mount::ReadOnly(folder) | Mount::ReadWrite(folder) => path.starts_with(folder),
             // Shows the session's own folder, not the host's at that path.
-            Mount::Elsewhere { .. } | Mount::SocketFolder(_) => false,
+            Mount::Elsewhere { .. } | Mount::EngineSocket { .. } | Mount::SocketFolder(_) => false,
         })
     };
     let mut masked: Vec<PathBuf> = Vec::new();

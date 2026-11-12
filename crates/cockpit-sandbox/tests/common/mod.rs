@@ -113,5 +113,6 @@ pub fn launch_request(session: &str, working_dir: &str) -> LaunchRequest {
         decisions: cockpit_sandbox::EgressDecisions::default(),
         login: None,
         forwards: Vec::new(),
+        engine: None,
     }
 }

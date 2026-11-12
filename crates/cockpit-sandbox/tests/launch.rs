@@ -737,3 +737,79 @@ fn staging_a_launch_while_its_decisions_are_rewritten_succeeds() {
         .collect();
     assert_eq!(left_staged, Vec::<std::ffi::OsString>::new());
 }
+
+fn project_engine(uid: u32) -> cockpit_sandbox::EngineSocket {
+    cockpit_sandbox::EngineSocket {
+        user: "torlek-e3".to_owned(),
+        uid,
+        socket: PathBuf::from("/run/torlek-e3/docker.sock"),
+    }
+}
+
+/// #390: the engine the daemon verified reaches the launcher's spec, and the evidence names
+/// it and the uid the launcher checks.
+#[test]
+fn a_required_sandbox_hands_the_project_engine_to_the_launcher_and_says_so() {
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.engine = Some(project_engine(990));
+
+    let prepared = native_launch(&request).unwrap();
+
+    assert_eq!(
+        prepared.staged.unwrap().spec.engine,
+        Some(project_engine(990))
+    );
+    let rules: Vec<String> = prepared
+        .evidence
+        .rules
+        .into_iter()
+        .map(|rule| rule.rule)
+        .collect();
+    let expected = "project engine: torlek-e3's socket at /run/torlek-engine/docker.sock, bound \
+                    once uid 990 is seen listening";
+    assert!(rules.iter().any(|rule| rule == expected), "{rules:?}");
+}
+
+#[test]
+fn the_evidence_of_a_launch_without_an_engine_says_so() {
+    let rules: Vec<String> = native_launch(&launch_request("s1", "/home/owner/app"))
+        .unwrap()
+        .evidence
+        .rules
+        .into_iter()
+        .map(|rule| rule.rule)
+        .collect();
+
+    assert!(
+        rules.iter().any(|rule| rule == "project engine: none"),
+        "{rules:?}"
+    );
+}
+
+/// #390: root's engine is the host; no spec binds its socket.
+#[test]
+fn an_engine_run_as_root_is_refused() {
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.engine = Some(project_engine(0));
+
+    let refused = native_launch(&request).unwrap_err();
+
+    assert_eq!(refused.rule, "launch spec");
+    assert!(refused.reason.contains("runs as root"), "{refused}");
+}
+
+/// #390: an unsandboxed agent uses the owner's own engine; a project engine handed to it is
+/// a daemon bug, refused rather than ignored.
+#[test]
+fn the_off_setting_refuses_a_project_engine() {
+    let sandbox = Sandbox::new(Platform::Linux, no_host_paths(), missing_backend());
+    let (program, arguments) = agent_words();
+    let mut request = launch_request("s1", "/home/owner/app");
+    request.engine = Some(project_engine(990));
+
+    let refused = sandbox
+        .prepare(AgentSandbox::Off, &request, program, arguments)
+        .unwrap_err();
+
+    assert_eq!(refused.rule, "project engine of torlek-e3");
+}

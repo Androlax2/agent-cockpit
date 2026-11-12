@@ -129,6 +129,9 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
         .and_then(|path| path.canonicalize())
         .map_err(|error| format!("cannot find the launcher's own program: {error}"))?;
     let waiting = handoff::Waiting::open(mount_dir.join(HANDOFF_FOLDER))?;
+    if let Some(engine) = &spec.engine {
+        proxy::check_engine_socket(engine)?;
+    }
     // Before the sandbox starts: bubblewrap binds the folders the sockets are in.
     let sockets = proxy::bind_sockets(&mount_dir, &spec.forwards)?;
     let plan = plan::plan(&spec, &launcher, &waiting.socket(), &sockets.folders)?;

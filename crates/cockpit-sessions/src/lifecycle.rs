@@ -110,6 +110,9 @@ pub struct Sessions {
     /// Told before a session's own home folder is removed or changes account (#699); set once
     /// by the daemon, after it builds the cost archive's worker.
     home_observer: OnceLock<Arc<dyn crate::HomeObserver>>,
+    /// Finds the project engine each sandboxed launch reaches (#390); set once by the
+    /// daemon. Unset, no launch reaches an engine.
+    project_engines: OnceLock<Arc<dyn crate::ProjectEngines>>,
 }
 
 /// A session's operation lock, and whether a launch holds it. A stop never
@@ -224,6 +227,7 @@ impl Sessions {
             operations: Mutex::new(HashMap::new()),
             agentless: Mutex::new(HashMap::new()),
             home_observer: OnceLock::new(),
+            project_engines: OnceLock::new(),
         }
     }
 
@@ -234,6 +238,42 @@ impl Sessions {
             self.home_observer.set(observer).is_ok(),
             "the sessions' homes have one observer"
         );
+    }
+
+    /// Has `engines` find the project engine each sandboxed launch reaches
+    /// ([`crate::ProjectEngines`]). Once.
+    pub fn reach_engines(&self, engines: Arc<dyn crate::ProjectEngines>) {
+        assert!(
+            self.project_engines.set(engines).is_ok(),
+            "the sessions have one finder of project engines"
+        );
+    }
+
+    /// The project engine a launch of `project` in `checkout` under `setting` reaches: none
+    /// under `"off"`, whose agent uses the owner's own engine, nor without a backend, whose
+    /// launch is refused.
+    async fn launch_engine(
+        &self,
+        setting: cockpit_config::AgentSandbox,
+        project: &str,
+        checkout: &Path,
+    ) -> Result<Option<cockpit_sandbox::EngineSocket>, Error> {
+        let has_backend = self.settings.sandbox.backend().missing_reason().is_none();
+        if setting == cockpit_config::AgentSandbox::Off || !has_backend {
+            return Ok(None);
+        }
+        let Some(engines) = self.project_engines.get() else {
+            return Ok(None);
+        };
+        engines
+            .reachable(project, checkout)
+            .await
+            .map_err(|reason| {
+                Error::Sandbox(cockpit_sandbox::Refusal {
+                    rule: "project engine".to_owned(),
+                    reason,
+                })
+            })
     }
 
     async fn tell_home_observer(&self, session: &Session, change: crate::HomeChange) {
@@ -2344,6 +2384,9 @@ impl Sessions {
             )
             .await?;
         let forwards = self.declared_forwards(setting, &checkout.path).await?;
+        let engine = self
+            .launch_engine(setting, &output_project, &checkout.path)
+            .await?;
         let prepared = self.prepare_sandbox(
             setting,
             id.as_str(),
@@ -2359,6 +2402,7 @@ impl Sessions {
             needs,
             decisions,
             forwards,
+            engine,
             tools,
             command.program,
             command.arguments,
@@ -3041,6 +3085,7 @@ impl Sessions {
         needs: cockpit_sandbox::ProviderNeeds,
         decisions: cockpit_sandbox::EgressDecisions,
         forwards: Vec<cockpit_sandbox::Forward>,
+        engine: Option<cockpit_sandbox::EngineSocket>,
         tools: cockpit_sandbox::ToolNeeds,
         program: PathBuf,
         arguments: Vec<OsString>,
@@ -3104,6 +3149,7 @@ impl Sessions {
                     decisions,
                     login,
                     forwards,
+                    engine,
                 },
                 program,
                 arguments,
@@ -3400,6 +3446,13 @@ impl Sessions {
             Ok(forwards) => forwards,
             Err(error) => return Ok(Err(error.to_string())),
         };
+        let engine = match self
+            .launch_engine(setting, checkout.project.as_str(), &checkout.path)
+            .await
+        {
+            Ok(engine) => engine,
+            Err(error) => return Ok(Err(error.to_string())),
+        };
         Ok(self
             .prepare_sandbox(
                 setting,
@@ -3416,6 +3469,7 @@ impl Sessions {
                 needs,
                 decisions,
                 forwards,
+                engine,
                 tools,
                 command.program.clone(),
                 command.arguments.clone(),

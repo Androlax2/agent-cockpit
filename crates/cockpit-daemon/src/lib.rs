@@ -538,6 +538,10 @@ impl Instance {
         };
         // The launchers' decisions name each project's engine (#390).
         let network_containers = detected_readiness.containers.clone();
+        sessions.reach_engines(Arc::new(containers::LaunchEngines {
+            database: Arc::clone(&database),
+            host: detected_readiness.containers.clone(),
+        }));
         let is_restoring = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let shared = Arc::new(server::Shared {
             is_restoring: Arc::clone(&is_restoring),

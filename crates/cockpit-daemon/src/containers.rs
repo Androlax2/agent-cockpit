@@ -15,7 +15,7 @@ use cockpit_protocol::{
     Command, DecidedThroughView, ErrorCode, ProtocolError, Reply, Unblock, UnblockedBy,
 };
 use cockpit_readiness::{EngineRemedy, ProjectEngine};
-use cockpit_sandbox::{EngineRelay, Forward};
+use cockpit_sandbox::{EngineRelay, EngineSocket, Forward};
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
 
@@ -116,16 +116,7 @@ pub(crate) async fn project_engine(
     host: &Host,
     project: &str,
 ) -> Result<ProjectEngine, String> {
-    let (found, recorded) = {
-        let read = database.read().await.map_err(|error| error.to_string())?;
-        let found = cockpit_projects::project_named(&read, project)
-            .await
-            .map_err(|error| error.to_string())?;
-        let recorded = cockpit_containers::recorded_engine(&read, project)
-            .await
-            .map_err(|error| error.to_string())?;
-        (found, recorded)
-    };
+    let (found, recorded) = project_and_record(database, project).await?;
     let passwd = read_passwd().await?;
     let user = host.engine_user(&found)?;
     let state = examine(host, &user, &passwd, recorded.as_ref()).await;
@@ -172,6 +163,81 @@ pub(crate) async fn project_engine(
         record_command,
         state,
     })
+}
+
+/// `project` and the engine the owner recorded for it, if any.
+async fn project_and_record(
+    database: &Database,
+    project: &str,
+) -> Result<(Project, Option<RecordedEngine>), String> {
+    let read = database.read().await.map_err(|error| error.to_string())?;
+    let found = cockpit_projects::project_named(&read, project)
+        .await
+        .map_err(|error| error.to_string())?;
+    let recorded = cockpit_containers::recorded_engine(&read, project)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok((found, recorded))
+}
+
+/// Finds the engine each sandboxed launch reaches at `DOCKER_HOST` (#390): its project's,
+/// once that engine answers as the one the owner recorded and sees the launch's checkout
+/// masked.
+pub(crate) struct LaunchEngines {
+    pub(crate) database: Arc<Database>,
+    pub(crate) host: Host,
+}
+
+impl cockpit_sessions::ProjectEngines for LaunchEngines {
+    fn reachable<'asked>(
+        &'asked self,
+        project: &'asked str,
+        checkout: &'asked Path,
+    ) -> cockpit_sessions::EngineAnswer<'asked> {
+        Box::pin(self.engine_socket(project, checkout))
+    }
+}
+
+impl LaunchEngines {
+    async fn engine_socket(
+        &self,
+        project: &str,
+        checkout: &Path,
+    ) -> Result<Option<EngineSocket>, String> {
+        let (found, recorded) = project_and_record(&self.database, project).await?;
+        let passwd = read_passwd().await?;
+        let user = self.host.engine_user(&found)?;
+        let state = examine(&self.host, &user, &passwd, recorded.as_ref()).await;
+        if !matches!(state, EngineState::Verified(_)) {
+            tracing::info!(
+                project,
+                user = %user.name(),
+                "the launch reaches no project engine: it is not verified; `torlek doctor` says why"
+            );
+            return Ok(None);
+        }
+        if let Err(reason) = masked(checkout) {
+            tracing::info!(project, user = %user.name(), %reason, "the launch reaches no project engine");
+            return Ok(None);
+        }
+        let account = cockpit_containers::account_named(&passwd, user.name())
+            .ok_or_else(|| format!("the verified engine's user {} has no account", user.name()))?;
+        Ok(Some(EngineSocket {
+            user: user.name().to_owned(),
+            uid: account.uid,
+            socket: user.socket(),
+        }))
+    }
+}
+
+/// Whether the engine sees `checkout` through every denial of the session baseline in it:
+/// until #390's masks are built, it sees none masked, so no session reaches an engine whose
+/// containers could write the checkout's Git hooks or read its `.env`.
+fn masked(checkout: &Path) -> Result<(), String> {
+    Err(format!(
+        "the engine does not see {} masked: its masks are not built yet (#390)",
+        checkout.display()
+    ))
 }
 
 /// The forward for `port` of `project`'s engine (#390), once that engine answers as the one
@@ -410,6 +476,14 @@ fn through_name(through: DecidedThroughView) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #390: no session reaches an engine before its masks exist, whatever the engine.
+    #[test]
+    fn no_checkout_is_masked_before_the_masks_are_built() {
+        let refused = masked(Path::new("/home/owner/app")).unwrap_err();
+
+        assert!(refused.contains("/home/owner/app"), "{refused}");
+    }
 
     const PASSWD: &str = "root:x:0:0::/root:/bin/sh\n\
                           torlek-e3:x:991:991::/var/lib/torlek-e3:/usr/bin/nologin\n";

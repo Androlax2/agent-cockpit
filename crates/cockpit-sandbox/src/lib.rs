@@ -65,6 +65,7 @@ pub use profile::{
     Secret, SecretHandling, shared_desktop_refusal,
 };
 pub use spec::{
-    Folder, InvalidSpec, LANDLOCK_ABI_FLOOR, LaunchSpec, NeedsSource, Protected, SPEC_FILE,
-    SPEC_VERSION, SYSTEM_READ_ONLY, Subject, WhenAbsent,
+    ENGINE_SOCKET_INSIDE, EngineSocket, Folder, InvalidSpec, LANDLOCK_ABI_FLOOR, LaunchSpec,
+    NeedsSource, Protected, SPEC_FILE, SPEC_VERSION, SYSTEM_READ_ONLY, Subject, WhenAbsent,
+    engine_folder_inside,
 };

@@ -470,6 +470,8 @@ pub(crate) struct Launch {
     pub login: Option<crate::SessionLogin>,
     /// The declared services the launcher serves (#880); a check serves none.
     pub forwards: Vec<crate::Forward>,
+    /// The project engine whose socket the launcher binds (#390); a check binds none.
+    pub engine: Option<crate::EngineSocket>,
 }
 
 /// The launch of `program` with `arguments` for `launch` through `native`: the launcher in
@@ -605,6 +607,7 @@ pub(crate) fn prepare(
             entries: launch.needs.egress.clone(),
         },
         interception,
+        engine: launch.engine.clone(),
     };
     spec.validate(&launch.decisions)
         .map_err(|error| Refusal::new("launch spec", error.to_string()))?;
@@ -1198,6 +1201,7 @@ fn evidence(
         ));
     }
     rules.extend(forward_rules(&spec.forwards));
+    rules.push(engine_rule(spec.engine.as_ref()));
     rules.push(rule(
         format!("desktop session {}", profile.desktop.as_str()),
         "environment",
@@ -1222,6 +1226,23 @@ fn evidence(
             "namespaces: user, mount, pid, network, ipc, uts, cgroup".to_owned(),
             observed_subject,
         ],
+    }
+}
+
+/// The project engine the session reaches, if any (#390).
+fn engine_rule(engine: Option<&crate::EngineSocket>) -> AppliedRule {
+    let rule = match engine {
+        Some(engine) => format!(
+            "project engine: {}'s socket at {}, bound once uid {} is seen listening",
+            engine.user,
+            crate::ENGINE_SOCKET_INSIDE,
+            engine.uid
+        ),
+        None => "project engine: none".to_owned(),
+    };
+    AppliedRule {
+        rule,
+        enforced_by: format!("{BACKEND_NAME} launcher"),
     }
 }
 
