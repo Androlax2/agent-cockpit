@@ -257,23 +257,15 @@ impl Sessions {
         setting: cockpit_config::AgentSandbox,
         project: &str,
         checkout: &Path,
-    ) -> Result<Option<cockpit_sandbox::EngineSocket>, Error> {
+    ) -> Option<cockpit_sandbox::EngineSocket> {
         let has_backend = self.settings.sandbox.backend().missing_reason().is_none();
         if setting == cockpit_config::AgentSandbox::Off || !has_backend {
-            return Ok(None);
+            return None;
         }
-        let Some(engines) = self.project_engines.get() else {
-            return Ok(None);
-        };
-        engines
+        self.project_engines
+            .get()?
             .reachable(project, checkout)
             .await
-            .map_err(|reason| {
-                Error::Sandbox(cockpit_sandbox::Refusal {
-                    rule: "project engine".to_owned(),
-                    reason,
-                })
-            })
     }
 
     async fn tell_home_observer(&self, session: &Session, change: crate::HomeChange) {
@@ -2386,7 +2378,7 @@ impl Sessions {
         let forwards = self.declared_forwards(setting, &checkout.path).await?;
         let engine = self
             .launch_engine(setting, &output_project, &checkout.path)
-            .await?;
+            .await;
         let prepared = self.prepare_sandbox(
             setting,
             id.as_str(),
@@ -3446,13 +3438,9 @@ impl Sessions {
             Ok(forwards) => forwards,
             Err(error) => return Ok(Err(error.to_string())),
         };
-        let engine = match self
+        let engine = self
             .launch_engine(setting, checkout.project.as_str(), &checkout.path)
-            .await
-        {
-            Ok(engine) => engine,
-            Err(error) => return Ok(Err(error.to_string())),
-        };
+            .await;
         Ok(self
             .prepare_sandbox(
                 setting,

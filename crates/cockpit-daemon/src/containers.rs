@@ -199,35 +199,42 @@ impl cockpit_sessions::ProjectEngines for LaunchEngines {
 }
 
 impl LaunchEngines {
-    async fn engine_socket(
-        &self,
-        project: &str,
-        checkout: &Path,
-    ) -> Result<Option<EngineSocket>, String> {
+    /// The masks come first: they cost nothing, and an engine they refuse is not asked.
+    async fn engine_socket(&self, project: &str, checkout: &Path) -> Option<EngineSocket> {
+        if let Err(reason) = masked(checkout) {
+            tracing::debug!(project, %reason, "the launch reaches no project engine");
+            return None;
+        }
+        match self.examined(project).await {
+            Ok((user, passwd, state)) => socket_of(&user, &state, &passwd),
+            Err(reason) => {
+                tracing::warn!(project, %reason, "the launch reaches no project engine");
+                None
+            }
+        }
+    }
+
+    async fn examined(&self, project: &str) -> Result<(EngineUser, String, EngineState), String> {
         let (found, recorded) = project_and_record(&self.database, project).await?;
         let passwd = read_passwd().await?;
         let user = self.host.engine_user(&found)?;
         let state = examine(&self.host, &user, &passwd, recorded.as_ref()).await;
-        if !matches!(state, EngineState::Verified(_)) {
-            tracing::info!(
-                project,
-                user = %user.name(),
-                "the launch reaches no project engine: it is not verified; `torlek doctor` says why"
-            );
-            return Ok(None);
-        }
-        if let Err(reason) = masked(checkout) {
-            tracing::info!(project, user = %user.name(), %reason, "the launch reaches no project engine");
-            return Ok(None);
-        }
-        let account = cockpit_containers::account_named(&passwd, user.name())
-            .ok_or_else(|| format!("the verified engine's user {} has no account", user.name()))?;
-        Ok(Some(EngineSocket {
-            user: user.name().to_owned(),
-            uid: account.uid,
-            socket: user.socket(),
-        }))
+        Ok((user, passwd, state))
     }
+}
+
+/// `user`'s Docker socket, when its engine answers as the one the owner recorded and
+/// `passwd` holds its account; readiness says why when it does not.
+fn socket_of(user: &EngineUser, state: &EngineState, passwd: &str) -> Option<EngineSocket> {
+    if !matches!(state, EngineState::Verified(_)) {
+        return None;
+    }
+    let account = cockpit_containers::account_named(passwd, user.name())?;
+    Some(EngineSocket {
+        user: user.name().to_owned(),
+        uid: account.uid,
+        socket: user.socket(),
+    })
 }
 
 /// Whether the engine sees `checkout` through every denial of the session baseline in it:
@@ -525,6 +532,52 @@ mod tests {
             ("no account", Some(recorded("torlek-e3")), without_account),
         ] {
             assert_eq!(relay_of(&user, engine.as_ref(), passwd), None, "{case}");
+        }
+    }
+
+    fn info() -> cockpit_containers::EngineInfo {
+        cockpit_containers::EngineInfo {
+            id: "engine-1".to_owned(),
+            name: "box".to_owned(),
+            server_version: "28.0.0".to_owned(),
+            rootless: true,
+            in_desktop_vm: false,
+        }
+    }
+
+    #[test]
+    fn a_verified_engine_names_its_users_uid_and_docker_socket() {
+        let user = EngineUser::for_project("torlek", 3).unwrap();
+
+        let socket = socket_of(&user, &EngineState::Verified(info()), PASSWD);
+
+        assert_eq!(
+            socket,
+            Some(EngineSocket {
+                user: "torlek-e3".to_owned(),
+                uid: 991,
+                socket: "/run/torlek-e3/docker.sock".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn no_docker_socket_for_an_engine_not_verified_or_without_its_account() {
+        let user = EngineUser::for_project("torlek", 3).unwrap();
+        let without_account = "root:x:0:0::/root:/bin/sh\n";
+
+        for (case, state, passwd) in [
+            ("unrecorded", EngineState::Unrecorded(info()), PASSWD),
+            (
+                "not set up",
+                EngineState::NotSetUp {
+                    reason: "no socket".to_owned(),
+                },
+                PASSWD,
+            ),
+            ("no account", EngineState::Verified(info()), without_account),
+        ] {
+            assert_eq!(socket_of(&user, &state, passwd), None, "{case}");
         }
     }
 }
