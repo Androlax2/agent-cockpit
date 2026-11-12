@@ -25,7 +25,13 @@ static WORKING_DIRECTORY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new
 const CHECKS: &str = "[[checks]]\nname = \"test\"\ncommand = \"echo testing; test -f ok\"\n\
                       artifacts = [\"ok\"]\n\n\
                       [[checks]]\nname = \"lint\"\ncommand = \"echo linted\"\n\n\
-                      [[checks]]\nname = \"boxed\"\ncommand = \"true\"\nenvironment = \"sandbox\"\n";
+                      [[checks]]\nname = \"boxed\"\ncommand = \"true\"\nenvironment = \"sandbox\"\n\n\
+                      [[checks]]\nname = \"host\"\ncommand = \"touch ran-on-host\"\n\
+                      environment = \"native\"\n\n\
+                      [[checks]]\nname = \"contained\"\ncommand = \"touch ran-somewhere\"\n\
+                      environment = \"docker\"\n";
+
+const REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
 
 /// Fields drop in order: the daemon stops before its home is deleted.
 struct Verification {
@@ -341,13 +347,90 @@ async fn a_check_the_project_does_not_declare_is_not_found() {
 }
 
 #[tokio::test]
-async fn a_check_in_an_environment_the_daemon_cannot_provide_is_refused_before_it_runs() {
+async fn a_sandbox_check_runs_on_the_host_when_the_owner_turns_the_sandbox_off() {
     let verification = started().await;
 
-    let error = refused(verification.as_owner(verification.owner_run("boxed")).await);
+    let receipt = verification.run("boxed").await;
 
-    assert_eq!(error.code, ErrorCode::Refused);
-    assert!(error.message.contains("sandbox"), "{error:?}");
+    assert_eq!(receipt.outcome, CheckOutcomeView::Passed, "{receipt:?}");
+    assert_eq!(receipt.environment, "sandbox");
+    assert_eq!(receipt.ran_environment.as_deref(), Some("native"));
+    assert_eq!(
+        receipt.ran_isolation.as_deref(),
+        Some("no sandbox: agents.sandbox = \"off\"")
+    );
+}
+
+#[tokio::test]
+async fn a_docker_check_is_recorded_unavailable_and_never_runs() {
+    let verification = started().await;
+
+    let receipt = verification.run("contained").await;
+
+    assert_eq!(
+        receipt.outcome,
+        CheckOutcomeView::Unavailable,
+        "{receipt:?}"
+    );
+    assert_eq!(receipt.exit_code, None);
+    assert_eq!(receipt.ran_environment, None);
+    assert!(receipt.output.contains("docker"), "{receipt:?}");
+    assert!(!verification.root.join("ran-somewhere").exists());
+}
+
+#[tokio::test]
+async fn a_native_check_under_a_required_sandbox_is_recorded_unavailable_and_never_runs() {
+    let verification = started_configured(true, REQUIRED).await;
+
+    let receipt = verification.run("host").await;
+
+    assert_eq!(
+        receipt.outcome,
+        CheckOutcomeView::Unavailable,
+        "{receipt:?}"
+    );
+    assert_eq!(receipt.ran_environment, None);
+    assert_eq!(
+        receipt.output,
+        "native checks run only with `agents.sandbox = \"off\"`"
+    );
+    assert!(!verification.root.join("ran-on-host").exists());
+}
+
+#[tokio::test]
+async fn the_gate_tells_the_owner_how_a_native_check_can_run_under_a_required_sandbox() {
+    let verification = started_configured(true, REQUIRED).await;
+    verification.run("host").await;
+
+    let gate = verification.owner_gate().await;
+
+    let host = gate
+        .checks
+        .iter()
+        .find(|check| check.name == "host")
+        .expect("the native check is in the gate");
+    assert_eq!(
+        host.next_action.as_deref(),
+        Some("declare `environment = \"sandbox\"`, or set `agents.sandbox = \"off\"`")
+    );
+}
+
+#[tokio::test]
+async fn the_gate_tells_the_owner_a_docker_check_waits_for_torlek_to_run_it() {
+    let verification = started().await;
+    verification.run("contained").await;
+
+    let gate = verification.owner_gate().await;
+
+    let contained = gate
+        .checks
+        .iter()
+        .find(|check| check.name == "contained")
+        .expect("the docker check is in the gate");
+    assert_eq!(
+        contained.next_action.as_deref(),
+        Some("declare `environment = \"sandbox\"` until Torlek runs docker checks (#856)")
+    );
 }
 
 #[tokio::test]

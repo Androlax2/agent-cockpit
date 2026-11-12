@@ -143,6 +143,8 @@ pub struct CheckRequest {
     pub command: String,
     /// The checkout the check runs in, whole: read and write.
     pub checkout: PathBuf,
+    /// The folder the command starts in, inside the checkout: its declared working directory.
+    pub start_dir: PathBuf,
     /// The run's own folder: read and write, removed by the caller when the run ends.
     pub execution_dir: PathBuf,
     /// The run's own temporary folder, which `TMPDIR` names and its caches live in: read and
@@ -152,6 +154,12 @@ pub struct CheckRequest {
     pub environment: Vec<(OsString, OsString)>,
     /// What the checkout's toolchains and Git ask of the run (#859).
     pub tools: ToolNeeds,
+    /// Where the run's proxy lets it go beside the owner's grants: the registries of the
+    /// ecosystems its checkout uses (#862 Q2), never a provider's hosts.
+    pub egress: Vec<crate::AllowEntry>,
+    /// The owner's decisions when the run starts (#674): the project's host grants. A check
+    /// serves no forward, so a service decision lets nothing through.
+    pub decisions: crate::EgressDecisions,
 }
 
 /// A launch ready to run: the program and arguments that start the agent and the evidence
@@ -384,14 +392,17 @@ impl Sandbox {
                 run: request.run.clone(),
                 check: request.check.clone(),
             },
-            start_dir: request.checkout.clone(),
+            start_dir: request.start_dir.clone(),
             // The profile's: without what the platform withholds, `WSL_INTEROP` on WSL2.
             environment: profile.environment.clone(),
-            needs: ProviderNeeds::floor(),
+            needs: ProviderNeeds {
+                egress: request.egress.clone(),
+                ..ProviderNeeds::floor()
+            },
             tools: request.tools.clone(),
             reaches_agent: false,
             credentials: Vec::new(),
-            decisions: crate::EgressDecisions::default(),
+            decisions: request.decisions.clone(),
             login: None,
             forwards: Vec::new(),
             engine: None,

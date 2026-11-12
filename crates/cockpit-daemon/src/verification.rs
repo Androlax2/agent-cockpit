@@ -31,9 +31,7 @@ use crate::approvals::{Answer, Failed, Sender, job, now};
 use crate::routes::{Peer, Route, WorkClass};
 use crate::tasks::refused;
 
-/// The one environment the daemon runs checks in so far: on the host, as the owner's
-/// approved commands run.
-const NATIVE: &str = "native";
+mod environment;
 
 /// A check's command is POSIX shell whatever the owner's login shell is, so a project's
 /// checks read the same on every host.
@@ -41,13 +39,15 @@ const CHECK_SHELL: &str = "/bin/sh";
 
 /// What a verification command needs: the state, the host Git that reads a checkout's source,
 /// the supervisor that runs checks, how approved commands run (the shell and environment a
-/// check gets too), and the owner's environment for the project's configuration.
+/// host check gets too), the sessions' owner settings and sandbox a check follows (#862), and
+/// the owner's environment for the project's configuration.
 #[derive(Clone)]
 pub(crate) struct Context {
     pub(crate) database: Arc<Database>,
     pub(crate) git: cockpit_projects::Git,
     pub(crate) processes: Supervisor,
     pub(crate) run_settings: Arc<RunSettings>,
+    pub(crate) sessions: Arc<cockpit_sessions::Sessions>,
     pub(crate) environment: cockpit_config::Environment,
 }
 
@@ -387,23 +387,27 @@ pub(crate) async fn source(git: &cockpit_projects::Git, checkout: &Path) -> Resu
     })
 }
 
-/// Starts `check` in `target` and answers with its run; the receipt is recorded when it ends.
+/// Starts `check` in `target` where the owner's `agents.sandbox` places it (#352) and answers
+/// with its run; the receipt is recorded when it ends. A check placed nowhere is recorded
+/// `unavailable` at once, with no process started.
 async fn run(context: &Context, target: Target, check: &str) -> Answer {
     let checks = declared_checks(&context.environment, &target.path).await?;
     let check = declared(&checks, check, &target.project)?.clone();
     let definition = definition(&check);
     definition.validate()?;
-    if definition.environment != NATIVE {
-        return Err(refused(
-            ErrorCode::Refused,
-            format!(
-                "check `{}` runs in `{}`; this daemon runs checks only `{NATIVE}`",
-                definition.name, definition.environment
-            ),
-            "declare the check's environment `native`",
-            UnblockedBy::Owner,
-        ));
-    }
+    let start_dir = target.path.join(&definition.working_directory);
+    let placement = environment::placement(
+        context.sessions.owner_settings().sandbox,
+        &definition.environment,
+    );
+    let sandboxed = match placement {
+        environment::Placement::Sandbox => {
+            Some(sandbox_inputs(context, &target, &start_dir).await?)
+        }
+        environment::Placement::Host | environment::Placement::Unavailable(_) => None,
+    };
+    // The sandbox sets Git's configuration itself; only a host run applies the daemon's.
+    let is_host = placement == environment::Placement::Host;
     let source = source(&context.git, &target.path).await?;
     let (artifacts, git_config) = {
         let git = context.git.clone();
@@ -412,7 +416,12 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
         tokio::task::spawn_blocking(move || {
             let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
             let artifacts = cockpit_verification::fingerprint(&checkout, &paths);
-            (artifacts, git.safe_config(&checkout))
+            let git_config = if is_host {
+                git.safe_config(&checkout)
+            } else {
+                Ok(Vec::new())
+            };
+            (artifacts, git_config)
         })
         .await
         .map_err(|error| internal(&error))?
@@ -443,6 +452,19 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
         .map_err(|error| internal(&error))?;
     let started_at = now();
     let run_id = format!("execution-{}-{}", context.database.epoch(), execution.0);
+    // Prepared under the writer, since its folders are named for the run; it writes nothing.
+    let launch = match (placement, sandboxed) {
+        (environment::Placement::Unavailable(unplaced), _) => Err(unplaced.reason.to_owned()),
+        (environment::Placement::Sandbox, Some(inputs)) => {
+            sandboxed_launch(context, &run_id, &definition, &target, start_dir, inputs)
+        }
+        (environment::Placement::Sandbox, None) => {
+            unreachable!("a sandboxed placement read its inputs")
+        }
+        (environment::Placement::Host, _) => {
+            Ok(host_launch(context, &definition, start_dir, &git_config))
+        }
+    };
     cockpit_processes::attribute_output(
         &write,
         execution,
@@ -462,6 +484,7 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
             project: target.project,
             run_id: run_id.clone(),
             check: definition.clone(),
+            ran: launch.as_ref().ok().map(|launch| launch.ran.clone()),
             source,
             artifacts,
             outcome: Outcome::Unknown,
@@ -473,24 +496,56 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
         },
     )
     .await?;
+    let launch = match launch {
+        Ok(launch) => launch,
+        Err(reason) => {
+            tracing::info!(run = run_id, check = definition.name, %reason, "check unavailable");
+            seal_never_started(&write, &pending, &reason).await?;
+            write.commit().await?;
+            return Ok(Reply::CheckRunStarted { run: run_id });
+        }
+    };
     let collector =
         cockpit_processes::guard_output_in(&write, Arc::clone(&context.database), execution)
             .await
             .map_err(|e| internal(&e))?;
     write.commit().await?;
-    let spec = LaunchSpec {
-        program: CHECK_SHELL.into(),
-        arguments: vec![
-            "-c".into(),
-            format!("exec 2>&1\n{}", definition.command).into(),
-        ],
-        working_dir: target.path.join(&definition.working_directory),
-        environment: context.run_settings.run_environment(&git_config),
-        terminal: None,
-    };
+    if let Some(staged) = launch.staged.clone() {
+        let folder = launch.folder.as_ref().map(|folder| folder.root.clone());
+        let written = tokio::task::spawn_blocking(move || {
+            if let Some(folder) = &folder {
+                create_owner_folder(&folder.join("tmp"))?;
+            }
+            staged.write()
+        })
+        .await
+        .map_err(|error| internal(&error))?;
+        if let Err(error) = written {
+            // Nothing started, and this run's own collector is the only one: dropped first.
+            drop(collector);
+            remove_run_folders(launch.cleanup).await;
+            let write = context.database.write().await?;
+            seal_never_started(
+                &write,
+                &pending,
+                &format!("the sandbox could not start: {error}"),
+            )
+            .await?;
+            write.commit().await?;
+            return Ok(Reply::CheckRunStarted { run: run_id });
+        }
+    }
+    if let cockpit_sandbox::Enforcement::Unsandboxed { reason } = &launch.enforcement {
+        tracing::warn!(
+            run = run_id,
+            %reason,
+            "a check runs UNSANDBOXED: {}",
+            cockpit_config::UNSANDBOXED_RISK
+        );
+    }
     match context
         .processes
-        .launch_reserved_with_output(execution, &spec, collector.clone())
+        .launch_reserved_with_output(execution, &launch.spec, collector.clone())
         .await
     {
         Ok(launched) => {
@@ -499,6 +554,7 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
                 pending,
                 launched.exit,
                 collector,
+                launch.cleanup,
             ));
         }
         Err(error) => {
@@ -509,23 +565,10 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
             if observed.phase
                 == cockpit_processes::Phase::Ended(cockpit_processes::EndReason::NeverStarted)
             {
-                let mut result = pending.receipt.clone();
-                result.finished_at = now().max(result.started_at);
-                result.output = format!("check could not start: {error}");
-                let bytes = result.output.len() as u64;
-                cockpit_verification::seal_result(
-                    &write,
-                    &pending,
-                    result,
-                    bytes,
-                    now().max(pending.receipt.started_at),
-                    false,
-                )
-                .await?;
-                cockpit_processes::seal_output_result(&write, execution, &pending.origin_epoch)
-                    .await
-                    .map_err(|e| internal(&e))?;
+                seal_unavailable(&write, &pending, &format!("check could not start: {error}"))
+                    .await?;
                 write.commit().await?;
+                remove_run_folders(launch.cleanup).await;
                 return Err(refused(
                     ErrorCode::Refused,
                     format!("check `{}` could not start: {error}", definition.name),
@@ -536,10 +579,232 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
             drop(write);
             // No guessed outcome: even a failed launch has a durable, recoverable intent.
             // Pending protection remains until an observed-inactive owner recovery seals it.
+            // Its folders stay too: the launch may still run in them.
             tracing::warn!(run = run_id, %error, "check launch uncertain; pending result retained");
         }
     }
     Ok(Reply::CheckRunStarted { run: run_id })
+}
+
+/// What a check run needs from the host before it starts: its launch, where it runs, and
+/// what to remove when it ends.
+struct CheckLaunch {
+    spec: LaunchSpec,
+    ran: cockpit_verification::Ran,
+    enforcement: cockpit_sandbox::Enforcement,
+    staged: Option<cockpit_sandbox::Staged>,
+    folder: Option<environment::RunFolder>,
+    cleanup: Vec<PathBuf>,
+}
+
+/// On the host, with the owner's approved commands' shell and environment, as before #352.
+fn host_launch(
+    context: &Context,
+    definition: &CheckDefinition,
+    start_dir: PathBuf,
+    git_config: &[String],
+) -> CheckLaunch {
+    CheckLaunch {
+        spec: LaunchSpec {
+            program: CHECK_SHELL.into(),
+            arguments: vec![
+                "-c".into(),
+                format!("exec 2>&1\n{}", definition.command).into(),
+            ],
+            working_dir: start_dir,
+            environment: context.run_settings.run_environment(git_config),
+            terminal: None,
+        },
+        ran: environment::ran_on_host(),
+        enforcement: cockpit_sandbox::Enforcement::Unsandboxed {
+            reason: environment::HOST_ISOLATION.to_owned(),
+        },
+        staged: None,
+        folder: None,
+        cleanup: Vec::new(),
+    }
+}
+
+/// What a sandboxed run reads before the writer: the checkout's toolchains, the registry
+/// hosts they fetch from and the project's host grants (#862, Q2).
+struct SandboxInputs {
+    tools: cockpit_sandbox::ToolNeeds,
+    egress: Vec<cockpit_sandbox::AllowEntry>,
+    decisions: cockpit_sandbox::EgressDecisions,
+}
+
+async fn sandbox_inputs(
+    context: &Context,
+    target: &Target,
+    start_dir: &Path,
+) -> Result<SandboxInputs, Failed> {
+    let checkout = target.path.clone();
+    let start = start_dir.to_path_buf();
+    let daemon = context.run_settings.environment.clone();
+    let tools = tokio::task::spawn_blocking(move || {
+        cockpit_sessions::tool_needs(&checkout, &start, &daemon)
+    })
+    .await
+    .map_err(|error| internal(&error))?
+    .map_err(|error| {
+        refused(
+            ErrorCode::Refused,
+            format!("the checkout's toolchains cannot be read: {error}"),
+            "fix the toolchain files in the checkout",
+            UnblockedBy::Owner,
+        )
+    })?;
+    let egress = cockpit_sessions::registry_entries(&tools.ecosystems).map_err(|reason| {
+        refused(
+            ErrorCode::Refused,
+            reason,
+            "report it: the toolchain table is Torlek's own",
+            UnblockedBy::Owner,
+        )
+    })?;
+    let grants = {
+        let read = context.database.read().await?;
+        cockpit_sandbox::network_grants(&read, Some(&target.project))
+            .await
+            .map_err(|error| internal(&error))?
+    };
+    Ok(SandboxInputs {
+        tools,
+        egress,
+        decisions: environment::host_grants(grants),
+    })
+}
+
+/// Through `torlek-sandbox` (#862): the reason it cannot when the sandbox refuses it, which the
+/// receipt records as `unavailable`.
+fn sandboxed_launch(
+    context: &Context,
+    run_id: &str,
+    definition: &CheckDefinition,
+    target: &Target,
+    start_dir: PathBuf,
+    inputs: SandboxInputs,
+) -> Result<CheckLaunch, String> {
+    let sandbox = context.sessions.sandbox();
+    let folder = environment::RunFolder::new(context.sessions.session_temps(), run_id);
+    let request = cockpit_sandbox::CheckRequest {
+        run: run_id.to_owned(),
+        check: definition.name.clone(),
+        shell: CHECK_SHELL.into(),
+        command: definition.command.clone(),
+        checkout: target.path.clone(),
+        start_dir: start_dir.clone(),
+        execution_dir: folder.root.clone(),
+        temp_dir: folder.temp_dir(),
+        environment: environment::sandboxed_environment(
+            &context.run_settings.environment,
+            &folder.temp_dir(),
+        ),
+        tools: inputs.tools,
+        egress: inputs.egress,
+        decisions: inputs.decisions,
+    };
+    let prepared = sandbox
+        .prepare_check(cockpit_config::AgentSandbox::Required, &request)
+        .map_err(|refusal| format!("the sandbox cannot start: {refusal}"))?;
+    let cockpit_sandbox::Backend::Native(backend) = sandbox.backend() else {
+        return Err("the sandbox prepared a launch without a backend".to_owned());
+    };
+    let staged = prepared
+        .staged
+        .clone()
+        .ok_or_else(|| "the sandbox prepared no launch spec".to_owned())?;
+    let enforcement = prepared.evidence.enforcement.clone();
+    Ok(CheckLaunch {
+        ran: environment::ran_in_sandbox(backend),
+        enforcement,
+        cleanup: vec![
+            folder.root.clone(),
+            staged.mount_dir.clone(),
+            staged.home_source.clone(),
+        ],
+        spec: environment::launcher_spec(prepared, start_dir),
+        staged: Some(staged),
+        folder: Some(folder),
+    })
+}
+
+/// Seals `pending` as `unavailable` with `reason` as its output and ends its reserved
+/// execution as never started, in the caller's transaction: no process of it ever ran. The
+/// caller holds no collector of its output.
+async fn seal_never_started(
+    write: &cockpit_turso::WriteTransaction<'_>,
+    pending: &cockpit_verification::PendingResult,
+    reason: &str,
+) -> Result<(), Failed> {
+    let execution = ExecutionId(pending.execution);
+    let ended = cockpit_processes::end_unstarted_output(write, execution, &pending.origin_epoch)
+        .await
+        .map_err(|e| internal(&e))?;
+    if !ended {
+        return Err(internal(&"a check run that never launched was not ended"));
+    }
+    seal_unavailable(write, pending, reason).await
+}
+
+/// Seals `pending`, whose execution ended without starting, as `unavailable` with `reason` as
+/// its output and nowhere as where it ran, in the caller's transaction.
+async fn seal_unavailable(
+    write: &cockpit_turso::WriteTransaction<'_>,
+    pending: &cockpit_verification::PendingResult,
+    reason: &str,
+) -> Result<(), Failed> {
+    let execution = ExecutionId(pending.execution);
+    let mut result = pending.receipt.clone();
+    result.outcome = Outcome::Unavailable;
+    result.ran = None;
+    result.finished_at = now().max(result.started_at);
+    result.output = reason.to_owned();
+    let bytes = result.output.len() as u64;
+    cockpit_verification::seal_result(
+        write,
+        pending,
+        result,
+        bytes,
+        now().max(pending.receipt.started_at),
+        false,
+    )
+    .await?;
+    cockpit_processes::seal_output_result(write, execution, &pending.origin_epoch)
+        .await
+        .map_err(|e| internal(&e))?;
+    Ok(())
+}
+
+fn create_owner_folder(folder: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(folder)
+}
+
+/// Removes a sandboxed run's own folders once it ended (#859); a failure is logged, since the
+/// receipt is already recorded.
+async fn remove_run_folders(folders: Vec<PathBuf>) {
+    if folders.is_empty() {
+        return;
+    }
+    let removed = tokio::task::spawn_blocking(move || {
+        for folder in folders {
+            match cockpit_sessions::remove_tree(&folder) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    tracing::warn!(folder = %folder.display(), %error, "a check run's folder was not removed");
+                }
+            }
+        }
+    })
+    .await;
+    if let Err(error) = removed {
+        tracing::warn!(%error, "a check run's folders were not removed");
+    }
 }
 
 async fn record_when_ended(
@@ -547,6 +812,7 @@ async fn record_when_ended(
     pending: cockpit_verification::PendingResult,
     exit: oneshot::Receiver<std::io::Result<ExitStatus>>,
     collector: cockpit_processes::OutputGuard,
+    cleanup: Vec<PathBuf>,
 ) {
     let mut receipt = pending.receipt.clone();
     (receipt.outcome, receipt.exit_code) = match exit.await {
@@ -555,7 +821,8 @@ async fn record_when_ended(
             Some(code) => (Outcome::Failed, Some(i64::from(code))),
             None => (Outcome::Failed, None),
         },
-        Ok(Err(_)) | Err(_) => return, // pending hold remains; no timeout success
+        // The pending hold remains, and the run's folders with it: no timeout success.
+        Ok(Err(_)) | Err(_) => return,
     };
     receipt.finished_at = now();
     let execution = ExecutionId(pending.execution);
@@ -605,6 +872,7 @@ async fn record_when_ended(
         }
     }
     drop(collector);
+    remove_run_folders(cleanup).await;
     // Output retention only considers ended runs; without this the run stays running until
     // the next reservation sweep.
     if let Err(error) = context
@@ -710,8 +978,21 @@ async fn gate(context: &Context, target: Target, refusal: Option<RunRefusal>) ->
     let report = tokio::task::spawn_blocking(move || evidence.evaluate(&checkout))
         .await
         .map_err(|error| internal(&error))??;
+    // A check placed nowhere is not lifted by running it again: its next action says what is.
+    let setting = context.sessions.owner_settings().sandbox;
+    let unplaced: Vec<(&str, environment::Unplaced)> = checks
+        .iter()
+        .filter_map(
+            |check| match environment::placement(setting, &check.environment) {
+                environment::Placement::Unavailable(unplaced) => {
+                    Some((check.name.as_str(), unplaced))
+                }
+                environment::Placement::Host | environment::Placement::Sandbox => None,
+            },
+        )
+        .collect();
     Ok(Reply::CheckGate {
-        gate: Box::new(gate_view(&target, &source, &report, refusal)),
+        gate: Box::new(gate_view(&target, &source, &report, refusal, &unplaced)),
     })
 }
 
@@ -778,6 +1059,8 @@ fn receipt_view(receipt: &Receipt, output_retired: bool) -> CheckReceiptView {
         command: recorded.check.command.clone(),
         working_directory: recorded.check.working_directory.clone(),
         environment: recorded.check.environment.clone(),
+        ran_environment: recorded.ran.as_ref().map(|ran| ran.environment.clone()),
+        ran_isolation: recorded.ran.as_ref().map(|ran| ran.isolation.clone()),
         head: recorded.source.head.clone(),
         dirty: recorded.source.dirty.clone(),
         artifacts: recorded
@@ -812,11 +1095,13 @@ fn claim_view(project: &str, claim: &Claim) -> CheckClaimView {
     }
 }
 
+/// `unplaced` names the checks the owner's setting runs nowhere, whose next action is theirs.
 fn gate_view(
     target: &Target,
     source: &Source,
     report: &GateReport,
     refusal: Option<RunRefusal>,
+    unplaced: &[(&str, environment::Unplaced)],
 ) -> GateView {
     GateView {
         project: target.project.clone(),
@@ -835,10 +1120,18 @@ fn gate_view(
                 name: check.name.clone(),
                 status: status_view(&check.status),
                 receipt: check.receipt.map(|receipt| receipt.0),
-                next_action: check.next_action().map(|action| match refusal {
-                    Some(refusal) => refusal.before(&action),
-                    None => action,
-                }),
+                next_action: check
+                    .next_action()
+                    .map(|action| {
+                        unplaced
+                            .iter()
+                            .find(|(name, _)| *name == check.name)
+                            .map_or(action, |(_, unplaced)| unplaced.next_action.to_owned())
+                    })
+                    .map(|action| match refusal {
+                        Some(refusal) => refusal.before(&action),
+                        None => action,
+                    }),
             })
             .collect(),
     }

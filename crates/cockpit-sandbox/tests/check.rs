@@ -8,8 +8,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use cockpit_sandbox::{
-    AgentSandbox, CheckRequest, Enforcement, HostPaths, NeedsSource, Platform, Prepared, Sandbox,
-    Subject, ToolNeeds,
+    AgentSandbox, AllowEntry, AllowSource, CheckRequest, EgressDecisions, Enforcement, HostPaths,
+    NeedsSource, Platform, Prepared, Sandbox, Subject, Target, ToolNeeds,
 };
 use common::{
     HOMES, MOUNT_SOURCES, NO_BUBBLEWRAP, missing_backend, native_backend, no_host_paths, wsl2,
@@ -25,6 +25,7 @@ fn check_request() -> CheckRequest {
         shell: PathBuf::from("/bin/sh"),
         command: "cargo test".to_owned(),
         checkout: PathBuf::from(CHECKOUT),
+        start_dir: PathBuf::from(CHECKOUT),
         execution_dir: PathBuf::from(EXECUTION),
         temp_dir: PathBuf::from(format!("{EXECUTION}/tmp")),
         environment: vec![
@@ -33,6 +34,8 @@ fn check_request() -> CheckRequest {
             ("TMPDIR".into(), format!("{EXECUTION}/tmp").into()),
         ],
         tools: ToolNeeds::none(),
+        egress: Vec::new(),
+        decisions: EgressDecisions::default(),
     }
 }
 
@@ -257,6 +260,60 @@ fn a_checks_proxy_names_the_check_and_allows_no_host() {
         (spec.egress.program.as_str(), spec.egress.entries.len()),
         ("check unit", 0)
     );
+}
+
+#[test]
+fn a_check_starts_in_its_working_directory_inside_the_checkout() {
+    let request = CheckRequest {
+        start_dir: PathBuf::from(format!("{CHECKOUT}/tools")),
+        ..check_request()
+    };
+
+    let spec = Sandbox::new(Platform::Linux, agent_host_paths(), native_backend())
+        .prepare_check(AgentSandbox::Required, &request)
+        .unwrap()
+        .staged
+        .unwrap()
+        .spec;
+
+    assert_eq!(spec.working_dir, PathBuf::from(format!("{CHECKOUT}/tools")));
+}
+
+/// #862, Q2: the registries of the checkout's ecosystems, and the project's grants as the
+/// owner's decisions, the proxy applies from the first connection.
+#[test]
+fn a_checks_proxy_allows_its_registries_and_its_projects_grants() {
+    let registry = AllowEntry {
+        target: Target::Name("index.crates.io".to_owned()),
+        port: 443,
+        source: AllowSource::Ecosystem {
+            ecosystem: "rust".to_owned(),
+        },
+    };
+    let grant = AllowEntry {
+        target: Target::Name("git.example.org".to_owned()),
+        port: 443,
+        source: AllowSource::Grant {
+            grant: "7".to_owned(),
+        },
+    };
+    let request = CheckRequest {
+        egress: vec![registry.clone()],
+        decisions: EgressDecisions {
+            allowed: vec![grant.clone()],
+            ..EgressDecisions::default()
+        },
+        ..check_request()
+    };
+
+    let staged = Sandbox::new(Platform::Linux, agent_host_paths(), native_backend())
+        .prepare_check(AgentSandbox::Required, &request)
+        .unwrap()
+        .staged
+        .unwrap();
+
+    assert_eq!(staged.spec.egress.entries, [registry]);
+    assert_eq!(staged.decisions.allowed, [grant]);
 }
 
 /// #862, Q2: a check run holds no bound credential, so its proxy intercepts nothing and its

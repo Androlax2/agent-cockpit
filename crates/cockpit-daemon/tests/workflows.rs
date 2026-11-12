@@ -616,13 +616,14 @@ async fn evidence_scenario(preset: &'static cockpit_workflows::Preset, second: &
             cockpit_verification::record_receipt(
                 &write,
                 cockpit_verification::NewReceipt {
+                    ran: None,
                     project: "app".into(),
                     run_id: format!("{name}-{outcome:?}"),
                     check: cockpit_verification::CheckDefinition {
                         name: name.into(),
                         command: "true".into(),
                         working_directory: ".".into(),
-                        environment: "native".into(),
+                        environment: "sandbox".into(),
                     },
                     source: cockpit_verification::Source {
                         head: source.head.clone(),

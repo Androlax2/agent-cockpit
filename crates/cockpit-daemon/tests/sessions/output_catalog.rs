@@ -183,6 +183,7 @@ async fn pending_recovery_waits_for_a_cancelled_readers_actual_blocking_work() {
         database.epoch(),
         execution.0,
         cockpit_verification::NewReceipt {
+            ran: None,
             project: "app".into(),
             run_id: run.clone(),
             check: cockpit_verification::CheckDefinition {

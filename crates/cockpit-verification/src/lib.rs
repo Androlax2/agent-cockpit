@@ -18,7 +18,7 @@ pub use error::{Error, Refusal};
 pub use gate::Evidence;
 pub use model::{
     Artifact, CheckDefinition, CheckReport, CheckStatus, Claim, ClaimId, GateOutcome, GateReport,
-    NewClaim, NewReceipt, Outcome, Receipt, ReceiptId, Source, StaleReason,
+    NewClaim, NewReceipt, Outcome, Ran, Receipt, ReceiptId, Source, StaleReason,
 };
 pub use receipts::{
     ARTIFACTS_MAX, CLAIMS_LOADED_PER_CHECK, COMMAND_MAX_CHARS, NAME_MAX_CHARS, OUTPUT_MAX_BYTES,
@@ -89,6 +89,19 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
         Migration {
             version: 2,
             sql: pending::SCHEMA,
+        },
+        // #352: where a run's command ran, kept on its intent so a recovered run keeps it. Both
+        // columns are set together or not at all.
+        Migration {
+            version: 3,
+            sql: "ALTER TABLE verification_receipts ADD COLUMN ran_environment TEXT
+                CHECK (ran_environment <> '');
+            ALTER TABLE verification_receipts ADD COLUMN ran_isolation TEXT
+                CHECK (ran_isolation <> '');
+            ALTER TABLE verification_run_identities ADD COLUMN ran_environment TEXT
+                CHECK (ran_environment <> '');
+            ALTER TABLE verification_run_identities ADD COLUMN ran_isolation TEXT
+                CHECK (ran_isolation <> '');",
         },
     ],
 };

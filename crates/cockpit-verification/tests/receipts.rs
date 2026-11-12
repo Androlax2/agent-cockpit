@@ -40,6 +40,45 @@ async fn a_receipt_keeps_what_was_checked() {
 }
 
 #[tokio::test]
+async fn a_receipt_of_a_run_that_never_ran_says_it_ran_nowhere() {
+    let fixture = Fixture::new().await;
+    let mut new = fixture.receipt(
+        "run-1",
+        &check("test"),
+        &clean_source(),
+        &[],
+        Outcome::Unavailable,
+    );
+    new.ran = None;
+
+    let recorded = fixture.record(new).await.unwrap();
+
+    let evidence = fixture.evidence(&clean_source(), &[check("test")]).await;
+    assert_eq!(evidence.receipt("test").unwrap().recorded.ran, None);
+    assert_eq!(recorded.recorded.ran, None);
+}
+
+#[tokio::test]
+async fn a_receipt_keeps_where_its_command_ran() {
+    let fixture = Fixture::new().await;
+    let new = fixture.receipt(
+        "run-1",
+        &check("test"),
+        &clean_source(),
+        &[],
+        Outcome::Passed,
+    );
+
+    fixture.record(new).await.unwrap();
+
+    let evidence = fixture.evidence(&clean_source(), &[check("test")]).await;
+    assert_eq!(
+        evidence.receipt("test").unwrap().recorded.ran,
+        Some(common::sandboxed())
+    );
+}
+
+#[tokio::test]
 async fn long_output_keeps_its_tail_and_its_full_size() {
     let fixture = Fixture::new().await;
     let mut new = fixture.receipt(

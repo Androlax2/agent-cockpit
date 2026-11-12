@@ -181,6 +181,7 @@ impl Routes {
                 git: capabilities.git.clone(),
                 processes: capabilities.processes.clone(),
                 run_settings: capabilities.run_settings,
+                sessions: Arc::clone(&capabilities.sessions),
                 environment: environment.clone(),
             },
             bug_reports: bug_reports::Context {

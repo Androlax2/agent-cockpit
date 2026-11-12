@@ -13,7 +13,7 @@ use crate::artifacts::{check_artifact_paths, check_relative};
 use crate::error::invalid;
 use crate::gate::{CheckEvidence, OtherRun};
 use crate::{
-    Artifact, CheckDefinition, Claim, ClaimId, Error, Evidence, NewClaim, NewReceipt, Outcome,
+    Artifact, CheckDefinition, Claim, ClaimId, Error, Evidence, NewClaim, NewReceipt, Outcome, Ran,
     Receipt, ReceiptId, Refusal, Source,
 };
 
@@ -83,29 +83,33 @@ pub(crate) async fn record_tail_unchecked_pending(
         .prepare(
             "INSERT INTO verification_receipts (project, run_id, check_name, command,
                 working_directory, environment, head, base, dirty, outcome, exit_code, output,
-                output_bytes, started_at, finished_at, recorded_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                output_bytes, started_at, finished_at, recorded_at, ran_environment,
+                ran_isolation)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                ?17, ?18)
              RETURNING id",
         )
         .await?
-        .query_row((
-            new.project.as_str(),
-            new.run_id.as_str(),
-            new.check.name.as_str(),
-            new.check.command.as_str(),
-            new.check.working_directory.as_str(),
-            new.check.environment.as_str(),
-            new.source.head.as_str(),
-            new.source.base.as_deref(),
-            new.source.dirty.as_deref(),
-            new.outcome.as_str(),
-            new.exit_code,
-            new.output.as_str(),
-            stored_output_bytes,
-            new.started_at,
-            new.finished_at,
-            now,
-        ))
+        .query_row(params_from_iter([
+            Value::Text(new.project.clone()),
+            Value::Text(new.run_id.clone()),
+            Value::Text(new.check.name.clone()),
+            Value::Text(new.check.command.clone()),
+            Value::Text(new.check.working_directory.clone()),
+            Value::Text(new.check.environment.clone()),
+            Value::Text(new.source.head.clone()),
+            optional_text(new.source.base.as_deref()),
+            optional_text(new.source.dirty.as_deref()),
+            Value::Text(new.outcome.as_str().to_owned()),
+            new.exit_code.map_or(Value::Null, Value::Integer),
+            Value::Text(new.output.clone()),
+            Value::Integer(stored_output_bytes),
+            Value::Integer(new.started_at),
+            Value::Integer(new.finished_at),
+            Value::Integer(now),
+            optional_text(new.ran.as_ref().map(|ran| ran.environment.as_str())),
+            optional_text(new.ran.as_ref().map(|ran| ran.isolation.as_str())),
+        ]))
         .await?
         .get::<i64>(0)?;
     let mut insert_artifact = write
@@ -315,7 +319,7 @@ async fn load_receipts(
             &format!(
                 "SELECT id, project, run_id, check_name, command, working_directory,
                     environment, head, base, dirty, outcome, exit_code, output, output_bytes,
-                    started_at, finished_at, recorded_at
+                    started_at, finished_at, recorded_at, ran_environment, ran_isolation
                  FROM verification_receipts WHERE {condition}"
             ),
             params_from_iter(parameters),
@@ -364,6 +368,10 @@ fn receipt_from(row: &Row) -> Result<Receipt, Error> {
             working_directory: row.get(5)?,
             environment: row.get(6)?,
         },
+        ran: ran_from(row.get(17)?, row.get(18)?).map_err(|reason| Error::InvalidStoredRow {
+            table: "verification_receipts",
+            reason: format!("receipt {id} {reason}"),
+        })?,
         source: Source {
             head: row.get(7)?,
             base: row.get(8)?,
@@ -383,6 +391,25 @@ fn receipt_from(row: &Row) -> Result<Receipt, Error> {
         output_bytes,
         recorded_at: row.get(16)?,
     })
+}
+
+/// A run's [`Ran`] from its two columns, which are set together or not at all.
+pub(crate) fn ran_from(
+    environment: Option<String>,
+    isolation: Option<String>,
+) -> Result<Option<Ran>, String> {
+    match (environment, isolation) {
+        (Some(environment), Some(isolation)) => Ok(Some(Ran {
+            environment,
+            isolation,
+        })),
+        (None, None) => Ok(None),
+        _ => Err("has one of ran_environment and ran_isolation without the other".to_owned()),
+    }
+}
+
+pub(crate) fn optional_text(value: Option<&str>) -> Value {
+    value.map_or(Value::Null, |value| Value::Text(value.to_owned()))
 }
 
 async fn artifacts_of(
@@ -468,6 +495,10 @@ pub(crate) fn validated(mut new: NewReceipt, now: i64) -> Result<NewReceipt, Ref
     required("project", &new.project, NAME_MAX_CHARS)?;
     required("run_id", &new.run_id, NAME_MAX_CHARS)?;
     check_definition(&new.check)?;
+    if let Some(ran) = &new.ran {
+        required("ran.environment", &ran.environment, NAME_MAX_CHARS)?;
+        required("ran.isolation", &ran.isolation, COMMAND_MAX_CHARS)?;
+    }
     check_source(&new.source)?;
     check_exit_code(new.outcome, new.exit_code)?;
     if new.finished_at < new.started_at {

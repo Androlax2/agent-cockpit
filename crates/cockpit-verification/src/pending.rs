@@ -1,7 +1,9 @@
 //! Durable producer intent. This is the receipt-identity seam for future retention, not a
 //! separate capacity ledger: reservations never deny ordinary verification by a lifetime cap.
+use crate::receipts::{optional_text, ran_from};
 use crate::{Artifact, CheckDefinition, Error, NewReceipt, Outcome, Receipt, Source};
-use cockpit_turso::{WriteTransaction, sql::Connection};
+use cockpit_turso::WriteTransaction;
+use cockpit_turso::sql::{Connection, Value, params_from_iter};
 
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE verification_run_identities (
@@ -56,11 +58,16 @@ pub async fn reserve_result(
         return Err(changed());
     }
     write.execute("INSERT INTO verification_run_identities
-        (project,run_id,origin_epoch,execution,check_name,command,working_directory,environment,head,base,dirty,started_at)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-        (receipt.project.as_str(), receipt.run_id.as_str(), epoch, execution, receipt.check.name.as_str(), receipt.check.command.as_str(),
-         receipt.check.working_directory.as_str(), receipt.check.environment.as_str(), receipt.source.head.as_str(),
-         receipt.source.base.as_deref(), receipt.source.dirty.as_deref(), receipt.started_at)).await?;
+        (project,run_id,origin_epoch,execution,check_name,command,working_directory,environment,head,base,dirty,started_at,
+         ran_environment,ran_isolation)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        params_from_iter([Value::Text(receipt.project.clone()), Value::Text(receipt.run_id.clone()), Value::Text(epoch.to_owned()),
+         Value::Integer(execution), Value::Text(receipt.check.name.clone()), Value::Text(receipt.check.command.clone()),
+         Value::Text(receipt.check.working_directory.clone()), Value::Text(receipt.check.environment.clone()),
+         Value::Text(receipt.source.head.clone()), optional_text(receipt.source.base.as_deref()),
+         optional_text(receipt.source.dirty.as_deref()), Value::Integer(receipt.started_at),
+         optional_text(receipt.ran.as_ref().map(|ran| ran.environment.as_str())),
+         optional_text(receipt.ran.as_ref().map(|ran| ran.isolation.as_str()))])).await?;
     for artifact in &receipt.artifacts {
         write
             .execute(
@@ -89,8 +96,8 @@ pub async fn pending_result(
     project: &str,
     run: &str,
 ) -> Result<Option<PendingResult>, Error> {
-    let mut rows = read.query("SELECT origin_epoch,execution,revision,sealed,recovered,check_name,command,working_directory,environment,head,base,dirty,started_at
-        FROM verification_run_identities WHERE project=?1 AND run_id=?2", (project,run)).await?;
+    let mut rows = read.query("SELECT origin_epoch,execution,revision,sealed,recovered,check_name,command,working_directory,environment,head,base,dirty,started_at,
+        ran_environment,ran_isolation FROM verification_run_identities WHERE project=?1 AND run_id=?2", (project,run)).await?;
     let Some(row) = rows.next().await? else {
         return Ok(None);
     };
@@ -110,6 +117,12 @@ pub async fn pending_result(
                 working_directory: row.get(7)?,
                 environment: row.get(8)?,
             },
+            ran: ran_from(row.get(13)?, row.get(14)?).map_err(|reason| {
+                Error::InvalidStoredRow {
+                    table: "verification_run_identities",
+                    reason: format!("run {run} {reason}"),
+                }
+            })?,
             source: Source {
                 head: row.get(9)?,
                 base: row.get(10)?,
@@ -154,7 +167,15 @@ pub async fn seal_result(
     {
         return Err(changed());
     }
+    let never_ran = result.ran.is_none() && pending.receipt.ran.is_some();
+    if never_ran && result.outcome != Outcome::Unavailable {
+        return Err(changed());
+    }
     let mut input = result.clone();
+    // A run whose environment did not start says it ran nowhere, never somewhere else.
+    if never_ran {
+        input.ran.clone_from(&pending.receipt.ran);
+    }
     input.outcome = Outcome::Unknown;
     input.exit_code = None;
     input.output.clear();

@@ -192,10 +192,21 @@ not share code.
 
 - `check-run` and `check-receipt` are the owner's: the daemon runs a check the project
   declares under `[[checks]]` in its checkout, as an execution of its one supervisor, under
-  `/bin/sh` with the approved commands' environment (Git settings included). Only a checkout
-  the owner trusts runs checks, never a review checkout; only `native` checks run. Anything
+  `/bin/sh`. Only a checkout the owner trusts runs checks, never a review checkout; anything
   else is refused before anything starts; a launch that may have started is recorded
   `unknown`.
+- Where it runs follows `agents.sandbox` (#352, #862 Q1; `src/verification/environment.rs`).
+  Under `"required"` a check runs through `torlek-sandbox` in a folder of its own beside the
+  sessions' temporary folders, removed when it ends: the checkout writable, the daemon's
+  agent base variables and its own `TMPDIR` only (never `GH_TOKEN`), its proxy allowing the
+  checkout's ecosystem registries and the project's host grants (#862 Q2). One that declares
+  `native` is recorded `unavailable`, never run on the host, and the gate's next action says
+  to declare `sandbox` or turn the sandbox off. Under `"off"` every check but `docker` runs
+  on the host with the approved commands' environment (Git settings included) and the risk
+  is logged. `docker` checks are `unavailable` until the project's engine runs them (#856).
+  A sandbox that cannot start is `unavailable` with its reason, and no process ran.
+- The receipt records where the command ran (`ran in sandbox: <backend>`, or `native` with
+  the sandbox off); a run that never started records nowhere.
 - Before the run starts, the daemon fingerprints the check's artifacts and reads the
   checkout's head and uncommitted changes with its own Git (`Git::source_state`). The run id
   is `execution-<id>`. When the program exits, the receipt is recorded with the exit code and
@@ -370,7 +381,13 @@ builds it only when asked and no release installs it.
 - `tests/verification.rs`: issue #313 on the binary's sockets: a run yields the receipt the
   gate counts, a failure is recorded failed with its output, a change after the run is stale,
   an agent cannot run a check or read a receipt, an agent's claim stays unverified, socket
-  roles, and checks refused before they run (undeclared, untrusted, another environment).
+  roles, checks refused before they run (undeclared, untrusted), and the placement of each
+  environment under `agents.sandbox` (#352).
+- `tests/check_environment.rs`: issue #352 through the real sandbox: a check under
+  `"required"` cannot read the owner's key or the daemon's state, reach the owner's socket,
+  see `GH_TOKEN`, write the owner's cache or reach an ungranted host; its receipt names the
+  sandbox and its folder is removed; on a host without bubblewrap it is `unavailable`; under
+  `"off"` it runs on the host.
 - `tests/scheduling.rs`: issue #43 on the binary's sockets: a queued item placed on the idle
   session of its project, the working session named in its explanation; `scheduling/budget.rs`,
   a turn ended past an item's budget put on the feed once and taken back by the owner's next

@@ -30,7 +30,7 @@ fn a_project_declares_its_checks_with_their_lines() {
         &home,
         "[[checks]]\nname = \"test\"\ncommand = \"cargo test\"\nartifacts = [\"src/lib.rs\"]\n\n\
          [[checks]]\nname = \"lint\"\ncommand = \"make lint\"\nworking_directory = \"tools\"\n\
-         environment = \"sandbox\"\n",
+         environment = \"native\"\n",
     );
 
     let config = load(home.path(), Some(&project)).unwrap();
@@ -43,14 +43,14 @@ fn a_project_declares_its_checks_with_their_lines() {
                 name: "test".to_owned(),
                 command: "cargo test".to_owned(),
                 working_directory: ".".to_owned(),
-                environment: "native".to_owned(),
+                environment: "sandbox".to_owned(),
                 artifacts: vec!["src/lib.rs".to_owned()],
             },
             &Check {
                 name: "lint".to_owned(),
                 command: "make lint".to_owned(),
                 working_directory: "tools".to_owned(),
-                environment: "sandbox".to_owned(),
+                environment: "native".to_owned(),
                 artifacts: Vec::new(),
             },
         ]

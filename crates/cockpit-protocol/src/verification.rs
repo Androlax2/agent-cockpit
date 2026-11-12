@@ -14,7 +14,16 @@ pub struct CheckReceiptView {
     pub check: String,
     pub command: String,
     pub working_directory: String,
+    /// The declared environment.
     pub environment: String,
+    /// The environment the command ran in (#352), which differs from the declared one under
+    /// `agents.sandbox = "off"`; `None` when nothing ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ran_environment: Option<String>,
+    /// How the run was isolated: the sandbox's backend and Landlock ABI, or why it ran
+    /// without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ran_isolation: Option<String>,
     pub head: String,
     /// A digest of the uncommitted changes, `None` for a clean checkout.
     pub dirty: Option<String>,
