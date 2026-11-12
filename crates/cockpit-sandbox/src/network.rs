@@ -837,10 +837,12 @@ pub async fn egress_decisions(
                 source,
             }),
             NetworkTarget::Service { service, record } => {
+                // Container ports open live from #390 part 2c's requests; until then none.
                 decisions.services.allowed.push(AllowedService {
                     service,
                     record,
                     source,
+                    live: None,
                 });
             }
         }
@@ -913,6 +915,7 @@ fn add_service_decision(
             service,
             record,
             source: AllowSource::Request { request },
+            live: None,
         }),
         NetworkRequestState::Asking => services.asking.push(DecidedService {
             service,

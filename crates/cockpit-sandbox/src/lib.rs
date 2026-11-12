@@ -33,8 +33,8 @@ pub use evidence::{AppliedRule, Enforcement, Evidence};
 #[cfg(feature = "persistence")]
 pub use evidence::{MIGRATIONS, first_launch_was_sandboxed, latest_for_session, record};
 pub use forwards::{
-    AllowedService, AskedService, DecidedService, Endpoint, Forward, MAX_FORWARDS,
-    ServiceDecisions, is_service_name, proxy_port,
+    AllowedService, AskedService, CONTAINERS_SERVICE, DecidedService, Endpoint, EngineRelay,
+    Forward, MAX_FORWARDS, ServiceDecisions, is_service_name, proxy_port,
 };
 pub use launch::{
     AccountLogin, CheckRequest, HostPaths, LaunchRequest, LoginMount, Prepared, Sandbox,

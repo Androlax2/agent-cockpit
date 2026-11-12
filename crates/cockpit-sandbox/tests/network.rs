@@ -589,6 +589,7 @@ async fn allow_always_grants_the_projects_sessions_that_one_service_record() {
         source: AllowSource::Grant {
             grant: grant.to_string(),
         },
+        live: None,
     };
     assert_eq!(
         store.decisions("s2", "app").await.services.allowed,

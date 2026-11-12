@@ -39,14 +39,54 @@ pub fn run(policy_argument: &OsString, arguments: &[OsString]) -> Result<Infalli
     let policy: Policy = serde_json::from_str(policy_text)
         .map_err(|error| format!("stage 2's policy is malformed: {error}"))?;
     verify_mounts(&policy)?;
-    crate::handoff::hand_over(&policy.proxy_handoff, &policy.forward_ports)?;
+    let handoff = crate::handoff::hand_over(&policy.proxy_handoff, &policy.forward_ports)?;
     restrict_files(&policy)?;
     restrict_system_calls()?;
+    start_binder(handoff)?;
     let error = std::process::Command::new(&policy.program)
         .arg0(&policy.program_name)
         .args(arguments)
         .exec();
     Err(format!("cannot run {}: {error}", policy.program.display()))
+}
+
+/// Starts the binder beside the program, under the same restrictions, with the hand-off
+/// connection as its standard input; the program does not inherit it. The binder is not the
+/// program's child: a program that waits for all its children would wait for it for good.
+fn start_binder(handoff: std::os::unix::net::UnixStream) -> Result<(), String> {
+    let status = binder_command()?
+        .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+            handoff,
+        )))
+        .status()
+        .map_err(|error| format!("cannot start the sandbox's binder: {error}"))?;
+    if !status.success() {
+        return Err(format!("the sandbox's binder did not start: {status}"));
+    }
+    Ok(())
+}
+
+/// The binder's first process: starts the one that serves, then ends, so the sandbox's first
+/// process adopts it. It ends when the launcher closes the connection, or with the sandbox's
+/// PID namespace.
+pub fn detach_binder() -> Result<(), String> {
+    let serving = binder_command()?
+        .arg(crate::handoff::BINDER_SERVES)
+        .spawn()
+        .map_err(|error| format!("cannot start the sandbox's binder: {error}"))?;
+    drop(serving);
+    Ok(())
+}
+
+fn binder_command() -> Result<std::process::Command, String> {
+    let launcher = std::env::current_exe()
+        .map_err(|error| format!("cannot find the launcher in the sandbox: {error}"))?;
+    let mut command = std::process::Command::new(&launcher);
+    command
+        .arg(crate::handoff::BINDER_VERB)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    Ok(command)
 }
 
 /// The probe launch's stage 2: Landlock with every right this launcher knows, best effort,

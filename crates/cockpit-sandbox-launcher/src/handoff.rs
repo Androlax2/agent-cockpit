@@ -7,6 +7,12 @@
 //! The hand-off goes through a named Unix socket in a folder of the launcher's own, bound
 //! read-only into the view and never granted by Landlock: stage 2 connects before the
 //! program runs, and the launcher removes the socket as soon as it has the listener.
+//!
+//! The connection stays open for the binder (#390): a process stage 2 starts beside the
+//! program, under the same Landlock and seccomp, which binds one more loopback listener
+//! whenever the launcher asks and sends it over. It binds only the port asked, the launcher
+//! checks the address of each listener it receives, and the launcher alone decides what a
+//! listener reaches. A binder that is gone opens nothing more.
 
 use std::fs::File;
 use std::io::{IoSlice, IoSliceMut, Read, Write};
@@ -34,6 +40,23 @@ const HANDOFF_TIMEOUT: Duration = Duration::from_secs(30);
 /// What stage 2 sends with the listener, and the launcher answers once it holds it.
 const LISTENER_BYTE: u8 = b'L';
 const RECEIVED_BYTE: u8 = b'R';
+
+/// The launcher asks the binder for a listener with this byte and the port, big-endian; the
+/// binder answers [`LISTENER_BYTE`] with the listener, or this byte, a length and why not.
+const BIND_BYTE: u8 = b'B';
+const REFUSED_BYTE: u8 = b'E';
+
+/// The verb stage 2 starts the binder with. Never run by hand.
+pub const BINDER_VERB: &str = "stage2-binder";
+
+/// The binder's argument once it left stage 2's children, as it serves.
+pub const BINDER_SERVES: &str = "serve";
+
+/// How long the binder has to answer one request.
+const BINDER_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The longest reason a binder sends.
+const MAX_REASON: usize = 512;
 
 /// The launcher's side: the hand-off socket, listening until stage 2 connects. Dropping it
 /// removes its folder.
@@ -107,6 +130,98 @@ pub struct Received {
     pub proxy: TcpListener,
     /// One per forward port, in the order the launcher asked for them.
     pub forwards: Vec<TcpListener>,
+    /// Binds the listeners the owner's decisions open after the launch.
+    pub binder: Binder,
+}
+
+/// The launcher's end of the binder's connection; none once the binder failed to answer,
+/// which a later request could misread.
+pub struct Binder {
+    stream: std::sync::Mutex<Option<UnixStream>>,
+}
+
+impl Binder {
+    /// A listener on the sandbox's `127.0.0.1:port`, bound by the binder; why not when the
+    /// port is taken or the binder is gone.
+    pub fn listen(&self, port: u16) -> Result<TcpListener, String> {
+        let mut stream = self
+            .stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(connection) = stream.as_ref() else {
+            return Err("the sandbox's binder is gone".to_owned());
+        };
+        match ask_binder(connection, port) {
+            Ok(answer) => answer,
+            Err(error) => {
+                // Dropping the connection ends the binder.
+                *stream = None;
+                Err(format!("the sandbox's binder stopped answering: {error}"))
+            }
+        }
+    }
+}
+
+/// The binder's answer for `port`; an error when it broke the protocol or missed
+/// [`BINDER_DEADLINE`].
+fn ask_binder(stream: &UnixStream, port: u16) -> std::io::Result<Result<TcpListener, String>> {
+    let [high, low] = port.to_be_bytes();
+    let mut writer = stream;
+    writer.write_all(&[BIND_BYTE, high, low])?;
+    let (byte, mut descriptors) = receive(stream, 1)?;
+    match (byte, descriptors.pop()) {
+        (LISTENER_BYTE, Some(descriptor)) if descriptors.is_empty() => {
+            let listener = TcpListener::from(descriptor);
+            Ok(check_address(&listener, forward_address(port)).map(|()| listener))
+        }
+        (REFUSED_BYTE, None) => {
+            let mut reader = stream;
+            let mut length = [0_u8; 2];
+            reader.read_exact(&mut length)?;
+            let length = usize::from(u16::from_be_bytes(length));
+            if length > MAX_REASON {
+                return Err(std::io::Error::other(format!(
+                    "a reason of {length} bytes, not at most {MAX_REASON}"
+                )));
+            }
+            let mut reason = vec![0_u8; length];
+            reader.read_exact(&mut reason)?;
+            Ok(Err(String::from_utf8_lossy(&reason).into_owned()))
+        }
+        (byte, descriptor) => Err(std::io::Error::other(format!(
+            "it answered {byte:?} with {} descriptors",
+            usize::from(descriptor.is_some()) + descriptors.len()
+        ))),
+    }
+}
+
+/// One byte and the descriptors that came with it, at most `most`.
+fn receive(stream: &UnixStream, most: usize) -> std::io::Result<(u8, Vec<std::os::fd::OwnedFd>)> {
+    let mut byte = [0_u8; 1];
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1 + MAX_FORWARDS))];
+    let mut control = RecvAncillaryBuffer::new(&mut space);
+    let message = recvmsg(
+        stream,
+        &mut [IoSliceMut::new(&mut byte)],
+        &mut control,
+        RecvFlags::CMSG_CLOEXEC,
+    )?;
+    if message.bytes == 0 {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
+    let mut received = Vec::new();
+    for message in control.drain() {
+        if let RecvAncillaryMessage::ScmRights(descriptors) = message {
+            received.extend(descriptors);
+        }
+    }
+    if received.len() > most {
+        return Err(std::io::Error::other(format!(
+            "{} descriptors came, not at most {most}",
+            received.len()
+        )));
+    }
+    Ok((byte[0], received))
 }
 
 impl Drop for Waiting {
@@ -122,26 +237,10 @@ fn take_listeners(mut stream: UnixStream, forward_ports: &[u16]) -> Result<Recei
     stream
         .set_read_timeout(Some(HANDOFF_TIMEOUT))
         .map_err(failed)?;
-    let mut byte = [0_u8; 1];
-    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1 + MAX_FORWARDS))];
-    let mut control = RecvAncillaryBuffer::new(&mut space);
-    recvmsg(
-        &stream,
-        &mut [IoSliceMut::new(&mut byte)],
-        &mut control,
-        RecvFlags::CMSG_CLOEXEC,
-    )
-    .map_err(|error| failed(error.into()))?;
-    let mut received = Vec::new();
-    for message in control.drain() {
-        if let RecvAncillaryMessage::ScmRights(descriptors) = message {
-            received.extend(descriptors);
-        }
-    }
-    if byte != [LISTENER_BYTE] {
+    let (byte, received) = receive(&stream, 1 + forward_ports.len()).map_err(failed)?;
+    if byte != LISTENER_BYTE {
         return Err(format!(
-            "stage 2 sent {byte:?} with its listeners, not {:?}",
-            [LISTENER_BYTE]
+            "stage 2 sent {byte:?} with its listeners, not {LISTENER_BYTE:?}"
         ));
     }
     if received.len() != 1 + forward_ports.len() {
@@ -162,7 +261,20 @@ fn take_listeners(mut stream: UnixStream, forward_ports: &[u16]) -> Result<Recei
         check_address(listener, forward_address(*port))?;
     }
     stream.write_all(&[RECEIVED_BYTE]).map_err(failed)?;
-    Ok(Received { proxy, forwards })
+    // A binder the program stopped must not hold the owner's decisions for good.
+    stream
+        .set_read_timeout(Some(BINDER_DEADLINE))
+        .map_err(failed)?;
+    stream
+        .set_write_timeout(Some(BINDER_DEADLINE))
+        .map_err(failed)?;
+    Ok(Received {
+        proxy,
+        forwards,
+        binder: Binder {
+            stream: std::sync::Mutex::new(Some(stream)),
+        },
+    })
 }
 
 /// A listener on `expected`, which stage 2 bound inside the sandbox; one on another address
@@ -191,8 +303,9 @@ pub struct ForwardPort {
 /// Stage 2's side, before Landlock and before the program: listens on the proxy address of
 /// the sandbox's loopback and on each of `forward_ports`, and sends the listeners to the
 /// launcher on `socket`. A port taken already refuses the launch naming its service. Stage 2
-/// keeps no copy: the program never holds them.
-pub fn hand_over(socket: &Path, forward_ports: &[ForwardPort]) -> Result<(), String> {
+/// keeps no copy: the program never holds them. Returns the connection, which the binder
+/// serves.
+pub fn hand_over(socket: &Path, forward_ports: &[ForwardPort]) -> Result<UnixStream, String> {
     let listener = TcpListener::bind(PROXY_ADDRESS)
         .map_err(|error| format!("cannot listen on {PROXY_ADDRESS} in the sandbox: {error}"))?;
     let mut forwards = Vec::with_capacity(forward_ports.len());
@@ -231,6 +344,56 @@ pub fn hand_over(socket: &Path, forward_ports: &[ForwardPort]) -> Result<(), Str
     if answer != [RECEIVED_BYTE] {
         return Err("the launcher did not take the proxy listener".to_owned());
     }
+    stream.set_read_timeout(None).map_err(failed)?;
+    Ok(stream)
+}
+
+/// The binder: answers each of the launcher's requests on `stream` with a listener on the
+/// sandbox's loopback at the port asked, until the launcher closes it. Keeps no copy.
+pub fn serve_binds(stream: &UnixStream) -> Result<(), String> {
+    let mut request = [0_u8; 3];
+    loop {
+        match (&*stream).read_exact(&mut request) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(error) => return Err(format!("cannot read the launcher's request: {error}")),
+        }
+        let [BIND_BYTE, high, low] = request else {
+            return Err(format!("the launcher asked {request:?}"));
+        };
+        let address = forward_address(u16::from_be_bytes([high, low]));
+        let sent = match TcpListener::bind(address) {
+            Ok(listener) => send_listener(stream, &listener),
+            Err(error) => {
+                let mut reason = format!("cannot listen on {address} in the sandbox: {error}");
+                let mut kept = reason.len().min(MAX_REASON);
+                while !reason.is_char_boundary(kept) {
+                    kept -= 1;
+                }
+                reason.truncate(kept);
+                let length = u16::try_from(reason.len()).unwrap_or(0).to_be_bytes();
+                (&*stream)
+                    .write_all(&[REFUSED_BYTE, length[0], length[1]])
+                    .and_then(|()| (&*stream).write_all(reason.as_bytes()))
+            }
+        };
+        sent.map_err(|error| format!("cannot answer the launcher: {error}"))?;
+    }
+}
+
+fn send_listener(stream: &UnixStream, listener: &TcpListener) -> std::io::Result<()> {
+    let descriptors = [listener.as_fd()];
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut control = SendAncillaryBuffer::new(&mut space);
+    if !control.push(SendAncillaryMessage::ScmRights(&descriptors)) {
+        return Err(std::io::Error::other("no room for the listener"));
+    }
+    sendmsg(
+        stream,
+        &[IoSlice::new(&[LISTENER_BYTE])],
+        &mut control,
+        SendFlags::empty(),
+    )?;
     Ok(())
 }
 

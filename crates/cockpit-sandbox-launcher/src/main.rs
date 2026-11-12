@@ -65,6 +65,22 @@ fn main() -> ExitCode {
         Some((verb, [])) if verb == stage2::PROBE_VERB => {
             stage2::probe().map(|()| ExitCode::SUCCESS)
         }
+        Some((verb, [])) if verb == handoff::BINDER_VERB => {
+            stage2::detach_binder().map(|()| ExitCode::SUCCESS)
+        }
+        Some((verb, [serves]))
+            if verb == handoff::BINDER_VERB && serves == handoff::BINDER_SERVES =>
+        {
+            // Stage 2 gave it the hand-off connection as its standard input.
+            use std::os::fd::AsFd;
+            std::io::stdin()
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(|error| format!("cannot take the launcher's connection: {error}"))
+                .map(std::os::unix::net::UnixStream::from)
+                .and_then(|launcher| handoff::serve_binds(&launcher))
+                .map(|()| ExitCode::SUCCESS)
+        }
         Some((verb, [socket, owner_uid])) if verb == "engine-relay" => {
             engine_relay::run(std::path::Path::new(socket), owner_uid).map(|never| match never {})
         }
@@ -154,6 +170,8 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
     );
     let report = mount_dir.join(cockpit_sandbox::EGRESS_FILE);
     proxy.keep_report(report.clone());
+    // Before the decisions: they may open container ports live (#390).
+    proxy.open_live_through(received.binder)?;
     // The owner's decisions (#674) apply before the first connection is served.
     proxy.apply_decisions(launch_decisions);
     proxy.keep_decisions(decisions);

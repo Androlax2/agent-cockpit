@@ -228,3 +228,85 @@ fn a_record_of_another_service_or_on_two_lines_is_not_filed() {
         assert!(!asked.is_askable(), "{service} {record:?} was filed");
     }
 }
+
+fn engine(port: u16) -> Endpoint {
+    Endpoint::Engine {
+        user: "torlek-e3".to_owned(),
+        port,
+    }
+}
+
+/// #390: an engine's port is opened live from the owner's decisions, never declared.
+#[test]
+fn a_declared_forward_to_or_on_an_engines_port_is_refused() {
+    let targeting = spec(vec![forward("containers", port(8080), engine(8080))]);
+    let listening = spec(vec![forward("containers", engine(8080), port(8080))]);
+
+    assert!(
+        refusal(&targeting).contains("targets an engine's port"),
+        "{}",
+        refusal(&targeting)
+    );
+    assert!(
+        refusal(&listening).contains("listens on an engine's port"),
+        "{}",
+        refusal(&listening)
+    );
+}
+
+#[test]
+fn a_container_port_opens_live_and_names_its_engine_in_its_record() {
+    let forward = Forward::container_port("torlek-e3", 8080);
+
+    assert_eq!(forward.live_problem(), None);
+    assert_eq!(
+        forward.record(),
+        "service containers listen 127.0.0.1:8080 target engine:torlek-e3:8080"
+    );
+}
+
+#[test]
+fn only_the_container_port_shape_opens_live() {
+    for (shape, refused) in [
+        (
+            "another service",
+            forward("figcraft", port(8080), engine(8080)),
+        ),
+        ("a host port", forward("containers", port(8080), port(8080))),
+        (
+            "another port",
+            forward("containers", port(8080), engine(9090)),
+        ),
+        (
+            "a privileged port",
+            Forward::container_port("torlek-e3", 80),
+        ),
+        (
+            "the proxy's port",
+            Forward::container_port("torlek-e3", 3128),
+        ),
+        (
+            "a user with a space",
+            Forward::container_port("torlek e3", 8080),
+        ),
+    ] {
+        assert!(refused.live_problem().is_some(), "{shape}");
+    }
+}
+
+/// A live forward is opened only under the record the owner allowed.
+#[test]
+fn a_live_forward_under_another_record_is_not_opened() {
+    let allowed = Forward::container_port("torlek-e3", 8080);
+    let decisions = cockpit_sandbox::ServiceDecisions {
+        allowed: vec![cockpit_sandbox::AllowedService {
+            service: "containers".to_owned(),
+            record: allowed.record(),
+            source: cockpit_sandbox::AllowSource::Request { request: 3 },
+            live: Some(Forward::container_port("torlek-e3", 9090)),
+        }],
+        ..Default::default()
+    };
+
+    assert_eq!(decisions.live_forwards().count(), 0);
+}
