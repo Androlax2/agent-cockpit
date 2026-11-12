@@ -896,14 +896,41 @@ fn only_a_container_port_opens_live() {
 }
 
 /// #390: the binder's connection to the launcher stays the binder's: the program holds only
-/// its standard streams.
+/// its standard streams, beside what this test's own process passes to any child.
 #[test]
 fn the_program_holds_no_connection_to_the_launcher() {
     let fixture = Fixture::new();
+    let mut expected = inheritable_descriptors();
+    expected.extend([0, 1, 2]);
 
     let printed = fixture.run("ls /proc/$$/fd | tr '\\n' ' '");
 
-    assert_eq!(printed, "0 1 2 exit=0\n");
+    let held: std::collections::BTreeSet<u32> = printed
+        .strip_suffix("exit=0\n")
+        .unwrap_or_else(|| panic!("{printed}"))
+        .split_whitespace()
+        .map(|descriptor| descriptor.parse().unwrap())
+        .collect();
+    assert_eq!(held, expected, "{printed}");
+}
+
+/// This process's descriptors above the standard streams that a child inherits: a CI runner
+/// may leave some open, which reach any program it starts.
+fn inheritable_descriptors() -> std::collections::BTreeSet<u32> {
+    const CLOSE_ON_EXEC: u32 = 0o2_000_000;
+    std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|descriptor| *descriptor > 2)
+        .filter(|descriptor| {
+            let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{descriptor}"))
+                .unwrap_or_default();
+            info.lines()
+                .find_map(|line| line.strip_prefix("flags:"))
+                .and_then(|flags| u32::from_str_radix(flags.trim(), 8).ok())
+                .is_some_and(|flags| flags & CLOSE_ON_EXEC == 0)
+        })
+        .collect()
 }
 
 /// #390: a program that waits for every child of its own does not wait for the binder.
