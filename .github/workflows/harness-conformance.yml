@@ -48,7 +48,7 @@ jobs:
     needs: check
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 40
     outputs:
       results: ${{ steps.test.outputs.results }}
       untested: ${{ steps.test.outputs.untested }}
