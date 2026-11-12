@@ -93,6 +93,17 @@ impl Forward {
         }
     }
 
+    /// The container port whose record is `record`, if it is one (#390): a grant keeps the
+    /// record alone, and the launcher opens the forward it names.
+    pub fn container_port_of(record: &str) -> Option<Forward> {
+        let rest =
+            record.strip_prefix(&format!("service {CONTAINERS_SERVICE} listen 127.0.0.1:"))?;
+        let (port, rest) = rest.split_once(" target engine:")?;
+        let (user, _) = rest.rsplit_once(':')?;
+        let forward = Forward::container_port(user, port.parse().ok()?);
+        (forward.record() == record && forward.live_problem().is_none()).then_some(forward)
+    }
+
     /// Why the launcher does not open this forward live, if it does not: only
     /// [`Forward::container_port`]'s shape is opened, on a port the sandbox may bind.
     pub fn live_problem(&self) -> Option<String> {
@@ -126,7 +137,7 @@ fn is_engine_user(user: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-/// A project engine's relay, as the daemon found it verified (#390): its socket, and the
+/// A project engine's relay, as the daemon found it recorded (#390): its socket, and the
 /// engine user's uid, which must be the one listening there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineRelay {
@@ -165,7 +176,7 @@ pub struct ServiceDecisions {
     /// The records asked of the owner and not yet decided.
     pub asking: Vec<DecidedService>,
     /// The session's project engine, which [`CONTAINERS_SERVICE`] forwards reach; None when
-    /// the daemon verified none.
+    /// the owner recorded none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engine: Option<EngineRelay>,
 }

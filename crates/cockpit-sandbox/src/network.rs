@@ -837,12 +837,11 @@ pub async fn egress_decisions(
                 source,
             }),
             NetworkTarget::Service { service, record } => {
-                // Container ports open live from #390 part 2c's requests; until then none.
                 decisions.services.allowed.push(AllowedService {
+                    live: live_forward(&service, &record),
                     service,
                     record,
                     source,
-                    live: None,
                 });
             }
         }
@@ -902,6 +901,11 @@ fn add_host_decision(
     }
 }
 
+/// The forward the launcher opens live for an allowed `record`: a container port's (#390).
+fn live_forward(service: &str, record: &str) -> Option<crate::Forward> {
+    crate::Forward::container_port_of(record).filter(|forward| forward.service == service)
+}
+
 fn add_service_decision(
     decisions: &mut EgressDecisions,
     state: NetworkRequestState,
@@ -912,10 +916,10 @@ fn add_service_decision(
     let services = &mut decisions.services;
     match state {
         NetworkRequestState::AllowedOnce => services.allowed.push(AllowedService {
+            live: live_forward(&service, &record),
             service,
             record,
             source: AllowSource::Request { request },
-            live: None,
         }),
         NetworkRequestState::Asking => services.asking.push(DecidedService {
             service,

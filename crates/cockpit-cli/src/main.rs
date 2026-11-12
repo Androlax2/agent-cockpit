@@ -104,6 +104,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check
        torlek ask guide [--cwd DIR] < GUIDE | --wait ID
        torlek ask service NAME --reason TEXT
+       torlek ask service containers --port PORT --reason TEXT
        torlek approval list [--all [--since 2h|RFC3339]] | show ID | decline ID | input ID [--shown] < LINE
        torlek approval stop ID | purge-output ID
        torlek approval approve ID --revision REVISION --digest DIGEST

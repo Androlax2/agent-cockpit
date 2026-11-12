@@ -18,9 +18,9 @@ use cockpit_protocol::{
     ProtocolError, Reply, Unblock, UnblockedBy,
 };
 use cockpit_sandbox::{
-    EgressDecisions, EgressRequests, Forward, NetworkError, NetworkGrant, NetworkRefusal,
-    NetworkRequest, NetworkRequestState, NetworkTarget, OwnerClient, OwnerDecision, Sandbox,
-    ServiceAsk, Subject,
+    CONTAINERS_SERVICE, EgressDecisions, EgressRequests, EngineRelay, Forward, NetworkError,
+    NetworkGrant, NetworkRefusal, NetworkRequest, NetworkRequestState, NetworkTarget, OwnerClient,
+    OwnerDecision, Sandbox, ServiceAsk, Subject,
 };
 use cockpit_sessions::Sessions;
 use cockpit_turso::Database;
@@ -194,10 +194,12 @@ pub(crate) fn route_ask(
     database: Arc<Database>,
     sessions: Arc<Sessions>,
     decided: Arc<Notify>,
+    containers: crate::containers::Host,
 ) -> Route {
     let Command::AskService {
         launch_token,
         service,
+        port,
         reason,
     } = command
     else {
@@ -209,28 +211,38 @@ pub(crate) fn route_ask(
         let write = database.write().await?;
         let session = sender.identify(&write, launch_token.clone()).await?;
         cockpit_approvals::may_ask(&write, &session).await?;
+        let session_project = asking_project(&write, session.as_str()).await?;
         write.commit().await?;
-        let session_id = cockpit_sessions::SessionId::parse(session.as_str())
-            .map_err(|error| internal(&error))?;
-        let declared = sessions
-            .declared_services(&session_id)
-            .await
-            .map_err(|error| Failed(crate::sessions::protocol_error(&error)))?;
-        let forward = declared_service(&declared, &service)?;
+        let forward = if service == CONTAINERS_SERVICE {
+            let port = port.ok_or_else(needs_port)?;
+            // Outside a transaction: the engine may take its whole deadline to answer.
+            crate::containers::container_port(&database, &containers, &session_project, port)
+                .await?
+        } else {
+            if port.is_some() {
+                return Err(port_for_containers_only(&service));
+            }
+            let session_id = cockpit_sessions::SessionId::parse(session.as_str())
+                .map_err(|error| internal(&error))?;
+            let declared = sessions
+                .declared_services(&session_id)
+                .await
+                .map_err(|error| Failed(crate::sessions::protocol_error(&error)))?;
+            declared_service(&declared, &service)?.clone()
+        };
         // Again in the transaction that files: a grant revoked meanwhile asks nothing.
         let write = database.write().await?;
         let session = sender.identify(&write, launch_token).await?;
         cockpit_approvals::may_ask(&write, &session).await?;
-        let project = live_sessions(&write)
-            .await
-            .map_err(|reason| internal(&reason))?
-            .remove(session.as_str())
-            .ok_or_else(|| internal(&"the asking session holds no checkout"))?;
+        let project = asking_project(&write, session.as_str()).await?;
+        if project != session_project {
+            return Err(internal(&"the asking session moved to another project"));
+        }
         let subject = Subject::Session {
             session: session.as_str().to_owned(),
         };
         let asked =
-            cockpit_sandbox::ask_service(&write, &subject, &project, forward, &reason, now())
+            cockpit_sandbox::ask_service(&write, &subject, &project, &forward, &reason, now())
                 .await?;
         write.commit().await?;
         if let ServiceAsk::Filed(filed) = &asked {
@@ -248,6 +260,43 @@ pub(crate) fn route_ask(
         class: WorkClass::Bulk,
         job: work,
     }
+}
+
+/// The project of the asking session's checkout.
+async fn asking_project(connection: &Connection, session: &str) -> Result<String, Failed> {
+    live_sessions(connection)
+        .await
+        .map_err(|reason| internal(&reason))?
+        .remove(session)
+        .ok_or_else(|| internal(&"the asking session holds no checkout"))
+}
+
+fn needs_port() -> Failed {
+    Failed(ProtocolError {
+        code: ErrorCode::InvalidArgument,
+        message: format!("the {CONTAINERS_SERVICE} service needs the port to open"),
+        unblock: Some(Unblock {
+            action: format!(
+                "ask again with `torlek ask service {CONTAINERS_SERVICE} --port PORT --reason TEXT`, \
+                 PORT the one the container publishes"
+            ),
+            by: UnblockedBy::Agent,
+        }),
+    })
+}
+
+fn port_for_containers_only(service: &str) -> Failed {
+    Failed(ProtocolError {
+        code: ErrorCode::InvalidArgument,
+        message: format!(
+            "--port names a container port; the declared service {service} opens where the \
+             project declares it"
+        ),
+        unblock: Some(Unblock {
+            action: format!("ask again without --port, or for `{CONTAINERS_SERVICE} --port PORT`"),
+            by: UnblockedBy::Agent,
+        }),
+    })
 }
 
 fn ask_reply(asked: &ServiceAsk) -> Reply {
@@ -316,14 +365,19 @@ fn validate_reason(reason: &str) -> Result<(), Failed> {
 /// each [`RESYNC_PASSES`] passes so that a launch that
 /// staged decisions read before one was taken gets it too. Until the daemon stops; one
 /// pass's failure is logged and the next pass tries again.
-pub(crate) async fn keep_forever(database: Arc<Database>, sandbox: Sandbox, decided: Arc<Notify>) {
+pub(crate) async fn keep_forever(
+    database: Arc<Database>,
+    sandbox: Sandbox,
+    decided: Arc<Notify>,
+    containers: crate::containers::Host,
+) {
     let mut seen = HashMap::new();
     // At the start: a decision committed just before a crash may not have reached its file.
     let mut is_decided = true;
     let mut passes: u32 = 0;
     loop {
         if is_decided || passes.is_multiple_of(RESYNC_PASSES) {
-            write_decisions(&database, &sandbox).await;
+            write_decisions(&database, &sandbox, &containers).await;
         }
         let is_filed = match collect(&database, &sandbox, &mut seen).await {
             Ok(is_filed) => is_filed,
@@ -462,8 +516,12 @@ async fn collect(
 
 /// Rewrites the decisions file of every live session that has a sandbox folder. A session
 /// whose decisions cannot be read or written is logged and the others still get theirs.
-async fn write_decisions(database: &Database, sandbox: &Sandbox) {
-    let all = match decisions_of_live_sessions(database).await {
+async fn write_decisions(
+    database: &Database,
+    sandbox: &Sandbox,
+    containers: &crate::containers::Host,
+) {
+    let all = match decisions_of_live_sessions(database, containers).await {
         Ok(all) => all,
         Err(error) => {
             tracing::warn!(%error, "the owner's network decisions were not read");
@@ -486,20 +544,45 @@ async fn write_decisions(database: &Database, sandbox: &Sandbox) {
 
 async fn decisions_of_live_sessions(
     database: &Database,
+    containers: &crate::containers::Host,
 ) -> Result<Vec<(String, EgressDecisions)>, String> {
     let read = database.read().await.map_err(|error| error.to_string())?;
     let live = live_sessions(&read).await?;
     let mut all = Vec::with_capacity(live.len());
+    let passwd = tokio::sync::OnceCell::new();
+    // A project's sessions share its engine: looked up once a pass.
+    let mut relays: HashMap<String, Result<Option<EngineRelay>, String>> = HashMap::new();
     for (session, project) in live {
         let subject = Subject::Session {
             session: session.clone(),
         };
-        match cockpit_sandbox::egress_decisions(&read, &project, &subject).await {
-            Ok(decisions) => all.push((session, decisions)),
+        let mut decisions = match cockpit_sandbox::egress_decisions(&read, &project, &subject).await
+        {
+            Ok(decisions) => decisions,
             Err(error) => {
                 tracing::warn!(session, %error, "the owner's network decisions were not read");
+                continue;
+            }
+        };
+        if decisions.services.live_forwards().next().is_some() {
+            // Without it the launcher refuses each container port, naming the engine.
+            if !relays.contains_key(&project) {
+                let found = match passwd.get_or_try_init(crate::containers::read_passwd).await {
+                    Ok(accounts) => {
+                        crate::containers::engine_relay(&read, containers, accounts, &project).await
+                    }
+                    Err(error) => Err(error),
+                };
+                relays.insert(project.clone(), found);
+            }
+            match &relays[&project] {
+                Ok(engine) => decisions.services.engine.clone_from(engine),
+                Err(error) => {
+                    tracing::warn!(session, %error, "the project's engine was not found");
+                }
             }
         }
+        all.push((session, decisions));
     }
     Ok(all)
 }

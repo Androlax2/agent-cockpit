@@ -431,6 +431,7 @@ impl Handler for Routes {
                     Arc::clone(&self.database),
                     Arc::clone(&self.sessions),
                     Arc::clone(&self.network_decided),
+                    self.readiness.containers.clone(),
                 ),
                 Peer::Owner => Route::Answer(wrong_socket(
                     "asking the owner is an agent's request; the owner has no session",

@@ -83,6 +83,12 @@ pub(super) fn services(layers: &[Layer]) -> Result<Vec<Sourced<Service>>, Config
                     declared.name
                 )));
             }
+            if declared.name == ENGINE_PORTS_SERVICE {
+                return Err(invalid(format!(
+                    "has the name {ENGINE_PORTS_SERVICE:?}, which the project engine's ports \
+                     go by; name the service otherwise"
+                )));
+            }
             if services
                 .iter()
                 .any(|known| known.value.name == declared.name)
@@ -126,6 +132,10 @@ pub(super) fn services(layers: &[Layer]) -> Result<Vec<Sourced<Service>>, Config
     }
     Ok(services)
 }
+
+/// `cockpit_sandbox::CONTAINERS_SERVICE`: the ports a project engine publishes are asked for
+/// under it (#390), so no declared service takes it.
+const ENGINE_PORTS_SERVICE: &str = "containers";
 
 /// The launch spec's service name (`cockpit_sandbox::is_service_name`): it holds no space,
 /// so the record a grant is bound to reads one way only.

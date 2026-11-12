@@ -71,15 +71,24 @@ pub(crate) fn guide(arguments: &[OsString]) -> Result<ExitCode, String> {
 
 /// `cockpit ask service NAME --reason TEXT`: asks ahead for a service the project declares,
 /// without waiting: the owner's decision reaches the session's launcher, and the agent
-/// connects once it allows the service.
+/// connects once it allows the service. `containers --port PORT` asks for a port the
+/// project's engine publishes (#390).
 pub(crate) fn service(arguments: &[OsString]) -> Result<ExitCode, String> {
     let words = utf8(arguments)?;
-    let (service, reason) = parse_ask_service(&words)?;
-    Ok(Agent::connect().map_or_else(|code| code, |agent| agent.ask_service(service, reason)))
+    let asked = parse_ask_service(&words)?;
+    Ok(Agent::connect().map_or_else(|code| code, |agent| agent.ask_service(asked)))
 }
 
-fn parse_ask_service(words: &[&str]) -> Result<(String, String), String> {
+/// What `cockpit ask service` asks for.
+struct ServiceAsk {
+    service: String,
+    port: Option<u16>,
+    reason: String,
+}
+
+fn parse_ask_service(words: &[&str]) -> Result<ServiceAsk, String> {
     let mut service = None;
+    let mut port = None;
     let mut reason = None;
     let mut words = words.iter();
     while let Some(word) = words.next() {
@@ -87,6 +96,16 @@ fn parse_ask_service(words: &[&str]) -> Result<(String, String), String> {
             let value = words.next().ok_or("--reason needs a value")?;
             if reason.replace((*value).to_owned()).is_some() {
                 return Err("--reason given twice".to_owned());
+            }
+        } else if *word == "--port" {
+            let value = words.next().ok_or("--port needs a value")?;
+            let parsed = value
+                .parse::<u16>()
+                .ok()
+                .filter(|parsed| *parsed > 0)
+                .ok_or_else(|| format!("--port {value}: not a port from 1 to 65535"))?;
+            if port.replace(parsed).is_some() {
+                return Err("--port given twice".to_owned());
             }
         } else if word.starts_with('-') {
             return Err(format!("unknown ask service option {word}"));
@@ -98,7 +117,11 @@ fn parse_ask_service(words: &[&str]) -> Result<(String, String), String> {
     }
     let service = service.ok_or("name the declared service to ask for")?;
     let reason = reason.ok_or("--reason is required: what the service is for and why")?;
-    Ok((service, reason))
+    Ok(ServiceAsk {
+        service,
+        port,
+        reason,
+    })
 }
 
 pub(crate) fn utf8(arguments: &[OsString]) -> Result<Vec<&str>, String> {
@@ -288,11 +311,12 @@ impl Agent {
         }
     }
 
-    fn ask_service(&self, service: String, reason: String) -> ExitCode {
+    fn ask_service(&self, asked: ServiceAsk) -> ExitCode {
         let asked = self.request(Command::AskService {
             launch_token: crate::agent::launch_token(),
-            service,
-            reason,
+            service: asked.service,
+            port: asked.port,
+            reason: asked.reason,
         });
         match asked {
             Ok(Reply::NetworkRequest { request }) => service_answer(&request),

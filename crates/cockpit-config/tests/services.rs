@@ -100,6 +100,10 @@ fn each_malformed_service_is_refused_naming_why() {
         (entry("FigCraft", port, port), "has the name \"FigCraft\""),
         (entry("a b", port, port), "has the name \"a b\""),
         (
+            entry("containers", port, port),
+            "has the name \"containers\", which the project engine's ports go by",
+        ),
+        (
             entry("a", port, port) + &entry("a", "127.0.0.1:2002", port),
             "repeats the name \"a\"",
         ),

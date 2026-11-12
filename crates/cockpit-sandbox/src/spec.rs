@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::credentials::{CredentialScheme, Interception};
 use crate::egress::{Allowlist, EgressDecisions, TLS_PORT, Target, normalized_name};
 use crate::forwards::{
-    Endpoint, FIRST_UNPRIVILEGED_PORT, Forward, MAX_FORWARDS, is_service_name, proxy_port,
+    CONTAINERS_SERVICE, Endpoint, FIRST_UNPRIVILEGED_PORT, Forward, MAX_FORWARDS, is_service_name,
+    proxy_port,
 };
 
 /// Bumped when a field changes meaning; the launcher refuses any other version, so a launcher
@@ -298,6 +299,12 @@ impl LaunchSpec {
                 return Err(InvalidSpec(format!(
                     "service name {service:?} is not a lower-case letter, then letters, digits \
                      and `-`"
+                )));
+            }
+            if service == CONTAINERS_SERVICE {
+                return Err(InvalidSpec(format!(
+                    "service {service} is the project engine's ports, which only the owner's \
+                     decisions open"
                 )));
             }
             let earlier = &self.forwards[..index];

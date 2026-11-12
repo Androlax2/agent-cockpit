@@ -145,6 +145,7 @@ fn ask_service_names_the_service_and_the_reason() {
     let ask = Command::AskService {
         launch_token: None,
         service: "figcraft".to_owned(),
+        port: None,
         reason: "read the design file".to_owned(),
     };
 

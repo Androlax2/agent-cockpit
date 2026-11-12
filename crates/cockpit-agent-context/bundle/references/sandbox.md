@@ -18,6 +18,10 @@ Torlek may run you inside a sandbox the owner configured. Its limits are deliber
   running it again reads the decision and files nothing new. Tell the owner why, then connect
   again after they allow it. A service declared after your session launched is served only
   from its next launch.
+- **Container ports.** A port a container of the project's own engine publishes opens at the
+  same `127.0.0.1:PORT` inside the sandbox once the owner allows it: ask with
+  `torlek ask service containers --port PORT --reason TEXT`, which answers as above. It is
+  refused, naming the owner's step, until the owner set up and recorded that engine.
 - **Host commands.** Anything that must run outside the sandbox (installs, system services,
   the owner's own programs) goes through `torlek ask run`.
 - **Docker.** Use only the engine your environment provides (`DOCKER_HOST` when set), never

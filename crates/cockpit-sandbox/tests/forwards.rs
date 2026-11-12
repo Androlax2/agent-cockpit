@@ -89,6 +89,11 @@ fn each_malformed_forward_is_refused_naming_why() {
             "service one is forwarded twice",
         ),
         (
+            vec![forward("containers", port(2001), port(2))],
+            "service containers is the project engine's ports, which only the owner's \
+             decisions open",
+        ),
+        (
             vec![
                 forward("one", port(2001), port(2)),
                 forward("two", port(2001), port(4)),
@@ -239,8 +244,8 @@ fn engine(port: u16) -> Endpoint {
 /// #390: an engine's port is opened live from the owner's decisions, never declared.
 #[test]
 fn a_declared_forward_to_or_on_an_engines_port_is_refused() {
-    let targeting = spec(vec![forward("containers", port(8080), engine(8080))]);
-    let listening = spec(vec![forward("containers", engine(8080), port(8080))]);
+    let targeting = spec(vec![forward("web", port(8080), engine(8080))]);
+    let listening = spec(vec![forward("web", engine(8080), port(8080))]);
 
     assert!(
         refusal(&targeting).contains("targets an engine's port"),
@@ -309,4 +314,29 @@ fn a_live_forward_under_another_record_is_not_opened() {
     };
 
     assert_eq!(decisions.live_forwards().count(), 0);
+}
+
+/// #390: a grant keeps the record alone; the container port it names is read back from it.
+#[test]
+fn a_container_ports_record_names_its_forward() {
+    let forward = Forward::container_port("torlek-e3", 8080);
+
+    assert_eq!(Forward::container_port_of(&forward.record()), Some(forward));
+}
+
+/// A record of another shape names no container port, nor one that may not open live.
+#[test]
+fn only_a_container_ports_record_names_one() {
+    for record in [
+        "service figcraft listen 127.0.0.1:3845 target 127.0.0.1:3845",
+        "service containers listen 127.0.0.1:8080 target 127.0.0.1:8080",
+        "service containers listen 127.0.0.1:8080 target engine:torlek-e3:9090",
+        "service containers listen 127.0.0.1:80 target engine:torlek-e3:80",
+        "service containers listen 127.0.0.1:3128 target engine:torlek-e3:3128",
+        "service containers listen 127.0.0.1:8080 target engine:Torlek:8080",
+        "service containers listen 127.0.0.1:08080 target engine:torlek-e3:8080",
+        "service containers listen 127.0.0.1:8080 target engine:torlek-e3:8080 extra",
+    ] {
+        assert_eq!(Forward::container_port_of(record), None, "{record}");
+    }
 }

@@ -1030,6 +1030,7 @@ async fn ask_service_files_the_request_with_the_token_and_says_who_allows_it() {
         [Command::AskService {
             launch_token: Some("the-token".to_owned()),
             service: "figcraft".to_owned(),
+            port: None,
             reason: "read the design".to_owned(),
         }]
     );
@@ -1086,6 +1087,71 @@ async fn an_ask_for_a_service_without_its_reason_is_a_usage_error() {
         "{}",
         text(&output.stderr)
     );
+}
+
+/// #390: a container port is asked for by its number.
+#[tokio::test]
+async fn ask_service_containers_sends_the_port() {
+    let home = Home::new();
+    let daemon = scripted_conversation(
+        &home.agent_socket(),
+        vec![service_request(NetworkRequestStateView::Asking)],
+    );
+
+    let output = home
+        .cockpit(
+            &[
+                "ask",
+                "service",
+                "containers",
+                "--port",
+                "8080",
+                "--reason",
+                "open the web app",
+            ],
+            "",
+        )
+        .await;
+
+    assert_eq!(output.status.code(), Some(124), "{}", text(&output.stderr));
+    assert_eq!(
+        daemon.await.unwrap(),
+        [Command::AskService {
+            launch_token: Some("the-token".to_owned()),
+            service: "containers".to_owned(),
+            port: Some(8080),
+            reason: "open the web app".to_owned(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn a_port_that_is_not_one_is_a_usage_error() {
+    let home = Home::new();
+
+    for port in ["0", "65536", "http", "-1"] {
+        let output = home
+            .cockpit(
+                &[
+                    "ask",
+                    "service",
+                    "containers",
+                    "--port",
+                    port,
+                    "--reason",
+                    "r",
+                ],
+                "",
+            )
+            .await;
+
+        assert_eq!(output.status.code(), Some(2), "{port}");
+        assert!(
+            text(&output.stderr).contains(&format!("--port {port}: not a port from 1 to 65535")),
+            "{port}: {}",
+            text(&output.stderr)
+        );
+    }
 }
 
 #[tokio::test]
