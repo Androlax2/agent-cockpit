@@ -607,6 +607,26 @@ async fn allow_always_grants_the_projects_sessions_that_one_service_record() {
     assert_eq!(store.file_service("s2", "app", &asked).await, None);
 }
 
+/// #390: a container port the owner allowed, always or for the session, opens live: its
+/// launcher reads the forward back from the record.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_allowed_container_port_opens_live() {
+    for is_always in [true, false] {
+        let store = store().await;
+        let forward = Forward::container_port("torlek-e3", 8080);
+        let request = store
+            .file_service("s1", "app", &AskedService::of(&forward))
+            .await
+            .unwrap();
+
+        store.allow(request, is_always, DECIDED_AT).await.unwrap();
+
+        let services = store.decisions("s1", "app").await.services;
+        let live: Vec<&Forward> = services.live_forwards().collect();
+        assert_eq!(live, [&forward], "always: {is_always}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_changed_target_is_another_record_the_grant_does_not_cover() {
     let store = store().await;

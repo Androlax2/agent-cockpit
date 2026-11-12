@@ -15,6 +15,7 @@ use cockpit_protocol::{
     Command, DecidedThroughView, ErrorCode, ProtocolError, Reply, Unblock, UnblockedBy,
 };
 use cockpit_readiness::{EngineRemedy, ProjectEngine};
+use cockpit_sandbox::{EngineRelay, Forward};
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
 
@@ -167,6 +168,77 @@ pub(crate) async fn project_engine(
     })
 }
 
+/// The forward for `port` of `project`'s engine (#390), once that engine answers as the one
+/// the owner recorded: an agent asks for a port of a verified engine only.
+pub(crate) async fn container_port(
+    database: &Database,
+    host: &Host,
+    project: &str,
+    port: u16,
+) -> Result<Forward, Failed> {
+    let (found, recorded) = {
+        let read = database.read().await?;
+        let found = registered(&read, project).await?;
+        let recorded = cockpit_containers::recorded_engine(&read, project).await?;
+        (found, recorded)
+    };
+    let passwd = read_passwd().await.map_err(|reason| internal(&reason))?;
+    let user = engine_user(host, &found)?;
+    let state = examine(host, &user, &passwd, recorded.as_ref()).await;
+    if !matches!(state, EngineState::Verified(_)) {
+        return Err(not_verified(&state, &user, &found, host));
+    }
+    let forward = Forward::container_port(user.name(), port);
+    if let Some(problem) = forward.live_problem() {
+        return Err(Failed(ProtocolError {
+            code: ErrorCode::InvalidArgument,
+            message: format!("port {port} cannot open in the sandbox: {problem}"),
+            unblock: Some(Unblock {
+                action: "publish the container on a port from 1024 up, not the session \
+                         proxy's, and ask for that one"
+                    .to_owned(),
+                by: UnblockedBy::Agent,
+            }),
+        }));
+    }
+    Ok(forward)
+}
+
+/// The project user's engine, as the decisions name it to the launcher (#390): the user the
+/// owner recorded, its uid and its relay's socket. None when the owner recorded none.
+pub(crate) async fn engine_relay(
+    connection: &Connection,
+    qualified_profile: &str,
+    passwd: &str,
+    project: &str,
+) -> Result<Option<EngineRelay>, String> {
+    let found = cockpit_projects::project_named(connection, project)
+        .await
+        .map_err(|error| error.to_string())?;
+    let user = EngineUser::for_project(qualified_profile, found.id.0)?;
+    let recorded = cockpit_containers::recorded_engine(connection, project)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(relay_of(&user, recorded.as_ref(), passwd))
+}
+
+/// `user`'s relay, when the owner recorded that user's engine and `passwd` holds its account.
+fn relay_of(
+    user: &EngineUser,
+    recorded: Option<&RecordedEngine>,
+    passwd: &str,
+) -> Option<EngineRelay> {
+    if recorded?.user != user.name() {
+        return None;
+    }
+    let account = cockpit_containers::account_named(passwd, user.name())?;
+    Some(EngineRelay {
+        user: user.name().to_owned(),
+        uid: account.uid,
+        socket: user.relay_socket(),
+    })
+}
+
 /// What answers on `user`'s socket, checked against `recorded`.
 async fn examine(
     host: &Host,
@@ -223,7 +295,7 @@ fn write_setup(
     cockpit_containers::write_setup_script(&host.scripts_dir, user, &script)
 }
 
-async fn read_passwd() -> Result<String, String> {
+pub(crate) async fn read_passwd() -> Result<String, String> {
     tokio::fs::read_to_string(PASSWD_FILE)
         .await
         .map_err(|error| format!("cannot read {PASSWD_FILE}: {error}"))
@@ -284,10 +356,93 @@ fn not_recordable(
     })
 }
 
+/// Why `project`'s engine serves no container port: it is not the one the owner recorded,
+/// answering now. The owner's step fixes it; the agent can only ask again after.
+fn not_verified(state: &EngineState, user: &EngineUser, project: &Project, host: &Host) -> Failed {
+    let doctor = format!(
+        "the owner runs `{} doctor --project {}` and the setup script it writes",
+        host.qualified_profile,
+        project.root.display()
+    );
+    let record = format!("the owner runs `{}`", record_command(host, project));
+    let (problem, action) = match state {
+        EngineState::NotSetUp { reason } => (reason.clone(), doctor),
+        EngineState::Unrecorded(_) => ("the owner has not recorded it".to_owned(), record),
+        EngineState::Refused(refusal) => (
+            refusal.to_string(),
+            match refusal.remedy() {
+                Remedy::Start => format!("the owner runs `sudo systemctl start {}`", user.unit()),
+                Remedy::Record => record,
+                Remedy::Setup => doctor,
+            },
+        ),
+        EngineState::Verified(_) => unreachable!("a verified engine serves container ports"),
+    };
+    Failed(ProtocolError {
+        code: ErrorCode::Refused,
+        message: format!(
+            "project {}'s engine {user} is not verified, so no container port opens: {problem}",
+            project.name
+        ),
+        unblock: Some(Unblock {
+            action,
+            by: UnblockedBy::Owner,
+        }),
+    })
+}
+
 fn through_name(through: DecidedThroughView) -> String {
     match through {
         DecidedThroughView::Tui => "tui",
         DecidedThroughView::Cli => "cli",
     }
     .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PASSWD: &str = "root:x:0:0::/root:/bin/sh\n\
+                          torlek-e3:x:991:991::/var/lib/torlek-e3:/usr/bin/nologin\n";
+
+    fn recorded(user: &str) -> RecordedEngine {
+        RecordedEngine {
+            project: "app".to_owned(),
+            user: user.to_owned(),
+            engine_id: "engine-1".to_owned(),
+            recorded_at: 0,
+            recorded_through: None,
+        }
+    }
+
+    #[test]
+    fn a_recorded_engine_names_its_users_uid_and_relay() {
+        let user = EngineUser::for_project("torlek", 3).unwrap();
+
+        let relay = relay_of(&user, Some(&recorded("torlek-e3")), PASSWD);
+
+        assert_eq!(
+            relay,
+            Some(EngineRelay {
+                user: "torlek-e3".to_owned(),
+                uid: 991,
+                socket: "/run/torlek-e3/relay.sock".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn no_relay_without_the_projects_recorded_engine_and_its_account() {
+        let user = EngineUser::for_project("torlek", 3).unwrap();
+        let without_account = "root:x:0:0::/root:/bin/sh\n";
+
+        for (case, engine, passwd) in [
+            ("nothing recorded", None, PASSWD),
+            ("another user recorded", Some(recorded("torlek-e4")), PASSWD),
+            ("no account", Some(recorded("torlek-e3")), without_account),
+        ] {
+            assert_eq!(relay_of(&user, engine.as_ref(), passwd), None, "{case}");
+        }
+    }
 }

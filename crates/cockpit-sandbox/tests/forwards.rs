@@ -310,3 +310,28 @@ fn a_live_forward_under_another_record_is_not_opened() {
 
     assert_eq!(decisions.live_forwards().count(), 0);
 }
+
+/// #390: a grant keeps the record alone; the container port it names is read back from it.
+#[test]
+fn a_container_ports_record_names_its_forward() {
+    let forward = Forward::container_port("torlek-e3", 8080);
+
+    assert_eq!(Forward::container_port_of(&forward.record()), Some(forward));
+}
+
+/// A record of another shape names no container port, nor one that may not open live.
+#[test]
+fn only_a_container_ports_record_names_one() {
+    for record in [
+        "service figcraft listen 127.0.0.1:3845 target 127.0.0.1:3845",
+        "service containers listen 127.0.0.1:8080 target 127.0.0.1:8080",
+        "service containers listen 127.0.0.1:8080 target engine:torlek-e3:9090",
+        "service containers listen 127.0.0.1:80 target engine:torlek-e3:80",
+        "service containers listen 127.0.0.1:3128 target engine:torlek-e3:3128",
+        "service containers listen 127.0.0.1:8080 target engine:Torlek:8080",
+        "service containers listen 127.0.0.1:08080 target engine:torlek-e3:8080",
+        "service containers listen 127.0.0.1:8080 target engine:torlek-e3:8080 extra",
+    ] {
+        assert_eq!(Forward::container_port_of(record), None, "{record}");
+    }
+}

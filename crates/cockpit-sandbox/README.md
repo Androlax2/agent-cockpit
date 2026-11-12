@@ -35,8 +35,9 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   or grant.
 - Live container ports (#390, `forwards.rs`): `Endpoint::Engine` names an engine's port, a
   target only `Forward::container_port` builds; a spec forward naming one is refused.
-  `AllowedService::live` carries the forward the launcher opens while the session runs, and
-  `ServiceDecisions::engine` (`EngineRelay`) the verified engine it reaches.
+  `AllowedService::live` carries the forward the launcher opens while the session runs, read
+  back from an allowed record by `Forward::container_port_of`, and `ServiceDecisions::engine`
+  (`EngineRelay`) the engine it reaches, which the daemon names.
 - Toolchains and caches (#859): the caller resolves `ToolNeeds` from the toolchain table of
   `cockpit-provider-api`. The install roots `PATH` resolves the checkout's ecosystems in are
   bound read-only; every cache variable points into `caches/` of the session's temp folder;

@@ -3656,7 +3656,8 @@ async fn an_edited_target_is_asked_about_again_at_the_next_launch() {
     assert!(listed.contains(&asking), "{listed}");
 }
 
-/// What the sandboxed agent's `torlek ask service SERVICE` printed, ending `exit=<code>`.
+/// What the sandboxed agent's `torlek ask service SERVICE` printed, ending `exit=<code>`;
+/// `service` may carry options after the name.
 async fn ask_service_in_agent(home: &Home, root: &Path, service: &str) -> String {
     let torlek = candidate::program("torlek");
     run_in_agent(
@@ -3732,6 +3733,57 @@ async fn an_ask_for_an_undeclared_service_is_refused_naming_the_declared_ones() 
     assert_eq!(owner_network(&home, &["list"]).await, "");
 }
 
+/// #390: a container port is asked for only of the project's verified engine; until the owner
+/// set it up and recorded it, the refusal names the owner's step and files nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_container_port_of_an_unverified_engine_is_refused_naming_the_owners_step() {
+    let home = Home::new();
+    let target = host_service().await;
+    let agent = agent_declaring_echo(&home, target).await;
+
+    let refused = ask_service_in_agent(&home, &agent.root, "containers --port 8080").await;
+
+    assert!(
+        refused.contains("is not verified, so no container port opens")
+            && refused.contains("doctor --project")
+            && refused.ends_with("exit=1\n"),
+        "{refused}"
+    );
+    assert_eq!(owner_network(&home, &["list"]).await, "");
+}
+
+/// #390: the containers service opens a port the agent names; without one nothing is asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_container_ask_without_its_port_is_refused() {
+    let home = Home::new();
+    let target = host_service().await;
+    let agent = agent_declaring_echo(&home, target).await;
+
+    let refused = ask_service_in_agent(&home, &agent.root, "containers").await;
+
+    assert!(
+        refused.contains("the containers service needs the port to open"),
+        "{refused}"
+    );
+    assert_eq!(owner_network(&home, &["list"]).await, "");
+}
+
+/// #390: a declared service opens where the project declares it, never at a port named.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_port_for_a_declared_service_is_refused() {
+    let home = Home::new();
+    let target = host_service().await;
+    let agent = agent_declaring_echo(&home, target).await;
+
+    let refused = ask_service_in_agent(&home, &agent.root, "echo --port 8080").await;
+
+    assert!(
+        refused.contains("--port names a container port; the declared service echo"),
+        "{refused}"
+    );
+    assert_eq!(owner_network(&home, &["list"]).await, "");
+}
+
 /// #880: asking is an agent's request. The owner's socket refuses `ask service` and files
 /// nothing.
 #[tokio::test(flavor = "multi_thread")]
@@ -3746,6 +3798,7 @@ async fn the_owner_socket_refuses_an_ask_for_a_service() {
             Command::AskService {
                 launch_token: None,
                 service: "echo".to_owned(),
+                port: None,
                 reason: "the owner tries".to_owned(),
             },
             GENEROUS,
