@@ -4810,26 +4810,10 @@ fn provider_needs(
         .map(|host| allow_entry(host.as_str(), adapter.clone()))
         .collect();
     if !egress.is_empty() {
-        for ecosystem in ecosystems {
-            let toolchain_refused = |reason: String| {
-                Error::Provider(ProviderError {
-                    reason: format!("the {ecosystem} toolchain {reason}"),
-                })
-            };
-            let toolchain = cockpit_provider_api::toolchains::TOOLCHAINS
-                .iter()
-                .find(|toolchain| toolchain.ecosystem == ecosystem)
-                .ok_or_else(|| toolchain_refused("is not in the toolchain table".to_owned()))?;
-            let source = cockpit_sandbox::AllowSource::Ecosystem {
-                ecosystem: ecosystem.clone(),
-            };
-            for host in toolchain.registry_hosts {
-                let host = cockpit_provider_api::Host::new(*host).map_err(|error| {
-                    toolchain_refused(format!("has an invalid registry host: {error}"))
-                })?;
-                egress.push(allow_entry(host.as_str(), source.clone()));
-            }
-        }
+        egress.extend(
+            registry_entries(ecosystems)
+                .map_err(|reason| Error::Provider(ProviderError { reason }))?,
+        );
     }
     let source = if declares_nothing {
         cockpit_sandbox::NeedsSource::Floor
@@ -4861,6 +4845,30 @@ fn provider_needs(
 
 /// A declared host, `name` or `name:port` as [`cockpit_provider_api::Host`] validated it,
 /// as the proxy's entry: port 443 when it names none.
+/// The registry hosts `ecosystems` fetch dependencies from (#859), each entry naming its
+/// ecosystem as its source: what a session's adapter hosts and a check run's proxy (#862)
+/// add. An ecosystem the toolchain table does not hold, or an invalid host in it, is refused
+/// with the reason rather than left out.
+pub fn registry_entries(ecosystems: &[String]) -> Result<Vec<cockpit_sandbox::AllowEntry>, String> {
+    let mut entries = Vec::new();
+    for ecosystem in ecosystems {
+        let toolchain = cockpit_provider_api::toolchains::TOOLCHAINS
+            .iter()
+            .find(|toolchain| toolchain.ecosystem == ecosystem)
+            .ok_or_else(|| format!("the {ecosystem} toolchain is not in the toolchain table"))?;
+        let source = cockpit_sandbox::AllowSource::Ecosystem {
+            ecosystem: ecosystem.clone(),
+        };
+        for host in toolchain.registry_hosts {
+            let host = cockpit_provider_api::Host::new(*host).map_err(|error| {
+                format!("the {ecosystem} toolchain has an invalid registry host: {error}")
+            })?;
+            entries.push(allow_entry(host.as_str(), source.clone()));
+        }
+    }
+    Ok(entries)
+}
+
 fn allow_entry(host: &str, source: cockpit_sandbox::AllowSource) -> cockpit_sandbox::AllowEntry {
     let (name, port) = match host.rsplit_once(':') {
         Some((name, port)) => (name, port.parse().unwrap_or(0)),
@@ -4877,8 +4885,9 @@ fn allow_entry(host: &str, source: cockpit_sandbox::AllowSource) -> cockpit_sand
 /// launch with `environment` (#859): the ecosystems the toolchain table detects at either
 /// folder, the owner's install roots the launch's `PATH` resolves their tools in, every
 /// cache variable of the table, so a tool of an ecosystem without a marker file still keeps
-/// its cache in the session's own folder, and the owner's Git identity for the checkout.
-fn tool_needs(
+/// its cache in the session's own folder, and the owner's Git identity for the checkout. A
+/// check run (#862) asks the same of its checkout, with `start_dir` the checkout.
+pub fn tool_needs(
     checkout: &Path,
     start_dir: &Path,
     environment: &[(OsString, OsString)],
@@ -5032,7 +5041,7 @@ fn owner_git_identity(
 /// Removes `path` and everything in it. A tool may leave read-only folders, as Go's module
 /// cache is unless `-modcacherw`, which the agent can unset (#859): when removal is denied,
 /// the folders inside are made writable by their owner and removal is tried again.
-fn remove_tree(path: &Path) -> std::io::Result<()> {
+pub fn remove_tree(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_dir_all(path) {
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
             make_folders_writable(path)?;

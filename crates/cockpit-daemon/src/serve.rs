@@ -31,7 +31,7 @@ const COST_SCAN_INTERVAL: Duration = Duration::from_secs(60);
 /// Variables of the daemon's own environment every agent starts with, where set, beside its
 /// XDG layout; the provider adds its own after them. The desktop session's
 /// ([`cockpit_protocol::DESKTOP_SESSION_VARIABLES`]) follow while the owner shares them.
-const AGENT_BASE_VARIABLES: &[&str] = &[
+pub(crate) const AGENT_BASE_VARIABLES: &[&str] = &[
     "HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LC_ALL", "LC_CTYPE",
 ];
 

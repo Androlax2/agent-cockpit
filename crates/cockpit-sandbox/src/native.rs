@@ -464,7 +464,7 @@ pub(crate) struct Launch {
     pub reaches_agent: bool,
     /// The credentials the session proxy adds (#832); a check binds none.
     pub credentials: Vec<BoundCredential>,
-    /// The owner's decisions when it launches (#674); a check's are none.
+    /// The owner's decisions when it launches (#674); a check's are its project's grants.
     pub decisions: EgressDecisions,
     /// The login account's sign-in a session uses (#59); a check binds none.
     pub login: Option<crate::SessionLogin>,

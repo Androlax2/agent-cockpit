@@ -299,7 +299,8 @@ pub struct Check {
     pub command: String,
     /// Relative to the checkout; `.` (the default) is its root.
     pub working_directory: String,
-    /// Where it runs; `native` by default.
+    /// Where it runs; `sandbox` by default (#862): under `agents.sandbox = "off"` a check of
+    /// any environment but `docker` runs on the host.
     pub environment: String,
     /// The files it covers, relative to the checkout: a change to one makes its result stale.
     pub artifacts: Vec<String>,
@@ -1187,7 +1188,7 @@ fn checks(layers: &[Layer]) -> Result<Vec<Sourced<Check>>, ConfigError> {
                     environment: check
                         .environment
                         .clone()
-                        .unwrap_or_else(|| "native".to_string()),
+                        .unwrap_or_else(|| "sandbox".to_string()),
                     artifacts: check.artifacts.clone(),
                 },
                 source,

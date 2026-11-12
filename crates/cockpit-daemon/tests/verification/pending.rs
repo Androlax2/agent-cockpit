@@ -200,6 +200,7 @@ async fn reservation_before_launch_survives_restore_and_needs_current_epoch_reco
         database.epoch(),
         execution.0,
         cockpit_verification::NewReceipt {
+            ran: None,
             project: "app".into(),
             run_id: run.clone(),
             check: cockpit_verification::CheckDefinition {

@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use cockpit_turso::Database;
 use cockpit_verification::{
-    CheckDefinition, Claim, Evidence, GateReport, NewClaim, NewReceipt, Outcome, Receipt, Source,
+    CheckDefinition, Claim, Evidence, GateReport, NewClaim, NewReceipt, Outcome, Ran, Receipt,
+    Source,
 };
 
 pub const NOW: i64 = 1_800_000_000;
@@ -96,6 +97,7 @@ impl Fixture {
             project: PROJECT.to_owned(),
             run_id: run_id.to_owned(),
             check: check.clone(),
+            ran: Some(sandboxed()),
             source: source.clone(),
             artifacts: cockpit_verification::fingerprint(&self.checkout(), artifacts).unwrap(),
             outcome,
@@ -118,6 +120,14 @@ pub fn check(name: &str) -> CheckDefinition {
         command: format!("make {name}"),
         working_directory: ".".to_owned(),
         environment: "native".to_owned(),
+    }
+}
+
+/// Where a fixture's receipts ran: a sandbox, as under `agents.sandbox = "required"`.
+pub fn sandboxed() -> Ran {
+    Ran {
+        environment: "sandbox".to_owned(),
+        isolation: "torlek-sandbox with bubblewrap 0.11.0 and Landlock ABI 6".to_owned(),
     }
 }
 

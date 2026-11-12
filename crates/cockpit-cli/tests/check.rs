@@ -224,17 +224,9 @@ fn pending_help_and_empty_owner_listing_do_not_invent_a_result() {
     );
 }
 
-#[tokio::test]
-async fn a_receipt_whose_full_output_was_retired_says_so_instead_of_naming_its_file() {
-    use cockpit_protocol::{CheckOutcomeView, CheckReceiptView, Outcome, Reply};
-    use std::os::unix::fs::DirBuilderExt;
-    let home = TestHome::new();
-    let socket = home.home().join("run/torlek-dev/daemon.sock");
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(socket.parent().unwrap())
-        .unwrap();
-    let receipt = CheckReceiptView {
+/// A passed receipt of check `test`, as a daemon answers it.
+fn scripted_receipt() -> cockpit_protocol::CheckReceiptView {
+    cockpit_protocol::CheckReceiptView {
         id: 1,
         project: "app".to_owned(),
         run: "execution-e-1".to_owned(),
@@ -242,18 +234,33 @@ async fn a_receipt_whose_full_output_was_retired_says_so_instead_of_naming_its_f
         command: "cargo test".to_owned(),
         working_directory: ".".to_owned(),
         environment: String::new(),
+        ran_environment: None,
+        ran_isolation: None,
         head: "abc".to_owned(),
         dirty: None,
         artifacts: Vec::new(),
-        outcome: CheckOutcomeView::Passed,
+        outcome: cockpit_protocol::CheckOutcomeView::Passed,
         exit_code: Some(0),
         output: "tail\n".to_owned(),
-        output_bytes: 9000,
+        output_bytes: 5,
         output_references: vec!["/state/executions/e/1/stdout".to_owned()],
-        output_retired: true,
+        output_retired: false,
         started_at: 1,
         finished_at: 2,
-    };
+    }
+}
+
+/// What `check run test --project app` prints against a daemon that starts the run and
+/// answers `receipt` for it.
+async fn printed_run(receipt: cockpit_protocol::CheckReceiptView) -> String {
+    use cockpit_protocol::{Outcome, Reply};
+    use std::os::unix::fs::DirBuilderExt;
+    let home = TestHome::new();
+    let socket = home.home().join("run/torlek-dev/daemon.sock");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(socket.parent().unwrap())
+        .unwrap();
     let daemon = scripted::scripted_conversation(
         &socket,
         vec![
@@ -272,11 +279,40 @@ async fn a_receipt_whose_full_output_was_retired_says_so_instead_of_naming_its_f
     .await
     .unwrap();
     daemon.await.unwrap();
+    scripted::text(&output.stdout)
+}
 
-    let stdout = scripted::text(&output.stdout);
+#[tokio::test]
+async fn a_receipt_whose_full_output_was_retired_says_so_instead_of_naming_its_file() {
+    let receipt = cockpit_protocol::CheckReceiptView {
+        output_bytes: 9000,
+        output_retired: true,
+        ..scripted_receipt()
+    };
+
+    let stdout = printed_run(receipt).await;
+
     assert!(
         stdout.contains("output: the last 5 of 9000 bytes; output retention removed the rest"),
         "{stdout}"
     );
     assert!(!stdout.contains("/state/executions"), "{stdout}");
+}
+
+#[tokio::test]
+async fn a_receipt_says_where_its_check_ran() {
+    let receipt = cockpit_protocol::CheckReceiptView {
+        ran_environment: Some("sandbox".to_owned()),
+        ran_isolation: Some("torlek-sandbox with bubblewrap 0.11.0 and Landlock ABI 6".to_owned()),
+        ..scripted_receipt()
+    };
+
+    let stdout = printed_run(receipt).await;
+
+    assert!(
+        stdout.contains(
+            "\nran in sandbox: torlek-sandbox with bubblewrap 0.11.0 and Landlock ABI 6\n"
+        ),
+        "{stdout}"
+    );
 }

@@ -77,6 +77,7 @@ impl Fixture {
             shell: PathBuf::from("/bin/sh"),
             command: command.to_owned(),
             checkout: self.path("checkout"),
+            start_dir: self.path("checkout"),
             execution_dir: self.path("execution"),
             temp_dir: self.path("execution/tmp"),
             environment: vec![
@@ -85,6 +86,8 @@ impl Fixture {
                 ("TMPDIR".into(), self.path("execution/tmp").into()),
             ],
             tools: ToolNeeds::none(),
+            egress: Vec::new(),
+            decisions: cockpit_sandbox::EgressDecisions::default(),
         };
         let prepared = self
             .sandbox()

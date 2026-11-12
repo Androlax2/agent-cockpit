@@ -34,3 +34,11 @@ Issue #313. Decided by the worker within reports 06, 09 and 11; nothing here nee
   run` waits on the one connection it started the run on, so the wait fails with it.
 - **Known gaps:** clean filters (#358), the artifact list outside the definition (#359), an
   agent's project read from its working directory (#360).
+
+## Revisited 2026-11-12 (#352)
+
+- **A check runs where `agents.sandbox` says, no longer only `native`** (Theo, #862 Q1 B):
+  through `torlek-sandbox` under `"required"`, on the host under `"off"`; `sandbox` is the
+  default environment, and a `native` check under `"required"` is recorded `unavailable`.
+  The sandboxed run gets no daemon variables beyond the agents' base ones and only its
+  registries plus the project's host grants (Q2 B). `docker` stays `unavailable` until #856.

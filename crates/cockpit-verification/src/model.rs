@@ -20,6 +20,15 @@ impl CheckDefinition {
     }
 }
 
+/// Where a run's command ran (#352), as the daemon launched it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ran {
+    /// The environment that ran: `native` or `sandbox`.
+    pub environment: String,
+    /// How it was isolated: the sandbox's backend and Landlock ABI, or why it ran without one.
+    pub isolation: String,
+}
+
 /// The exact source a check ran on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {
@@ -92,6 +101,9 @@ pub struct NewReceipt {
     /// The runner's identity for this execution: the same run delivered twice is one receipt.
     pub run_id: String,
     pub check: CheckDefinition,
+    /// Where the command ran, which may differ from the declared environment (#352). None
+    /// when nothing ran, and for receipts recorded before it was kept.
+    pub ran: Option<Ran>,
     pub source: Source,
     /// Fingerprinted with [`crate::fingerprint`] before the run started, so an edit during
     /// the run makes the receipt stale too.

@@ -260,6 +260,10 @@ fn receipt_report(receipt: &CheckReceiptView) -> ExitCode {
             ""
         }
     );
+    if let (Some(environment), Some(isolation)) = (&receipt.ran_environment, &receipt.ran_isolation)
+    {
+        outln!("ran in {environment}: {isolation}");
+    }
     if receipt.output_retired && receipt.output_bytes > receipt.output.len() as u64 {
         outln!(
             "output: the last {} of {} bytes; output retention removed the rest",

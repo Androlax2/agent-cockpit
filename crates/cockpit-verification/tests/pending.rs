@@ -111,6 +111,79 @@ async fn recovery_cannot_record_success_and_a_late_result_cannot_replace_unknown
     );
 }
 
+#[tokio::test]
+async fn a_sealed_result_keeps_where_its_intent_said_it_ran() {
+    let fixture = Fixture::new().await;
+    let new = intent(&fixture);
+    let write = fixture.database.write().await.unwrap();
+    let pending = reserve_result(&write, fixture.database.epoch(), 1, new.clone())
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    let mut result = new.clone();
+    result.finished_at = NOW;
+    result.outcome = Outcome::Passed;
+    result.exit_code = Some(0);
+
+    let write = fixture.database.write().await.unwrap();
+    let mut elsewhere = result.clone();
+    elsewhere.ran = Some(Ran {
+        environment: "native".to_owned(),
+        isolation: "no sandbox".to_owned(),
+    });
+    assert!(
+        seal_result(&write, &pending, elsewhere, 0, NOW, false)
+            .await
+            .is_err(),
+        "a result cannot say it ran somewhere its intent did not"
+    );
+    let mut passed_nowhere = result.clone();
+    passed_nowhere.ran = None;
+    assert!(
+        seal_result(&write, &pending, passed_nowhere, 0, NOW, false)
+            .await
+            .is_err(),
+        "a run that never ran cannot pass"
+    );
+    let recorded = seal_result(&write, &pending, result, 0, NOW, false)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(recorded.recorded.ran, Some(sandboxed()));
+    let read = fixture.database.read().await.unwrap();
+    let reread = pending_result(&read, PROJECT, &new.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reread.receipt.ran, Some(sandboxed()));
+}
+
+#[tokio::test]
+async fn a_run_whose_environment_never_started_is_sealed_unavailable_and_ran_nowhere() {
+    let fixture = Fixture::new().await;
+    let new = intent(&fixture);
+    let write = fixture.database.write().await.unwrap();
+    let pending = reserve_result(&write, fixture.database.epoch(), 1, new.clone())
+        .await
+        .unwrap();
+    let mut result = new;
+    result.finished_at = NOW;
+    result.outcome = Outcome::Unavailable;
+    result.ran = None;
+    result.output = "the sandbox could not start".into();
+
+    let recorded = seal_result(&write, &pending, result, 27, NOW, false)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(
+        (recorded.recorded.outcome, recorded.recorded.ran),
+        (Outcome::Unavailable, None)
+    );
+}
+
 fn intent_of(fixture: &Fixture, check_name: &str, execution: i64) -> NewReceipt {
     let mut receipt = fixture.receipt(
         &format!("execution-{}-{execution}", fixture.database.epoch()),
