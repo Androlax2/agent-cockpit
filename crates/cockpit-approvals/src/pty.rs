@@ -602,7 +602,9 @@ fn with_terminal_output(reason: String, live: &LiveRun) -> String {
 
 /// How the terminal may show what is typed, or `None` when it hides it as a password prompt
 /// does: echo off and lines read whole. A program reading keys one at a time (readline, most
-/// REPLs) may echo each one itself. Read on the master side, which on Linux reads the terminal
+/// REPLs) may echo each one itself; sudo's `pwfeedback` prompt reads keys so too, refused on
+/// purpose (#1372): its `*` per key cannot be told from an echo before the key is typed. Read
+/// on the master side, which on Linux reads the terminal
 /// side's settings. A program could change them between this read and the write that follows;
 /// a password prompt turns echo on only after it read its line.
 fn input_would_show(master: &File) -> Option<String> {
@@ -614,7 +616,11 @@ fn input_would_show(master: &File) -> Option<String> {
         return Some("has echo on".to_owned());
     }
     if !settings.local_modes.contains(LocalModes::ICANON) {
-        return Some("reads keys one at a time, which a program may echo itself".to_owned());
+        return Some(
+            "reads keys one at a time, as sudo's pwfeedback prompt does, and a program may echo \
+             each key itself"
+                .to_owned(),
+        );
     }
     None
 }

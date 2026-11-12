@@ -23,7 +23,7 @@ use crate::board::Board;
 use crate::pane::{Shown, Typing};
 use crate::render::{
     bug_reports_card, columns, guide_lines, network_lines, pane_keys, reveal_hint, run_lines,
-    scroll_to_show, status_line, truncated, typing_line, wrapped,
+    scroll_to_show, status_line, truncated, typed_input_lines, wrapped,
 };
 
 /// Typing stops after this long without a key: a phone left in a pocket reads only again.
@@ -288,9 +288,7 @@ fn document(app: &App, width: usize) -> Document {
     let head = app.pane.shown();
     if let Some(shown) = head {
         let mut card = card_lines(board, shown);
-        if let Some((typing, typed)) = app.pane.typing() {
-            card.push(typing_line(typing, typed, app.pane.is_input_revealed()));
-        }
+        card.extend(typed_input_lines(&app.pane));
         push_card(&mut lines, &card, width, bold);
     }
     let head_rows = lines.len();

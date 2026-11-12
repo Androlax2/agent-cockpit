@@ -543,7 +543,7 @@ fn draw_bug_form(form: &BugForm, frame: &mut Frame<'_>, area: Rect) {
 fn draw_pane(app: &App, frame: &mut Frame<'_>, area: Rect, now: Instant) {
     let pane = app.pane();
     let board = app.board();
-    let mut lines = match pane.shown() {
+    let lines = match pane.shown() {
         Some(Shown::Run { id, .. }) => board
             .runs
             .iter()
@@ -564,25 +564,58 @@ fn draw_pane(app: &App, frame: &mut Frame<'_>, area: Rect, now: Instant) {
             .unwrap_or_default(),
         None => Vec::new(),
     };
-    if let Some((typing, typed)) = pane.typing() {
-        lines.push(typing_line(typing, typed, pane.is_input_revealed()));
-    } else if pane.in_grace(now) {
-        lines.push("Read it first: keys work again in a moment.".to_owned());
-    } else {
-        lines.push(pane_keys(pane).to_owned());
-    }
+    let input = match pane.typing() {
+        Some(_) => typed_input_lines(pane),
+        None if pane.in_grace(now) => {
+            vec!["Read it first: keys work again in a moment.".to_owned()]
+        }
+        None => vec![pane_keys(pane).to_owned()],
+    };
     let title = if app.focus() == Focus::Pane {
         "Waiting on you *"
     } else {
         "Waiting on you (Tab)"
     };
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    // The input sits at the bottom, whole: a refusal under it is never cut off by a long
+    // request above (#1372).
+    let input_rows: Vec<Line<'_>> = input
+        .iter()
+        .flat_map(|line| wrapped(line, usize::from(inner.width), ""))
+        .map(Line::from)
+        .collect();
+    let input_height = u16::try_from(input_rows.len()).unwrap_or(u16::MAX);
+    let [details, input_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(input_height)]).areas(inner);
     frame.render_widget(
-        Paragraph::new(lines.join("\n"))
-            .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title(title)),
-        area,
+        Paragraph::new(lines.join("\n")).wrap(Wrap { trim: false }),
+        details,
     );
+    frame.render_widget(Paragraph::new(input_rows), input_area);
 }
+
+/// The line the owner types into the pane, with its prompt, and under it why the daemon did
+/// not type the last one into the command, if it refused it (#1372).
+pub(crate) fn typed_input_lines(pane: &Pane) -> Vec<String> {
+    let Some((typing, typed)) = pane.typing() else {
+        return Vec::new();
+    };
+    let mut lines = vec![typing_line(typing, typed, pane.is_input_revealed())];
+    if let Some(problem) = pane.input_refusal() {
+        lines.push(format!("Not sent: {problem}"));
+        lines.push(INPUT_REFUSED_NEXT.to_owned());
+    }
+    lines
+}
+
+/// What the owner can do instead of a refused line, safest first. A visible answer is only
+/// for a prompt that masks each key: one that echoes copies the line into the agent's output.
+const INPUT_REFUSED_NEXT: &str = "Your line is kept; Esc drops it. Safest: Esc, then x stops \
+    the command so its agent gets an answer, and you run it in your own terminal. For sudo, \
+    `Defaults !pwfeedback` in sudoers gives a prompt the pane can answer. Or, only for a prompt \
+    that shows a * per key, Tab then Enter sends it anyway: your line then shows here in clear.";
 
 /// What the owner types into the pane, with its prompt. A line for a command shows one `*`
 /// per character unless `is_input_revealed`: it may be a password (#1010).

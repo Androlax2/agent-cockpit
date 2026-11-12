@@ -11,8 +11,8 @@ use cockpit_protocol::{
 };
 use cockpit_tui::{App, Focus, INPUT_GRACE, Key, Shown};
 use common::{
-    answer, app_with, folded, guide, hidden, press, queue, run, screen_text, sent, session, shown,
-    typing, waiting_run,
+    answer, app_with, folded, guide, hidden, press, queue, run, screen, screen_text, sent, session,
+    shown, typing, waiting_run,
 };
 
 const SESSION: &str = "s00000000000a";
@@ -866,4 +866,144 @@ fn a_stop_asked_for_before_the_pane_lost_focus_is_asked_for_again() {
     let confirmed = app.key(Key::Char('y'), after_grace(ready));
 
     assert!(confirmed.send.is_empty(), "{:?}", confirmed.send);
+}
+
+/// The daemon's refusal of a line for a terminal that reads keys one at a time, as sudo's
+/// `pwfeedback` prompt does (#1372), as the TUI words a daemon refusal.
+const KEY_BY_KEY_REFUSAL: &str = "conflict: the command's terminal reads keys one at a time, \
+    as sudo's pwfeedback prompt does, and a program may echo each key itself: what is typed \
+    could show in the output the agent reads, so nothing was typed";
+
+/// The password typed and sent, and the daemon's refusal of it answered.
+fn refused_password(now: Instant) -> (App, Instant) {
+    let (mut app, ready) = typed_password(now);
+    let sent_line = sent(&press(&mut app, &[Key::Enter], ready));
+    app.answer(&sent_line[0], Err(KEY_BY_KEY_REFUSAL.to_owned()), ready);
+    (app, ready)
+}
+
+/// The screen at `width` columns read as one text: borders gone, each run of spaces one, so a
+/// wrapped line reads whole again.
+fn read_whole(app: &App, now: Instant, width: u16) -> String {
+    screen(app, now, width)
+        .concat()
+        .replace('│', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn a_refused_line_shows_why_it_was_not_sent_in_full_at_80_columns() {
+    let now = Instant::now();
+    let (app, ready) = refused_password(now);
+
+    let screen = read_whole(&app, ready, 80);
+
+    assert!(
+        screen.contains(&format!("Not sent: {KEY_BY_KEY_REFUSAL}")),
+        "{screen}"
+    );
+    assert!(
+        screen.contains(
+            "Your line is kept; Esc drops it. Safest: Esc, then x stops the command so its \
+             agent gets an answer, and you run it in your own terminal. For sudo, `Defaults \
+             !pwfeedback` in sudoers gives a prompt the pane can answer. Or, only for a prompt \
+             that shows a * per key, Tab then Enter sends it anyway: your line then shows here \
+             in clear."
+        ),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_refused_line_comes_back_masked_into_the_input() {
+    let now = Instant::now();
+    let (app, ready) = refused_password(now);
+
+    let screen = screen_text(&app, ready);
+
+    assert!(!screen.contains(PASSWORD), "{screen}");
+    assert!(
+        screen.contains("Line for the command: *******_"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn enter_after_a_refusal_sends_the_kept_line_again() {
+    let now = Instant::now();
+    let (mut app, ready) = refused_password(now);
+
+    let again = sent(&press(&mut app, &[Key::Enter], ready));
+
+    assert_eq!(
+        again,
+        [Command::ApprovalInput {
+            request: 5,
+            text: PASSWORD.to_owned(),
+            shown: false,
+        }]
+    );
+}
+
+#[test]
+fn esc_after_a_refusal_drops_the_line_and_why() {
+    let now = Instant::now();
+    let (mut app, ready) = refused_password(now);
+
+    press(&mut app, &[Key::Esc], ready);
+    let screen = screen_text(&app, ready);
+
+    assert!(!screen.contains("Not sent"), "{screen}");
+    assert!(screen.contains("i type a line"), "{screen}");
+}
+
+#[test]
+fn a_refusal_for_a_request_no_longer_shown_opens_no_input() {
+    let now = Instant::now();
+    let (mut app, ready) = app_at_sudo_prompt(now);
+
+    app.answer(
+        &Command::ApprovalInput {
+            request: 4,
+            text: PASSWORD.to_owned(),
+            shown: false,
+        },
+        Err(KEY_BY_KEY_REFUSAL.to_owned()),
+        ready,
+    );
+
+    assert_eq!(app.pane().typing(), None);
+}
+
+/// A lost connection or a passed deadline may have typed the line: it is not put back to be
+/// typed twice.
+#[test]
+fn a_line_whose_answer_was_lost_does_not_come_back_into_the_input() {
+    let now = Instant::now();
+    let (mut app, ready) = typed_password(now);
+    let sent_line = sent(&press(&mut app, &[Key::Enter], ready));
+
+    app.answer(
+        &sent_line[0],
+        Err("the deadline passed; the operation may or may not have taken effect".to_owned()),
+        ready,
+    );
+
+    assert_eq!(app.pane().typing(), None);
+}
+
+#[test]
+fn a_refusal_arriving_after_a_new_line_was_started_keeps_the_new_line() {
+    let now = Instant::now();
+    let (mut app, ready) = typed_password(now);
+    let sent_line = sent(&press(&mut app, &[Key::Enter], ready));
+    press(&mut app, &[Key::Char('i')], ready);
+    typing(&mut app, "next", ready);
+
+    app.answer(&sent_line[0], Err(KEY_BY_KEY_REFUSAL.to_owned()), ready);
+
+    assert_eq!(app.pane().typing().map(|(_, typed)| typed), Some("next"));
+    assert_eq!(app.pane().input_refusal(), None);
 }
