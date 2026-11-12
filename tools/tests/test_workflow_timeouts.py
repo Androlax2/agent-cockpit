@@ -38,7 +38,10 @@ class WorkflowTimeoutTests(unittest.TestCase):
     def test_every_job_sets_a_positive_timeout_in_minutes(self):
         self.assertTrue(WORKFLOWS)
         for workflow in WORKFLOWS:
-            for job, keys in job_keys(workflow.read_text()).items():
+            jobs = job_keys(workflow.read_text())
+            with self.subTest(workflow=workflow.name):
+                self.assertTrue(jobs, "no jobs parsed: the parser no longer matches this file")
+            for job, keys in jobs.items():
                 if "uses" in keys:
                     continue
                 with self.subTest(workflow=workflow.name, job=job):
