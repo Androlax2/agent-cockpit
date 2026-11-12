@@ -51,6 +51,11 @@ fn a_literal_host_port_is_found_on_its_line_in_every_syntax() {
             "services:\n  web:\n    ports:\n      - target: 80\n        published: 8080\n",
             vec![literal(5, "8080")],
         ),
+        (
+            "long, as a flow mapping",
+            "services:\n  web:\n    ports:\n      - { target: 80, published: 8080 }\n",
+            vec![literal(4, "8080")],
+        ),
     ] {
         assert_eq!(scan(text), expected, "{case}");
     }
@@ -123,4 +128,44 @@ fn a_service_after_the_ports_list_is_not_read_as_a_port() {
     let text = "services:\n  web:\n    ports:\n      - \"80\"\n  db:\n    image: \"postgres:16\"\n";
 
     assert_eq!(scan(text), Vec::new());
+}
+
+#[test]
+fn an_external_volume_or_network_or_a_nested_name_is_not_a_fixed_name() {
+    for (case, text) in [
+        (
+            "external after name",
+            "volumes:\n  shared:\n    name: team-cache\n    external: true\n",
+        ),
+        (
+            "external before name",
+            "networks:\n  proxy:\n    external: true\n    name: traefik\n",
+        ),
+        (
+            "a driver option called name",
+            "volumes:\n  data:\n    driver_opts:\n      name: tmpfs\n",
+        ),
+    ] {
+        assert_eq!(scan(text), Vec::new(), "{case}");
+    }
+}
+
+#[test]
+fn a_fixed_name_is_found_on_the_last_entry_and_before_the_next_section() {
+    let text = "volumes:\n  shared:\n    external: true\n  data:\n    name: app-data\n\
+                networks:\n  back:\n    name: app-back\n";
+
+    assert_eq!(
+        scan(text),
+        vec![
+            ComposeFinding {
+                line: 5,
+                problem: ComposeProblem::FixedName { kind: "volume" },
+            },
+            ComposeFinding {
+                line: 8,
+                problem: ComposeProblem::FixedName { kind: "network" },
+            },
+        ]
+    );
 }

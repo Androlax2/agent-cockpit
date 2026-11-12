@@ -9,6 +9,7 @@ mod exits;
 mod home_observer;
 mod lifecycle;
 mod model;
+mod port_blocks;
 mod project_engines;
 mod questions;
 mod quota_stops;
@@ -29,6 +30,9 @@ pub use model::{
     LaunchBundle, LaunchKind, RestartAll, Restored, Session, SessionBundle, SessionId,
     SessionState, Settings, SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,
 };
+pub use port_blocks::{
+    HeldPortBlock, keep_own_container_ports, live_port_blocks, other_sessions_block,
+};
 pub use project_engines::{EngineAnswer, ProjectEngines};
 pub use questions::{
     QUESTION_HOLD_SECONDS, answer_question, coordinator_scope, escalate_question, question_holder,
@@ -44,8 +48,7 @@ pub use reports::{
     latest_reports, report, report_counting_limits,
 };
 pub use store::{
-    HeldPortBlock, MIGRATIONS, checkout_sessions, live_port_blocks, maintenance_sessions,
-    mark_budget_spent, session, sessions,
+    MIGRATIONS, checkout_sessions, maintenance_sessions, mark_budget_spent, session, sessions,
 };
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

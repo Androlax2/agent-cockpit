@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cockpit_config::{PORT_BASE_VARIABLE, PortBlock};
+use cockpit_config::PORT_BASE_VARIABLE;
 use cockpit_containers::{
     EngineState, EngineUser, Expected, PASSWD_FILE, RecordedEngine, Remedy, SOCKET_DEADLINE,
     SetupPlan,
@@ -265,7 +265,8 @@ pub(crate) async fn container_port(
         let held = cockpit_sessions::live_port_blocks(&read)
             .await
             .map_err(|error| internal(&error))?;
-        if let Some(holder) = other_sessions_block(&held, project, session, port) {
+        if let Some(holder) = cockpit_sessions::other_sessions_block(&held, project, session, port)
+        {
             return Err(in_another_sessions_block(port, holder));
         }
         let recorded = cockpit_containers::recorded_engine(&read, project).await?;
@@ -291,20 +292,6 @@ pub(crate) async fn container_port(
         }));
     }
     Ok(forward)
-}
-
-/// The block of another session of `project` that holds `port`, if one does (#1371): that
-/// session's containers publish there, so no forward of `session` opens it.
-pub(crate) fn other_sessions_block<'held>(
-    held: &'held [HeldPortBlock],
-    project: &str,
-    session: &str,
-    port: u16,
-) -> Option<&'held HeldPortBlock> {
-    let block = PortBlock::containing(port)?;
-    held.iter().find(|holder| {
-        holder.project == project && holder.block == block && holder.session.as_str() != session
-    })
 }
 
 fn in_another_sessions_block(port: u16, holder: &HeldPortBlock) -> Failed {
@@ -531,45 +518,6 @@ mod tests {
         let refused = masked(Path::new("/home/owner/app")).unwrap_err();
 
         assert!(refused.contains("/home/owner/app"), "{refused}");
-    }
-
-    fn held(session: &str, project: &str, block: u16) -> HeldPortBlock {
-        HeldPortBlock {
-            session: cockpit_sessions::SessionId::parse(session).unwrap(),
-            project: project.to_owned(),
-            block: PortBlock::new(block).unwrap(),
-        }
-    }
-
-    const FIRST: &str = "s000000000001";
-    const SECOND: &str = "s000000000002";
-
-    /// #1371: a port of another session's block is that session's.
-    #[test]
-    fn a_port_in_another_sessions_block_names_that_session() {
-        let blocks = [held(FIRST, "app", 0), held(SECOND, "app", 1)];
-
-        let holder = other_sessions_block(&blocks, "app", SECOND, 20_005);
-
-        assert_eq!(holder, Some(&blocks[0]));
-    }
-
-    #[test]
-    fn a_port_of_the_sessions_own_block_another_project_or_no_block_is_not_anothers() {
-        let blocks = [held(FIRST, "app", 0), held(SECOND, "web", 1)];
-
-        for (case, session, port) in [
-            ("own block", FIRST, 20_005),
-            ("another project's session", FIRST, 20_015),
-            ("no block holds it", SECOND, 8_080),
-            ("a block no session holds", SECOND, 20_025),
-        ] {
-            assert_eq!(
-                other_sessions_block(&blocks, "app", session, port),
-                None,
-                "{case}"
-            );
-        }
     }
 
     const PASSWD: &str = "root:x:0:0::/root:/bin/sh\n\

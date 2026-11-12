@@ -297,37 +297,14 @@ fn compose_files(dir: &Path) -> Vec<cockpit_readiness::ComposeFile> {
     cockpit_readiness::COMPOSE_FILES
         .iter()
         .filter_map(|name| {
-            let path = dir.join(name);
-            let found = std::fs::symlink_metadata(&path).ok()?;
+            let text =
+                cockpit_projects::read_checkout_file(dir, name, MAX_COMPOSE_BYTES).transpose()?;
             Some(cockpit_readiness::ComposeFile {
                 name: (*name).to_owned(),
-                text: plain_file_text(&path, &found),
+                text,
             })
         })
         .collect()
-}
-
-/// The text of `path`, which `found` describes, when it is still that plain file.
-fn plain_file_text(path: &Path, found: &std::fs::Metadata) -> Result<String, String> {
-    use std::io::Read;
-    use std::os::unix::fs::MetadataExt;
-    if !found.is_file() {
-        return Err("it is a symbolic link or not a file".to_owned());
-    }
-    if found.len() > MAX_COMPOSE_BYTES {
-        return Err(format!("it is larger than {MAX_COMPOSE_BYTES} bytes"));
-    }
-    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let opened = file.metadata().map_err(|error| error.to_string())?;
-    // Replaced between the two looks: what was opened is not the plain file examined.
-    if (opened.dev(), opened.ino()) != (found.dev(), found.ino()) {
-        return Err("it changed while it was read".to_owned());
-    }
-    let mut text = String::new();
-    file.take(MAX_COMPOSE_BYTES)
-        .read_to_string(&mut text)
-        .map_err(|error| error.to_string())?;
-    Ok(text)
 }
 
 /// `report` with what only the daemon knows: the disk guard's reading and `clipboard`.

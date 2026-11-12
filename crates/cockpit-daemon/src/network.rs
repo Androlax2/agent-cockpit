@@ -575,16 +575,12 @@ async fn decisions_of_live_sessions(
         };
         // A port always allowed for the project opens in the session whose block holds it,
         // not in the others (#1371).
-        decisions.services.allowed.retain(|allowed| {
-            allowed
-                .live
-                .as_ref()
-                .and_then(Forward::listen_port)
-                .is_none_or(|port| {
-                    crate::containers::other_sessions_block(&held, &project, &session, port)
-                        .is_none()
-                })
-        });
+        cockpit_sessions::keep_own_container_ports(
+            &mut decisions.services,
+            &held,
+            &project,
+            &session,
+        );
         if decisions.services.live_forwards().next().is_some() {
             // Without it the launcher refuses each container port, naming the engine.
             if !relays.contains_key(&project) {

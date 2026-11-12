@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use cockpit_config::{FileState, PortBlock, RecordedFile, StartFileSnapshot};
+use cockpit_config::{FileState, RecordedFile, StartFileSnapshot};
 
 use cockpit_processes::ExecutionId;
 use cockpit_projects::CheckoutId;
@@ -889,102 +889,6 @@ pub(crate) async fn logins_in_use(
         in_use.push((row.get(0)?, id));
     }
     Ok(in_use)
-}
-
-/// A port block held by a session not ended (#1371).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeldPortBlock {
-    pub session: SessionId,
-    pub project: String,
-    pub block: PortBlock,
-}
-
-/// The port block `session` of `project` launches with: the one it took at an earlier
-/// launch, or else the lowest no session of the project holds. The blocks ended sessions
-/// held are freed first. The caller commits.
-pub(crate) async fn hold_port_block(
-    write: &WriteTransaction<'_>,
-    session: &SessionId,
-    project: &str,
-) -> Result<PortBlock, Error> {
-    write
-        .execute(
-            "DELETE FROM session_port_blocks
-             WHERE session_id IN (SELECT id FROM sessions WHERE state = 'ended')",
-            (),
-        )
-        .await?;
-    let mut rows = write
-        .query(
-            "SELECT block FROM session_port_blocks WHERE session_id = ?1",
-            [session.as_str()],
-        )
-        .await?;
-    if let Some(row) = rows.next().await? {
-        return stored_port_block(row.get(0)?);
-    }
-    let mut rows = write
-        .query(
-            "SELECT block FROM session_port_blocks WHERE project = ?1 ORDER BY block",
-            [project],
-        )
-        .await?;
-    let mut lowest_free: i64 = 0;
-    while let Some(row) = rows.next().await? {
-        let held: i64 = row.get(0)?;
-        if held != lowest_free {
-            break;
-        }
-        lowest_free += 1;
-    }
-    let block = u16::try_from(lowest_free)
-        .ok()
-        .and_then(PortBlock::new)
-        .ok_or_else(|| Error::NoPortBlock {
-            project: project.to_owned(),
-        })?;
-    write
-        .execute(
-            "INSERT INTO session_port_blocks (session_id, project, block) VALUES (?1, ?2, ?3)",
-            (session.as_str(), project, i64::from(block.index())),
-        )
-        .await?;
-    Ok(block)
-}
-
-/// Every port block a session not ended holds, by project and block.
-pub async fn live_port_blocks(connection: &Connection) -> Result<Vec<HeldPortBlock>, Error> {
-    let mut rows = connection
-        .query(
-            "SELECT b.session_id, b.project, b.block
-             FROM session_port_blocks b JOIN sessions s ON s.id = b.session_id
-             WHERE s.state <> 'ended'
-             ORDER BY b.project, b.block",
-            (),
-        )
-        .await?;
-    let mut held = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let id_text: String = row.get(0)?;
-        let session = SessionId::parse(&id_text).map_err(|error| Error::InvalidStoredRow {
-            reason: format!("port block of session {id_text}: {error}"),
-        })?;
-        held.push(HeldPortBlock {
-            session,
-            project: row.get(1)?,
-            block: stored_port_block(row.get(2)?)?,
-        });
-    }
-    Ok(held)
-}
-
-fn stored_port_block(index: i64) -> Result<PortBlock, Error> {
-    u16::try_from(index)
-        .ok()
-        .and_then(PortBlock::new)
-        .ok_or_else(|| Error::InvalidStoredRow {
-            reason: format!("port block {index} is not a block"),
-        })
 }
 
 /// The bundle the latest launch of each session whose agent is starting, running or stopping

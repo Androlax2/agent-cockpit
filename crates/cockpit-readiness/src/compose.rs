@@ -73,44 +73,33 @@ pub fn scan(text: &str) -> Vec<ComposeFinding> {
             if indent > key_indent || (indent == key_indent && is_item) {
                 if let Some(item) = trimmed.strip_prefix('-') {
                     let item = item.trim();
-                    if key_value(item).is_none() {
+                    if let Some(mapping) = item.strip_prefix('{') {
+                        found_published_ports(mapping.trim_end_matches('}').split(','), &mut found);
+                    } else if key_value(item).is_none() {
                         found_short_ports([item], &mut found);
                     }
                 }
-                if let Some(("published", value)) =
-                    key_value(trimmed.trim_start_matches(['-', ' ']))
-                    && let Some(port) = literal_port(unquoted(value))
-                {
-                    found(ComposeProblem::LiteralPort { port });
-                }
+                found_published_ports([trimmed.trim_start_matches(['-', ' '])], &mut found);
                 continue;
             }
             ports_indent = None;
         }
         if indent == 0 {
+            findings.extend(section.flush());
             section = match key_value(trimmed) {
-                Some(("volumes", _)) => Section::Named {
-                    kind: "volume",
-                    entry_indent: None,
-                },
-                Some(("networks", _)) => Section::Named {
-                    kind: "network",
-                    entry_indent: None,
-                },
+                Some(("volumes", _)) => Section::named("volume"),
+                Some(("networks", _)) => Section::named("network"),
                 _ => Section::Other,
             };
+            continue;
+        }
+        if let Section::Named(named) = &mut section {
+            findings.extend(named.read(indent, key_value(trimmed), number + 1));
             continue;
         }
         let Some((key, value)) = key_value(trimmed) else {
             continue;
         };
-        if let Section::Named { kind, entry_indent } = &mut section {
-            let entry = *entry_indent.get_or_insert(indent);
-            if key == "name" && indent > entry && !value.contains("${") {
-                found(ComposeProblem::FixedName { kind });
-            }
-            continue;
-        }
         match key {
             "container_name" if !value.contains("${") => found(ComposeProblem::ContainerName),
             "ports" if value.is_empty() => ports_indent = Some(indent),
@@ -121,17 +110,81 @@ pub fn scan(text: &str) -> Vec<ComposeFinding> {
             _ => {}
         }
     }
+    findings.extend(section.flush());
     findings
 }
 
-#[derive(Debug, Clone, Copy)]
 enum Section {
-    /// Top-level `volumes:` or `networks:`, whose entries start at `entry_indent`.
-    Named {
-        kind: &'static str,
-        entry_indent: Option<usize>,
-    },
+    /// Top-level `volumes:` or `networks:`.
+    Named(NamedSection),
     Other,
+}
+
+impl Section {
+    fn named(kind: &'static str) -> Section {
+        Section::Named(NamedSection {
+            kind,
+            entry_indent: None,
+            key_indent: None,
+            fixed_name: None,
+            is_external: false,
+        })
+    }
+
+    /// The finding of the section's last entry, once nothing more of it follows.
+    fn flush(&mut self) -> Option<ComposeFinding> {
+        match self {
+            Section::Named(named) => named.entry_ends(),
+            Section::Other => None,
+        }
+    }
+}
+
+/// The entries of a top-level `volumes:` or `networks:`, read one line at a time. An entry's
+/// own `name:` is fixed unless it reads a variable; an `external` one is shared on purpose.
+struct NamedSection {
+    kind: &'static str,
+    /// Where each entry's key starts.
+    entry_indent: Option<usize>,
+    /// Where the current entry's own keys start; deeper ones, as under `driver_opts:`,
+    /// are not the entry's name.
+    key_indent: Option<usize>,
+    /// The line of the current entry's fixed `name:`.
+    fixed_name: Option<usize>,
+    is_external: bool,
+}
+
+impl NamedSection {
+    fn read(
+        &mut self,
+        indent: usize,
+        key_value: Option<(&str, &str)>,
+        line: usize,
+    ) -> Option<ComposeFinding> {
+        let entry_indent = *self.entry_indent.get_or_insert(indent);
+        if indent <= entry_indent {
+            return self.entry_ends();
+        }
+        if *self.key_indent.get_or_insert(indent) != indent {
+            return None;
+        }
+        match key_value {
+            Some(("name", value)) if !value.contains("${") => self.fixed_name = Some(line),
+            Some(("external", value)) => self.is_external = unquoted(value) == "true",
+            _ => {}
+        }
+        None
+    }
+
+    fn entry_ends(&mut self) -> Option<ComposeFinding> {
+        let line = self.fixed_name.take();
+        let is_external = std::mem::take(&mut self.is_external);
+        self.key_indent = None;
+        Some(ComposeFinding {
+            line: line.filter(|_| !is_external)?,
+            problem: ComposeProblem::FixedName { kind: self.kind },
+        })
+    }
 }
 
 /// Each literal host port of `items`, in compose's short syntax: `HOST:CONTAINER`,
@@ -152,6 +205,20 @@ fn found_short_ports<'item>(
             continue;
         }
         if let Some(port) = literal_port(parts[parts.len() - 2]) {
+            found(ComposeProblem::LiteralPort { port });
+        }
+    }
+}
+
+/// Each literal `published:` port of `pairs`, in compose's long syntax.
+fn found_published_ports<'pair>(
+    pairs: impl IntoIterator<Item = &'pair str>,
+    found: &mut impl FnMut(ComposeProblem),
+) {
+    for pair in pairs {
+        if let Some(("published", value)) = key_value(pair.trim())
+            && let Some(port) = literal_port(unquoted(value))
+        {
             found(ComposeProblem::LiteralPort { port });
         }
     }
