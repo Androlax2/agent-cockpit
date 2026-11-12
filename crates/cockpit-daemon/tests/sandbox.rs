@@ -661,7 +661,8 @@ async fn a_sandboxed_launch_leaves_no_launch_spec() {
 }
 
 /// #856: no container engine socket, nor the variables that point at one. `DOCKER_CONFIG`
-/// names a folder for the client's settings, not an engine (#1253), so it is not one.
+/// names a folder for the client's settings, not an engine (#1253), so it is not one. #390:
+/// nor the project engine's, which a launch reaches only once its checkout is masked.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sandboxed_agent_reaches_no_container_engine() {
     let home = Home::new();
@@ -671,7 +672,8 @@ async fn a_sandboxed_agent_reaches_no_container_engine() {
         &home,
         &agent.root,
         "for socket in /var/run/docker.sock /run/docker.sock /run/podman/podman.sock \
-         /run/containerd/containerd.sock \"${XDG_RUNTIME_DIR-/nonexistent}/docker.sock\" \
+         /run/containerd/containerd.sock /run/torlek-engine/docker.sock \
+         \"${XDG_RUNTIME_DIR-/nonexistent}/docker.sock\" \
          \"${XDG_RUNTIME_DIR-/nonexistent}/podman/podman.sock\"; do \
          test -e \"$socket\" && echo \"present: $socket\"; done; \
          env | grep '^DOCKER_' | grep -v '^DOCKER_CONFIG=' || echo 'no docker variables'",

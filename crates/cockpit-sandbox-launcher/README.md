@@ -114,6 +114,15 @@ engine's uid, then names the port (`engine_relay::request`). A revoked port's li
 shut and its relays closed; a connection reaching it meanwhile is closed without filing a
 request.
 
+### The project engine's socket
+
+Issue #390. The spec's `engine` (`cockpit_sandbox::EngineSocket`) names the project engine
+the daemon verified: its user, uid and Docker socket. Before bubblewrap starts, the launcher
+connects to that socket and refuses the launch unless its peer is the engine's uid
+(`proxy::check_engine_socket`); bubblewrap then binds the socket read-only, alone in its
+folder, at `cockpit_sandbox::ENGINE_SOCKET_INSIDE`, stage 2 lets the program connect there,
+and `DOCKER_HOST` names it. A spec for a check run, or an engine run as root, is refused.
+
 ## Credential hosts
 
 Issue #832, D1 stage C. When the spec's `interception` binds credentials, the launcher reads

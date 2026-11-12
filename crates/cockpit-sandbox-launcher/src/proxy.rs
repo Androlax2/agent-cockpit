@@ -42,7 +42,7 @@ use crate::intercept::{self, Direction, Ended, Event, Wire};
 mod forward;
 mod live;
 
-pub use forward::{Listener, bind_sockets};
+pub use forward::{Listener, bind_sockets, check_engine_socket};
 
 /// How long a client has to send its `CONNECT` request.
 const HEAD_TIMEOUT: Duration = Duration::from_secs(30);

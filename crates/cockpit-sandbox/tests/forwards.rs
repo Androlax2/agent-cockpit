@@ -33,6 +33,7 @@ fn spec(forwards: Vec<Forward>) -> LaunchSpec {
         login: None,
         egress: Allowlist::default(),
         interception: None,
+        engine: None,
     }
 }
 

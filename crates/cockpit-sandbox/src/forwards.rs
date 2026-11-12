@@ -128,7 +128,7 @@ impl Forward {
 }
 
 /// A name `useradd` takes and a record reads one way: lower-case letters, digits and `-`.
-fn is_engine_user(user: &str) -> bool {
+pub(crate) fn is_engine_user(user: &str) -> bool {
     !user.is_empty()
         && user.len() <= 32
         && user.starts_with(|first: char| first.is_ascii_lowercase())

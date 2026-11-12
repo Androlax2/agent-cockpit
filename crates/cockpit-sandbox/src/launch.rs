@@ -124,6 +124,9 @@ pub struct LaunchRequest {
     /// The project's declared services the launcher serves (#880); each relays only while
     /// the owner's decisions allow its record. Only a sandboxed launch serves one.
     pub forwards: Vec<crate::Forward>,
+    /// The project engine the session reaches at `DOCKER_HOST` (#390), verified by the
+    /// daemon; only a sandboxed launch binds one.
+    pub engine: Option<crate::EngineSocket>,
 }
 
 /// One check run's facts (#862): the project's check as the program, with no provider, agent
@@ -391,6 +394,7 @@ impl Sandbox {
             decisions: crate::EgressDecisions::default(),
             login: None,
             forwards: Vec::new(),
+            engine: None,
         };
         crate::native::prepare(
             native,
@@ -437,6 +441,13 @@ impl Sandbox {
                      unsandboxed launch reaches the host's services itself",
                 ));
             }
+            if let Some(engine) = &request.engine {
+                return Err(Refusal::new(
+                    format!("project engine of {}", engine.user),
+                    "only a sandboxed launch binds the project engine's socket; an \
+                     unsandboxed launch reaches the owner's own engine",
+                ));
+            }
             return Ok(self.unsandboxed(program, arguments, &request.environment));
         }
         let native = self.native()?;
@@ -457,6 +468,7 @@ impl Sandbox {
             decisions: request.decisions.clone(),
             login: request.login.clone(),
             forwards: request.forwards.clone(),
+            engine: request.engine.clone(),
         };
         crate::native::prepare(
             native,

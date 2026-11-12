@@ -11,16 +11,20 @@ use serde::{Deserialize, Serialize};
 use crate::credentials::{CredentialScheme, Interception};
 use crate::egress::{Allowlist, EgressDecisions, TLS_PORT, Target, normalized_name};
 use crate::forwards::{
-    CONTAINERS_SERVICE, Endpoint, FIRST_UNPRIVILEGED_PORT, Forward, MAX_FORWARDS, is_service_name,
-    proxy_port,
+    CONTAINERS_SERVICE, Endpoint, FIRST_UNPRIVILEGED_PORT, Forward, MAX_FORWARDS, is_engine_user,
+    is_service_name, proxy_port,
 };
 
 /// Bumped when a field changes meaning; the launcher refuses any other version, so a launcher
 /// left from an older install never half-reads a newer daemon's spec. 3: bound credentials
 /// (#832), which an older launcher would leave unadded. 4: a login account's sign-in bound
 /// in the session's home (#59). 5: host-service forwards (#880), which an older launcher
-/// refuses.
-pub const SPEC_VERSION: u32 = 5;
+/// refuses. 6: the project engine's socket (#390), which an older launcher would leave out.
+pub const SPEC_VERSION: u32 = 6;
+
+/// Where the project engine's socket appears inside the sandbox, which `DOCKER_HOST` names
+/// (#390): in a folder of its own, so the program reaches that socket and nothing beside it.
+pub const ENGINE_SOCKET_INSIDE: &str = "/run/torlek-engine/docker.sock";
 
 /// The file name of the spec in the session's mount folder.
 pub const SPEC_FILE: &str = "launch-spec.json";
@@ -125,6 +129,27 @@ pub struct LaunchSpec {
     /// The hosts the session proxy intercepts to add a bound credential (#832); None for a
     /// launch with no bound credential, whose proxy intercepts nothing and has no CA.
     pub interception: Option<Interception>,
+    /// The project engine whose socket the launcher binds at [`ENGINE_SOCKET_INSIDE`]
+    /// (#390): None for a launch that reaches no engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<EngineSocket>,
+}
+
+/// The folder of [`ENGINE_SOCKET_INSIDE`], which holds that socket alone.
+pub fn engine_folder_inside() -> PathBuf {
+    Path::new(ENGINE_SOCKET_INSIDE)
+        .parent()
+        .expect("the engine's socket is in a folder")
+        .to_path_buf()
+}
+
+/// A project engine's Docker socket, as the daemon verified the engine behind it (#390): the
+/// launcher binds it only once the kernel says the engine user's uid listens there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineSocket {
+    pub user: String,
+    pub uid: u32,
+    pub socket: PathBuf,
 }
 
 /// A folder bound read-write at another path.
@@ -249,6 +274,9 @@ impl LaunchSpec {
         if let Some(interception) = &self.interception {
             check_interception(interception, &self.egress.with_decisions(decisions))?;
         }
+        if let Some(engine) = &self.engine {
+            check_engine(engine, &self.subject)?;
+        }
         self.check_forwards()
     }
 
@@ -271,6 +299,7 @@ impl LaunchSpec {
                 .cloned(),
             )
             .chain(self.folders.iter().map(|folder| folder.destination.clone()))
+            .chain(self.engine.iter().map(|_| engine_folder_inside()))
             .collect()
     }
 
@@ -545,6 +574,29 @@ fn is_credential_header(name: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
     })
+}
+
+/// Refuses an engine a session cannot be given as written: one for a check run, run by root
+/// or by no engine user, or whose socket is no plain absolute path.
+fn check_engine(engine: &EngineSocket, subject: &Subject) -> Result<(), InvalidSpec> {
+    if !matches!(subject, Subject::Session { .. }) {
+        return Err(InvalidSpec(
+            "a check run reaches no project engine".to_owned(),
+        ));
+    }
+    if engine.uid == 0 {
+        return Err(InvalidSpec(format!(
+            "the project engine of {} runs as root",
+            engine.user
+        )));
+    }
+    if !is_engine_user(&engine.user) {
+        return Err(InvalidSpec(format!(
+            "{:?} is not an engine user",
+            engine.user
+        )));
+    }
+    check_plain(&engine.socket)
 }
 
 /// An absolute path without `.` or `..`: what the launcher binds is what the spec names.

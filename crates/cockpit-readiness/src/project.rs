@@ -330,7 +330,8 @@ fn docker(docker: &Result<DockerEngine, String>, platform: &Platform) -> Require
 }
 
 /// The project's own engine under `agents.sandbox = "required"` (#390, #856's table). A
-/// verified engine is still `unsupported`: sandboxed sessions do not reach it yet.
+/// verified engine is still `unsupported`: a session reaches it only once it sees the
+/// session's checkout masked, which no release does yet.
 fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
     let engine = match engine {
         Ok(engine) => engine,
@@ -401,8 +402,8 @@ fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
             "docker",
             Status::Unsupported,
             format!(
-                "{} runs as {user}, rootless, recorded; sandboxed sessions do not reach it yet \
-                 in this release (#390)",
+                "{} runs as {user}, rootless, recorded; sandboxed sessions reach it once it sees \
+                 their checkouts masked, which it does not yet in this release (#390)",
                 identity(found)
             ),
             "`torlek ask run` asks you to run a container command on the host",

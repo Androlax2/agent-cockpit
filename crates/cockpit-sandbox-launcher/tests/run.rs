@@ -22,6 +22,7 @@ struct Fixture {
     egress: Allowlist,
     interception: Option<Interception>,
     forwards: Vec<Forward>,
+    engine: Option<cockpit_sandbox::EngineSocket>,
 }
 
 impl Fixture {
@@ -36,6 +37,7 @@ impl Fixture {
             },
             interception: None,
             forwards: Vec::new(),
+            engine: None,
         };
         for folder in ["checkout/.git/hooks", "home", "home-source", "mounts"] {
             std::fs::create_dir_all(fixture.path(folder)).unwrap();
@@ -90,6 +92,7 @@ impl Fixture {
             login: None,
             egress: self.egress.clone(),
             interception: self.interception.clone(),
+            engine: self.engine.clone(),
         }
     }
 
@@ -941,4 +944,66 @@ fn the_binder_is_not_a_child_of_the_program() {
     let printed = fixture.run("read -r children < /proc/$$/task/$$/children; echo \"[$children]\"");
 
     assert_eq!(printed, "[]\nexit=0\n");
+}
+
+/// A project engine's socket (#390): an HTTP server answering `hello` on a short path,
+/// which stands for the engine's `/run/<user>/docker.sock`. The engine user is this test's.
+fn engine_socket() -> (tempfile::TempDir, PathBuf) {
+    // A socket path must fit the kernel's 108 bytes, which the target folder may not.
+    let dir = tempfile::tempdir().unwrap();
+    let socket = socket_server(dir.path());
+    (dir, socket)
+}
+
+/// #390: the project's engine socket answers inside at `DOCKER_HOST`, which the program
+/// cannot remove or replace.
+#[test]
+fn the_project_engines_socket_answers_at_docker_host() {
+    let mut fixture = Fixture::new();
+    let (_dir, socket) = engine_socket();
+    fixture.engine = Some(cockpit_sandbox::EngineSocket {
+        user: "torlek-e3".to_owned(),
+        uid: own_uid(),
+        socket,
+    });
+
+    let printed = fixture.run(
+        "socket=${DOCKER_HOST#unix://}; echo \"$DOCKER_HOST\"; \
+         curl --silent --max-time 5 --unix-socket \"$socket\" http://engine/; echo; \
+         rm -f \"$socket\" 2>/dev/null; echo rm=$?; \
+         touch \"${socket%/*}/other.sock\" 2>/dev/null; echo touch=$?",
+    );
+
+    assert_eq!(
+        printed,
+        format!(
+            "unix://{}\nhello\nrm=1\ntouch=1\nexit=0\n",
+            cockpit_sandbox::ENGINE_SOCKET_INSIDE
+        )
+    );
+}
+
+/// #390: a socket another user than the engine's listens on is never bound; the launch is
+/// refused naming both uids.
+#[test]
+fn an_engine_socket_another_user_listens_on_is_refused() {
+    let mut fixture = Fixture::new();
+    let (_dir, socket) = engine_socket();
+    fixture.engine = Some(cockpit_sandbox::EngineSocket {
+        user: "torlek-e3".to_owned(),
+        uid: own_uid() + 1,
+        socket,
+    });
+
+    let printed = fixture.run("echo started");
+
+    assert!(!printed.contains("started"), "{printed}");
+    assert!(
+        printed.contains(&format!(
+            "uid {} listens on the project engine's socket",
+            own_uid()
+        )),
+        "{printed}"
+    );
+    assert!(printed.ends_with("exit=125\n"), "{printed}");
 }

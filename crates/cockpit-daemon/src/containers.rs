@@ -15,7 +15,7 @@ use cockpit_protocol::{
     Command, DecidedThroughView, ErrorCode, ProtocolError, Reply, Unblock, UnblockedBy,
 };
 use cockpit_readiness::{EngineRemedy, ProjectEngine};
-use cockpit_sandbox::{EngineRelay, Forward};
+use cockpit_sandbox::{EngineRelay, EngineSocket, Forward};
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
 
@@ -116,16 +116,7 @@ pub(crate) async fn project_engine(
     host: &Host,
     project: &str,
 ) -> Result<ProjectEngine, String> {
-    let (found, recorded) = {
-        let read = database.read().await.map_err(|error| error.to_string())?;
-        let found = cockpit_projects::project_named(&read, project)
-            .await
-            .map_err(|error| error.to_string())?;
-        let recorded = cockpit_containers::recorded_engine(&read, project)
-            .await
-            .map_err(|error| error.to_string())?;
-        (found, recorded)
-    };
+    let (found, recorded) = project_and_record(database, project).await?;
     let passwd = read_passwd().await?;
     let user = host.engine_user(&found)?;
     let state = examine(host, &user, &passwd, recorded.as_ref()).await;
@@ -172,6 +163,88 @@ pub(crate) async fn project_engine(
         record_command,
         state,
     })
+}
+
+/// `project` and the engine the owner recorded for it, if any.
+async fn project_and_record(
+    database: &Database,
+    project: &str,
+) -> Result<(Project, Option<RecordedEngine>), String> {
+    let read = database.read().await.map_err(|error| error.to_string())?;
+    let found = cockpit_projects::project_named(&read, project)
+        .await
+        .map_err(|error| error.to_string())?;
+    let recorded = cockpit_containers::recorded_engine(&read, project)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok((found, recorded))
+}
+
+/// Finds the engine each sandboxed launch reaches at `DOCKER_HOST` (#390): its project's,
+/// once that engine answers as the one the owner recorded and sees the launch's checkout
+/// masked.
+pub(crate) struct LaunchEngines {
+    pub(crate) database: Arc<Database>,
+    pub(crate) host: Host,
+}
+
+impl cockpit_sessions::ProjectEngines for LaunchEngines {
+    fn reachable<'asked>(
+        &'asked self,
+        project: &'asked str,
+        checkout: &'asked Path,
+    ) -> cockpit_sessions::EngineAnswer<'asked> {
+        Box::pin(self.engine_socket(project, checkout))
+    }
+}
+
+impl LaunchEngines {
+    /// The masks come first: they cost nothing, and an engine they refuse is not asked.
+    async fn engine_socket(&self, project: &str, checkout: &Path) -> Option<EngineSocket> {
+        if let Err(reason) = masked(checkout) {
+            tracing::debug!(project, %reason, "the launch reaches no project engine");
+            return None;
+        }
+        match self.examined(project).await {
+            Ok((user, passwd, state)) => socket_of(&user, &state, &passwd),
+            Err(reason) => {
+                tracing::warn!(project, %reason, "the launch reaches no project engine");
+                None
+            }
+        }
+    }
+
+    async fn examined(&self, project: &str) -> Result<(EngineUser, String, EngineState), String> {
+        let (found, recorded) = project_and_record(&self.database, project).await?;
+        let passwd = read_passwd().await?;
+        let user = self.host.engine_user(&found)?;
+        let state = examine(&self.host, &user, &passwd, recorded.as_ref()).await;
+        Ok((user, passwd, state))
+    }
+}
+
+/// `user`'s Docker socket, when its engine answers as the one the owner recorded and
+/// `passwd` holds its account; readiness says why when it does not.
+fn socket_of(user: &EngineUser, state: &EngineState, passwd: &str) -> Option<EngineSocket> {
+    if !matches!(state, EngineState::Verified(_)) {
+        return None;
+    }
+    let account = cockpit_containers::account_named(passwd, user.name())?;
+    Some(EngineSocket {
+        user: user.name().to_owned(),
+        uid: account.uid,
+        socket: user.socket(),
+    })
+}
+
+/// Whether the engine sees `checkout` through every denial of the session baseline in it:
+/// until #390's masks are built, it sees none masked, so no session reaches an engine whose
+/// containers could write the checkout's Git hooks or read its `.env`.
+fn masked(checkout: &Path) -> Result<(), String> {
+    Err(format!(
+        "the engine does not see {} masked: its masks are not built yet (#390)",
+        checkout.display()
+    ))
 }
 
 /// The forward for `port` of `project`'s engine (#390), once that engine answers as the one
@@ -411,6 +484,14 @@ fn through_name(through: DecidedThroughView) -> String {
 mod tests {
     use super::*;
 
+    /// #390: no session reaches an engine before its masks exist, whatever the engine.
+    #[test]
+    fn no_checkout_is_masked_before_the_masks_are_built() {
+        let refused = masked(Path::new("/home/owner/app")).unwrap_err();
+
+        assert!(refused.contains("/home/owner/app"), "{refused}");
+    }
+
     const PASSWD: &str = "root:x:0:0::/root:/bin/sh\n\
                           torlek-e3:x:991:991::/var/lib/torlek-e3:/usr/bin/nologin\n";
 
@@ -451,6 +532,52 @@ mod tests {
             ("no account", Some(recorded("torlek-e3")), without_account),
         ] {
             assert_eq!(relay_of(&user, engine.as_ref(), passwd), None, "{case}");
+        }
+    }
+
+    fn info() -> cockpit_containers::EngineInfo {
+        cockpit_containers::EngineInfo {
+            id: "engine-1".to_owned(),
+            name: "box".to_owned(),
+            server_version: "28.0.0".to_owned(),
+            rootless: true,
+            in_desktop_vm: false,
+        }
+    }
+
+    #[test]
+    fn a_verified_engine_names_its_users_uid_and_docker_socket() {
+        let user = EngineUser::for_project("torlek", 3).unwrap();
+
+        let socket = socket_of(&user, &EngineState::Verified(info()), PASSWD);
+
+        assert_eq!(
+            socket,
+            Some(EngineSocket {
+                user: "torlek-e3".to_owned(),
+                uid: 991,
+                socket: "/run/torlek-e3/docker.sock".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn no_docker_socket_for_an_engine_not_verified_or_without_its_account() {
+        let user = EngineUser::for_project("torlek", 3).unwrap();
+        let without_account = "root:x:0:0::/root:/bin/sh\n";
+
+        for (case, state, passwd) in [
+            ("unrecorded", EngineState::Unrecorded(info()), PASSWD),
+            (
+                "not set up",
+                EngineState::NotSetUp {
+                    reason: "no socket".to_owned(),
+                },
+                PASSWD,
+            ),
+            ("no account", EngineState::Verified(info()), without_account),
+        ] {
+            assert_eq!(socket_of(&user, &state, passwd), None, "{case}");
         }
     }
 }
