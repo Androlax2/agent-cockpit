@@ -231,6 +231,38 @@ pub async fn pending_results(
     Ok(result)
 }
 
+/// A run not yet sealed that runs in an environment of its own: its launcher may still ask
+/// the owner for a host (#352).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsealedRun {
+    pub project: String,
+    pub run_id: String,
+    pub check: String,
+}
+
+/// Every run not yet sealed whose intent says it runs in `environment`, oldest first.
+pub async fn unsealed_runs_in(
+    read: &Connection,
+    environment: &str,
+) -> Result<Vec<UnsealedRun>, Error> {
+    let mut rows = read
+        .query(
+            "SELECT project, run_id, check_name FROM verification_run_identities
+             WHERE sealed = 0 AND ran_environment = ?1 ORDER BY origin_epoch, execution",
+            [environment],
+        )
+        .await?;
+    let mut runs = Vec::new();
+    while let Some(row) = rows.next().await? {
+        runs.push(UnsealedRun {
+            project: row.get(0)?,
+            run_id: row.get(1)?,
+            check: row.get(2)?,
+        });
+    }
+    Ok(runs)
+}
+
 /// The executions of `epoch` whose output a retention pass keeps whole (#406): each check's
 /// newest run, and its newest finished run while a newer one is still pending.
 pub async fn newest_runs(read: &Connection, epoch: &str) -> Result<Vec<i64>, Error> {

@@ -110,6 +110,21 @@ fn committed_repository(home: &Path, name: &str) -> PathBuf {
 }
 
 impl Verification {
+    /// What the supervisor recorded of `run`'s execution, read once the daemon stopped.
+    async fn stopped_execution(self, run: &str) -> cockpit_processes::Execution {
+        let Verification { _daemon, home, .. } = self;
+        drop(_daemon);
+        let execution = run
+            .rsplit('-')
+            .next()
+            .and_then(|number| number.parse().ok())
+            .expect("a run names its execution");
+        let database = home.open_state().await;
+        cockpit_processes::execution(&database, cockpit_processes::ExecutionId(execution))
+            .await
+            .unwrap()
+    }
+
     fn token(&self) -> Option<String> {
         Some(self.token.as_str().to_owned())
     }
@@ -395,6 +410,20 @@ async fn a_native_check_under_a_required_sandbox_is_recorded_unavailable_and_nev
         "native checks run only with `agents.sandbox = \"off\"`"
     );
     assert!(!verification.root.join("ran-on-host").exists());
+}
+
+#[tokio::test]
+async fn the_supervisor_starts_no_process_for_a_native_check_under_a_required_sandbox() {
+    let verification = started_configured(true, REQUIRED).await;
+
+    let receipt = verification.run("host").await;
+
+    let execution = verification.stopped_execution(&receipt.run).await;
+    assert_eq!(
+        execution.phase,
+        cockpit_processes::Phase::Ended(cockpit_processes::EndReason::NeverStarted)
+    );
+    assert_eq!(execution.process_group, None, "{execution:?}");
 }
 
 #[tokio::test]

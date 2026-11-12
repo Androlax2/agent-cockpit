@@ -818,3 +818,153 @@ async fn the_decided_list_holds_every_decision_oldest_first_and_no_asking_reques
         ]
     );
 }
+
+fn check_run(run: &str) -> Subject {
+    Subject::Check {
+        run: run.to_owned(),
+        check: "test".to_owned(),
+    }
+}
+
+impl Store {
+    async fn file_for(&self, subject: &Subject, project: &str) -> Option<i64> {
+        let write = self.database.write().await.unwrap();
+        let filed =
+            cockpit_sandbox::file_network_request(&write, subject, project, &example(), ASKED_AT)
+                .await
+                .unwrap();
+        write.commit().await.unwrap();
+        filed.map(|request| request.id)
+    }
+
+    async fn decisions_of(&self, subject: &Subject, project: &str) -> EgressDecisions {
+        let read = self.database.read().await.unwrap();
+        cockpit_sandbox::egress_decisions(&read, project, subject)
+            .await
+            .unwrap()
+    }
+}
+
+/// #352 (#862, Q2): a check run's refused host is a request naming the run and its check.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_check_runs_refused_destination_is_filed_naming_the_run_and_its_check() {
+    let store = store().await;
+
+    let request = store.file_for(&check_run("execution-1"), "app").await;
+
+    let read = store.database.read().await.unwrap();
+    let asking = cockpit_sandbox::asking_network_requests(&read)
+        .await
+        .unwrap();
+    assert_eq!(asking.len(), 1);
+    assert_eq!(asking[0].id, request.unwrap());
+    assert_eq!(asking[0].subject, check_run("execution-1"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_once_lets_only_the_asking_check_run_through() {
+    let store = store().await;
+    let request = store
+        .file_for(&check_run("execution-1"), "app")
+        .await
+        .unwrap();
+
+    store.allow(request, false, DECIDED_AT).await.unwrap();
+
+    assert_eq!(
+        store
+            .decisions_of(&check_run("execution-1"), "app")
+            .await
+            .allowed,
+        vec![entry(AllowSource::Request { request })]
+    );
+    assert_eq!(
+        store.decisions_of(&check_run("execution-2"), "app").await,
+        EgressDecisions::default()
+    );
+    assert_eq!(
+        store.decisions("execution-1", "app").await,
+        EgressDecisions::default()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_check_runs_allow_always_also_allows_the_projects_sessions() {
+    let store = store().await;
+    let request = store
+        .file_for(&check_run("execution-1"), "app")
+        .await
+        .unwrap();
+
+    store.allow(request, true, DECIDED_AT).await.unwrap();
+
+    let read = store.database.read().await.unwrap();
+    let grant = cockpit_sandbox::network_request(&read, request)
+        .await
+        .unwrap()
+        .grant
+        .expect("allow always made a grant");
+    drop(read);
+    assert_eq!(
+        store.decisions("s1", "app").await.allowed,
+        vec![entry(AllowSource::Grant {
+            grant: grant.to_string()
+        })]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_check_run_asks_ahead_for_no_service() {
+    let store = store().await;
+    let write = store.database.write().await.unwrap();
+
+    let asked = cockpit_sandbox::ask_service(
+        &write,
+        &check_run("execution-1"),
+        "app",
+        &figcraft_port(),
+        "needs it",
+        ASKED_AT,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            asked,
+            Err(NetworkError::Refused(NetworkRefusal::NotASession))
+        ),
+        "{asked:?}"
+    );
+}
+
+/// #352: the migration that lets a check run ask keeps every earlier request a session's.
+#[tokio::test(flavor = "multi_thread")]
+async fn requests_made_before_check_subjects_stay_their_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let earlier = cockpit_turso::MigrationSet {
+        owner: MIGRATIONS.owner,
+        migrations: &MIGRATIONS.migrations[..6],
+    };
+    let database = Database::open(&path, &[earlier]).await.unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO sandbox_network_requests
+                (id, subject_kind, subject, project, kind, host, port, state, asked_at)
+             VALUES (1, 'session', 's1', 'app', 'host', 'unknown.example.com', 443, 'asking',
+                ?1)",
+            [ASKED_AT],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(database);
+
+    let database = Database::open(&path, &[MIGRATIONS]).await.unwrap();
+
+    let read = database.read().await.unwrap();
+    let decided = cockpit_sandbox::network_request(&read, 1).await.unwrap();
+    assert_eq!(decided.subject, session("s1"));
+    assert_eq!(decided.state, NetworkRequestState::Asking);
+}

@@ -34,12 +34,13 @@ pub struct NetworkRequestView {
     pub shown_reason: Option<ShownText>,
 }
 
-/// Who was refused: a session today; a check run or a project's containers later (#856,
-/// #862).
+/// Who was refused: a session, or a run of a project's check (#352, #862 Q2), whose "allow
+/// always" is a project grant its sessions get too.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum NetworkSubjectView {
     Session { id: String },
+    Check { run: String, check: String },
 }
 
 /// What a request asks for and a grant allows, by `kind`: a host and port, or a declared
@@ -56,7 +57,7 @@ pub enum NetworkTargetView {
 #[serde(rename_all = "kebab-case")]
 pub enum NetworkRequestStateView {
     Asking,
-    /// Allowed for the rest of the asking session.
+    /// Allowed for the rest of the asking session or check run.
     AllowedOnce,
     /// Allowed always for the project, through `grant`.
     AllowedAlways,

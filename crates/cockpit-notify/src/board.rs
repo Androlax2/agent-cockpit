@@ -335,7 +335,7 @@ impl Board {
         }
         let network = self.network.iter().filter(|request| {
             request.state == NetworkRequestStateView::Asking
-                && network_session(request) == session.id
+                && network_session(request) == Some(session.id.as_str())
         });
         for request in network {
             raised.push(raise(Event::Hold, Cause::Network(request.id)));
@@ -456,9 +456,11 @@ fn decode<View: serde::de::DeserializeOwned>(
         .map_err(|error| error.to_string())
 }
 
-/// The session a network request came from.
-fn network_session(request: &NetworkRequestView) -> &str {
+/// The session a network request came from; `None` for a check run's, which no session waits
+/// on.
+fn network_session(request: &NetworkRequestView) -> Option<&str> {
     match &request.subject {
-        NetworkSubjectView::Session { id } => id,
+        NetworkSubjectView::Session { id } => Some(id),
+        NetworkSubjectView::Check { .. } => None,
     }
 }

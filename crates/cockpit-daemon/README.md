@@ -199,7 +199,11 @@ not share code.
   Under `"required"` a check runs through `torlek-sandbox` in a folder of its own beside the
   sessions' temporary folders, removed when it ends: the checkout writable, the daemon's
   agent base variables and its own `TMPDIR` only (never `GH_TOKEN`), its proxy allowing the
-  checkout's ecosystem registries and the project's host grants (#862 Q2). One that declares
+  checkout's ecosystem registries and the project's host grants (#862 Q2). A host its proxy
+  refuses is a network request whose subject is the check run (`network.rs`), filed while
+  it runs and again before its seal removes its folder; it stays in the owner's list until
+  decided, since the run is usually over by then, and "allow always" is a grant the
+  project's sessions use too. One that declares
   `native` is recorded `unavailable`, never run on the host, and the gate's next action says
   to declare `sandbox` or turn the sandbox off. Under `"off"` every check but `docker` runs
   on the host with the approved commands' environment (Git settings included) and the risk
@@ -382,12 +386,15 @@ builds it only when asked and no release installs it.
   gate counts, a failure is recorded failed with its output, a change after the run is stale,
   an agent cannot run a check or read a receipt, an agent's claim stays unverified, socket
   roles, checks refused before they run (undeclared, untrusted), and the placement of each
-  environment under `agents.sandbox` (#352).
+  environment under `agents.sandbox` (#352), a `native` check under `"required"` ending with
+  no process started.
 - `tests/check_environment.rs`: issue #352 through the real sandbox: a check under
   `"required"` cannot read the owner's key or the daemon's state, reach the owner's socket,
   see `GH_TOKEN`, write the owner's cache or reach an ungranted host; its receipt names the
-  sandbox and its folder is removed; on a host without bubblewrap it is `unavailable`; under
-  `"off"` it runs on the host.
+  sandbox and its folder is removed; a host it was refused reaches the owner as a request
+  of the check run; on a host without bubblewrap it is `unavailable` and the supervisor
+  started no process; under `"off"` it runs on the host. `tests/live_enforcement.rs`
+  (ignored, internet) has the check reach the host the owner allowed always and not another.
 - `tests/scheduling.rs`: issue #43 on the binary's sockets: a queued item placed on the idle
   session of its project, the working session named in its explanation; `scheduling/budget.rs`,
   a turn ended past an item's budget put on the feed once and taken back by the owner's next

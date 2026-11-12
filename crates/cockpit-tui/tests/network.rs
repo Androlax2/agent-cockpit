@@ -157,6 +157,29 @@ fn the_pane_names_the_host_the_session_and_what_each_key_does() {
 }
 
 #[test]
+fn the_pane_names_a_check_runs_request_and_says_always_reaches_the_projects_sessions() {
+    let now = Instant::now();
+    let request = NetworkRequestView {
+        subject: NetworkSubjectView::Check {
+            run: "execution-e-3".to_owned(),
+            check: "test".to_owned(),
+        },
+        ..asking(9)
+    };
+    let app = app_asked_for(request, now);
+
+    let screen = screen_text(&app, after_grace(now));
+
+    for expected in [
+        "Network request 9 from check test (run execution-e-3) (project app)",
+        "Allow always: every check and session",
+    ] {
+        assert!(screen.contains(expected), "{expected:?} not in:\n{screen}");
+    }
+    assert!(!app.board().needs_you(SESSION));
+}
+
+#[test]
 fn a_session_with_an_asking_network_request_needs_the_owner() {
     let now = Instant::now();
     let app = app_asked(now);

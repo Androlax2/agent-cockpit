@@ -354,7 +354,7 @@ impl Board {
             .iter()
             .filter(move |request| {
                 request.state == NetworkRequestStateView::Asking
-                    && network_session(request) == session
+                    && network_session(request) == Some(session)
             })
             .map(|request| format!("network {}", request.id));
         runs.chain(guides).chain(network)
@@ -459,9 +459,18 @@ fn decode<View: serde::de::DeserializeOwned>(
     View::deserialize(state).map_err(|error| error.to_string())
 }
 
-/// The session a network request came from.
-pub(crate) fn network_session(request: &NetworkRequestView) -> &str {
+/// The session a network request came from; `None` for a check run's.
+fn network_session(request: &NetworkRequestView) -> Option<&str> {
     match &request.subject {
-        NetworkSubjectView::Session { id } => id,
+        NetworkSubjectView::Session { id } => Some(id),
+        NetworkSubjectView::Check { .. } => None,
+    }
+}
+
+/// Who a network request came from, as the owner reads it.
+pub(crate) fn network_requester(request: &NetworkRequestView) -> String {
+    match &request.subject {
+        NetworkSubjectView::Session { id } => id.clone(),
+        NetworkSubjectView::Check { run, check } => format!("check {check} (run {run})"),
     }
 }

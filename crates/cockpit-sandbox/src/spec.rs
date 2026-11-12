@@ -41,7 +41,7 @@ pub const SYSTEM_READ_ONLY: &[&str] = &[
 ];
 
 /// Who the sandboxed program runs for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Subject {
     /// An agent session's provider.

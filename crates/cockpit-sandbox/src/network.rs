@@ -162,6 +162,51 @@ pub(crate) const SERVICES_MIGRATION_SQL: &str = "CREATE TABLE sandbox_network_gr
 pub(crate) const REASON_MIGRATION_SQL: &str =
     "ALTER TABLE sandbox_network_requests ADD COLUMN reason TEXT CHECK (reason <> '');";
 
+/// The `sandbox` migration set's version 7 (#352, #862 Q2): a check run files requests as a
+/// session does; its row names the run as the subject and the check in `subject_check`.
+pub(crate) const CHECK_SUBJECTS_MIGRATION_SQL: &str =
+    "CREATE TABLE sandbox_network_requests_checks (
+        id INTEGER PRIMARY KEY,
+        subject_kind TEXT NOT NULL CHECK (subject_kind IN ('session', 'check')),
+        subject TEXT NOT NULL CHECK (subject <> ''),
+        subject_check TEXT CHECK (subject_check <> ''),
+        project TEXT NOT NULL CHECK (project <> ''),
+        kind TEXT NOT NULL CHECK (kind IN ('host', 'service')),
+        host TEXT CHECK (host <> ''),
+        port INTEGER CHECK (port BETWEEN 1 AND 65535),
+        service TEXT CHECK (service <> ''),
+        record TEXT CHECK (record <> ''),
+        state TEXT NOT NULL CHECK (state IN ('asking', 'allowed-once', 'allowed-always',
+            'denied')),
+        asked_at INTEGER NOT NULL,
+        decided_at INTEGER,
+        decided_through TEXT CHECK (decided_through IN ('tui', 'cli')),
+        grant_id INTEGER REFERENCES sandbox_network_grants (id),
+        reason TEXT CHECK (reason <> ''),
+        CHECK ((state = 'asking') = (decided_at IS NULL)),
+        CHECK ((state = 'allowed-always') = (grant_id IS NOT NULL)),
+        CHECK (decided_at IS NOT NULL OR decided_through IS NULL),
+        CHECK ((kind = 'host') = (host IS NOT NULL)),
+        CHECK ((kind = 'host') = (port IS NOT NULL)),
+        CHECK ((kind = 'service') = (service IS NOT NULL)),
+        CHECK ((kind = 'service') = (record IS NOT NULL)),
+        CHECK ((subject_kind = 'check') = (subject_check IS NOT NULL))
+    );
+    INSERT INTO sandbox_network_requests_checks (id, subject_kind, subject, project, kind, host,
+            port, service, record, state, asked_at, decided_at, decided_through, grant_id,
+            reason)
+        SELECT id, subject_kind, subject, project, kind, host, port, service, record, state,
+            asked_at, decided_at, decided_through, grant_id, reason
+        FROM sandbox_network_requests;
+    DROP TABLE sandbox_network_requests;
+    ALTER TABLE sandbox_network_requests_checks RENAME TO sandbox_network_requests;
+    CREATE UNIQUE INDEX sandbox_network_requests_one_standing
+        ON sandbox_network_requests (subject_kind, subject, host, port)
+        WHERE kind = 'host' AND state IN ('asking', 'allowed-once', 'denied');
+    CREATE UNIQUE INDEX sandbox_network_requests_one_standing_service
+        ON sandbox_network_requests (subject_kind, subject, service, record)
+        WHERE kind = 'service' AND state IN ('asking', 'allowed-once', 'denied');";
+
 /// What a request asks for and a grant allows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkTarget {
@@ -210,7 +255,7 @@ pub const GITHUB_HOST: &str = "github.com";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkRequestState {
     Asking,
-    /// Allowed for the rest of the asking session.
+    /// Allowed for the rest of the asking session or check run.
     AllowedOnce,
     /// Allowed always for the project, through a grant.
     AllowedAlways,
@@ -272,12 +317,12 @@ pub struct OwnerDecision {
     pub through: Option<OwnerClient>,
 }
 
-/// One destination or service a session was refused, and what the owner decided. Only
-/// sessions ask today; the rows name the subject's kind for #862.
+/// One destination or service a session or a check run was refused, and what the owner
+/// decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkRequest {
     pub id: i64,
-    pub session: String,
+    pub subject: Subject,
     pub project: String,
     pub target: NetworkTarget,
     pub state: NetworkRequestState,
@@ -333,7 +378,8 @@ pub enum NetworkRefusal {
     TooSoon {
         wait_seconds: i64,
     },
-    /// Only a session asks: a check run's network requests are #862's.
+    /// Only a session's agent asks ahead for a service; a check run only files what its
+    /// launcher refused.
     NotASession,
 }
 
@@ -359,7 +405,7 @@ impl std::fmt::Display for NetworkRefusal {
                  allow it again in {wait_seconds} s"
             ),
             NetworkRefusal::NotASession => {
-                formatter.write_str("only a session's network requests are filed (#862)")
+                formatter.write_str("only a session's agent asks ahead for a service")
             }
         }
     }
@@ -406,7 +452,7 @@ impl From<NetworkRefusal> for NetworkError {
 }
 
 const REQUEST_COLUMNS: &str = "id, subject_kind, subject, project, kind, host, port, service,
-    record, state, asked_at, decided_at, decided_through, grant_id, reason";
+    record, state, asked_at, decided_at, decided_through, grant_id, reason, subject_check";
 const GRANT_COLUMNS: &str = "id, project, kind, host, port, service, record, request,
     granted_at, granted_through, revoked_at, revoked_through";
 
@@ -458,6 +504,9 @@ pub async fn ask_service(
     reason: &str,
     now: i64,
 ) -> Result<ServiceAsk, NetworkError> {
+    if !matches!(subject, Subject::Session { .. }) {
+        return Err(NetworkError::Refused(NetworkRefusal::NotASession));
+    }
     let target = NetworkTarget::Service {
         service: forward.service.clone(),
         record: forward.record(),
@@ -497,7 +546,7 @@ async fn standing_request(
     subject: &Subject,
     target: &NetworkTarget,
 ) -> Result<Option<NetworkRequest>, NetworkError> {
-    let (subject_kind, subject_id) = subject_columns(subject)?;
+    let (subject_kind, subject_id) = subject_columns(subject);
     let (kind, host, port, service, record) = target.columns();
     let mut standing = connection
         .query(
@@ -524,14 +573,18 @@ async fn insert_request(
     reason: Option<&str>,
     now: i64,
 ) -> Result<NetworkRequest, NetworkError> {
-    let (subject_kind, subject_id) = subject_columns(subject)?;
+    let (subject_kind, subject_id) = subject_columns(subject);
+    let subject_check = match subject {
+        Subject::Session { .. } => None,
+        Subject::Check { check, .. } => Some(check.as_str()),
+    };
     let (kind, host, port, service, record) = target.columns();
     let row = write
         .prepare(&format!(
             "INSERT INTO sandbox_network_requests
                 (subject_kind, subject, project, kind, host, port, service, record, state,
-                 asked_at, reason)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'asking', ?9, ?10)
+                 asked_at, reason, subject_check)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'asking', ?9, ?10, ?11)
              RETURNING {REQUEST_COLUMNS}"
         ))
         .await?
@@ -546,6 +599,7 @@ async fn insert_request(
             record,
             now,
             reason,
+            subject_check,
         ))
         .await?;
     request_from(&row)
@@ -824,7 +878,7 @@ pub async fn egress_decisions(
     project: &str,
     subject: &Subject,
 ) -> Result<EgressDecisions, NetworkError> {
-    let (subject_kind, subject_id) = subject_columns(subject)?;
+    let (subject_kind, subject_id) = subject_columns(subject);
     let mut decisions = EgressDecisions::default();
     for grant in network_grants(connection, Some(project)).await? {
         let source = AllowSource::Grant {
@@ -960,26 +1014,37 @@ async fn decided(
     request_from(&row)
 }
 
-fn subject_columns(subject: &Subject) -> Result<(&'static str, &str), NetworkError> {
+/// The `subject_kind, subject` columns: a check run is named by its run, unique to it.
+fn subject_columns(subject: &Subject) -> (&'static str, &str) {
     match subject {
-        Subject::Session { session } => Ok(("session", session.as_str())),
-        Subject::Check { .. } => Err(NetworkError::Refused(NetworkRefusal::NotASession)),
+        Subject::Session { session } => ("session", session.as_str()),
+        Subject::Check { run, .. } => ("check", run.as_str()),
     }
 }
 
 fn request_from(row: &Row) -> Result<NetworkRequest, NetworkError> {
     let subject_kind: String = row.get(1)?;
-    if subject_kind != "session" {
-        return Err(NetworkError::InvalidRow(format!(
-            "subject kind {subject_kind:?}"
-        )));
-    }
+    let subject_id: String = row.get(2)?;
+    let subject = match subject_kind.as_str() {
+        "session" => Subject::Session {
+            session: subject_id,
+        },
+        "check" => Subject::Check {
+            run: subject_id,
+            check: row.get::<Option<String>>(15)?.ok_or_else(|| {
+                NetworkError::InvalidRow("a check run's request without its check".to_owned())
+            })?,
+        },
+        other => {
+            return Err(NetworkError::InvalidRow(format!("subject kind {other:?}")));
+        }
+    };
     let state: String = row.get(9)?;
     let state = NetworkRequestState::parse(&state)
         .ok_or_else(|| NetworkError::InvalidRow(format!("request state {state:?}")))?;
     Ok(NetworkRequest {
         id: row.get(0)?,
-        session: row.get(2)?,
+        subject,
         project: row.get(3)?,
         target: target_from(row, 4)?,
         state,

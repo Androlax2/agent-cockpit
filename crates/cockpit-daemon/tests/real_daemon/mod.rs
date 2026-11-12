@@ -17,7 +17,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use cockpit_client::Connection;
-use cockpit_protocol::{Command, Reply, SessionStateView, SessionView};
+use cockpit_protocol::{CheckReceiptView, Command, Reply, SessionStateView, SessionView};
 
 /// The profile directory of a daemon this test build runs without `--profile`: a build
 /// outside a release bundle runs profile `dev` (#196).
@@ -661,6 +661,51 @@ impl Home {
         match added {
             Ok(Reply::ProjectAdded { project, .. }) => (root, project.name),
             other => panic!("project-add {relative}: {other:?}"),
+        }
+    }
+}
+
+impl Home {
+    /// Runs `project`'s `check` as the owner and waits for its receipt.
+    pub async fn run_check(&self, project: &str, check: &str) -> CheckReceiptView {
+        let client = self.connect().await;
+        let run = match client
+            .request(
+                Command::CheckRun {
+                    project: project.to_owned(),
+                    check: check.to_owned(),
+                    checkout: None,
+                },
+                GENEROUS,
+            )
+            .await
+        {
+            Ok(Reply::CheckRunStarted { run }) => run,
+            other => panic!("expected a started run, got {other:?}"),
+        };
+        let deadline = Instant::now() + GENEROUS * 3;
+        loop {
+            let reply = client
+                .request(
+                    Command::CheckReceipt {
+                        project: project.to_owned(),
+                        run: run.clone(),
+                    },
+                    GENEROUS,
+                )
+                .await;
+            match reply {
+                Ok(Reply::CheckReceipt {
+                    receipt: Some(receipt),
+                }) => return *receipt,
+                Ok(Reply::CheckReceipt { receipt: None }) if Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                other => panic!(
+                    "expected the receipt of {run}, got {other:?}; {}",
+                    self.stderr()
+                ),
+            }
         }
     }
 }

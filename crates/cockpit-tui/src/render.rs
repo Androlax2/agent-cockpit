@@ -5,8 +5,8 @@
 use std::time::Instant;
 
 use cockpit_protocol::{
-    CompactionStatus, GuideView, HiddenView, NetworkRequestView, NetworkTargetView, RunRequestView,
-    SessionReport, SessionStateView, SessionView, ShownText,
+    CompactionStatus, GuideView, HiddenView, NetworkRequestView, NetworkSubjectView,
+    NetworkTargetView, RunRequestView, SessionReport, SessionStateView, SessionView, ShownText,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -663,7 +663,7 @@ pub(crate) fn pane_keys(pane: &Pane) -> &'static str {
     }
 }
 
-/// A network request's lines (#674): "allow once" lasts the rest of the asking session,
+/// A network request's lines (#674): "allow once" lasts the rest of the asking session or check run,
 /// "allow always" is a grant to the project the owner can revoke. A service's request names
 /// its whole record (#880): what the grant is bound to.
 pub(crate) fn network_lines(request: &NetworkRequestView) -> Vec<String> {
@@ -680,7 +680,7 @@ pub(crate) fn network_lines(request: &NetworkRequestView) -> Vec<String> {
         format!(
             "Network request {} from {} (project {})",
             request.id,
-            crate::board::network_session(request),
+            crate::board::network_requester(request),
             request.project
         ),
         asked,
@@ -692,11 +692,15 @@ pub(crate) fn network_lines(request: &NetworkRequestView) -> Vec<String> {
             lines.push(format!("Warning: {warnings}"));
         }
     }
-    lines.push(
-        "Allow once: for the rest of this session. Allow always: every session of the \
-         project, until `torlek network revoke`."
+    lines.push(match request.subject {
+        NetworkSubjectView::Session { .. } => "Allow once: for the rest of this session. \
+            Allow always: every session of the project, until `torlek network revoke`."
             .to_owned(),
-    );
+        NetworkSubjectView::Check { .. } => "Allow once: for the rest of this check run. \
+            Allow always: every check and session of the project, until \
+            `torlek network revoke`."
+            .to_owned(),
+    });
     lines
 }
 

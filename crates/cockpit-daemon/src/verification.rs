@@ -807,6 +807,49 @@ async fn remove_run_folders(folders: Vec<PathBuf>) {
     }
 }
 
+/// Files the hosts a sandboxed run's launcher refused as requests for the owner (#352, #862
+/// Q2), before its seal removes the folder they are listed in: a run often ends before the
+/// network loop's next pass reads it. A failure is logged; the receipt is recorded anyway.
+async fn file_refused_hosts(context: &Context, pending: &cockpit_verification::PendingResult) {
+    let is_sandboxed = pending.receipt.ran.as_ref().is_some_and(|ran| {
+        ran.environment == cockpit_config::ExecutionEnvironment::Sandbox.as_str()
+    });
+    if !is_sandboxed {
+        return;
+    }
+    let run = pending.receipt.run_id.clone();
+    let sandbox = context.sessions.sandbox().clone();
+    let listed = match tokio::task::spawn_blocking(move || sandbox.check_egress_requests(&run))
+        .await
+    {
+        Ok(Ok(Some(requests))) => requests,
+        Ok(Ok(None)) => return,
+        Ok(Err(error)) => {
+            tracing::warn!(run = pending.receipt.run_id, %error, "a check run's requests file was not read");
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(run = pending.receipt.run_id, %error, "a check run's requests file was not read");
+            return;
+        }
+    };
+    let subject = cockpit_sandbox::Subject::Check {
+        run: pending.receipt.run_id.clone(),
+        check: pending.receipt.check.name.clone(),
+    };
+    let filed = async {
+        let write = context.database.write().await?;
+        crate::network::file_listed(&write, &subject, &pending.receipt.project, &listed, now())
+            .await?;
+        write.commit().await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    }
+    .await;
+    if let Err(error) = filed {
+        tracing::warn!(run = pending.receipt.run_id, %error, "a check run's refused hosts were not filed");
+    }
+}
+
 async fn record_when_ended(
     context: Context,
     pending: cockpit_verification::PendingResult,
@@ -851,6 +894,7 @@ async fn record_when_ended(
             receipt.output.len() as u64
         }
     };
+    file_refused_hosts(&context, &pending).await;
     let recorded = async {
         let write = context.database.write().await?;
         let receipt =

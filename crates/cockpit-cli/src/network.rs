@@ -205,10 +205,13 @@ fn grant_origin(grant: &NetworkGrantView) -> String {
 
 fn request_detail(request: &NetworkRequestView) -> String {
     let mut text = format!(
-        "network request {}: {} for session {} (project {})\nstate: {}\n",
+        "network request {}: {} for {} (project {})\nstate: {}\n",
         request.id,
         request.target,
-        subject(&request.subject),
+        match &request.subject {
+            NetworkSubjectView::Session { id } => format!("session {id}"),
+            NetworkSubjectView::Check { run, check } => format!("check {check} (run {run})"),
+        },
         request.project,
         state_name(request.state)
     );
@@ -218,7 +221,7 @@ fn request_detail(request: &NetworkRequestView) -> String {
     }
     let verdict = match request.state {
         NetworkRequestStateView::Asking => None,
-        NetworkRequestStateView::AllowedOnce => Some("allowed for the rest of this session"),
+        NetworkRequestStateView::AllowedOnce => Some(once_lasts(&request.subject)),
         NetworkRequestStateView::AllowedAlways => Some("allowed always for the project"),
         NetworkRequestStateView::Denied => Some("denied"),
     };
@@ -269,9 +272,19 @@ pub(crate) fn decided(verdict: &str, decision: NetworkDecisionView) -> String {
     )
 }
 
-fn subject(subject: &NetworkSubjectView) -> &str {
+/// The session's id, or `check NAME run RUN` for a check run's request (#352).
+fn subject(subject: &NetworkSubjectView) -> String {
     match subject {
-        NetworkSubjectView::Session { id } => id,
+        NetworkSubjectView::Session { id } => id.clone(),
+        NetworkSubjectView::Check { run, check } => format!("check {check} run {run}"),
+    }
+}
+
+/// What "allow once" lasts for the request's subject.
+fn once_lasts(subject: &NetworkSubjectView) -> &'static str {
+    match subject {
+        NetworkSubjectView::Session { .. } => "allowed for the rest of this session",
+        NetworkSubjectView::Check { .. } => "allowed for the rest of this check run",
     }
 }
 

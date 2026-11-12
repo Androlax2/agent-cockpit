@@ -69,6 +69,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 6,
             sql: crate::network::REASON_MIGRATION_SQL,
         },
+        // #352: a check run files network requests as a session does (#862, Q2).
+        Migration {
+            version: 7,
+            sql: crate::network::CHECK_SUBJECTS_MIGRATION_SQL,
+        },
     ],
 };
 

@@ -178,10 +178,8 @@ fn run(spec_path: PathBuf) -> Result<ExitCode, String> {
     // The owner's decisions (#674) apply before the first connection is served.
     proxy.apply_decisions(launch_decisions);
     proxy.keep_decisions(decisions);
-    // Only a session asks the owner; a check run's requests are #862's.
-    if matches!(spec.subject, cockpit_sandbox::Subject::Session { .. }) {
-        proxy.ask_through(mount_dir.join(cockpit_sandbox::REQUESTS_FILE));
-    }
+    // A session and a check run both ask the owner (#352, #862 Q2).
+    proxy.ask_through(mount_dir.join(cockpit_sandbox::REQUESTS_FILE));
     let serving = std::sync::Arc::clone(&proxy);
     let proxy_listener = received.proxy;
     std::thread::Builder::new()
