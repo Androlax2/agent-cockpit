@@ -281,10 +281,22 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
         let Ok(answer) = outgoing.clone().reserve_owned().await else {
             break;
         };
-        wipe_vec(&mut frame);
+        frame.clear();
         frame.shrink_to(RETAINED_FRAME_CAPACITY);
-        match reader.next_frame(&mut frame).await {
-            Ok(()) => {}
+        let read = reader.next_frame(&mut frame).await;
+        let decoded = read.map(|()| std::str::from_utf8(&frame).map(decode_request_with_kind));
+        // The frame may carry a secret the owner typed (#1386); the request holds its own copy.
+        wipe(&mut frame);
+        let (request, kind) = match decoded {
+            Ok(Ok(Ok(decoded))) => decoded,
+            Ok(Ok(Err(rejection))) => {
+                answer.send(rejection.into_frame());
+                continue;
+            }
+            Ok(Err(_)) => {
+                answer.send(malformed("the frame is not UTF-8".to_owned()));
+                continue;
+            }
             Err(FrameError::TooLarge) => {
                 answer.send(malformed(format!(
                     "the frame is larger than {MAX_FRAME_BYTES} bytes"
@@ -292,20 +304,6 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
                 break;
             }
             Err(FrameError::Closed) => break,
-        }
-        let Ok(text) = std::str::from_utf8(&frame) else {
-            answer.send(malformed("the frame is not UTF-8".to_owned()));
-            continue;
-        };
-        let decoded = decode_request_with_kind(text);
-        // The frame may carry a secret the owner typed (#1386); the request holds its own copy.
-        wipe(&mut frame);
-        let (request, kind) = match decoded {
-            Ok(decoded) => decoded,
-            Err(rejection) => {
-                answer.send(rejection.into_frame());
-                continue;
-            }
         };
         let id = request.id;
         let respond = move |outcome| ServerFrame::Response(Response { id, outcome });
@@ -372,7 +370,6 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
             }
         });
     }
-    wipe_vec(&mut frame);
     // Requests still running keep their answer places, so the writer delivers their
     // answers before it stops.
     drop(feeds);

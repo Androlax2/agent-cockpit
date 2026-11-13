@@ -1576,10 +1576,17 @@ pub fn decode_request_with_kind(frame: &str) -> Result<(Request, String), Reques
             format!("the frame is not JSON: {error}"),
         )
     })?;
+    let decoded = decode_value(&value);
+    // The frame may carry a secret the owner typed (#1386); the request holds its own copy.
+    wipe_strings(value);
+    decoded
+}
+
+fn decode_value(value: &Value) -> Result<(Request, String), RequestRejection> {
     let id = value
         .get("id")
         .and_then(|id| RequestId::deserialize(id).ok());
-    match Request::deserialize(&value) {
+    match Request::deserialize(value) {
         Ok(Request {
             command: Command::Unknown,
             ..
@@ -1610,6 +1617,22 @@ pub fn decode_request_with_kind(frame: &str) -> Result<(Request, String), Reques
             ErrorCode::InvalidRequest,
             format!("malformed request: {error}"),
         )),
+    }
+}
+
+/// Overwrites every string `value` holds before freeing it.
+fn wipe_strings(value: Value) {
+    match value {
+        Value::String(text) => {
+            let mut bytes = text.into_bytes();
+            bytes.fill(0);
+            std::hint::black_box(&mut bytes);
+        }
+        Value::Array(values) => values.into_iter().for_each(wipe_strings),
+        Value::Object(fields) => fields
+            .into_iter()
+            .for_each(|(_, field)| wipe_strings(field)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 

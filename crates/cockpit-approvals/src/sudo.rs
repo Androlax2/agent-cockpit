@@ -642,6 +642,11 @@ impl Runner {
     ) -> Result<(), Refusal> {
         let live = self.live_run(id).ok_or(Refusal::NotRunning)?;
         let no_ask = Refusal::NoSudoAsk { request: id.0, ask };
+        if !live.sudo_asks().waiting.contains_key(&ask) {
+            return Err(no_ask);
+        }
+        // Before the ask is taken: when the key cannot be drawn, it still waits for a retry.
+        live.protect_typed_secret(id, password.as_bytes().to_vec())?;
         let waiting = live
             .sudo_asks()
             .waiting
@@ -654,10 +659,6 @@ impl Runner {
                 ask,
                 why,
             });
-        }
-        if let Err(unprotected) = live.protect_typed_secret(id, password.as_bytes().to_vec()) {
-            let _ = waiting.answer.send(Err(unprotected.to_string()));
-            return Err(unprotected);
         }
         waiting
             .answer

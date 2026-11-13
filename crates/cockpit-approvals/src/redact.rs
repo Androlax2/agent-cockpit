@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
 
-const REDACTED: &str = "[redacted]";
+pub(crate) const REDACTED: &str = "[redacted]";
 
 /// Escape sequences (CSI, OSC, DCS, SOS, PM, APC, charset and single-character ones), C1
 /// controls and every C0 control but newline and tab: a terminal interprets them, an agent

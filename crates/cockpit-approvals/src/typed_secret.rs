@@ -13,10 +13,15 @@
 
 use sha2::{Digest, Sha256};
 
-const REDACTED: &[u8] = b"[redacted]";
+use crate::redact::REDACTED;
+
 /// Shorter typed lines (a `y`, an empty answer) are not fingerprinted: their bytes are too
 /// common in ordinary output to redact.
 pub(crate) const MIN_TYPED_SECRET_BYTES: usize = 4;
+/// An encoded form shorter than this (the base64 of a 4-byte secret) is not fingerprinted:
+/// a few base64 or hex characters turn up by chance in hashes and tokens. The raw form is
+/// kept from [`MIN_TYPED_SECRET_BYTES`].
+const MIN_ENCODED_FORM_BYTES: usize = 6;
 const BLOCK: usize = 64;
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -29,9 +34,9 @@ pub fn wipe(bytes: &mut [u8]) {
 
 /// [`wipe`] for a whole vector's allocation, spare capacity included, then empties it.
 pub fn wipe_vec(bytes: &mut Vec<u8>) {
-    let length = bytes.capacity();
-    bytes.resize(length, 0);
-    wipe(bytes);
+    bytes.fill(0);
+    bytes.resize(bytes.capacity(), 0);
+    std::hint::black_box(&mut *bytes);
     bytes.clear();
 }
 
@@ -61,6 +66,10 @@ impl std::fmt::Debug for TypedSecrets {
 impl Drop for TypedSecrets {
     fn drop(&mut self) {
         wipe_vec(&mut self.held);
+        for fingerprint in &mut self.fingerprints {
+            fingerprint.tag = 0;
+            wipe(&mut fingerprint.mac);
+        }
     }
 }
 
@@ -72,33 +81,43 @@ struct Fingerprint {
     mac: [u8; 32],
 }
 
-/// HMAC-SHA-256 with the key's inner and outer pads already absorbed, and the rolling hash's
-/// base.
-#[derive(Clone)]
+/// The run's HMAC-SHA-256 key and the rolling hash's base, wiped when dropped. The key is
+/// kept as bytes rather than as hash states absorbed from it, which could not be wiped: an
+/// HMAC is computed only for a window the screen passed, so the extra block costs little.
 struct Keyed {
-    inner: Sha256,
-    outer: Sha256,
+    key: [u8; BLOCK],
     base: u64,
 }
 
+impl Drop for Keyed {
+    fn drop(&mut self) {
+        wipe(&mut self.key);
+        self.base = 0;
+        std::hint::black_box(&mut self.base);
+    }
+}
+
 impl Keyed {
-    fn new(mut key: [u8; BLOCK], base: u64) -> Keyed {
-        let mut inner_pad = key.map(|byte| byte ^ 0x36);
-        let mut outer_pad = key.map(|byte| byte ^ 0x5c);
-        let keyed = Keyed {
-            inner: Sha256::new_with_prefix(inner_pad),
-            outer: Sha256::new_with_prefix(outer_pad),
+    fn new(key: [u8; BLOCK], base: u64) -> Keyed {
+        Keyed {
+            key,
             base: base | 1,
-        };
-        wipe(&mut key);
-        wipe(&mut inner_pad);
-        wipe(&mut outer_pad);
-        keyed
+        }
     }
 
     fn mac(&self, message: &[u8]) -> [u8; 32] {
-        let inner = self.inner.clone().chain_update(message).finalize();
-        self.outer.clone().chain_update(inner).finalize().into()
+        let mut pad = self.key.map(|byte| byte ^ 0x36);
+        let inner = Sha256::new()
+            .chain_update(pad)
+            .chain_update(message)
+            .finalize();
+        pad = self.key.map(|byte| byte ^ 0x5c);
+        let mac = Sha256::new()
+            .chain_update(pad)
+            .chain_update(inner)
+            .finalize();
+        wipe(&mut pad);
+        mac.into()
     }
 
     fn fingerprint(&self, form: &[u8]) -> Fingerprint {
@@ -148,19 +167,19 @@ impl TypedSecrets {
             wipe(secret);
             return Ok(());
         }
-        let keyed = match &self.keyed {
-            Some(keyed) => keyed.clone(),
-            None => {
-                let (key, base) = random_key()?;
-                let keyed = Keyed::new(key, base);
-                self.keyed = Some(keyed.clone());
-                keyed
-            }
-        };
-        for mut form in forms(secret) {
-            let fingerprint = keyed.fingerprint(&form);
-            if !self.fingerprints.contains(&fingerprint) {
-                self.fingerprints.push(fingerprint);
+        if self.keyed.is_none() {
+            let (mut key, base) = random_key()?;
+            self.keyed = Some(Keyed::new(key, base));
+            wipe(&mut key);
+        }
+        let keyed = self.keyed.as_ref().expect("the key was drawn above");
+        for (index, mut form) in forms(secret).into_iter().enumerate() {
+            let is_raw = index == 0;
+            if is_raw || form.len() >= MIN_ENCODED_FORM_BYTES {
+                let fingerprint = keyed.fingerprint(&form);
+                if !self.fingerprints.contains(&fingerprint) {
+                    self.fingerprints.push(fingerprint);
+                }
             }
             wipe_vec(&mut form);
         }
@@ -224,6 +243,7 @@ impl TypedSecrets {
             })
             .collect();
         let mut at = 0;
+        let mut unmatched_from = 0;
         while at < until {
             let found = screens.iter().find_map(|(length, passed)| {
                 let candidate = window.get(at..at + length)?;
@@ -235,16 +255,16 @@ impl TypedSecrets {
             });
             match found {
                 Some(length) => {
-                    output.extend_from_slice(REDACTED);
+                    output.extend_from_slice(&window[unmatched_from..at]);
+                    output.extend_from_slice(REDACTED.as_bytes());
                     self.redacted += 1;
                     at += length;
+                    unmatched_from = at;
                 }
-                None => {
-                    output.push(window[at]);
-                    at += 1;
-                }
+                None => at += 1,
             }
         }
+        output.extend_from_slice(&window[unmatched_from..at]);
         at
     }
 }
@@ -260,14 +280,13 @@ fn random_key() -> std::io::Result<([u8; BLOCK], u64)> {
     Ok((key, u64::from_le_bytes(base)))
 }
 
-/// Every form `secret` may be printed in. Each is wiped by the caller.
+/// Every form `secret` may be printed in, the raw bytes first. Each is wiped by the caller.
 fn forms(secret: &[u8]) -> Vec<Vec<u8>> {
     let mut forms = vec![secret.to_vec()];
     forms.extend((0..3).map(|alignment| base64_inside(secret, alignment)));
     forms.push(hex(secret, b"0123456789abcdef"));
     forms.push(hex(secret, b"0123456789ABCDEF"));
     forms.push(url_encoded(secret));
-    forms.retain(|form| !form.is_empty());
     forms
 }
 
@@ -424,6 +443,17 @@ mod tests {
         let mut secrets = typed(b"yes");
 
         assert_eq!(scrubbed(&mut secrets, b"yes, yes", 3), b"yes, yes");
+    }
+
+    #[test]
+    fn a_short_secrets_short_base64_forms_are_not_fingerprinted() {
+        // `abcd` in base64, at alignment 0, is `YWJj` and then `ZA==`: inside, `YWJjZ`.
+        let mut secrets = typed(b"abcd");
+
+        assert_eq!(
+            scrubbed(&mut secrets, b"YWJjZA== abcd 61626364", 4),
+            b"YWJjZA== [redacted] [redacted]"
+        );
     }
 
     #[test]

@@ -258,10 +258,16 @@ struct Kept {
     /// The fingerprints of what the owner typed, and the bytes held back until it is known
     /// whether they begin one.
     typed: TypedSecrets,
+    /// The run's result was taken and its fingerprints dropped: what a process still holding
+    /// the terminal prints now is read and discarded, never kept unscrubbed.
+    is_finished: bool,
 }
 
 impl Kept {
     fn append(&mut self, chunk: &[u8]) {
+        if self.is_finished {
+            return;
+        }
         let before = self.bytes.len();
         self.typed.scrub_into(chunk, &mut self.bytes);
         self.total += (self.bytes.len() - before) as u64;
@@ -401,6 +407,7 @@ impl Runner {
                 total: 0,
                 last_output: Instant::now(),
                 typed: TypedSecrets::default(),
+                is_finished: false,
             }),
             is_stopped_by_owner: AtomicBool::new(false),
             sudo_asks: Mutex::default(),
@@ -444,6 +451,7 @@ impl Runner {
         let typed_secret_redacted = kept.typed.redacted();
         // The run ended: its key and fingerprints go with it.
         kept.typed = TypedSecrets::default();
+        kept.is_finished = true;
         let tail = &kept.bytes[kept.bytes.len().saturating_sub(self.settings.kept_bytes)..];
         Ok(Ran {
             result: RunResult {
@@ -938,6 +946,7 @@ mod tests {
                 total: line.len() as u64,
                 last_output: now - Duration::from_secs(2),
                 typed: TypedSecrets::default(),
+                is_finished: false,
             };
             assert_eq!(is_at_prompt(&kept, now), expected, "{line:?}");
         }
