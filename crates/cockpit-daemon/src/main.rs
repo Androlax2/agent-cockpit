@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use cockpit_daemon::{
-    RUN_LEADER_FLAG, SESSION_TICK, Serve, StartError, own_profile, own_program, serve,
+    RUN_LEADER_FLAG, SESSION_TICK, SUDO_ASKPASS_FLAG, Serve, StartError, own_profile, own_program,
+    run_sudo_askpass, serve,
 };
 
 const USAGE: &str = "usage: torlek-daemon [--foreground] [--profile NAME]";
@@ -14,8 +15,15 @@ const USAGE: &str = "usage: torlek-daemon [--foreground] [--profile NAME]";
 fn main() -> ExitCode {
     let mut raw_arguments = std::env::args_os().skip(1);
     // The daemon starts itself in this mode as the session leader of each approved run.
-    if raw_arguments.next().as_deref() == Some(RUN_LEADER_FLAG.as_ref()) {
-        return cockpit_processes::run_session_leader(&raw_arguments.collect::<Vec<_>>());
+    match raw_arguments.next() {
+        Some(flag) if flag == RUN_LEADER_FLAG => {
+            return cockpit_processes::run_session_leader(&raw_arguments.collect::<Vec<_>>());
+        }
+        // sudo runs the daemon's program in this mode, through a run's askpass launcher.
+        Some(flag) if flag == SUDO_ASKPASS_FLAG => {
+            return run_sudo_askpass(&raw_arguments.collect::<Vec<_>>());
+        }
+        _ => {}
     }
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let Some(arguments) = parse(&arguments) else {

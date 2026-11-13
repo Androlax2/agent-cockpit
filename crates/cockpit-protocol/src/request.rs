@@ -380,6 +380,14 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         shown: bool,
     },
+    /// Owner only: the owner's password for sudo's ask `ask` in the running command `request`
+    /// (#1374), handed to the Torlek askpass helper sudo waits on: never typed into the
+    /// command's terminal. Refused once that ask no longer waits.
+    ApprovalSudoPassword {
+        request: i64,
+        ask: u64,
+        password: SecretText,
+    },
     /// Owner only: stop a running approved command, ending every process in its execution
     /// (#1301). The run finishes with the exit status the stop left and the note that the
     /// owner stopped it.

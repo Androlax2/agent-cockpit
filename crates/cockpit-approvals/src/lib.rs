@@ -10,6 +10,7 @@ mod restart;
 mod retention;
 mod rows;
 mod runs;
+mod sudo;
 
 use cockpit_turso::{Migration, MigrationSet};
 
@@ -33,6 +34,9 @@ pub use runs::{
     finish_start, interrupted_runs, may_ask, open_runs, purge_run_output, queue_order,
     reconcile_run, record_not_run, record_outcome_unknown, resolve_cwd, run_request, run_status,
     run_status_if_fresh, shown_run, start_run, validate_start,
+};
+pub use sudo::{
+    SudoAnswered, SudoAsk, SudoAskpass, SudoHelper, TRUSTED_SUDO, sudo_asks_every_time,
 };
 
 /// The approvals tables. A run request keeps its asked command beside the current one, so an

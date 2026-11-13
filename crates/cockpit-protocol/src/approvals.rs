@@ -110,6 +110,11 @@ pub struct RunRequestView {
     /// under the display rules. `None` otherwise, or when the daemon cannot show that line.
     #[serde(default)]
     pub waiting_prompt: Option<ShownText>,
+    /// A sudo in the running command asks for the owner's password through Torlek's askpass
+    /// helper (#1374): the oldest such ask, answered with `approval-sudo-password`. The
+    /// command then also reads `waiting_for_input`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sudo_ask: Option<SudoAskView>,
     pub result: Option<RunResultView>,
     /// Why the request ended without a result, or what is known about it.
     pub note: Option<String>,
@@ -120,6 +125,15 @@ pub struct RunRequestView {
     /// (#1335), so this is that request, nothing new was filed and the new reason was dropped.
     #[serde(default)]
     pub already_asked: bool,
+}
+
+/// What a sudo in a running command asks the owner (#1374).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SudoAskView {
+    /// Counts from 1 in each run; the answer names it.
+    pub ask: u64,
+    /// sudo's prompt as a terminal would show it, redacted, under the display rules.
+    pub prompt: ShownText,
 }
 
 /// One decided run request as `approval list --all` reads it (#1252): what it was, how long

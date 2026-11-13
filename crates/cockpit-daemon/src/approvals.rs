@@ -19,7 +19,7 @@ use cockpit_processes::{ExecutionId, Termination};
 use cockpit_protocol::{
     Command, DecidedRunView, DecidedThroughView, ErrorCode, FoldedView, GuideStateView,
     GuideStepView, GuideView, HiddenView, Outcome, ProtocolError, Reply, RunDecisionView,
-    RunRequestView, RunResultView, RunStateView, ShownText, Unblock, UnblockedBy,
+    RunRequestView, RunResultView, RunStateView, ShownText, SudoAskView, Unblock, UnblockedBy,
 };
 use cockpit_turso::sql::Connection;
 use cockpit_turso::{Database, WriteTransaction};
@@ -69,6 +69,8 @@ impl From<Refusal> for Failed {
             | Refusal::AlreadyDecided { .. }
             | Refusal::NotRunning
             | Refusal::InputWouldShow { .. }
+            | Refusal::NoSudoAsk { .. }
+            | Refusal::SudoStoppedAsking { .. }
             | Refusal::NotStoppable { .. }
             | Refusal::StopUnconfirmed { .. }
             | Refusal::NoStoredOutput { .. } => ErrorCode::Conflict,
@@ -517,6 +519,16 @@ pub(crate) fn route_decision(
                 shown,
             } => {
                 runner.send_input(RunId(request), &text, shown)?;
+                let read = database.read().await?;
+                Ok(run_reply(&existing_run(&read, request).await?, &runner))
+            }
+            Command::ApprovalSudoPassword {
+                request,
+                ask,
+                password,
+            } => {
+                runner.answer_sudo(RunId(request), ask, password.expose().to_owned())?;
+                tracing::info!(request, ask, "the owner answered sudo's ask");
                 let read = database.read().await?;
                 Ok(run_reply(&existing_run(&read, request).await?, &runner))
             }
@@ -1040,6 +1052,13 @@ fn run_view(
             .then(|| runner.prompt(run.id))
             .flatten()
             .map(|prompt| shown(&prompt)),
+        sudo_ask: is_waiting_for_input
+            .then(|| runner.sudo_ask(run.id))
+            .flatten()
+            .map(|ask| SudoAskView {
+                ask: ask.ask,
+                prompt: shown(&ask.prompt),
+            }),
         decision: run.decision.map(|decision| RunDecisionView {
             approved: decision.approved,
             at: decision.at,

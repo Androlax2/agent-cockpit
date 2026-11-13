@@ -82,10 +82,15 @@ files: `begin_output_retirement` fences readers and commits first, `remove_outpu
 removes only `stdout` and `stderr`, and `recover_output_retirements` finishes an interrupted
 one. Which outputs to retire is the daemon's policy.
 
+`seal_against_tracing` (Linux) makes the calling process non-dumpable, so its own user can
+neither trace it nor read its memory or descriptors through `/proc`, and refuses when a
+tracer was attached before (`TracerPid`). sudo's askpass helper calls it before it is
+handed the owner's password (#1374).
+
 ## Dependency edges
 
 - Depends on: `cockpit-turso` (the transactions and migrations of its table), `rustix`
-  (process-group signals without `unsafe`), `tokio`.
+  (process-group signals and `PR_SET_DUMPABLE` without `unsafe`), `tokio`.
 - Depends on no product capability; `tests/crate_graph.rs` enforces it, and the workspace
   rule `verification -> processes` keeps verification from launching processes.
 - Used by: the daemon, which reconciles executions before it accepts requests, and

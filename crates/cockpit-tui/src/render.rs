@@ -625,10 +625,16 @@ pub(crate) fn typing_line(typing: Typing, typed: &str, is_input_revealed: bool) 
             "Line for the command",
             format!(", {}", reveal_hint(is_input_revealed)),
         ),
+        Typing::SudoPassword => ("sudo's password", ", to sudo alone".to_owned()),
         Typing::Answer => ("Answer", String::new()),
         Typing::StuckNote => ("Stuck because", String::new()),
     };
-    let shown = if typing == Typing::Input && !is_input_revealed {
+    let is_masked = match typing {
+        Typing::Input => !is_input_revealed,
+        Typing::SudoPassword => true,
+        Typing::Answer | Typing::StuckNote => false,
+    };
+    let shown = if is_masked {
         "*".repeat(typed.chars().count())
     } else {
         typed.to_owned()
@@ -651,6 +657,9 @@ pub(crate) fn pane_keys(pane: &Pane) -> &'static str {
         return "stop it and every process it started? y to confirm, any other key keeps it";
     }
     match pane.shown() {
+        Some(Shown::Run {
+            sudo_ask: Some(_), ..
+        }) => "i type sudo's password   x stop it   m more",
         Some(Shown::Run {
             waiting_for_input: true,
             ..
@@ -712,22 +721,36 @@ pub(crate) fn network_lines(request: &NetworkRequestView) -> Vec<String> {
 /// A run request's lines; `is_expanded` shows the whole command instead of its folded start.
 pub(crate) fn run_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> {
     let waiting = crate::pane::waits_for_input(run);
-    let mut lines = vec![format!(
-        "{} {} from {}{}",
-        if waiting {
-            "Command waiting for input:"
-        } else {
-            "Run request"
-        },
-        run.id,
-        run.session,
-        run.project
-            .as_ref()
-            .map(|project| format!(" (project {project})"))
-            .unwrap_or_default(),
-    )];
-    if let Some(prompt) = run.waiting_prompt.as_ref().filter(|_| waiting) {
+    let sudo_ask = run.sudo_ask.as_ref().filter(|_| waiting);
+    let project = run
+        .project
+        .as_ref()
+        .map(|project| format!(" (project {project})"))
+        .unwrap_or_default();
+    let mut lines = vec![match (sudo_ask, waiting) {
+        (Some(_), _) => format!(
+            "sudo asks for your password for request {} from {}{project}",
+            run.id, run.session
+        ),
+        (None, true) => format!(
+            "Command waiting for input: {} from {}{project}",
+            run.id, run.session
+        ),
+        (None, false) => format!("Run request {} from {}{project}", run.id, run.session),
+    }];
+    let prompt = match sudo_ask {
+        Some(ask) => Some(&ask.prompt),
+        None => run.waiting_prompt.as_ref().filter(|_| waiting),
+    };
+    if let Some(prompt) = prompt {
         lines.push(format!("Prompt: {}", prompt.text));
+    }
+    if sudo_ask.is_some() {
+        lines.push(
+            "Your password goes to sudo through Torlek's askpass helper: never the command's \
+             terminal or its output."
+                .to_owned(),
+        );
     }
     let outside = if run.outside_project {
         "  [outside the project]"
@@ -750,7 +773,7 @@ pub(crate) fn run_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> 
         lines.push(format!("Edited from what the agent asked: {asked}"));
     }
     let mut shown_texts = vec![&run.shown_command, &run.shown_cwd, &run.shown_reason];
-    shown_texts.extend(run.waiting_prompt.as_ref().filter(|_| waiting));
+    shown_texts.extend(prompt);
     let warnings = warnings(&shown_texts);
     if !warnings.is_empty() {
         lines.push(format!("Warning: {warnings}"));

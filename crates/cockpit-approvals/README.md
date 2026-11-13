@@ -39,6 +39,18 @@ request here, so nothing is re-read from the sandbox.
    process group that terminates whole. Git hooks are off and program-running Git settings
    reset; it returns the end of the output without terminal controls and with secrets
    redacted (`present`). `start_run` and `finish_run` are fenced on the revision.
+   With `RunSettings::sudo` set (#1374, `src/sudo.rs`), each run's `PATH` starts with a
+   `sudo` launcher that runs the trusted sudo with `-A -k`, `SUDO_ASKPASS` names the
+   helper's launcher, and `sudo_asks_every_time` writes `-A -k` into a leading or
+   `&&`-chained `sudo` before the owner reads the request. `Runner::sudo_helper` accepts a
+   helper only when it runs the helper program with a pipe as its output and its parent has
+   the trusted sudo's name and effective uid, in the helper's session, while the trusted
+   file is setuid to that uid and writable by it alone. The helper then closes itself to
+   tracing (`cockpit_processes::seal_against_tracing`), and `Runner::ask_sudo` asks the
+   owner only when it is traced by none, no other process holds its pipe, and the session
+   is a live run's. The ask waits in the run (`sudo_ask`) until
+   `Runner::answer_sudo` hands it the owner's password, the run ends, or the helper goes;
+   before answering it checks that the same sudo still waits on the same helper.
 5. `Runner::reconcile` at startup, after the executions were reconciled: an approved run
    never started is `not-run`; a running one follows its execution (`reconcile_run`): never
    started is `not-run`, ended is `outcome-unknown`, still running stays `running` until

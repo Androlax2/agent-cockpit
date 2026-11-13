@@ -16,7 +16,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use cockpit_processes::{
@@ -33,6 +33,7 @@ use tokio::sync::oneshot;
 use crate::error::invalid;
 use crate::redact::{redact_secrets, redact_secrets_after_cut, strip_terminal_controls};
 use crate::runs::{Approved, RunId, RunResult, start_run};
+use crate::sudo::{SudoAskpass, SudoAsks};
 use crate::{Error, Refusal};
 
 /// After the command exits, how long output still in the terminal may take to arrive. A
@@ -106,6 +107,8 @@ pub struct RunSettings {
     pub answer_lines: usize,
     pub rows: u16,
     pub columns: u16,
+    /// How `sudo` in a run asks the owner (#1374); `None` leaves sudo to the terminal.
+    pub sudo: Option<SudoAskpass>,
 }
 
 impl RunSettings {
@@ -119,6 +122,7 @@ impl RunSettings {
             answer_lines: 120,
             rows: 40,
             columns: 120,
+            sudo: None,
         }
     }
 
@@ -139,6 +143,9 @@ impl RunSettings {
             let (key, value) = setting.split_once('=').unwrap_or((setting, ""));
             environment.push((format!("GIT_CONFIG_KEY_{index}").into(), key.into()));
             environment.push((format!("GIT_CONFIG_VALUE_{index}").into(), value.into()));
+        }
+        if let Some(sudo) = &self.sudo {
+            sudo.apply(&mut environment);
         }
         environment
     }
@@ -181,17 +188,32 @@ pub enum NoResult {
 /// Starts approved runs and keeps the ones in progress, for input and for the queue.
 #[derive(Debug, Clone)]
 pub struct Runner {
-    settings: Arc<RunSettings>,
+    pub(crate) settings: Arc<RunSettings>,
     pub(crate) supervisor: Supervisor,
     live: Arc<Mutex<HashMap<RunId, Arc<LiveRun>>>>,
 }
 
 #[derive(Debug)]
-struct LiveRun {
+pub(crate) struct LiveRun {
     execution: ExecutionId,
+    /// The terminal session the command leads, once launched: its process group.
+    session: OnceLock<i32>,
     input: Mutex<File>,
     output: Mutex<Kept>,
     is_stopped_by_owner: AtomicBool,
+    sudo_asks: Mutex<SudoAsks>,
+}
+
+impl LiveRun {
+    pub(crate) fn session(&self) -> Option<i32> {
+        self.session.get().copied()
+    }
+
+    pub(crate) fn sudo_asks(&self) -> MutexGuard<'_, SudoAsks> {
+        self.sudo_asks
+            .lock()
+            .expect("the sudo asks lock is never poisoned")
+    }
 }
 
 #[derive(Debug)]
@@ -292,6 +314,17 @@ impl Runner {
         }
         let not_started =
             |what: &str, error: std::io::Error| NoResult::NotStarted(format!("{what}: {error}"));
+        if let Some(sudo) = &self.settings.sudo {
+            sudo.write_launchers().map_err(|error| {
+                not_started(
+                    &format!(
+                        "cannot write the run's sudo launchers in {}",
+                        sudo.launchers.display()
+                    ),
+                    error,
+                )
+            })?;
+        }
         let (master, terminal) = open_terminal(self.settings.rows, self.settings.columns)
             .map_err(|error| not_started("cannot open a terminal for the command", error))?;
         let reader = master
@@ -302,6 +335,7 @@ impl Runner {
         })?;
         let live = Arc::new(LiveRun {
             execution,
+            session: OnceLock::new(),
             input: Mutex::new(master),
             output: Mutex::new(Kept {
                 bytes: Vec::new(),
@@ -309,6 +343,7 @@ impl Runner {
                 last_output: Instant::now(),
             }),
             is_stopped_by_owner: AtomicBool::new(false),
+            sudo_asks: Mutex::default(),
         });
         self.live
             .lock()
@@ -316,7 +351,7 @@ impl Runner {
             .insert(run.id, Arc::clone(&live));
         let drained = drain(reader, Arc::clone(&live), self.settings.kept_bytes);
         let exited = self
-            .launch(database, run, execution, terminal, git_config)
+            .launch(database, run, &live, terminal, git_config)
             .await;
         // Read as the exit is observed: a stop sent after it did not end the command.
         let is_stopped_by_owner = live.is_stopped_by_owner.load(Ordering::SeqCst);
@@ -327,6 +362,7 @@ impl Runner {
             .lock()
             .expect("the live runs lock is never poisoned")
             .remove(&run.id);
+        live.sudo_asks().close();
         let exit_code = match exited {
             Ok(exit_code) => exit_code,
             Err(NoResult::NotStarted(reason)) => {
@@ -375,10 +411,11 @@ impl Runner {
         &self,
         database: &Database,
         run: &Approved,
-        execution: ExecutionId,
+        live: &LiveRun,
         terminal: OwnedFd,
         git_config: &[String],
     ) -> Result<i32, NoResult> {
+        let execution = live.execution;
         let spec = LaunchSpec {
             program: self.settings.shell.clone(),
             arguments: vec!["-c".into(), run.command.clone().into()],
@@ -401,6 +438,9 @@ impl Runner {
             Ok(launched) => launched,
             Err(error) => return Err(self.launch_failed(database, execution, &error).await),
         };
+        if let Some(session) = launched.execution.process_group {
+            let _ = live.session.set(session);
+        }
         match launched.exit.await {
             Ok(Ok(status)) => Ok(status
                 .code()
@@ -431,6 +471,23 @@ impl Runner {
             }
             _ => NoResult::Unobserved(format!("the command may have started: {error}")),
         }
+    }
+
+    pub(crate) fn live_run(&self, id: RunId) -> Option<Arc<LiveRun>> {
+        self.live
+            .lock()
+            .expect("the live runs lock is never poisoned")
+            .get(&id)
+            .cloned()
+    }
+
+    pub(crate) fn live_runs(&self) -> Vec<(RunId, Arc<LiveRun>)> {
+        self.live
+            .lock()
+            .expect("the live runs lock is never poisoned")
+            .iter()
+            .map(|(id, live)| (*id, Arc::clone(live)))
+            .collect()
     }
 
     /// Types `text` and Enter into the running command, only while its terminal does not echo
@@ -489,8 +546,8 @@ impl Runner {
         Ok(terminated?)
     }
 
-    /// The runs silent a while with prompt-like output ending mid-line. Read at one
-    /// instant, so a queue sorted by it stays consistent.
+    /// The runs silent a while with prompt-like output ending mid-line, and those whose sudo
+    /// asks the owner (#1374). Read at one instant, so a queue sorted by it stays consistent.
     pub fn waiting_for_input(&self) -> Vec<RunId> {
         let now = Instant::now();
         self.live
@@ -498,6 +555,9 @@ impl Runner {
             .expect("the live runs lock is never poisoned")
             .iter()
             .filter(|(_, live)| {
+                if live.sudo_asks().is_waiting() {
+                    return true;
+                }
                 let kept = live
                     .output
                     .lock()
@@ -560,7 +620,7 @@ pub const PROMPT_MAX_CHARS: usize = 200;
 /// What a terminal shows of `line`, output after the last newline: the last nonblank redraw,
 /// without terminal controls, redacted, at most
 /// [`PROMPT_MAX_CHARS`] from its end.
-fn prompt_line(line: &[u8]) -> Option<String> {
+pub(crate) fn prompt_line(line: &[u8]) -> Option<String> {
     let drawn = drawn_line(line)?;
     let (redacted, _) = redact_secrets(&drawn);
     let length = redacted.chars().count();

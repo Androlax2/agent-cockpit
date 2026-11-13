@@ -14,8 +14,8 @@ use cockpit_protocol::{
     Command, DecidedRunView, DecidedThroughView, ErrorCode, FoldedView, GuideStateView,
     GuideStepView, GuideView, HiddenView, NetworkDecisionView, NetworkGrantView,
     NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, NetworkTargetView, Outcome,
-    ProtocolError, Reply, RunDecisionView, RunRequestView, RunResultView, RunStateView, ShownText,
-    Unblock, UnblockedBy,
+    ProtocolError, Reply, RunDecisionView, RunRequestView, RunResultView, RunStateView, SecretText,
+    ShownText, SudoAskView, Unblock, UnblockedBy,
 };
 use scripted::{scripted_conversation, text};
 
@@ -136,6 +136,7 @@ fn request(state: RunStateView) -> RunRequestView {
         expires_at: 901,
         waiting_for_input: false,
         waiting_prompt: None,
+        sudo_ask: None,
         decision: None,
         result: None,
         note: None,
@@ -490,6 +491,52 @@ async fn the_owner_types_input_from_standard_input_not_the_command_line() {
             text: "hunter2".to_owned(),
             shown: false,
         }]
+    );
+}
+
+#[tokio::test]
+async fn the_owner_answers_sudos_ask_from_standard_input_not_the_command_line() {
+    let home = Home::new();
+    let daemon = scripted_conversation(
+        &home.owner_socket(),
+        vec![run_reply(request(RunStateView::Running))],
+    );
+
+    let output = home
+        .cockpit_as_owner(&["approval", "sudo-password", "7", "3"], "hunter2\n")
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(
+        !text(&output.stdout).contains("hunter2"),
+        "{}",
+        text(&output.stdout)
+    );
+    assert_eq!(
+        daemon.await.unwrap(),
+        [Command::ApprovalSudoPassword {
+            request: 7,
+            ask: 3,
+            password: SecretText::new("hunter2".to_owned()),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn the_owner_is_told_how_to_answer_a_sudo_ask() {
+    let shown = shown_to_owner(RunRequestView {
+        waiting_for_input: true,
+        sudo_ask: Some(SudoAskView {
+            ask: 3,
+            prompt: shown("[sudo] password for owner: "),
+        }),
+        ..request(RunStateView::Running)
+    })
+    .await;
+
+    assert!(
+        shown.contains("torlek approval sudo-password 7 3"),
+        "{shown}"
     );
 }
 

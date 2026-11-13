@@ -4,6 +4,7 @@ mod accounts;
 mod agent;
 mod agent_context;
 mod approvals;
+mod askpass;
 mod budgets;
 mod bug_report_feed;
 mod bug_reports;
@@ -54,6 +55,7 @@ use tokio::sync::Semaphore;
 
 pub use agent_context::{DeliveredSkillPack, opencode_hidden_skills};
 pub use approvals::{RUN_LEADER_FLAG, run_settings};
+pub use askpass::{SUDO_ASKPASS_FLAG, run_sudo_askpass, sudo_askpass};
 pub use cost::CostScanning;
 pub use error::StartError;
 pub use instance::{Instance, Options};
@@ -252,6 +254,8 @@ pub struct Daemon {
     agent_socket_path: PathBuf,
     accepting: tokio::task::JoinHandle<()>,
     accepting_agents: supervisor::AbortOnDrop,
+    /// sudo's askpass helpers in approved runs (#1374).
+    _answering_sudo: Option<supervisor::AbortOnDrop>,
     ticking: tokio::task::JoinHandle<()>,
     publishing: tokio::task::JoinHandle<()>,
     recording_turns: tokio::task::JoinHandle<()>,
@@ -336,8 +340,10 @@ impl Instance {
             containment = ?processes.launch_containment(),
             "new executions use this containment"
         );
+        let answers_sudo = wiring.run_settings.sudo.is_some();
         let run_settings = Arc::new(wiring.run_settings.clone());
         let runner = cockpit_approvals::Runner::new(wiring.run_settings, processes.clone());
+        let askpass_runner = runner.clone();
         reconcile(&database, &processes, &runner).await?;
         {
             let write = database.write().await?;
@@ -597,6 +603,23 @@ impl Instance {
         sessions::restore(&sessions)
             .await
             .map_err(StartError::Restore)?;
+        // No socket when runs' sudo asks no one here: nothing could be answered on it.
+        let answering_sudo = if answers_sudo {
+            let askpass_listener = Arc::new(askpass::bind(&options.askpass_socket_path())?);
+            let runner = askpass_runner.clone();
+            let owner_uid = self.owner_uid;
+            Some(supervisor::AbortOnDrop(tokio::spawn(
+                supervisor::supervise("sudo-askpass", faults.clone(), move || {
+                    askpass::answer_forever(
+                        Arc::clone(&askpass_listener),
+                        runner.clone(),
+                        owner_uid,
+                    )
+                }),
+            )))
+        } else {
+            None
+        };
         // Owner clients must fail to connect while restore is busy, not hang on a socket
         // whose accept loop has not started.
         let listener = Arc::new(server::bind(&socket_path)?);
@@ -856,6 +879,7 @@ impl Instance {
             agent_socket_path,
             accepting,
             accepting_agents,
+            _answering_sudo: answering_sudo,
             ticking,
             publishing,
             recording_turns,

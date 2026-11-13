@@ -16,12 +16,15 @@
 //!   running (#1301).
 //! - A line the daemon refused comes back into the input as it was typed, masked or not, with
 //!   why it was not sent (#1372): it never vanishes behind a status line.
+//! - A sudo in a running command that asks for the owner's password (#1374) takes it masked,
+//!   always: it goes to sudo alone, never into the command's terminal, so there is nothing to
+//!   reveal. A new ask is a new request shown, with its own grace.
 
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
     Command, DecidedThroughView, ErrorCode, GuideStateView, GuideView, NetworkRequestStateView,
-    NetworkSubjectView, RunRequestView, RunStateView,
+    NetworkSubjectView, RunRequestView, RunStateView, SecretText,
 };
 
 use crate::Key;
@@ -42,6 +45,8 @@ pub enum Shown {
         revision: i64,
         digest: String,
         waiting_for_input: bool,
+        /// The sudo ask the command waits on (#1374), answered with sudo's password.
+        sudo_ask: Option<u64>,
     },
     Guide {
         id: i64,
@@ -61,6 +66,8 @@ pub enum Shown {
 pub enum Typing {
     /// A line for the running command's terminal.
     Input,
+    /// The password a sudo in the running command asks for (#1374).
+    SudoPassword,
     /// The answer a guide step asks for.
     Answer,
     /// Why the owner is stuck on a guide step.
@@ -142,13 +149,16 @@ impl Pane {
     /// then stays on the status line alone, as does a refusal arriving after the owner started
     /// another line.
     pub(crate) fn input_refused(&mut self, command: &Command, problem: &str) {
-        let Command::ApprovalInput {
-            request,
-            text,
-            shown,
-        } = command
-        else {
-            return;
+        let (request, typing, text, shown) = match command {
+            Command::ApprovalInput {
+                request,
+                text,
+                shown,
+            } => (request, Typing::Input, text.as_str(), *shown),
+            Command::ApprovalSudoPassword {
+                request, password, ..
+            } => (request, Typing::SudoPassword, password.expose(), false),
+            _ => return,
         };
         let is_refused_by_daemon = problem
             .strip_prefix(ErrorCode::Conflict.as_str())
@@ -157,9 +167,9 @@ impl Pane {
         if !is_refused_by_daemon || !is_shown || self.typing.is_some() {
             return;
         }
-        self.typing = Some(Typing::Input);
-        self.typed = text.clone();
-        self.is_input_revealed = *shown;
+        self.typing = Some(typing);
+        self.typed = text.to_owned();
+        self.is_input_revealed = shown;
         self.input_refusal = Some(problem.to_owned());
     }
 
@@ -243,6 +253,18 @@ impl Pane {
             (
                 Shown::Run {
                     waiting_for_input: true,
+                    sudo_ask: Some(_),
+                    ..
+                },
+                Key::Char('i'),
+            ) => {
+                self.typing = Some(Typing::SudoPassword);
+                self.is_input_revealed = false;
+                handled("approval-type-sudo-password", None)
+            }
+            (
+                Shown::Run {
+                    waiting_for_input: true,
                     ..
                 },
                 Key::Char('i'),
@@ -267,6 +289,7 @@ impl Pane {
                     revision,
                     digest,
                     waiting_for_input: false,
+                    ..
                 },
                 Key::Char('y'),
             ) => handled(
@@ -380,6 +403,21 @@ impl Pane {
                 self.typing = None;
                 self.input_refusal = None;
                 let (used, send) = match (shown, typing) {
+                    (
+                        Shown::Run {
+                            id,
+                            sudo_ask: Some(ask),
+                            ..
+                        },
+                        Typing::SudoPassword,
+                    ) => (
+                        "approval-sudo-password",
+                        Command::ApprovalSudoPassword {
+                            request: *id,
+                            ask: *ask,
+                            password: SecretText::new(text),
+                        },
+                    ),
                     (Shown::Run { id, .. }, Typing::Input) => (
                         "approval-input",
                         Command::ApprovalInput {
@@ -466,6 +504,11 @@ fn shown_run(run: &RunRequestView) -> Shown {
         revision: run.revision,
         digest: run.digest.clone(),
         waiting_for_input: waits_for_input(run),
+        sudo_ask: run
+            .sudo_ask
+            .as_ref()
+            .filter(|_| waits_for_input(run))
+            .map(|ask| ask.ask),
     }
 }
 

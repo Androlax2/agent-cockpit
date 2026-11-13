@@ -90,6 +90,7 @@ pub fn run(id: i64, session: &str, command: &str) -> RunRequestView {
         expires_at: 1000,
         waiting_for_input: false,
         waiting_prompt: None,
+        sudo_ask: None,
         decision: None,
         result: None,
         note: None,

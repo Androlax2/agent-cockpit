@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
     Command, DecidedThroughView, GuideView, HiddenView, ManagerPaneView, Reply, RunRequestView,
+    SecretText, SudoAskView,
 };
 use cockpit_tui::{App, Focus, INPUT_GRACE, Key, Shown};
 use common::{
@@ -696,6 +697,76 @@ fn app_at_sudo_prompt(now: Instant) -> (App, Instant) {
     (app, after_grace(now))
 }
 
+/// sudo asking through Torlek's askpass helper (#1374), shown in the pane, the grace over.
+fn app_at_sudo_ask(now: Instant) -> (App, Instant) {
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+    let sudo = RunRequestView {
+        sudo_ask: Some(SudoAskView {
+            ask: 2,
+            prompt: shown(SUDO_PROMPT),
+        }),
+        ..waiting_run(5, SESSION)
+    };
+    shown_with_keys(&mut app, vec![sudo], Vec::new(), now);
+    (app, after_grace(now))
+}
+
+/// The owner presses `i` at sudo's ask and types the password.
+fn typed_sudo_password(now: Instant) -> (App, Instant) {
+    let (mut app, ready) = app_at_sudo_ask(now);
+    app.key(Key::Char('i'), ready);
+    typing(&mut app, PASSWORD, ready);
+    (app, ready)
+}
+
+#[test]
+fn a_sudo_ask_says_the_password_goes_to_sudo_alone() {
+    let now = Instant::now();
+    let (app, ready) = app_at_sudo_ask(now);
+
+    let screen = screen_text(&app, ready);
+
+    assert!(
+        screen.contains("sudo asks for your password for request 5"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("Prompt: [sudo] password for theo:"),
+        "{screen}"
+    );
+    assert!(screen.contains("i type sudo's password"), "{screen}");
+}
+
+#[test]
+fn sudos_password_is_sent_to_its_ask_not_the_terminal() {
+    let now = Instant::now();
+    let (mut app, ready) = typed_sudo_password(now);
+
+    let sent_password = app.key(Key::Enter, ready);
+
+    assert_eq!(
+        sent_password.send,
+        [Command::ApprovalSudoPassword {
+            request: 5,
+            ask: 2,
+            password: SecretText::new(PASSWORD.to_owned()),
+        }]
+    );
+}
+
+#[test]
+fn sudos_password_stays_masked_after_tab() {
+    let now = Instant::now();
+    let (mut app, ready) = typed_sudo_password(now);
+
+    let tabbed = app.key(Key::Tab, ready);
+    let screen = screen_text(&app, ready);
+
+    assert_ne!(tabbed.used, Some("approval-input-reveal"));
+    assert!(!screen.contains(PASSWORD), "{screen}");
+    assert!(screen.contains("sudo's password: *******_"), "{screen}");
+}
+
 /// The owner presses `i` and types the password.
 fn typed_password(now: Instant) -> (App, Instant) {
     let (mut app, ready) = app_at_sudo_prompt(now);
@@ -928,6 +999,22 @@ fn a_refused_line_comes_back_masked_into_the_input() {
         screen.contains("Line for the command: *******_"),
         "{screen}"
     );
+}
+
+#[test]
+fn a_refused_sudo_password_comes_back_masked_with_why() {
+    let now = Instant::now();
+    let (mut app, ready) = typed_sudo_password(now);
+    let sent_password = sent(&press(&mut app, &[Key::Enter], ready));
+    let refusal = "conflict: sudo's ask 2 for request 5 was not answered: the sudo that asked \
+                   ended before the owner answered";
+
+    app.answer(&sent_password[0], Err(refusal.to_owned()), ready);
+    let screen = read_whole(&app, ready, 120);
+
+    assert!(!screen.contains(PASSWORD), "{screen}");
+    assert!(screen.contains("sudo's password: *******_"), "{screen}");
+    assert!(screen.contains("the sudo that asked ended"), "{screen}");
 }
 
 #[test]
