@@ -120,6 +120,11 @@ pub struct Wiring {
     pub sandbox_launcher: std::path::PathBuf,
     /// How often the sessions' periodic pass (exits, idle sleep, expiry) runs.
     pub session_tick: Duration,
+    /// How often the quota-stop resume pass runs. [`Wiring::session_tick`] in the product. Its
+    /// send is refused while the sessions' pass holds the session's lock and tried again next
+    /// time, so a test that needs resumes quickly gives the sessions' pass the hour instead
+    /// of a tick passes outlast under load (#1390).
+    pub quota_resume_tick: Duration,
     /// How often the exits alone are looked at between ticks (#632): a dead agent shows as
     /// failed or ended within about this long. [`EXIT_SWEEP`] in the product. There is no sweep
     /// unless this is shorter than `session_tick`: a test whose passes are its own sets both to
@@ -752,7 +757,7 @@ impl Instance {
                     Arc::clone(&resumed_database),
                     Arc::clone(&resumed_sessions),
                     resume_readings.clone(),
-                    wiring.session_tick,
+                    wiring.quota_resume_tick,
                 )
             },
         ));

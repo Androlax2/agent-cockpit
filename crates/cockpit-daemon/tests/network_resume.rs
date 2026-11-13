@@ -59,7 +59,8 @@ fn quota_asks(home: &Home) -> std::path::PathBuf {
 
 async fn start_with(home: &Home, provider: FakeProvider, refresh: Duration) -> Daemon {
     let mut wiring = common::wiring_in(home.path(), vec![Arc::new(provider)]);
-    wiring.session_tick = Duration::from_millis(100);
+    wiring.session_tick = Duration::from_secs(3600);
+    wiring.quota_resume_tick = Duration::from_millis(100);
     wiring.quota = Some(QuotaPolling {
         home: home.path().join("home"),
         refresh,

@@ -1739,10 +1739,13 @@ async fn agent_on_work_with_spare(home: &Home) -> Sandboxed {
 }
 
 /// The line the agent runs to report that the usage limit stopped its turn, as Codex's
-/// launcher does.
+/// launcher does. It reports once: a relaunched commanded agent runs every `.agent/<n>.sh`
+/// again from 0, and a second report from the new launch would be a second quota stop, on the
+/// account the session just moved to, replacing the stop the test waits to see switched
+/// (#1396).
 fn quota_stop_line() -> String {
     format!(
-        "'{}' agent report --state waiting --outcome quota-stopped",
+        "if [ ! -e \"$0.sent\" ]; then : > \"$0.sent\"; '{}' agent report --state waiting --outcome quota-stopped; fi",
         cockpit_program().display()
     )
 }
@@ -1790,7 +1793,9 @@ async fn a_quota_stop_resumes_the_conversation_on_the_next_account_within_a_minu
         arguments.contains(&format!("--resume {}", before.conversation.unwrap())),
         "{arguments}"
     );
-    // #158: the move makes the stop due its continue message without waiting for a reset.
+    // #158: the move makes the stop due its continue message without waiting for a reset. The
+    // daemon records it right after the relaunch returns: under 120 ms in 32 runs beside a
+    // parallel workspace run.
     let switched = Instant::now();
     loop {
         let stop = listed(&client, &agent.session).await.quota_stop;
