@@ -48,7 +48,12 @@ the wire. Report 14 treats this contract as stable from the first release.
    `guide-stuck` (naming the step shown) and `guide-close`. Views carry the display rules'
    `ShownText` beside the exact text, with the kinds escaped as `warnings`; a run request
    carries `folded_command`, `timeout_without_foreground`, `unchecked_shell` (#494) and,
-   in the owner's views of an asking request, `changed_build_files` (#156). An approval within the daemon's grace after
+   in the owner's views of an asking request, `changed_build_files` (#156). The owner's
+   views carry `root_runs` (#1383): the files the request's `sudo` runs that its session can
+   edit, each with the hash recorded at the check and, while it asks, `now` (hash and first
+   lines as read for this view), and `cannot_tell`; `editable_as_root_warning`,
+   `changed_since_asked_warning` and `CANNOT_TELL_AS_ROOT` are the clients' shared wording.
+   An approval within the daemon's grace after
    the request appeared or changed is refused with code `refused`. A decision may name the
    owner client it came `through` (`tui`, `cli`); a decided request's view carries it in
    `decision` with `approved` and `at` (#657). The client is self-named: the owner socket

@@ -22,8 +22,8 @@ use cockpit_agent_channel::{LaunchToken, identity_of};
 use cockpit_authorization::{Permission, Scope, SessionId};
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
-    Command, ErrorCode, GuideStateView, GuideView, HiddenView, Reply, RunRequestView, RunStateView,
-    UnblockedBy,
+    Command, ErrorCode, GuideStateView, GuideView, HiddenView, Reply, RootRunsView, RunRequestView,
+    RunStateView, UnblockedBy,
 };
 use common::{GENEROUS, TestHome, refused};
 
@@ -226,7 +226,14 @@ async fn the_owner_sees_the_request_in_the_queue_with_the_display_rules_applied(
         panic!("expected the queue");
     };
 
-    assert_eq!(runs, std::slice::from_ref(&request));
+    let checked_for_root = RunRequestView {
+        root_runs: Some(RootRunsView {
+            editable: Vec::new(),
+            cannot_tell: false,
+        }),
+        ..request.clone()
+    };
+    assert_eq!(runs, [checked_for_root]);
     assert!(guides.is_empty());
     assert!(request.shown_command.has_hidden_characters);
     assert!(request.shown_command.text.contains("\\u{202e}"));
@@ -778,6 +785,109 @@ async fn the_owner_is_warned_of_changed_build_files_the_command_runs_as_they_are
 
     assert_eq!(before.changed_build_files, Some(Vec::new()));
     assert_eq!(after.changed_build_files, Some(vec!["Makefile".to_owned()]));
+}
+
+/// #1383: the test's session runs unsandboxed, so a file in its directory, the test's own, is
+/// one it can edit.
+#[tokio::test]
+async fn the_owner_is_warned_of_a_file_the_session_can_edit_that_sudo_runs() {
+    let asking = started(true).await;
+    std::fs::write(asking.cwd.path().join("x.sh"), "echo setup\n").unwrap();
+    let asked = asking.asked("sudo ./x.sh").await;
+
+    let shown = shown_to_owner(&asking, asked.id).await;
+
+    assert_eq!(asked.root_runs, None, "the agent's answer leaves it out");
+    let root_runs = shown.root_runs.expect("the owner's view carries the check");
+    assert!(!root_runs.cannot_tell, "{root_runs:?}");
+    let [file] = root_runs.editable.as_slice() else {
+        panic!("one editable file: {root_runs:?}");
+    };
+    assert_eq!(file.shown_path.text, "./x.sh");
+    let now = file.now.as_ref().expect("read while asking");
+    assert_eq!(
+        now.head.as_ref().map(|head| head.text.as_str()),
+        Some("echo setup")
+    );
+    assert!(file.sha256.is_some());
+    assert!(!file.changed_since_asked());
+}
+
+#[tokio::test]
+async fn sudo_running_a_system_program_or_an_expansion_is_checked_too() {
+    let asking = started(true).await;
+
+    let system = asking.asked("sudo true").await;
+    let expansion = asking.asked(r#"sudo bash -c "$(cat x)""#).await;
+
+    let system = shown_to_owner(&asking, system.id).await.root_runs.unwrap();
+    let expansion = shown_to_owner(&asking, expansion.id)
+        .await
+        .root_runs
+        .unwrap();
+    assert!(
+        system.editable.is_empty() && !system.cannot_tell,
+        "{system:?}"
+    );
+    assert!(expansion.cannot_tell, "{expansion:?}");
+}
+
+#[tokio::test]
+async fn an_owner_edit_is_checked_for_what_its_sudo_runs() {
+    let asking = started(true).await;
+    std::fs::write(asking.cwd.path().join("x.sh"), "echo setup\n").unwrap();
+    let asked = asking.asked("true").await;
+
+    let edited = run(asking
+        .owner
+        .request(
+            Command::ApprovalEdit {
+                request: asked.id,
+                revision: asked.revision,
+                command: "sudo bash x.sh".to_owned(),
+            },
+            GENEROUS,
+        )
+        .await);
+
+    let root_runs = edited
+        .root_runs
+        .expect("the owner's view carries the check");
+    assert_eq!(edited.revision, 2);
+    assert_eq!(root_runs.editable.len(), 1, "{root_runs:?}");
+    assert_eq!(root_runs.editable[0].shown_path.text, "./x.sh");
+}
+
+#[tokio::test]
+async fn a_file_sudo_runs_that_changed_after_the_card_refuses_the_run() {
+    let asking = started(true).await;
+    let script = asking.cwd.path().join("x.sh");
+    std::fs::write(&script, "echo setup\n").unwrap();
+    let asked = asking.asked("sudo ./x.sh").await;
+    let shown = shown_to_owner(&asking, asked.id).await;
+
+    std::fs::write(&script, "echo replaced\n").unwrap();
+    assert!(
+        shown_to_owner(&asking, asked.id)
+            .await
+            .root_runs
+            .unwrap()
+            .editable[0]
+            .changed_since_asked()
+    );
+    run(asking.approve(&shown).await);
+    let ended = asking.ended(asked.id).await;
+
+    assert_eq!(ended.state, RunStateView::NotRun, "{ended:?}");
+    assert_eq!(
+        ended.note.as_deref(),
+        Some("./x.sh changed after you approved")
+    );
+    let record = shown_to_owner(&asking, asked.id).await.root_runs.unwrap();
+    assert_eq!(
+        record.editable[0].sha256,
+        shown.root_runs.unwrap().editable[0].sha256
+    );
 }
 
 #[tokio::test]

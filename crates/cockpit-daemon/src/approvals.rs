@@ -26,6 +26,8 @@ use cockpit_turso::{Database, WriteTransaction};
 
 use crate::routes::{Route, WorkClass};
 
+mod root_runs;
+
 /// The argument that makes `cockpit-daemon` the session leader of an approved command
 /// (`cockpit_processes::run_session_leader`) instead of the daemon.
 pub const RUN_LEADER_FLAG: &str = "--run-leader";
@@ -148,6 +150,7 @@ pub(crate) fn route_ask(
     connector: Result<ProcessIdentity, ProcessError>,
     database: Arc<Database>,
     runner: Runner,
+    sessions: Arc<cockpit_sessions::Sessions>,
 ) -> Route {
     let work = job(async move {
         match command {
@@ -160,6 +163,7 @@ pub(crate) fn route_ask(
                 ask_run(
                     &database,
                     &runner,
+                    &sessions,
                     connector,
                     launch_token,
                     command,
@@ -259,9 +263,14 @@ async fn poll_guide_status(
     Ok(guide)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one ask's fields beside the daemon's parts; a struct for its single call site adds nothing"
+)]
 async fn ask_run(
     database: &Database,
     runner: &Runner,
+    sessions: &cockpit_sessions::Sessions,
     connector: Result<ProcessIdentity, ProcessError>,
     launch_token: Option<String>,
     command: String,
@@ -280,7 +289,10 @@ async fn ask_run(
         reason,
         project,
     };
-    let filed = cockpit_approvals::ask_run_unless_pending(&write, &session, ask, now()).await?;
+    let mut filed = cockpit_approvals::ask_run_unless_pending(&write, &session, ask, now()).await?;
+    if !filed.already_pending {
+        filed.run = root_runs::record(&write, sessions, &filed.run).await?;
+    }
     write.commit().await?;
     tracing::info!(
         request = filed.run.id.0,
@@ -446,12 +458,10 @@ pub(crate) fn route_decision(
                 let mut changes = CheckoutChanges::default();
                 let mut views = Vec::with_capacity(runs.len());
                 for run in &runs {
-                    views.push(run_view(
-                        run,
-                        &runner,
-                        &waiting,
-                        changes.build_files_run(run).await,
-                    ));
+                    let mut view =
+                        run_view(run, &runner, &waiting, changes.build_files_run(run).await);
+                    view.root_runs = root_runs::owner_view(run).await;
+                    views.push(view);
                 }
                 Ok(Reply::ApprovalQueue {
                     runs: views,
@@ -507,9 +517,10 @@ pub(crate) fn route_decision(
             } => {
                 check_syntax(&runner, &command).await?;
                 let write = database.write().await?;
-                let run =
+                let edited =
                     cockpit_approvals::edit_run(&write, RunId(request), revision, &command, now())
                         .await?;
+                let run = root_runs::record(&write, &sessions, &edited).await?;
                 write.commit().await?;
                 tracing::info!(request, revision = run.revision, "the owner edited a run");
                 Ok(owner_run_reply(&run, &runner).await)
@@ -564,6 +575,10 @@ pub(crate) fn route_decision(
                 let answered =
                     cockpit_approvals::answer_step(&write, GuideId(guide), step, answer, now())
                         .await?;
+                if let Some(filed) = answered.steps.get(step).and_then(|step| step.run_request) {
+                    let run = existing_run(&write, filed.0).await?;
+                    root_runs::record(&write, &sessions, &run).await?;
+                }
                 write.commit().await?;
                 Ok(guide_reply(&answered))
             }
@@ -717,7 +732,7 @@ async fn approve(
             run.asking_grant(),
         ));
     } else {
-        tokio::spawn(execute(database, runner, approved));
+        tokio::spawn(execute(database, runner, approved, run));
     }
     Ok(reply)
 }
@@ -743,11 +758,17 @@ async fn record_granted_approval(
     Ok(())
 }
 
-async fn execute(database: Arc<Database>, runner: Runner, approved: Approved) {
+/// Runs `approved`, unless a file its sudo runs changed since `run`, the request as approved,
+/// recorded it (#1383).
+async fn execute(database: Arc<Database>, runner: Runner, approved: Approved, run: RunRequest) {
     let request = approved.id.0;
-    let ended = match safe_git_config(&approved.cwd).await {
-        Ok(git_config) => runner.run(&database, &approved, &git_config).await,
-        Err(reason) => Err(NoResult::NotStarted(reason)),
+    let ended = match (
+        safe_git_config(&approved.cwd).await,
+        root_runs::changed_after_approval(&run).await,
+    ) {
+        (Ok(_), Some(changed)) => Err(NoResult::NotStarted(changed)),
+        (Ok(git_config), None) => runner.run(&database, &approved, &git_config).await,
+        (Err(reason), _) => Err(NoResult::NotStarted(reason)),
     };
     match &ended {
         Ok(ran) => {
@@ -925,8 +946,10 @@ pub(crate) fn run_reply(run: &RunRequest, runner: &Runner) -> Reply {
 /// would run, read now.
 async fn owner_run_reply(run: &RunRequest, runner: &Runner) -> Reply {
     let changed = CheckoutChanges::default().build_files_run(run).await;
+    let mut view = run_view(run, runner, &runner.waiting_for_input(), changed);
+    view.root_runs = root_runs::owner_view(run).await;
     Reply::RunRequest {
-        request: Box::new(run_view(run, runner, &runner.waiting_for_input(), changed)),
+        request: Box::new(view),
     }
 }
 
@@ -1065,6 +1088,7 @@ fn run_view(
             }),
         sudo_ran_unasked: runner.sudo_ran_unasked(run.id),
         typed_secret_redacted: runner.typed_secret_redacted(run.id),
+        root_runs: None,
         decision: run.decision.map(|decision| RunDecisionView {
             approved: decision.approved,
             at: decision.at,

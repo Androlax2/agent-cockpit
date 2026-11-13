@@ -22,6 +22,15 @@ request here, so nothing is re-read from the sandbox.
    leaves out, for a pane's explicit "more". `timeout_without_foreground` and
    `build_files_run` (the changed build files and scripts a command runs, from the
    checkout's changed files the daemon reads) say what the text alone does not (#156).
+   `root_runs` (`src/sudo_editable.rs`, #1383) reads the command line for what its `sudo`
+   runs as root: the program, a shell's or interpreter's script, code or standard input, a
+   makefile or justfile, through `cd`, `sudo -D` and the usual wrappers. Each such file the
+   session can change (`SessionWrites`: its sandbox's read-write folders, or anything not
+   root's alone when unsandboxed) is kept with its SHA-256, or as absent; what it cannot
+   resolve is `cannot_tell`. The daemon records it with the revision (`record_root_runs`,
+   column `root_runs`; an owner edit clears it until checked again), shows each file as it is
+   now (`file_now`) and refuses an approved run when `changed_file` names one. The module is
+   the one place the later rule scan (#1388) takes the rule from.
 3. `approve_run` needs the request's current revision and its `action_digest` (SHA-256 of
    the directory and command). It consumes the request with the run intent in one
    transaction; a second decision, an older revision or another digest is refused. The
@@ -104,6 +113,8 @@ bound to its index), reports being stuck there (`report_stuck`) or closes the gu
 
 - `tests/display.rs`, `tests/redaction.rs`: the display and redaction rules.
 - `tests/hints.rs`: the `timeout` hint and the changed build files a command runs.
+- `tests/sudo_editable.rs`: what a command's sudo runs that the session can edit, against
+  real files, and the hashes that tell a change.
 - `tests/runs.rs`: the run state machine on a real state database, report 04's
   stale-approval walkthrough and the restart decisions from each execution phase included.
 - `tests/guides.rs`: the guide format and step answers.

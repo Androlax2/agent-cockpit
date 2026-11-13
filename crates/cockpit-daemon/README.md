@@ -105,6 +105,11 @@ not share code.
 - Agents ask on the agent socket (`ask-run`, `ask-guide`, their status, `ask-check`); the
   owner decides on the host-only socket. The shell's syntax check and the working
   directory's resolution happen before the write transaction.
+- What a request's `sudo` runs that its session can edit (#1383, `src/approvals/root_runs.rs`)
+  is checked inside the write transaction that files, edits or (by a guide's `run:` step)
+  files the revision, against the read-write folders of the session's staged launch spec,
+  or as unsandboxed when there is none; the check reads files. The owner's views read each
+  recorded file again, and an approved run whose recorded file changed is not started.
 - An approval commits the run intent, then the run starts outside the lanes: a long command
   holds no control worker. It is a `cockpit-processes` terminal execution (#163) of the
   daemon's one supervisor: a pseudo-terminal under `torlek-daemon --run-leader`

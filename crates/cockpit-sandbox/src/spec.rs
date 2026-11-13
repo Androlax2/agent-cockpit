@@ -195,6 +195,21 @@ impl std::fmt::Display for InvalidSpec {
 impl std::error::Error for InvalidSpec {}
 
 impl LaunchSpec {
+    /// The host paths the program can change: the folders bound read-write at their own
+    /// path, the session's home folder, and the sources of the folders and the sign-in bound
+    /// elsewhere (#1383). `/tmp` and `/dev` inside are the sandbox's own.
+    pub fn host_writes(&self) -> Vec<PathBuf> {
+        let mut writes = self.read_write.clone();
+        writes.push(self.home_source.clone());
+        writes.extend(
+            self.folders
+                .iter()
+                .chain(&self.login)
+                .map(|folder| folder.source.clone()),
+        );
+        writes
+    }
+
     /// Refuses a spec the launcher cannot enforce as written: one for a project's containers
     /// (#390), another version, a relative path, a Landlock ABI below the floor, a protected
     /// or hidden path outside every bound folder, a working directory outside the writable

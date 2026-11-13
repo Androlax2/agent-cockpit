@@ -9,8 +9,9 @@ use std::process::ExitCode;
 
 use chrono::{DateTime, Local};
 use cockpit_protocol::{
-    Command, DecidedRunView, DecidedThroughView, GuideStateView, GuideView, HiddenView, Reply,
-    RunDecisionView, RunRequestView, RunStateView, SecretText, ShownText, sudo_ran_unasked_warning,
+    CANNOT_TELL_AS_ROOT, Command, DecidedRunView, DecidedThroughView, GuideStateView, GuideView,
+    HiddenView, Reply, RootRunsView, RunDecisionView, RunRequestView, RunStateView, SecretText,
+    ShownText, changed_since_asked_warning, editable_as_root_warning, sudo_ran_unasked_warning,
     typed_secret_redacted_notice,
 };
 
@@ -291,11 +292,15 @@ fn hidden_name(kind: HiddenView) -> &'static str {
     }
 }
 
-/// What the owner should weigh before approving, beyond the text: build files the session
-/// changed that the command runs, a `timeout` that would take the terminal from it, and a
-/// shell that could not check the command.
+/// What the owner should weigh before approving, beyond the text: files the session can edit
+/// that its sudo runs as root, build files the session changed that the command runs, a
+/// `timeout` that would take the terminal from it, and a shell that could not check the
+/// command.
 fn run_hints(run: &RunRequestView) -> String {
     let mut text = String::new();
+    if let Some(root_runs) = &run.root_runs {
+        text.push_str(&root_runs_hints(root_runs));
+    }
     if let Some(files) = &run.changed_build_files {
         if !files.is_empty() {
             let _ = writeln!(
@@ -320,6 +325,53 @@ fn run_hints(run: &RunRequestView) -> String {
         );
     }
     text
+}
+
+/// Each file the session can edit that the command's sudo runs, with its hash and, while the
+/// request asks, its first lines as they are now (#1383).
+fn root_runs_hints(root_runs: &RootRunsView) -> String {
+    let mut text = String::new();
+    for file in &root_runs.editable {
+        let _ = writeln!(
+            text,
+            "  ! {}",
+            editable_as_root_warning(&file.shown_path.text, 0)
+        );
+        text.push_str(&warnings(&file.shown_path));
+        if file.changed_since_asked() {
+            let _ = writeln!(
+                text,
+                "  ! {}",
+                changed_since_asked_warning(&file.shown_path.text)
+            );
+        }
+        let Some(now) = &file.now else {
+            let _ = writeln!(text, "    sha256 {}", hash_text(file.sha256.as_deref()));
+            continue;
+        };
+        let _ = writeln!(text, "    sha256 {}", hash_text(now.sha256.as_deref()));
+        match (&now.head, &now.sha256) {
+            (Some(head), _) => {
+                for line in head.text.lines() {
+                    let _ = writeln!(text, "    | {line}");
+                }
+                text.push_str(&warnings(head));
+                if now.more_lines > 0 {
+                    let _ = writeln!(text, "    ... {} more lines", now.more_lines);
+                }
+            }
+            (None, Some(_)) => text.push_str("    (not text)\n"),
+            (None, None) => {}
+        }
+    }
+    if root_runs.cannot_tell {
+        let _ = writeln!(text, "  ! {CANNOT_TELL_AS_ROOT}");
+    }
+    text
+}
+
+fn hash_text(sha256: Option<&str>) -> &str {
+    sha256.unwrap_or("none: the file is not there")
 }
 
 fn run_detail(run: &RunRequestView) -> String {

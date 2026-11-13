@@ -7,9 +7,10 @@ use cockpit_approvals::{
     Approved, DecidedThrough, EXPIRES_AFTER_SECONDS, Error, Interrupted, Output, Refusal,
     RunDecision, RunId, RunRequest, RunResult, RunState, action_digest, approve_run, ask_run,
     decided_runs, decline_run, edit_run, finish_run, interrupted_runs, open_runs, queue_order,
-    reconcile_run, record_not_run, record_outcome_unknown, resolve_cwd, run_request, run_status,
-    shown_run, start_run,
+    reconcile_run, record_not_run, record_outcome_unknown, record_root_runs, resolve_cwd,
+    run_request, run_status, shown_run, start_run,
 };
+use cockpit_approvals::{RootFile, RootRuns};
 use cockpit_authorization::Permission;
 use cockpit_processes::{EndReason, ExecutionId, Phase};
 use common::{Fixture, NOW, session};
@@ -1029,4 +1030,70 @@ async fn the_decided_list_since_a_time_keeps_the_decisions_made_from_then_on() {
 
     let ids: Vec<RunId> = decided.iter().map(|run| run.id).collect();
     assert_eq!(ids, [declined]);
+}
+
+fn flagged() -> RootRuns {
+    RootRuns {
+        editable: vec![RootFile {
+            path: "/clone/x.sh".into(),
+            sha256: Some("ab".repeat(32)),
+        }],
+        cannot_tell: true,
+    }
+}
+
+#[tokio::test]
+async fn what_a_revision_runs_as_root_is_kept_with_the_request() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "sudo ./x.sh").await;
+    assert_eq!(run.root_runs, None);
+    let write = fixture.database.write().await.unwrap();
+
+    let recorded = record_root_runs(&write, run.id, 1, &flagged(), NOW)
+        .await
+        .unwrap();
+
+    assert_eq!(recorded.root_runs, Some(flagged()));
+    assert_eq!(recorded, stored(&write, run.id).await);
+}
+
+#[tokio::test]
+async fn an_edit_drops_what_the_old_revision_ran_as_root() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "sudo ./x.sh").await;
+    let write = fixture.database.write().await.unwrap();
+    record_root_runs(&write, run.id, 1, &flagged(), NOW)
+        .await
+        .unwrap();
+
+    let edited = edit_run(&write, run.id, 1, "sudo ./y.sh", NOW)
+        .await
+        .unwrap();
+
+    assert_eq!(edited.root_runs, None);
+    assert_eq!(
+        refusal(record_root_runs(&write, run.id, 1, &flagged(), NOW).await),
+        Refusal::StaleRevision { current: 2 }
+    );
+}
+
+#[tokio::test]
+async fn an_approval_keeps_what_the_run_runs_as_root_in_the_record() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "sudo ./x.sh").await;
+    let write = fixture.database.write().await.unwrap();
+    record_root_runs(&write, run.id, 1, &flagged(), NOW)
+        .await
+        .unwrap();
+
+    let approved_at = NOW + cockpit_approvals::APPROVAL_GRACE_SECONDS;
+    let (_, approved) = approve_run(&write, None, run.id, 1, &run.digest(), approved_at)
+        .await
+        .unwrap();
+
+    assert_eq!(approved.root_runs, Some(flagged()));
+    assert!(matches!(
+        refusal(record_root_runs(&write, run.id, 1, &RootRuns::default(), approved_at).await),
+        Refusal::AlreadyDecided { .. }
+    ));
 }
