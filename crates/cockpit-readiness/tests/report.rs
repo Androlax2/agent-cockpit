@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use cockpit_config::{AgentSandbox, EffectiveConfig, Environment};
 use cockpit_readiness::{
     CheckoutFacts, ComposeFile, ControlFacts, DockerEngine, EngineRemedy, EngineState, HostFacts,
-    Platform, PresetFacts, ProjectEngine, ProjectFacts, ProjectNeeds, ProviderFacts, ProviderFound,
-    ProviderUnusable, Report, Requirement, Status, Trust, assess, needs_docker,
+    MasksGap, Platform, PresetFacts, ProjectEngine, ProjectFacts, ProjectNeeds, ProviderFacts,
+    ProviderFound, ProviderUnusable, Report, Requirement, Status, Trust, assess, needs_docker,
 };
 use tempfile::TempDir;
 
@@ -1131,9 +1131,34 @@ fn a_projects_own_engine_reports_each_state_with_its_next_step() {
             "`torlek containers record project` records it",
         ),
         (
-            EngineState::Verified(engine(true)),
-            Status::Unsupported,
-            "`torlek ask run`",
+            EngineState::Verified {
+                engine: engine(true),
+                masks: Ok(()),
+            },
+            Status::Available,
+            "",
+        ),
+        (
+            EngineState::Verified {
+                engine: engine(true),
+                masks: Err(MasksGap::NotInstalled(
+                    "Torlek's masks helper is not installed: no /run/torlek-engine-masks.sock"
+                        .to_owned(),
+                )),
+            },
+            Status::MissingPrerequisite,
+            "torlek-engine-masks.socket",
+        ),
+        (
+            EngineState::Verified {
+                engine: engine(true),
+                masks: Err(MasksGap::NotSetUp {
+                    reason: "the helper has no record of this engine".to_owned(),
+                    setup: Ok(script.clone()),
+                }),
+            },
+            Status::MissingPrerequisite,
+            "run `sudo sh /state/containers/torlek-e3-setup.sh` again",
         ),
     ];
     for (state, status, next) in cases {

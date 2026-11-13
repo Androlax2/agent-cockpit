@@ -3,9 +3,11 @@
 //!
 //! It makes the engine's system user and its subordinate ids, lets that user write the
 //! project's checkouts with ACLs whose default entries keep what containers create there the
-//! owner's to change and delete, installs the `torlek-engine@` unit with an instance drop-in
-//! that binds the checkouts into an otherwise empty `/home`, and restarts the engine. The
-//! unit has no network until the engine's egress proxy exists: pulls fail closed.
+//! owner's to change and delete, installs the `torlek-engine@` unit, whose `/home` is empty,
+//! and restarts the engine. The unit has no network until the engine's egress proxy exists:
+//! pulls fail closed. It records the engine for Torlek's masks helper (`ENGINES_DIR`), which
+//! shows the engine each checkout a session asks for through that session's masks, and lets
+//! only the owner reach the helper's socket.
 //!
 //! Beside it runs `torlek-engine-relay@`, in the engine's network namespace: the owner's
 //! installed `torlek-sandbox engine-relay`, bound read-only, which relays the owner to the
@@ -17,7 +19,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{Account, EngineUser};
+use crate::{Account, ENGINES_DIR, EngineUser, MASKS_SOCKET_UNIT};
 
 /// Folders both units make inaccessible.
 const HIDDEN_FOLDERS: [&str; 7] = [
@@ -72,6 +74,15 @@ pub fn setup_script(plan: &SetupPlan<'_>) -> Result<String, String> {
         .join(" ");
     let relay_socket = plan.user.relay_socket();
     let relay_socket = unit_path("the relay's socket", &relay_socket)?;
+    // The helper refuses them: showing the engine one would take the other's trees away.
+    if plan.project_root.starts_with(plan.clones_dir)
+        || plan.clones_dir.starts_with(plan.project_root)
+    {
+        return Err(format!(
+            "the project's checkout {root} and its clones folder {clones} are inside one \
+             another: the engine sees them only apart"
+        ));
+    }
     for (role, path) in [
         ("the project's checkout", plan.project_root),
         ("the project's clones folder", plan.clones_dir),
@@ -97,11 +108,15 @@ pub fn setup_script(plan: &SetupPlan<'_>) -> Result<String, String> {
             plan.record_command
         ));
     }
-    // Under /home, the unit's empty /home hides it already.
-    let hide_home = if home.starts_with("/home") {
-        String::new()
+    // Under /home, the units' empty /home hides it already. The engine's stays writable to
+    // root, where the masks helper makes the folders above each checkout it shows.
+    let (hide_home_engine, hide_home_relay) = if home.starts_with("/home") {
+        (String::new(), String::new())
     } else {
-        format!("TemporaryFileSystem={home_text}:ro\n")
+        (
+            format!("TemporaryFileSystem={home_text}\n"),
+            format!("TemporaryFileSystem={home_text}:ro\n"),
+        )
     };
     Ok(SCRIPT
         .replace("{project}", plan.project)
@@ -109,7 +124,10 @@ pub fn setup_script(plan: &SetupPlan<'_>) -> Result<String, String> {
         .replace("{owner}", &plan.owner.name)
         .replace("{project_root}", &root)
         .replace("{clones_dir}", &clones)
-        .replace("{hide_home}", &hide_home)
+        .replace("{hide_home_engine}", &hide_home_engine)
+        .replace("{hide_home_relay}", &hide_home_relay)
+        .replace("{engines_dir}", ENGINES_DIR)
+        .replace("{masks_socket_unit}", MASKS_SOCKET_UNIT)
         .replace("{relay_program}", &relay_program)
         .replace("{relay_socket}", &relay_socket)
         .replace("{owner_uid}", &plan.owner.uid.to_string())
@@ -149,9 +167,9 @@ pub fn write_setup_script(dir: &Path, user: &EngineUser, script: &str) -> Result
     Ok(path)
 }
 
-/// `path` as a unit file and the script take it: absolute UTF-8 without `..` (which would
-/// escape the home check), whitespace, quotes, backslashes, `$`, `%` (a unit specifier)
-/// or `:` (`BindPaths=`' separator).
+/// `path` as the script and the helper's engine file take it: absolute UTF-8 without `..`
+/// (which would escape the home check), whitespace, quotes, backslashes or `$`. `%` and `:`
+/// stay refused, as when the unit bound these folders.
 fn unit_path(role: &str, path: &Path) -> Result<String, String> {
     let shown = path.display();
     let text = path
@@ -169,7 +187,7 @@ fn unit_path(role: &str, path: &Path) -> Result<String, String> {
     if !is_plain(text) {
         return Err(format!(
             "{role} {shown} holds a space, a quote, a backslash or one of `$%:`, which the \
-             engine's unit cannot bind"
+             engine's setup cannot take"
         ));
     }
     Ok(text.to_owned())
@@ -218,6 +236,10 @@ done
 dockerd_rootless=$(command -v dockerd-rootless.sh)
 setfacl_program=$(command -v setfacl)
 nologin=$(command -v nologin || echo /bin/false)
+# Torlek's masks helper lets one user connect: a second owner's setup would take it.
+masks_owner="$unit_dir/{masks_socket_unit}.d/owner.conf"
+[ ! -f "$masks_owner" ] || grep -qx "SocketUser=$owner" "$masks_owner" ||
+    fail "Torlek's masks helper serves another user on this host ($(grep '^SocketUser=' "$masks_owner")); it serves one owner"
 
 if ! id -u "$user" >/dev/null 2>&1; then
     useradd --system --user-group --create-home --home-dir "/var/lib/$user" \
@@ -259,8 +281,12 @@ ExecStart=$dockerd_rootless --exec-opt native.cgroupdriver=cgroupfs
 # No route out until Torlek's egress proxy serves the engine: pulls fail closed.
 PrivateNetwork=yes
 PrivateTmp=yes
-# No home but the project's checkouts, which the instance's drop-in binds.
-TemporaryFileSystem=/home:ro
+# No home and no checkout: Torlek's masks helper shows the engine each checkout a session
+# asks for, through that session's masks. The empty /home is root's, so the helper makes
+# the folders above a checkout there and the engine's user none.
+TemporaryFileSystem=/home
+# The helper's later mounts reach rootlesskit's namespace below this one only so.
+MountFlags=shared
 InaccessiblePaths={inaccessible}
 Delegate=yes
 KillMode=mixed
@@ -279,9 +305,7 @@ cat >"$unit_dir/torlek-engine@$user.service.d/torlek.conf" <<UNIT
 [Service]
 # You reach the socket; nobody else does.
 ExecStartPre=+$setfacl_program -m u:$owner:x,d:u:$owner:rw /run/$user
-{hide_home}BindPaths=$project_root
-BindPaths=$clones_dir
-UNIT
+{hide_home_engine}UNIT
 
 cat >"$unit_dir/torlek-engine-relay@.service" <<UNIT
 # Written by Torlek's engine setup (#390); running a setup again rewrites it.
@@ -309,12 +333,36 @@ cat >"$unit_dir/torlek-engine-relay@$user.service.d/torlek.conf" <<UNIT
 # Written by Torlek's engine setup for project {project}; running it again rewrites it.
 [Service]
 # Your installed program, read-only: whatever can write it runs as $user.
-{hide_home}BindReadOnlyPaths=$relay_program
+{hide_home_relay}BindReadOnlyPaths=$relay_program
 # Serves you alone ({owner_uid}); the socket's folder lets nobody else in either.
 ExecStart=$relay_program engine-relay {relay_socket} {owner_uid}
 UNIT
 
+# Torlek's masks helper shows this engine the project's checkouts from what it records here.
+mkdir -p '{engines_dir}'
+user_uid=$(id -u "$user")
+cat >"{engines_dir}/$user.conf" <<CONF
+# Written by Torlek's engine setup for project {project}; running it again rewrites it.
+uid=$user_uid
+owner_uid={owner_uid}
+project_root=$project_root
+clones_dir=$clones_dir
+CONF
+mkdir -p "$unit_dir/{masks_socket_unit}.d"
+cat >"$masks_owner" <<UNIT
+# Written by Torlek's engine setup: only you connect, and the helper checks it is you.
+[Socket]
+SocketUser=$owner
+SocketMode=0600
+UNIT
+
 systemctl daemon-reload
+if systemctl cat {masks_socket_unit} >/dev/null 2>&1; then
+    # Its socket becomes yours to connect to.
+    systemctl restart {masks_socket_unit}
+else
+    echo "torlek engine setup: Torlek's masks helper is not installed, so the engine sees no checkout; torlek doctor names its step" >&2
+fi
 systemctl enable "torlek-engine@$user.service"
 # Restarts the relay too: it stops with the engine, which upholds it.
 systemctl restart "torlek-engine@$user.service"
@@ -347,7 +395,29 @@ mod tests {
     }
 
     #[test]
-    fn the_script_binds_the_checkouts_and_keeps_containers_files_the_owners() {
+    fn the_engines_unit_shows_it_no_checkout_of_its_own() {
+        let script = script_for(
+            &owner(),
+            "/home/theo/code/shop",
+            "/home/theo/code/.parallel/shop",
+        )
+        .unwrap();
+
+        assert!(!script.contains("BindPaths="), "{script}");
+        assert!(script.contains("TemporaryFileSystem=/home\n"), "{script}");
+        assert!(!script.contains("TemporaryFileSystem=/home/theo"));
+    }
+
+    /// The helper's later mounts reach rootlesskit's namespace below the unit's only so.
+    #[test]
+    fn the_engines_unit_shares_its_mounts_downstream() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+
+        assert!(script.contains("MountFlags=shared\n"), "{script}");
+    }
+
+    #[test]
+    fn the_script_keeps_what_containers_make_in_the_checkouts_the_owners() {
         let script = script_for(
             &owner(),
             "/home/theo/code/shop",
@@ -357,11 +427,76 @@ mod tests {
 
         assert!(script.contains("user='torlek-e3'"), "{script}");
         assert!(script.contains("project_root='/home/theo/code/shop'"));
-        assert!(script.contains("BindPaths=$project_root\nBindPaths=$clones_dir"));
         assert!(script.contains("d:u:$owner:rwX"));
         assert!(script.contains("PrivateNetwork=yes"));
         assert!(script.contains("now record it: torlek containers record shop"));
-        assert!(!script.contains("TemporaryFileSystem=/home/theo"));
+    }
+
+    #[test]
+    fn the_script_records_the_engine_for_the_masks_helper() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+
+        assert!(
+            script.contains(
+                "cat >\"/etc/torlek/engines/$user.conf\" <<CONF\n\
+                 # Written by Torlek's engine setup for project shop; running it again rewrites it.\n\
+                 uid=$user_uid\nowner_uid=1000\nproject_root=$project_root\n\
+                 clones_dir=$clones_dir\nCONF\n"
+            ),
+            "{script}"
+        );
+    }
+
+    /// `set -e` stops at a failed assignment, never at a substitution inside a heredoc.
+    #[test]
+    fn the_engine_users_uid_is_read_where_a_failure_stops_the_script() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+
+        assert!(
+            script.contains("\nuser_uid=$(id -u \"$user\")\n"),
+            "{script}"
+        );
+    }
+
+    /// The helper's socket has one owner per host: a second owner's setup would take it.
+    #[test]
+    fn a_masks_socket_another_owner_holds_stops_the_script_before_it_changes_anything() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+
+        let refusal = script
+            .find("grep -qx \"SocketUser=$owner\" \"$masks_owner\" ||")
+            .expect(&script);
+        let first_change = script.find("useradd --system").unwrap();
+        assert!(refusal < first_change, "{script}");
+        assert!(
+            script.contains("Torlek's masks helper serves another user on this host"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn the_masks_socket_lets_the_owner_alone_connect() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+
+        assert!(
+            script.contains("[Socket]\nSocketUser=$owner\nSocketMode=0600\n"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn a_clones_folder_and_checkout_inside_one_another_are_refused() {
+        for (root, clones) in [
+            ("/home/theo/shop", "/home/theo/shop/.parallel"),
+            (
+                "/home/theo/.parallel/shop/main",
+                "/home/theo/.parallel/shop",
+            ),
+        ] {
+            let error = script_for(&owner(), root, clones).unwrap_err();
+
+            assert!(error.contains("inside one another"), "{root}: {error}");
+        }
     }
 
     #[test]
@@ -446,7 +581,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(script.contains("TemporaryFileSystem=/var/home/theo:ro\nBindPaths="));
+        assert!(
+            script.contains("TemporaryFileSystem=/var/home/theo\nUNIT"),
+            "{script}"
+        );
         assert!(script.contains("TemporaryFileSystem=/var/home/theo:ro\nBindReadOnlyPaths="));
     }
 
@@ -467,7 +605,7 @@ mod tests {
         ] {
             let error = script_for(&owner(), root, "/home/theo/.parallel/shop").unwrap_err();
 
-            assert!(error.contains("cannot bind"), "{root}: {error}");
+            assert!(error.contains("cannot take"), "{root}: {error}");
         }
     }
 

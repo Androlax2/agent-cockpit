@@ -7,8 +7,8 @@ use cockpit_config::{AgentSandbox, EffectiveConfig, ExecutionEnvironment};
 
 use crate::host::listed;
 use crate::{
-    CheckoutFacts, DockerEngine, EngineRemedy, EngineState, HostFacts, Platform, PresetFacts,
-    ProjectEngine, ProjectFacts, ProviderFound, Requirement, Status, Trust,
+    CheckoutFacts, DockerEngine, EngineRemedy, EngineState, HostFacts, MasksGap, Platform,
+    PresetFacts, ProjectEngine, ProjectFacts, ProviderFound, Requirement, Status, Trust,
 };
 
 /// Whether the project or one of its checks runs in Docker, so the daemon probes the engine.
@@ -331,8 +331,8 @@ fn docker(docker: &Result<DockerEngine, String>, platform: &Platform) -> Require
 }
 
 /// The project's own engine under `agents.sandbox = "required"` (#390, #856's table). A
-/// verified engine is still `unsupported`: a session reaches it only once it sees the
-/// session's checkout masked, which no release does yet.
+/// verified engine is available once Torlek's masks helper is installed: a session reaches
+/// it only after the helper shows it the session's checkout masked.
 fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
     let engine = match engine {
         Ok(engine) => engine,
@@ -399,16 +399,58 @@ fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
                 }
             },
         ),
-        EngineState::Verified(found) => Requirement::needs(
+        EngineState::Verified {
+            engine: found,
+            masks: Ok(()),
+        } => Requirement::available(
             "docker",
-            Status::Unsupported,
             format!(
-                "{} runs as {user}, rootless, recorded; sandboxed sessions reach it once it sees \
-                 their checkouts masked, which it does not yet in this release (#390)",
+                "{} runs as {user}, rootless, recorded; a sandboxed session reaches it at \
+                 DOCKER_HOST once Torlek's masks helper shows it the session's checkout masked",
                 identity(found)
             ),
-            "`torlek ask run` asks you to run a container command on the host",
         ),
+        EngineState::Verified {
+            engine: found,
+            masks: Err(gap),
+        } => {
+            let (reason, next) = match gap {
+                MasksGap::NotInstalled(reason) => (
+                    reason,
+                    "install Torlek's masks helper, torlek-engine-masks.socket; no step of this \
+                     release installs it yet (#390)"
+                        .to_owned(),
+                ),
+                MasksGap::NotSetUp {
+                    reason,
+                    setup: Ok(script),
+                } => (
+                    reason,
+                    format!(
+                        "review {}, run `sudo sh {}` again",
+                        script.display(),
+                        script.display()
+                    ),
+                ),
+                MasksGap::NotSetUp {
+                    reason,
+                    setup: Err(error),
+                } => (
+                    reason,
+                    format!("the setup script could not be written: {error}"),
+                ),
+            };
+            Requirement::needs(
+                "docker",
+                Status::MissingPrerequisite,
+                format!(
+                    "{} runs as {user}, rootless, recorded; no sandboxed session reaches it: \
+                     {reason}",
+                    identity(found)
+                ),
+                next,
+            )
+        }
     }
 }
 
