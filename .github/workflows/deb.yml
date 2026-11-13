@@ -12,6 +12,7 @@ on:
       - .github/workflows/deb.yml
       - packaging/deb/**
       - tools/tests/test_deb_package.py
+      - tools/tests/fake_systemd_host.py
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:

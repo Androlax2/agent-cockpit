@@ -37,6 +37,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 release = load("release", ROOT / "tools/release.py")
 build = load("deb_build", BUILD)
 repository = load("deb_repository", REPOSITORY)
+fake_systemd_host = load("fake_systemd_host", Path(__file__).with_name("fake_systemd_host.py"))
 HAS_DPKG = shutil.which("dpkg") is not None
 HAS_DPKG_DEB = shutil.which("dpkg-deb") is not None
 HAS_AR = shutil.which("ar") is not None
@@ -361,6 +362,10 @@ class ArchiveRefusalTest(ReleaseFixture):
         )
         installed = tar_members(members["data.tar.xz"])
         self.assertFalse([name for name in installed if "/systemd/" in name])
+        control = lzma.decompress(members["control.tar.xz"])
+        with tarfile.open(fileobj=io.BytesIO(control)) as archive:
+            text = archive.extractfile("./control").read().decode()
+        self.assertNotIn("torlek-engine-masks", repository.fields_of(text)["Description"])
 
     def test_refuses_a_helper_another_version_built(self):
         def age_the_codex_hook(bundle):
@@ -507,6 +512,9 @@ class BuiltPackageTest(ReleaseFixture):
         self.assertIn("systemctl enable torlek-engine-masks.socket", scripts["postinst"])
         self.assertIn("systemctl disable torlek-engine-masks.socket", scripts["prerm"])
 
+    def test_its_description_names_the_masks_socket_it_enables(self):
+        self.assertIn("enables torlek-engine-masks.socket", self.control("amd64")["Description"])
+
     def test_its_maintainer_scripts_are_posix_shell(self):
         for name, text in self.maintainer_scripts("amd64").items():
             with self.subTest(script=name):
@@ -616,6 +624,96 @@ class BuiltPackageTest(ReleaseFixture):
             check=True,
         )
         self.assertEqual(result.stdout, f"Version: {VERSION}\nArchitecture: arm64\n")
+
+
+SCRIPTS = ROOT / "packaging/deb/torlek"
+SOCKET = "torlek-engine-masks.socket"
+SET_UP_SOCKET = f"/etc/systemd/system/{SOCKET}"
+OWNER_DROP_IN = f"/etc/systemd/system/{SOCKET}.d/owner.conf"
+
+
+@unittest.skipUnless(fake_systemd_host.is_available(), "no unprivileged user namespaces")
+class MaintainerScriptTest(unittest.TestCase):
+    """The masks helper's maintainer scripts, run as root of a fake host."""
+
+    def setUp(self):
+        self.host = fake_systemd_host.Host()
+        self.addCleanup(self.host.cleanup)
+        self.host.write(f"/usr/lib/systemd/system/{SOCKET}", "[Socket]\n")
+
+    def run_script(self, name, *arguments, failing=""):
+        return self.host.run("sh", str(SCRIPTS / name), *arguments, failing=failing)
+
+    def test_configuring_enables_the_socket_and_restarts_it_where_systemd_runs(self):
+        self.host.boot()
+        result, calls = self.run_script("postinst", "configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, f"daemon-reload\nenable {SOCKET}\nrestart {SOCKET}\n")
+
+    def test_configuring_without_systemd_running_only_enables_the_socket(self):
+        result, calls = self.run_script("postinst", "configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, f"enable {SOCKET}\n")
+
+    def test_a_removal_rolled_back_enables_the_socket_again(self):
+        self.host.boot()
+        result, calls = self.run_script("postinst", "abort-remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"enable {SOCKET}\n", calls)
+
+    def test_a_socket_that_fails_to_start_is_named_and_leaves_the_package_configured(self):
+        self.host.boot()
+        result, _ = self.run_script("postinst", "configure", failing="restart")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"cannot restart {SOCKET}", result.stderr)
+        self.assertIn("torlek doctor", result.stderr)
+
+    def test_configuring_beside_the_setup_steps_copy_names_the_command_that_removes_it(self):
+        self.host.write(SET_UP_SOCKET, "[Socket]\n")
+        result, _ = self.run_script("postinst", "configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("torlek setup engine-masks --uninstall", result.stderr)
+
+    def test_removing_stops_and_disables_the_socket(self):
+        self.host.boot()
+        result, calls = self.run_script("prerm", "remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, f"stop {SOCKET} torlek-engine-masks@*.service\ndisable {SOCKET}\n")
+
+    def test_removing_beside_the_setup_steps_copy_leaves_its_socket_listening(self):
+        self.host.boot()
+        self.host.write(SET_UP_SOCKET, "[Socket]\n")
+        result, calls = self.run_script("prerm", "remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, "")
+
+    def test_an_upgrade_leaves_the_socket_alone(self):
+        self.host.boot()
+        result, calls = self.run_script("prerm", "upgrade", "0.1.0~alpha.9-1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, "")
+
+    def test_a_socket_that_fails_to_stop_does_not_block_the_removal(self):
+        self.host.boot()
+        result, _ = self.run_script("prerm", "remove", failing="stop")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"cannot stop {SOCKET}", result.stderr)
+
+    def test_removing_keeps_the_socket_owner_and_purging_removes_it(self):
+        self.host.write(OWNER_DROP_IN, "[Socket]\nSocketUser=owner\n")
+        result, _ = self.run_script("postrm", "remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.host.at(OWNER_DROP_IN).exists())
+        result, _ = self.run_script("postrm", "purge")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.host.at(OWNER_DROP_IN).parent.exists())
+
+    def test_purging_beside_the_setup_steps_copy_keeps_the_socket_owner(self):
+        self.host.write(SET_UP_SOCKET, "[Socket]\n")
+        self.host.write(OWNER_DROP_IN, "[Socket]\nSocketUser=owner\n")
+        result, _ = self.run_script("postrm", "purge")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.host.at(OWNER_DROP_IN).exists())
 
 
 class SigningKeyRefusalTest(unittest.TestCase):

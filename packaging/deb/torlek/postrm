@@ -5,7 +5,7 @@ set -e
 case "$1" in
 remove | purge)
     if [ -d /run/systemd/system ]; then
-        systemctl daemon-reload
+        systemctl daemon-reload || echo "torlek: cannot reload systemd" >&2
     fi
     ;;
 esac

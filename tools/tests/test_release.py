@@ -717,6 +717,20 @@ class PackageTests(PackagingTestCase):
         manifest = json.loads((Path(outputs["root"]) / release.MANIFEST_PATH).read_text())
         self.assertIn(f"{release.SYSTEMD_UNITS}/torlek-engine-masks.socket", manifest["contents"])
 
+    def test_a_macos_bundle_carries_no_systemd_units(self):
+        with patch.object(release, "release_platforms", return_value=release.PLATFORMS):
+            staging = Path(self.out) / "staging"
+            outputs = release.package(
+                "0.1.0-alpha.7",
+                "alpha",
+                "macos-universal",
+                "0123abcd",
+                self.binaries,
+                staging,
+                ROOT,
+            )
+        self.assertFalse((Path(outputs["root"]) / release.SYSTEMD_UNITS).exists())
+
     def test_the_bundle_readme_installs_the_bundle_s_own_version(self):
         code, outputs, error = self.package()
         self.assertEqual(code, 0, error)
@@ -1267,6 +1281,7 @@ class ReleaseTriggerTests(unittest.TestCase):
                 "crates/cockpit-containers/units/torlek-engine-masks.socket",
                 "crates/cockpit-containers/units/torlek-engine-masks@.service",
                 "tools/tests/test_aur_package.py",
+                "tools/tests/fake_systemd_host.py",
                 "packaging/windows/ci-analyze.ps1",
                 "packaging/windows/ci-install.ps1",
                 "packaging/windows/install-in-wsl.sh",

@@ -39,6 +39,11 @@ PUBLIC_COMMAND = "usr/bin/torlek"
 PUBLIC_COMMAND_TARGET = "../lib/torlek/bin/torlek"
 SYSTEMD_UNIT_DIRECTORY = "usr/lib/systemd/system"
 MAINTAINER_SCRIPTS = ("postinst", "prerm", "postrm")
+# The description's sentence for a package that installs the masks helper's units.
+MASKS_HELPER_DESCRIPTION = (
+    " It enables torlek-engine-masks.socket, the root socket of\n"
+    " Torlek's masks helper, which runs the helper for each connection only."
+)
 SUMS_LINE = re.compile(r"([0-9a-f]{64})  (\S+)")
 # Debian policy 5.6.2: a name and an RFC 5322 address, which a package cannot leave out.
 MAINTAINER = re.compile(r"[^<>,\n]+ <[^<>@\s]+@[^<>@\s]+>")
@@ -273,12 +278,13 @@ def installed_size(files, links):
     return file_kibibytes + len(links) + len(parent_directories([*files, *links]))
 
 
-def control_file(version, architecture, maintainer, size):
+def control_file(version, architecture, maintainer, size, has_masks_helper):
     values = {
         "@VERSION@": version,
         "@ARCHITECTURE@": architecture,
         "@MAINTAINER@": maintainer,
         "@INSTALLED_SIZE@": str(size),
+        "@MASKS_HELPER@": MASKS_HELPER_DESCRIPTION if has_masks_helper else "",
     }
     template = PACKAGING / "control.in"
     text = template.read_text()
@@ -358,11 +364,13 @@ def build(tag, sums, archive, maintainer, release_date, out, debian_revision=1):
     links = {PUBLIC_COMMAND: PUBLIC_COMMAND_TARGET}
     # The release day, not the epoch: lintian refuses files dated 1970 (package-contains-ancient-file).
     timestamp = int(datetime.combine(release_date, datetime.min.time(), UTC).timestamp())
-    control = control_file(version, architecture, maintainer, installed_size(files, links))
+    scripts = maintainer_scripts(files)
+    size = installed_size(files, links)
+    control = control_file(version, architecture, maintainer, size, has_masks_helper=bool(scripts))
     control_files = {
         "control": (control.encode(), 0o644),
         "md5sums": (md5sums(files).encode(), 0o644),
-        **maintainer_scripts(files),
+        **scripts,
     }
     package = ar_archive(
         [

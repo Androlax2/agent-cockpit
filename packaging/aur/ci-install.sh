@@ -82,7 +82,6 @@ if $is_published; then
     # What an AUR push carries is the committed pair, so it must be this rendering, byte for byte.
     diff -u "$recipe/PKGBUILD" "$committed/PKGBUILD"
     diff -u "$recipe/.SRCINFO" "$committed/.SRCINFO"
-    diff -u "$recipe/torlek-bin.install" "$committed/torlek-bin.install"
     # No Arch container runs on aarch64 here: makepkg downloads that archive and checks it
     # against the recipe's checksum, and nothing installs it.
     (cd "$recipe" && as_builder env CARCH=aarch64 makepkg --verifysource --noprogressbar)

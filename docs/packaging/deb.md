@@ -56,12 +56,16 @@ skipping.
   compares them. A bundle from before the units (alpha.4 and earlier) installs none and gets no
   maintainer scripts.
 - **Maintainer scripts:** only with those units, from
-  [packaging/deb/torlek](../../packaging/deb/torlek/). `postinst configure` enables
-  `torlek-engine-masks.socket` and, with systemd running, reloads it and restarts the socket;
-  `prerm remove` stops the socket and its connections and disables it, not on an upgrade;
-  `postrm purge` removes the socket's owner drop-in the engines' setup scripts write, unless
-  `torlek setup engine-masks`'s socket still uses it. In a container without systemd running,
-  the socket is enabled only. The package never starts, stops or adopts the per-user daemon:
+  [packaging/deb/torlek](../../packaging/deb/torlek/). `postinst configure` (and each
+  `abort-*` rollback) enables `torlek-engine-masks.socket` and, with systemd running, reloads
+  systemd and restarts the socket; `prerm remove` stops the socket and its connections and
+  disables it, not on an upgrade, and beside `torlek setup engine-masks`'s units, which shadow
+  the package's, leaves that step's socket listening; `postrm purge` removes the socket's owner
+  drop-in the engines' setup scripts write, unless that step's socket still uses it. In a
+  container without systemd running, the socket is enabled only. A `systemctl` call that fails
+  is named and leaves dpkg's state alone; `torlek doctor` reports the helper.
+  `tools/tests/test_deb_package.py` runs each script as root of a user namespace with a fake
+  `systemctl`. The package never starts, stops or adopts the per-user daemon:
   `torlek daemon install` writes those services.
 - **Dependencies:** `libc6 (>= 2.39), libgcc-s1 (>= 4.2), git, curl, tmux (>= 3.6)`;
   `Suggests: systemd`. The programs need `GLIBC_2.39` and `GCC_4.2.0` symbols (built on

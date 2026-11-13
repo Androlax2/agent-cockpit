@@ -43,6 +43,7 @@ on:
       - crates/cockpit-containers/units/torlek-engine-masks.socket
       - crates/cockpit-containers/units/torlek-engine-masks@.service
       - tools/tests/test_aur_package.py
+      - tools/tests/fake_systemd_host.py
       - packaging/windows/ci-analyze.ps1
       - packaging/windows/ci-install.ps1
       - packaging/windows/install-in-wsl.sh

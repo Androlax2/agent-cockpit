@@ -1,9 +1,16 @@
 #!/bin/sh
-# The masks helper's socket stops with the package, not on an upgrade (#390).
+# The masks helper's socket stops with the package, not on an upgrade (#390). Beside
+# `torlek setup engine-masks`'s units, which shadow the package's, the socket is that step's
+# and keeps listening. A socket that cannot stop does not block the removal.
 set -e
-if [ "$1" = remove ] && command -v systemctl >/dev/null 2>&1; then
-    if [ -d /run/systemd/system ]; then
-        systemctl stop torlek-engine-masks.socket 'torlek-engine-masks@*.service'
-    fi
-    systemctl disable torlek-engine-masks.socket
+warn() {
+    echo "torlek: cannot $*; \`torlek doctor\` reports Torlek's masks helper" >&2
+}
+[ "$1" = remove ] || exit 0
+command -v systemctl >/dev/null 2>&1 || exit 0
+[ ! -e /etc/systemd/system/torlek-engine-masks.socket ] || exit 0
+if [ -d /run/systemd/system ]; then
+    systemctl stop torlek-engine-masks.socket 'torlek-engine-masks@*.service' ||
+        warn "stop torlek-engine-masks.socket"
 fi
+systemctl disable torlek-engine-masks.socket || warn "disable torlek-engine-masks.socket"

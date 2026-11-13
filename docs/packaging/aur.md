@@ -74,9 +74,13 @@ error-level one. `0.1.0alpha.4-1` has warnings only:
   2026-11-13 that the package installs and enables them itself, so the owner copies no command.
   [torlek-bin.install](../../packaging/aur/torlek-bin/torlek-bin.install), which `render.py`
   publishes beside the recipe, enables the socket on install and upgrade (restarting it when
-  systemd runs) and stops and disables it before removal; after removal it deletes the socket's
-  owner drop-in the engines' setup scripts write, unless `torlek setup engine-masks`'s socket
-  still uses it. The files are the ones that setup step installs, the helper's path alone told
+  systemd runs) and stops and disables it before removal. Beside `torlek setup engine-masks`'s
+  units, which shadow the package's, it leaves that step's socket listening on removal. A
+  `systemctl` call that fails is named and the transaction goes on; `torlek doctor` reports the
+  helper. The socket's owner drop-in, which the engines' setup scripts write under
+  `/etc/systemd/system/torlek-engine-masks.socket.d`, stays on removal like other configuration
+  under `/etc`. `tools/tests/test_aur_package.py` runs each function as root of a user
+  namespace with a fake `systemctl`. The files are the ones that setup step installs, the helper's path alone told
   apart: `the_packages_install_the_files_the_setup_step_installs_under_their_own_paths` in
   `crates/cockpit-containers/tests/masks_install.rs` compares them. A release whose bundle
   predates the units, such as the committed `0.1.0-alpha.4`, installs none, and the install
@@ -139,7 +143,7 @@ approval; this list grants none. `$TAG` is the committed recipe's `_tag`, withou
 8. Publish, only with Theo's approval, from the AUR account whose SSH key is registered there:
    `git -c init.defaultBranch=master clone ssh://aur@aur.archlinux.org/torlek-bin.git`, which
    gives an empty repository until the first push creates the package. Copy in
-   `packaging/aur/torlek-bin/PKGBUILD` and `.SRCINFO`, nothing else, run
+   `packaging/aur/torlek-bin/PKGBUILD`, `.SRCINFO` and `torlek-bin.install`, nothing else, run
    `python3 packaging/aur/render.py check-srcinfo` on the clone, then commit and push `master`.
 9. Check the published route on a new fixture: `git clone https://aur.archlinux.org/torlek-bin.git`,
    then `makepkg -si` and `torlek doctor`. Link the evidence from #97.
@@ -152,14 +156,14 @@ later one. Nothing reaches the AUR that was not merged here first.
 **A new release tag.** `pkgrel` starts again at 1.
 
 1. Steps 1 to 3 of the [publication checklist](#publication-checklist), for the new tag.
-2. Replace the committed pair:
+2. Replace the committed pair (`torlek-bin.install` stays: `render` keeps it):
    `rm packaging/aur/torlek-bin/PKGBUILD packaging/aur/torlek-bin/.SRCINFO`, then
    `python3 packaging/aur/render.py render --tag "$TAG" --sums "$WORK/SHA256SUMS" --out packaging/aur/torlek-bin`
 3. Open a pull request with the pair and this page's status line. Its `install-arch-published`
    job must pass before it merges.
 4. Steps 6 to 9 of the publication checklist. In step 7, also upgrade from the `torlek-bin`
    published before, with a daemon running. In step 8, the clone already holds the package:
-   replace its two files.
+   replace its three files.
 
 **A fix to the recipe alone.** Change the template, then follow the four steps above for the
 same tag, adding `--pkgrel` with one above the published number to the `render` command, so

@@ -120,9 +120,13 @@ def printed_srcinfo(directory):
 
 def render(tag, sums, out, pkgrel=1, is_development=False):
     """The files appear together or not at all: a failed makepkg leaves nothing to retry around."""
-    for name in ("PKGBUILD", ".SRCINFO", INSTALL_SCRIPT.name):
+    for name in ("PKGBUILD", ".SRCINFO"):
         if (out / name).exists():
             raise Refusal(f"{out / name} exists; render into a directory without a recipe")
+    # The committed folder holds the install script itself: rendering there keeps it.
+    script = out / INSTALL_SCRIPT.name
+    if script.exists() and script.read_bytes() != INSTALL_SCRIPT.read_bytes():
+        raise Refusal(f"{script} exists and is not {INSTALL_SCRIPT}; render elsewhere")
     text = recipe(tag, sums.read_text(), pkgrel, is_development)
     out.mkdir(parents=True, exist_ok=True)
     pkgver = package_version(tag, is_development)
