@@ -200,10 +200,12 @@ not share code.
   sessions' temporary folders, removed when it ends: the checkout writable, the daemon's
   agent base variables and its own `TMPDIR` only (never `GH_TOKEN`), its proxy allowing the
   checkout's ecosystem registries and the project's host grants (#862 Q2). A host its proxy
-  refuses is a network request whose subject is the check run (`network.rs`), filed while
-  it runs and again before its seal removes its folder; it stays in the owner's list until
-  decided, since the run is usually over by then, and "allow always" is a grant the
-  project's sessions use too. One that declares
+  refuses is a network request of the check run (`network.rs`), filed while it runs and
+  again before its seal removes its folder. The run is usually over before the owner
+  decides, so the request stands for the check: its next runs file no second one, it is
+  allowed always (a grant the project's sessions use too) or denied, never once, and the
+  run's output ends with a line naming it or its denial (`verification.rs`). The notifier
+  tells it as the host's hold. One that declares
   `native` is recorded `unavailable`, never run on the host, and the gate's next action says
   to declare `sandbox` or turn the sandbox off. Under `"off"` every check but `docker` runs
   on the host with the approved commands' environment (Git settings included) and the risk
@@ -391,8 +393,8 @@ builds it only when asked and no release installs it.
 - `tests/check_environment.rs`: issue #352 through the real sandbox: a check under
   `"required"` cannot read the owner's key or the daemon's state, reach the owner's socket,
   see `GH_TOKEN`, write the owner's cache or reach an ungranted host; its receipt names the
-  sandbox and its folder is removed; a host it was refused reaches the owner as a request
-  of the check run; on a host without bubblewrap it is `unavailable` and the supervisor
+  sandbox and its folder is removed; a host it was refused reaches the owner as one request
+  of the check, which its output and its reruns' name, a denial included; on a host without bubblewrap it is `unavailable` and the supervisor
   started no process; under `"off"` it runs on the host. `tests/live_enforcement.rs`
   (ignored, internet) has the check reach the host the owner allowed always and not another.
 - `tests/scheduling.rs`: issue #43 on the binary's sockets: a queued item placed on the idle

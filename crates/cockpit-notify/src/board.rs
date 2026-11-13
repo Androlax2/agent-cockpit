@@ -18,8 +18,9 @@ use crate::event::Event;
 
 /// The "session" of an event that is the host's, not a session's: the low disk; with `host:`
 /// and the window's `quota-alert` id, a quota alert, so each window's alert is held and still
-/// raised apart; with `host:budget/` and the item's id, a spent budget. A session id is `s` and
-/// twelve hex digits, so no session can have any of them.
+/// raised apart; with `host:budget/` and the item's id, a spent budget; with `host:network/`
+/// and the request's id, a check run's network request, which no session waits on (#352). A
+/// session id is `s` and twelve hex digits, so no session can have any of them.
 pub(crate) const HOST: &str = "host";
 
 /// One reason a session needs the owner. A session raises it while its cause stands; the
@@ -267,12 +268,25 @@ impl Board {
                 budget_minutes: spent.budget_minutes,
             },
         });
+        let check_requests = self
+            .network
+            .iter()
+            .filter(|request| {
+                request.state == NetworkRequestStateView::Asking
+                    && network_session(request).is_none()
+            })
+            .map(|request| Raised {
+                session: format!("{HOST}:network/{}", request.id),
+                event: Event::Hold,
+                cause: Cause::Network(request.id),
+            });
         self.sessions
             .values()
             .flat_map(|session| self.raised_by(session))
             .chain(low_disk)
             .chain(quota_alerts)
             .chain(spent_budgets)
+            .chain(check_requests)
             .collect()
     }
 
@@ -377,6 +391,17 @@ impl Board {
                 .spent_budgets
                 .get(item)
                 .map_or_else(|| format!("item {item}"), |spent| spent.title.clone()),
+            Cause::Network(id) => self
+                .network
+                .iter()
+                .find(|request| request.id == *id)
+                .and_then(|request| match &request.subject {
+                    NetworkSubjectView::Check { check, .. } => {
+                        Some(format!("check {check} of {}", request.project))
+                    }
+                    NetworkSubjectView::Session { .. } => None,
+                })
+                .unwrap_or_else(|| self.name_of(&raised.session)),
             _ => self.name_of(&raised.session),
         }
     }

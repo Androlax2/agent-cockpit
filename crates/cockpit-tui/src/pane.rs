@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
     Command, DecidedThroughView, ErrorCode, GuideStateView, GuideView, NetworkRequestStateView,
-    RunRequestView, RunStateView,
+    NetworkSubjectView, RunRequestView, RunStateView,
 };
 
 use crate::Key;
@@ -48,9 +48,11 @@ pub enum Shown {
         step: usize,
         asks: bool,
     },
-    /// A host a sandboxed session was refused (#674).
+    /// A host a sandboxed session or check was refused (#674). A check's run ends before
+    /// the owner decides, so it is allowed always or denied, never once (#352).
     Network {
         id: i64,
+        can_allow_once: bool,
     },
 }
 
@@ -309,19 +311,29 @@ impl Pane {
             (Shown::Guide { id, .. }, Key::Char('x')) => {
                 handled("guide-close", Some(Command::GuideClose { guide: *id }))
             }
-            (Shown::Network { id }, Key::Char(key @ ('y' | 'a'))) => handled(
-                if key == 'y' {
-                    "network-allow-once"
-                } else {
-                    "network-allow-always"
+            (
+                Shown::Network {
+                    id,
+                    can_allow_once: true,
                 },
+                Key::Char('y'),
+            ) => handled(
+                "network-allow-once",
                 Some(Command::NetworkAllow {
                     request: *id,
-                    always: key == 'a',
+                    always: false,
                     through: Some(DecidedThroughView::Tui),
                 }),
             ),
-            (Shown::Network { id }, Key::Char('x')) => handled(
+            (Shown::Network { id, .. }, Key::Char('a')) => handled(
+                "network-allow-always",
+                Some(Command::NetworkAllow {
+                    request: *id,
+                    always: true,
+                    through: Some(DecidedThroughView::Tui),
+                }),
+            ),
+            (Shown::Network { id, .. }, Key::Char('x')) => handled(
                 "network-deny",
                 Some(Command::NetworkDeny {
                     request: *id,
@@ -428,7 +440,10 @@ pub(crate) fn waiting(board: &Board) -> impl Iterator<Item = Shown> + '_ {
                 .network
                 .iter()
                 .filter(|request| request.state == NetworkRequestStateView::Asking)
-                .map(|request| Shown::Network { id: request.id }),
+                .map(|request| Shown::Network {
+                    id: request.id,
+                    can_allow_once: matches!(request.subject, NetworkSubjectView::Session { .. }),
+                }),
         )
 }
 

@@ -807,46 +807,81 @@ async fn remove_run_folders(folders: Vec<PathBuf>) {
     }
 }
 
-/// Files the hosts a sandboxed run's launcher refused as requests for the owner (#352, #862
-/// Q2), before its seal removes the folder they are listed in: a run often ends before the
-/// network loop's next pass reads it. A failure is logged; the receipt is recorded anyway.
-async fn file_refused_hosts(context: &Context, pending: &cockpit_verification::PendingResult) {
+/// Files the hosts a sandboxed run's launcher refused as its check's requests for the owner
+/// (#352, #862 Q2), before its seal removes the folder they are listed in: a run often ends
+/// before the network loop's next pass reads it. Returns a line for the run's output per host
+/// still refused: the request the owner has to decide, or the denial. A failure is logged;
+/// the receipt is recorded anyway.
+async fn file_refused_hosts(
+    context: &Context,
+    pending: &cockpit_verification::PendingResult,
+) -> String {
     let is_sandboxed = pending.receipt.ran.as_ref().is_some_and(|ran| {
         ran.environment == cockpit_config::ExecutionEnvironment::Sandbox.as_str()
     });
     if !is_sandboxed {
-        return;
+        return String::new();
     }
     let run = pending.receipt.run_id.clone();
     let sandbox = context.sessions.sandbox().clone();
-    let listed = match tokio::task::spawn_blocking(move || sandbox.check_egress_requests(&run))
+    let read = tokio::task::spawn_blocking(move || sandbox.check_egress_requests(&run))
         .await
-    {
-        Ok(Ok(Some(requests))) => requests,
-        Ok(Ok(None)) => return,
-        Ok(Err(error)) => {
-            tracing::warn!(run = pending.receipt.run_id, %error, "a check run's requests file was not read");
-            return;
-        }
+        .map_err(|error| error.to_string())
+        .and_then(|read| read);
+    let listed = match read {
+        Ok(Some(requests)) => requests,
+        Ok(None) => return String::new(),
         Err(error) => {
             tracing::warn!(run = pending.receipt.run_id, %error, "a check run's requests file was not read");
-            return;
+            return String::new();
         }
     };
     let subject = cockpit_sandbox::Subject::Check {
         run: pending.receipt.run_id.clone(),
         check: pending.receipt.check.name.clone(),
     };
+    let project = &pending.receipt.project;
     let filed = async {
         let write = context.database.write().await?;
-        crate::network::file_listed(&write, &subject, &pending.receipt.project, &listed, now())
-            .await?;
+        crate::network::file_listed(&write, &subject, project, &listed, now()).await?;
+        let mut standing = Vec::new();
+        for asked in listed
+            .asked
+            .iter()
+            .take(cockpit_sandbox::MAX_ASKED_DESTINATIONS)
+        {
+            if let Some(request) =
+                cockpit_sandbox::standing_check_request(&write, &subject, project, asked).await?
+            {
+                standing.push(request);
+            }
+        }
         write.commit().await?;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(standing)
     }
     .await;
-    if let Err(error) = filed {
-        tracing::warn!(run = pending.receipt.run_id, %error, "a check run's refused hosts were not filed");
+    match filed {
+        Ok(standing) => standing.iter().map(refused_host_line).collect(),
+        Err(error) => {
+            tracing::warn!(run = pending.receipt.run_id, %error, "a check run's refused hosts were not filed");
+            String::new()
+        }
+    }
+}
+
+fn refused_host_line(request: &cockpit_sandbox::NetworkRequest) -> String {
+    let target = request.target.describe();
+    let id = request.id;
+    match request.state {
+        cockpit_sandbox::NetworkRequestState::Denied => {
+            format!(
+                "torlek: the sandbox refused {target}: the owner denied it (network request {id})\n"
+            )
+        }
+        _ => format!(
+            "torlek: the sandbox refused {target}: network request {id} waits for the owner to \
+             allow it always or deny it\n"
+        ),
     }
 }
 
@@ -894,7 +929,16 @@ async fn record_when_ended(
             receipt.output.len() as u64
         }
     };
-    file_refused_hosts(&context, &pending).await;
+    let refused = file_refused_hosts(&context, &pending).await;
+    let mut bytes = bytes;
+    if !refused.is_empty() {
+        if !receipt.output.is_empty() && !receipt.output.ends_with('\n') {
+            receipt.output.push('\n');
+            bytes += 1;
+        }
+        receipt.output.push_str(&refused);
+        bytes += refused.len() as u64;
+    }
     let recorded = async {
         let write = context.database.write().await?;
         let receipt =

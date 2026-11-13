@@ -208,10 +208,7 @@ fn request_detail(request: &NetworkRequestView) -> String {
         "network request {}: {} for {} (project {})\nstate: {}\n",
         request.id,
         request.target,
-        match &request.subject {
-            NetworkSubjectView::Session { id } => format!("session {id}"),
-            NetworkSubjectView::Check { run, check } => format!("check {check} (run {run})"),
-        },
+        requester(&request.subject),
         request.project,
         state_name(request.state)
     );
@@ -221,7 +218,7 @@ fn request_detail(request: &NetworkRequestView) -> String {
     }
     let verdict = match request.state {
         NetworkRequestStateView::Asking => None,
-        NetworkRequestStateView::AllowedOnce => Some(once_lasts(&request.subject)),
+        NetworkRequestStateView::AllowedOnce => Some("allowed for the rest of this session"),
         NetworkRequestStateView::AllowedAlways => Some("allowed always for the project"),
         NetworkRequestStateView::Denied => Some("denied"),
     };
@@ -272,19 +269,19 @@ pub(crate) fn decided(verdict: &str, decision: NetworkDecisionView) -> String {
     )
 }
 
-/// The session's id, or `check NAME run RUN` for a check run's request (#352).
-fn subject(subject: &NetworkSubjectView) -> String {
+/// `session ID`, or `check NAME (run RUN)` for a check run's request (#352).
+fn requester(subject: &NetworkSubjectView) -> String {
     match subject {
-        NetworkSubjectView::Session { id } => id.clone(),
-        NetworkSubjectView::Check { run, check } => format!("check {check} run {run}"),
+        NetworkSubjectView::Session { id } => format!("session {id}"),
+        NetworkSubjectView::Check { .. } => self::subject(subject),
     }
 }
 
-/// What "allow once" lasts for the request's subject.
-fn once_lasts(subject: &NetworkSubjectView) -> &'static str {
+/// The session's id, or `check NAME (run RUN)` for a check run's request (#352).
+fn subject(subject: &NetworkSubjectView) -> String {
     match subject {
-        NetworkSubjectView::Session { .. } => "allowed for the rest of this session",
-        NetworkSubjectView::Check { .. } => "allowed for the rest of this check run",
+        NetworkSubjectView::Session { id } => id.clone(),
+        NetworkSubjectView::Check { run, check } => format!("check {check} (run {run})"),
     }
 }
 

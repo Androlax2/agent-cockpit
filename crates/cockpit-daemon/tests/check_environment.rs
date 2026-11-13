@@ -279,15 +279,7 @@ async fn a_host_a_sandboxed_check_was_refused_asks_the_owner_for_the_check_run()
     let receipt = home.run_check("app", "asking").await;
 
     assert_eq!(receipt.outcome, CheckOutcomeView::Failed, "{receipt:?}");
-    let requests = match home
-        .connect()
-        .await
-        .request(Command::NetworkList, GENEROUS)
-        .await
-    {
-        Ok(Reply::NetworkRequests { requests }) => requests,
-        other => panic!("expected the network requests, got {other:?}"),
-    };
+    let requests = network_requests(&home).await;
     let [request] = requests.as_slice() else {
         panic!("expected one request, got {requests:?}; {}", home.stderr());
     };
@@ -300,4 +292,86 @@ async fn a_host_a_sandboxed_check_was_refused_asks_the_owner_for_the_check_run()
     );
     assert_eq!(request.project, "app");
     assert_eq!(request.target, "ungranted.example:443");
+}
+
+/// #352: the run ends before the owner can decide, so its output says what to wait for.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_check_run_names_the_request_the_owner_decides() {
+    let (home, _daemon) = started(REQUIRED, ASKING_CHECK, Home::start).await;
+
+    let receipt = home.run_check("app", "asking").await;
+
+    let [request] = network_requests(&home).await.try_into().unwrap();
+    let named = format!(
+        "torlek: the sandbox refused ungranted.example:443: network request {} waits for the \
+         owner to allow it always or deny it",
+        request.id
+    );
+    assert!(receipt.output.contains(&named), "{}", receipt.output);
+}
+
+/// #352: one card per check and host; a rerun while it asks joins it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rerun_of_a_refused_check_adds_no_second_request() {
+    let (home, _daemon) = started(REQUIRED, ASKING_CHECK, Home::start).await;
+    home.run_check("app", "asking").await;
+
+    let rerun = home.run_check("app", "asking").await;
+
+    let requests = network_requests(&home).await;
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert!(
+        rerun
+            .output
+            .contains(&format!("network request {} waits", requests[0].id)),
+        "{}",
+        rerun.output
+    );
+}
+
+/// #352: a denial holds for the check's next runs, which name it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rerun_after_the_owner_denied_the_host_names_the_denial() {
+    let (home, _daemon) = started(REQUIRED, ASKING_CHECK, Home::start).await;
+    home.run_check("app", "asking").await;
+    let [request] = network_requests(&home).await.try_into().unwrap();
+    let denied = home
+        .connect()
+        .await
+        .request(
+            Command::NetworkDeny {
+                request: request.id,
+                through: None,
+            },
+            GENEROUS,
+        )
+        .await;
+    assert!(
+        matches!(denied, Ok(Reply::NetworkRequest { .. })),
+        "{denied:?}"
+    );
+
+    let rerun = home.run_check("app", "asking").await;
+
+    assert_eq!(rerun.outcome, CheckOutcomeView::Failed, "{rerun:?}");
+    let named = format!(
+        "torlek: the sandbox refused ungranted.example:443: the owner denied it (network \
+         request {})",
+        request.id
+    );
+    assert!(rerun.output.contains(&named), "{}", rerun.output);
+    assert_eq!(network_requests(&home).await, []);
+}
+
+/// What `NetworkList` shows the owner.
+async fn network_requests(home: &Home) -> Vec<cockpit_protocol::NetworkRequestView> {
+    match home
+        .connect()
+        .await
+        .request(Command::NetworkList, GENEROUS)
+        .await
+    {
+        Ok(Reply::NetworkRequests { requests }) => requests,
+        other => panic!("expected the network requests, got {other:?}"),
+    }
 }

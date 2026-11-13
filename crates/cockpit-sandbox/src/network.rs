@@ -163,7 +163,8 @@ pub(crate) const REASON_MIGRATION_SQL: &str =
     "ALTER TABLE sandbox_network_requests ADD COLUMN reason TEXT CHECK (reason <> '');";
 
 /// The `sandbox` migration set's version 7 (#352, #862 Q2): a check run files requests as a
-/// session does; its row names the run as the subject and the check in `subject_check`.
+/// session does; its row names the run as the subject and the check in `subject_check`. One
+/// request stands per project, check, host and port, and none is allowed once.
 pub(crate) const CHECK_SUBJECTS_MIGRATION_SQL: &str =
     "CREATE TABLE sandbox_network_requests_checks (
         id INTEGER PRIMARY KEY,
@@ -190,7 +191,8 @@ pub(crate) const CHECK_SUBJECTS_MIGRATION_SQL: &str =
         CHECK ((kind = 'host') = (port IS NOT NULL)),
         CHECK ((kind = 'service') = (service IS NOT NULL)),
         CHECK ((kind = 'service') = (record IS NOT NULL)),
-        CHECK ((subject_kind = 'check') = (subject_check IS NOT NULL))
+        CHECK ((subject_kind = 'check') = (subject_check IS NOT NULL)),
+        CHECK (subject_kind = 'session' OR state <> 'allowed-once')
     );
     INSERT INTO sandbox_network_requests_checks (id, subject_kind, subject, project, kind, host,
             port, service, record, state, asked_at, decided_at, decided_through, grant_id,
@@ -199,6 +201,9 @@ pub(crate) const CHECK_SUBJECTS_MIGRATION_SQL: &str =
             asked_at, decided_at, decided_through, grant_id, reason
         FROM sandbox_network_requests;
     DROP TABLE sandbox_network_requests;
+    CREATE UNIQUE INDEX sandbox_network_requests_one_standing_check
+        ON sandbox_network_requests_checks (project, subject_check, host, port)
+        WHERE subject_kind = 'check' AND kind = 'host' AND state IN ('asking', 'denied');
     ALTER TABLE sandbox_network_requests_checks RENAME TO sandbox_network_requests;
     CREATE UNIQUE INDEX sandbox_network_requests_one_standing
         ON sandbox_network_requests (subject_kind, subject, host, port)
@@ -381,6 +386,9 @@ pub enum NetworkRefusal {
     /// Only a session's agent asks ahead for a service; a check run only files what its
     /// launcher refused.
     NotASession,
+    /// A check run ends before the owner can decide, so its check's request is allowed
+    /// always or denied, never for one run (#352).
+    OnceForACheck,
 }
 
 impl std::fmt::Display for NetworkRefusal {
@@ -407,6 +415,8 @@ impl std::fmt::Display for NetworkRefusal {
             NetworkRefusal::NotASession => {
                 formatter.write_str("only a session's agent asks ahead for a service")
             }
+            NetworkRefusal::OnceForACheck => formatter
+                .write_str("a check's network request is allowed always or denied, not once"),
         }
     }
 }
@@ -514,7 +524,7 @@ pub async fn ask_service(
     if let Some(grant) = active_grant(write, project, &target).await? {
         return Ok(ServiceAsk::Granted(network_grant(write, grant).await?));
     }
-    if let Some(request) = standing_request(write, subject, &target).await? {
+    if let Some(request) = standing_request(write, subject, project, &target).await? {
         return Ok(ServiceAsk::Standing(request));
     }
     insert_request(write, subject, project, &target, Some(reason), now)
@@ -530,7 +540,9 @@ async fn file_request(
     now: i64,
 ) -> Result<Option<NetworkRequest>, NetworkError> {
     if active_grant(write, project, target).await?.is_some()
-        || standing_request(write, subject, target).await?.is_some()
+        || standing_request(write, subject, project, target)
+            .await?
+            .is_some()
     {
         return Ok(None);
     }
@@ -540,29 +552,66 @@ async fn file_request(
 }
 
 /// `subject`'s request for `target` that still decides it: asking, allowed for the session,
-/// or denied.
+/// or denied. A check run's is its check's in `project`, whichever run asked (#352): a run
+/// ends before the owner can decide, so a rerun joins the open card and a denial holds.
 async fn standing_request(
     connection: &Connection,
     subject: &Subject,
+    project: &str,
     target: &NetworkTarget,
 ) -> Result<Option<NetworkRequest>, NetworkError> {
-    let (subject_kind, subject_id) = subject_columns(subject);
     let (kind, host, port, service, record) = target.columns();
-    let mut standing = connection
-        .query(
-            &format!(
-                "SELECT {REQUEST_COLUMNS} FROM sandbox_network_requests
-                 WHERE subject_kind = ?1 AND subject = ?2 AND kind = ?3
-                    AND host IS ?4 AND port IS ?5 AND service IS ?6 AND record IS ?7
-                    AND state IN ('asking', 'allowed-once', 'denied')"
-            ),
-            (subject_kind, subject_id, kind, host, port, service, record),
-        )
-        .await?;
+    let mut standing = match subject {
+        Subject::Session { session } => {
+            connection
+                .query(
+                    &format!(
+                        "SELECT {REQUEST_COLUMNS} FROM sandbox_network_requests
+                         WHERE subject_kind = 'session' AND subject = ?1 AND kind = ?2
+                            AND host IS ?3 AND port IS ?4 AND service IS ?5 AND record IS ?6
+                            AND state IN ('asking', 'allowed-once', 'denied')"
+                    ),
+                    (session.as_str(), kind, host, port, service, record),
+                )
+                .await?
+        }
+        Subject::Check { check, .. } => {
+            connection
+                .query(
+                    &format!(
+                        "SELECT {REQUEST_COLUMNS} FROM sandbox_network_requests
+                         WHERE subject_kind = 'check' AND project = ?1 AND subject_check = ?2
+                            AND kind = ?3 AND host IS ?4 AND port IS ?5 AND service IS ?6
+                            AND record IS ?7 AND state IN ('asking', 'denied')
+                         ORDER BY id LIMIT 1"
+                    ),
+                    (project, check.as_str(), kind, host, port, service, record),
+                )
+                .await?
+        }
+    };
     match standing.next().await? {
         Some(row) => request_from(&row).map(Some),
         None => Ok(None),
     }
+}
+
+/// What decides `asked` for a run of `subject`'s check now, for its receipt to name (#352):
+/// the open or denied request of the check, else `None`, a grant included.
+pub async fn standing_check_request(
+    connection: &Connection,
+    subject: &Subject,
+    project: &str,
+    asked: &AskedDestination,
+) -> Result<Option<NetworkRequest>, NetworkError> {
+    let target = NetworkTarget::Host {
+        host: asked.host.clone(),
+        port: asked.port,
+    };
+    if active_grant(connection, project, &target).await?.is_some() {
+        return Ok(None);
+    }
+    standing_request(connection, subject, project, &target).await
 }
 
 async fn insert_request(
@@ -666,8 +715,8 @@ pub async fn network_request(
 }
 
 /// The owner allows request `id`: for the rest of its session, or `always` for its project
-/// through a new grant. Refused once decided, and within [`NETWORK_ALLOW_GRACE_SECONDS`] of
-/// the request appearing.
+/// through a new grant. Refused once decided, for a check's request but always, and within
+/// [`NETWORK_ALLOW_GRACE_SECONDS`] of the request appearing.
 pub async fn allow_network_request(
     write: &WriteTransaction<'_>,
     id: i64,
@@ -676,6 +725,9 @@ pub async fn allow_network_request(
     now: i64,
 ) -> Result<NetworkRequest, NetworkError> {
     let request = undecided(write, id).await?;
+    if !always && matches!(request.subject, Subject::Check { .. }) {
+        return Err(NetworkRefusal::OnceForACheck.into());
+    }
     let wait_seconds = request.asked_at + NETWORK_ALLOW_GRACE_SECONDS - now;
     if wait_seconds > 0 {
         return Err(NetworkRefusal::TooSoon { wait_seconds }.into());

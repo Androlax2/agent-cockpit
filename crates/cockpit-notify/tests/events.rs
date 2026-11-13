@@ -6,8 +6,8 @@ mod common;
 use cockpit_notify::{Event, Notice, Notifier};
 use cockpit_protocol::{
     AgentExitView, AgentState, Command, DiskView, EntityKind, ExitStatusView, NetworkRequestView,
-    NetworkTargetView, QuestionSource, QuotaAlertView, SessionReport, SessionStateView,
-    SessionView, TaskBudgetSpentView, TurnOutcome,
+    NetworkSubjectView, NetworkTargetView, QuestionSource, QuotaAlertView, SessionReport,
+    SessionStateView, SessionView, TaskBudgetSpentView, TurnOutcome,
 };
 use common::{
     after_snapshot, change_session, guide, loaded, network_request, report, run, session,
@@ -575,6 +575,25 @@ fn a_refused_network_host_is_a_hold_naming_the_host() {
     let told = set_network(&mut notifier, vec![network_request(4, WORKER)]);
 
     assert_eq!(events(&told), [Event::Hold]);
+    assert_eq!(told[0].detail.as_deref(), Some("unknown.example.com:443"));
+}
+
+/// #352: a check run's request waits on no session, so it is told as the host's own.
+#[test]
+fn a_check_runs_refused_host_is_a_hold_naming_the_check_and_the_host() {
+    let mut notifier = running();
+    let request = NetworkRequestView {
+        subject: NetworkSubjectView::Check {
+            run: "execution-e-3".to_owned(),
+            check: "test".to_owned(),
+        },
+        ..network_request(6, WORKER)
+    };
+
+    let told = set_network(&mut notifier, vec![request]);
+
+    assert_eq!(events(&told), [Event::Hold]);
+    assert_eq!(told[0].name, "check test of app");
     assert_eq!(told[0].detail.as_deref(), Some("unknown.example.com:443"));
 }
 

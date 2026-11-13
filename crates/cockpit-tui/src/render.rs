@@ -556,7 +556,7 @@ fn draw_pane(app: &App, frame: &mut Frame<'_>, area: Rect, now: Instant) {
             .find(|guide| guide.id == *id)
             .map(guide_lines)
             .unwrap_or_default(),
-        Some(Shown::Network { id }) => board
+        Some(Shown::Network { id, .. }) => board
             .network
             .iter()
             .find(|request| request.id == *id)
@@ -658,13 +658,18 @@ pub(crate) fn pane_keys(pane: &Pane) -> &'static str {
         Some(Shown::Run { .. }) => "y approve   x decline   m more",
         Some(Shown::Guide { asks: true, .. }) => "y answer   s stuck   x close",
         Some(Shown::Guide { .. }) => "y done   s stuck   x close",
-        Some(Shown::Network { .. }) => "y allow once   a allow always   x deny",
+        Some(Shown::Network {
+            can_allow_once: true,
+            ..
+        }) => "y allow once   a allow always   x deny",
+        Some(Shown::Network { .. }) => "a allow always   x deny",
         None => "",
     }
 }
 
-/// A network request's lines (#674): "allow once" lasts the rest of the asking session or check run,
-/// "allow always" is a grant to the project the owner can revoke. A service's request names
+/// A network request's lines (#674): "allow once" lasts the rest of the asking session, a
+/// check's request has none (#352), "allow always" is a grant to the project the owner can
+/// revoke. A service's request names
 /// its whole record (#880): what the grant is bound to.
 pub(crate) fn network_lines(request: &NetworkRequestView) -> Vec<String> {
     let asked = match &request.asks {
@@ -696,9 +701,9 @@ pub(crate) fn network_lines(request: &NetworkRequestView) -> Vec<String> {
         NetworkSubjectView::Session { .. } => "Allow once: for the rest of this session. \
             Allow always: every session of the project, until `torlek network revoke`."
             .to_owned(),
-        NetworkSubjectView::Check { .. } => "Allow once: for the rest of this check run. \
-            Allow always: every check and session of the project, until \
-            `torlek network revoke`."
+        NetworkSubjectView::Check { .. } => "Allow always: every check and session of the \
+            project, until `torlek network revoke`; run the check again. Deny: its next runs \
+            are refused it too."
             .to_owned(),
     });
     lines

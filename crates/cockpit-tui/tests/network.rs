@@ -159,24 +159,40 @@ fn the_pane_names_the_host_the_session_and_what_each_key_does() {
 #[test]
 fn the_pane_names_a_check_runs_request_and_says_always_reaches_the_projects_sessions() {
     let now = Instant::now();
-    let request = NetworkRequestView {
-        subject: NetworkSubjectView::Check {
-            run: "execution-e-3".to_owned(),
-            check: "test".to_owned(),
-        },
-        ..asking(9)
-    };
-    let app = app_asked_for(request, now);
+    let app = app_asked_for(check_request(9), now);
 
     let screen = screen_text(&app, after_grace(now));
 
     for expected in [
         "Network request 9 from check test (run execution-e-3) (project app)",
         "Allow always: every check and session",
+        "a allow always   x deny",
     ] {
         assert!(screen.contains(expected), "{expected:?} not in:\n{screen}");
     }
+    assert!(!screen.contains("allow once"), "{screen}");
     assert!(!app.board().needs_you(SESSION));
+}
+
+/// #352: a check run ends before the owner decides, so "once" would allow nothing.
+#[test]
+fn y_on_a_check_runs_request_sends_nothing() {
+    let now = Instant::now();
+    let mut app = app_asked_for(check_request(9), now);
+
+    let pressed = app.key(Key::Char('y'), after_grace(now));
+
+    assert_eq!(pressed.send, Vec::new());
+}
+
+fn check_request(id: i64) -> NetworkRequestView {
+    NetworkRequestView {
+        subject: NetworkSubjectView::Check {
+            run: "execution-e-3".to_owned(),
+            check: "test".to_owned(),
+        },
+        ..asking(id)
+    }
 }
 
 #[test]

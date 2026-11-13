@@ -85,13 +85,16 @@ launch, `torlek doctor` and `torlek init` say so.
    control characters. Agent callers, stale identities and unsandboxed launches are
    refused; an identical retry is idempotent. Reports never change policy or grants.
 5. Network requests (#674, `network.rs`, migration 2): `file_network_request` files a
-   destination the launcher refused for want of an entry, once per subject, host and port,
+   destination the launcher refused for want of an entry, once per session, host and port,
    unless a decision or a grant already covers it. The subject is a session or, since
    migration 7, a check run (#352): `Sandbox::check_egress_requests` reads a run's requests
-   file and `Sandbox::write_check_egress_decisions` rewrites its decisions; only a session
-   asks ahead for a service. The owner's `allow_network_request`
-   (for the rest of the session or run, or `always`: a project grant for that host and port),
-   `deny_network_request` and `revoke_network_grant` record who decided, when and through
+   file and `Sandbox::write_check_egress_decisions` rewrites its decisions. A run ends
+   before the owner decides, so a check's request is filed once per project, check, host
+   and port, whichever run asked, stands while asking or denied, and is never allowed once
+   (`NetworkRefusal::OnceForACheck`, and a unique index and a constraint in the store);
+   `standing_check_request` is what decides a host for the check's next run. Only a session
+   asks ahead for a service. The owner's `allow_network_request` (for the rest of the
+   session, or `always`: a project grant for that host and port), `deny_network_request` and `revoke_network_grant` record who decided, when and through
    which client; an allow within `NETWORK_ALLOW_GRACE_SECONDS` of the request is refused.
    `egress_decisions` is what the session's launcher is given: `Staged::write` writes it
    as `egress-decisions.json`, with the requests still asking, which allow nothing; the

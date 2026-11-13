@@ -103,5 +103,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             ALTER TABLE verification_run_identities ADD COLUMN ran_isolation TEXT
                 CHECK (ran_isolation <> '');",
         },
+        // #352: the daemon's network loop asks for the sandboxed runs still going at each pass.
+        Migration {
+            version: 4,
+            sql: "CREATE INDEX verification_unsealed_runs
+                ON verification_run_identities (ran_environment) WHERE sealed = 0;",
+        },
     ],
 };

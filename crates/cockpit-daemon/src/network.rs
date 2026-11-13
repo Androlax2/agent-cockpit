@@ -60,6 +60,10 @@ impl From<NetworkError> for Failed {
                 ErrorCode::Refused,
                 format!("read the request, then allow it again in {wait_seconds} s"),
             ),
+            NetworkRefusal::OnceForACheck => (
+                ErrorCode::Refused,
+                "allow it always (`--always`, a in the TUI) or deny it".to_owned(),
+            ),
             // No owner verb names a subject: a check run reaching here is the daemon's bug.
             NetworkRefusal::NotASession => return internal(&error),
         };
@@ -90,8 +94,8 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
                         .iter()
                         .filter(|request| match &request.subject {
                             Subject::Session { session } => live.contains_key(session),
-                            // A run ends long before the owner reads its request: it waits
-                            // for the decision the check's next run needs (#352).
+                            // A run ends long before the owner reads its request, which
+                            // stands for its check's next runs (#352).
                             Subject::Check { .. } => true,
                         })
                         .map(request_view)

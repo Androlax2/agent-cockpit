@@ -3,8 +3,8 @@
 use cockpit_sandbox::{
     AllowEntry, AllowSource, AskedDestination, AskingDestination, DeniedDestination,
     EgressDecisions, GITHUB_HOST, MIGRATIONS, NETWORK_ALLOW_GRACE_SECONDS, NetworkError,
-    NetworkGrant, NetworkRefusal, NetworkRequestState, NetworkTarget, OwnerClient, OwnerDecision,
-    ServiceAsk, Subject, Target,
+    NetworkGrant, NetworkRefusal, NetworkRequest, NetworkRequestState, NetworkTarget, OwnerClient,
+    OwnerDecision, ServiceAsk, Subject, Target,
 };
 use cockpit_sandbox::{AllowedService, AskedService, DecidedService, Endpoint, Forward};
 use cockpit_turso::Database;
@@ -837,9 +837,9 @@ impl Store {
         filed.map(|request| request.id)
     }
 
-    async fn decisions_of(&self, subject: &Subject, project: &str) -> EgressDecisions {
+    async fn standing_for(&self, subject: &Subject, project: &str) -> Option<NetworkRequest> {
         let read = self.database.read().await.unwrap();
-        cockpit_sandbox::egress_decisions(&read, project, subject)
+        cockpit_sandbox::standing_check_request(&read, subject, project, &example())
             .await
             .unwrap()
     }
@@ -861,31 +861,107 @@ async fn a_check_runs_refused_destination_is_filed_naming_the_run_and_its_check(
     assert_eq!(asking[0].subject, check_run("execution-1"));
 }
 
+/// #352: a check run ends before the owner can decide, so "once" would allow nothing.
 #[tokio::test(flavor = "multi_thread")]
-async fn allow_once_lets_only_the_asking_check_run_through() {
+async fn a_check_runs_request_is_not_allowed_once() {
     let store = store().await;
     let request = store
         .file_for(&check_run("execution-1"), "app")
         .await
         .unwrap();
 
-    store.allow(request, false, DECIDED_AT).await.unwrap();
+    let allowed = store.allow(request, false, DECIDED_AT).await;
 
-    assert_eq!(
-        store
-            .decisions_of(&check_run("execution-1"), "app")
-            .await
-            .allowed,
-        vec![entry(AllowSource::Request { request })]
+    assert!(
+        matches!(
+            allowed,
+            Err(NetworkError::Refused(NetworkRefusal::OnceForACheck))
+        ),
+        "{allowed:?}"
     );
+}
+
+/// #352: one card per check and host, whichever run asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rerun_of_the_check_files_no_second_request_while_one_asks() {
+    let store = store().await;
+    store.file_for(&check_run("execution-1"), "app").await;
+
+    let rerun = store.file_for(&check_run("execution-2"), "app").await;
+
+    assert_eq!(rerun, None);
+}
+
+/// #352: the store holds one standing request per check and host, whatever files it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_store_refuses_a_second_standing_request_of_a_check_for_a_host() {
+    let store = store().await;
+    let request = store.file_for(&check_run("execution-1"), "app").await;
+    let write = store.database.write().await.unwrap();
+
+    let second = write
+        .execute(
+            "INSERT INTO sandbox_network_requests
+                (subject_kind, subject, subject_check, project, kind, host, port, state,
+                 asked_at)
+             SELECT 'check', 'execution-2', subject_check, project, kind, host, port, state,
+                 asked_at
+             FROM sandbox_network_requests WHERE id = ?1",
+            [request.unwrap()],
+        )
+        .await;
+
+    assert!(second.is_err(), "{second:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_check_or_project_asking_for_the_host_files_its_own_request() {
+    let store = store().await;
+    store.file_for(&check_run("execution-1"), "app").await;
+    let lint = Subject::Check {
+        run: "execution-2".to_owned(),
+        check: "lint".to_owned(),
+    };
+
+    let other_check = store.file_for(&lint, "app").await;
+    let other_project = store.file_for(&check_run("execution-3"), "web").await;
+
+    assert!(other_check.is_some());
+    assert!(other_project.is_some());
+}
+
+/// #352: a denial holds for the check's next runs, each of which names it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_check_request_stands_for_the_checks_next_run() {
+    let store = store().await;
+    let request = store
+        .file_for(&check_run("execution-1"), "app")
+        .await
+        .unwrap();
+    store.deny(request).await;
+
+    let rerun = store.file_for(&check_run("execution-2"), "app").await;
+
+    assert_eq!(rerun, None);
+    let standing = store.standing_for(&check_run("execution-2"), "app").await;
     assert_eq!(
-        store.decisions_of(&check_run("execution-2"), "app").await,
-        EgressDecisions::default()
+        standing.map(|standing| (standing.id, standing.state)),
+        Some((request, NetworkRequestState::Denied))
     );
-    assert_eq!(
-        store.decisions("execution-1", "app").await,
-        EgressDecisions::default()
-    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_granted_host_leaves_the_check_nothing_standing() {
+    let store = store().await;
+    let request = store
+        .file_for(&check_run("execution-1"), "app")
+        .await
+        .unwrap();
+    store.allow(request, true, DECIDED_AT).await.unwrap();
+
+    let standing = store.standing_for(&check_run("execution-2"), "app").await;
+
+    assert_eq!(standing, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]

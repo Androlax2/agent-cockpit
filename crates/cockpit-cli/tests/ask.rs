@@ -1302,7 +1302,7 @@ async fn the_network_list_names_a_check_runs_request_by_its_check_and_run() {
             run: "execution-e-3".to_owned(),
             check: "test".to_owned(),
         },
-        ..decided_network_request(5, NetworkRequestStateView::AllowedOnce)
+        ..decided_network_request(5, NetworkRequestStateView::Denied)
     };
     let daemon = scripted_conversation(
         &home.owner_socket(),
@@ -1317,7 +1317,7 @@ async fn the_network_list_names_a_check_runs_request_by_its_check_and_run() {
 
     assert_eq!(
         text(&output.stdout),
-        "network\t5\tallowed-once\tcheck test run execution-e-3\tapp\tcrates.io:443\t45s\n"
+        "network\t5\tdenied\tcheck test (run execution-e-3)\tapp\tcrates.io:443\t45s\n"
     );
     assert_eq!(daemon.await.unwrap(), [Command::NetworkDecided]);
 }

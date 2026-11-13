@@ -1,6 +1,7 @@
 //! Wire views of network requests (#674): a destination a sandboxed subject was refused for
 //! want of an entry, which the owner allows for the rest of the session, allows always for
-//! the project, or denies; and the project grants "allow always" creates.
+//! the project, or denies (a check's only always or denied, #352); and the project grants
+//! "allow always" creates.
 //!
 //! The shape is kept stable for every owner client, the phone (#245) included: a request
 //! names its `subject` (kind and id), its `project`, what it asks for (`kind`, with `host`
@@ -34,8 +35,9 @@ pub struct NetworkRequestView {
     pub shown_reason: Option<ShownText>,
 }
 
-/// Who was refused: a session, or a run of a project's check (#352, #862 Q2), whose "allow
-/// always" is a project grant its sessions get too.
+/// Who was refused: a session, or a run of a project's check (#352, #862 Q2). A check's
+/// request stands for its next runs, which file no second one; its "allow always" is a
+/// project grant the sessions get too, and it is never allowed once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum NetworkSubjectView {
@@ -57,7 +59,7 @@ pub enum NetworkTargetView {
 #[serde(rename_all = "kebab-case")]
 pub enum NetworkRequestStateView {
     Asking,
-    /// Allowed for the rest of the asking session or check run.
+    /// Allowed for the rest of the asking session; never a check's request.
     AllowedOnce,
     /// Allowed always for the project, through `grant`.
     AllowedAlways,

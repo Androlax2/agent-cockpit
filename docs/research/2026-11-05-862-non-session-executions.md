@@ -157,6 +157,9 @@ Theo's answers, asked one at a time in his session.
   detected ecosystem's registry hosts, never a provider's hosts. An unknown host is refused at
   once and filed as a #674 request whose subject is the check (allow once, allow always for the
   project, deny). A check gets no bound credential in this release.
+  Refined 2026-11-13 in #352: a run ends before the owner can decide, so a check's request
+  offers only allow always and deny, one per project, check and host whichever run asked; the
+  run's output names the open request or its denial.
 - [x] **Q3.** Decided 2026-11-05: **C**. A plugin's network requests go from the plugin host to
   an egress-only instance of the launcher, confined with Landlock and seccomp, with no state and
   no owner socket. The daemon never opens a plugin's connection.
