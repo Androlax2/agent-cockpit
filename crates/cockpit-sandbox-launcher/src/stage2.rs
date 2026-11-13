@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::ffi::OsString;
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
@@ -19,7 +19,7 @@ use seccompiler::{
     SeccompRule, TargetArch,
 };
 
-use crate::plan::Policy;
+use crate::plan::{self, Policy};
 
 /// The verb of the probe launch: applies the same restrictions to nothing and reports the
 /// Landlock ABI the kernel gave.
@@ -38,7 +38,7 @@ pub fn run(policy_argument: &OsString, arguments: &[OsString]) -> Result<Infalli
         .ok_or("stage 2's policy is not UTF-8")?;
     let policy: Policy = serde_json::from_str(policy_text)
         .map_err(|error| format!("stage 2's policy is malformed: {error}"))?;
-    verify_mounts(&policy)?;
+    plan::verify(&policy.verify).map_err(|reason| format!("{reason}; the launch is refused"))?;
     let handoff = crate::handoff::hand_over(&policy.proxy_handoff, &policy.forward_ports)?;
     restrict_files(&policy)?;
     restrict_system_calls()?;
@@ -114,22 +114,6 @@ fn abi_number(abi: ABI) -> Result<u8, String> {
     abi.to_string()
         .parse()
         .map_err(|_| format!("Landlock reports no numbered ABI ({abi})"))
-}
-
-/// Each folder or file the launcher pinned or masked inside a writable folder must still be
-/// the one it saw: a link swapped in before bubblewrap mounted it would have moved the mount.
-fn verify_mounts(policy: &Policy) -> Result<(), String> {
-    for expected in &policy.verify {
-        let metadata = std::fs::symlink_metadata(&expected.path)
-            .map_err(|error| format!("cannot check {}: {error}", expected.path.display()))?;
-        if metadata.dev() != expected.device || metadata.ino() != expected.inode {
-            return Err(format!(
-                "{} changed between planning and mounting; the launch is refused",
-                expected.path.display()
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// Landlock at exactly the probed ABI, as a hard requirement: reads and runs where the

@@ -15,11 +15,16 @@
 //! - `torlek-sandbox engine-relay SOCKET OWNER_UID`: run by a project engine's relay unit
 //!   inside the engine's network namespace (#390); relays the owner's connections to the
 //!   ports that engine published.
+//! - `torlek-sandbox engine-masks ENGINES_DIR`: run as root by the engine masks' unit for each
+//!   connection (#390); shows a project's engine one checkout through the session baseline's
+//!   masks.
 
 #[cfg(target_os = "linux")]
 mod authority;
 #[cfg(target_os = "linux")]
 mod client_hello;
+#[cfg(target_os = "linux")]
+mod engine_masks;
 #[cfg(target_os = "linux")]
 mod engine_relay;
 #[cfg(target_os = "linux")]
@@ -84,9 +89,13 @@ fn main() -> ExitCode {
         Some((verb, [socket, owner_uid])) if verb == "engine-relay" => {
             engine_relay::run(std::path::Path::new(socket), owner_uid).map(|never| match never {})
         }
+        Some((verb, rest)) if verb == "engine-masks" => engine_masks::engines_dir(rest)
+            .and_then(|folder| engine_masks::serve(&folder))
+            .map(|()| ExitCode::SUCCESS),
         _ => Err(
             "usage: torlek-sandbox run SPEC | torlek-sandbox probe BWRAP | torlek-sandbox \
-             engine-relay SOCKET OWNER_UID (stage2 is internal)"
+             engine-relay SOCKET OWNER_UID | torlek-sandbox engine-masks ENGINES_DIR \
+             (stage2 is internal)"
                 .to_owned(),
         ),
     };

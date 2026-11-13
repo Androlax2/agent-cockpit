@@ -49,6 +49,38 @@ const PROTECTED_WHEN_PRESENT: &[&str] = &[
 /// secrets (`BASELINE_DENIED_READ`).
 const HIDDEN_IN_CHECKOUT: &[&str] = &[".env", ".env.*"];
 
+/// What a checkout's masks protect and hide: a session's sandbox, and the project's engine,
+/// which sees each checkout through the same masks (#390).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutMasks {
+    /// Read-only, with what each gets when absent.
+    pub protected: Vec<Protected>,
+    /// Unreadable; a last name ending in `*` stands for every name it starts.
+    pub hidden: Vec<PathBuf>,
+}
+
+/// The masks of `checkout`, an absolute path.
+pub fn checkout_masks(checkout: &Path) -> CheckoutMasks {
+    let protected = PROTECTED_FOLDERS
+        .iter()
+        .map(|path| (path, WhenAbsent::EmptyFolder))
+        .chain(
+            PROTECTED_WHEN_PRESENT
+                .iter()
+                .map(|path| (path, WhenAbsent::Unprotected)),
+        )
+        .map(|(path, when_absent)| Protected {
+            path: checkout.join(path),
+            when_absent,
+        })
+        .collect();
+    let hidden = HIDDEN_IN_CHECKOUT
+        .iter()
+        .map(|name| checkout.join(name))
+        .collect();
+    CheckoutMasks { protected, hidden }
+}
+
 /// What the daemon's probe found: the sandbox launches under `required` run through, or why
 /// none can.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -537,23 +569,9 @@ pub(crate) fn prepare(
         .iter()
         .map(|path| in_home(&home, path))
         .collect::<Result<Vec<_>, _>>()?;
-    let checkout = &profile.working_dir;
-    let protected = PROTECTED_FOLDERS
-        .iter()
-        .map(|path| (path, WhenAbsent::EmptyFolder))
-        .chain(
-            PROTECTED_WHEN_PRESENT
-                .iter()
-                .map(|path| (path, WhenAbsent::Unprotected)),
-        )
-        .map(|(path, when_absent)| Protected {
-            path: checkout.join(path),
-            when_absent,
-        })
-        .collect();
-    let hidden = HIDDEN_IN_CHECKOUT
-        .iter()
-        .map(|name| checkout.join(name))
+    let CheckoutMasks { protected, hidden } = checkout_masks(&profile.working_dir);
+    let hidden = hidden
+        .into_iter()
         .chain(profile.denied.iter().cloned())
         .chain(credential_files)
         .collect();
