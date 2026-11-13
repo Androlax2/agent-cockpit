@@ -1,0 +1,14 @@
+# Torlek's masks helper (#390): systemd starts one torlek-engine-masks@.service for each
+# connection. Only root connects until a project engine's setup gives the socket to its
+# owner, in torlek-engine-masks.socket.d/owner.conf.
+[Unit]
+Description=Torlek's masks helper for project engines
+
+[Socket]
+ListenStream=/run/torlek-engine-masks.sock
+Accept=yes
+SocketMode=0600
+MaxConnections=16
+
+[Install]
+WantedBy=sockets.target

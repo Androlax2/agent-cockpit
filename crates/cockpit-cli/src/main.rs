@@ -49,6 +49,7 @@ mod projects;
 mod queue;
 mod resources;
 mod sessions;
+mod setup;
 mod skills;
 mod status_page;
 mod storage;
@@ -114,6 +115,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek network list [--all] | allow ID [--always] | deny ID | grants [PROJECT] | revoke GRANT
        torlek network grant PROJECT github.com
        torlek containers record PROJECT
+       torlek setup engine-masks [--uninstall]
        torlek session send ID MESSAGE | cancel ID
        torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL] [--compaction-threshold VALUE]
        torlek session list [--ended]
@@ -258,6 +260,10 @@ fn main() -> ExitCode {
         },
         [Some("containers"), ..] => match containers::parse(&arguments[1..]) {
             Ok(command) => containers::run(command),
+            Err(problem) => verb_usage_error(&verb_name, problem),
+        },
+        [Some("setup"), ..] => match setup::parse(&arguments[1..]) {
+            Ok(uninstall) => setup::run(uninstall),
             Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("project"), Some("token")] => credentials::project_token(&arguments[2..])

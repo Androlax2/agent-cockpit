@@ -444,6 +444,13 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         through: Option<DecidedThroughView>,
     },
+    /// Owner only: the root step that installs Torlek's masks helper on the install script's
+    /// path (#390), or with `uninstall` removes it, for the owner's terminal to run with
+    /// sudo: `torlek setup engine-masks`. The daemon runs nothing as root.
+    MasksHelperStep {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        uninstall: bool,
+    },
     /// Owner only: prepare a fresh home to sign `account` of `provider` in (#59); the answer
     /// is the harness's sign-in, which the owner's terminal runs with that home.
     AccountSignIn {
@@ -1228,6 +1235,13 @@ pub enum Reply {
         engine_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         replaced: Option<String>,
+    },
+    /// The root step `masks-helper-step` asked for (#390): a POSIX `sh` script to run as
+    /// root with `helper` as its one argument, the `torlek-sandbox` the daemon runs, which
+    /// the setup step copies.
+    MasksHelperStep {
+        script: String,
+        helper: String,
     },
     /// Network requests, oldest first (#674): the ones still asking for `NetworkList`, the
     /// decided ones for `NetworkDecided`.

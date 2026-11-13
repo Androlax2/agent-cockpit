@@ -36,7 +36,7 @@ pub(crate) struct Host {
     /// Where setup scripts are written for the owner to review.
     pub(crate) scripts_dir: PathBuf,
     /// The installed `torlek-sandbox` the engine's relay unit runs; the setup script checks
-    /// the engine's user can run it.
+    /// the engine's user can run it. `torlek setup engine-masks` copies it as the masks helper.
     pub(crate) relay_program: PathBuf,
     /// Torlek's masks helper, which shows an engine each session's checkout masked.
     pub(crate) masks: MasksHelper,
@@ -114,6 +114,19 @@ pub(crate) fn route(command: Command, database: Arc<Database>, host: Host) -> Ro
     }
 }
 
+/// The root step `torlek setup engine-masks` runs with sudo (#390): it copies the
+/// `torlek-sandbox` this daemon runs, which readiness compares the installed helper with.
+pub(crate) fn masks_helper_step(host: &Host, uninstall: bool) -> Reply {
+    Reply::MasksHelperStep {
+        script: if uninstall {
+            cockpit_containers::masks_removal_script()
+        } else {
+            cockpit_containers::masks_setup_script()
+        },
+        helper: host.relay_program.display().to_string(),
+    }
+}
+
 /// The readiness report's view of `project`'s engine: verified against the owner's record,
 /// with the setup script written when setting up is the next step.
 pub(crate) async fn project_engine(
@@ -152,9 +165,14 @@ pub(crate) async fn project_engine(
         }
         EngineState::Verified(info) => cockpit_readiness::EngineState::Verified {
             engine: crate::readiness::docker_engine(info),
-            masks: match host.masks.check_ready(host.owner_uid, &user) {
+            masks: match host
+                .masks
+                .check_ready(host.owner_uid, &user, &host.relay_program)
+            {
                 Ok(()) => Ok(()),
                 Err(MasksUnready::NotInstalled(reason)) => Err(MasksGap::NotInstalled(reason)),
+                Err(MasksUnready::OutOfDate { stale }) => Err(MasksGap::OutOfDate { stale }),
+                Err(MasksUnready::Shadowed) => Err(MasksGap::Shadowed),
                 Err(MasksUnready::NotSetUp(reason)) => Err(MasksGap::NotSetUp {
                     reason,
                     setup: setup().await,
@@ -557,6 +575,7 @@ mod tests {
                 socket,
                 uid,
                 engines_dir,
+                install_root: PathBuf::from("/"),
             },
         )
     }
@@ -591,6 +610,7 @@ mod tests {
             socket: dir.path().join("absent.sock"),
             uid: 0,
             engines_dir: dir.path().join("engines"),
+            install_root: dir.path().to_path_buf(),
         };
         let user = EngineUser::for_project("torlek", 3).unwrap();
 

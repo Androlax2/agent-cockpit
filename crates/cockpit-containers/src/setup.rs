@@ -361,7 +361,7 @@ if systemctl cat {masks_socket_unit} >/dev/null 2>&1; then
     # Its socket becomes yours to connect to.
     systemctl restart {masks_socket_unit}
 else
-    echo "torlek engine setup: Torlek's masks helper is not installed, so the engine sees no checkout; torlek doctor names its step" >&2
+    echo "torlek engine setup: Torlek's masks helper is not installed, so the engine sees no checkout; install it with: torlek setup engine-masks" >&2
 fi
 systemctl enable "torlek-engine@$user.service"
 # Restarts the relay too: it stops with the engine, which upholds it.

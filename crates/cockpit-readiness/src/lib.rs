@@ -177,6 +177,12 @@ pub enum MasksGap {
         reason: String,
         setup: Result<PathBuf, String>,
     },
+    /// `torlek setup engine-masks` installed the helper, and each of these files is missing
+    /// or not this release's.
+    OutOfDate { stale: Vec<String> },
+    /// Both a package and `torlek setup engine-masks` installed the helper; the setup
+    /// step's units in `/etc` shadow the package's.
+    Shadowed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
