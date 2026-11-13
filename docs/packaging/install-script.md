@@ -35,7 +35,9 @@ state, never installs, starts or stops the daemon, and never removes a release.
 
 The one root step a sandboxed project's engine needs, Torlek's masks helper (#390), is
 `torlek setup engine-masks`, which the owner runs after installing: it calls sudo once, the
-owner typing the password ([User guide](../USER-GUIDE.md)). The script itself never does.
+owner typing the password ([User guide](../USER-GUIDE.md)). The script itself never does. It
+installs the files the [AUR](aur.md) and [Debian](deb.md) packages install, under
+`/etc/systemd/system` and `/usr/local/lib` instead of `/usr/lib`.
 
 `--check` does steps 1 to 4 and reports what installing would change, changing nothing. Files
 given with `--archive` and `--sums` are checked even when that release is already installed.

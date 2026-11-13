@@ -420,7 +420,8 @@ fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
                     missing,
                     reason.clone(),
                     "run `torlek setup engine-masks`, which installs Torlek's masks helper as \
-                     root and asks for your password once"
+                     root and asks for your password once; Torlek's Arch and Debian packages \
+                     install it themselves"
                         .to_owned(),
                 ),
                 MasksGap::OutOfDate { stale } => (

@@ -1,8 +1,9 @@
 pkgbase = torlek-bin
 	pkgdesc = Agent session cockpit: CLI, terminal UI and per-user daemon (prebuilt release)
 	pkgver = 0.1.0alpha.4
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/Androlax2/agent-cockpit
+	install = torlek-bin.install
 	arch = x86_64
 	arch = aarch64
 	license = Apache-2.0

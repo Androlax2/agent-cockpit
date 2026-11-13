@@ -7,8 +7,10 @@ Usage: build.py --tag 0.1.0-alpha.1 --sums SHA256SUMS --archive ARCHIVE
 ARCHIVE is one of the release's two Linux archives; its name gives the Debian architecture
 (linux-x86_64 is amd64, linux-aarch64 is arm64). It must match its line in the release's
 SHA256SUMS and its unpacked contents its own manifest. The whole bundle goes to
-/usr/lib/torlek, with /usr/bin/torlek a symlink into it, and the package has no maintainer
-scripts. Owners and timestamps are fixed, so the same inputs give the same bytes.
+/usr/lib/torlek, with /usr/bin/torlek a symlink into it. The masks helper's systemd units the
+bundle carries (#390) go to /usr/lib/systemd/system too, and with them come the maintainer
+scripts that enable its socket and disable it on removal; a bundle from before them gets
+neither. Owners and timestamps are fixed, so the same inputs give the same bytes.
 Nothing here downloads, installs, signs or publishes.
 """
 
@@ -35,6 +37,13 @@ BUNDLE_DIRECTORY = "usr/lib/torlek"
 DOCUMENTATION_DIRECTORY = f"usr/share/doc/{PACKAGE}"
 PUBLIC_COMMAND = "usr/bin/torlek"
 PUBLIC_COMMAND_TARGET = "../lib/torlek/bin/torlek"
+SYSTEMD_UNIT_DIRECTORY = "usr/lib/systemd/system"
+MAINTAINER_SCRIPTS = ("postinst", "prerm", "postrm")
+# The description's sentence for a package that installs the masks helper's units.
+MASKS_HELPER_DESCRIPTION = (
+    " It enables torlek-engine-masks.socket, the root socket of\n"
+    " Torlek's masks helper, which runs the helper for each connection only."
+)
 SUMS_LINE = re.compile(r"([0-9a-f]{64})  (\S+)")
 # Debian policy 5.6.2: a name and an RFC 5322 address, which a package cannot leave out.
 MAINTAINER = re.compile(r"[^<>,\n]+ <[^<>@\s]+@[^<>@\s]+>")
@@ -246,10 +255,21 @@ def installed_files(bundle, maintainer, version, channel, tag, release_date):
             relative = path.relative_to(bundle)
             mode = 0o755 if relative.parts[0] == "bin" else 0o644
             files[f"{BUNDLE_DIRECTORY}/{relative.as_posix()}"] = (path.read_bytes(), mode)
+    units = bundle / release_tool().SYSTEMD_UNITS
+    if units.is_dir():
+        for unit in sorted(units.iterdir()):
+            files[f"{SYSTEMD_UNIT_DIRECTORY}/{unit.name}"] = (unit.read_bytes(), 0o644)
     files[f"{DOCUMENTATION_DIRECTORY}/copyright"] = ((PACKAGING / "copyright").read_bytes(), 0o644)
     changes = changelog(version, channel, tag, maintainer, release_date)
     files[f"{DOCUMENTATION_DIRECTORY}/changelog.Debian.gz"] = (changes, 0o644)
     return files
+
+
+def maintainer_scripts(files):
+    """The scripts that enable the masks helper's socket, when the package installs its units."""
+    if not any(path.startswith(f"{SYSTEMD_UNIT_DIRECTORY}/") for path in files):
+        return {}
+    return {name: ((PACKAGING / name).read_bytes(), 0o755) for name in MAINTAINER_SCRIPTS}
 
 
 def installed_size(files, links):
@@ -258,12 +278,13 @@ def installed_size(files, links):
     return file_kibibytes + len(links) + len(parent_directories([*files, *links]))
 
 
-def control_file(version, architecture, maintainer, size):
+def control_file(version, architecture, maintainer, size, has_masks_helper):
     values = {
         "@VERSION@": version,
         "@ARCHITECTURE@": architecture,
         "@MAINTAINER@": maintainer,
         "@INSTALLED_SIZE@": str(size),
+        "@MASKS_HELPER@": MASKS_HELPER_DESCRIPTION if has_masks_helper else "",
     }
     template = PACKAGING / "control.in"
     text = template.read_text()
@@ -343,10 +364,13 @@ def build(tag, sums, archive, maintainer, release_date, out, debian_revision=1):
     links = {PUBLIC_COMMAND: PUBLIC_COMMAND_TARGET}
     # The release day, not the epoch: lintian refuses files dated 1970 (package-contains-ancient-file).
     timestamp = int(datetime.combine(release_date, datetime.min.time(), UTC).timestamp())
-    control = control_file(version, architecture, maintainer, installed_size(files, links))
+    scripts = maintainer_scripts(files)
+    size = installed_size(files, links)
+    control = control_file(version, architecture, maintainer, size, has_masks_helper=bool(scripts))
     control_files = {
         "control": (control.encode(), 0o644),
         "md5sums": (md5sums(files).encode(), 0o644),
+        **scripts,
     }
     package = ar_archive(
         [

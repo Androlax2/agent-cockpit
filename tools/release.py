@@ -80,6 +80,10 @@ BINARIES = ("torlek", "torlek-daemon", *FRONTENDS.values(), *HELPERS)
 # release notes are on the GitHub Release.
 DOCUMENTS = ("LICENSE", "README.md")
 MANIFEST_PATH = "share/torlek/manifest.json"
+# Torlek's masks helper's systemd units (#390), as cockpit-containers ships them: a package
+# installs them under /usr/lib/systemd/system; `torlek setup engine-masks` writes its own.
+SYSTEMD_UNITS_SOURCE = "crates/cockpit-containers/units"
+SYSTEMD_UNITS = "share/torlek/systemd"
 MANIFEST_SCHEMA = 1
 # How long verify-install waits for `torlek version --all` and for the daemon's ready line.
 COMMAND_TIMEOUT_SECONDS = 60
@@ -552,8 +556,18 @@ def normalized(member):
     return member
 
 
+def bundle_systemd_units(staging, cwd):
+    units = sorted((Path(cwd) / SYSTEMD_UNITS_SOURCE).glob("torlek-*"))
+    if not units:
+        raise Refusal(f"{SYSTEMD_UNITS_SOURCE}: no systemd units to bundle")
+    (staging / SYSTEMD_UNITS).mkdir(parents=True)
+    for unit in units:
+        shutil.copyfile(unit, staging / SYSTEMD_UNITS / unit.name)
+
+
 def package(version, channel, platform, revision, binaries, out, cwd):
-    """Stage bin/, the documents and the manifest, then write a reproducible .tar.gz."""
+    """Stage bin/, the documents, a Linux bundle's systemd units and the manifest, then write a
+    reproducible .tar.gz."""
     if platform not in PLATFORMS:
         raise Refusal(f"{platform}: not one of {', '.join(PLATFORMS)}")
     if platform not in release_platforms(version, channel):
@@ -575,6 +589,8 @@ def package(version, channel, platform, revision, binaries, out, cwd):
         if document == "README.md":
             text = stamped_readme(text, version)
         (staging / document).write_text(text)
+    if platform.startswith("linux-"):
+        bundle_systemd_units(staging, cwd)
     write_manifest(staging, version, channel, platform, revision)
     archive = Path(out) / f"{name}.tar.gz"
     # The gzip header's own timestamp is zeroed too, so a rebuild gives the same bytes.

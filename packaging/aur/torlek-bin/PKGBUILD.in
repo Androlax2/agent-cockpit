@@ -20,6 +20,7 @@ optdepends=('systemd: the per-user daemon service, torlek daemon install'
 provides=('torlek')
 conflicts=('torlek')
 options=('!strip' '!debug')
+install=torlek-bin.install
 source_x86_64=("$url/releases/download/v$_tag/torlek-v$_tag-linux-x86_64.tar.gz")
 source_aarch64=("$url/releases/download/v$_tag/torlek-v$_tag-linux-aarch64.tar.gz")
 sha256sums_x86_64=('@SHA256_X86_64@')
@@ -34,4 +35,9 @@ package() {
     cp -a --no-preserve=ownership "$bundle/." "$pkgdir/usr/lib/torlek/"
     ln -s ../lib/torlek/bin/torlek "$pkgdir/usr/bin/torlek"
     ln -s ../../../lib/torlek/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    # Torlek's masks helper's units (#390), from a release whose bundle carries them;
+    # torlek-bin.install enables the socket.
+    if [ -d "$bundle/share/torlek/systemd" ]; then
+        install -D -m 0644 -t "$pkgdir/usr/lib/systemd/system" "$bundle/share/torlek/systemd/"*
+    fi
 }

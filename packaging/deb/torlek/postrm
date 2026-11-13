@@ -1,0 +1,14 @@
+#!/bin/sh
+# Purging removes the socket's owner, which the engines' setup scripts write (#390), unless
+# `torlek setup engine-masks`'s socket still uses it.
+set -e
+case "$1" in
+remove | purge)
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || echo "torlek: cannot reload systemd" >&2
+    fi
+    ;;
+esac
+if [ "$1" = purge ] && [ ! -e /etc/systemd/system/torlek-engine-masks.socket ]; then
+    rm -rf /etc/systemd/system/torlek-engine-masks.socket.d
+fi

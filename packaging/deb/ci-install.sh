@@ -158,6 +158,15 @@ fi
 apt-get install --yes torlek
 expect_installed "$tag"
 keep_profile_files "$tag"
+# The masks helper's units (#390), from the release whose bundle carries them.
+if [ -d /usr/lib/torlek/share/torlek/systemd ]; then
+    for unit in torlek-engine-masks.socket torlek-engine-masks@.service; do
+        cmp "/usr/lib/torlek/share/torlek/systemd/$unit" "/usr/lib/systemd/system/$unit"
+    done
+    if command -v systemctl >/dev/null 2>&1; then
+        test -L /etc/systemd/system/sockets.target.wants/torlek-engine-masks.socket
+    fi
+fi
 # The release's own clean-install check, daemon start included, through the packaged path.
 apt-get install --yes --no-install-recommends python3
 as_tester python3 "$fixture/release.py" verify-install /usr/lib/torlek --revision "$revision"
@@ -176,7 +185,10 @@ if dpkg-query --show --showformat '${db:Status-Status}' torlek 2>/dev/null | gre
     printf '%s\n' 'dpkg still records torlek after purge' >&2
     exit 1
 fi
-for removed in /usr/bin/torlek /usr/lib/torlek /usr/share/doc/torlek; do
+for removed in /usr/bin/torlek /usr/lib/torlek /usr/share/doc/torlek \
+    /usr/lib/systemd/system/torlek-engine-masks.socket \
+    /usr/lib/systemd/system/torlek-engine-masks@.service \
+    /etc/systemd/system/sockets.target.wants/torlek-engine-masks.socket; do
     if [ -e "$removed" ] || [ -L "$removed" ]; then
         printf '%s remains after apt-get purge\n' "$removed" >&2
         exit 1

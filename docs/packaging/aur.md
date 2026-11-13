@@ -16,12 +16,12 @@ no installed path, so both can stay installed.
 | File | Role |
 | --- | --- |
 | [packaging/aur/torlek-bin/PKGBUILD.in](../../packaging/aur/torlek-bin/PKGBUILD.in) | The reviewed recipe, with the tag and checksums as `@TOKEN@`s |
-| [packaging/aur/torlek-bin/PKGBUILD](../../packaging/aur/torlek-bin/PKGBUILD) and [.SRCINFO](../../packaging/aur/torlek-bin/.SRCINFO) | The template rendered for one published release, now `0.1.0-alpha.4` with `pkgrel` 1: the pair an AUR push carries. Never edited by hand |
+| [packaging/aur/torlek-bin/PKGBUILD](../../packaging/aur/torlek-bin/PKGBUILD) and [.SRCINFO](../../packaging/aur/torlek-bin/.SRCINFO) | The template rendered for one published release, now `0.1.0-alpha.4` with `pkgrel` 2: the pair an AUR push carries, with `torlek-bin.install`. Never edited by hand |
 | [packaging/aur/render.py](../../packaging/aur/render.py) | `render` fills the template from one release's `SHA256SUMS` (and `--pkgrel`), writing `PKGBUILD` and its `makepkg --printsrcinfo` together or neither; `check-srcinfo` refuses a stale `.SRCINFO` |
 | [packaging/aur/ci-install.sh](../../packaging/aur/ci-install.sh) | The release workflow's two Arch jobs, each as root in a fresh `archlinux:base-devel` container: render, build as a user, `namcap`, `pacman -U`, `verify-install`, `torlek doctor`, `pacman -R` with the user's files unchanged. `install-arch` takes the run's own candidate archive; `install-arch-published` takes the committed pair |
 | [tools/tests/test_aur_package.py](../../tools/tests/test_aur_package.py) | Tag and checksum refusals, `vercmp` order, `.SRCINFO`, the committed pair against the template, and a `makepkg` build of a `tools/release.py` bundle of stand-in programs |
 
-The committed `PKGBUILD` and `.SRCINFO` are what the AUR repository holds; the template is the
+The committed `PKGBUILD`, `.SRCINFO` and `torlek-bin.install` are what the AUR repository holds; the template is the
 only file to edit. The pair names one published release's checksums: there is no placeholder or
 `SKIP` checksum, and no `latest` URL. It trails a new tag until that tag's
 [update](#update-checklist) is merged
@@ -68,6 +68,23 @@ error-level one. `0.1.0alpha.4-1` has warnings only:
   manifest (`share/torlek/manifest.json`) through their own resolved path, so the bundle cannot
   be split across `/usr/bin` and `/usr/share`. The unchanged tree still passes the manifest
   check. The license is linked to `/usr/share/licenses/torlek-bin/LICENSE`.
+- **Masks helper (#390):** `package()` also installs the bundle's `share/torlek/systemd` units,
+  `torlek-engine-masks.socket` and `torlek-engine-masks@.service`, to `/usr/lib/systemd/system`;
+  the helper they run is the bundle's own `/usr/lib/torlek/bin/torlek-sandbox`. Theo decided on
+  2026-11-13 that the package installs and enables them itself, so the owner copies no command.
+  [torlek-bin.install](../../packaging/aur/torlek-bin/torlek-bin.install), which `render.py`
+  publishes beside the recipe, enables the socket on install and upgrade (restarting it when
+  systemd runs) and stops and disables it before removal. Beside `torlek setup engine-masks`'s
+  units, which shadow the package's, it leaves that step's socket listening on removal. A
+  `systemctl` call that fails is named and the transaction goes on; `torlek doctor` reports the
+  helper. The socket's owner drop-in, which the engines' setup scripts write under
+  `/etc/systemd/system/torlek-engine-masks.socket.d`, stays on removal like other configuration
+  under `/etc`. `tools/tests/test_aur_package.py` runs each function as root of a user
+  namespace with a fake `systemctl`. The files are the ones that setup step installs, the helper's path alone told
+  apart: `the_packages_install_the_files_the_setup_step_installs_under_their_own_paths` in
+  `crates/cockpit-containers/tests/masks_install.rs` compares them. A release whose bundle
+  predates the units, such as the committed `0.1.0-alpha.4`, installs none, and the install
+  script does nothing; that recipe-only change is `pkgrel` 2.
 - **Dependencies:** `glibc` and `libgcc`, the only libraries the programs link (`libc`, `libm`
   and `libgcc_s`), plus the [user guide](../USER-GUIDE.md#platforms-and-prerequisites)'s
   prerequisites: `git`, `curl` and `tmux>=3.6`. Optional: `systemd` for `torlek daemon install`,
@@ -126,7 +143,7 @@ approval; this list grants none. `$TAG` is the committed recipe's `_tag`, withou
 8. Publish, only with Theo's approval, from the AUR account whose SSH key is registered there:
    `git -c init.defaultBranch=master clone ssh://aur@aur.archlinux.org/torlek-bin.git`, which
    gives an empty repository until the first push creates the package. Copy in
-   `packaging/aur/torlek-bin/PKGBUILD` and `.SRCINFO`, nothing else, run
+   `packaging/aur/torlek-bin/PKGBUILD`, `.SRCINFO` and `torlek-bin.install`, nothing else, run
    `python3 packaging/aur/render.py check-srcinfo` on the clone, then commit and push `master`.
 9. Check the published route on a new fixture: `git clone https://aur.archlinux.org/torlek-bin.git`,
    then `makepkg -si` and `torlek doctor`. Link the evidence from #97.
@@ -139,14 +156,14 @@ later one. Nothing reaches the AUR that was not merged here first.
 **A new release tag.** `pkgrel` starts again at 1.
 
 1. Steps 1 to 3 of the [publication checklist](#publication-checklist), for the new tag.
-2. Replace the committed pair:
+2. Replace the committed pair (`torlek-bin.install` stays: `render` keeps it):
    `rm packaging/aur/torlek-bin/PKGBUILD packaging/aur/torlek-bin/.SRCINFO`, then
    `python3 packaging/aur/render.py render --tag "$TAG" --sums "$WORK/SHA256SUMS" --out packaging/aur/torlek-bin`
 3. Open a pull request with the pair and this page's status line. Its `install-arch-published`
    job must pass before it merges.
 4. Steps 6 to 9 of the publication checklist. In step 7, also upgrade from the `torlek-bin`
    published before, with a daemon running. In step 8, the clone already holds the package:
-   replace its two files.
+   replace its three files.
 
 **A fix to the recipe alone.** Change the template, then follow the four steps above for the
 same tag, adding `--pkgrel` with one above the published number to the `render` command, so

@@ -6,7 +6,8 @@ Usage: render.py render --tag 0.1.0-alpha.1 --sums SHA256SUMS --out DIR [--pkgre
        render.py check-srcinfo DIR
 
 `render` fills packaging/aur/torlek-bin/PKGBUILD.in with the tag and the two Linux archive
-checksums from the release's SHA256SUMS, then writes .SRCINFO with `makepkg --printsrcinfo`.
+checksums from the release's SHA256SUMS, then writes .SRCINFO with `makepkg --printsrcinfo`
+and copies the recipe's install script, torlek-bin.install, beside them.
 `check-srcinfo` refuses a directory whose .SRCINFO no longer matches its PKGBUILD.
 `--development` takes a dry run's `X.Y.Z-dev.N` instead, for the release workflow's Arch
 install check; such a recipe names no published release and is never submitted.
@@ -21,6 +22,8 @@ import tempfile
 from pathlib import Path
 
 TEMPLATE = Path(__file__).resolve().parent / "torlek-bin/PKGBUILD.in"
+# The recipe's `install=` script, published beside it unchanged.
+INSTALL_SCRIPT = TEMPLATE.parent / "torlek-bin.install"
 RELEASE_TOOL = Path(__file__).resolve().parents[2] / "tools/release.py"
 # The Alpha1 plan's archives (tools/release.py ALPHA1_PLATFORMS), keyed by pacman's CARCH.
 ARCHITECTURES = {"x86_64": "linux-x86_64", "aarch64": "linux-aarch64"}
@@ -116,17 +119,23 @@ def printed_srcinfo(directory):
 
 
 def render(tag, sums, out, pkgrel=1, is_development=False):
-    """Both files appear together or not at all, so a failed makepkg leaves nothing to retry around."""
+    """The files appear together or not at all: a failed makepkg leaves nothing to retry around."""
     for name in ("PKGBUILD", ".SRCINFO"):
         if (out / name).exists():
             raise Refusal(f"{out / name} exists; render into a directory without a recipe")
+    # The committed folder holds the install script itself: rendering there keeps it.
+    script = out / INSTALL_SCRIPT.name
+    if script.exists() and script.read_bytes() != INSTALL_SCRIPT.read_bytes():
+        raise Refusal(f"{script} exists and is not {INSTALL_SCRIPT}; render elsewhere")
     text = recipe(tag, sums.read_text(), pkgrel, is_development)
     out.mkdir(parents=True, exist_ok=True)
     pkgver = package_version(tag, is_development)
     with tempfile.TemporaryDirectory(prefix="torlek-aur-", dir=out) as folder:
         staged = Path(folder)
         (staged / "PKGBUILD").write_text(text)
+        (staged / INSTALL_SCRIPT.name).write_text(INSTALL_SCRIPT.read_text())
         (staged / ".SRCINFO").write_text(printed_srcinfo(staged))
+        (staged / INSTALL_SCRIPT.name).replace(out / INSTALL_SCRIPT.name)
         (staged / ".SRCINFO").replace(out / ".SRCINFO")
         (staged / "PKGBUILD").replace(out / "PKGBUILD")
     return f"{pkgver}-{pkgrel}"

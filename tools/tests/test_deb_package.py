@@ -37,6 +37,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 release = load("release", ROOT / "tools/release.py")
 build = load("deb_build", BUILD)
 repository = load("deb_repository", REPOSITORY)
+fake_systemd_host = load("fake_systemd_host", Path(__file__).with_name("fake_systemd_host.py"))
 HAS_DPKG = shutil.which("dpkg") is not None
 HAS_DPKG_DEB = shutil.which("dpkg-deb") is not None
 HAS_AR = shutil.which("ar") is not None
@@ -340,6 +341,32 @@ class ArchiveRefusalTest(ReleaseFixture):
         result = run_build(earlier, self.resummed(earlier), self.out("debs"))
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_an_earlier_release_without_the_masks_units_installs_none_and_runs_nothing(self):
+        def predate_the_masks_units(bundle):
+            shutil.rmtree(bundle / release.SYSTEMD_UNITS)
+            manifest_file = bundle / release.MANIFEST_PATH
+            manifest = json.loads(manifest_file.read_text())
+            for relative in list(manifest["contents"]):
+                if relative.startswith(f"{release.SYSTEMD_UNITS}/"):
+                    del manifest["contents"][relative]
+            manifest_file.write_text(json.dumps(manifest))
+
+        earlier = self.out("upload") / self.amd64_archive.name
+        earlier.parent.mkdir(parents=True)
+        repack(self.amd64_archive, earlier, predate_the_masks_units)
+        result = run_build(earlier, self.resummed(earlier), self.out("debs"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        members = build.deb_members((self.out("debs") / f"torlek_{VERSION}_amd64.deb").read_bytes())
+        self.assertEqual(
+            sorted(tar_members(members["control.tar.xz"])), [".", "./control", "./md5sums"]
+        )
+        installed = tar_members(members["data.tar.xz"])
+        self.assertFalse([name for name in installed if "/systemd/" in name])
+        control = lzma.decompress(members["control.tar.xz"])
+        with tarfile.open(fileobj=io.BytesIO(control)) as archive:
+            text = archive.extractfile("./control").read().decode()
+        self.assertNotIn("torlek-engine-masks", repository.fields_of(text)["Description"])
+
     def test_refuses_a_helper_another_version_built(self):
         def age_the_codex_hook(bundle):
             manifest_file = bundle / release.MANIFEST_PATH
@@ -463,9 +490,45 @@ class BuiltPackageTest(ReleaseFixture):
         self.assertTrue(extended)
         self.assertTrue(all(line.startswith(" ") for line in extended))
 
-    def test_has_no_maintainer_scripts(self):
+    def test_installs_the_masks_helper_s_units_where_systemd_looks(self):
+        bundle = self.installed_root("amd64") / "usr/lib/torlek" / release.SYSTEMD_UNITS
+        for unit in ("torlek-engine-masks.socket", "torlek-engine-masks@.service"):
+            with self.subTest(unit=unit):
+                member = self.data["amd64"][f"./usr/lib/systemd/system/{unit}"]
+                self.assertEqual(member.mode, 0o644)
+                installed = self.installed_root("amd64") / "usr/lib/systemd/system" / unit
+                self.assertEqual(installed.read_bytes(), (bundle / unit).read_bytes())
+
+    def test_its_maintainer_scripts_enable_the_masks_socket_and_disable_it_on_removal(self):
         control = tar_members(self.members["amd64"]["control.tar.xz"])
-        self.assertEqual(sorted(control), [".", "./control", "./md5sums"])
+        self.assertEqual(
+            sorted(control),
+            [".", "./control", "./md5sums", "./postinst", "./postrm", "./prerm"],
+        )
+        for script in ("postinst", "postrm", "prerm"):
+            with self.subTest(script=script):
+                self.assertEqual(control[f"./{script}"].mode, 0o755)
+        scripts = self.maintainer_scripts("amd64")
+        self.assertIn("systemctl enable torlek-engine-masks.socket", scripts["postinst"])
+        self.assertIn("systemctl disable torlek-engine-masks.socket", scripts["prerm"])
+
+    def test_its_description_names_the_masks_socket_it_enables(self):
+        self.assertIn("enables torlek-engine-masks.socket", self.control("amd64")["Description"])
+
+    def test_its_maintainer_scripts_are_posix_shell(self):
+        for name, text in self.maintainer_scripts("amd64").items():
+            with self.subTest(script=name):
+                checked = subprocess.run(["sh", "-n"], input=text, capture_output=True, text=True)
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+                self.assertTrue(text.startswith("#!/bin/sh\n"))
+
+    def maintainer_scripts(self, architecture):
+        control = lzma.decompress(self.members[architecture]["control.tar.xz"])
+        with tarfile.open(fileobj=io.BytesIO(control)) as archive:
+            return {
+                name: archive.extractfile(f"./{name}").read().decode()
+                for name in ("postinst", "postrm", "prerm")
+            }
 
     def test_public_command_links_into_the_whole_bundle(self):
         link = self.data["amd64"]["./usr/bin/torlek"]
@@ -561,6 +624,96 @@ class BuiltPackageTest(ReleaseFixture):
             check=True,
         )
         self.assertEqual(result.stdout, f"Version: {VERSION}\nArchitecture: arm64\n")
+
+
+SCRIPTS = ROOT / "packaging/deb/torlek"
+SOCKET = "torlek-engine-masks.socket"
+SET_UP_SOCKET = f"/etc/systemd/system/{SOCKET}"
+OWNER_DROP_IN = f"/etc/systemd/system/{SOCKET}.d/owner.conf"
+
+
+@unittest.skipUnless(fake_systemd_host.is_available(), "no unprivileged user namespaces")
+class MaintainerScriptTest(unittest.TestCase):
+    """The masks helper's maintainer scripts, run as root of a fake host."""
+
+    def setUp(self):
+        self.host = fake_systemd_host.Host()
+        self.addCleanup(self.host.cleanup)
+        self.host.write(f"/usr/lib/systemd/system/{SOCKET}", "[Socket]\n")
+
+    def run_script(self, name, *arguments, failing=""):
+        return self.host.run("sh", str(SCRIPTS / name), *arguments, failing=failing)
+
+    def test_configuring_enables_the_socket_and_restarts_it_where_systemd_runs(self):
+        self.host.boot()
+        result, calls = self.run_script("postinst", "configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, f"daemon-reload\nenable {SOCKET}\nrestart {SOCKET}\n")
+
+    def test_configuring_without_systemd_running_only_enables_the_socket(self):
+        result, calls = self.run_script("postinst", "configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, f"enable {SOCKET}\n")
+
+    def test_a_removal_rolled_back_enables_the_socket_again(self):
+        self.host.boot()
+        result, calls = self.run_script("postinst", "abort-remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"enable {SOCKET}\n", calls)
+
+    def test_a_socket_that_fails_to_start_is_named_and_leaves_the_package_configured(self):
+        self.host.boot()
+        result, _ = self.run_script("postinst", "configure", failing="restart")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"cannot restart {SOCKET}", result.stderr)
+        self.assertIn("torlek doctor", result.stderr)
+
+    def test_configuring_beside_the_setup_steps_copy_names_the_command_that_removes_it(self):
+        self.host.write(SET_UP_SOCKET, "[Socket]\n")
+        result, _ = self.run_script("postinst", "configure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("torlek setup engine-masks --uninstall", result.stderr)
+
+    def test_removing_stops_and_disables_the_socket(self):
+        self.host.boot()
+        result, calls = self.run_script("prerm", "remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, f"stop {SOCKET} torlek-engine-masks@*.service\ndisable {SOCKET}\n")
+
+    def test_removing_beside_the_setup_steps_copy_leaves_its_socket_listening(self):
+        self.host.boot()
+        self.host.write(SET_UP_SOCKET, "[Socket]\n")
+        result, calls = self.run_script("prerm", "remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, "")
+
+    def test_an_upgrade_leaves_the_socket_alone(self):
+        self.host.boot()
+        result, calls = self.run_script("prerm", "upgrade", "0.1.0~alpha.9-1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, "")
+
+    def test_a_socket_that_fails_to_stop_does_not_block_the_removal(self):
+        self.host.boot()
+        result, _ = self.run_script("prerm", "remove", failing="stop")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"cannot stop {SOCKET}", result.stderr)
+
+    def test_removing_keeps_the_socket_owner_and_purging_removes_it(self):
+        self.host.write(OWNER_DROP_IN, "[Socket]\nSocketUser=owner\n")
+        result, _ = self.run_script("postrm", "remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.host.at(OWNER_DROP_IN).exists())
+        result, _ = self.run_script("postrm", "purge")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.host.at(OWNER_DROP_IN).parent.exists())
+
+    def test_purging_beside_the_setup_steps_copy_keeps_the_socket_owner(self):
+        self.host.write(SET_UP_SOCKET, "[Socket]\n")
+        self.host.write(OWNER_DROP_IN, "[Socket]\nSocketUser=owner\n")
+        result, _ = self.run_script("postrm", "purge")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.host.at(OWNER_DROP_IN).exists())
 
 
 class SigningKeyRefusalTest(unittest.TestCase):

@@ -45,6 +45,10 @@ system user of its own, shared by its clones:
   sudo (helper in `/usr/local/lib/torlek/bin`, units in `/etc/systemd/system`); the setup
   refuses where a package installs the helper. `masks_install` says which install a host has
   and which of the setup step's files are not this release's, which `check_ready` reports.
+  `tools/release.py` bundles `units/` under `share/torlek/systemd`, and the AUR and Debian
+  packages install them to `/usr/lib/systemd/system` and enable the socket
+  ([aur.md](../../docs/packaging/aur.md), [deb.md](../../docs/packaging/deb.md)); a test
+  builds both and compares their files with the setup step's.
 
 The daemon finds the project, its clones folder and the owner, and passes them in.
 

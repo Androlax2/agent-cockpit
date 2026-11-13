@@ -8,7 +8,7 @@
 pkgname=torlek-bin
 _tag=0.1.0-alpha.4
 pkgver=0.1.0alpha.4
-pkgrel=1
+pkgrel=2
 pkgdesc='Agent session cockpit: CLI, terminal UI and per-user daemon (prebuilt release)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/Androlax2/agent-cockpit'
@@ -20,6 +20,7 @@ optdepends=('systemd: the per-user daemon service, torlek daemon install'
 provides=('torlek')
 conflicts=('torlek')
 options=('!strip' '!debug')
+install=torlek-bin.install
 source_x86_64=("$url/releases/download/v$_tag/torlek-v$_tag-linux-x86_64.tar.gz")
 source_aarch64=("$url/releases/download/v$_tag/torlek-v$_tag-linux-aarch64.tar.gz")
 sha256sums_x86_64=('7aabe12ff02948a6b77e58a73f8032cbfd42cd55b908b33776222326d24dc270')
@@ -34,4 +35,9 @@ package() {
     cp -a --no-preserve=ownership "$bundle/." "$pkgdir/usr/lib/torlek/"
     ln -s ../lib/torlek/bin/torlek "$pkgdir/usr/bin/torlek"
     ln -s ../../../lib/torlek/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    # Torlek's masks helper's units (#390), from a release whose bundle carries them;
+    # torlek-bin.install enables the socket.
+    if [ -d "$bundle/share/torlek/systemd" ]; then
+        install -D -m 0644 -t "$pkgdir/usr/lib/systemd/system" "$bundle/share/torlek/systemd/"*
+    fi
 }
