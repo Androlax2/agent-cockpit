@@ -1131,9 +1131,23 @@ fn a_projects_own_engine_reports_each_state_with_its_next_step() {
             "`torlek containers record project` records it",
         ),
         (
-            EngineState::Verified(engine(true)),
-            Status::Unsupported,
-            "`torlek ask run`",
+            EngineState::Verified {
+                engine: engine(true),
+                masks: Ok(()),
+            },
+            Status::Available,
+            "",
+        ),
+        (
+            EngineState::Verified {
+                engine: engine(true),
+                masks: Err(
+                    "Torlek's masks helper is not installed: no /run/torlek-engine-masks.sock"
+                        .to_owned(),
+                ),
+            },
+            Status::MissingPrerequisite,
+            "torlek-engine-masks.socket",
         ),
     ];
     for (state, status, next) in cases {

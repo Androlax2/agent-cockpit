@@ -153,8 +153,12 @@ pub enum EngineState {
     },
     /// The project's engine answers, rootless, as its user; the owner has not recorded it.
     Unrecorded(DockerEngine),
-    /// The recorded engine answers as the project's own, rootless.
-    Verified(DockerEngine),
+    /// The recorded engine answers as the project's own, rootless; `masks` says whether
+    /// Torlek's masks helper is installed to show it each session's checkout masked.
+    Verified {
+        engine: DockerEngine,
+        masks: Result<(), String>,
+    },
     /// What failed, by name, and what makes it usable.
     Refused {
         reason: String,

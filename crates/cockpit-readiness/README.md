@@ -62,7 +62,8 @@ Under `agents.sandbox = "required"` sandboxed sessions never reach the owner's e
 its own, which the daemon verifies through its socket against the engine the owner
 recorded. Not set up, not recorded and refused are `missing-prerequisite`, each with its
 next step (the setup script to review and run, `torlek containers record`, starting the
-unit). A verified engine is `unsupported` until sessions can reach it.
+unit). A verified engine is `available` once Torlek's masks helper's socket is installed for
+the owner, and `missing-prerequisite` until then: sessions reach the engine only through it.
 
 Under `agents.sandbox = "required"` each compose file in the project's folder (`compose.yaml`,
 `docker-compose.yml` and their overrides) gets a line too (#1371). Parallel sessions share

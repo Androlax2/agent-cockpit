@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use cockpit_config::PORT_BASE_VARIABLE;
 use cockpit_containers::{
-    EngineState, EngineUser, Expected, PASSWD_FILE, RecordedEngine, Remedy, SOCKET_DEADLINE,
-    SetupPlan,
+    EngineState, EngineUser, Expected, MASKS_DEADLINE, MasksHelper, PASSWD_FILE, RecordedEngine,
+    Remedy, SOCKET_DEADLINE, SetupPlan,
 };
 use cockpit_projects::Project;
 use cockpit_protocol::{
@@ -38,6 +38,8 @@ pub(crate) struct Host {
     /// The installed `torlek-sandbox` the engine's relay unit runs; the setup script checks
     /// the engine's user can run it.
     pub(crate) relay_program: PathBuf,
+    /// Torlek's masks helper, which shows an engine each session's checkout masked.
+    pub(crate) masks: MasksHelper,
 }
 
 impl Host {
@@ -53,6 +55,7 @@ impl Host {
             qualified_profile: environment.profile.value.qualified_name(),
             scripts_dir: state_dir.join("containers"),
             relay_program: sandbox_launcher.to_path_buf(),
+            masks: MasksHelper::installed(),
         }
     }
 
@@ -147,9 +150,10 @@ pub(crate) async fn project_engine(
         EngineState::Unrecorded(info) => {
             cockpit_readiness::EngineState::Unrecorded(crate::readiness::docker_engine(info))
         }
-        EngineState::Verified(info) => {
-            cockpit_readiness::EngineState::Verified(crate::readiness::docker_engine(info))
-        }
+        EngineState::Verified(info) => cockpit_readiness::EngineState::Verified {
+            engine: crate::readiness::docker_engine(info),
+            masks: host.masks.check_socket(host.owner_uid),
+        },
         EngineState::Refused(refusal) => cockpit_readiness::EngineState::Refused {
             reason: refusal.to_string(),
             remedy: match refusal.remedy() {
@@ -183,8 +187,8 @@ async fn project_and_record(
 }
 
 /// Finds the engine each sandboxed launch reaches at `DOCKER_HOST` (#390): its project's,
-/// once that engine answers as the one the owner recorded and sees the launch's checkout
-/// masked.
+/// once that engine answers as the one the owner recorded and Torlek's masks helper has
+/// shown it the launch's checkout masked.
 pub(crate) struct LaunchEngines {
     pub(crate) database: Arc<Database>,
     pub(crate) host: Host,
@@ -201,19 +205,22 @@ impl cockpit_sessions::ProjectEngines for LaunchEngines {
 }
 
 impl LaunchEngines {
-    /// The masks come first: they cost nothing, and an engine they refuse is not asked.
+    /// The engine is verified first: the helper is asked to mask only for the project's own.
     async fn engine_socket(&self, project: &str, checkout: &Path) -> Option<EngineSocket> {
-        if let Err(reason) = masked(checkout) {
-            tracing::debug!(project, %reason, "the launch reaches no project engine");
-            return None;
-        }
-        match self.examined(project).await {
-            Ok((user, passwd, state)) => socket_of(&user, &state, &passwd),
+        let (user, passwd, state) = match self.examined(project).await {
+            Ok(examined) => examined,
             Err(reason) => {
                 tracing::warn!(project, %reason, "the launch reaches no project engine");
-                None
+                return None;
             }
-        }
+        };
+        let socket = socket_of(&user, &state, &passwd)?;
+        once_masked(&self.host.masks, &user, checkout, socket)
+            .await
+            .inspect_err(|reason| {
+                tracing::warn!(project, %reason, "the launch reaches no project engine");
+            })
+            .ok()
     }
 
     async fn examined(&self, project: &str) -> Result<(EngineUser, String, EngineState), String> {
@@ -239,14 +246,26 @@ fn socket_of(user: &EngineUser, state: &EngineState, passwd: &str) -> Option<Eng
     })
 }
 
-/// Whether the engine sees `checkout` through every denial of the session baseline in it:
-/// until #390's masks are built, it sees none masked, so no session reaches an engine whose
-/// containers could write the checkout's Git hooks or read its `.env`.
-fn masked(checkout: &Path) -> Result<(), String> {
-    Err(format!(
-        "the engine does not see {} masked: its masks are not built yet (#390)",
-        checkout.display()
-    ))
+/// `socket`, once the helper shows `user`'s engine `checkout` through every denial of the
+/// session baseline in it: otherwise the engine's containers could write the checkout's Git
+/// hooks or read its `.env`. Each launch asks again, so an environment file made since the
+/// last is masked too.
+async fn once_masked(
+    helper: &MasksHelper,
+    user: &EngineUser,
+    checkout: &Path,
+    socket: EngineSocket,
+) -> Result<EngineSocket, String> {
+    helper
+        .show_masked(user, checkout, MASKS_DEADLINE)
+        .await
+        .map_err(|reason| {
+            format!(
+                "the engine of {user} is not shown {} masked: {reason}",
+                checkout.display()
+            )
+        })?;
+    Ok(socket)
 }
 
 /// The forward `session` asks for, of `port` of `project`'s engine (#390), once that engine
@@ -512,12 +531,85 @@ fn through_name(through: DecidedThroughView) -> String {
 mod tests {
     use super::*;
 
-    /// #390: no session reaches an engine before its masks exist, whatever the engine.
-    #[test]
-    fn no_checkout_is_masked_before_the_masks_are_built() {
-        let refused = masked(Path::new("/home/owner/app")).unwrap_err();
+    /// A helper that answers `answer` to every request, listening as this test's user.
+    fn fake_masks_helper(answer: &'static str) -> (tempfile::TempDir, MasksHelper) {
+        use std::os::unix::fs::MetadataExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("engine-masks.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut request = [0u8; 512];
+                let _ = stream.read(&mut request).await;
+                let _ = stream.write_all(answer.as_bytes()).await;
+            }
+        });
+        let uid = std::fs::metadata(&socket).unwrap().uid();
+        (dir, MasksHelper { socket, uid })
+    }
 
-        assert!(refused.contains("/home/owner/app"), "{refused}");
+    fn engine_socket_of(user: &EngineUser) -> EngineSocket {
+        EngineSocket {
+            user: user.name().to_owned(),
+            uid: 991,
+            socket: user.socket(),
+        }
+    }
+
+    /// #390: a launch reaches the engine only once the helper masked its checkout.
+    #[tokio::test]
+    async fn a_launch_reaches_the_engine_once_the_helper_masked_its_checkout() {
+        let (_dir, helper) = fake_masks_helper("ok\n");
+        let user = EngineUser::for_project("torlek", 3).unwrap();
+
+        let reached = once_masked(
+            &helper,
+            &user,
+            Path::new("/home/owner/app"),
+            engine_socket_of(&user),
+        )
+        .await;
+
+        assert_eq!(reached, Ok(engine_socket_of(&user)));
+    }
+
+    #[tokio::test]
+    async fn a_checkout_the_helper_refuses_reaches_no_engine() {
+        let (_dir, helper) = fake_masks_helper("refused: /home/owner/app holds no .git\n");
+        let user = EngineUser::for_project("torlek", 3).unwrap();
+
+        let refused = once_masked(
+            &helper,
+            &user,
+            Path::new("/home/owner/app"),
+            engine_socket_of(&user),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(refused.contains("holds no .git"), "{refused}");
+    }
+
+    #[tokio::test]
+    async fn no_engine_is_reached_without_the_helper() {
+        let dir = tempfile::tempdir().unwrap();
+        let helper = MasksHelper {
+            socket: dir.path().join("absent.sock"),
+            uid: 0,
+        };
+        let user = EngineUser::for_project("torlek", 3).unwrap();
+
+        let refused = once_masked(
+            &helper,
+            &user,
+            Path::new("/home/owner/app"),
+            engine_socket_of(&user),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(refused.contains("cannot connect"), "{refused}");
     }
 
     const PASSWD: &str = "root:x:0:0::/root:/bin/sh\n\
