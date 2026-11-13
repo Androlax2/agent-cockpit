@@ -56,7 +56,8 @@ fn fake(home: &Home) -> FakeProvider {
 
 async fn start_with(home: &Home, provider: FakeProvider) -> Daemon {
     let mut wiring = common::wiring_in(home.path(), vec![Arc::new(provider)]);
-    wiring.session_tick = Duration::from_millis(100);
+    wiring.session_tick = Duration::from_secs(3600);
+    wiring.quota_resume_tick = Duration::from_millis(100);
     wiring.quota = Some(QuotaPolling {
         home: home.path().join("home"),
         refresh: Duration::from_secs(3600),

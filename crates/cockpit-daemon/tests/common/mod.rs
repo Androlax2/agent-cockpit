@@ -380,6 +380,7 @@ pub fn wiring_in(
         clipboard_reader: PathBuf::from("/nonexistent/wl-paste"),
         sandbox_launcher: PathBuf::from("/nonexistent/torlek-sandbox"),
         session_tick: Duration::from_secs(3600),
+        quota_resume_tick: Duration::from_secs(3600),
         exit_sweep: cockpit_daemon::EXIT_SWEEP,
         run_settings: cockpit_daemon::run_settings(Vec::new()).unwrap(),
         environment: cockpit_config::Environment {

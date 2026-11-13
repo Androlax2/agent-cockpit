@@ -211,6 +211,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             clipboard_reader: "wl-paste".into(),
             sandbox_launcher,
             session_tick: serve.session_tick,
+            quota_resume_tick: serve.session_tick,
             exit_sweep: EXIT_SWEEP,
             run_settings,
             environment: environment.clone(),
