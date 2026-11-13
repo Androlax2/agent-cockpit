@@ -272,17 +272,22 @@ impl Sandbox {
         let Some(host) = self.host.as_ref() else {
             return Ok(None);
         };
-        let path = session_folder(&host.mount_sources, session)
-            .map_err(|refusal| refusal.reason)?
-            .join(crate::REQUESTS_FILE);
-        let text = match std::fs::read(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+        let folder =
+            session_folder(&host.mount_sources, session).map_err(|refusal| refusal.reason)?;
+        read_egress_requests(&folder)
+    }
+
+    /// The destinations check run `run`'s launcher refused (#352), as
+    /// [`Sandbox::egress_requests`] reads a session's.
+    pub fn check_egress_requests(
+        &self,
+        run: &str,
+    ) -> Result<Option<crate::EgressRequests>, String> {
+        let Some(host) = self.host.as_ref() else {
+            return Ok(None);
         };
-        serde_json::from_slice(&text)
-            .map(Some)
-            .map_err(|error| format!("{} is malformed: {error}", path.display()))
+        let folder = check_folder(&host.mount_sources, run).map_err(|refusal| refusal.reason)?;
+        read_egress_requests(&folder)
     }
 
     /// Replaces the decisions `session`'s launcher enforces (#674); false, writing nothing,
@@ -298,6 +303,28 @@ impl Sandbox {
         };
         let folder =
             session_folder(&host.mount_sources, session).map_err(|refusal| refusal.reason)?;
+        self.write_decisions_into(&folder, decisions)
+    }
+
+    /// Replaces the decisions check run `run`'s launcher enforces (#352), as
+    /// [`Sandbox::write_egress_decisions`] does a session's.
+    pub fn write_check_egress_decisions(
+        &self,
+        run: &str,
+        decisions: &crate::EgressDecisions,
+    ) -> Result<bool, String> {
+        let Some(host) = self.host.as_ref() else {
+            return Ok(false);
+        };
+        let folder = check_folder(&host.mount_sources, run).map_err(|refusal| refusal.reason)?;
+        self.write_decisions_into(&folder, decisions)
+    }
+
+    fn write_decisions_into(
+        &self,
+        folder: &std::path::Path,
+        decisions: &crate::EgressDecisions,
+    ) -> Result<bool, String> {
         let _writing = self.hold_mount_writes();
         if !folder.is_dir() {
             return Ok(false);
@@ -566,6 +593,19 @@ fn account_folder(
         }
     }
     Ok(parent.join(provider).join(account))
+}
+
+/// The requests file in a launcher's mount folder; None when its launcher refused nothing.
+fn read_egress_requests(folder: &std::path::Path) -> Result<Option<crate::EgressRequests>, String> {
+    let path = folder.join(crate::REQUESTS_FILE);
+    let text = match std::fs::read(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+    };
+    serde_json::from_slice(&text)
+        .map(Some)
+        .map_err(|error| format!("{} is malformed: {error}", path.display()))
 }
 
 /// Check run `run`'s own folder in `parent`, beside sessions' folders: a session id is `s`

@@ -254,3 +254,38 @@ async fn a_run_of_another_epoch_is_not_this_epochs_newest() {
 
     assert!(newest.is_empty(), "{newest:?}");
 }
+
+/// #352: a sandboxed run is listed while its launcher may still ask the owner, never after.
+#[tokio::test]
+async fn an_unsealed_sandboxed_run_is_listed_until_it_is_sealed() {
+    let fixture = Fixture::new().await;
+    let new = intent(&fixture);
+    let write = fixture.database.write().await.unwrap();
+    let pending = reserve_result(&write, fixture.database.epoch(), 1, new.clone())
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let read = fixture.database.read().await.unwrap();
+    assert_eq!(
+        unsealed_runs_in(&read, "sandbox").await.unwrap(),
+        [UnsealedRun {
+            project: PROJECT.to_owned(),
+            run_id: new.run_id.clone(),
+            check: "test".to_owned(),
+        }]
+    );
+    assert_eq!(unsealed_runs_in(&read, "native").await.unwrap(), []);
+    drop(read);
+    let mut result = new.clone();
+    result.outcome = Outcome::Passed;
+    result.exit_code = Some(0);
+    let write = fixture.database.write().await.unwrap();
+    seal_result(&write, &pending, result, 0, NOW, false)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let read = fixture.database.read().await.unwrap();
+    assert_eq!(unsealed_runs_in(&read, "sandbox").await.unwrap(), []);
+}

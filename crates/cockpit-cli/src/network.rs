@@ -205,10 +205,10 @@ fn grant_origin(grant: &NetworkGrantView) -> String {
 
 fn request_detail(request: &NetworkRequestView) -> String {
     let mut text = format!(
-        "network request {}: {} for session {} (project {})\nstate: {}\n",
+        "network request {}: {} for {} (project {})\nstate: {}\n",
         request.id,
         request.target,
-        subject(&request.subject),
+        requester(&request.subject),
         request.project,
         state_name(request.state)
     );
@@ -269,9 +269,19 @@ pub(crate) fn decided(verdict: &str, decision: NetworkDecisionView) -> String {
     )
 }
 
-fn subject(subject: &NetworkSubjectView) -> &str {
+/// `session ID`, or `check NAME (run RUN)` for a check run's request (#352).
+fn requester(subject: &NetworkSubjectView) -> String {
     match subject {
-        NetworkSubjectView::Session { id } => id,
+        NetworkSubjectView::Session { id } => format!("session {id}"),
+        NetworkSubjectView::Check { .. } => self::subject(subject),
+    }
+}
+
+/// The session's id, or `check NAME (run RUN)` for a check run's request (#352).
+fn subject(subject: &NetworkSubjectView) -> String {
+    match subject {
+        NetworkSubjectView::Session { id } => id.clone(),
+        NetworkSubjectView::Check { run, check } => format!("check {check} (run {run})"),
     }
 }
 

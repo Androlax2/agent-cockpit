@@ -23,8 +23,8 @@ use cockpit_sandbox::{
     OwnerDecision, Sandbox, ServiceAsk, Subject,
 };
 use cockpit_sessions::Sessions;
-use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
+use cockpit_turso::{Database, WriteTransaction};
 use tokio::sync::Notify;
 
 use crate::approvals::{Failed, Sender, internal, job, now, shown};
@@ -60,6 +60,10 @@ impl From<NetworkError> for Failed {
                 ErrorCode::Refused,
                 format!("read the request, then allow it again in {wait_seconds} s"),
             ),
+            NetworkRefusal::OnceForACheck => (
+                ErrorCode::Refused,
+                "allow it always (`--always`, a in the TUI) or deny it".to_owned(),
+            ),
             // No owner verb names a subject: a check run reaching here is the daemon's bug.
             NetworkRefusal::NotASession => return internal(&error),
         };
@@ -88,7 +92,12 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
                 Ok(Reply::NetworkRequests {
                     requests: requests
                         .iter()
-                        .filter(|request| live.contains_key(&request.session))
+                        .filter(|request| match &request.subject {
+                            Subject::Session { session } => live.contains_key(session),
+                            // A run ends long before the owner reads its request, which
+                            // stands for its check's next runs (#352).
+                            Subject::Check { .. } => true,
+                        })
                         .map(request_view)
                         .collect(),
                 })
@@ -255,7 +264,7 @@ pub(crate) fn route_ask(
             decided.notify_one();
             tracing::info!(
                 request = filed.id,
-                session = filed.session,
+                subject = ?filed.subject,
                 record = filed.target.describe(),
                 "an agent asks the owner for a service"
             );
@@ -405,28 +414,28 @@ pub(crate) async fn keep_forever(
     }
 }
 
-/// Files the destinations each live session's launcher listed since the last pass; true when
-/// it filed a new request. The requests files of ended sessions are not read, and what was
-/// seen of them is forgotten.
+/// Files the destinations each live subject's launcher listed since the last pass; true when
+/// it filed a new request. The requests files of ended sessions and sealed check runs are not
+/// read, and what was seen of them is forgotten.
 async fn collect(
     database: &Database,
     sandbox: &Sandbox,
-    seen: &mut HashMap<String, EgressRequests>,
+    seen: &mut HashMap<Subject, EgressRequests>,
 ) -> Result<bool, String> {
     let read = database.read().await.map_err(|error| error.to_string())?;
-    let live = live_sessions(&read).await?;
+    let live = live_subjects(&read).await?;
     drop(read);
-    seen.retain(|session, _| live.contains_key(session));
+    seen.retain(|subject, _| live.contains_key(subject));
     let reading = sandbox.clone();
-    let sessions: Vec<String> = live.keys().cloned().collect();
+    let subjects: Vec<Subject> = live.keys().cloned().collect();
     let listed = tokio::task::spawn_blocking(move || {
         let mut listed = Vec::new();
-        for session in sessions {
-            match reading.egress_requests(&session) {
-                Ok(requests) => listed.push((session, requests)),
+        for subject in subjects {
+            match requests_of(&reading, &subject) {
+                Ok(requests) => listed.push((subject, requests)),
                 // One bad file does not stop the others' requests.
                 Err(error) => {
-                    tracing::warn!(session, %error, "a requests file was not read");
+                    tracing::warn!(?subject, %error, "a requests file was not read");
                 }
             }
         }
@@ -435,99 +444,129 @@ async fn collect(
     .await
     .map_err(|error| error.to_string())?;
     // A relaunch removes the file: what was seen of the last launch is forgotten with it.
-    let listed: Vec<(String, EgressRequests)> = listed
+    let listed: Vec<(Subject, EgressRequests)> = listed
         .into_iter()
-        .filter_map(|(session, requests)| match requests {
-            Some(requests) => Some((session, requests)),
+        .filter_map(|(subject, requests)| match requests {
+            Some(requests) => Some((subject, requests)),
             None => {
-                seen.remove(&session);
+                seen.remove(&subject);
                 None
             }
         })
         .collect();
-    let changed: Vec<(String, EgressRequests)> = listed
+    let changed: Vec<(Subject, EgressRequests)> = listed
         .into_iter()
-        .filter(|(session, requests)| seen.get(session) != Some(requests))
+        .filter(|(subject, requests)| seen.get(subject) != Some(requests))
         .collect();
     if changed.is_empty() {
         return Ok(false);
     }
     let mut is_filed = false;
     let write = database.write().await.map_err(|error| error.to_string())?;
-    // Again inside the write: a session that ended since asks nothing.
-    let live = live_sessions(&write).await?;
+    // Again inside the write: a session that ended or a run sealed since asks nothing.
+    let live = live_subjects(&write).await?;
     let at = now();
-    for (session, requests) in &changed {
-        let Some(project) = live.get(session) else {
+    for (subject, requests) in &changed {
+        let Some(project) = live.get(subject) else {
             continue;
         };
-        let subject = Subject::Session {
-            session: session.clone(),
-        };
-        if requests.subject != subject {
-            tracing::warn!(session, "a requests file names another subject; ignored");
-            continue;
-        }
-        for asked in requests
-            .asked
-            .iter()
-            .take(cockpit_sandbox::MAX_ASKED_DESTINATIONS)
-        {
-            if !cockpit_sandbox::is_askable_destination(&asked.host, asked.port) {
-                tracing::warn!(
-                    session,
-                    host = asked.host,
-                    "a refused host is not a DNS name"
-                );
-                continue;
-            }
-            if let Some(filed) =
-                cockpit_sandbox::file_network_request(&write, &subject, project, asked, at)
-                    .await
-                    .map_err(|error| error.to_string())?
-            {
-                is_filed = true;
-                tracing::info!(
-                    request = filed.id,
-                    session,
-                    destination = filed.target.describe(),
-                    "a sandboxed session asks the owner for a host"
-                );
-            }
-        }
-        for asked in requests.services.iter().take(cockpit_sandbox::MAX_FORWARDS) {
-            if !asked.is_askable() {
-                tracing::warn!(session, "a refused service names no service record");
-                continue;
-            }
-            if let Some(filed) =
-                cockpit_sandbox::file_service_request(&write, &subject, project, asked, at)
-                    .await
-                    .map_err(|error| error.to_string())?
-            {
-                is_filed = true;
-                tracing::info!(
-                    request = filed.id,
-                    session,
-                    record = filed.target.describe(),
-                    "a sandboxed session asks the owner for a service"
-                );
-            }
-        }
+        is_filed |= file_listed(&write, subject, project, requests, at)
+            .await
+            .map_err(|error| error.to_string())?;
     }
     write.commit().await.map_err(|error| error.to_string())?;
     seen.extend(changed);
     Ok(is_filed)
 }
 
-/// Rewrites the decisions file of every live session that has a sandbox folder. A session
-/// whose decisions cannot be read or written is logged and the others still get theirs.
+/// Files what `subject`'s launcher listed in `requests` as requests of `project` for the
+/// owner, in the caller's transaction; true when it filed a new one. A file naming another
+/// subject, a host that is no DNS name and a check run's service are logged and skipped.
+pub(crate) async fn file_listed(
+    write: &WriteTransaction<'_>,
+    subject: &Subject,
+    project: &str,
+    requests: &EgressRequests,
+    at: i64,
+) -> Result<bool, NetworkError> {
+    if requests.subject != *subject {
+        tracing::warn!(?subject, "a requests file names another subject; ignored");
+        return Ok(false);
+    }
+    let mut is_filed = false;
+    for asked in requests
+        .asked
+        .iter()
+        .take(cockpit_sandbox::MAX_ASKED_DESTINATIONS)
+    {
+        if !cockpit_sandbox::is_askable_destination(&asked.host, asked.port) {
+            tracing::warn!(
+                ?subject,
+                host = asked.host,
+                "a refused host is not a DNS name"
+            );
+            continue;
+        }
+        if let Some(filed) =
+            cockpit_sandbox::file_network_request(write, subject, project, asked, at).await?
+        {
+            is_filed = true;
+            tracing::info!(
+                request = filed.id,
+                ?subject,
+                destination = filed.target.describe(),
+                "a sandboxed launcher asks the owner for a host"
+            );
+        }
+    }
+    if matches!(subject, Subject::Check { .. }) {
+        // A check run is given no forward, so its launcher has no service to close.
+        if !requests.services.is_empty() {
+            tracing::warn!(
+                ?subject,
+                "a check run's requests file lists services; ignored"
+            );
+        }
+        return Ok(is_filed);
+    }
+    for asked in requests.services.iter().take(cockpit_sandbox::MAX_FORWARDS) {
+        if !asked.is_askable() {
+            tracing::warn!(?subject, "a refused service names no service record");
+            continue;
+        }
+        if let Some(filed) =
+            cockpit_sandbox::file_service_request(write, subject, project, asked, at).await?
+        {
+            is_filed = true;
+            tracing::info!(
+                request = filed.id,
+                ?subject,
+                record = filed.target.describe(),
+                "a sandboxed session asks the owner for a service"
+            );
+        }
+    }
+    Ok(is_filed)
+}
+
+/// What `subject`'s launcher refused, from its own mount folder; `None` when it refused
+/// nothing yet.
+fn requests_of(sandbox: &Sandbox, subject: &Subject) -> Result<Option<EgressRequests>, String> {
+    match subject {
+        Subject::Session { session } => sandbox.egress_requests(session),
+        Subject::Check { run, .. } => sandbox.check_egress_requests(run),
+    }
+}
+
+/// Rewrites the decisions file of every live session and sandboxed check run that has a
+/// sandbox folder. One whose decisions cannot be read or written is logged and the others
+/// still get theirs.
 async fn write_decisions(
     database: &Database,
     sandbox: &Sandbox,
     containers: &crate::containers::Host,
 ) {
-    let all = match decisions_of_live_sessions(database, containers).await {
+    let all = match decisions_of_live_subjects(database, containers).await {
         Ok(all) => all,
         Err(error) => {
             tracing::warn!(%error, "the owner's network decisions were not read");
@@ -536,9 +575,13 @@ async fn write_decisions(
     };
     let writing = sandbox.clone();
     let written = tokio::task::spawn_blocking(move || {
-        for (session, decisions) in all {
-            if let Err(error) = writing.write_egress_decisions(&session, &decisions) {
-                tracing::warn!(session, %error, "the owner's network decisions were not written");
+        for (subject, decisions) in all {
+            let written = match &subject {
+                Subject::Session { session } => writing.write_egress_decisions(session, &decisions),
+                Subject::Check { run, .. } => writing.write_check_egress_decisions(run, &decisions),
+            };
+            if let Err(error) = written {
+                tracing::warn!(?subject, %error, "the owner's network decisions were not written");
             }
         }
     })
@@ -548,16 +591,17 @@ async fn write_decisions(
     }
 }
 
-async fn decisions_of_live_sessions(
+async fn decisions_of_live_subjects(
     database: &Database,
     containers: &crate::containers::Host,
-) -> Result<Vec<(String, EgressDecisions)>, String> {
+) -> Result<Vec<(Subject, EgressDecisions)>, String> {
     let read = database.read().await.map_err(|error| error.to_string())?;
+    let mut all = decisions_of_check_runs(&read).await?;
     let live = live_sessions(&read).await?;
     let held = cockpit_sessions::live_port_blocks(&read)
         .await
         .map_err(|error| format!("the sessions' port blocks could not be read: {error}"))?;
-    let mut all = Vec::with_capacity(live.len());
+    all.reserve(live.len());
     let passwd = tokio::sync::OnceCell::new();
     // A project's sessions share its engine: looked up once a pass.
     let mut relays: HashMap<String, Result<Option<EngineRelay>, String>> = HashMap::new();
@@ -599,9 +643,63 @@ async fn decisions_of_live_sessions(
                 }
             }
         }
-        all.push((session, decisions));
+        all.push((subject, decisions));
     }
     Ok(all)
+}
+
+/// The decisions of each sandboxed check run not yet sealed (#352): the project's host
+/// grants and what the owner allowed or denied for the run. A check is given no forward, so
+/// service grants are left out.
+async fn decisions_of_check_runs(
+    read: &Connection,
+) -> Result<Vec<(Subject, EgressDecisions)>, String> {
+    let mut all = Vec::new();
+    for (subject, project) in live_check_runs(read).await? {
+        match cockpit_sandbox::egress_decisions(read, &project, &subject).await {
+            Ok(decisions) => all.push((
+                subject,
+                EgressDecisions {
+                    services: cockpit_sandbox::ServiceDecisions::default(),
+                    ..decisions
+                },
+            )),
+            Err(error) => {
+                tracing::warn!(?subject, %error, "the owner's network decisions were not read");
+            }
+        }
+    }
+    Ok(all)
+}
+
+/// Every subject whose launcher may still ask the owner: each live session and each
+/// sandboxed check run not yet sealed (#352), with its project's name.
+async fn live_subjects(connection: &Connection) -> Result<HashMap<Subject, String>, String> {
+    let sessions = live_sessions(connection).await?;
+    let runs = live_check_runs(connection).await?;
+    Ok(sessions
+        .into_iter()
+        .map(|(session, project)| (Subject::Session { session }, project))
+        .chain(runs)
+        .collect())
+}
+
+/// Every sandboxed check run not yet sealed, with its project's name.
+async fn live_check_runs(connection: &Connection) -> Result<Vec<(Subject, String)>, String> {
+    let sandboxed = cockpit_config::ExecutionEnvironment::Sandbox.as_str();
+    let runs = cockpit_verification::unsealed_runs_in(connection, sandboxed)
+        .await
+        .map_err(|error| format!("the unsealed check runs could not be read: {error}"))?;
+    Ok(runs
+        .into_iter()
+        .map(|run| {
+            let subject = Subject::Check {
+                run: run.run_id,
+                check: run.check,
+            };
+            (subject, run.project)
+        })
+        .collect())
 }
 
 /// Every session not ended, by id, with its project's name.
@@ -643,6 +741,18 @@ pub(crate) fn decision_view(decision: OwnerDecision) -> NetworkDecisionView {
     }
 }
 
+fn subject_view(subject: &Subject) -> NetworkSubjectView {
+    match subject {
+        Subject::Session { session } => NetworkSubjectView::Session {
+            id: session.clone(),
+        },
+        Subject::Check { run, check } => NetworkSubjectView::Check {
+            run: run.clone(),
+            check: check.clone(),
+        },
+    }
+}
+
 fn request_reply(request: &NetworkRequest) -> Reply {
     Reply::NetworkRequest {
         request: Box::new(request_view(request)),
@@ -652,9 +762,7 @@ fn request_reply(request: &NetworkRequest) -> Reply {
 fn request_view(request: &NetworkRequest) -> NetworkRequestView {
     NetworkRequestView {
         id: request.id,
-        subject: NetworkSubjectView::Session {
-            id: request.session.clone(),
-        },
+        subject: subject_view(&request.subject),
         project: request.project.clone(),
         asks: target_view(&request.target),
         target: request.target.describe(),

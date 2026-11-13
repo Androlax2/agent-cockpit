@@ -30,7 +30,9 @@ entities, one per provider, account and window: each new state is one notice (th
 share used, the threshold), a higher threshold or the next window instance another. It names the
 host too. `budget` follows the daemon's `budget-spent` entities, one per item: it names the item
 by its title (`session=host:budget/ID` in the log) with its project, budget and the command that
-says how to go on. A raised budget spent again is news; a new title is not. A session that exits by itself
+says how to go on. A raised budget spent again is news; a new title is not. A check run's
+network request (#352) waits on no session: it is a `hold` of the host (`session=host:network/ID`)
+naming the check, its project and the host. A session that exits by itself
 raises `failure`, not `finished`. Events that land together make one
 notification, the most urgent first, and one sound, the most urgent event's. Nothing is told
 for the state the notifier started on, for a session the owner ended, or for a question a

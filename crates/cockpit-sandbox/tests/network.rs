@@ -3,8 +3,8 @@
 use cockpit_sandbox::{
     AllowEntry, AllowSource, AskedDestination, AskingDestination, DeniedDestination,
     EgressDecisions, GITHUB_HOST, MIGRATIONS, NETWORK_ALLOW_GRACE_SECONDS, NetworkError,
-    NetworkGrant, NetworkRefusal, NetworkRequestState, NetworkTarget, OwnerClient, OwnerDecision,
-    ServiceAsk, Subject, Target,
+    NetworkGrant, NetworkRefusal, NetworkRequest, NetworkRequestState, NetworkTarget, OwnerClient,
+    OwnerDecision, ServiceAsk, Subject, Target,
 };
 use cockpit_sandbox::{AllowedService, AskedService, DecidedService, Endpoint, Forward};
 use cockpit_turso::Database;
@@ -817,4 +817,230 @@ async fn the_decided_list_holds_every_decision_oldest_first_and_no_asking_reques
             (allowed, NetworkRequestState::AllowedAlways),
         ]
     );
+}
+
+fn check_run(run: &str) -> Subject {
+    Subject::Check {
+        run: run.to_owned(),
+        check: "test".to_owned(),
+    }
+}
+
+impl Store {
+    async fn file_for(&self, subject: &Subject, project: &str) -> Option<i64> {
+        let write = self.database.write().await.unwrap();
+        let filed =
+            cockpit_sandbox::file_network_request(&write, subject, project, &example(), ASKED_AT)
+                .await
+                .unwrap();
+        write.commit().await.unwrap();
+        filed.map(|request| request.id)
+    }
+
+    async fn standing_for(&self, subject: &Subject, project: &str) -> Option<NetworkRequest> {
+        let read = self.database.read().await.unwrap();
+        cockpit_sandbox::standing_check_request(&read, subject, project, &example())
+            .await
+            .unwrap()
+    }
+}
+
+/// #352 (#862, Q2): a check run's refused host is a request naming the run and its check.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_check_runs_refused_destination_is_filed_naming_the_run_and_its_check() {
+    let store = store().await;
+
+    let request = store.file_for(&check_run("execution-1"), "app").await;
+
+    let read = store.database.read().await.unwrap();
+    let asking = cockpit_sandbox::asking_network_requests(&read)
+        .await
+        .unwrap();
+    assert_eq!(asking.len(), 1);
+    assert_eq!(asking[0].id, request.unwrap());
+    assert_eq!(asking[0].subject, check_run("execution-1"));
+}
+
+/// #352: a check run ends before the owner can decide, so "once" would allow nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_check_runs_request_is_not_allowed_once() {
+    let store = store().await;
+    let request = store
+        .file_for(&check_run("execution-1"), "app")
+        .await
+        .unwrap();
+
+    let allowed = store.allow(request, false, DECIDED_AT).await;
+
+    assert!(
+        matches!(
+            allowed,
+            Err(NetworkError::Refused(NetworkRefusal::OnceForACheck))
+        ),
+        "{allowed:?}"
+    );
+}
+
+/// #352: one card per check and host, whichever run asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rerun_of_the_check_files_no_second_request_while_one_asks() {
+    let store = store().await;
+    store.file_for(&check_run("execution-1"), "app").await;
+
+    let rerun = store.file_for(&check_run("execution-2"), "app").await;
+
+    assert_eq!(rerun, None);
+}
+
+/// #352: the store holds one standing request per check and host, whatever files it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_store_refuses_a_second_standing_request_of_a_check_for_a_host() {
+    let store = store().await;
+    let request = store.file_for(&check_run("execution-1"), "app").await;
+    let write = store.database.write().await.unwrap();
+
+    let second = write
+        .execute(
+            "INSERT INTO sandbox_network_requests
+                (subject_kind, subject, subject_check, project, kind, host, port, state,
+                 asked_at)
+             SELECT 'check', 'execution-2', subject_check, project, kind, host, port, state,
+                 asked_at
+             FROM sandbox_network_requests WHERE id = ?1",
+            [request.unwrap()],
+        )
+        .await;
+
+    assert!(second.is_err(), "{second:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_check_or_project_asking_for_the_host_files_its_own_request() {
+    let store = store().await;
+    store.file_for(&check_run("execution-1"), "app").await;
+    let lint = Subject::Check {
+        run: "execution-2".to_owned(),
+        check: "lint".to_owned(),
+    };
+
+    let other_check = store.file_for(&lint, "app").await;
+    let other_project = store.file_for(&check_run("execution-3"), "web").await;
+
+    assert!(other_check.is_some());
+    assert!(other_project.is_some());
+}
+
+/// #352: a denial holds for the check's next runs, each of which names it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_check_request_stands_for_the_checks_next_run() {
+    let store = store().await;
+    let request = store
+        .file_for(&check_run("execution-1"), "app")
+        .await
+        .unwrap();
+    store.deny(request).await;
+
+    let rerun = store.file_for(&check_run("execution-2"), "app").await;
+
+    assert_eq!(rerun, None);
+    let standing = store.standing_for(&check_run("execution-2"), "app").await;
+    assert_eq!(
+        standing.map(|standing| (standing.id, standing.state)),
+        Some((request, NetworkRequestState::Denied))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_granted_host_leaves_the_check_nothing_standing() {
+    let store = store().await;
+    let request = store
+        .file_for(&check_run("execution-1"), "app")
+        .await
+        .unwrap();
+    store.allow(request, true, DECIDED_AT).await.unwrap();
+
+    let standing = store.standing_for(&check_run("execution-2"), "app").await;
+
+    assert_eq!(standing, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_check_runs_allow_always_also_allows_the_projects_sessions() {
+    let store = store().await;
+    let request = store
+        .file_for(&check_run("execution-1"), "app")
+        .await
+        .unwrap();
+
+    store.allow(request, true, DECIDED_AT).await.unwrap();
+
+    let read = store.database.read().await.unwrap();
+    let grant = cockpit_sandbox::network_request(&read, request)
+        .await
+        .unwrap()
+        .grant
+        .expect("allow always made a grant");
+    drop(read);
+    assert_eq!(
+        store.decisions("s1", "app").await.allowed,
+        vec![entry(AllowSource::Grant {
+            grant: grant.to_string()
+        })]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_check_run_asks_ahead_for_no_service() {
+    let store = store().await;
+    let write = store.database.write().await.unwrap();
+
+    let asked = cockpit_sandbox::ask_service(
+        &write,
+        &check_run("execution-1"),
+        "app",
+        &figcraft_port(),
+        "needs it",
+        ASKED_AT,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            asked,
+            Err(NetworkError::Refused(NetworkRefusal::NotASession))
+        ),
+        "{asked:?}"
+    );
+}
+
+/// #352: the migration that lets a check run ask keeps every earlier request a session's.
+#[tokio::test(flavor = "multi_thread")]
+async fn requests_made_before_check_subjects_stay_their_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let earlier = cockpit_turso::MigrationSet {
+        owner: MIGRATIONS.owner,
+        migrations: &MIGRATIONS.migrations[..6],
+    };
+    let database = Database::open(&path, &[earlier]).await.unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO sandbox_network_requests
+                (id, subject_kind, subject, project, kind, host, port, state, asked_at)
+             VALUES (1, 'session', 's1', 'app', 'host', 'unknown.example.com', 443, 'asking',
+                ?1)",
+            [ASKED_AT],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(database);
+
+    let database = Database::open(&path, &[MIGRATIONS]).await.unwrap();
+
+    let read = database.read().await.unwrap();
+    let decided = cockpit_sandbox::network_request(&read, 1).await.unwrap();
+    assert_eq!(decided.subject, session("s1"));
+    assert_eq!(decided.state, NetworkRequestState::Asking);
 }

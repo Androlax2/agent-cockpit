@@ -2,6 +2,8 @@
 //! probe runs inside a sandboxed agent: it cannot read a denied path, is refused a host the
 //! session does not allow, reaches one it does, and records what it saw on the launch's
 //! evidence (`observed: owner probe: ...`). Four launches in a row of one session each do.
+//! A sandboxed check reaches a host once the owner allows its request always, and not another
+//! (#352, #862 Q2).
 //!
 //! Ignored by default because it reaches the internet: CI's Linux and WSL 2 jobs run it on
 //! their disposable runners with `--run-ignored only`.
@@ -12,6 +14,7 @@ mod real_daemon;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use cockpit_protocol::{Command, NetworkRequestView, Reply};
 use real_daemon::{COMMANDED_PROJECT, GENEROUS, Home, new_session};
 
 const REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
@@ -20,6 +23,8 @@ const ALLOWED_HOST: &str = "api.anthropic.com";
 /// A real host no adapter, registry or grant allows.
 const UNKNOWN_HOST: &str = "example.com";
 const LAUNCHES: usize = 4;
+/// A second real host no adapter, registry or grant allows: the check is granted the first.
+const OTHER_HOST: &str = "example.org";
 
 /// `curl` through the session proxy the agent's `HTTPS_PROXY` names: the proxy's answer to
 /// the tunnel, then the server's, `000` when there was none.
@@ -202,4 +207,110 @@ async fn four_launches_in_a_row_of_one_session_each_reach_the_allowed_host() {
     distinct.sort();
     distinct.dedup();
     assert_eq!(distinct.len(), LAUNCHES, "{identities:?}");
+}
+
+/// Project `checked`, trusted by the owner, whose `reach` check prints what the proxy answered
+/// for [`UNKNOWN_HOST`] and [`OTHER_HOST`].
+async fn checked_project(home: &Home) -> std::path::PathBuf {
+    let root = home.path().join("projects").join("checked");
+    home.write_owner_config(&format!(
+        "{REQUIRED}\n[projects]\ntrusted = [{:?}]\n",
+        root.display().to_string()
+    ));
+    let client = home.connect().await;
+    let (registered, _) = home.project(&client, "checked").await;
+    assert_eq!(registered, root);
+    let reach = [UNKNOWN_HOST, OTHER_HOST]
+        .map(|host| format!("printf '{host} '; {} 2>/dev/null", fetch_line(host)))
+        .join("\n");
+    std::fs::create_dir_all(root.join(".torlek")).unwrap();
+    std::fs::write(
+        root.join(".torlek/config.toml"),
+        "[[checks]]\nname = \"reach\"\ncommand = \"sh reach.sh\"\nenvironment = \"sandbox\"\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("reach.sh"), reach + "\n").unwrap();
+    for arguments in [
+        &["add", "--all"][..],
+        &["commit", "--quiet", "-m", "checks"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .current_dir(&root)
+            .args(["-c", "user.name=Fixture", "-c", "user.email=f@example.com"])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {arguments:?}");
+    }
+    root
+}
+
+/// The asking request of `checked`'s check for `host` on 443.
+async fn asking_for(home: &Home, host: &str) -> NetworkRequestView {
+    let target = format!("{host}:443");
+    let reply = home
+        .connect()
+        .await
+        .request(Command::NetworkList, GENEROUS)
+        .await;
+    let Ok(Reply::NetworkRequests { requests }) = reply else {
+        panic!("expected the network requests, got {reply:?}");
+    };
+    requests
+        .into_iter()
+        .find(|request| request.project == "checked" && request.target == target)
+        .unwrap_or_else(|| panic!("no request for {target}; {}", home.stderr()))
+}
+
+/// What the check's line for `host` printed: `tunnel=<code> status=<code>`.
+fn reached<'a>(output: &'a str, host: &str) -> &'a str {
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{host} ")))
+        .unwrap_or_else(|| panic!("no line for {host} in {output}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "live: reaches the internet; CI's Linux and WSL 2 jobs run it (#352)"]
+async fn a_sandboxed_check_reaches_the_host_its_owner_allowed_and_not_another() {
+    let home = Home::new();
+    prepare(&home);
+    let _daemon = home.start();
+    checked_project(&home).await;
+    let refused = home.run_check("checked", "reach").await;
+    assert!(
+        reached(&refused.output, UNKNOWN_HOST).starts_with("tunnel=403"),
+        "{refused:?}"
+    );
+    let request = asking_for(&home, UNKNOWN_HOST).await;
+    // The owner cannot decide a request in its first seconds (#674).
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let allowed = home
+        .connect()
+        .await
+        .request(
+            Command::NetworkAllow {
+                request: request.id,
+                always: true,
+                through: None,
+            },
+            GENEROUS,
+        )
+        .await;
+    assert!(
+        matches!(allowed, Ok(Reply::NetworkRequest { .. })),
+        "{allowed:?}"
+    );
+
+    let receipt = home.run_check("checked", "reach").await;
+
+    println!("{}", receipt.output);
+    assert!(
+        reached(&receipt.output, UNKNOWN_HOST).starts_with("tunnel=200"),
+        "{receipt:?}"
+    );
+    assert!(
+        reached(&receipt.output, OTHER_HOST).starts_with("tunnel=403"),
+        "{receipt:?}"
+    );
 }

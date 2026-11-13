@@ -365,7 +365,7 @@ fn card_lines(board: &Board, shown: &Shown) -> Vec<String> {
             .find(|guide| guide.id == *id)
             .map(guide_lines)
             .unwrap_or_default(),
-        Shown::Network { id } => board
+        Shown::Network { id, .. } => board
             .network
             .iter()
             .find(|request| request.id == *id)
