@@ -35,7 +35,16 @@ system user of its own, shared by its clones:
 - `MasksHelper::show_masked` asks Torlek's masks helper (`torlek-sandbox engine-masks`, root,
   behind `torlek-engine-masks.socket`) to show the engine one checkout through the session's
   masks, after the kernel names root as the socket's listener. `check_ready` is readiness's
-  cheaper look: the socket exists, only the owner may connect, and the engine is recorded.
+  cheaper look: the helper is installed as this release's, the socket exists, only the owner
+  may connect, and the engine is recorded.
+
+- `masks_units` are the helper's units, `units/torlek-engine-masks.socket` and
+  `units/torlek-engine-masks@.service`, as a package installs them, or running the setup
+  step's copy of the helper: the two differ by that path alone. `masks_setup_script` and
+  `masks_removal_script` are the root steps `torlek setup engine-masks [--uninstall]` runs with
+  sudo (helper in `/usr/local/lib/torlek/bin`, units in `/etc/systemd/system`); the setup
+  refuses where a package installs the helper. `masks_install` says which install a host has
+  and which of the setup step's files are not this release's, which `check_ready` reports.
 
 The daemon finds the project, its clones folder and the owner, and passes them in.
 

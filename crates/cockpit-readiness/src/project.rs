@@ -414,18 +414,39 @@ fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
             engine: found,
             masks: Err(gap),
         } => {
-            let (reason, next) = match gap {
+            let missing = Status::MissingPrerequisite;
+            let (status, reason, next) = match gap {
                 MasksGap::NotInstalled(reason) => (
-                    reason,
-                    "install Torlek's masks helper, torlek-engine-masks.socket; no step of this \
-                     release installs it yet (#390)"
+                    missing,
+                    reason.clone(),
+                    "run `torlek setup engine-masks`, which installs Torlek's masks helper as \
+                     root and asks for your password once"
+                        .to_owned(),
+                ),
+                MasksGap::OutOfDate { stale } => (
+                    missing,
+                    format!(
+                        "the masks helper `torlek setup engine-masks` installed is not this \
+                         release's: {}",
+                        stale.join(", ")
+                    ),
+                    "run `torlek setup engine-masks` again".to_owned(),
+                ),
+                MasksGap::Shadowed => (
+                    missing,
+                    "Torlek's package and `torlek setup engine-masks` both install the masks \
+                     helper, and the setup step's units in /etc/systemd/system shadow the \
+                     package's"
+                        .to_owned(),
+                    "`torlek setup engine-masks --uninstall` removes the setup step's copy"
                         .to_owned(),
                 ),
                 MasksGap::NotSetUp {
                     reason,
                     setup: Ok(script),
                 } => (
-                    reason,
+                    missing,
+                    reason.clone(),
                     format!(
                         "review {}, run `sudo sh {}` again",
                         script.display(),
@@ -436,13 +457,19 @@ fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
                     reason,
                     setup: Err(error),
                 } => (
-                    reason,
+                    missing,
+                    reason.clone(),
                     format!("the setup script could not be written: {error}"),
+                ),
+                MasksGap::Unknown(reason) => (
+                    Status::Unknown,
+                    format!("whether Torlek's masks helper is installed is unknown: {reason}"),
+                    "fix what it names, then run `torlek doctor` again".to_owned(),
                 ),
             };
             Requirement::needs(
                 "docker",
-                Status::MissingPrerequisite,
+                status,
                 format!(
                     "{} runs as {user}, rootless, recorded; no sandboxed session reaches it: \
                      {reason}",

@@ -33,6 +33,10 @@ release beside the old one, which it keeps. It refuses to replace a `~/.local/bi
 is not a link into `~/.local/lib/torlek/torlek-v*/`. It never touches the profile's config or
 state, never installs, starts or stops the daemon, and never removes a release.
 
+The one root step a sandboxed project's engine needs, Torlek's masks helper (#390), is
+`torlek setup engine-masks`, which the owner runs after installing: it calls sudo once, the
+owner typing the password ([User guide](../USER-GUIDE.md)). The script itself never does.
+
 `--check` does steps 1 to 4 and reports what installing would change, changing nothing. Files
 given with `--archive` and `--sums` are checked even when that release is already installed.
 

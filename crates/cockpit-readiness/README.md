@@ -64,8 +64,9 @@ recorded. Not set up, not recorded and refused are `missing-prerequisite`, each 
 next step (the setup script to review and run, `torlek containers record`, starting the
 unit). A verified engine is `available` once Torlek's masks helper's socket is installed for
 the owner and the engine's setup recorded it for the helper, and `missing-prerequisite` until
-then, naming the helper's install or the setup script: sessions reach the engine only through
-it.
+then, naming `torlek setup engine-masks` (missing, or its copy not this release's), its
+`--uninstall` (its copy shadows a package's) or the engine's setup script: sessions reach the
+engine only through the helper.
 
 Under `agents.sandbox = "required"` each compose file in the project's folder (`compose.yaml`,
 `docker-compose.yml` and their overrides) gets a line too (#1371). Parallel sessions share

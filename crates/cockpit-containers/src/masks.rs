@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-use crate::EngineUser;
+use crate::{EngineUser, MasksInstall, masks_install};
 
 /// The helper's socket unit; each instance of `torlek-engine-masks@.service` answers one
 /// connection.
@@ -37,6 +37,9 @@ pub struct MasksHelper {
     pub uid: u32,
     /// Where each engine's setup records the engine for the helper: `ENGINES_DIR`.
     pub engines_dir: PathBuf,
+    /// The host's root, under which a package or `torlek setup engine-masks` installed the
+    /// helper: `/` but in tests.
+    pub install_root: PathBuf,
 }
 
 /// Why no session reaches a verified engine yet.
@@ -44,9 +47,16 @@ pub struct MasksHelper {
 pub enum MasksUnready {
     /// Torlek's masks helper is not installed, with why.
     NotInstalled(String),
+    /// `torlek setup engine-masks` installed it, and each of these files is missing or not
+    /// this release's.
+    OutOfDate { stale: Vec<String> },
+    /// A package and `torlek setup engine-masks` both installed it.
+    Shadowed,
     /// The helper is installed, but the engine's setup has not given it to the owner or
     /// recorded the engine for it: running that setup again does.
     NotSetUp(String),
+    /// Whether the helper is installed could not be read, with why.
+    Unknown(String),
 }
 
 impl MasksHelper {
@@ -56,6 +66,7 @@ impl MasksHelper {
             socket: PathBuf::from(MASKS_SOCKET),
             uid: 0,
             engines_dir: PathBuf::from(ENGINES_DIR),
+            install_root: PathBuf::from("/"),
         }
     }
 
@@ -122,8 +133,29 @@ impl MasksHelper {
     }
 
     /// Whether the helper would show `user`'s engine a checkout for `owner_uid`, the one user
-    /// its setup lets connect: a cheap look for readiness, which asks the helper nothing.
-    pub fn check_ready(&self, owner_uid: u32, user: &EngineUser) -> Result<(), MasksUnready> {
+    /// its setup lets connect, installed as this release's (`current_helper` is the
+    /// `torlek-sandbox` the daemon runs): a cheap look for readiness, which asks the helper
+    /// nothing.
+    pub fn check_ready(
+        &self,
+        owner_uid: u32,
+        user: &EngineUser,
+        current_helper: &Path,
+    ) -> Result<(), MasksUnready> {
+        match masks_install(&self.install_root, current_helper).map_err(MasksUnready::Unknown)? {
+            MasksInstall::Absent => {
+                return Err(MasksUnready::NotInstalled(
+                    "Torlek's masks helper is not installed: neither a package nor `torlek \
+                     setup engine-masks` installed its units"
+                        .to_owned(),
+                ));
+            }
+            MasksInstall::Both => return Err(MasksUnready::Shadowed),
+            MasksInstall::SetUp { stale } if !stale.is_empty() => {
+                return Err(MasksUnready::OutOfDate { stale });
+            }
+            MasksInstall::Packaged | MasksInstall::SetUp { .. } => {}
+        }
         let shown = self.socket.display();
         let metadata = match std::fs::symlink_metadata(&self.socket) {
             Ok(metadata) => metadata,

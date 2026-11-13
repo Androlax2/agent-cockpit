@@ -132,9 +132,9 @@ Issue #390, option C (Theo, 2026-11-13). The engine is to see the project's chec
 through the masks a session gets: `cockpit_sandbox::checkout_masks`, planned by the same
 `plan::protect` and `plan::hide` that build bubblewrap's arguments. `engine-masks` shows it
 one checkout per request, a clone made after the engine started included, without a root
-step each time. The engine's setup does not yet stop binding the project's folders in the
-unit, nor give the unit a writable `/home` for the helper's folders: until it does (part
-4b), the helper refuses its engines.
+step each time. `torlek-engine-masks.socket` runs it, one `torlek-engine-masks@.service` per
+connection (`cockpit-containers`' `units/`); a package installs them, or
+`torlek setup engine-masks` does.
 
 Each engine's setup writes `ENGINES_DIR/<user>.conf` (`uid=`, `owner_uid=`,
 `project_root=`, `clones_dir=`, each once; neither folder inside the other). The request is

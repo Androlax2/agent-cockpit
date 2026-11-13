@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cockpit_containers::{EngineUser, MasksHelper, MasksUnready};
+use cockpit_containers::{
+    EngineUser, MasksHelper, MasksUnready, PACKAGED_HELPER, PACKAGED_UNIT_DIR, SET_UP_HELPER,
+    SET_UP_UNIT_DIR, masks_units,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 
@@ -62,12 +65,41 @@ fn own_uid(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().uid()
 }
 
+/// The helper behind `fake`'s socket, listening as `uid`, installed on its host by a package.
 fn helper_at(fake: &FakeHelper, uid: u32) -> MasksHelper {
-    MasksHelper {
+    let helper = MasksHelper {
         socket: fake.socket.clone(),
         uid,
         engines_dir: fake._dir.path().join("engines"),
+        install_root: fake._dir.path().join("root"),
+    };
+    install(
+        &helper,
+        PACKAGED_UNIT_DIR,
+        PACKAGED_HELPER,
+        "the package's helper",
+    );
+    helper
+}
+
+/// Writes the helper's units in `unit_dir` of `helper`'s host, running `program`, and
+/// `program` holding `contents`.
+fn install(helper: &MasksHelper, unit_dir: &str, program: &str, contents: &str) {
+    let at = |path: &str| helper.install_root.join(path.trim_start_matches('/'));
+    for (name, text) in masks_units(program) {
+        let unit = at(&format!("{unit_dir}/{name}"));
+        std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
+        std::fs::write(unit, text).unwrap();
     }
+    std::fs::create_dir_all(at(program).parent().unwrap()).unwrap();
+    std::fs::write(at(program), contents).unwrap();
+}
+
+/// The `torlek-sandbox` the daemon runs.
+fn current_helper(fake: &FakeHelper) -> PathBuf {
+    let current = fake._dir.path().join("torlek-sandbox");
+    std::fs::write(&current, "this release's helper").unwrap();
+    current
 }
 
 /// What the engine's setup writes for the helper.
@@ -181,6 +213,7 @@ fn the_installed_helper_listens_where_the_units_put_it_as_root() {
     assert_eq!(helper.socket, Path::new("/run/torlek-engine-masks.sock"));
     assert_eq!(helper.uid, 0);
     assert_eq!(helper.engines_dir, Path::new("/etc/torlek/engines"));
+    assert_eq!(helper.install_root, Path::new("/"));
 }
 
 #[tokio::test]
@@ -190,7 +223,11 @@ async fn a_helper_the_owner_reaches_that_records_the_engine_is_ready() {
     record_engine(&helper, &engine_user());
 
     assert_eq!(
-        helper.check_ready(own_uid(&fake.socket), &engine_user()),
+        helper.check_ready(
+            own_uid(&fake.socket),
+            &engine_user(),
+            &current_helper(&fake)
+        ),
         Ok(())
     );
 }
@@ -215,7 +252,9 @@ async fn a_helper_socket_that_is_missing_or_no_socket_is_not_installed() {
         };
         record_engine(&helper, &engine_user());
 
-        let unready = helper.check_ready(owner, &engine_user()).unwrap_err();
+        let unready = helper
+            .check_ready(owner, &engine_user(), &current_helper(&fake))
+            .unwrap_err();
 
         match unready {
             MasksUnready::NotInstalled(reason) => {
@@ -233,7 +272,11 @@ async fn a_helper_socket_another_user_connects_to_needs_the_engines_setup_again(
     record_engine(&helper, &engine_user());
 
     let unready = helper
-        .check_ready(own_uid(&fake.socket) + 1, &engine_user())
+        .check_ready(
+            own_uid(&fake.socket) + 1,
+            &engine_user(),
+            &current_helper(&fake),
+        )
         .unwrap_err();
 
     // The reason names uids: CodeQL takes a printed one for cleartext logging.
@@ -249,11 +292,143 @@ async fn an_engine_the_helper_has_no_record_of_needs_its_setup_again() {
     let helper = helper_at(&fake, 0);
 
     let unready = helper
-        .check_ready(own_uid(&fake.socket), &engine_user())
+        .check_ready(
+            own_uid(&fake.socket),
+            &engine_user(),
+            &current_helper(&fake),
+        )
         .unwrap_err();
 
     assert!(matches!(
         unready,
         MasksUnready::NotSetUp(reason) if reason.contains("torlek-e3.conf")
     ));
+}
+
+#[tokio::test]
+async fn a_host_where_neither_install_put_the_helper_is_told_to_install_it() {
+    let fake = fake_helper(Some("ok\n"));
+    let helper = MasksHelper {
+        install_root: fake._dir.path().join("empty root"),
+        ..helper_at(&fake, 0)
+    };
+    record_engine(&helper, &engine_user());
+
+    let unready = helper
+        .check_ready(
+            own_uid(&fake.socket),
+            &engine_user(),
+            &current_helper(&fake),
+        )
+        .unwrap_err();
+
+    assert!(matches!(unready, MasksUnready::NotInstalled(_)));
+}
+
+#[tokio::test]
+async fn a_setup_steps_helper_of_an_earlier_release_is_out_of_date() {
+    let fake = fake_helper(Some("ok\n"));
+    let helper = MasksHelper {
+        install_root: fake._dir.path().join("set up root"),
+        ..helper_at(&fake, 0)
+    };
+    install(
+        &helper,
+        SET_UP_UNIT_DIR,
+        SET_UP_HELPER,
+        "an earlier release's helper",
+    );
+    record_engine(&helper, &engine_user());
+
+    let unready = helper
+        .check_ready(
+            own_uid(&fake.socket),
+            &engine_user(),
+            &current_helper(&fake),
+        )
+        .unwrap_err();
+
+    assert_eq!(
+        unready,
+        MasksUnready::OutOfDate {
+            stale: vec![SET_UP_HELPER.to_owned()]
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_setup_steps_helper_that_matches_this_release_is_ready() {
+    let fake = fake_helper(Some("ok\n"));
+    let helper = MasksHelper {
+        install_root: fake._dir.path().join("set up root"),
+        ..helper_at(&fake, 0)
+    };
+    install(
+        &helper,
+        SET_UP_UNIT_DIR,
+        SET_UP_HELPER,
+        "this release's helper",
+    );
+    record_engine(&helper, &engine_user());
+
+    assert_eq!(
+        helper.check_ready(
+            own_uid(&fake.socket),
+            &engine_user(),
+            &current_helper(&fake)
+        ),
+        Ok(())
+    );
+}
+
+#[tokio::test]
+async fn a_setup_steps_helper_beside_a_packages_shadows_it() {
+    let fake = fake_helper(Some("ok\n"));
+    let helper = helper_at(&fake, 0);
+    install(
+        &helper,
+        SET_UP_UNIT_DIR,
+        SET_UP_HELPER,
+        "this release's helper",
+    );
+    record_engine(&helper, &engine_user());
+
+    let unready = helper
+        .check_ready(
+            own_uid(&fake.socket),
+            &engine_user(),
+            &current_helper(&fake),
+        )
+        .unwrap_err();
+
+    assert_eq!(unready, MasksUnready::Shadowed);
+}
+
+#[tokio::test]
+async fn a_set_up_helper_with_nothing_to_compare_with_is_unknown_not_missing() {
+    let fake = fake_helper(Some("ok\n"));
+    let helper = MasksHelper {
+        install_root: fake._dir.path().join("set up root"),
+        ..helper_at(&fake, 0)
+    };
+    install(
+        &helper,
+        SET_UP_UNIT_DIR,
+        SET_UP_HELPER,
+        "this release's helper",
+    );
+    record_engine(&helper, &engine_user());
+
+    let unready = helper
+        .check_ready(
+            own_uid(&fake.socket),
+            &engine_user(),
+            &fake._dir.path().join("no torlek-sandbox"),
+        )
+        .unwrap_err();
+
+    assert!(
+        matches!(&unready, MasksUnready::Unknown(reason) if reason.contains("no torlek-sandbox")),
+        "{unready:?}"
+    );
 }

@@ -1,0 +1,12 @@
+# Torlek's masks helper (#390), for one connection to torlek-engine-masks.socket: it shows a
+# project's engine one checkout through the session's masks, then exits.
+[Unit]
+Description=Torlek's masks helper for project engines, connection %i
+
+[Service]
+ExecStart=/usr/lib/torlek/bin/torlek-sandbox engine-masks /etc/torlek/engines
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+# The daemon waits 10 seconds for an answer; a helper still running long after is stuck.
+RuntimeMaxSec=30

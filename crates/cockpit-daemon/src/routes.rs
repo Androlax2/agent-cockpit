@@ -468,6 +468,14 @@ impl Handler for Routes {
                     self.readiness.containers.clone(),
                 ),
             },
+            (Command::MasksHelperStep { uninstall }, peer) => match peer {
+                // A root step is the owner's to run, from their own terminal (#390).
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => Route::Answer(Outcome::Ok(containers::masks_helper_step(
+                    &self.readiness.containers,
+                    uninstall,
+                ))),
+            },
             (
                 command @ (Command::AccountSignIn { .. }
                 | Command::AccountSignedIn { .. }
