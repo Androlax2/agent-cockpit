@@ -26,7 +26,9 @@ requirements fail the same way in the owner file (#50): `[execution] environment
 `sandbox` or `docker`), `[needs] cpu_millis` and `memory_mib` (at least one), and
 `[results] artifacts` (paths relative to the project, never `..`). A check's
 `working_directory` follows the same rule, and its `environment` is `native`, `sandbox`
-(the default, #862) or `docker`. `torlek doctor` reports
+(the default, #862) or `docker`. A `docker` check names the `image` it runs in (#352):
+ASCII letters, digits and `._-/:@`, at most 255 characters, not starting with `-`; a
+docker check without one, and any other check with one, fails. `torlek doctor` reports
 whether this host meets them; the configuration never grants them. Unknown keys,
 relative paths and unknown providers fail the same way. State and cache go under
 `$XDG_STATE_HOME/torlek` and `$XDG_CACHE_HOME/torlek`; the runtime directory is

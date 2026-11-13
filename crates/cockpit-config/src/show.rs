@@ -414,6 +414,9 @@ pub fn render(config: &EffectiveConfig) -> String {
             "artifacts".to_string(),
             Value::from(check.value.artifacts.clone()),
         );
+        if let Some(image) = &check.value.image {
+            fields.insert("image".to_string(), Value::from(image.as_str()));
+        }
         lines.push(line(
             &format!("checks.{}", Value::from(check.value.name.as_str())),
             &Value::Table(fields).to_string(),

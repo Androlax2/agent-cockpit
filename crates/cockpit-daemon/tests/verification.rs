@@ -29,7 +29,7 @@ const CHECKS: &str = "[[checks]]\nname = \"test\"\ncommand = \"echo testing; tes
                       [[checks]]\nname = \"host\"\ncommand = \"touch ran-on-host\"\n\
                       environment = \"native\"\n\n\
                       [[checks]]\nname = \"contained\"\ncommand = \"touch ran-somewhere\"\n\
-                      environment = \"docker\"\n";
+                      environment = \"docker\"\nimage = \"alpine:3.20\"\n";
 
 const REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
 
@@ -458,7 +458,7 @@ async fn the_gate_tells_the_owner_a_docker_check_waits_for_torlek_to_run_it() {
         .expect("the docker check is in the gate");
     assert_eq!(
         contained.next_action.as_deref(),
-        Some("declare `environment = \"sandbox\"` until Torlek runs docker checks (#856)")
+        Some("declare `environment = \"sandbox\"` until Torlek runs docker checks (#1392)")
     );
 }
 
