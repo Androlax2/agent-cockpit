@@ -9,7 +9,9 @@
 //!   ignores a cached unlock and stores none, so no later sudo in the run reuses this one.
 //! - The helper hands sudo's prompt to the daemon, which asks the owner only when the
 //!   helper's parent is the trusted sudo inside a running approved command's session
-//!   ([`Runner::ask_sudo`]). Anything else is refused and asks the owner nothing.
+//!   ([`Runner::sudo_helper`]). Anything else is refused and asks the owner nothing.
+//! - The helper then closes itself to tracing and `/proc`, and refuses if it is traced
+//!   already; the owner is asked once it did ([`Runner::ask_sudo`]).
 //! - The owner's answer goes back to the helper, which writes it to sudo on its standard
 //!   output, a pipe: never the run's terminal, its output, a file or a log.
 
@@ -214,6 +216,8 @@ struct Process {
     /// Clock ticks after boot: with the pid, tells this process from a later one.
     start: u64,
     effective_uid: u32,
+    /// The process tracing it, 0 when none.
+    tracer: u32,
 }
 
 #[cfg(target_os = "linux")]
@@ -256,6 +260,7 @@ fn parse_process(pid: u32, stat: &str, status: &str) -> Option<Process> {
         session: field(6)?.parse().ok()?,
         start: field(22)?.parse().ok()?,
         effective_uid,
+        tracer: cockpit_processes::tracer_of(status)?,
     })
 }
 
@@ -264,7 +269,14 @@ fn parse_process(pid: u32, stat: &str, status: &str) -> Option<Process> {
 struct AskingSudo {
     helper: Process,
     sudo: Process,
+    /// The pipe sudo reads the password from: the helper's standard output.
+    pipe: PathBuf,
 }
+
+/// An askpass helper checked to be Torlek's, under the trusted sudo, before it closed itself
+/// to tracing ([`Runner::sudo_helper`]). Its executable and output cannot be read once it did.
+#[derive(Debug)]
+pub struct SudoHelper(AskingSudo);
 
 /// The helper `helper_pid` and its parent, when that parent is the trusted sudo: a process
 /// running as the trusted sudo's owner under its name, in the helper's session, while the
@@ -292,19 +304,16 @@ fn sudo_asking(askpass: &SudoAskpass, helper_pid: u32) -> Result<AskingSudo, Str
             helper.pid
         ));
     }
-    helper_holds(askpass, &helper, &sudo)?;
-    Ok(AskingSudo { helper, sudo })
+    let pipe = torleks_helper_output(askpass, &helper)?;
+    Ok(AskingSudo { helper, sudo, pipe })
 }
 
-/// The helper runs the program `askpass.helper` names, and its standard output is a pipe no
-/// process but the trusted sudo holds. sudo runs whatever `SUDO_ASKPASS` names, which a
+/// The pipe the helper writes to, when the helper runs the program `askpass.helper` names
+/// and its standard output is a pipe. sudo runs whatever `SUDO_ASKPASS` names, which a
 /// command may set itself: an askpass of its own, or Torlek's with its output sent anywhere
-/// but sudo, is refused before the owner is asked.
-///
-/// What it cannot stop: a process running as the owner may trace the helper, or open its
-/// pipe through `/proc` after this check. Either is code in a command the owner approved,
-/// which runs with the owner's rights and could take a password typed at a terminal as well.
-fn helper_holds(askpass: &SudoAskpass, helper: &Process, sudo: &Process) -> Result<(), String> {
+/// but a pipe, is refused before the owner is asked. Read before the helper closes itself to
+/// tracing, after which neither can be read ([`cockpit_processes::seal_against_tracing`]).
+fn torleks_helper_output(askpass: &SudoAskpass, helper: &Process) -> Result<PathBuf, String> {
     let program = askpass
         .helper
         .first()
@@ -340,7 +349,23 @@ fn helper_holds(askpass: &SudoAskpass, helper: &Process, sudo: &Process) -> Resu
             output.display()
         ));
     }
-    if let Some(holder) = pipe_holder(&output, &[helper.pid, sudo.pid])? {
+    Ok(output)
+}
+
+/// The helper, closed to tracing, is traced by none, and no process but it and its sudo holds
+/// the pipe it writes the password to.
+///
+/// What it cannot stop: a process of the owner's that opened the pipe through `/proc` before
+/// the helper closed itself, and made itself unreadable since. Either is code in a command
+/// the owner approved, which runs with the owner's rights and, after sudo, as root.
+fn sealed_helper_holds(asking: &AskingSudo, helper: &Process) -> Result<(), String> {
+    if helper.tracer != 0 {
+        return Err(format!(
+            "process {} traces Torlek's askpass helper: nothing was asked",
+            helper.tracer
+        ));
+    }
+    if let Some(holder) = pipe_holder(&asking.pipe, &[asking.helper.pid, asking.sudo.pid])? {
         return Err(format!(
             "process {holder} holds the pipe sudo reads the password from: nothing was asked"
         ));
@@ -399,9 +424,10 @@ fn trusted_name(sudo: &Path) -> String {
     String::from_utf8_lossy(&name[..name.len().min(PROCESS_NAME_MAX_BYTES)]).into_owned()
 }
 
-/// The helper still runs under the sudo it asked for: a sudo that ended meanwhile, or a
-/// helper left to another parent, gets no answer.
-fn still_asking(askpass: &SudoAskpass, asking: &AskingSudo) -> Result<(), String> {
+/// The helper still runs under the sudo it asked for, closed to all but it: a sudo that ended
+/// meanwhile, a helper left to another parent, traced or whose pipe another process holds,
+/// gets no answer.
+fn still_asking(asking: &AskingSudo) -> Result<(), String> {
     let gone = || "the sudo that asked ended before the owner answered".to_owned();
     let helper = read_process(asking.helper.pid).map_err(|_| gone())?;
     let sudo = read_process(asking.sudo.pid).map_err(|_| gone())?;
@@ -411,7 +437,7 @@ fn still_asking(askpass: &SudoAskpass, asking: &AskingSudo) -> Result<(), String
     {
         return Err(gone());
     }
-    helper_holds(askpass, &helper, &sudo)
+    sealed_helper_holds(asking, &helper)
 }
 
 /// What sudo asks the owner while a run waits for the answer.
@@ -482,15 +508,24 @@ impl Drop for OpenAsk<'_> {
 }
 
 impl Runner {
-    /// The helper `helper_pid` asks for the owner's password with sudo's `prompt` (#1374).
-    /// It waits until the owner answers ([`Runner::answer_sudo`]), the run ends, or the
-    /// returned future is dropped (the helper went). Refused, with why, unless the helper's
-    /// parent is the trusted sudo in a running approved command's session.
-    pub async fn ask_sudo(&self, helper_pid: u32, prompt: &str) -> Result<SudoAnswered, String> {
+    /// The process `helper_pid`, when it is Torlek's askpass helper with its output a pipe,
+    /// started by the trusted sudo (#1374). Checked before the helper closes itself to tracing,
+    /// which it does next; [`Runner::ask_sudo`] checks the rest once it did.
+    pub fn sudo_helper(&self, helper_pid: u32) -> Result<SudoHelper, String> {
         let Some(askpass) = &self.settings.sudo else {
             return Err("this daemon does not answer sudo's askpass".to_owned());
         };
-        let asking = sudo_asking(askpass, helper_pid)?;
+        sudo_asking(askpass, helper_pid).map(SudoHelper)
+    }
+
+    /// The `helper`, now closed to tracing, asks for the owner's password with sudo's
+    /// `prompt`. It waits until the owner answers ([`Runner::answer_sudo`]), the run ends, or
+    /// the returned future is dropped (the helper went). Refused, with why, unless the helper
+    /// is traced by none, its pipe is held by none but it and sudo, and its sudo runs in a
+    /// running approved command's session.
+    pub async fn ask_sudo(&self, helper: SudoHelper, prompt: &str) -> Result<SudoAnswered, String> {
+        let SudoHelper(asking) = helper;
+        still_asking(&asking)?;
         let (request, live) = self
             .live_in_session(asking.sudo.session)
             .await
@@ -528,7 +563,7 @@ impl Runner {
             .await
             .map_err(|_| "the command ended before the owner answered".to_owned())??;
         // Checked again: time passed since `answer_sudo` checked before handing it over.
-        still_asking(askpass, &asking)?;
+        still_asking(&asking)?;
         Ok(SudoAnswered {
             request,
             ask,
@@ -548,11 +583,7 @@ impl Runner {
             .waiting
             .remove(&ask)
             .ok_or(no_ask.clone())?;
-        let checked = match &self.settings.sudo {
-            Some(askpass) => still_asking(askpass, &waiting.asking),
-            None => Err("this daemon does not answer sudo's askpass".to_owned()),
-        };
-        if let Err(why) = checked {
+        if let Err(why) = still_asking(&waiting.asking) {
             let _ = waiting.answer.send(Err(why.clone()));
             return Err(Refusal::SudoStoppedAsking {
                 request: id.0,
@@ -637,7 +668,8 @@ mod tests {
     fn a_process_reads_from_its_stat_line_and_status() {
         let stat = "4242 (sudo (x)) S 4200 4242 4100 34816 4242 4194560 1 0 0 0 0 0 0 0 20 0 1 \
                     0 987654 1000 100";
-        let status = "Name:\tsudo\nUid:\t1000\t0\t0\t0\nGid:\t1000\t1000\t1000\t1000\n";
+        let status =
+            "Name:\tsudo\nTracerPid:\t0\nUid:\t1000\t0\t0\t0\nGid:\t1000\t1000\t1000\t1000\n";
         assert_eq!(
             parse_process(4242, stat, status),
             Some(Process {
@@ -647,6 +679,7 @@ mod tests {
                 session: 4100,
                 start: 987_654,
                 effective_uid: 0,
+                tracer: 0,
             })
         );
     }

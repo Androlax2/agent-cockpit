@@ -96,7 +96,9 @@ not share code.
   sudo's askpass helper in an approved run asks for the owner's password. The helper is
   `torlek-daemon --sudo-askpass <socket> <prompt>`; the daemon answers only peers running as
   the owner, and `cockpit-approvals` decides whether the helper's parent is the trusted
-  sudo inside a live run. The password goes back on the same connection, never into a log.
+  sudo inside a live run. Once its program and output are checked, the daemon replies
+  `seal` and the helper makes itself non-dumpable, refusing if it is traced already, before
+  the owner is asked. The password goes back on the same connection, never into a log.
 
 ## Approvals (#34)
 

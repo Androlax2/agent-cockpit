@@ -18,6 +18,8 @@ pub use output_retirement::{
     retirable_outputs, retiring_outputs,
 };
 mod platform;
+mod sealing;
+pub use sealing::{seal_against_tracing, tracer_of};
 mod session;
 mod store;
 mod supervisor;

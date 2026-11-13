@@ -414,6 +414,106 @@ async fn torleks_helper_with_its_output_sent_elsewhere_is_refused() {
     );
 }
 
+/// A sudo stand-in at `<dir>/traced/sudo` that traces the helper it starts, as an approved
+/// command may trace its own descendants: a Python script, so `/proc` names it `sudo` as it
+/// names the trusted one. It starts `SUDO_ASKPASS` under `PTRACE_TRACEME`, lets it run to its
+/// end, and prints what it read from it.
+fn tracing_sudo_stand_in(dir: &Path) -> PathBuf {
+    let traced = dir.join("traced");
+    std::fs::create_dir(&traced).unwrap();
+    let script = traced.join("sudo");
+    std::fs::write(
+        &script,
+        "#!/usr/bin/python3\n\
+         import ctypes, os, signal\n\
+         libc = ctypes.CDLL(None, use_errno=True)\n\
+         libc.ptrace.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]\n\
+         PTRACE_TRACEME, PTRACE_CONT = 0, 7\n\
+         askpass = os.environ['SUDO_ASKPASS']\n\
+         read, write = os.pipe()\n\
+         helper = os.fork()\n\
+         if helper == 0:\n\
+         \x20   os.dup2(write, 1)\n\
+         \x20   libc.ptrace(PTRACE_TRACEME, 0, None, None)\n\
+         \x20   os.execv(askpass, [askpass, 'Password: '])\n\
+         os.close(write)\n\
+         while True:\n\
+         \x20   _, status = os.waitpid(helper, 0)\n\
+         \x20   if not os.WIFSTOPPED(status):\n\
+         \x20       break\n\
+         \x20   stopped = os.WSTOPSIG(status)\n\
+         \x20   libc.ptrace(PTRACE_CONT, helper, None, 0 if stopped == signal.SIGTRAP else stopped)\n\
+         print('tracer read %d bytes' % len(os.read(read, 4096)))\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    script
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_traced_helper_refuses_and_asks_nothing() {
+    let asking = started().await;
+    let tracing_sudo = tracing_sudo_stand_in(asking.fixture.path());
+    let request = asking
+        .asked(&format!(
+            "'{}' -A -k true; echo \"sudo exited $?\"",
+            tracing_sudo.display()
+        ))
+        .await;
+    asking.approve(&request).await;
+
+    let ended = asking.ended(request.id).await;
+
+    let output = ended.result.expect("a result").output;
+    assert!(
+        output.contains("traces it, so nothing was asked"),
+        "{output}"
+    );
+    assert!(output.contains("tracer read 0 bytes"), "{output}");
+    assert_eq!(ended.sudo_ask, None);
+}
+
+/// The pid of the askpass helper asking on `socket`, found by its command line.
+fn helper_asking_on(socket: &Path) -> u32 {
+    let wanted = [
+        cockpit_daemon::SUDO_ASKPASS_FLAG.as_bytes(),
+        socket.as_os_str().as_encoded_bytes(),
+    ];
+    std::fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .find(|pid| {
+            std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
+                let words: Vec<&[u8]> = cmdline.split(|byte| *byte == 0).collect();
+                words.windows(2).any(|pair| pair == wanted)
+            })
+        })
+        .expect("a helper asking")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_waiting_helpers_descriptors_and_memory_are_closed_to_its_own_user() {
+    let asking = started().await;
+    let request = asking.asked("sudo true").await;
+    asking.approve(&request).await;
+    asking.sudo_asked(request.id, 1).await;
+    let helper = helper_asking_on(&asking.home.socket_dir().join("askpass.sock"));
+
+    let descriptors = std::fs::read_dir(format!("/proc/{helper}/fd")).map(|_| ());
+    let memory = std::fs::File::open(format!("/proc/{helper}/mem")).map(|_| ());
+
+    assert_eq!(
+        descriptors.map_err(|error| error.kind()),
+        Err(std::io::ErrorKind::PermissionDenied)
+    );
+    assert_eq!(
+        memory.map_err(|error| error.kind()),
+        Err(std::io::ErrorKind::PermissionDenied)
+    );
+    run(asking.answer(request.id, 1, PASSWORD).await);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_helper_outside_any_run_is_refused_and_prints_no_password() {
     let asking = started().await;

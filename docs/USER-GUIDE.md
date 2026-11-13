@@ -109,7 +109,8 @@ From a terminal, `torlek approval sudo-password ID ASK` reads it hidden; the ask
 The password goes from the daemon to the helper and from the helper to sudo through a pipe: it never reaches the command's terminal, its output, a log or the state database.
 Torlek answers only Torlek's own helper, writing to a pipe only sudo reads, under `/usr/bin/sudo`, setuid root, inside an approved command that is still running; an askpass of the command's own, or the helper run any other way, is refused and asks you nothing.
 When `/usr/bin/sudo` is missing or not setuid root, the daemon logs a warning and `sudo` in a run asks through its terminal as before.
-The limit: an approved command runs with your rights, so code in it that sets out to trace the helper could still read the password, as it could read one typed at a terminal; approve only commands whose content you trust with `sudo`.
+Once Torlek has checked the helper's program and output, the helper closes itself to your own user before you are asked: nothing running as you can trace it or read its memory or open files, and a helper that finds itself traced already refuses and asks you nothing.
+The limit: after sudo accepts the password, the approved command runs as root, so approve only commands whose content you trust with `sudo`.
 To end a running command instead, such as `git push` waiting for a username it will never get, run `torlek approval stop ID`, or, while it waits for input in the TUI pane, press `x` and confirm with `y`.
 The stop sends `SIGTERM`, then `SIGKILL` after 3 seconds, to every process the command started; the agent reads that the owner stopped it, with the exit status the stop left (143 after `SIGTERM`).
 A command that outlived a daemon restart cannot be stopped this way: end it on the host.
