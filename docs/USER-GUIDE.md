@@ -110,7 +110,14 @@ The password goes from the daemon to the helper and from the helper to sudo thro
 Torlek answers only Torlek's own helper, writing to a pipe only sudo reads, under `/usr/bin/sudo`, setuid root, inside an approved command that is still running; an askpass of the command's own, or the helper run any other way, is refused and asks you nothing.
 When `/usr/bin/sudo` is missing or not setuid root, the daemon logs a warning and `sudo` in a run asks through its terminal as before.
 Once Torlek has checked the helper's program and output, the helper closes itself to your own user before you are asked: nothing running as you can trace it or read its memory or open files, and a helper that finds itself traced already refuses and asks you nothing.
+The checks come first because they read the helper's program and open files, which the closing then hides: a process running as you could attach to the helper in the moment between its start and its closing, and leave again before the check, unseen.
 The limit: after sudo accepts the password, the approved command runs as root, so approve only commands whose content you trust with `sudo`.
+
+A script in the command can still call `/usr/bin/sudo` by its path, without `-k`, and reuse an unlock an earlier `sudo` in the same command left (about 5 minutes), or hand sudo a password itself (its own askpass, `-S`); Torlek cannot prevent that, so it reports it.
+While a command runs, Torlek watches its processes for `/usr/bin/sudo`, every 10 ms. A sudo that ended having asked you nothing through Torlek's helper marks the command "sudo ran without asking you": in the pane while the command waits for you, in `torlek approval show ID`, in the stored request, and in the answer the agent reads.
+That includes a sudo that asked nothing because it needed nothing (`sudo -V`, a sudoers rule without a password, a `sudo -n` that was refused), a sudo still running when the command ends, and another program named `sudo` that runs as root, so the mark means "look at what this command did", not proof of a reused unlock.
+The watch can miss a sudo that lasts under 10 ms, one outside the command's own process tree (`setsid`, a daemon, one whose parent exited first), and one run through a link under another name.
+On a kernel that does not list a process's children in `/proc`, the daemon logs a warning at start and no command is marked.
 To end a running command instead, such as `git push` waiting for a username it will never get, run `torlek approval stop ID`, or, while it waits for input in the TUI pane, press `x` and confirm with `y`.
 The stop sends `SIGTERM`, then `SIGKILL` after 3 seconds, to every process the command started; the agent reads that the owner stopped it, with the exit status the stop left (143 after `SIGTERM`).
 A command that outlived a daemon restart cannot be stopped this way: end it on the host.

@@ -34,6 +34,7 @@ use crate::error::invalid;
 use crate::redact::{redact_secrets, redact_secrets_after_cut, strip_terminal_controls};
 use crate::runs::{Approved, RunId, RunResult, start_run};
 use crate::sudo::{SudoAskpass, SudoAsks};
+use crate::sudo_unasked::{self, SudoSightings};
 use crate::{Error, Refusal};
 
 /// After the command exits, how long output still in the terminal may take to arrive. A
@@ -202,6 +203,7 @@ pub(crate) struct LiveRun {
     output: Mutex<Kept>,
     is_stopped_by_owner: AtomicBool,
     sudo_asks: Mutex<SudoAsks>,
+    sudo_sightings: Mutex<SudoSightings>,
 }
 
 impl LiveRun {
@@ -213,6 +215,12 @@ impl LiveRun {
         self.sudo_asks
             .lock()
             .expect("the sudo asks lock is never poisoned")
+    }
+
+    pub(crate) fn sudo_sightings(&self) -> MutexGuard<'_, SudoSightings> {
+        self.sudo_sightings
+            .lock()
+            .expect("the sudo sightings lock is never poisoned")
     }
 }
 
@@ -344,6 +352,7 @@ impl Runner {
             }),
             is_stopped_by_owner: AtomicBool::new(false),
             sudo_asks: Mutex::default(),
+            sudo_sightings: Mutex::default(),
         });
         self.live
             .lock()
@@ -386,6 +395,11 @@ impl Runner {
                 output: present(tail, kept.total, self.settings.answer_lines),
                 output_retired: false,
                 stopped_by_owner: is_stopped_by_owner,
+                sudo_ran_unasked: {
+                    let mut sightings = live.sudo_sightings();
+                    sightings.end();
+                    sightings.ran_unasked()
+                },
             },
             terminal_held_open,
             leftover: is_left_running.then_some(execution),
@@ -441,7 +455,20 @@ impl Runner {
         if let Some(session) = launched.execution.process_group {
             let _ = live.session.set(session);
         }
-        match launched.exit.await {
+        let watching = async {
+            let leader = live
+                .session()
+                .and_then(|session| u32::try_from(session).ok());
+            match (&self.settings.sudo, leader) {
+                (Some(askpass), Some(leader)) => sudo_unasked::watch(askpass, live, leader).await,
+                _ => std::future::pending().await,
+            }
+        };
+        let exited = tokio::select! {
+            exited = launched.exit => exited,
+            never = watching => match never {},
+        };
+        match exited {
             Ok(Ok(status)) => Ok(status
                 .code()
                 .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))),
@@ -479,6 +506,13 @@ impl Runner {
             .expect("the live runs lock is never poisoned")
             .get(&id)
             .cloned()
+    }
+
+    /// How many sudo processes in the running run `id` ended having maybe reused an unlock
+    /// (#1374): 0 when none, or when the run is not running here.
+    pub fn sudo_ran_unasked(&self, id: RunId) -> u64 {
+        self.live_run(id)
+            .map_or(0, |live| live.sudo_sightings().ran_unasked())
     }
 
     pub(crate) fn live_runs(&self) -> Vec<(RunId, Arc<LiveRun>)> {

@@ -11,6 +11,7 @@ mod retention;
 mod rows;
 mod runs;
 mod sudo;
+mod sudo_unasked;
 
 use cockpit_turso::{Migration, MigrationSet};
 
@@ -38,6 +39,7 @@ pub use runs::{
 pub use sudo::{
     SudoAnswered, SudoAsk, SudoAskpass, SudoHelper, TRUSTED_SUDO, sudo_asks_every_time,
 };
+pub use sudo_unasked::unasked_sudo_watch_holds;
 
 /// The approvals tables. A run request keeps its asked command beside the current one, so an
 /// owner's edit stays visible; its decision columns are set once, by the transaction that
@@ -177,6 +179,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 10,
             sql: "ALTER TABLE approvals_runs ADD COLUMN stopped_by_owner_at INTEGER
                 CHECK (stopped_by_owner_at IS NULL OR state = 'finished');",
+        },
+        // #1374: how many sudo processes in a finished command ended having asked the owner
+        // nothing ("sudo ran without asking you"). NULL when none, as on earlier rows.
+        Migration {
+            version: 11,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN sudo_ran_unasked INTEGER
+                CHECK (sudo_ran_unasked IS NULL OR (sudo_ran_unasked > 0 AND state = 'finished'));",
         },
     ],
 };

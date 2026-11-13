@@ -61,6 +61,9 @@ pub fn sudo_askpass(program: &Path, socket: &Path, launchers: PathBuf) -> Option
         tracing::warn!(%why, "sudo in approved runs asks through its terminal: Torlek's askpass is off");
         return None;
     }
+    if let Err(why) = cockpit_approvals::unasked_sudo_watch_holds() {
+        tracing::warn!(%why, "Torlek's askpass is on, but cannot tell when sudo ran without asking");
+    }
     Some(askpass)
 }
 

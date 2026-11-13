@@ -7,6 +7,7 @@ use std::time::Instant;
 use cockpit_protocol::{
     CompactionStatus, GuideView, HiddenView, NetworkRequestView, NetworkSubjectView,
     NetworkTargetView, RunRequestView, SessionReport, SessionStateView, SessionView, ShownText,
+    sudo_ran_unasked_warning,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -751,6 +752,13 @@ pub(crate) fn run_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> 
              terminal or its output."
                 .to_owned(),
         );
+    }
+    let ran_unasked = run.sudo_ran_unasked_so_far();
+    if ran_unasked > 0 {
+        lines.push(format!(
+            "Warning: {}",
+            sudo_ran_unasked_warning(ran_unasked)
+        ));
     }
     let outside = if run.outside_project {
         "  [outside the project]"

@@ -35,6 +35,7 @@ fn result(exit_code: i32) -> RunResult {
         },
         output_retired: false,
         stopped_by_owner: false,
+        sudo_ran_unasked: 0,
     }
 }
 
@@ -421,6 +422,24 @@ async fn a_result_is_recorded_once_for_the_approved_revision() {
     assert_eq!(late, Refusal::AlreadyDecided { state: "finished" });
     let stored = run_request(&write, run.id, NOW).await.unwrap().unwrap();
     assert_eq!(stored.result.map(|result| result.exit_code), Some(0));
+}
+
+#[tokio::test]
+async fn a_result_keeps_how_many_sudo_ran_without_asking() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "make install").await;
+    let approved = approve(&fixture, run.id).await;
+    let write = fixture.database.write().await.unwrap();
+    start_run(&write, &approved, EXECUTION).await.unwrap();
+    let flagged = RunResult {
+        sudo_ran_unasked: 2,
+        ..result(0)
+    };
+
+    finish_run(&write, &approved, &flagged, NOW).await.unwrap();
+
+    let stored = run_request(&write, run.id, NOW).await.unwrap().unwrap();
+    assert_eq!(stored.result.map(|result| result.sudo_ran_unasked), Some(2));
 }
 
 #[tokio::test]

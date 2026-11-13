@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use chrono::{DateTime, Local};
 use cockpit_protocol::{
     Command, DecidedRunView, DecidedThroughView, GuideStateView, GuideView, HiddenView, Reply,
-    RunDecisionView, RunRequestView, RunStateView, SecretText, ShownText,
+    RunDecisionView, RunRequestView, RunStateView, SecretText, ShownText, sudo_ran_unasked_warning,
 };
 
 /// The command a verb sends, or the usage problem that stops it.
@@ -362,6 +362,10 @@ fn run_detail(run: &RunRequestView) -> String {
              stop it: torlek approval stop {}",
             run.id, run.id
         );
+    }
+    let ran_unasked = run.sudo_ran_unasked_so_far();
+    if ran_unasked > 0 {
+        let _ = writeln!(text, "{}", sudo_ran_unasked_warning(ran_unasked));
     }
     if let Some(result) = &run.result {
         if result.stopped_by_owner {
