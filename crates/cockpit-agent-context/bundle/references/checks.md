@@ -12,7 +12,9 @@ source (head and uncommitted changes), its definition, environment and the files
   CHECK --project P"`.
 - A check runs where the owner's sandbox setting says, and its receipt says where it ran.
   Sandboxed, it has no agent socket and no GitHub token; a check that is
-  `unavailable` there names why, and running it again does not change that.
+  `unavailable` there names why, and running it again does not change that. A `docker`
+  check names its `image`; Torlek does not run docker checks yet, so they are
+  `unavailable`.
 - A host a sandboxed check was refused (`403` from its proxy) goes to the owner as one
   network request of that check; the run's output ends with a `torlek:` line naming it.
   Once the owner allows it always, run the check again; after a denial its runs keep

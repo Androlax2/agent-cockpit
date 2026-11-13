@@ -45,6 +45,7 @@ fn a_project_declares_its_checks_with_their_lines() {
                 working_directory: ".".to_owned(),
                 environment: "sandbox".to_owned(),
                 artifacts: vec!["src/lib.rs".to_owned()],
+                image: None,
             },
             &Check {
                 name: "lint".to_owned(),
@@ -52,6 +53,7 @@ fn a_project_declares_its_checks_with_their_lines() {
                 working_directory: "tools".to_owned(),
                 environment: "native".to_owned(),
                 artifacts: Vec::new(),
+                image: None,
             },
         ]
     );
@@ -99,6 +101,108 @@ fn a_check_without_a_name_or_a_command_fails() {
             matches!(&error, ConfigError::Invalid { key, .. } if key == "checks"),
             "{contents}: {error}"
         );
+    }
+}
+
+/// #352: a docker check runs in the image it names.
+#[test]
+fn a_docker_check_declares_its_image() {
+    let home = TempDir::new().unwrap();
+    let project = project(
+        &home,
+        "[[checks]]\nname = \"test\"\ncommand = \"cargo test\"\nenvironment = \"docker\"\n\
+         image = \"docker.io/library/rust:1.86@sha256:0123abcd\"\n",
+    );
+
+    let config = load(home.path(), Some(&project)).unwrap();
+
+    assert_eq!(
+        config.checks[0].value.image.as_deref(),
+        Some("docker.io/library/rust:1.86@sha256:0123abcd")
+    );
+}
+
+#[test]
+fn the_shown_configuration_names_a_docker_checks_image() {
+    let home = TempDir::new().unwrap();
+    let project = project(
+        &home,
+        "[[checks]]\nname = \"test\"\ncommand = \"make\"\nenvironment = \"docker\"\n\
+         image = \"rust:1.86\"\n",
+    );
+
+    let shown = cockpit_config::render(&load(home.path(), Some(&project)).unwrap());
+
+    let line = shown
+        .lines()
+        .find(|line| line.starts_with("checks.\"test\" = "))
+        .expect("the check is shown");
+    assert!(line.contains("image = \"rust:1.86\""), "{line}");
+}
+
+#[test]
+fn a_docker_check_without_an_image_fails() {
+    let home = TempDir::new().unwrap();
+    let project = project(
+        &home,
+        "[[checks]]\nname = \"test\"\ncommand = \"make\"\nenvironment = \"docker\"\n",
+    );
+
+    let error = load(home.path(), Some(&project)).unwrap_err().to_string();
+
+    assert!(
+        error.contains("\"test\" runs in docker and names no image"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_image_on_a_check_that_runs_elsewhere_fails() {
+    let home = TempDir::new().unwrap();
+    for environment in [
+        "",
+        "environment = \"sandbox\"\n",
+        "environment = \"native\"\n",
+    ] {
+        let project = project(
+            &home,
+            &format!(
+                "[[checks]]\nname = \"test\"\ncommand = \"make\"\n{environment}image = \"rust\"\n"
+            ),
+        );
+
+        let error = load(home.path(), Some(&project)).unwrap_err().to_string();
+
+        assert!(
+            error.contains("names an image but runs in"),
+            "{environment}: {error}"
+        );
+    }
+}
+
+/// An image never reaches an engine's command line as an option or a second word.
+#[test]
+fn an_image_that_is_no_image_reference_fails() {
+    let home = TempDir::new().unwrap();
+    let too_long = "a".repeat(256);
+    for image in [
+        "",
+        "-v/:/host",
+        "rust latest",
+        "rust;true",
+        too_long.as_str(),
+    ] {
+        let project = project(
+            &home,
+            &format!(
+                "[[checks]]\nname = \"test\"\ncommand = \"make\"\nenvironment = \"docker\"\n\
+                 image = {image:?}\n"
+            ),
+        );
+
+        let error = load(home.path(), Some(&project)).unwrap_err().to_string();
+
+        assert!(error.contains("names the image"), "{image:?}: {error}");
     }
 }
 

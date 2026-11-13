@@ -2,8 +2,8 @@
 //! Under `"required"` a check runs through `torlek-sandbox`, still as an execution of the
 //! daemon's supervisor; one that declares `native` is recorded `unavailable` and never runs on
 //! the host. Under `"off"` a check of any environment but `docker` runs on the host as the
-//! owner's approved commands run. A `docker` check is `unavailable` until the project's engine
-//! runs it (#856).
+//! owner's approved commands run. A `docker` check names its image, and is `unavailable` until
+//! the project's engine runs it (#856, #1392).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -24,9 +24,9 @@ const NATIVE_UNDER_REQUIRED: Unplaced = Unplaced {
 };
 
 const DOCKER_NOT_RUN: Unplaced = Unplaced {
-    reason: "docker checks run in a container of the project's Torlek-run engine (#390), \
-        which this daemon does not start checks in yet",
-    next_action: "declare `environment = \"sandbox\"` until Torlek runs docker checks (#856)",
+    reason: "docker checks run their image in a container of the project's Torlek-run engine, \
+        which no run reaches before its checkout masks and container egress exist (#390)",
+    next_action: "declare `environment = \"sandbox\"` until Torlek runs docker checks (#1392)",
 };
 
 const UNKNOWN_ENVIRONMENT: Unplaced = Unplaced {

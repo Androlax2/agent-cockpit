@@ -304,6 +304,9 @@ pub struct Check {
     pub environment: String,
     /// The files it covers, relative to the checkout: a change to one makes its result stale.
     pub artifacts: Vec<String>,
+    /// The image a `docker` check runs in (#352); only a docker check names one, and it
+    /// must.
+    pub image: Option<String>,
 }
 
 impl EffectiveConfig {
@@ -441,6 +444,7 @@ struct CheckEntry {
     environment: Option<String>,
     #[serde(default)]
     artifacts: Vec<String>,
+    image: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1174,6 +1178,31 @@ fn checks(layers: &[Layer]) -> Result<Vec<Sourced<Check>>, ConfigError> {
                     check.name
                 )));
             }
+            let environment = check.environment.as_deref().unwrap_or("sandbox");
+            let is_docker = environment == ExecutionEnvironment::Docker.as_str();
+            match (&check.image, is_docker) {
+                (None, true) => {
+                    return Err(invalid(format!(
+                        "{:?} runs in docker and names no image",
+                        check.name
+                    )));
+                }
+                (Some(_), false) => {
+                    return Err(invalid(format!(
+                        "{:?} names an image but runs in {environment}; only a docker check \
+                         runs in an image",
+                        check.name
+                    )));
+                }
+                (Some(image), true) if !is_image_reference(image) => {
+                    return Err(invalid(format!(
+                        "{:?} names the image {image:?}; an image is ASCII letters, digits \
+                         and `._-/:@`, at most {IMAGE_MAX_CHARS} characters, not starting with `-`",
+                        check.name
+                    )));
+                }
+                _ => {}
+            }
             if checks.iter().any(|known| known.value.name == check.name) {
                 return Err(invalid(format!("repeats the name {:?}", check.name)));
             }
@@ -1185,11 +1214,9 @@ fn checks(layers: &[Layer]) -> Result<Vec<Sourced<Check>>, ConfigError> {
                         .working_directory
                         .clone()
                         .unwrap_or_else(|| ".".to_string()),
-                    environment: check
-                        .environment
-                        .clone()
-                        .unwrap_or_else(|| "sandbox".to_string()),
+                    environment: environment.to_owned(),
                     artifacts: check.artifacts.clone(),
+                    image: check.image.clone(),
                 },
                 source,
             ));
@@ -1241,6 +1268,19 @@ fn needs(layers: &[Layer]) -> Result<Sourced<Option<ProjectNeeds>>, ConfigError>
         resolved = Sourced::new(Some(needs), source);
     }
     Ok(resolved)
+}
+
+const IMAGE_MAX_CHARS: usize = 255;
+
+/// A Docker image reference's characters (`registry/name:tag@sha256:...`), never one an
+/// engine's command line would read as an option.
+fn is_image_reference(image: &str) -> bool {
+    !image.is_empty()
+        && image.len() <= IMAGE_MAX_CHARS
+        && !image.starts_with('-')
+        && image
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._-/:@".contains(character))
 }
 
 /// Each artifact is a path inside the checkout: relative, without `..`.
