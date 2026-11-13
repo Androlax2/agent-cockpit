@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
     Command, GuideStateView, GuideView, NetworkRequestStateView, NetworkRequestView, Reply,
-    RunRequestView, RunStateView, sudo_ran_unasked_warning,
+    RunRequestView, RunStateView, sudo_ran_unasked_warning, typed_secret_redacted_notice,
 };
 
 const PENDING: u8 = 124;
@@ -464,6 +464,12 @@ fn run_answer(request: &RunRequestView) -> Option<ExitCode> {
                 eprintln!(
                     "torlek: {}",
                     sudo_ran_unasked_warning(result.sudo_ran_unasked)
+                );
+            }
+            if result.typed_secret_redacted > 0 {
+                eprintln!(
+                    "torlek: {}",
+                    typed_secret_redacted_notice(result.typed_secret_redacted)
                 );
             }
             if result.output_retired {

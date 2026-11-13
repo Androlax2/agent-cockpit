@@ -29,6 +29,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use crate::pty::{LiveRun, Runner, prompt_line};
+use crate::typed_secret::wipe_vec;
 use crate::{Refusal, RunId};
 
 const SUDO_LAUNCHER: &str = "sudo";
@@ -621,10 +622,24 @@ impl Runner {
     }
 
     /// The owner's `password` for ask `ask` of the run `id`: handed to the helper waiting on
-    /// it, never typed into the run's terminal.
+    /// it, never typed into the run's terminal, and fingerprinted first so that the run
+    /// printing it anyway shows `[redacted]` (#1386).
     /// The sudo and helper are checked first, so the owner learns when the password could
     /// not be handed on.
-    pub fn answer_sudo(&self, id: RunId, ask: u64, password: String) -> Result<(), Refusal> {
+    pub fn answer_sudo(&self, id: RunId, ask: u64, mut password: String) -> Result<(), Refusal> {
+        let answered = self.hand_sudo_password(id, ask, &mut password);
+        wipe_vec(&mut password.into_bytes());
+        answered
+    }
+
+    /// [`Runner::answer_sudo`]'s work: moves the password out of `password` only to hand it
+    /// on, so the caller wipes whatever is left.
+    fn hand_sudo_password(
+        &self,
+        id: RunId,
+        ask: u64,
+        password: &mut String,
+    ) -> Result<(), Refusal> {
         let live = self.live_run(id).ok_or(Refusal::NotRunning)?;
         let no_ask = Refusal::NoSudoAsk { request: id.0, ask };
         let waiting = live
@@ -640,7 +655,19 @@ impl Runner {
                 why,
             });
         }
-        waiting.answer.send(Ok(password)).map_err(|_| no_ask)
+        if let Err(unprotected) = live.protect_typed_secret(id, password.as_bytes().to_vec()) {
+            let _ = waiting.answer.send(Err(unprotected.to_string()));
+            return Err(unprotected);
+        }
+        waiting
+            .answer
+            .send(Ok(std::mem::take(password)))
+            .map_err(|returned| {
+                if let Ok(back) = returned {
+                    *password = back;
+                }
+                no_ask
+            })
     }
 
     /// The oldest ask the run `id` waits on, if any.

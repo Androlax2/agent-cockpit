@@ -36,6 +36,9 @@ pub enum Refusal {
     NoSudoAsk { request: i64, ask: u64 },
     /// The sudo or helper behind the ask changed before the owner's answer (#1374): `why`.
     SudoStoppedAsking { request: i64, ask: u64, why: String },
+    /// The secret could not be fingerprinted to be redacted from the run's output (#1386), so
+    /// it was not handed on: `why`.
+    SecretUnprotected { request: i64, why: String },
     /// Only a command running under this daemon can be stopped (#1301); `why` says what the
     /// request is instead.
     NotStoppable { why: String },
@@ -116,6 +119,13 @@ impl Refusal {
                      {request}` and answer the sudo ask it shows, if any"
                 ),
             ),
+            Refusal::SecretUnprotected { request, .. } => (
+                UnblockedBy::Owner,
+                format!(
+                    "send it again while request {request} still waits; if it fails again, \
+                     the daemon cannot read /dev/urandom"
+                ),
+            ),
             Refusal::NotStoppable { .. } => (
                 UnblockedBy::Owner,
                 "nothing to stop from Torlek: decline a request that still asks, or end a command \
@@ -194,6 +204,11 @@ impl fmt::Display for Refusal {
             Refusal::SudoStoppedAsking { request, ask, why } => write!(
                 formatter,
                 "sudo's ask {ask} for request {request} was not answered: {why}"
+            ),
+            Refusal::SecretUnprotected { request, why } => write!(
+                formatter,
+                "the secret for request {request} could not be readied for redaction from its \
+                 output ({why}): nothing was sent"
             ),
             Refusal::NotStoppable { why } => write!(formatter, "nothing was stopped: {why}"),
             Refusal::StopUnconfirmed { .. } => formatter.write_str(

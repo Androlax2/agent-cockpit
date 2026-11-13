@@ -33,7 +33,7 @@ pub use agent::{
 pub use approvals::{
     DecidedRunView, DecidedThroughView, FoldedView, GuideStateView, GuideStepView, GuideView,
     HiddenView, RunDecisionView, RunRequestView, RunResultView, RunStateView, ShownText,
-    SudoAskView, sudo_ran_unasked_warning,
+    SudoAskView, sudo_ran_unasked_warning, typed_secret_redacted_notice,
 };
 pub use bug_reports::{
     BugBundleView, BugFiledView, BugIssueView, BugKindView, BugOriginView, BugReportView,

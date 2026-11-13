@@ -23,6 +23,16 @@ impl SecretText {
     }
 }
 
+/// The value is overwritten before its memory is freed (#1386). `black_box` keeps the
+/// compiler from dropping the writes; the workspace denies `unsafe`, so no volatile write.
+impl Drop for SecretText {
+    fn drop(&mut self) {
+        let mut bytes = std::mem::take(&mut self.0).into_bytes();
+        bytes.fill(0);
+        std::hint::black_box(&mut bytes);
+    }
+}
+
 impl fmt::Debug for SecretText {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("SecretText([redacted])")

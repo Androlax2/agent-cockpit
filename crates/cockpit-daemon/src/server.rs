@@ -8,12 +8,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
+use cockpit_approvals::{wipe, wipe_vec};
 use cockpit_protocol::{
     Capability, Command, ErrorCode, HandshakeReply, MAX_FRAME_BYTES, ProtocolError, Refusal,
     RefusalReason, Response, SUPPORTED_VERSIONS, ServerFrame, Welcome, decode_hello,
     decode_request_with_kind, negotiate,
 };
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Semaphore, mpsc, oneshot};
@@ -245,7 +246,7 @@ async fn connector(stream: &UnixStream) -> Result<ProcessIdentity, ProcessError>
 
 async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
     let (read_half, mut write_half) = stream.into_split();
-    let mut reader = BufReader::new(read_half);
+    let mut reader = FrameReader::new(read_half);
     let mut frame = Vec::new();
     let offered = match peer {
         Peer::Owner => OWNER_CAPABILITIES,
@@ -280,9 +281,9 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
         let Ok(answer) = outgoing.clone().reserve_owned().await else {
             break;
         };
-        frame.clear();
+        wipe_vec(&mut frame);
         frame.shrink_to(RETAINED_FRAME_CAPACITY);
-        match next_frame(&mut reader, &mut frame).await {
+        match reader.next_frame(&mut frame).await {
             Ok(()) => {}
             Err(FrameError::TooLarge) => {
                 answer.send(malformed(format!(
@@ -296,7 +297,10 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
             answer.send(malformed("the frame is not UTF-8".to_owned()));
             continue;
         };
-        let (request, kind) = match decode_request_with_kind(text) {
+        let decoded = decode_request_with_kind(text);
+        // The frame may carry a secret the owner typed (#1386); the request holds its own copy.
+        wipe(&mut frame);
+        let (request, kind) = match decoded {
             Ok(decoded) => decoded,
             Err(rejection) => {
                 answer.send(rejection.into_frame());
@@ -368,6 +372,7 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
             }
         });
     }
+    wipe_vec(&mut frame);
     // Requests still running keep their answer places, so the writer delivers their
     // answers before it stops.
     drop(feeds);
@@ -378,12 +383,12 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
 /// Reads the `hello` and answers it, granting what both sides offer of `offered`; `None`
 /// when the connection ends here.
 async fn handshake(
-    reader: &mut BufReader<OwnedReadHalf>,
+    reader: &mut FrameReader,
     writer: &mut OwnedWriteHalf,
     frame: &mut Vec<u8>,
     offered: &[Capability],
 ) -> Option<Welcome> {
-    let read = next_frame(reader, frame).await;
+    let read = reader.next_frame(frame).await;
     let reply = match read {
         Err(FrameError::Closed) => return None,
         Err(FrameError::TooLarge) => malformed_hello(format!(
@@ -511,21 +516,77 @@ enum FrameError {
     TooLarge,
 }
 
-/// Reads the next line into `frame` without its newline. The client's twin is
-/// `cockpit-client/src/framing.rs`; both follow `cockpit-protocol`'s framing rule.
-async fn next_frame<R: AsyncBufRead + Unpin>(
-    reader: &mut R,
-    frame: &mut Vec<u8>,
-) -> Result<(), FrameError> {
-    frame.clear();
-    let read = reader
-        .take(MAX_FRAME_BYTES as u64)
-        .read_until(b'\n', frame)
-        .await
-        .map_err(|_| FrameError::Closed)?;
-    match frame.pop() {
-        Some(b'\n') => Ok(()),
-        Some(_) if read == MAX_FRAME_BYTES => Err(FrameError::TooLarge),
-        _ => Err(FrameError::Closed),
+/// The bytes a connection read at once.
+const READ_CHUNK: usize = 8 * 1024;
+
+/// A connection's frames as they arrive. Unlike a `BufReader`, it wipes every byte it read
+/// once it handed the byte on, and never leaves a copy behind when a buffer grows: a frame
+/// may carry a secret the owner typed (#1386).
+struct FrameReader {
+    inner: OwnedReadHalf,
+    /// Bytes read past the end of the last frame.
+    pending: Vec<u8>,
+}
+
+impl Drop for FrameReader {
+    fn drop(&mut self) {
+        wipe_vec(&mut self.pending);
     }
+}
+
+impl FrameReader {
+    fn new(inner: OwnedReadHalf) -> FrameReader {
+        FrameReader {
+            inner,
+            pending: Vec::with_capacity(READ_CHUNK),
+        }
+    }
+
+    /// Reads the next line into `frame` without its newline. The client's twin is
+    /// `cockpit-client/src/framing.rs`; both follow `cockpit-protocol`'s framing rule: a
+    /// frame is at most `MAX_FRAME_BYTES` with its newline.
+    async fn next_frame(&mut self, frame: &mut Vec<u8>) -> Result<(), FrameError> {
+        frame.clear();
+        loop {
+            let newline = self.pending.iter().position(|byte| *byte == b'\n');
+            let taken = newline.unwrap_or(self.pending.len());
+            if frame.len() + taken >= MAX_FRAME_BYTES {
+                return Err(FrameError::TooLarge);
+            }
+            append_wiping(frame, &self.pending[..taken]);
+            self.consume(newline.map_or(taken, |at| at + 1));
+            if newline.is_some() {
+                return Ok(());
+            }
+            let mut chunk = [0u8; READ_CHUNK];
+            let read = self.inner.read(&mut chunk).await;
+            let read = match read {
+                Ok(0) | Err(_) => return Err(FrameError::Closed),
+                Ok(read) => read,
+            };
+            self.pending.extend_from_slice(&chunk[..read]);
+            wipe(&mut chunk[..read]);
+        }
+    }
+
+    /// Drops the first `count` pending bytes, wiping the places the rest moved out of.
+    fn consume(&mut self, count: usize) {
+        let rest = self.pending.len() - count;
+        self.pending.copy_within(count.., 0);
+        wipe(&mut self.pending[rest..]);
+        self.pending.truncate(rest);
+    }
+}
+
+/// Appends `bytes` to `frame`; when `frame` must grow, its old allocation is wiped before it
+/// is freed.
+fn append_wiping(frame: &mut Vec<u8>, bytes: &[u8]) {
+    let needed = frame.len() + bytes.len();
+    if needed > frame.capacity() {
+        let mut grown = Vec::with_capacity(needed.max(2 * frame.capacity()));
+        grown.extend_from_slice(frame);
+        wipe_vec(frame);
+        *frame = grown;
+    }
+    frame.extend_from_slice(bytes);
 }

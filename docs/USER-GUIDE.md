@@ -101,6 +101,14 @@ A running command that waits at a prompt shows in the queue. Type into it with `
 The line is typed only while the command's terminal hides what is typed, as at a `sudo`, `ssh` or `gpg` password prompt (echo off, the line read whole); otherwise it is refused, because an echoed line lands in the output the agent reads and Torlek stores.
 To answer a visible prompt (`y`, `[Y/n]`, `read`) on purpose, use `torlek approval input ID --shown`, or Tab in the TUI to show the line before Enter; that answer appears in the output.
 
+A hidden line you type, and a password you give `sudo` (below), is a secret Torlek also looks for in that command's output, in case the command prints it anyway: a script that echoes its input, a tool that logs it (#1386).
+Wherever it appears, raw, in base64, in lower- or upper-case hex, or URL-encoded, it is replaced by `[redacted]` before the output reaches the agent, the stored request or the pane.
+Torlek keeps no copy of the secret for this: when you type it, the daemon draws a random key for the command and keeps only a keyed fingerprint (HMAC-SHA-256) and the length of each form, overwrites the secret, and drops the key when the command ends.
+A command that printed it marks the request "your typed secret appeared in the output N times and was redacted": in the pane, in `torlek approval show ID`, in the stored request and in the agent's answer. That is a sign the command handles the secret badly.
+This catches accidents, not a command built to leak the secret: one that changes it first (one character per line, reversed, encrypted) is not recognised.
+A line shorter than 4 bytes is not looked for, since its bytes are common in ordinary output; neither is a `--shown` answer, which appears on purpose.
+The output is read in pieces, so the last bytes of each piece, as many as the longest form less one, are held back until the next piece arrives; when the command goes quiet for 1.5 seconds they are shown, so a prompt it prints still appears. A secret split by such a pause is not recognised.
+
 On Linux, `sudo` in an approved command asks you for its password every time, never through the command's terminal (#1374).
 Every `sudo` the command runs is `sudo -A -k`: the request you approve shows those flags on a leading or `&&`-chained `sudo`, and a `sudo` started anywhere else in the command gets them too.
 `-A` makes sudo ask through Torlek's askpass helper; `-k` keeps sudo from reusing or caching an unlock, so the next `sudo` asks again.

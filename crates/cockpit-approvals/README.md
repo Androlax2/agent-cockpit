@@ -54,6 +54,15 @@ request here, so nothing is re-read from the sandbox.
    command runs, `src/sudo_unasked.rs` reads its process tree every 10 ms for the trusted
    sudo; one that ended having asked the owner nothing through the helper is counted in
    the result's `sudo_ran_unasked`, stored in the column of that name.
+   A hidden line `Runner::send_input` types, and the password `Runner::answer_sudo` hands
+   on, is fingerprinted first (#1386, `src/typed_secret.rs`): the run draws a random key
+   and keeps `HMAC-SHA-256(key, form)` and the length of each form (raw, base64 at three
+   alignments, lower- and upper-case hex, URL encoding), then wipes the secret. The
+   terminal reader scrubs each chunk before it keeps any byte, holding back the last
+   `longest form - 1` bytes until the next chunk, the run's end or 1.5 s of quiet; a match
+   becomes `[redacted]`, counted in the result's `typed_secret_redacted` (its column). The
+   key and fingerprints are dropped with the run's end. `wipe` and `wipe_vec` overwrite
+   buffers that held a secret; the daemon's frame reader uses them too.
 5. `Runner::reconcile` at startup, after the executions were reconciled: an approved run
    never started is `not-run`; a running one follows its execution (`reconcile_run`): never
    started is `not-run`, ended is `outcome-unknown`, still running stays `running` until

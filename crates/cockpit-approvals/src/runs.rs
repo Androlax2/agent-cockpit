@@ -42,7 +42,8 @@ const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, p
         project_root, reason, state, asked_at, expires_at, exit_code, output,
         output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant,
         kind, start_prompt, start_clone, start_agent, start_model, start_effort, decided_at,
-        decided_through, output_retired_at, stopped_by_owner_at, sudo_ran_unasked";
+        decided_through, output_retired_at, stopped_by_owner_at, sudo_ran_unasked,
+        typed_secret_redacted";
 const START_PROMPT_MAX_CHARS: usize = 4000;
 const START_KIND: &str = "start-session";
 
@@ -127,6 +128,9 @@ pub struct RunResult {
     /// sudo processes that ended having asked the owner nothing, so may have reused an unlock
     /// (#1374): "sudo ran without asking you".
     pub sudo_ran_unasked: u64,
+    /// How many times a secret the owner typed for the command appeared in its output and was
+    /// replaced by `[redacted]` (#1386).
+    pub typed_secret_redacted: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -982,7 +986,8 @@ pub async fn finish_run(
         run,
         "UPDATE approvals_runs SET state = 'finished', exit_code = ?3, output = ?4,
             output_omitted_lines = ?5, output_truncated_bytes = ?6, redacted = ?7,
-            ended_at = ?8, stopped_by_owner_at = ?9, sudo_ran_unasked = ?10
+            ended_at = ?8, stopped_by_owner_at = ?9, sudo_ran_unasked = ?10,
+            typed_secret_redacted = ?11
          WHERE id = ?1 AND revision = ?2 AND state = 'running'",
         (
             run.id.0,
@@ -995,6 +1000,7 @@ pub async fn finish_run(
             now,
             result.stopped_by_owner.then_some(now),
             (result.sudo_ran_unasked > 0).then(|| count_column(result.sudo_ran_unasked)),
+            (result.typed_secret_redacted > 0).then(|| count_column(result.typed_secret_redacted)),
         ),
     )
     .await
@@ -1324,6 +1330,10 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
             stopped_by_owner: row.get::<Option<i64>>(29)?.is_some(),
             sudo_ran_unasked: match row.get::<Option<i64>>(30)? {
                 Some(_) => count(30)?,
+                None => 0,
+            },
+            typed_secret_redacted: match row.get::<Option<i64>>(31)? {
+                Some(_) => count(31)?,
                 None => 0,
             },
         }),

@@ -1,7 +1,9 @@
 //! Running an approved command on the host in a pseudo-terminal (report 17): programs see a
 //! real terminal, so `sudo` and other prompts work, and the owner can type into it. Git runs
 //! with hooks off and its program-running settings reset. What comes back to the agent is
-//! the end of the output, without terminal controls, secrets redacted.
+//! the end of the output, without terminal controls, secrets redacted. A secret the owner
+//! typed for the run is redacted as the output is read, before the daemon keeps any of it
+//! (#1386, `typed_secret.rs`).
 //!
 //! Each run is a `cockpit-processes` terminal execution (#163): its own session in a
 //! systemd scope or process group, led by `cockpit_processes::run_session_leader`, so it can
@@ -35,6 +37,7 @@ use crate::redact::{redact_secrets, redact_secrets_after_cut, strip_terminal_con
 use crate::runs::{Approved, RunId, RunResult, start_run};
 use crate::sudo::{SudoAskpass, SudoAsks};
 use crate::sudo_unasked::{self, SudoSightings};
+use crate::typed_secret::{TypedSecrets, wipe};
 use crate::{Error, Refusal};
 
 /// After the command exits, how long output still in the terminal may take to arrive. A
@@ -207,6 +210,27 @@ pub(crate) struct LiveRun {
 }
 
 impl LiveRun {
+    /// Fingerprints `secret`, typed for run `id`, so its output redacts it (#1386), then wipes
+    /// it. Refused when the run's key cannot be drawn: the secret must not be handed on
+    /// unprotected.
+    pub(crate) fn protect_typed_secret(
+        &self,
+        id: RunId,
+        mut secret: Vec<u8>,
+    ) -> Result<(), Refusal> {
+        let added = self
+            .output
+            .lock()
+            .expect("the output lock is never poisoned")
+            .typed
+            .add(&mut secret);
+        crate::typed_secret::wipe_vec(&mut secret);
+        added.map_err(|error| Refusal::SecretUnprotected {
+            request: id.0,
+            why: format!("/dev/urandom: {error}"),
+        })
+    }
+
     pub(crate) fn session(&self) -> Option<i32> {
         self.session.get().copied()
     }
@@ -226,9 +250,36 @@ impl LiveRun {
 
 #[derive(Debug)]
 struct Kept {
+    /// The output as read, typed secrets redacted.
     bytes: Vec<u8>,
+    /// Bytes appended to `bytes` so far, including those trimmed from its start.
     total: u64,
     last_output: Instant,
+    /// The fingerprints of what the owner typed, and the bytes held back until it is known
+    /// whether they begin one.
+    typed: TypedSecrets,
+}
+
+impl Kept {
+    fn append(&mut self, chunk: &[u8]) {
+        let before = self.bytes.len();
+        self.typed.scrub_into(chunk, &mut self.bytes);
+        self.total += (self.bytes.len() - before) as u64;
+    }
+
+    /// Appends the bytes held back: the output ended, or went quiet long enough that what it
+    /// shows last must be seen (a prompt).
+    fn release_held(&mut self) {
+        let before = self.bytes.len();
+        self.typed.release(&mut self.bytes);
+        self.total += (self.bytes.len() - before) as u64;
+    }
+
+    fn release_held_if_quiet(&mut self, now: Instant) {
+        if now.duration_since(self.last_output) >= PROMPT_IDLE {
+            self.release_held();
+        }
+    }
 }
 
 impl Runner {
@@ -349,6 +400,7 @@ impl Runner {
                 bytes: Vec::new(),
                 total: 0,
                 last_output: Instant::now(),
+                typed: TypedSecrets::default(),
             }),
             is_stopped_by_owner: AtomicBool::new(false),
             sudo_asks: Mutex::default(),
@@ -384,10 +436,14 @@ impl Runner {
             // Not observed ended, so it stays charged and is watched.
             Err(_) => true,
         };
-        let kept = live
+        let mut kept = live
             .output
             .lock()
             .expect("the output lock is never poisoned");
+        kept.release_held();
+        let typed_secret_redacted = kept.typed.redacted();
+        // The run ended: its key and fingerprints go with it.
+        kept.typed = TypedSecrets::default();
         let tail = &kept.bytes[kept.bytes.len().saturating_sub(self.settings.kept_bytes)..];
         Ok(Ran {
             result: RunResult {
@@ -395,6 +451,7 @@ impl Runner {
                 output: present(tail, kept.total, self.settings.answer_lines),
                 output_retired: false,
                 stopped_by_owner: is_stopped_by_owner,
+                typed_secret_redacted,
                 sudo_ran_unasked: {
                     let mut sightings = live.sudo_sightings();
                     sightings.end();
@@ -515,6 +572,18 @@ impl Runner {
             .map_or(0, |live| live.sudo_sightings().ran_unasked())
     }
 
+    /// How many times a secret the owner typed for the running run `id` was redacted from its
+    /// output so far (#1386): 0 when none, or when the run is not running here.
+    pub fn typed_secret_redacted(&self, id: RunId) -> u64 {
+        self.live_run(id).map_or(0, |live| {
+            live.output
+                .lock()
+                .expect("the output lock is never poisoned")
+                .typed
+                .redacted()
+        })
+    }
+
     pub(crate) fn live_runs(&self) -> Vec<(RunId, Arc<LiveRun>)> {
         self.live
             .lock()
@@ -527,7 +596,8 @@ impl Runner {
     /// Types `text` and Enter into the running command, only while its terminal does not echo
     /// what is typed: an echo lands in the output the agent reads and the daemon stores, and
     /// the text may be a password (#1160). `is_shown` is the owner's opt-out for a visible
-    /// answer, typed whatever the echo.
+    /// answer, typed whatever the echo. Hidden text is a secret: it is fingerprinted first, so
+    /// that the run printing it anyway shows `[redacted]` (#1386).
     pub fn send_input(&self, id: RunId, text: &str, is_shown: bool) -> Result<(), Refusal> {
         let live = self
             .live
@@ -537,8 +607,11 @@ impl Runner {
             .cloned()
             .ok_or(Refusal::NotRunning)?;
         let mut input = live.input.lock().expect("the input lock is never poisoned");
-        if !is_shown && let Some(why) = input_would_show(&input) {
-            return Err(Refusal::InputWouldShow { request: id.0, why });
+        if !is_shown {
+            if let Some(why) = input_would_show(&input) {
+                return Err(Refusal::InputWouldShow { request: id.0, why });
+            }
+            live.protect_typed_secret(id, text.as_bytes().to_vec())?;
         }
         input
             .write_all(text.as_bytes())
@@ -592,10 +665,11 @@ impl Runner {
                 if live.sudo_asks().is_waiting() {
                     return true;
                 }
-                let kept = live
+                let mut kept = live
                     .output
                     .lock()
                     .expect("the output lock is never poisoned");
+                kept.release_held_if_quiet(now);
                 is_at_prompt(&kept, now)
             })
             .map(|(id, _)| *id)
@@ -615,11 +689,13 @@ impl Runner {
             .cloned()?;
         // Copied out, so the reader is not held up while the line is redacted.
         let line = {
-            let kept = live
+            let mut kept = live
                 .output
                 .lock()
                 .expect("the output lock is never poisoned");
-            if !is_at_prompt(&kept, Instant::now()) {
+            let now = Instant::now();
+            kept.release_held_if_quiet(now);
+            if !is_at_prompt(&kept, now) {
                 return None;
             }
             let read = &kept.bytes[kept.bytes.len().saturating_sub(ANSWER_MAX_BYTES)..];
@@ -682,10 +758,11 @@ const LAUNCH_FAILURE_LINES: usize = 5;
 
 /// `reason`, followed by what the terminal showed: a launcher that failed wrote why there.
 fn with_terminal_output(reason: String, live: &LiveRun) -> String {
-    let kept = live
+    let mut kept = live
         .output
         .lock()
         .expect("the output lock is never poisoned");
+    kept.release_held();
     let shown = present(&kept.bytes, kept.total, LAUNCH_FAILURE_LINES).shown;
     if shown.is_empty() {
         reason
@@ -758,8 +835,9 @@ fn drain(mut reader: File, live: Arc<LiveRun>, kept_bytes: usize) -> oneshot::Re
                         .output
                         .lock()
                         .expect("the output lock is never poisoned");
-                    kept.bytes.extend_from_slice(&buffer[..read]);
-                    kept.total += read as u64;
+                    kept.append(&buffer[..read]);
+                    // The raw read may hold a typed secret: only its redacted copy stays.
+                    wipe(&mut buffer[..read]);
                     kept.last_output = Instant::now();
                     // Trimmed only at twice the bound, so each byte is moved about once.
                     if kept.bytes.len() > 2 * kept_bytes {
@@ -772,6 +850,10 @@ fn drain(mut reader: File, live: Arc<LiveRun>, kept_bytes: usize) -> oneshot::Re
                 Err(_) => break,
             }
         }
+        live.output
+            .lock()
+            .expect("the output lock is never poisoned")
+            .release_held();
         let _ = done.send(());
     });
     drained
@@ -855,6 +937,7 @@ mod tests {
                 bytes: line.as_bytes().to_vec(),
                 total: line.len() as u64,
                 last_output: now - Duration::from_secs(2),
+                typed: TypedSecrets::default(),
             };
             assert_eq!(is_at_prompt(&kept, now), expected, "{line:?}");
         }

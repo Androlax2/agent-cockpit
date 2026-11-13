@@ -119,6 +119,10 @@ pub struct RunRequestView {
     /// (#1374). Its result counts them once it finished.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub sudo_ran_unasked: u64,
+    /// While the command runs: how many times a secret the owner typed for it appeared in its
+    /// output and was redacted (#1386). Its result counts them once it finished.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub typed_secret_redacted: u64,
     pub result: Option<RunResultView>,
     /// Why the request ended without a result, or what is known about it.
     pub note: Option<String>,
@@ -201,6 +205,10 @@ pub struct RunResultView {
     /// reused an unlock (#1374): "sudo ran without asking you".
     #[serde(default, skip_serializing_if = "is_zero")]
     pub sudo_ran_unasked: u64,
+    /// How many times a secret the owner typed for the command appeared in its output and
+    /// was replaced by `[redacted]` (#1386): a sign the command handles it badly.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub typed_secret_redacted: u64,
 }
 
 #[expect(
@@ -219,6 +227,27 @@ impl RunRequestView {
             .as_ref()
             .map_or(self.sudo_ran_unasked, |result| result.sudo_ran_unasked)
     }
+
+    /// How many times a typed secret was redacted from the output so far: the result's total
+    /// once the command finished, the live count while it runs (#1386).
+    pub fn typed_secret_redacted_so_far(&self) -> u64 {
+        self.result
+            .as_ref()
+            .map_or(self.typed_secret_redacted, |result| {
+                result.typed_secret_redacted
+            })
+    }
+}
+
+/// What the owner and the agent read when a secret the owner typed for a run appeared
+/// `count` times in its output (#1386): the same words in the pane, `approval show` and the
+/// answer.
+pub fn typed_secret_redacted_notice(count: u64) -> String {
+    let times = if count == 1 { "time" } else { "times" };
+    format!(
+        "your typed secret appeared in the output {count} {times} and was redacted: the \
+         command handles it badly"
+    )
 }
 
 /// What the owner and the agent read when `count` sudo processes in a run ended having asked

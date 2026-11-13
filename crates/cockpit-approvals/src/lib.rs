@@ -12,6 +12,7 @@ mod rows;
 mod runs;
 mod sudo;
 mod sudo_unasked;
+mod typed_secret;
 
 use cockpit_turso::{Migration, MigrationSet};
 
@@ -40,6 +41,7 @@ pub use sudo::{
     SudoAnswered, SudoAsk, SudoAskpass, SudoHelper, TRUSTED_SUDO, sudo_asks_every_time,
 };
 pub use sudo_unasked::unasked_sudo_watch_holds;
+pub use typed_secret::{wipe, wipe_vec};
 
 /// The approvals tables. A run request keeps its asked command beside the current one, so an
 /// owner's edit stays visible; its decision columns are set once, by the transaction that
@@ -186,6 +188,14 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 11,
             sql: "ALTER TABLE approvals_runs ADD COLUMN sudo_ran_unasked INTEGER
                 CHECK (sudo_ran_unasked IS NULL OR (sudo_ran_unasked > 0 AND state = 'finished'));",
+        },
+        // #1386: how many times a secret the owner typed for a finished command appeared in
+        // its output and was redacted. NULL when none, as on earlier rows.
+        Migration {
+            version: 12,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN typed_secret_redacted INTEGER
+                CHECK (typed_secret_redacted IS NULL
+                    OR (typed_secret_redacted > 0 AND state = 'finished'));",
         },
     ],
 };
