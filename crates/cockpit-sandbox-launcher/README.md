@@ -139,7 +139,7 @@ unit, nor give the unit a writable `/home` for the helper's folders: until it do
 Each engine's setup writes `ENGINES_DIR/<user>.conf` (`uid=`, `owner_uid=`,
 `project_root=`, `clones_dir=`, each once; neither folder inside the other). The request is
 the engine's user, a space, a checkout's path and a newline; the answer `ok` or
-`refused: ` and why, and a refusal leaves the helper's exit status 0, its reason in the
+`refused:`, a space and why, and a refusal leaves the helper's exit status 0, its reason in the
 journal. The helper answers only the owner's uid (`SO_PEERCRED`); anyone else, or a missing
 or unreadable file, is told only that no such engine is set up for them. It masks only
 `project_root` or a folder directly in `clones_dir` that it reaches without a link, the
