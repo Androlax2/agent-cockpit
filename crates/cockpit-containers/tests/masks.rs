@@ -236,10 +236,11 @@ async fn a_helper_socket_another_user_connects_to_needs_the_engines_setup_again(
         .check_ready(own_uid(&fake.socket) + 1, &engine_user())
         .unwrap_err();
 
-    match unready {
-        MasksUnready::NotSetUp(reason) => assert!(reason.contains("only uid"), "{reason}"),
-        other => panic!("{other:?}"),
-    }
+    // The reason names uids: CodeQL takes a printed one for cleartext logging.
+    assert!(matches!(
+        unready,
+        MasksUnready::NotSetUp(reason) if reason.contains("only uid")
+    ));
 }
 
 #[tokio::test]
@@ -251,10 +252,8 @@ async fn an_engine_the_helper_has_no_record_of_needs_its_setup_again() {
         .check_ready(own_uid(&fake.socket), &engine_user())
         .unwrap_err();
 
-    match unready {
-        MasksUnready::NotSetUp(reason) => {
-            assert!(reason.contains("torlek-e3.conf"), "{reason}");
-        }
-        other => panic!("{other:?}"),
-    }
+    assert!(matches!(
+        unready,
+        MasksUnready::NotSetUp(reason) if reason.contains("torlek-e3.conf")
+    ));
 }
