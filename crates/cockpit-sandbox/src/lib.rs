@@ -46,7 +46,8 @@ pub use logins::{
     revoke_project_login_grants,
 };
 pub use native::{
-    Backend, GitIdentity, NativeBackend, ProviderNeeds, Staged, ToolNeeds, ToolSetting,
+    Backend, CheckoutMasks, GitIdentity, NativeBackend, ProviderNeeds, Staged, ToolNeeds,
+    ToolSetting, checkout_masks,
 };
 #[cfg(feature = "persistence")]
 pub use network::{

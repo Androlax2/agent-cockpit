@@ -294,9 +294,17 @@ pub fn plan(
     for mount in &mounts {
         arguments.extend(mount.arguments());
     }
-    let masks = protect(spec)?;
-    arguments.extend(masks.arguments);
-    arguments.extend(hide(spec, &mounts)?);
+    let masks = protect(&spec.protected, &spec.read_write)?;
+    let is_bound = |path: &Path| {
+        mounts.iter().any(|mount| match mount {
+            Mount::ReadOnly(folder) | Mount::ReadWrite(folder) => path.starts_with(folder),
+            // Shows the session's own folder, not the host's at that path.
+            Mount::Elsewhere { .. } | Mount::EngineSocket { .. } | Mount::SocketFolder(_) => false,
+        })
+    };
+    for mask in masks.masks.iter().chain(&hide(&spec.hidden, is_bound)?) {
+        arguments.extend(mask.bubblewrap_arguments());
+    }
     if spec.engine.is_some() {
         arguments.extend(
             [
@@ -373,21 +381,85 @@ fn require_present(mount: &Mount) -> Result<(), String> {
         .map_err(|error| format!("cannot bind {}: {error}", source.display()))
 }
 
-struct Masks {
-    arguments: Vec<OsString>,
-    verify: Vec<Expected>,
+/// One mask over a folder already bound, in the order the masks are applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mask {
+    /// A folder bound onto itself, so it cannot be renamed away with a mask inside it and a
+    /// writable one put in its place.
+    Pinned(PathBuf),
+    /// Bound onto itself read-only.
+    ReadOnly(PathBuf),
+    /// An empty read-only folder at an absent protected path's first absent name, made in
+    /// the checkout, where it stays.
+    EmptyFolder(PathBuf),
+    /// A folder no one reads: an empty one, unreadable, over it.
+    HiddenFolder(PathBuf),
+    /// Anything else no one reads: `/dev/null`, read-only, over it.
+    HiddenFile(PathBuf),
+}
+
+impl Mask {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Pinned(path)
+            | Self::ReadOnly(path)
+            | Self::EmptyFolder(path)
+            | Self::HiddenFolder(path)
+            | Self::HiddenFile(path) => path,
+        }
+    }
+
+    fn bubblewrap_arguments(&self) -> Vec<OsString> {
+        let tmpfs = |mode: &str, path: &Path| {
+            let mut arguments: Vec<OsString> =
+                ["--perms", mode, "--tmpfs"].map(OsString::from).into();
+            arguments.push(path.as_os_str().to_owned());
+            arguments.push("--remount-ro".into());
+            arguments.push(path.as_os_str().to_owned());
+            arguments
+        };
+        match self {
+            Self::Pinned(path) => words("--bind", path, path),
+            Self::ReadOnly(path) => words("--ro-bind", path, path),
+            Self::EmptyFolder(path) => tmpfs("0555", path),
+            Self::HiddenFolder(path) => tmpfs("0000", path),
+            Self::HiddenFile(path) => words("--ro-bind", Path::new("/dev/null"), path),
+        }
+    }
+}
+
+/// Each folder or file pinned or masked inside a writable folder still the one the plan saw
+/// (device and inode), once the mounts are made: a link swapped in before a mount would have
+/// moved it.
+pub fn verify(expected: &[Expected]) -> Result<(), String> {
+    for expected in expected {
+        let metadata = std::fs::symlink_metadata(&expected.path)
+            .map_err(|error| format!("cannot check {}: {error}", expected.path.display()))?;
+        if metadata.dev() != expected.device || metadata.ino() != expected.inode {
+            return Err(format!(
+                "{} changed between planning and mounting",
+                expected.path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub struct Masks {
+    pub masks: Vec<Mask>,
+    pub verify: Vec<Expected>,
 }
 
 /// Each protected path read-only inside its writable folder. Its folders inside the
-/// writable one are bound onto themselves first, so the program cannot rename one away
-/// with the read-only mount inside it and put a writable one in its place. A path absent
-/// at launch gets what its [`WhenAbsent`] says.
-fn protect(spec: &LaunchSpec) -> Result<Masks, String> {
+/// writable one are pinned first, so the program cannot rename one away with the
+/// read-only mount inside it and put a writable one in its place. A path absent at launch
+/// gets what its [`WhenAbsent`] says.
+pub fn protect(protected: &[Protected], read_write: &[PathBuf]) -> Result<Masks, String> {
     let mut pinned: Vec<PathBuf> = Vec::new();
     let mut read_only: Vec<PathBuf> = Vec::new();
     let mut emptied: Vec<PathBuf> = Vec::new();
     let mut verify = Vec::new();
-    for Protected { path, when_absent } in &spec.protected {
+    for Protected { path, when_absent } in protected {
         // Pinning the folders of a path left unprotected when absent would only make them
         // impossible to remove.
         if *when_absent == WhenAbsent::Unprotected
@@ -396,8 +468,7 @@ fn protect(spec: &LaunchSpec) -> Result<Masks, String> {
         {
             continue;
         }
-        let folder = spec
-            .read_write
+        let folder = read_write
             .iter()
             .filter(|folder| path.starts_with(folder))
             .max_by_key(|folder| folder.components().count())
@@ -462,36 +533,22 @@ fn protect(spec: &LaunchSpec) -> Result<Masks, String> {
         }
     }
     pinned.sort_by_key(|path| path.components().count());
-    let mut arguments = Vec::new();
-    for path in &pinned {
-        arguments.extend(words("--bind", path, path));
-    }
-    for path in &read_only {
-        arguments.extend(words("--ro-bind", path, path));
-    }
-    for path in &emptied {
-        arguments.extend(["--perms", "0555", "--tmpfs"].map(OsString::from));
-        arguments.push(path.as_os_str().to_owned());
-        arguments.push("--remount-ro".into());
-        arguments.push(path.as_os_str().to_owned());
-    }
-    Ok(Masks { arguments, verify })
+    let masks = pinned
+        .into_iter()
+        .map(Mask::Pinned)
+        .chain(read_only.into_iter().map(Mask::ReadOnly))
+        .chain(emptied.into_iter().map(Mask::EmptyFolder))
+        .collect();
+    Ok(Masks { masks, verify })
 }
 
 /// Each hidden path that exists inside a bound folder, masked: a folder by an empty
-/// read-only one, anything else by `/dev/null`. One outside every bound folder is not in
+/// unreadable one, anything else by `/dev/null`. One outside every bound folder is not in
 /// the view at all. A link is masked where it leads, when that is in the view: a `.env`
 /// that links to `config/secrets.env` hides the secrets, not only the link's name.
-fn hide(spec: &LaunchSpec, mounts: &[Mount]) -> Result<Vec<OsString>, String> {
-    let is_bound = |path: &Path| {
-        mounts.iter().any(|mount| match mount {
-            Mount::ReadOnly(folder) | Mount::ReadWrite(folder) => path.starts_with(folder),
-            // Shows the session's own folder, not the host's at that path.
-            Mount::Elsewhere { .. } | Mount::EngineSocket { .. } | Mount::SocketFolder(_) => false,
-        })
-    };
+pub fn hide(hidden: &[PathBuf], is_bound: impl Fn(&Path) -> bool) -> Result<Vec<Mask>, String> {
     let mut masked: Vec<PathBuf> = Vec::new();
-    for pattern in &spec.hidden {
+    for pattern in hidden {
         if !is_bound(pattern) {
             continue;
         }
@@ -511,21 +568,19 @@ fn hide(spec: &LaunchSpec, mounts: &[Mount]) -> Result<Vec<OsString>, String> {
             }
         }
     }
-    let mut arguments = Vec::new();
-    for path in masked {
-        let is_folder = std::fs::metadata(&path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?
-            .is_dir();
-        if is_folder {
-            arguments.extend(["--perms", "0000", "--tmpfs"].map(OsString::from));
-            arguments.push(path.as_os_str().to_owned());
-            arguments.push("--remount-ro".into());
-            arguments.push(path.into_os_string());
-        } else {
-            arguments.extend(words("--ro-bind", Path::new("/dev/null"), &path));
-        }
-    }
-    Ok(arguments)
+    masked
+        .into_iter()
+        .map(|path| {
+            let is_folder = std::fs::metadata(&path)
+                .map_err(|error| format!("cannot read {}: {error}", path.display()))?
+                .is_dir();
+            Ok(if is_folder {
+                Mask::HiddenFolder(path)
+            } else {
+                Mask::HiddenFile(path)
+            })
+        })
+        .collect()
 }
 
 /// `pattern` itself, or, when its last name ends in `*`, every entry of its folder whose

@@ -27,6 +27,9 @@ start and runs it in the agent's place under `agents.sandbox = "required"`.
 - `torlek-sandbox engine-relay SOCKET OWNER_UID`: run by a project engine's relay unit (#390)
   in the engine's network namespace; serves only `OWNER_UID`, which names one port per
   connection and gets that port's bytes (`engine_relay.rs`).
+- `torlek-sandbox engine-masks ENGINES_DIR`: the root helper of the project engines (#390),
+  run once per connection with the connection as its standard input; it masks one checkout
+  per request for the engine the request names, answering only that engine's owner (below).
 - `torlek-sandbox probe BWRAP`: the daemon's start-up probe. Prints
   `{"bubblewrap":"<version>","landlock_abi":<n>}`; a failure is the reason every launch under
   `required` is refused.
@@ -122,6 +125,38 @@ connects to that socket and refuses the launch unless its peer is the engine's u
 (`proxy::check_engine_socket`); bubblewrap then binds the socket read-only, alone in its
 folder, at `cockpit_sandbox::ENGINE_SOCKET_INSIDE`, stage 2 lets the program connect there,
 and `DOCKER_HOST` names it. A spec for a check run, or an engine run as root, is refused.
+
+### The project engine's masks
+
+Issue #390, option C (Theo, 2026-11-13). The engine is to see the project's checkouts only
+through the masks a session gets: `cockpit_sandbox::checkout_masks`, planned by the same
+`plan::protect` and `plan::hide` that build bubblewrap's arguments. `engine-masks` shows it
+one checkout per request, a clone made after the engine started included, without a root
+step each time. The engine's setup does not yet stop binding the project's folders in the
+unit, nor give the unit a writable `/home` for the helper's folders: until it does (part
+4b), the helper refuses its engines.
+
+Each engine's setup writes `ENGINES_DIR/<user>.conf` (`uid=`, `owner_uid=`,
+`project_root=`, `clones_dir=`, each once; neither folder inside the other). The request is
+the engine's user, a space, a checkout's path and a newline; the answer `ok` or
+`refused:`, a space and why, and a refusal leaves the helper's exit status 0, its reason in the
+journal. The helper answers only the owner's uid (`SO_PEERCRED`); anyone else, or a missing
+or unreadable file, is told only that no such engine is set up for them. It masks only
+`project_root` or a folder directly in `clones_dir` that it reaches without a link, the
+owner's, holding a `.git`, no mount and on no FUSE file system.
+
+Before it touches the checkout it checks the unit: its main process (`systemctl show`) runs
+as the engine's uid, in the helper's user namespace, with a mount namespace of its own that
+shows neither `clones_dir` nor the folder holding `project_root` as the host has them. It
+then builds the masked checkout in a mount namespace of its own: the checkout, checked
+again, is bound in a folder only that namespace has, and each mask is planned there and
+mounted on a file opened without following a link; it checks each mask sits on the file it
+planned for, clones the tree (`open_tree`), enters the unit's mount namespace and moves the
+tree there, in place of an earlier one. The unit's mounts propagate down to rootlesskit's
+user namespace, where they arrive locked: root there, as a privileged container is, cannot
+unmount a mask, make one writable or bind the checkout without its masks
+(`tests/engine_masks.rs`, which stands in for root and the engine with user namespaces). An
+environment file made after a request stays readable to the engine until the next one.
 
 ## Credential hosts
 
