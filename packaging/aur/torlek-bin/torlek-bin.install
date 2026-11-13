@@ -1,0 +1,47 @@
+# Torlek's masks helper (#390, docs/packaging/aur.md): the package enables its root socket,
+# which starts the helper for each connection only. A release whose bundle predates the
+# helper's units installs none, and these do nothing. Without a running systemd (a
+# container), enabling the socket is all that can be done; pacman's own hook reloads systemd
+# after a removal.
+
+_torlek_masks_socket_installed() {
+    [ -e /usr/lib/systemd/system/torlek-engine-masks.socket ] && command -v systemctl >/dev/null
+}
+
+_torlek_start_masks_socket() {
+    _torlek_masks_socket_installed || return 0
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+    fi
+    systemctl enable torlek-engine-masks.socket
+    if [ -d /run/systemd/system ]; then
+        # A socket that ran before keeps listening as its earlier units said.
+        systemctl restart torlek-engine-masks.socket
+    fi
+    if [ -e /etc/systemd/system/torlek-engine-masks.socket ]; then
+        echo "torlek: the masks helper \`torlek setup engine-masks\` installed shadows this package's; \`torlek setup engine-masks --uninstall\` removes it" >&2
+    fi
+}
+
+post_install() {
+    _torlek_start_masks_socket
+}
+
+post_upgrade() {
+    _torlek_start_masks_socket
+}
+
+pre_remove() {
+    _torlek_masks_socket_installed || return 0
+    if [ -d /run/systemd/system ]; then
+        systemctl stop torlek-engine-masks.socket 'torlek-engine-masks@*.service'
+    fi
+    systemctl disable torlek-engine-masks.socket
+}
+
+# The socket's owner, which the engines' setup scripts write, goes with the last helper.
+post_remove() {
+    if [ ! -e /etc/systemd/system/torlek-engine-masks.socket ]; then
+        rm -rf /etc/systemd/system/torlek-engine-masks.socket.d
+    fi
+}

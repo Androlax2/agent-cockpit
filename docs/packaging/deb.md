@@ -45,14 +45,31 @@ skipping.
   `release.py verify-install` on `/usr/lib/torlek`, so alpha.3, which predates `torlek-sandbox`,
   still packages. `copyright` and `changelog.Debian.gz` go to
   `/usr/share/doc/torlek/`. The package installs nothing outside `/usr` and has no conffiles.
-- **No maintainer scripts:** no `preinst`, `postinst`, `prerm` or `postrm`. The package never
-  starts, stops or adopts a daemon. Per-user services are written by `torlek daemon install`.
+- **Masks helper (#390):** the bundle's `share/torlek/systemd` units,
+  `torlek-engine-masks.socket` and `torlek-engine-masks@.service`, also go to
+  `/usr/lib/systemd/system`; the helper they run is the bundle's own
+  `/usr/lib/torlek/bin/torlek-sandbox`. Theo decided on 2026-11-13 that the package installs and
+  enables them itself, so the owner copies no command. They are the files
+  `torlek setup engine-masks` installs under `/etc/systemd/system` and `/usr/local/lib`, the
+  helper's path alone told apart: `the_packages_install_the_files_the_setup_step_installs_under_their_own_paths`
+  in `crates/cockpit-containers/tests/masks_install.rs` builds this package and the AUR one and
+  compares them. A bundle from before the units (alpha.4 and earlier) installs none and gets no
+  maintainer scripts.
+- **Maintainer scripts:** only with those units, from
+  [packaging/deb/torlek](../../packaging/deb/torlek/). `postinst configure` enables
+  `torlek-engine-masks.socket` and, with systemd running, reloads it and restarts the socket;
+  `prerm remove` stops the socket and its connections and disables it, not on an upgrade;
+  `postrm purge` removes the socket's owner drop-in the engines' setup scripts write, unless
+  `torlek setup engine-masks`'s socket still uses it. In a container without systemd running,
+  the socket is enabled only. The package never starts, stops or adopts the per-user daemon:
+  `torlek daemon install` writes those services.
 - **Dependencies:** `libc6 (>= 2.39), libgcc-s1 (>= 4.2), git, curl, tmux (>= 3.6)`;
   `Suggests: systemd`. The programs need `GLIBC_2.39` and `GCC_4.2.0` symbols (built on
   `ubuntu-24.04` runners), and the workflow
   fails when a term `dpkg-shlibdeps` computes for the newest release is missing from `Depends`.
   `git`, `curl` and `tmux >= 3.6` are the [user guide](../USER-GUIDE.md#platforms-and-prerequisites)
-  prerequisites. `systemd` is needed only for the user services. Provider CLIs are left out.
+  prerequisites. `systemd` is needed only for the user services and the masks helper's socket.
+  Provider CLIs are left out.
 - **Maintainer:** `build.py --maintainer 'Name <address>'` is required and has no default.
   Debian policy requires an address. Publication reads it from the `apt` environment's
   `TORLEK_APT_MAINTAINER` variable; the CI fixtures use `ci-fixture@example.invalid`.

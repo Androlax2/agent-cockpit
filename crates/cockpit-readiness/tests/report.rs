@@ -1147,7 +1147,8 @@ fn a_projects_own_engine_reports_each_state_with_its_next_step() {
                 )),
             },
             Status::MissingPrerequisite,
-            "run `torlek setup engine-masks`",
+            "run `torlek setup engine-masks`, which installs Torlek's masks helper as root and \
+             asks for your password once; Torlek's Arch and Debian packages install it themselves",
         ),
         (
             EngineState::Verified {

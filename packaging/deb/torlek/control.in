@@ -14,5 +14,6 @@ Description: agent session cockpit: CLI, terminal UI and per-user daemon
  with a CLI and terminal UI backed by a per-user daemon and tmux.
  .
  This package repackages the published release archive unchanged under
- /usr/lib/torlek. User services are written per user by
- `torlek daemon install`; the package starts no daemon.
+ /usr/lib/torlek. It enables torlek-engine-masks.socket, the root socket of
+ Torlek's masks helper, which runs the helper for each connection only.
+ User services are written per user by `torlek daemon install`.

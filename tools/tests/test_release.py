@@ -705,6 +705,18 @@ class PackageTests(PackagingTestCase):
             names,
         )
 
+    def test_the_bundle_carries_the_masks_helper_s_units_as_the_crate_ships_them(self):
+        code, outputs, error = self.package()
+        self.assertEqual(code, 0, error)
+        shipped = ROOT / "crates/cockpit-containers/units"
+        carried = Path(outputs["root"]) / release.SYSTEMD_UNITS
+        self.assertEqual(
+            {path.name: path.read_bytes() for path in carried.iterdir()},
+            {path.name: path.read_bytes() for path in shipped.iterdir()},
+        )
+        manifest = json.loads((Path(outputs["root"]) / release.MANIFEST_PATH).read_text())
+        self.assertIn(f"{release.SYSTEMD_UNITS}/torlek-engine-masks.socket", manifest["contents"])
+
     def test_the_bundle_readme_installs_the_bundle_s_own_version(self):
         code, outputs, error = self.package()
         self.assertEqual(code, 0, error)
@@ -1251,6 +1263,9 @@ class ReleaseTriggerTests(unittest.TestCase):
                 "packaging/aur/torlek-bin/PKGBUILD.in",
                 "packaging/aur/torlek-bin/PKGBUILD",
                 "packaging/aur/torlek-bin/.SRCINFO",
+                "packaging/aur/torlek-bin/torlek-bin.install",
+                "crates/cockpit-containers/units/torlek-engine-masks.socket",
+                "crates/cockpit-containers/units/torlek-engine-masks@.service",
                 "tools/tests/test_aur_package.py",
                 "packaging/windows/ci-analyze.ps1",
                 "packaging/windows/ci-install.ps1",

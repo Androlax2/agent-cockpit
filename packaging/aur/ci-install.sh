@@ -82,6 +82,7 @@ if $is_published; then
     # What an AUR push carries is the committed pair, so it must be this rendering, byte for byte.
     diff -u "$recipe/PKGBUILD" "$committed/PKGBUILD"
     diff -u "$recipe/.SRCINFO" "$committed/.SRCINFO"
+    diff -u "$recipe/torlek-bin.install" "$committed/torlek-bin.install"
     # No Arch container runs on aarch64 here: makepkg downloads that archive and checks it
     # against the recipe's checksum, and nothing installs it.
     (cd "$recipe" && as_builder env CARCH=aarch64 makepkg --verifysource --noprogressbar)
@@ -110,6 +111,14 @@ fi
 pacman -U --noconfirm "${packages[@]}"
 test "$(readlink -f /usr/bin/torlek)" = /usr/lib/torlek/bin/torlek
 as_builder python3 "$verify_tool" verify-install /usr/lib/torlek --revision "$revision"
+# The masks helper's units (#390), from a release whose bundle carries them; no systemd runs
+# here, so torlek-bin.install can only enable the socket.
+if [ -d /usr/lib/torlek/share/torlek/systemd ]; then
+    for unit in torlek-engine-masks.socket torlek-engine-masks@.service; do
+        cmp "/usr/lib/torlek/share/torlek/systemd/$unit" "/usr/lib/systemd/system/$unit"
+    done
+    test -L /etc/systemd/system/sockets.target.wants/torlek-engine-masks.socket
+fi
 
 # Through the public command: the link must still find the bundle's TUI and manifest.
 expect_line() {
@@ -155,7 +164,10 @@ home_contents > /tmp/home-before
 pacman -R --noconfirm torlek-bin
 home_contents > /tmp/home-after
 diff -u /tmp/home-before /tmp/home-after
-for removed in /usr/bin/torlek /usr/lib/torlek /usr/share/licenses/torlek-bin; do
+for removed in /usr/bin/torlek /usr/lib/torlek /usr/share/licenses/torlek-bin \
+    /usr/lib/systemd/system/torlek-engine-masks.socket \
+    /usr/lib/systemd/system/torlek-engine-masks@.service \
+    /etc/systemd/system/sockets.target.wants/torlek-engine-masks.socket; do
     if [ -e "$removed" ] || [ -L "$removed" ]; then
         printf '%s remains after pacman -R\n' "$removed" >&2
         exit 1

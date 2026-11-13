@@ -80,6 +80,10 @@ BINARIES = ("torlek", "torlek-daemon", *FRONTENDS.values(), *HELPERS)
 # release notes are on the GitHub Release.
 DOCUMENTS = ("LICENSE", "README.md")
 MANIFEST_PATH = "share/torlek/manifest.json"
+# Torlek's masks helper's systemd units (#390), as cockpit-containers ships them: a package
+# installs them under /usr/lib/systemd/system; `torlek setup engine-masks` writes its own.
+SYSTEMD_UNITS_SOURCE = "crates/cockpit-containers/units"
+SYSTEMD_UNITS = "share/torlek/systemd"
 MANIFEST_SCHEMA = 1
 # How long verify-install waits for `torlek version --all` and for the daemon's ready line.
 COMMAND_TIMEOUT_SECONDS = 60
@@ -575,6 +579,12 @@ def package(version, channel, platform, revision, binaries, out, cwd):
         if document == "README.md":
             text = stamped_readme(text, version)
         (staging / document).write_text(text)
+    units = sorted((Path(cwd) / SYSTEMD_UNITS_SOURCE).glob("torlek-*"))
+    if not units:
+        raise Refusal(f"{SYSTEMD_UNITS_SOURCE}: no systemd units to bundle")
+    (staging / SYSTEMD_UNITS).mkdir(parents=True)
+    for unit in units:
+        shutil.copyfile(unit, staging / SYSTEMD_UNITS / unit.name)
     write_manifest(staging, version, channel, platform, revision)
     archive = Path(out) / f"{name}.tar.gz"
     # The gzip header's own timestamp is zeroed too, so a rebuild gives the same bytes.

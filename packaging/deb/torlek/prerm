@@ -1,0 +1,9 @@
+#!/bin/sh
+# The masks helper's socket stops with the package, not on an upgrade (#390).
+set -e
+if [ "$1" = remove ] && command -v systemctl >/dev/null 2>&1; then
+    if [ -d /run/systemd/system ]; then
+        systemctl stop torlek-engine-masks.socket 'torlek-engine-masks@*.service'
+    fi
+    systemctl disable torlek-engine-masks.socket
+fi

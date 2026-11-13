@@ -457,3 +457,97 @@ fn walk(folder: &Path) -> Vec<PathBuf> {
         })
         .collect()
 }
+
+/// Theo, 2026-11-13: the packages and `torlek setup engine-masks` install the same files, the
+/// helper's path alone told apart. The packages are built here as the release builds them:
+/// a `tools/release.py` bundle whose `torlek-sandbox` is the setup step's helper, the .deb
+/// from `packaging/deb/build.py` and the AUR recipe's own `package()`
+/// (tests/package_roots.py). Needs python3 and bash.
+#[test]
+fn the_packages_install_the_files_the_setup_step_installs_under_their_own_paths() {
+    let step = RootStep::new();
+    let ran = step.run(&masks_setup_script(), false);
+    assert!(ran.is_success, "{}", ran.stderr);
+    let set_up = files_under(&ran.root, &[SET_UP_UNIT_DIR, "/usr/local/lib"]);
+    let as_packaged: Files = set_up
+        .into_iter()
+        .map(|(path, contents)| (packaged_path(&path), packaged_contents(contents)))
+        .collect();
+    assert!(as_packaged.len() >= 3, "{:?}", as_packaged.keys());
+
+    for (package, root) in package_roots(&step) {
+        let packaged = files_under(&root, &[PACKAGED_UNIT_DIR, PACKAGED_HELPER]);
+
+        assert_eq!(packaged, as_packaged, "{package}");
+    }
+}
+
+type Files = std::collections::BTreeMap<String, Vec<u8>>;
+
+/// Every file under each of `paths` (a file or a folder) of the host at `root`, by its path
+/// on that host.
+fn files_under(root: &Path, paths: &[&str]) -> Files {
+    let mut files = Files::new();
+    for path in paths {
+        let at = root.join(path.trim_start_matches('/'));
+        let found = if at.is_file() { vec![at] } else { walk(&at) };
+        for file in found {
+            let on_host = format!("/{}", file.strip_prefix(root).unwrap().display());
+            files.insert(on_host, std::fs::read(&file).unwrap());
+        }
+    }
+    files
+}
+
+fn packaged_path(path: &str) -> String {
+    if path == SET_UP_HELPER {
+        return PACKAGED_HELPER.to_owned();
+    }
+    let unit = path
+        .strip_prefix(&format!("{SET_UP_UNIT_DIR}/"))
+        .unwrap_or_else(|| panic!("the setup step installed {path}, outside its own paths"));
+    format!("{PACKAGED_UNIT_DIR}/{unit}")
+}
+
+fn packaged_contents(contents: Vec<u8>) -> Vec<u8> {
+    match String::from_utf8(contents) {
+        Ok(text) => text.replace(SET_UP_HELPER, PACKAGED_HELPER).into_bytes(),
+        Err(binary) => binary.into_bytes(),
+    }
+}
+
+/// Each package's installed tree, built from a bundle whose `torlek-sandbox` is `step`'s helper.
+fn package_roots(step: &RootStep) -> Vec<(String, PathBuf)> {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let work = step.dir.path().join("packages");
+    std::fs::create_dir(&work).unwrap();
+    let output = Command::new("python3")
+        .arg("-I")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/package_roots.py"))
+        .arg(&repository)
+        .arg(&work)
+        .arg(step.helper())
+        .output()
+        .expect("python3 on PATH");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let roots: Vec<(String, PathBuf)> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let (name, root) = line.split_once(' ').unwrap();
+            (name.to_owned(), PathBuf::from(root))
+        })
+        .collect();
+    assert_eq!(
+        roots
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["deb", "aur"]
+    );
+    roots
+}

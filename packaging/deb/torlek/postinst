@@ -1,0 +1,18 @@
+#!/bin/sh
+# Torlek's masks helper (#390, docs/packaging/deb.md): the package enables its root socket,
+# which starts the helper for each connection only. Without a running systemd (a container,
+# a chroot), enabling it is all that can be done.
+set -e
+if [ "$1" = configure ] && command -v systemctl >/dev/null 2>&1; then
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+    fi
+    systemctl enable torlek-engine-masks.socket
+    if [ -d /run/systemd/system ]; then
+        # A socket that ran before keeps listening as its earlier units said.
+        systemctl restart torlek-engine-masks.socket
+    fi
+    if [ -e /etc/systemd/system/torlek-engine-masks.socket ]; then
+        echo "torlek: the masks helper \`torlek setup engine-masks\` installed shadows this package's; \`torlek setup engine-masks --uninstall\` removes it" >&2
+    fi
+fi

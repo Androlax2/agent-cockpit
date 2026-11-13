@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 RENDER = ROOT / "packaging/aur/render.py"
 COMMITTED = ROOT / "packaging/aur/torlek-bin"
+INSTALL_SCRIPT = "torlek-bin.install"
 TAG = "0.1.0-alpha.1"
 REVISION = "b" * 40
 
@@ -185,6 +186,27 @@ class RecipeTest(unittest.TestCase):
             self.assertEqual(run_render("check-srcinfo", str(out)).returncode, 0)
 
     @unittest.skipUnless(HAS_MAKEPKG, "makepkg is not installed")
+    def test_render_writes_the_install_script_the_recipe_names(self):
+        with tempfile.TemporaryDirectory() as folder:
+            sums = Path(folder) / "SHA256SUMS"
+            sums.write_text(release_sums())
+            out = Path(folder) / "recipe"
+            result = run_render("render", "--tag", TAG, "--sums", str(sums), "--out", str(out))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            template = render.TEMPLATE.parent / INSTALL_SCRIPT
+            self.assertEqual((out / INSTALL_SCRIPT).read_text(), template.read_text())
+            self.assertIn(f"\tinstall = {INSTALL_SCRIPT}\n", (out / ".SRCINFO").read_text())
+
+    def test_the_install_script_enables_the_masks_socket_and_disables_it_on_removal(self):
+        text = (render.TEMPLATE.parent / INSTALL_SCRIPT).read_text()
+        checked = subprocess.run(["sh", "-n"], input=text, capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        for function in ("post_install", "post_upgrade", "pre_remove", "post_remove"):
+            self.assertRegex(text, rf"(?m)^{function}\(\) {{")
+        self.assertIn("systemctl enable torlek-engine-masks.socket", text)
+        self.assertIn("systemctl disable torlek-engine-masks.socket", text)
+
+    @unittest.skipUnless(HAS_MAKEPKG, "makepkg is not installed")
     def test_check_srcinfo_refuses_a_recipe_edited_after_rendering(self):
         with tempfile.TemporaryDirectory() as folder:
             sums = Path(folder) / "SHA256SUMS"
@@ -227,6 +249,15 @@ class RecipeTest(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertEqual((Path(folder) / "PKGBUILD").read_text(), "kept\n")
 
+    def test_render_refuses_to_replace_an_existing_install_script(self):
+        with tempfile.TemporaryDirectory() as folder:
+            sums = Path(folder) / "SHA256SUMS"
+            sums.write_text(release_sums())
+            (Path(folder) / INSTALL_SCRIPT).write_text("kept\n")
+            result = run_render("render", "--tag", TAG, "--sums", str(sums), "--out", folder)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual((Path(folder) / INSTALL_SCRIPT).read_text(), "kept\n")
+
 
 class CommittedRecipeTest(unittest.TestCase):
     """packaging/aur/torlek-bin's PKGBUILD and .SRCINFO, the pair an AUR push carries.
@@ -244,11 +275,17 @@ class CommittedRecipeTest(unittest.TestCase):
         }
         self.assertEqual(text, render.recipe(tag, release_sums(tag, **checksums), pkgrel))
 
+    def test_install_script_is_the_template_s(self):
+        self.assertEqual(
+            (COMMITTED / INSTALL_SCRIPT).read_text(),
+            (render.TEMPLATE.parent / INSTALL_SCRIPT).read_text(),
+        )
+
     @unittest.skipUnless(HAS_MAKEPKG, "makepkg is not installed")
     def test_srcinfo_is_the_one_makepkg_prints(self):
         # A copy: makepkg wants a folder it can write, and a CI checkout is another user's.
         with tempfile.TemporaryDirectory() as folder:
-            for name in ("PKGBUILD", ".SRCINFO"):
+            for name in ("PKGBUILD", ".SRCINFO", INSTALL_SCRIPT):
                 shutil.copy(COMMITTED / name, folder)
             result = run_render("check-srcinfo", folder)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -341,6 +378,19 @@ class FixturePackageTest(unittest.TestCase):
         link = self.root / "usr/share/licenses/torlek-bin/LICENSE"
         self.assertEqual(link.resolve(), (self.root / "usr/lib/torlek/LICENSE").resolve())
         self.assertTrue(link.is_file())
+
+    def test_installs_the_masks_helper_s_units_where_systemd_looks(self):
+        bundle = self.root / "usr/lib/torlek" / release.SYSTEMD_UNITS
+        for unit in ("torlek-engine-masks.socket", "torlek-engine-masks@.service"):
+            with self.subTest(unit=unit):
+                self.assertEqual(self.members[f"usr/lib/systemd/system/{unit}"].mode & 0o777, 0o644)
+                installed = self.root / "usr/lib/systemd/system" / unit
+                self.assertEqual(installed.read_bytes(), (bundle / unit).read_bytes())
+
+    def test_package_carries_the_install_script_that_enables_the_masks_socket(self):
+        self.assertEqual(
+            (self.root / ".INSTALL").read_text(), (COMMITTED / INSTALL_SCRIPT).read_text()
+        )
 
     def test_package_writes_nothing_under_home_or_etc(self):
         owned = [name for name in self.members if not name.startswith(".")]

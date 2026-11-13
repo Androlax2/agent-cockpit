@@ -39,6 +39,9 @@ on:
       - packaging/aur/torlek-bin/PKGBUILD.in
       - packaging/aur/torlek-bin/PKGBUILD
       - packaging/aur/torlek-bin/.SRCINFO
+      - packaging/aur/torlek-bin/torlek-bin.install
+      - crates/cockpit-containers/units/torlek-engine-masks.socket
+      - crates/cockpit-containers/units/torlek-engine-masks@.service
       - tools/tests/test_aur_package.py
       - packaging/windows/ci-analyze.ps1
       - packaging/windows/ci-install.ps1
