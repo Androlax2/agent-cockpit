@@ -254,20 +254,22 @@ fn has_asking_flags(after_sudo: &str) -> bool {
 
 /// One process as `/proc` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Process {
-    pid: u32,
-    name: String,
-    parent: u32,
+pub(crate) struct Process {
+    pub(crate) pid: u32,
+    pub(crate) name: String,
+    pub(crate) parent: u32,
     session: i32,
     /// Clock ticks after boot: with the pid, tells this process from a later one.
-    start: u64,
-    effective_uid: u32,
+    pub(crate) start: u64,
+    /// Who started it: a setuid program's caller.
+    pub(crate) real_uid: u32,
+    pub(crate) effective_uid: u32,
     /// The process tracing it, 0 when none.
     tracer: u32,
 }
 
 #[cfg(target_os = "linux")]
-fn read_process(pid: u32) -> Result<Process, String> {
+pub(crate) fn read_process(pid: u32) -> Result<Process, String> {
     let read = |file: &str| {
         std::fs::read_to_string(format!("/proc/{pid}/{file}"))
             .map_err(|error| format!("process {pid} cannot be read ({error})"))
@@ -278,7 +280,7 @@ fn read_process(pid: u32) -> Result<Process, String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read_process(pid: u32) -> Result<Process, String> {
+pub(crate) fn read_process(pid: u32) -> Result<Process, String> {
     Err(format!(
         "process {pid} cannot be checked: sudo's askpass is answered on Linux only"
     ))
@@ -292,19 +294,19 @@ fn parse_process(pid: u32, stat: &str, status: &str) -> Option<Process> {
     let fields: Vec<&str> = fields.split_whitespace().collect();
     // Field 3 is the state, 4 the parent, 6 the session, 22 the start time.
     let field = |number: usize| fields.get(number - 3).copied();
-    let effective_uid = status
+    let mut uids = status
         .lines()
         .find_map(|line| line.strip_prefix("Uid:"))?
-        .split_whitespace()
-        .nth(1)?
-        .parse()
-        .ok()?;
+        .split_whitespace();
+    let real_uid = uids.next()?.parse().ok()?;
+    let effective_uid = uids.next()?.parse().ok()?;
     Some(Process {
         pid,
         name: name.to_owned(),
         parent: field(4)?.parse().ok()?,
         session: field(6)?.parse().ok()?,
         start: field(22)?.parse().ok()?,
+        real_uid,
         effective_uid,
         tracer: cockpit_processes::tracer_of(status)?,
     })
@@ -465,7 +467,7 @@ fn trusted_sudo_holds(askpass: &SudoAskpass) -> Result<(), String> {
 }
 
 /// The name `/proc` gives a process started from `sudo`: its file name, cut to 15 bytes.
-fn trusted_name(sudo: &Path) -> String {
+pub(crate) fn trusted_name(sudo: &Path) -> String {
     let name = sudo.file_name().map(OsStr::as_bytes).unwrap_or_default();
     String::from_utf8_lossy(&name[..name.len().min(PROCESS_NAME_MAX_BYTES)]).into_owned()
 }
@@ -592,6 +594,7 @@ impl Runner {
                 ));
             }
             asks.last += 1;
+            live.sudo_sightings().asked(&asking.sudo);
             let prompt = prompt_line(prompt.as_bytes()).unwrap_or_else(|| NO_PROMPT.to_owned());
             let ask = asks.last;
             asks.waiting.insert(
@@ -732,6 +735,7 @@ mod tests {
                 parent: 4200,
                 session: 4100,
                 start: 987_654,
+                real_uid: 1000,
                 effective_uid: 0,
                 tracer: 0,
             })

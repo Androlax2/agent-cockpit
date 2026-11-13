@@ -1059,6 +1059,7 @@ fn run_view(
                 ask: ask.ask,
                 prompt: shown(&ask.prompt),
             }),
+        sudo_ran_unasked: runner.sudo_ran_unasked(run.id),
         decision: run.decision.map(|decision| RunDecisionView {
             approved: decision.approved,
             at: decision.at,
@@ -1072,6 +1073,7 @@ fn run_view(
             redacted: result.output.redacted,
             output_retired: result.output_retired,
             stopped_by_owner: result.stopped_by_owner,
+            sudo_ran_unasked: result.sudo_ran_unasked,
         }),
         note: run.note.clone(),
         already_asked: false,

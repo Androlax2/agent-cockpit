@@ -150,46 +150,53 @@ fn each_owner_decision_has_its_kebab_case_kind() {
     }
 }
 
+/// A finished `make test` that failed.
+fn finished_run() -> RunRequestView {
+    RunRequestView {
+        id: 4,
+        session: "s1".to_owned(),
+        revision: 2,
+        state: RunStateView::Finished,
+        command: "make test".to_owned(),
+        asked_command: Some("make".to_owned()),
+        cwd: "/p".to_owned(),
+        reason: "tests".to_owned(),
+        shown_command: shown("make test"),
+        shown_cwd: shown("/p"),
+        shown_reason: shown("tests"),
+        project: Some("p".to_owned()),
+        outside_project: false,
+        folded_command: None,
+        timeout_without_foreground: false,
+        unchecked_shell: None,
+        changed_build_files: Some(Vec::new()),
+        digest: "d".repeat(64),
+        asked_at: 1,
+        expires_at: 901,
+        waiting_for_input: false,
+        waiting_prompt: None,
+        sudo_ask: None,
+        sudo_ran_unasked: 0,
+        decision: None,
+        result: Some(RunResultView {
+            exit_code: 2,
+            output: "fail".to_owned(),
+            omitted_lines: 3,
+            truncated_bytes: 0,
+            redacted: 1,
+            output_retired: false,
+            stopped_by_owner: false,
+            sudo_ran_unasked: 0,
+        }),
+        note: None,
+        already_asked: false,
+    }
+}
+
 #[test]
 fn a_finished_run_request_reply_round_trips() {
     let reply = Outcome::Ok(Reply::RunRequest {
-        request: Box::new(RunRequestView {
-            id: 4,
-            session: "s1".to_owned(),
-            revision: 2,
-            state: RunStateView::Finished,
-            command: "make test".to_owned(),
-            asked_command: Some("make".to_owned()),
-            cwd: "/p".to_owned(),
-            reason: "tests".to_owned(),
-            shown_command: shown("make test"),
-            shown_cwd: shown("/p"),
-            shown_reason: shown("tests"),
-            project: Some("p".to_owned()),
-            outside_project: false,
-            folded_command: None,
-            timeout_without_foreground: false,
-            unchecked_shell: None,
-            changed_build_files: Some(Vec::new()),
-            digest: "d".repeat(64),
-            asked_at: 1,
-            expires_at: 901,
-            waiting_for_input: false,
-            waiting_prompt: None,
-            sudo_ask: None,
-            decision: None,
-            result: Some(RunResultView {
-                exit_code: 2,
-                output: "fail".to_owned(),
-                omitted_lines: 3,
-                truncated_bytes: 0,
-                redacted: 1,
-                output_retired: false,
-                stopped_by_owner: false,
-            }),
-            note: None,
-            already_asked: false,
-        }),
+        request: Box::new(finished_run()),
     });
 
     let wire = serde_json::to_value(&reply).unwrap();
@@ -198,6 +205,21 @@ fn a_finished_run_request_reply_round_trips() {
     assert_eq!(wire["ok"]["request"]["state"], "finished");
     assert_eq!(wire["ok"]["request"]["result"]["exit_code"], 2);
     assert_eq!(serde_json::from_value::<Outcome>(wire).unwrap(), reply);
+}
+
+#[test]
+fn the_sudo_that_ran_unasked_is_counted_live_then_by_the_result() {
+    let running = RunRequestView {
+        state: RunStateView::Running,
+        result: None,
+        sudo_ran_unasked: 2,
+        ..finished_run()
+    };
+    let mut finished = finished_run();
+    finished.result.as_mut().unwrap().sudo_ran_unasked = 3;
+
+    assert_eq!(running.sudo_ran_unasked_so_far(), 2);
+    assert_eq!(finished.sudo_ran_unasked_so_far(), 3);
 }
 
 #[test]

@@ -137,6 +137,7 @@ fn request(state: RunStateView) -> RunRequestView {
         waiting_for_input: false,
         waiting_prompt: None,
         sudo_ask: None,
+        sudo_ran_unasked: 0,
         decision: None,
         result: None,
         note: None,
@@ -160,6 +161,7 @@ fn finished(exit_code: i32, output: &str) -> Outcome {
             redacted: 0,
             output_retired: false,
             stopped_by_owner: false,
+            sudo_ran_unasked: 0,
         }),
         ..request(RunStateView::Finished)
     })
@@ -936,6 +938,7 @@ fn retired(exit_code: i32) -> Outcome {
             redacted: 3,
             output_retired: true,
             stopped_by_owner: false,
+            sudo_ran_unasked: 0,
         }),
         ..request(RunStateView::Finished)
     })
@@ -982,6 +985,7 @@ fn stopped_by_the_owner() -> Outcome {
             redacted: 0,
             output_retired: false,
             stopped_by_owner: true,
+            sudo_ran_unasked: 0,
         }),
         ..request(RunStateView::Finished)
     })
@@ -1020,6 +1024,69 @@ async fn waiting_on_a_run_the_owner_stopped_says_so_with_its_exit_status() {
         text(&output.stderr)
     );
     assert!(text(&output.stdout).contains("Username for"));
+}
+
+/// A run in which one sudo ended having asked the owner nothing (#1374).
+fn sudo_ran_unasked() -> Outcome {
+    run_reply(RunRequestView {
+        result: Some(RunResultView {
+            exit_code: 0,
+            output: "as-root".to_owned(),
+            omitted_lines: 0,
+            truncated_bytes: 0,
+            redacted: 0,
+            output_retired: false,
+            stopped_by_owner: false,
+            sudo_ran_unasked: 1,
+        }),
+        ..request(RunStateView::Finished)
+    })
+}
+
+#[tokio::test]
+async fn the_agent_is_told_a_sudo_ran_without_asking_the_owner() {
+    let home = Home::new();
+    let _daemon = scripted_conversation(&home.agent_socket(), vec![sudo_ran_unasked()]);
+
+    let output = home.cockpit(&["ask", "run", "--wait", "7"], "").await;
+
+    assert!(
+        text(&output.stderr).contains("torlek: sudo ran without asking you: 1 sudo"),
+        "{}",
+        text(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn the_owner_reads_that_a_sudo_ran_without_asking() {
+    let home = Home::new();
+    let _daemon = scripted_conversation(&home.owner_socket(), vec![sudo_ran_unasked()]);
+
+    let output = home.cockpit_as_owner(&["approval", "show", "7"], "").await;
+
+    assert!(
+        text(&output.stdout).contains("sudo ran without asking you"),
+        "{}",
+        text(&output.stdout)
+    );
+}
+
+#[tokio::test]
+async fn the_owner_reads_that_a_sudo_ran_without_asking_while_the_command_still_runs() {
+    let home = Home::new();
+    let running = run_reply(RunRequestView {
+        sudo_ran_unasked: 2,
+        ..request(RunStateView::Running)
+    });
+    let _daemon = scripted_conversation(&home.owner_socket(), vec![running]);
+
+    let output = home.cockpit_as_owner(&["approval", "show", "7"], "").await;
+
+    assert!(
+        text(&output.stdout).contains("sudo ran without asking you: 2 sudo"),
+        "{}",
+        text(&output.stdout)
+    );
 }
 
 const FIGCRAFT_RECORD: &str = "service figcraft listen 127.0.0.1:3845 target 127.0.0.1:3845";

@@ -21,7 +21,9 @@ use cockpit_approvals::{RunSettings, SudoAskpass};
 use cockpit_authorization::Permission;
 use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{Daemon, Instance, Limits, Options, RUN_LEADER_FLAG, Routes};
-use cockpit_protocol::{Command, ErrorCode, Reply, RunRequestView, RunStateView, SecretText};
+use cockpit_protocol::{
+    Command, ErrorCode, Reply, RunRequestView, RunResultView, RunStateView, SecretText,
+};
 use common::{BUILD_PROFILE_DIR, GENEROUS, TestHome, refused};
 
 const PASSWORD: &str = "correct-horse-1374";
@@ -514,6 +516,97 @@ async fn a_waiting_helpers_descriptors_and_memory_are_closed_to_its_own_user() {
     run(asking.answer(request.id, 1, PASSWORD).await);
 }
 
+/// Another sudo stand-in: `<dir>/<kind>/sudo`, a link to bash, so `/proc` names it as the
+/// trusted sudo and reads its arguments as a program's, not a script's. The asked command
+/// gives it `-c` and what it runs; bash takes `-k` too, harmlessly, as sudo would.
+fn other_sudo_stand_in(dir: &Path, kind: &str) -> PathBuf {
+    let other = dir.join(kind);
+    std::fs::create_dir(&other).unwrap();
+    let sudo = other.join("sudo");
+    std::os::unix::fs::symlink("/bin/bash", &sudo).unwrap();
+    sudo
+}
+
+/// The result of an approved `command` that asks the owner nothing.
+async fn ran_unasked(asking: &Asking, command: &str) -> RunResultView {
+    let request = asking.asked(command).await;
+    asking.approve(&request).await;
+    asking.ended(request.id).await.result.expect("a result")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sudo_by_its_path_that_asked_nothing_is_reported() {
+    let asking = started().await;
+    // As sudo does when an earlier sudo in the run left an unlock: it runs, asking nothing,
+    // after loading its policy.
+    let reusing = other_sudo_stand_in(asking.fixture.path(), "reusing");
+
+    let result = ran_unasked(
+        &asking,
+        &format!("'{}' -c 'sleep 0.3; echo as-root'", reusing.display()),
+    )
+    .await;
+
+    assert!(result.output.contains("as-root"), "{}", result.output);
+    assert_eq!(result.sudo_ran_unasked, 1, "{}", result.output);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sudo_given_k_that_asked_nothing_is_reported_too() {
+    let asking = started().await;
+    // `-k` does not prove the owner was asked: the command may hand sudo a password itself.
+    let supplied = other_sudo_stand_in(asking.fixture.path(), "supplied");
+
+    let result = ran_unasked(
+        &asking,
+        &format!("'{}' -k -c 'sleep 0.3; echo as-root'", supplied.display()),
+    )
+    .await;
+
+    assert!(result.output.contains("as-root"), "{}", result.output);
+    assert_eq!(result.sudo_ran_unasked, 1, "{}", result.output);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sudo_that_asked_the_owner_is_not_reported() {
+    let asking = started().await;
+    let asking_sudo = other_sudo_stand_in(asking.fixture.path(), "asking");
+    let request = asking
+        .asked(&format!(
+            "'{}' -c 'password=$(\"$SUDO_ASKPASS\" \"Password: \") || exit 1; echo as-root'",
+            asking_sudo.display()
+        ))
+        .await;
+    asking.approve(&request).await;
+    asking.sudo_asked(request.id, 1).await;
+    run(asking.answer(request.id, 1, PASSWORD).await);
+
+    let ended = asking.ended(request.id).await;
+
+    let result = ended.result.expect("a result");
+    assert_eq!(result.exit_code, 0, "{}", result.output);
+    assert_eq!(result.sudo_ran_unasked, 0, "{}", result.output);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_running_command_shows_its_unasked_sudo_once_that_sudo_ended() {
+    let asking = started().await;
+    let reusing = other_sudo_stand_in(asking.fixture.path(), "reusing");
+    let request = asking
+        .asked(&format!(
+            "'{}' -c 'sleep 0.3; true'; sleep 30",
+            reusing.display()
+        ))
+        .await;
+    asking.approve(&request).await;
+
+    let shown = asking
+        .shown_once(request.id, |run| run.sudo_ran_unasked == 1)
+        .await;
+
+    assert_eq!(shown.state, RunStateView::Running);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_helper_outside_any_run_is_refused_and_prints_no_password() {
     let asking = started().await;
@@ -643,4 +736,24 @@ fn a_runs_environment_names_no_sudo() {
     let settings = cockpit_daemon::run_settings(overrides).unwrap();
 
     assert!(settings.sudo.is_none(), "{:?}", settings.sudo);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sudo_within_a_sudo_is_counted_once() {
+    let asking = started().await;
+    let outer = other_sudo_stand_in(asking.fixture.path(), "outer");
+    let inner = other_sudo_stand_in(asking.fixture.path(), "inner");
+
+    let result = ran_unasked(
+        &asking,
+        &format!(
+            "'{}' -c \"'{}' -c 'sleep 0.3; echo as-root'; sleep 0.3\"",
+            outer.display(),
+            inner.display()
+        ),
+    )
+    .await;
+
+    assert!(result.output.contains("as-root"), "{}", result.output);
+    assert_eq!(result.sudo_ran_unasked, 1, "{}", result.output);
 }

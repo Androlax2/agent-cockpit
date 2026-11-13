@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
     Command, GuideStateView, GuideView, NetworkRequestStateView, NetworkRequestView, Reply,
-    RunRequestView, RunStateView,
+    RunRequestView, RunStateView, sudo_ran_unasked_warning,
 };
 
 const PENDING: u8 = 124;
@@ -458,6 +458,12 @@ fn run_answer(request: &RunRequestView) -> Option<ExitCode> {
                 eprintln!(
                     "torlek: the owner stopped request {} (exit status {})",
                     request.id, result.exit_code
+                );
+            }
+            if result.sudo_ran_unasked > 0 {
+                eprintln!(
+                    "torlek: {}",
+                    sudo_ran_unasked_warning(result.sudo_ran_unasked)
                 );
             }
             if result.output_retired {

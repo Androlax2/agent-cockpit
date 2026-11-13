@@ -738,6 +738,21 @@ fn a_sudo_ask_says_the_password_goes_to_sudo_alone() {
 }
 
 #[test]
+fn a_run_whose_sudo_ran_unasked_is_flagged_while_it_waits_on_the_owner() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+    let flagged = RunRequestView {
+        sudo_ran_unasked: 1,
+        ..waiting_run(5, SESSION)
+    };
+    shown_with_keys(&mut app, vec![flagged], Vec::new(), now);
+
+    let screen = screen_text(&app, after_grace(now));
+
+    assert!(screen.contains("sudo ran without asking you"), "{screen}");
+}
+
+#[test]
 fn sudos_password_is_sent_to_its_ask_not_the_terminal() {
     let now = Instant::now();
     let (mut app, ready) = typed_sudo_password(now);

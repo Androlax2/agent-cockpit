@@ -50,7 +50,10 @@ request here, so nothing is re-read from the sandbox.
    owner only when it is traced by none, no other process holds its pipe, and the session
    is a live run's. The ask waits in the run (`sudo_ask`) until
    `Runner::answer_sudo` hands it the owner's password, the run ends, or the helper goes;
-   before answering it checks that the same sudo still waits on the same helper.
+   before answering it checks that the same sudo still waits on the same helper. While the
+   command runs, `src/sudo_unasked.rs` reads its process tree every 10 ms for the trusted
+   sudo; one that ended having asked the owner nothing through the helper is counted in
+   the result's `sudo_ran_unasked`, stored in the column of that name.
 5. `Runner::reconcile` at startup, after the executions were reconciled: an approved run
    never started is `not-run`; a running one follows its execution (`reconcile_run`): never
    started is `not-run`, ended is `outcome-unknown`, still running stays `running` until

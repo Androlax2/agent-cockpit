@@ -115,6 +115,10 @@ pub struct RunRequestView {
     /// command then also reads `waiting_for_input`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sudo_ask: Option<SudoAskView>,
+    /// While the command runs: sudo processes in it that ended having asked the owner nothing
+    /// (#1374). Its result counts them once it finished.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sudo_ran_unasked: u64,
     pub result: Option<RunResultView>,
     /// Why the request ended without a result, or what is known about it.
     pub note: Option<String>,
@@ -193,6 +197,38 @@ pub struct RunResultView {
     /// `SIGTERM`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stopped_by_owner: bool,
+    /// sudo processes in the command that ended having asked the owner nothing, so may have
+    /// reused an unlock (#1374): "sudo ran without asking you".
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sudo_ran_unasked: u64,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's `skip_serializing_if` passes a reference"
+)]
+fn is_zero(count: &u64) -> bool {
+    *count == 0
+}
+
+impl RunRequestView {
+    /// The sudo processes that ran without asking the owner so far: the result's total once
+    /// the command finished, the live count while it runs (#1374).
+    pub fn sudo_ran_unasked_so_far(&self) -> u64 {
+        self.result
+            .as_ref()
+            .map_or(self.sudo_ran_unasked, |result| result.sudo_ran_unasked)
+    }
+}
+
+/// What the owner and the agent read when `count` sudo processes in a run ended having asked
+/// the owner nothing (#1374): the same words in the pane, `approval show` and the answer.
+pub fn sudo_ran_unasked_warning(count: u64) -> String {
+    format!(
+        "sudo ran without asking you: {count} sudo in the command asked nothing through \
+         Torlek's askpass, so it may have reused an earlier unlock or been handed a password \
+         by the command"
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
