@@ -32,10 +32,6 @@ use crate::StartError;
 /// The argument that makes `torlek-daemon` the askpass helper sudo runs (#1374).
 pub const SUDO_ASKPASS_FLAG: &str = "--sudo-askpass";
 
-/// The sudo every approved run's `sudo` runs, and whose askpass Torlek answers.
-const TRUSTED_SUDO: &str = "/usr/bin/sudo";
-/// The uid the trusted sudo runs as: it is setuid root.
-const ROOT_UID: u32 = 0;
 /// The longest prompt read: sudo's own is one short line.
 const PROMPT_MAX_BYTES: usize = 4096;
 /// How long a helper may take to send its prompt once connected.
@@ -53,16 +49,14 @@ pub fn sudo_askpass(program: &Path, socket: &Path, launchers: PathBuf) -> Option
     if !cfg!(target_os = "linux") {
         return None;
     }
-    let askpass = SudoAskpass {
-        sudo: PathBuf::from(TRUSTED_SUDO),
-        sudo_owner: ROOT_UID,
+    let askpass = SudoAskpass::new(
         launchers,
-        helper: vec![
+        vec![
             program.as_os_str().to_owned(),
             SUDO_ASKPASS_FLAG.into(),
             socket.as_os_str().to_owned(),
         ],
-    };
+    );
     if let Err(why) = askpass.trusted_sudo_holds() {
         tracing::warn!(%why, "sudo in approved runs asks through its terminal: Torlek's askpass is off");
         return None;

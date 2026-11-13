@@ -87,16 +87,16 @@ async fn started() -> Asking {
         vec![RUN_LEADER_FLAG.into()],
     );
     run_settings.environment = vec![("PATH".into(), "/usr/bin:/bin".into())];
-    run_settings.sudo = Some(SudoAskpass {
-        sudo_owner: std::fs::metadata(&sudo).unwrap().uid(),
-        sudo,
-        launchers: options.sudo_launchers(),
-        helper: vec![
+    run_settings.sudo = Some(SudoAskpass::with_stand_in(
+        sudo.clone(),
+        std::fs::metadata(&sudo).unwrap().uid(),
+        options.sudo_launchers(),
+        vec![
             helper.into_os_string(),
             cockpit_daemon::SUDO_ASKPASS_FLAG.into(),
             options.askpass_socket_path().into_os_string(),
         ],
-    });
+    ));
     let mut wiring = common::wiring_in(home.home(), Vec::new());
     wiring.run_settings = run_settings;
     let daemon = Instance::acquire(options)
@@ -573,4 +573,74 @@ async fn a_sudo_left_unanswered_ends_with_its_command_and_asks_no_more() {
     assert_eq!(ended.sudo_ask, None);
     let refusal = refused(asking.answer(request.id, 1, PASSWORD).await);
     assert_ne!(refusal.code, ErrorCode::Internal, "{refusal:?}");
+}
+
+/// Set, in the environment of this test binary run again, to run the release path's check.
+const OVERRIDDEN_ENVIRONMENT: &str = "TORLEK_TEST_SUDO_OVERRIDES_SET";
+const RELEASE_PATH_TEST: &str =
+    "the_daemons_own_askpass_answers_the_hosts_sudo_whatever_its_environment";
+
+/// What the release path does with each variable that could name another sudo set in the
+/// daemon's own environment: the test binary runs itself again with them set, since this
+/// workspace denies the unsafe `set_var`.
+#[test]
+fn the_daemons_own_askpass_answers_the_hosts_sudo_whatever_its_environment() {
+    if std::env::var_os(OVERRIDDEN_ENVIRONMENT).is_none() {
+        let fixture = tempfile::tempdir().unwrap();
+        let other = fixture.path().join("sudo");
+        std::os::unix::fs::symlink("/bin/true", &other).unwrap();
+        let again = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([RELEASE_PATH_TEST, "--exact", "--nocapture"])
+            .env(OVERRIDDEN_ENVIRONMENT, "1")
+            .env("TORLEK_SUDO", &other)
+            .env("SUDO", &other)
+            .env("SUDO_ASKPASS", fixture.path().join("askpass"))
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", other.parent().unwrap().display()),
+            )
+            .output()
+            .unwrap();
+        let printed = String::from_utf8_lossy(&again.stdout);
+        assert!(
+            again.status.success(),
+            "{printed}{}",
+            String::from_utf8_lossy(&again.stderr)
+        );
+        assert!(printed.contains("1 passed"), "{printed}");
+        return;
+    }
+    let launchers = tempfile::tempdir().unwrap();
+
+    let askpass = cockpit_daemon::sudo_askpass(
+        Path::new("/proc/self/exe"),
+        Path::new("/nonexistent/askpass.sock"),
+        launchers.path().to_path_buf(),
+    );
+
+    // Only read, never run: whether the host's sudo is a root-owned setuid file.
+    let host_sudo_is_trusted = std::fs::metadata(cockpit_approvals::TRUSTED_SUDO)
+        .is_ok_and(|sudo| sudo.uid() == 0 && sudo.mode() & 0o4000 != 0 && sudo.mode() & 0o022 == 0);
+    match askpass {
+        Some(askpass) => {
+            assert_eq!(askpass.sudo(), Path::new("/usr/bin/sudo"));
+            assert_eq!(askpass.sudo_owner(), 0);
+        }
+        None => assert!(
+            !host_sudo_is_trusted,
+            "the host's sudo holds, yet askpass is off"
+        ),
+    }
+}
+
+#[test]
+fn a_runs_environment_names_no_sudo() {
+    let overrides = vec![
+        ("SUDO_ASKPASS".into(), "/elsewhere/askpass".into()),
+        ("TORLEK_SUDO".into(), "/elsewhere/sudo".into()),
+    ];
+
+    let settings = cockpit_daemon::run_settings(overrides).unwrap();
+
+    assert!(settings.sudo.is_none(), "{:?}", settings.sudo);
 }

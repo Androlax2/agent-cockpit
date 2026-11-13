@@ -48,21 +48,67 @@ const LAUNCH_POLL: Duration = Duration::from_millis(20);
 /// The longest process name `/proc` reports (`TASK_COMM_LEN` less its terminator).
 const PROCESS_NAME_MAX_BYTES: usize = 15;
 
+/// The only sudo a release build trusts: the host's, setuid root. No configuration key or
+/// environment variable names another (#1374, the owner's decision C).
+pub const TRUSTED_SUDO: &str = "/usr/bin/sudo";
+const ROOT_UID: u32 = 0;
+
 /// How a run's `sudo` asks the owner (#1374).
 #[derive(Debug, Clone)]
 pub struct SudoAskpass {
     /// The sudo each run's `sudo` runs, and the only parent the helper is answered for.
-    pub sudo: PathBuf,
+    pub(crate) sudo: PathBuf,
     /// The uid the trusted sudo runs as, which its file's owner and setuid bit give it: root
     /// for the host's sudo.
-    pub sudo_owner: u32,
+    pub(crate) sudo_owner: u32,
     /// Where the run's `sudo` and `askpass` launchers are written; first in each run's `PATH`.
-    pub launchers: PathBuf,
+    pub(crate) launchers: PathBuf,
     /// The helper and its arguments; sudo appends its prompt.
-    pub helper: Vec<OsString>,
+    pub(crate) helper: Vec<OsString>,
 }
 
 impl SudoAskpass {
+    /// Runs' `sudo` asks through `helper` (its program and arguments; sudo appends its
+    /// prompt), with the launchers written in `launchers`, answering only [`TRUSTED_SUDO`]
+    /// running as root.
+    pub fn new(launchers: PathBuf, helper: Vec<OsString>) -> SudoAskpass {
+        SudoAskpass {
+            sudo: PathBuf::from(TRUSTED_SUDO),
+            sudo_owner: ROOT_UID,
+            launchers,
+            helper,
+        }
+    }
+
+    /// [`SudoAskpass::new`] answering a stand-in `sudo` setuid to `sudo_owner` instead, for
+    /// tests that must never run the host's sudo. Compiled only with debug assertions, so a
+    /// release build has no way to trust another sudo; `tests/trusted_sudo.rs` in
+    /// `cockpit-workspace-rules` keeps every caller in tests.
+    #[cfg(debug_assertions)]
+    pub fn with_stand_in(
+        sudo: PathBuf,
+        sudo_owner: u32,
+        launchers: PathBuf,
+        helper: Vec<OsString>,
+    ) -> SudoAskpass {
+        SudoAskpass {
+            sudo,
+            sudo_owner,
+            launchers,
+            helper,
+        }
+    }
+
+    /// The sudo answered for.
+    pub fn sudo(&self) -> &Path {
+        &self.sudo
+    }
+
+    /// The uid the answered sudo must run as.
+    pub fn sudo_owner(&self) -> u32 {
+        self.sudo_owner
+    }
+
     /// Writes the launchers again before each run, so one run that changed them changes no
     /// later run.
     pub(crate) fn write_launchers(&self) -> std::io::Result<()> {
@@ -629,6 +675,14 @@ impl Runner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_production_askpass_answers_only_the_hosts_sudo_as_root() {
+        let askpass = SudoAskpass::new(PathBuf::from("/launchers"), vec!["helper".into()]);
+
+        assert_eq!(askpass.sudo(), Path::new("/usr/bin/sudo"));
+        assert_eq!(askpass.sudo_owner(), 0);
+    }
 
     #[test]
     fn a_leading_and_and_chained_sudo_ask_every_time() {
