@@ -163,6 +163,40 @@ fn a_setup_unit_that_differs_from_this_releases_or_is_missing_is_stale() {
 }
 
 #[test]
+fn a_packages_helper_is_installed_whatever_the_daemon_runs() {
+    let host = Host::new();
+    host.install_package();
+    std::fs::remove_file(&host.current_helper).unwrap();
+
+    assert_eq!(host.install(), MasksInstall::Packaged);
+}
+
+#[test]
+fn a_setup_steps_helper_left_beside_a_package_without_its_units_shadows_nothing() {
+    let host = Host::new();
+    host.install_package();
+    write(&host.at(SET_UP_HELPER), "an earlier release's helper");
+
+    assert_eq!(host.install(), MasksInstall::Packaged);
+}
+
+#[test]
+fn the_setup_steps_helper_of_another_size_is_stale() {
+    let host = Host::new();
+    host.run_setup_step();
+    write(
+        &host.at(SET_UP_HELPER),
+        "a longer helper of an earlier release",
+    );
+
+    let MasksInstall::SetUp { stale } = host.install() else {
+        panic!("{:?}", host.install());
+    };
+
+    assert_eq!(stale, [SET_UP_HELPER.to_owned()]);
+}
+
+#[test]
 fn a_setup_steps_copy_beside_the_packages_shadows_it() {
     let host = Host::new();
     host.install_package();
@@ -337,25 +371,74 @@ fn removing_the_setup_steps_helper_leaves_none_of_its_files() {
     }
     assert_eq!(
         ran.systemctl,
-        "disable --now torlek-engine-masks.socket\ndaemon-reload\n"
+        "disable --now torlek-engine-masks.socket\nstop torlek-engine-masks@*.service\n\
+         daemon-reload\n"
     );
 }
 
 #[test]
 fn removing_the_setup_steps_helper_beside_a_package_restarts_the_packages() {
     let step = RootStep::new();
+    step.run(&masks_setup_script(), false);
+    std::fs::remove_file(step.dir.path().join("systemctl.log")).unwrap();
 
     let ran = step.run(&masks_removal_script(), true);
 
     assert!(ran.is_success, "{}", ran.stderr);
     assert_eq!(
         ran.systemctl,
-        "daemon-reload\nenable torlek-engine-masks.socket\nrestart torlek-engine-masks.socket\n"
+        "disable --now torlek-engine-masks.socket\nstop torlek-engine-masks@*.service\n\
+         daemon-reload\nenable torlek-engine-masks.socket\nrestart torlek-engine-masks.socket\n"
     );
     assert!(
         ran.file(&format!("{PACKAGED_UNIT_DIR}/torlek-engine-masks.socket"))
             .is_some()
     );
+}
+
+#[test]
+fn removing_where_the_setup_step_installed_nothing_changes_nothing() {
+    let step = RootStep::new();
+
+    let ran = step.run(&masks_removal_script(), true);
+
+    assert!(ran.is_success, "{}", ran.stderr);
+    assert!(ran.stderr.contains("nothing to remove"), "{}", ran.stderr);
+    assert_eq!(ran.systemctl, "");
+}
+
+#[test]
+fn removing_the_last_helper_removes_the_owner_its_engines_gave_its_socket() {
+    let step = RootStep::new();
+    step.run(&masks_setup_script(), false);
+    write(
+        &step.dir.path().join(format!(
+            "root{SET_UP_UNIT_DIR}/torlek-engine-masks.socket.d/owner.conf"
+        )),
+        "[Socket]\nSocketUser=theo\n",
+    );
+
+    let ran = step.run(&masks_removal_script(), false);
+
+    assert!(ran.is_success, "{}", ran.stderr);
+    let left = walk(&ran.root.join(SET_UP_UNIT_DIR.trim_start_matches('/')));
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn removing_the_setup_steps_helper_beside_a_package_keeps_the_owner_its_engines_gave_its_socket() {
+    let step = RootStep::new();
+    step.run(&masks_setup_script(), false);
+    let owner = format!("{SET_UP_UNIT_DIR}/torlek-engine-masks.socket.d/owner.conf");
+    write(
+        &step.dir.path().join(format!("root{owner}")),
+        "[Socket]\nSocketUser=theo\n",
+    );
+
+    let ran = step.run(&masks_removal_script(), true);
+
+    assert!(ran.is_success, "{}", ran.stderr);
+    assert!(ran.file(&owner).is_some());
 }
 
 /// Every file under `folder`.

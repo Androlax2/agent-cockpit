@@ -6,7 +6,7 @@
 //! setup step refuses where the package installs the helper, and readiness names both.
 
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::MASKS_SOCKET_UNIT;
 
@@ -62,40 +62,73 @@ pub enum MasksInstall {
 
 /// Which install of the helper the host under `root` (`/` but in tests) has, the setup
 /// step's compared with this release's units and `current_helper`, the `torlek-sandbox` the
-/// daemon runs.
+/// daemon runs. A package's needs no comparison: the package manager keeps it current.
 pub fn masks_install(root: &Path, current_helper: &Path) -> Result<MasksInstall, String> {
     let at = |path: &str| root.join(path.trim_start_matches('/'));
     let is_packaged = exists(&at(&format!("{PACKAGED_UNIT_DIR}/{MASKS_SOCKET_UNIT}")))?;
-    let mut expected: Vec<(String, Vec<u8>)> = masks_units(SET_UP_HELPER)
-        .into_iter()
-        .map(|(name, text)| (format!("{SET_UP_UNIT_DIR}/{name}"), text.into_bytes()))
-        .collect();
-    let current = read(current_helper)?.ok_or_else(|| {
-        format!(
-            "no {}: the helper to compare with",
-            current_helper.display()
-        )
-    })?;
-    expected.push((SET_UP_HELPER.to_owned(), current));
-    let mut is_set_up = false;
+    let mut has_set_up_units = false;
     let mut stale = Vec::new();
-    for (path, contents) in expected {
+    for (name, text) in masks_units(SET_UP_HELPER) {
+        let path = format!("{SET_UP_UNIT_DIR}/{name}");
         match read(&at(&path))? {
             Some(found) => {
-                is_set_up = true;
-                if found != contents {
+                has_set_up_units = true;
+                if found != text.as_bytes() {
                     stale.push(path);
                 }
             }
             None => stale.push(path),
         }
     }
-    Ok(match (is_packaged, is_set_up) {
-        (false, false) => MasksInstall::Absent,
-        (true, false) => MasksInstall::Packaged,
-        (false, true) => MasksInstall::SetUp { stale },
-        (true, true) => MasksInstall::Both,
+    // Only units in /etc shadow a package's; a helper an earlier setup left runs nowhere.
+    if is_packaged {
+        return Ok(if has_set_up_units {
+            MasksInstall::Both
+        } else {
+            MasksInstall::Packaged
+        });
+    }
+    let has_set_up_helper = match is_same_file(&at(SET_UP_HELPER), current_helper)? {
+        Some(true) => true,
+        Some(false) => {
+            stale.push(SET_UP_HELPER.to_owned());
+            true
+        }
+        None => {
+            stale.push(SET_UP_HELPER.to_owned());
+            false
+        }
+    };
+    Ok(if has_set_up_units || has_set_up_helper {
+        MasksInstall::SetUp { stale }
+    } else {
+        MasksInstall::Absent
     })
+}
+
+/// Whether `installed` has `current`'s contents, `None` when there is no `installed`. Sizes
+/// first: a helper is megabytes, and the daemon asks at each readiness report.
+fn is_same_file(installed: &Path, current: &Path) -> Result<Option<bool>, String> {
+    let Some(installed_size) = size(installed)? else {
+        return Ok(None);
+    };
+    let current_size = size(current)?
+        .ok_or_else(|| format!("no {}: the helper to compare with", current.display()))?;
+    if installed_size != current_size {
+        return Ok(Some(false));
+    }
+    let contents = |path: &Path| {
+        read(path)?.ok_or_else(|| format!("{} went away while it was read", path.display()))
+    };
+    Ok(Some(contents(installed)? == contents(current)?))
+}
+
+fn size(path: &Path) -> Result<Option<u64>, String> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata.len())),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("cannot read {}: {error}", path.display())),
+    }
 }
 
 fn exists(path: &Path) -> Result<bool, String> {
@@ -144,30 +177,54 @@ pub fn masks_setup_script() -> String {
 /// The root step `torlek setup engine-masks --uninstall` runs: it removes the setup step's
 /// files alone, and a package's helper, shadowed until then, listens in their place.
 pub fn masks_removal_script() -> String {
-    let units: Vec<PathBuf> = PACKAGED_UNITS
+    let units: Vec<String> = PACKAGED_UNITS
         .iter()
-        .map(|(name, _)| Path::new(SET_UP_UNIT_DIR).join(name))
+        .map(|(name, _)| format!("{SET_UP_UNIT_DIR}/{name}"))
         .collect();
+    let helper_folders: Vec<String> = Path::new(SET_UP_HELPER)
+        .ancestors()
+        .skip(1)
+        .take(2)
+        .map(|folder| folder.display().to_string())
+        .collect();
+    let owner_drop_in = format!("{SET_UP_UNIT_DIR}/{MASKS_SOCKET_UNIT}.d");
+    let set_up_files = units
+        .iter()
+        .chain([&SET_UP_HELPER.to_owned()])
+        .map(|path| format!("[ ! -e {path} ]"))
+        .collect::<Vec<_>>()
+        .join(" && ");
+    let packaged_socket = format!("{PACKAGED_UNIT_DIR}/{MASKS_SOCKET_UNIT}");
     let mut script = format!(
         "{PREAMBLE}\
+         if {set_up_files}; then\n    \
+         echo \"torlek setup engine-masks: the setup step installed nothing here: nothing to remove\" >&2\n    \
+         exit 0\n\
+         fi\n\
          if [ -e {SET_UP_UNIT_DIR}/{MASKS_SOCKET_UNIT} ]; then\n    \
          systemctl disable --now {MASKS_SOCKET_UNIT}\n\
-         fi\n"
+         fi\n\
+         # A connection's helper still running keeps the removed binary open.\n\
+         systemctl stop '{instances}'\n",
+        instances = MASKS_SERVICE_UNIT.replace("@.", "@*."),
     );
     for unit in &units {
-        script.push_str(&format!("rm -f {}\n", unit.display()));
+        script.push_str(&format!("rm -f {unit}\n"));
     }
     script.push_str(&format!(
         "rm -f {SET_UP_HELPER}\n\
          # Only empty folders go: another program's files under them stay.\n\
-         rmdir /usr/local/lib/torlek/bin /usr/local/lib/torlek 2>/dev/null || true\n\
+         rmdir {folders} 2>/dev/null || true\n\
+         # The owner the engines' setup gave the socket configures a package's socket too.\n\
+         [ -e {packaged_socket} ] || rm -rf {owner_drop_in}\n\
          systemctl daemon-reload\n\
-         if [ -e {PACKAGED_UNIT_DIR}/{MASKS_SOCKET_UNIT} ]; then\n    \
+         if [ -e {packaged_socket} ]; then\n    \
          systemctl enable {MASKS_SOCKET_UNIT}\n    \
          systemctl restart {MASKS_SOCKET_UNIT}\n    \
          echo \"torlek setup engine-masks: the package's masks helper listens in its place\"\n\
          fi\n\
-         echo \"torlek setup engine-masks: the setup step's masks helper is removed\"\n"
+         echo \"torlek setup engine-masks: the setup step's masks helper is removed\"\n",
+        folders = helper_folders.join(" "),
     ));
     script
 }

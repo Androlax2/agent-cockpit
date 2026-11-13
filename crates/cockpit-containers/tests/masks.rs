@@ -403,3 +403,32 @@ async fn a_setup_steps_helper_beside_a_packages_shadows_it() {
 
     assert_eq!(unready, MasksUnready::Shadowed);
 }
+
+#[tokio::test]
+async fn a_set_up_helper_with_nothing_to_compare_with_is_unknown_not_missing() {
+    let fake = fake_helper(Some("ok\n"));
+    let helper = MasksHelper {
+        install_root: fake._dir.path().join("set up root"),
+        ..helper_at(&fake, 0)
+    };
+    install(
+        &helper,
+        SET_UP_UNIT_DIR,
+        SET_UP_HELPER,
+        "this release's helper",
+    );
+    record_engine(&helper, &engine_user());
+
+    let unready = helper
+        .check_ready(
+            own_uid(&fake.socket),
+            &engine_user(),
+            &fake._dir.path().join("no torlek-sandbox"),
+        )
+        .unwrap_err();
+
+    assert!(
+        matches!(&unready, MasksUnready::Unknown(reason) if reason.contains("no torlek-sandbox")),
+        "{unready:?}"
+    );
+}

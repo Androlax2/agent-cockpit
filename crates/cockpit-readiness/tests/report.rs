@@ -1162,6 +1162,17 @@ fn a_projects_own_engine_reports_each_state_with_its_next_step() {
         (
             EngineState::Verified {
                 engine: engine(true),
+                masks: Err(MasksGap::Unknown(
+                    "cannot read /etc/systemd/system/torlek-engine-masks.socket: permission denied"
+                        .to_owned(),
+                )),
+            },
+            Status::Unknown,
+            "then run `torlek doctor` again",
+        ),
+        (
+            EngineState::Verified {
+                engine: engine(true),
                 masks: Err(MasksGap::Shadowed),
             },
             Status::MissingPrerequisite,

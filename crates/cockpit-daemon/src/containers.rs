@@ -173,6 +173,7 @@ pub(crate) async fn project_engine(
                 Err(MasksUnready::NotInstalled(reason)) => Err(MasksGap::NotInstalled(reason)),
                 Err(MasksUnready::OutOfDate { stale }) => Err(MasksGap::OutOfDate { stale }),
                 Err(MasksUnready::Shadowed) => Err(MasksGap::Shadowed),
+                Err(MasksUnready::Unknown(reason)) => Err(MasksGap::Unknown(reason)),
                 Err(MasksUnready::NotSetUp(reason)) => Err(MasksGap::NotSetUp {
                     reason,
                     setup: setup().await,
@@ -569,13 +570,14 @@ mod tests {
         });
         let uid = std::fs::metadata(&socket).unwrap().uid();
         let engines_dir = dir.path().join("engines");
+        let install_root = dir.path().join("root");
         (
             dir,
             MasksHelper {
                 socket,
                 uid,
                 engines_dir,
-                install_root: PathBuf::from("/"),
+                install_root,
             },
         )
     }

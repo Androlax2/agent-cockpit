@@ -55,6 +55,8 @@ pub enum MasksUnready {
     /// The helper is installed, but the engine's setup has not given it to the owner or
     /// recorded the engine for it: running that setup again does.
     NotSetUp(String),
+    /// Whether the helper is installed could not be read, with why.
+    Unknown(String),
 }
 
 impl MasksHelper {
@@ -140,9 +142,7 @@ impl MasksHelper {
         user: &EngineUser,
         current_helper: &Path,
     ) -> Result<(), MasksUnready> {
-        match masks_install(&self.install_root, current_helper)
-            .map_err(MasksUnready::NotInstalled)?
-        {
+        match masks_install(&self.install_root, current_helper).map_err(MasksUnready::Unknown)? {
             MasksInstall::Absent => {
                 return Err(MasksUnready::NotInstalled(
                     "Torlek's masks helper is not installed: neither a package nor `torlek \
