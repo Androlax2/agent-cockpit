@@ -16,7 +16,9 @@ pub use identity::{
     verify,
 };
 pub use info::{DOCKER_DEADLINE, EngineInfo, probe_docker};
-pub use masks::{ENGINES_DIR, MASKS_DEADLINE, MASKS_SOCKET, MASKS_SOCKET_UNIT, MasksHelper};
+pub use masks::{
+    ENGINES_DIR, MASKS_DEADLINE, MASKS_SOCKET, MASKS_SOCKET_UNIT, MasksHelper, MasksUnready,
+};
 pub use setup::{SetupPlan, setup_script, write_setup_script};
 #[cfg(feature = "persistence")]
 pub use store::{MIGRATIONS, record_engine, recorded_engine};

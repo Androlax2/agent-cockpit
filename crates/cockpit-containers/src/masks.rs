@@ -35,6 +35,18 @@ pub struct MasksHelper {
     pub socket: PathBuf,
     /// The user the kernel must name as the socket's listener: root, for the installed one.
     pub uid: u32,
+    /// Where each engine's setup records the engine for the helper: `ENGINES_DIR`.
+    pub engines_dir: PathBuf,
+}
+
+/// Why no session reaches a verified engine yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MasksUnready {
+    /// Torlek's masks helper is not installed, with why.
+    NotInstalled(String),
+    /// The helper is installed, but the engine's setup has not given it to the owner or
+    /// recorded the engine for it: running that setup again does.
+    NotSetUp(String),
 }
 
 impl MasksHelper {
@@ -43,6 +55,7 @@ impl MasksHelper {
         MasksHelper {
             socket: PathBuf::from(MASKS_SOCKET),
             uid: 0,
+            engines_dir: PathBuf::from(ENGINES_DIR),
         }
     }
 
@@ -108,29 +121,41 @@ impl MasksHelper {
         }
     }
 
-    /// Whether the helper's socket is installed for `owner_uid`, the one user its setup lets
-    /// connect: a cheap look for readiness, which asks the helper nothing.
-    pub fn check_socket(&self, owner_uid: u32) -> Result<(), String> {
+    /// Whether the helper would show `user`'s engine a checkout for `owner_uid`, the one user
+    /// its setup lets connect: a cheap look for readiness, which asks the helper nothing.
+    pub fn check_ready(&self, owner_uid: u32, user: &EngineUser) -> Result<(), MasksUnready> {
         let shown = self.socket.display();
         let metadata = match std::fs::symlink_metadata(&self.socket) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(format!(
+                return Err(MasksUnready::NotInstalled(format!(
                     "Torlek's masks helper is not installed: no {shown}"
-                ));
+                )));
             }
-            Err(error) => return Err(format!("cannot read {shown}: {error}")),
+            Err(error) => {
+                return Err(MasksUnready::NotInstalled(format!(
+                    "cannot read {shown}: {error}"
+                )));
+            }
         };
         if !metadata.file_type().is_socket() {
-            return Err(format!("{shown} is not a socket"));
+            return Err(MasksUnready::NotInstalled(format!(
+                "{shown} is not a socket"
+            )));
         }
         if metadata.uid() != owner_uid {
-            return Err(format!(
-                "{shown} lets only uid {} connect, not yours ({owner_uid}): run your \
-                 project engine's setup again",
+            return Err(MasksUnready::NotSetUp(format!(
+                "{shown} lets only uid {} connect, not yours ({owner_uid})",
                 metadata.uid()
-            ));
+            )));
         }
-        Ok(())
+        let record = self.engines_dir.join(format!("{}.conf", user.name()));
+        match std::fs::symlink_metadata(&record) {
+            Ok(_) => Ok(()),
+            Err(error) => Err(MasksUnready::NotSetUp(format!(
+                "the helper has no record of this engine: {}: {error}",
+                record.display()
+            ))),
+        }
     }
 }

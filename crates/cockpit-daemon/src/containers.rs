@@ -8,14 +8,14 @@ use std::sync::Arc;
 
 use cockpit_config::PORT_BASE_VARIABLE;
 use cockpit_containers::{
-    EngineState, EngineUser, Expected, MASKS_DEADLINE, MasksHelper, PASSWD_FILE, RecordedEngine,
-    Remedy, SOCKET_DEADLINE, SetupPlan,
+    EngineState, EngineUser, Expected, MASKS_DEADLINE, MasksHelper, MasksUnready, PASSWD_FILE,
+    RecordedEngine, Remedy, SOCKET_DEADLINE, SetupPlan,
 };
 use cockpit_projects::Project;
 use cockpit_protocol::{
     Command, DecidedThroughView, ErrorCode, ProtocolError, Reply, Unblock, UnblockedBy,
 };
-use cockpit_readiness::{EngineRemedy, ProjectEngine};
+use cockpit_readiness::{EngineRemedy, MasksGap, ProjectEngine};
 use cockpit_sandbox::{EngineRelay, EngineSocket, Forward};
 use cockpit_sessions::HeldPortBlock;
 use cockpit_turso::Database;
@@ -152,7 +152,14 @@ pub(crate) async fn project_engine(
         }
         EngineState::Verified(info) => cockpit_readiness::EngineState::Verified {
             engine: crate::readiness::docker_engine(info),
-            masks: host.masks.check_socket(host.owner_uid),
+            masks: match host.masks.check_ready(host.owner_uid, &user) {
+                Ok(()) => Ok(()),
+                Err(MasksUnready::NotInstalled(reason)) => Err(MasksGap::NotInstalled(reason)),
+                Err(MasksUnready::NotSetUp(reason)) => Err(MasksGap::NotSetUp {
+                    reason,
+                    setup: setup().await,
+                }),
+            },
         },
         EngineState::Refused(refusal) => cockpit_readiness::EngineState::Refused {
             reason: refusal.to_string(),
@@ -215,12 +222,11 @@ impl LaunchEngines {
             }
         };
         let socket = socket_of(&user, &state, &passwd)?;
-        once_masked(&self.host.masks, &user, checkout, socket)
-            .await
-            .inspect_err(|reason| {
-                tracing::warn!(project, %reason, "the launch reaches no project engine");
-            })
-            .ok()
+        if let Err(reason) = shown_masked(&self.host.masks, &user, checkout).await {
+            tracing::warn!(project, %reason, "the launch reaches no project engine");
+            return None;
+        }
+        Some(socket)
     }
 
     async fn examined(&self, project: &str) -> Result<(EngineUser, String, EngineState), String> {
@@ -246,16 +252,15 @@ fn socket_of(user: &EngineUser, state: &EngineState, passwd: &str) -> Option<Eng
     })
 }
 
-/// `socket`, once the helper shows `user`'s engine `checkout` through every denial of the
-/// session baseline in it: otherwise the engine's containers could write the checkout's Git
-/// hooks or read its `.env`. Each launch asks again, so an environment file made since the
-/// last is masked too.
-async fn once_masked(
+/// Whether the helper showed `user`'s engine `checkout` through every denial of the session
+/// baseline in it: otherwise the engine's containers could write the checkout's Git hooks or
+/// read its `.env`. Each launch asks again, so an environment file made since the last is
+/// masked too.
+async fn shown_masked(
     helper: &MasksHelper,
     user: &EngineUser,
     checkout: &Path,
-    socket: EngineSocket,
-) -> Result<EngineSocket, String> {
+) -> Result<(), String> {
     helper
         .show_masked(user, checkout, MASKS_DEADLINE)
         .await
@@ -264,8 +269,7 @@ async fn once_masked(
                 "the engine of {user} is not shown {} masked: {reason}",
                 checkout.display()
             )
-        })?;
-    Ok(socket)
+        })
 }
 
 /// The forward `session` asks for, of `port` of `project`'s engine (#390), once that engine
@@ -546,15 +550,15 @@ mod tests {
             }
         });
         let uid = std::fs::metadata(&socket).unwrap().uid();
-        (dir, MasksHelper { socket, uid })
-    }
-
-    fn engine_socket_of(user: &EngineUser) -> EngineSocket {
-        EngineSocket {
-            user: user.name().to_owned(),
-            uid: 991,
-            socket: user.socket(),
-        }
+        let engines_dir = dir.path().join("engines");
+        (
+            dir,
+            MasksHelper {
+                socket,
+                uid,
+                engines_dir,
+            },
+        )
     }
 
     /// #390: a launch reaches the engine only once the helper masked its checkout.
@@ -563,15 +567,9 @@ mod tests {
         let (_dir, helper) = fake_masks_helper("ok\n");
         let user = EngineUser::for_project("torlek", 3).unwrap();
 
-        let reached = once_masked(
-            &helper,
-            &user,
-            Path::new("/home/owner/app"),
-            engine_socket_of(&user),
-        )
-        .await;
+        let shown = shown_masked(&helper, &user, Path::new("/home/owner/app")).await;
 
-        assert_eq!(reached, Ok(engine_socket_of(&user)));
+        assert_eq!(shown, Ok(()));
     }
 
     #[tokio::test]
@@ -579,14 +577,9 @@ mod tests {
         let (_dir, helper) = fake_masks_helper("refused: /home/owner/app holds no .git\n");
         let user = EngineUser::for_project("torlek", 3).unwrap();
 
-        let refused = once_masked(
-            &helper,
-            &user,
-            Path::new("/home/owner/app"),
-            engine_socket_of(&user),
-        )
-        .await
-        .unwrap_err();
+        let refused = shown_masked(&helper, &user, Path::new("/home/owner/app"))
+            .await
+            .unwrap_err();
 
         assert!(refused.contains("holds no .git"), "{refused}");
     }
@@ -597,17 +590,13 @@ mod tests {
         let helper = MasksHelper {
             socket: dir.path().join("absent.sock"),
             uid: 0,
+            engines_dir: dir.path().join("engines"),
         };
         let user = EngineUser::for_project("torlek", 3).unwrap();
 
-        let refused = once_masked(
-            &helper,
-            &user,
-            Path::new("/home/owner/app"),
-            engine_socket_of(&user),
-        )
-        .await
-        .unwrap_err();
+        let refused = shown_masked(&helper, &user, Path::new("/home/owner/app"))
+            .await
+            .unwrap_err();
 
         assert!(refused.contains("cannot connect"), "{refused}");
     }

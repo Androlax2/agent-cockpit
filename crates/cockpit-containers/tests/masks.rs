@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cockpit_containers::{EngineUser, MasksHelper};
+use cockpit_containers::{EngineUser, MasksHelper, MasksUnready};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 
@@ -66,7 +66,18 @@ fn helper_at(fake: &FakeHelper, uid: u32) -> MasksHelper {
     MasksHelper {
         socket: fake.socket.clone(),
         uid,
+        engines_dir: fake._dir.path().join("engines"),
     }
+}
+
+/// What the engine's setup writes for the helper.
+fn record_engine(helper: &MasksHelper, user: &EngineUser) {
+    std::fs::create_dir_all(&helper.engines_dir).unwrap();
+    std::fs::write(
+        helper.engines_dir.join(format!("{}.conf", user.name())),
+        "uid=1001\n",
+    )
+    .unwrap();
 }
 
 fn engine_user() -> EngineUser {
@@ -169,36 +180,81 @@ fn the_installed_helper_listens_where_the_units_put_it_as_root() {
 
     assert_eq!(helper.socket, Path::new("/run/torlek-engine-masks.sock"));
     assert_eq!(helper.uid, 0);
+    assert_eq!(helper.engines_dir, Path::new("/etc/torlek/engines"));
 }
 
 #[tokio::test]
-async fn a_helper_socket_the_owner_reaches_is_ready() {
+async fn a_helper_the_owner_reaches_that_records_the_engine_is_ready() {
     let fake = fake_helper(Some("ok\n"));
     let helper = helper_at(&fake, 0);
+    record_engine(&helper, &engine_user());
 
-    assert_eq!(helper.check_socket(own_uid(&fake.socket)), Ok(()));
+    assert_eq!(
+        helper.check_ready(own_uid(&fake.socket), &engine_user()),
+        Ok(())
+    );
 }
 
 #[tokio::test]
-async fn a_helper_socket_that_is_missing_another_users_or_no_socket_is_not_ready() {
+async fn a_helper_socket_that_is_missing_or_no_socket_is_not_installed() {
     let fake = fake_helper(Some("ok\n"));
     let owner = own_uid(&fake.socket);
     let plain_file = fake._dir.path().join("plain");
     std::fs::write(&plain_file, "").unwrap();
-    for (case, socket, owner_uid, expected) in [
+    for (case, socket, expected) in [
         (
             "missing",
             fake._dir.path().join("absent.sock"),
-            owner,
             "is not installed",
         ),
-        ("not a socket", plain_file, owner, "is not a socket"),
-        ("another user's", fake.socket.clone(), owner + 1, "only uid"),
+        ("not a socket", plain_file, "is not a socket"),
     ] {
-        let helper = MasksHelper { socket, uid: 0 };
+        let helper = MasksHelper {
+            socket,
+            ..helper_at(&fake, 0)
+        };
+        record_engine(&helper, &engine_user());
 
-        let refused = helper.check_socket(owner_uid).unwrap_err();
+        let unready = helper.check_ready(owner, &engine_user()).unwrap_err();
 
-        assert!(refused.contains(expected), "{case}: {refused}");
+        match unready {
+            MasksUnready::NotInstalled(reason) => {
+                assert!(reason.contains(expected), "{case}: {reason}");
+            }
+            other => panic!("{case}: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_helper_socket_another_user_connects_to_needs_the_engines_setup_again() {
+    let fake = fake_helper(Some("ok\n"));
+    let helper = helper_at(&fake, 0);
+    record_engine(&helper, &engine_user());
+
+    let unready = helper
+        .check_ready(own_uid(&fake.socket) + 1, &engine_user())
+        .unwrap_err();
+
+    match unready {
+        MasksUnready::NotSetUp(reason) => assert!(reason.contains("only uid"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_engine_the_helper_has_no_record_of_needs_its_setup_again() {
+    let fake = fake_helper(Some("ok\n"));
+    let helper = helper_at(&fake, 0);
+
+    let unready = helper
+        .check_ready(own_uid(&fake.socket), &engine_user())
+        .unwrap_err();
+
+    match unready {
+        MasksUnready::NotSetUp(reason) => {
+            assert!(reason.contains("torlek-e3.conf"), "{reason}");
+        }
+        other => panic!("{other:?}"),
     }
 }

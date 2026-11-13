@@ -236,6 +236,10 @@ done
 dockerd_rootless=$(command -v dockerd-rootless.sh)
 setfacl_program=$(command -v setfacl)
 nologin=$(command -v nologin || echo /bin/false)
+# Torlek's masks helper lets one user connect: a second owner's setup would take it.
+masks_owner="$unit_dir/{masks_socket_unit}.d/owner.conf"
+[ ! -f "$masks_owner" ] || grep -qx "SocketUser=$owner" "$masks_owner" ||
+    fail "Torlek's masks helper serves another user on this host ($(grep '^SocketUser=' "$masks_owner")); it serves one owner"
 
 if ! id -u "$user" >/dev/null 2>&1; then
     useradd --system --user-group --create-home --home-dir "/var/lib/$user" \
@@ -336,15 +340,16 @@ UNIT
 
 # Torlek's masks helper shows this engine the project's checkouts from what it records here.
 mkdir -p '{engines_dir}'
+user_uid=$(id -u "$user")
 cat >"{engines_dir}/$user.conf" <<CONF
 # Written by Torlek's engine setup for project {project}; running it again rewrites it.
-uid=$(id -u "$user")
+uid=$user_uid
 owner_uid={owner_uid}
 project_root=$project_root
 clones_dir=$clones_dir
 CONF
 mkdir -p "$unit_dir/{masks_socket_unit}.d"
-cat >"$unit_dir/{masks_socket_unit}.d/owner.conf" <<UNIT
+cat >"$masks_owner" <<UNIT
 # Written by Torlek's engine setup: only you connect, and the helper checks it is you.
 [Socket]
 SocketUser=$owner
@@ -435,9 +440,36 @@ mod tests {
             script.contains(
                 "cat >\"/etc/torlek/engines/$user.conf\" <<CONF\n\
                  # Written by Torlek's engine setup for project shop; running it again rewrites it.\n\
-                 uid=$(id -u \"$user\")\nowner_uid=1000\nproject_root=$project_root\n\
+                 uid=$user_uid\nowner_uid=1000\nproject_root=$project_root\n\
                  clones_dir=$clones_dir\nCONF\n"
             ),
+            "{script}"
+        );
+    }
+
+    /// `set -e` stops at a failed assignment, never at a substitution inside a heredoc.
+    #[test]
+    fn the_engine_users_uid_is_read_where_a_failure_stops_the_script() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+
+        assert!(
+            script.contains("\nuser_uid=$(id -u \"$user\")\n"),
+            "{script}"
+        );
+    }
+
+    /// The helper's socket has one owner per host: a second owner's setup would take it.
+    #[test]
+    fn a_masks_socket_another_owner_holds_stops_the_script_before_it_changes_anything() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+
+        let refusal = script
+            .find("grep -qx \"SocketUser=$owner\" \"$masks_owner\" ||")
+            .expect(&script);
+        let first_change = script.find("useradd --system").unwrap();
+        assert!(refusal < first_change, "{script}");
+        assert!(
+            script.contains("Torlek's masks helper serves another user on this host"),
             "{script}"
         );
     }
