@@ -857,8 +857,18 @@ impl Home {
 
     /// What the [`COMMANDED_PROJECT`] agent's line `number` printed, ending `exit=<code>`.
     pub async fn agent_output(&self, root: &Path, number: usize) -> String {
+        self.agent_output_within(root, number, SETTLED_WITHIN).await
+    }
+
+    /// [`Home::agent_output`] for a line that may take up to `within`, a container's pull.
+    pub async fn agent_output_within(
+        &self,
+        root: &Path,
+        number: usize,
+        within: Duration,
+    ) -> String {
         let output = root.join(".agent").join(format!("{number}.out"));
-        let deadline = Instant::now() + SETTLED_WITHIN;
+        let deadline = Instant::now() + within;
         loop {
             if let Ok(printed) = std::fs::read_to_string(&output) {
                 return printed;
