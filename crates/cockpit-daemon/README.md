@@ -138,7 +138,7 @@ not share code.
   are lost with the terminal.
 - Approved runs are confined unless `agents.confined_runs = "off"` (#1387, `run_confinement`):
   hidden are the owner's keys, tokens, keyrings and browser profiles under their home
-  (`HIDDEN_FROM_RUNS`), Torlek's token folders and the sessions' mount sources; emptied are
+  (`cockpit_sandbox::OWNER_SECRETS`), Torlek's token folders and the sessions' mount sources; emptied are
   Torlek's state, the owner's runtime folder and `/run`; reachable read-only, the agent
   socket's folder alone, never the owner's or the askpass socket. `ask-run` refuses a card
   folder inside what runs cannot see.

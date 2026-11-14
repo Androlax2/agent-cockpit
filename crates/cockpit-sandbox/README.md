@@ -42,6 +42,15 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   confined run's card names into the only entries of its own proxy (`AllowSource::Card`),
   `host` or `host:port`, 443 when no port is named; `card_entry` checks one as that proxy
   will read it. The owner approved them on the card, so the proxy files no request.
+- The root part of an approved run (#1387, option B, `root_run.rs`): `RootRunRequest` is
+  what the daemon asks `torlek-sandbox root-run` to run as root; `RootFloor` builds the system
+  unit's properties and refuses what would lower its floor. The floor: `OWNER_SECRETS` under
+  the owner's home, `/root` and the password hashes hidden; `/boot`, `/efi`, sudo's rules and
+  Torlek's install (`ROOT_NEVER_WRITES`) read-only even inside a folder the request writes,
+  and a request to write in one refused; `/run` emptied; no network, devices or processes of
+  the host; no capability that undoes a mount or reaches the kernel. The request can hide more
+  and name folders to write, nothing else. The daemon's confined runs hide the same
+  `OWNER_SECRETS`.
 - Toolchains and caches (#859): the caller resolves `ToolNeeds` from the toolchain table of
   `cockpit-provider-api`. The install roots `PATH` resolves the checkout's ecosystems in are
   bound read-only; every cache variable points into `caches/` of the session's temp folder;
