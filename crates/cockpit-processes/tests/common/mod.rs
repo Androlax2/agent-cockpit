@@ -189,6 +189,7 @@ if [ "$1" = --version ]; then
   echo "systemd $version (fake)"
   exit 0
 fi
+printf '%s\n' "$@" > "$state/arguments"
 unit=
 # From 258 a scope expands `$` by default; 254 added the switch.
 if [ "$version" -ge 258 ]; then expand=yes; else expand=no; fi
@@ -286,6 +287,15 @@ impl FakeSystemd {
 
     pub fn without_manager(&self) {
         std::fs::write(self.dir.path().join("no-manager"), "").unwrap();
+    }
+
+    /// The arguments of the last `systemd-run` call, one per entry.
+    pub fn last_arguments(&self) -> Vec<String> {
+        std::fs::read_to_string(self.dir.path().join("arguments"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     pub fn calls(&self) -> Vec<String> {

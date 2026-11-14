@@ -17,8 +17,8 @@ use crate::output::{OutputKind, OutputLimits, OutputStream};
 use crate::platform::{self, HOSTED_LAUNCH_SCRIPT, LAUNCH_SCRIPT};
 use crate::systemd::SystemdTools;
 use crate::{
-    Containment, EndReason, Error, Escalation, Execution, ExecutionId, FinalPresence, HostedLaunch,
-    Identity, LaunchSpec, Phase, Reconciled, Signal, SignalOutcome, Termination,
+    Confinement, Containment, EndReason, Error, Escalation, Execution, ExecutionId, FinalPresence,
+    HostedLaunch, Identity, LaunchSpec, Phase, Reconciled, Signal, SignalOutcome, Termination,
     TerminationDiagnostics, UnconfirmedReason, store,
 };
 
@@ -179,7 +179,76 @@ impl Supervisor {
         epoch: &str,
     ) -> Result<ExecutionId, Error> {
         let boot_id = self.boot_id().await?;
-        store::record_intent(write, epoch, self.launch_containment, boot_id).await
+        store::record_intent(
+            write,
+            epoch,
+            store::Holder::Launching(self.launch_containment),
+            boot_id,
+        )
+        .await
+    }
+
+    /// [`Supervisor::reserve`] for a confined execution (#1387), which runs in a systemd
+    /// service of its own: refused unless this user's systemd manager holds new launches.
+    /// Launch it with [`Supervisor::launch_confined`] only.
+    pub async fn reserve_confined(
+        &self,
+        write: &WriteTransaction<'_>,
+        epoch: &str,
+    ) -> Result<ExecutionId, Error> {
+        if self.launch_containment != LaunchContainment::SystemdScope {
+            return Err(Error::ConfinementUnavailable {
+                reason: "no systemd user manager answers, so there is no service to confine it"
+                    .to_owned(),
+            });
+        }
+        let boot_id = self.boot_id().await?;
+        store::record_intent(write, epoch, store::Holder::Service, boot_id).await
+    }
+
+    /// Starts the committed confined intent `id` in its service, held to `confinement`, and
+    /// waits for its start confirmation, as [`Supervisor::launch_reserved`] does. Its own
+    /// execution folder is writable too: the launch confirms itself there. A `systemd-run`
+    /// that cannot keep `$` from being expanded ends the intent unstarted.
+    pub async fn launch_confined(
+        &self,
+        database: &Database,
+        id: ExecutionId,
+        spec: &LaunchSpec,
+        confinement: &Confinement,
+    ) -> Result<Launched, Error> {
+        let containment = reserved_execution(database, id, true).await?.containment;
+        let Containment::SystemdService { unit } = &containment else {
+            unreachable!("reserved_execution checked the containment");
+        };
+        if !*self
+            .takes_expand_environment
+            .get_or_init(|| self.systemd.takes_expand_environment())
+            .await
+        {
+            store::record_ended(database, id, EndReason::NeverStarted).await?;
+            return Err(Error::ConfinementUnavailable {
+                reason: "this systemd-run cannot keep a service from expanding `$` in the \
+                         command (systemd 254 or later can)"
+                    .to_owned(),
+            });
+        }
+        let mode = if spec.terminal.is_some() {
+            crate::OutputMode::Pty
+        } else {
+            crate::OutputMode::Files
+        };
+        crate::output_catalog::begin_output_launch(database, id, mode, false).await?;
+        let launcher =
+            match self.spawn_confined(self.execution_dir(database, id), unit, spec, confinement) {
+                Ok(launcher) => launcher,
+                Err(error) => {
+                    store::record_ended(database, id, EndReason::NeverStarted).await?;
+                    return Err(error);
+                }
+            };
+        self.follow_launcher(database, id, launcher, spec.terminal.is_some(), None)
+            .await
     }
 
     /// Spawns the program of the committed intent `id` in its containment and waits for its
@@ -216,7 +285,7 @@ impl Supervisor {
         spec: &LaunchSpec,
         guard: Option<crate::OutputGuard>,
     ) -> Result<Launched, Error> {
-        let containment = reserved_execution(database, id).await?.containment;
+        let containment = reserved_execution(database, id, false).await?.containment;
         let takes_expand_environment = self.scope_takes_expand_environment(&containment).await;
         let mode = if spec.terminal.is_some() {
             crate::OutputMode::Pty
@@ -224,7 +293,7 @@ impl Supervisor {
             crate::OutputMode::Files
         };
         crate::output_catalog::begin_output_launch(database, id, mode, guard.is_some()).await?;
-        let mut launcher = match self.spawn(
+        let launcher = match self.spawn(
             self.execution_dir(database, id),
             &containment,
             takes_expand_environment,
@@ -236,6 +305,19 @@ impl Supervisor {
                 return Err(error);
             }
         };
+        self.follow_launcher(database, id, launcher, spec.terminal.is_some(), guard)
+            .await
+    }
+
+    /// Records the spawned launcher's pid, reaps it, and waits for the start confirmation.
+    async fn follow_launcher(
+        &self,
+        database: &Database,
+        id: ExecutionId,
+        mut launcher: tokio::process::Child,
+        has_terminal: bool,
+        guard: Option<crate::OutputGuard>,
+    ) -> Result<Launched, Error> {
         let process_group = launcher
             .id()
             .and_then(|pid| i32::try_from(pid).ok())
@@ -252,7 +334,7 @@ impl Supervisor {
             id,
             process_group,
             launcher_exited,
-            spec.terminal.is_some(),
+            has_terminal,
             guard,
         )
         .await
@@ -289,6 +371,9 @@ impl Supervisor {
         let scope_only = match containment {
             Containment::SystemdScope { .. } => scope_manager_variables(&spec.environment),
             Containment::ProcessGroup => Vec::new(),
+            Containment::SystemdService { .. } => {
+                unreachable!("a confined intent is launched by `launch_confined` only")
+            }
         };
         let (mut command, program) = match containment {
             Containment::SystemdScope { unit } => {
@@ -302,6 +387,9 @@ impl Supervisor {
                 let mut command = tokio::process::Command::new(launcher[0]);
                 command.args(&launcher[1..]);
                 (command, PathBuf::from(launcher[0]))
+            }
+            Containment::SystemdService { .. } => {
+                unreachable!("a confined intent is launched by `launch_confined` only")
             }
         };
         command
@@ -342,6 +430,80 @@ impl Supervisor {
         command.spawn().map_err(Error::io("spawn", program))
     }
 
+    /// Spawns `systemd-run` for a confined execution. The service starts from the manager's
+    /// environment, so its first step reads the spec's from a private file in the execution
+    /// folder, deletes it and clears the rest, as a hosted launch does; then the session
+    /// leader, when there is a terminal, and the launch script that confirms the start.
+    fn spawn_confined(
+        &self,
+        dir: PathBuf,
+        unit: &str,
+        spec: &LaunchSpec,
+        confinement: &Confinement,
+    ) -> Result<tokio::process::Child, Error> {
+        let environment = valid_environment(&spec.environment)?;
+        let script = host_script(&[], &environment)?;
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .map_err(Error::io("create", &dir))?;
+        let environment_file = dir.join(ENVIRONMENT_FILE);
+        write_environment_file(&environment_file, &environment)
+            .map_err(Error::io("write", &environment_file))?;
+        let mut command =
+            self.systemd
+                .service_launcher(unit, &spec.working_dir, confinement, &dir)?;
+        command
+            .args(["/bin/sh", "-c", &script, "cockpit-host"])
+            .arg(&environment_file);
+        if let Some(terminal) = &spec.terminal {
+            command
+                .arg(&terminal.leader)
+                .args(&terminal.leader_arguments);
+        }
+        command
+            .args(["/bin/sh", "-c", LAUNCH_SCRIPT, "cockpit-launch"])
+            .arg(dir.join(LEADER_FILE))
+            .arg(&spec.program)
+            .args(&spec.arguments)
+            .current_dir(&spec.working_dir)
+            .env_clear()
+            .envs(scope_manager_variables(&[]));
+        match &spec.terminal {
+            // `--pipe` hands the service these very descriptors.
+            Some(terminal) => {
+                let device = |device: &OwnedFd| {
+                    device
+                        .try_clone()
+                        .map_err(Error::io("duplicate", "the execution's terminal"))
+                };
+                command
+                    .stdin(device(&terminal.device)?)
+                    .stdout(device(&terminal.device)?)
+                    .stderr(device(&terminal.device)?);
+            }
+            None => {
+                let output_file = |kind: OutputKind| {
+                    let path = dir.join(kind.file_name());
+                    OpenOptions::new()
+                        .append(true)
+                        .create_new(true)
+                        .open(&path)
+                        .map_err(Error::io("create", path))
+                };
+                command
+                    .stdin(Stdio::null())
+                    .stdout(output_file(OutputKind::Stdout)?)
+                    .stderr(output_file(OutputKind::Stderr)?)
+                    .process_group(0);
+            }
+        }
+        command
+            .spawn()
+            .map_err(Error::io("spawn", &self.systemd.systemd_run))
+    }
+
     /// Commits the launch intent of an execution whose program a host starts itself: a tmux
     /// pane, whose terminal the program needs (report 05). The host runs the returned
     /// command in `spec.working_dir` as the leader of a new process group (tmux makes each
@@ -380,7 +542,7 @@ impl Supervisor {
         spec: &LaunchSpec,
         host_variables: &[&str],
     ) -> Result<HostedLaunch, Error> {
-        let containment = reserved_execution(database, id).await?.containment;
+        let containment = reserved_execution(database, id, false).await?.containment;
         let prepared = self.launch_environment(spec).and_then(|environment| {
             let host_script = host_script(host_variables, &environment)?;
             Ok((environment, host_script))
@@ -453,14 +615,7 @@ impl Supervisor {
     /// needs to reach the manager when the execution runs in a scope. Refuses a name that is
     /// not a plain shell name, and a value holding a NUL byte.
     fn launch_environment(&self, spec: &LaunchSpec) -> Result<Vec<(OsString, OsString)>, Error> {
-        let mut environment = spec.environment.clone();
-        if let Some((name, _)) = environment.iter().find(|(name, value)| {
-            !name.to_str().is_some_and(is_shell_name) || value.as_encoded_bytes().contains(&0)
-        }) {
-            return Err(Error::InvalidEnvironment {
-                name: name.to_string_lossy().into_owned(),
-            });
-        }
+        let mut environment = valid_environment(&spec.environment)?;
         if self.launch_containment == LaunchContainment::SystemdScope {
             let manager = scope_manager_variables(&environment);
             environment.extend(manager);
@@ -532,6 +687,10 @@ impl Supervisor {
         has_terminal: bool,
         guard: Option<crate::OutputGuard>,
     ) -> Result<Launched, Error> {
+        let is_service = matches!(
+            store::execution(database, id).await?.containment,
+            Containment::SystemdService { .. }
+        );
         let leader_path = self.execution_dir(database, id).join(LEADER_FILE);
         let deadline = tokio::time::Instant::now() + self.launch_timeout;
         // Kept once received: a program that exits at once still has its status reported.
@@ -543,7 +702,9 @@ impl Supervisor {
                 exited = launcher_exited.try_recv().ok();
             }
             if let Some((pid, start)) = read_leader_file(&leader_path).await? {
-                if pid != process_group {
+                // A service's program is the manager's child, not the launcher itself: the
+                // unit, not the pid, ties it to the execution.
+                if pid != process_group && !is_service {
                     return Err(Error::InvalidStoredExecution {
                         execution: id,
                         reason: format!(
@@ -699,7 +860,9 @@ impl Supervisor {
             process_group,
             leader_start: leader_start.clone(),
         };
-        if let Containment::SystemdScope { unit } = &execution.containment {
+        if let Containment::SystemdScope { unit } | Containment::SystemdService { unit } =
+            &execution.containment
+        {
             if self.systemd.is_active(unit).await? {
                 return Ok(ours);
             }
@@ -840,7 +1003,7 @@ impl Supervisor {
             return Ok(None);
         };
         match (&execution.containment, process_group) {
-            (Containment::SystemdScope { unit }, _) => {
+            (Containment::SystemdScope { unit } | Containment::SystemdService { unit }, _) => {
                 self.systemd.continue_scope(unit).await.map(Some)
             }
             (Containment::ProcessGroup, Some(group)) => platform::continue_group(group).map(Some),
@@ -875,7 +1038,9 @@ impl Supervisor {
         signal: Signal,
     ) -> Result<SignalOutcome, Error> {
         match containment {
-            Containment::SystemdScope { unit } => self.systemd.signal(unit, signal).await,
+            Containment::SystemdScope { unit } | Containment::SystemdService { unit } => {
+                self.systemd.signal(unit, signal).await
+            }
             Containment::ProcessGroup => platform::signal_group(
                 process_group.expect("an identified process-group execution has its group"),
                 signal,
@@ -948,10 +1113,19 @@ impl Supervisor {
     }
 }
 
-/// The execution `id`, refused unless it is a launch intent still waiting for its launch.
-async fn reserved_execution(database: &Database, id: ExecutionId) -> Result<Execution, Error> {
+/// The execution `id`, refused unless it is a launch intent still waiting for its launch, and
+/// a confined one exactly when `is_confined`: a confined intent is launched confined only.
+async fn reserved_execution(
+    database: &Database,
+    id: ExecutionId,
+    is_confined: bool,
+) -> Result<Execution, Error> {
     let reserved = store::execution(database, id).await?;
-    if reserved.phase != Phase::Launching || reserved.process_group.is_some() {
+    let is_service = matches!(reserved.containment, Containment::SystemdService { .. });
+    if reserved.phase != Phase::Launching
+        || reserved.process_group.is_some()
+        || is_service != is_confined
+    {
         return Err(Error::NotReserved { execution: id });
     }
     Ok(reserved)
@@ -975,7 +1149,9 @@ fn launching_or(gone: Presence, leader_start: &Option<String>, launcher: Option<
 /// never cut short by a flaky `systemctl`.
 async fn identity_present(systemd: &SystemdTools, identity: &Identity) -> bool {
     match &identity.containment {
-        Containment::SystemdScope { unit } => systemd.is_active(unit).await.unwrap_or(true),
+        Containment::SystemdScope { unit } | Containment::SystemdService { unit } => {
+            systemd.is_active(unit).await.unwrap_or(true)
+        }
         Containment::ProcessGroup => platform::group_has_members(identity.process_group),
     }
 }
@@ -989,6 +1165,21 @@ fn scope_manager_variables(environment: &[(OsString, OsString)]) -> Vec<(OsStrin
         .filter(|name| !environment.iter().any(|(set, _)| set == name))
         .filter_map(|name| Some((name.into(), std::env::var_os(name)?)))
         .collect()
+}
+
+/// `environment`, refused when a name is not a plain shell name or a value holds a NUL byte:
+/// both are written into a shell script and its environment file.
+fn valid_environment(
+    environment: &[(OsString, OsString)],
+) -> Result<Vec<(OsString, OsString)>, Error> {
+    if let Some((name, _)) = environment.iter().find(|(name, value)| {
+        !name.to_str().is_some_and(is_shell_name) || value.as_encoded_bytes().contains(&0)
+    }) {
+        return Err(Error::InvalidEnvironment {
+            name: name.to_string_lossy().into_owned(),
+        });
+    }
+    Ok(environment.to_vec())
 }
 
 /// The host's shell step of a hosted command. It reads the environment file (its first

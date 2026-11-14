@@ -21,12 +21,17 @@ pub enum Containment {
     /// A transient systemd user scope: its cgroup holds every descendant, including one
     /// that leaves the process group with `setsid`.
     SystemdScope { unit: String },
+    /// A transient systemd user service started with `systemd-run --pipe --wait` (#1387): a
+    /// confined execution, held to its [`Confinement`] by the manager. Its cgroup holds every
+    /// descendant, as a scope's does.
+    SystemdService { unit: String },
     /// A process group led by the launched program. A descendant that calls `setsid`
     /// leaves it; that is the macOS limit report 03 accepts.
     ProcessGroup,
 }
 
 pub(crate) const SYSTEMD_SCOPE: &str = "systemd-scope";
+pub(crate) const SYSTEMD_SERVICE: &str = "systemd-service";
 pub(crate) const PROCESS_GROUP: &str = "process-group";
 
 /// How the processes of an execution are recognised after a daemon restart: never by PID
@@ -133,6 +138,21 @@ pub struct LaunchSpec {
     pub environment: Vec<(OsString, OsString)>,
     /// Runs the program in this terminal instead of with its output in files.
     pub terminal: Option<Terminal>,
+}
+
+/// What a confined execution may reach (#1387), as systemd's sandboxing of its service
+/// enforces it: the whole file system read-only except the `writable` folders, `hidden`
+/// paths unreachable, `emptied` folders shown empty, its own `/tmp`, and no network: its
+/// network namespace has only a loopback of its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Confinement {
+    /// Folders the execution may write, even inside an `emptied` one. Each must exist.
+    pub writable: Vec<PathBuf>,
+    /// Paths the execution cannot read or list; one that does not exist is skipped.
+    pub hidden: Vec<PathBuf>,
+    /// Folders shown as empty and read-only, except the `writable` folders inside them: a
+    /// hidden folder cannot hold a writable one.
+    pub emptied: Vec<PathBuf>,
 }
 
 /// A terminal an execution runs in, as its controlling terminal, so prompts such as `sudo`'s

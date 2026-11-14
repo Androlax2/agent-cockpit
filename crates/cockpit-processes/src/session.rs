@@ -2,7 +2,8 @@
 //!
 //! A terminal becomes a process's controlling terminal only when a session leader takes it.
 //! Making the child one between `fork` and `exec` would need `unsafe`, so a leader program
-//! does it in its own process: it calls `setsid`, takes its standard input (the terminal) as
+//! does it in its own process: it calls `setsid` unless it leads a session already (a
+//! service's program does), takes its standard input (the terminal) as
 //! controlling terminal, then execs the rest of its command line, which keeps its pid.
 
 use std::ffi::OsString;
@@ -18,7 +19,11 @@ pub fn run_session_leader(arguments: &[OsString]) -> ExitCode {
         eprintln!("torlek: the session leader needs a program to run");
         return ExitCode::from(2);
     };
-    if let Err(error) = rustix::process::setsid() {
+    // A confined execution's service is already a session leader without a terminal
+    // (#1387), and `setsid` refuses a session leader.
+    let is_session_leader =
+        rustix::process::getsid(None).is_ok_and(|session| session == rustix::process::getpid());
+    if !is_session_leader && let Err(error) = rustix::process::setsid() {
         eprintln!("torlek: cannot start a session for the command: {error}");
         return ExitCode::from(127);
     }

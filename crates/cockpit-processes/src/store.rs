@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cockpit_turso::sql::{Connection, Row};
 use cockpit_turso::{Database, Migration, MigrationSet, WriteTransaction};
 
-use crate::model::{PROCESS_GROUP, SYSTEMD_SCOPE};
+use crate::model::{PROCESS_GROUP, SYSTEMD_SCOPE, SYSTEMD_SERVICE};
 use crate::{Containment, EndReason, Error, Execution, ExecutionId, LaunchContainment, Phase};
 
 /// One row per execution. A row is never deleted: an ended execution keeps its identity and
@@ -46,15 +46,57 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 3,
             sql: crate::output_retirement::SCHEMA,
         },
+        // #1387: a confined execution is a systemd service, which also names its unit.
+        Migration {
+            version: 4,
+            sql: "CREATE TABLE process_executions_with_services (
+                id INTEGER PRIMARY KEY,
+                containment TEXT NOT NULL
+                    CHECK (containment IN ('process-group', 'systemd-scope', 'systemd-service')),
+                unit TEXT CHECK (unit <> '')
+                    CHECK ((containment <> 'process-group') = (unit IS NOT NULL)),
+                boot_id TEXT NOT NULL CHECK (boot_id <> ''),
+                phase TEXT NOT NULL CHECK (phase IN ('launching', 'running', 'ended')),
+                process_group INTEGER CHECK (process_group > 1),
+                leader_start TEXT CHECK (leader_start <> ''),
+                intended_at INTEGER NOT NULL,
+                cancel_requested_at INTEGER,
+                ended_at INTEGER,
+                ended_reason TEXT CHECK (ended_reason IN
+                    ('exited', 'terminated', 'never-started', 'host-restarted')),
+                CHECK ((phase = 'ended') = (ended_reason IS NOT NULL)),
+                CHECK ((phase = 'ended') = (ended_at IS NOT NULL)),
+                CHECK (phase <> 'running'
+                    OR (process_group IS NOT NULL AND leader_start IS NOT NULL))
+            );
+            INSERT INTO process_executions_with_services (id, containment, unit, boot_id, phase,
+                    process_group, leader_start, intended_at, cancel_requested_at, ended_at,
+                    ended_reason)
+                SELECT id, containment, unit, boot_id, phase, process_group, leader_start,
+                    intended_at, cancel_requested_at, ended_at, ended_reason
+                FROM process_executions;
+            DROP TABLE process_executions;
+            ALTER TABLE process_executions_with_services RENAME TO process_executions;
+            CREATE INDEX process_executions_occupying
+                ON process_executions (id) WHERE phase <> 'ended';",
+        },
     ],
 };
+
+/// What a launch intent is recorded to be held by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Holder {
+    Launching(LaunchContainment),
+    /// A confined execution's service (#1387).
+    Service,
+}
 
 /// Records the launch intent in the caller's transaction: once committed, the reservation
 /// exists before any process does. `epoch` is the database's.
 pub(crate) async fn record_intent(
     write: &WriteTransaction<'_>,
     epoch: &str,
-    launch_containment: LaunchContainment,
+    holder: Holder,
     boot_id: &str,
 ) -> Result<ExecutionId, Error> {
     // The unit name embeds the row id, so a restart finds the unit from the row alone; ids
@@ -65,11 +107,15 @@ pub(crate) async fn record_intent(
         .query_row(())
         .await?;
     let id = ExecutionId(next.get(0)?);
-    let (containment_kind, unit) = match launch_containment {
-        LaunchContainment::SystemdScope => {
+    let (containment_kind, unit) = match holder {
+        Holder::Launching(LaunchContainment::SystemdScope) => {
             (SYSTEMD_SCOPE, Some(crate::systemd::scope_unit(epoch, id)))
         }
-        LaunchContainment::ProcessGroup => (PROCESS_GROUP, None),
+        Holder::Launching(LaunchContainment::ProcessGroup) => (PROCESS_GROUP, None),
+        Holder::Service => (
+            SYSTEMD_SERVICE,
+            Some(crate::systemd::service_unit(epoch, id)),
+        ),
     };
     write
         .execute(
@@ -213,6 +259,7 @@ fn execution_from_row(row: &Row) -> Result<Execution, Error> {
     let unit: Option<String> = row.get(2)?;
     let containment = match (containment_kind.as_str(), unit) {
         (SYSTEMD_SCOPE, Some(unit)) => Containment::SystemdScope { unit },
+        (SYSTEMD_SERVICE, Some(unit)) => Containment::SystemdService { unit },
         (PROCESS_GROUP, None) => Containment::ProcessGroup,
         (kind, unit) => {
             return Err(invalid(format!("containment {kind:?} with unit {unit:?}")));
