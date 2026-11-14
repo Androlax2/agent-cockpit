@@ -85,6 +85,8 @@ class ShardedGreenfieldTests(unittest.TestCase):
         for name in [
             "Run the daemon's sandbox tests, with the ignored one for #628",
             "Probe the native sandbox live",
+            "Install rootless Docker's programs for a project's engine",
+            "Set up a project's own engine as its owner does and probe its containers",
         ]:
             with self.subTest(step=name):
                 self.assertIn(name, sandbox)
