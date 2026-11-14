@@ -8,7 +8,9 @@ mod project;
 use std::path::PathBuf;
 
 pub use cockpit_config::{AgentSandbox, EffectiveConfig, ExecutionEnvironment, ProjectNeeds};
-pub use compose::{COMPOSE_FILES, ComposeFile, ComposeFinding, ComposeProblem, scan};
+pub use compose::{
+    COMPOSE_FILES, ComposeFile, ComposeFinding, ComposeProblem, scan, service_names,
+};
 pub use launch::{HarnessTrust, LaunchFacts, Toolchains, launch_gates, launch_summary};
 pub use project::needs_docker;
 

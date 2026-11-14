@@ -27,7 +27,8 @@ system user of its own, shared by its clones:
   the unit. The unit sees an empty `/home` and no network but slirp4netns's `10.0.2.2`, its
   own `127.0.0.1` with host loopback turned on, where only the engine's proxy
   (`ENGINE_EGRESS_PORT`) and its published ports listen; dockerd's `HTTP(S)_PROXY` name that
-  proxy. The script records the engine for Torlek's masks helper in
+  proxy, and `engine_client_config` is the Docker client configuration that gives it to the
+  containers and builds a session runs, its compose services kept direct. The script records the engine for Torlek's masks helper in
   `/etc/torlek/engines/<user>.conf` and lets only the owner connect to the helper's socket,
   refusing when the helper already serves another user of the host.
   A second unit, `torlek-engine-relay@`, joins the engine's network

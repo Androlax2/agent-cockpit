@@ -36,6 +36,29 @@ pub const ENGINE_EGRESS_PORT: u16 = 3128;
 /// the containers.
 const SLIRP4NETNS_HOST: &str = "10.0.2.2";
 
+/// The Docker client configuration (`config.json`) of a session that reaches the project's
+/// engine (#390 part 6d): the client gives the engine's containers and builds the engine's
+/// proxy, their one way out, as `HTTP(S)_PROXY`. Their own loopback and `services`, the
+/// names of the session's compose services, stay direct: that traffic stays on the engine's
+/// own network and never reaches the host.
+pub fn engine_client_config(services: &[String]) -> String {
+    let proxy = format!("http://{SLIRP4NETNS_HOST}:{ENGINE_EGRESS_PORT}");
+    let direct: Vec<&str> = ["localhost", "127.0.0.1", "::1"]
+        .into_iter()
+        .chain(services.iter().map(String::as_str))
+        .collect();
+    serde_json::json!({
+        "proxies": {
+            "default": {
+                "httpProxy": proxy,
+                "httpsProxy": proxy,
+                "noProxy": direct.join(","),
+            }
+        }
+    })
+    .to_string()
+}
+
 /// Folders both units make inaccessible.
 const HIDDEN_FOLDERS: [&str; 7] = [
     "/root", "/mnt", "/media", "/srv", "/opt", "/var/log", "/boot",
@@ -399,6 +422,40 @@ echo "torlek engine setup: the engine of {project} runs as $user; now record it:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #390 part 6d: the Docker client gives the engine's containers and builds the engine's
+    /// proxy, their one way out, and keeps their own loopback direct.
+    #[test]
+    fn a_session_reaching_the_engine_tells_its_containers_and_builds_the_engines_proxy() {
+        let config: serde_json::Value = serde_json::from_str(&engine_client_config(&[])).unwrap();
+
+        assert_eq!(
+            config,
+            serde_json::json!({
+                "proxies": {
+                    "default": {
+                        "httpProxy": "http://10.0.2.2:3128",
+                        "httpsProxy": "http://10.0.2.2:3128",
+                        "noProxy": "localhost,127.0.0.1,::1"
+                    }
+                }
+            })
+        );
+    }
+
+    /// #390 part 6d: a compose service reaches another by its name on the engine's own
+    /// network, which never reaches the host, so the name stays direct like loopback.
+    #[test]
+    fn a_sessions_compose_services_reach_each_other_without_the_proxy() {
+        let config: serde_json::Value =
+            serde_json::from_str(&engine_client_config(&["web".to_owned(), "db".to_owned()]))
+                .unwrap();
+
+        assert_eq!(
+            config["proxies"]["default"]["noProxy"],
+            "localhost,127.0.0.1,::1,web,db"
+        );
+    }
 
     fn owner() -> Account {
         Account {

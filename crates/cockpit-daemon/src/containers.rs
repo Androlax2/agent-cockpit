@@ -236,6 +236,26 @@ impl cockpit_sessions::ProjectEngines for LaunchEngines {
     ) -> cockpit_sessions::EngineAnswer<'asked> {
         Box::pin(self.engine_socket(project, checkout))
     }
+
+    fn docker_client_config(&self, checkout: &Path) -> String {
+        client_config(checkout)
+    }
+}
+
+/// The engine's client configuration for a session working in `checkout`, its compose
+/// services named once each. A file readiness cannot read names none: `torlek doctor` says
+/// why. Blocks.
+fn client_config(checkout: &Path) -> String {
+    let mut services: Vec<String> = Vec::new();
+    for file in crate::readiness::compose_files(checkout) {
+        let Ok(text) = file.text else { continue };
+        for name in cockpit_readiness::service_names(&text) {
+            if !services.contains(&name) {
+                services.push(name);
+            }
+        }
+    }
+    cockpit_containers::engine_client_config(&services)
 }
 
 impl LaunchEngines {
@@ -718,5 +738,30 @@ mod tests {
         ] {
             assert_eq!(socket_of(&user, &state, passwd), None, "{case}");
         }
+    }
+
+    /// #390 part 6d: a launch's containers reach the services of its checkout's compose
+    /// files by name without the proxy, each name once, overrides included.
+    #[test]
+    fn a_launch_keeps_its_compose_services_direct() {
+        let checkout = tempfile::tempdir().unwrap();
+        std::fs::write(
+            checkout.path().join("compose.yaml"),
+            "services:\n  web:\n    image: nginx\n  db:\n    image: postgres\n",
+        )
+        .unwrap();
+        std::fs::write(
+            checkout.path().join("compose.override.yaml"),
+            "services:\n  web:\n    ports: []\n  cache:\n    image: valkey\n",
+        )
+        .unwrap();
+
+        let config: serde_json::Value =
+            serde_json::from_str(&client_config(checkout.path())).unwrap();
+
+        assert_eq!(
+            config["proxies"]["default"]["noProxy"],
+            "localhost,127.0.0.1,::1,web,db,cache"
+        );
     }
 }

@@ -451,6 +451,7 @@ impl Handler for Routes {
                 | Command::NetworkDeny { .. }
                 | Command::NetworkGrants { .. }
                 | Command::NetworkGrantGithub { .. }
+                | Command::NetworkGrantDockerHub { .. }
                 | Command::NetworkRevoke { .. }),
                 peer,
             ) => match peer {

@@ -183,3 +183,54 @@ async fn a_host_the_owner_allowed_always_reaches_the_engines_proxy() {
         "{decisions:?}"
     );
 }
+
+/// #390, decided 2026-11-09 (B): the owner's "allow Docker Hub" answer reaches the engine's
+/// proxy as the project's grants, one per pull host.
+#[tokio::test(flavor = "multi_thread")]
+async fn docker_hub_granted_by_the_owner_reaches_the_engines_proxy() {
+    let home = Home::new();
+    let _daemon = with_recorded_engine(&home, "app").await;
+    let folder = home.engine_proxy_folder("app");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&folder)
+        .unwrap();
+
+    let granted = home
+        .cockpit(&["network", "grant", "app", "docker-hub"], &[])
+        .await;
+
+    assert!(granted.status.success(), "{}", text(&granted.stderr));
+    let printed = text(&granted.stdout);
+    for host in cockpit_sandbox::DOCKER_HUB_HOSTS {
+        assert!(
+            printed.contains(&format!("\tapp\t{host}:443\t")),
+            "{printed}"
+        );
+    }
+    let deadline = Instant::now() + GENEROUS;
+    let allowed = loop {
+        let allowed: Vec<Target> = std::fs::read(folder.join(cockpit_sandbox::DECISIONS_FILE))
+            .ok()
+            .and_then(|written| serde_json::from_slice::<EgressDecisions>(&written).ok())
+            .map(|decisions| {
+                decisions
+                    .allowed
+                    .into_iter()
+                    .filter(|entry| entry.port == 443)
+                    .map(|entry| entry.target)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if allowed.len() == cockpit_sandbox::DOCKER_HUB_HOSTS.len() || Instant::now() > deadline {
+            break allowed;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let docker_hub: Vec<Target> = cockpit_sandbox::DOCKER_HUB_HOSTS
+        .iter()
+        .map(|host| Target::Name((*host).to_owned()))
+        .collect();
+    assert_eq!(allowed, docker_hub);
+}

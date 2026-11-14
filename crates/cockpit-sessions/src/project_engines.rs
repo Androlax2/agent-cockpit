@@ -17,4 +17,10 @@ pub trait ProjectEngines: Send + Sync {
         project: &'asked str,
         checkout: &'asked Path,
     ) -> EngineAnswer<'asked>;
+
+    /// The Docker client configuration (`config.json`) a session working in `checkout` that
+    /// reaches an engine gets in its `DOCKER_CONFIG` folder: the engine's proxy for its
+    /// containers and builds, and the checkout's compose services kept direct. Read at
+    /// launch: a service added later goes through the proxy until the next launch. Blocks.
+    fn docker_client_config(&self, checkout: &Path) -> String;
 }

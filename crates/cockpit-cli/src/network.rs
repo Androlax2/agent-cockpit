@@ -28,7 +28,7 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Command, String> {
         ["grants", project] => Command::NetworkGrants {
             project: Some((*project).to_owned()),
         },
-        ["grant", project, host] => grant_github(project, host)?,
+        ["grant", project, host] => grant_without_request(project, host)?,
         ["revoke", grant] => Command::NetworkRevoke {
             grant: id_of(grant)?,
             through: Some(DecidedThroughView::Cli),
@@ -50,17 +50,30 @@ fn allow(id: &str, always: bool) -> Result<Command, String> {
 pub(crate) const GITHUB_HOST: &str = "github.com";
 const GITHUB_PORT: u16 = 443;
 
-/// Only github.com is granted without a request: any other host is decided on the request a
-/// session's refusal filed, so the owner sees who asked for it.
-fn grant_github(project: &str, host: &str) -> Result<Command, String> {
+/// The word `network grant` takes for Docker Hub's pull hosts (#390).
+pub(crate) const DOCKER_HUB: &str = "docker-hub";
+
+/// Only github.com and Docker Hub's pull hosts are granted without a request: any other host
+/// is decided on the request a refusal filed, so the owner sees who asked for it.
+fn grant_without_request(project: &str, host: &str) -> Result<Command, String> {
+    if host == DOCKER_HUB {
+        return Ok(docker_hub_grant_command(project));
+    }
     if host != GITHUB_HOST {
         return Err(format!(
-            "only {} is granted without a request, not {host}; allow another host from its \
-             request with `torlek network allow ID --always`",
-            GITHUB_HOST
+            "only {GITHUB_HOST} and {DOCKER_HUB} are granted without a request, not {host}; \
+             allow another host from its request with `torlek network allow ID --always`"
         ));
     }
     Ok(github_grant_command(project))
+}
+
+/// The command that grants `project` Docker Hub's pull hosts always, from this client.
+pub(crate) fn docker_hub_grant_command(project: &str) -> Command {
+    Command::NetworkGrantDockerHub {
+        project: project.to_owned(),
+        through: Some(DecidedThroughView::Cli),
+    }
 }
 
 /// The command that grants `project` github.com always, from this client.

@@ -2403,6 +2403,21 @@ impl Sessions {
         let engine = self
             .launch_engine(setting, &output_project, &checkout.path)
             .await;
+        {
+            let engines = engine
+                .as_ref()
+                .and_then(|_| self.project_engines.get())
+                .map(Arc::clone);
+            let reading = checkout.path.clone();
+            let docker_config = docker_config_dir(&temp_dir);
+            let counted = TerminalStep::start(&self.session_lock(id));
+            self.blocking("configure the session's Docker client", move || {
+                let _counted = counted;
+                let config = engines.map(|engines| engines.docker_client_config(&reading));
+                set_docker_client_config(&docker_config, config.as_deref())
+            })
+            .await?;
+        }
         let environment = match self.launch_port_block(setting, id, &output_project).await? {
             Some(block) => with_container_ports(environment, &output_project, id, block),
             None => environment,
@@ -4470,6 +4485,27 @@ fn docker_config_dir(temp_dir: &Path) -> PathBuf {
     temp_dir.join("docker-config")
 }
 
+/// The Docker client's configuration file in its `DOCKER_CONFIG` folder.
+const DOCKER_CLIENT_CONFIG: &str = "config.json";
+
+/// Writes `config` as the session's Docker client configuration (#390 part 6d), or removes
+/// the one an earlier launch wrote when this launch reaches no engine.
+fn set_docker_client_config(docker_config: &Path, config: Option<&str>) -> Result<(), Error> {
+    let path = docker_config.join(DOCKER_CLIENT_CONFIG);
+    let written = match config {
+        Some(config) => std::fs::write(&path, config).map_err(|source| ("write", source)),
+        None => match std::fs::remove_file(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            removed => removed.map_err(|source| ("remove", source)),
+        },
+    };
+    written.map_err(|(action, source)| Error::Io {
+        action,
+        path,
+        source,
+    })
+}
+
 /// A launch's bound credentials file (#832), removed if the launch returns before its agent is
 /// released, so a launch that fails before its launcher runs leaves none. Once released, the
 /// launcher runs and removes it as it starts: removing it then would race the launcher, which
@@ -5209,6 +5245,36 @@ fn forward_of(service: cockpit_config::Service) -> cockpit_sandbox::Forward {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #390 part 6d: the Docker client a session runs gives the engine's containers and
+    /// builds what the engine names as their proxy.
+    #[test]
+    fn a_launch_reaching_an_engine_gives_its_docker_client_the_engines_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker_config = docker_config_dir(temp.path());
+        std::fs::create_dir(&docker_config).unwrap();
+
+        set_docker_client_config(&docker_config, Some("{\"proxies\":{}}")).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(docker_config.join(DOCKER_CLIENT_CONFIG)).unwrap(),
+            "{\"proxies\":{}}"
+        );
+    }
+
+    /// A relaunch that reaches no engine leaves no proxy its last launch was told.
+    #[test]
+    fn a_launch_reaching_no_engine_leaves_its_docker_client_unconfigured() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker_config = docker_config_dir(temp.path());
+        std::fs::create_dir(&docker_config).unwrap();
+        set_docker_client_config(&docker_config, Some("{}")).unwrap();
+
+        set_docker_client_config(&docker_config, None).unwrap();
+        set_docker_client_config(&docker_config, None).unwrap();
+
+        assert!(!docker_config.join(DOCKER_CLIENT_CONFIG).exists());
+    }
 
     #[test]
     fn a_provided_docker_config_is_kept() {

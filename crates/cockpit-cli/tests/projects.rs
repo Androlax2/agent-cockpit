@@ -1329,7 +1329,7 @@ fn network_grant_refuses_an_unregistered_project() {
 }
 
 #[test]
-fn network_grant_takes_no_host_but_github() {
+fn network_grant_takes_no_host_but_github_and_docker_hub() {
     let home = TestHome::new();
     let _daemon = home.start();
     let root = home.project("app");
@@ -1339,8 +1339,9 @@ fn network_grant_takes_no_host_but_github() {
 
     assert_eq!(refused.status.code(), Some(2), "{refused:?}");
     assert!(
-        String::from_utf8_lossy(&refused.stderr)
-            .contains("only github.com is granted without a request, not example.com"),
+        String::from_utf8_lossy(&refused.stderr).contains(
+            "only github.com and docker-hub are granted without a request, not example.com"
+        ),
         "{refused:?}"
     );
     assert_eq!(home.cockpit_ok(&["network", "grants"]), "");

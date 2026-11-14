@@ -175,7 +175,7 @@ fn offer_github_grant(project: &str) -> ExitCode {
 }
 
 /// Only `y` or `yes`, in any case, grants; an empty line or anything else declines.
-fn is_yes(answer: &str) -> bool {
+pub(crate) fn is_yes(answer: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
