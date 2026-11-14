@@ -179,7 +179,7 @@ sudo sh ~/.local/state/torlek/containers/torlek-e3-setup.sh
 torlek containers record PROJECT   # records the engine that now answers as the project's
 ```
 
-The engine sees only the project's checkout and clones folder, and no network yet.
+The engine sees only the project's checkout and clones folder, and no network yet. Its one way out is port 3128 of the engine's own network (`10.0.2.2:3128` from its containers), kept for a proxy Torlek does not run yet (#390). That proxy will pass only what you allowed always for the project. The engine's containers can reach that port and the engine's own published ports, but nothing else on your host and no other project's engine. An engine set up before this release needs its setup script run again to get that port.
 Beside it, `torlek-engine-relay@<user>.service` runs your installed `torlek-sandbox` as the engine's user, inside the engine's network namespace, to relay you to the ports the engine published; it serves your user alone.
 It runs the program from your install, read-only, so an upgrade applies when the engine restarts; the trade-off is that whatever can write your Torlek install can run as the project's engine user.
 Run the setup script again if Torlek's programs move.

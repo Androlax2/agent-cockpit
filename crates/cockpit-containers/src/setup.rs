@@ -4,15 +4,22 @@
 //! It makes the engine's system user and its subordinate ids, lets that user write the
 //! project's checkouts with ACLs whose default entries keep what containers create there the
 //! owner's to change and delete, installs the `torlek-engine@` unit, whose `/home` is empty,
-//! and restarts the engine. The unit has no network until the engine's egress proxy exists:
-//! pulls fail closed. It records the engine for Torlek's masks helper (`ENGINES_DIR`), which
-//! shows the engine each checkout a session asks for through that session's masks, and lets
-//! only the owner reach the helper's socket.
+//! and restarts the engine. It records the engine for Torlek's masks helper (`ENGINES_DIR`),
+//! which shows the engine each checkout a session asks for through that session's masks, and
+//! lets only the owner reach the helper's socket.
 //!
 //! Beside it runs `torlek-engine-relay@`, in the engine's network namespace: the owner's
 //! installed `torlek-sandbox engine-relay`, bound read-only, which relays the owner to the
 //! ports the engine published. Whatever can write that installed program runs as the engine
 //! user; Theo chose that over a root-owned copy to refresh after each upgrade.
+//!
+//! The engine's namespace has no route out. Its one way out is the engine's proxy, which the
+//! owner's daemon runs on the listener the relay opens on [`ENGINE_EGRESS_PORT`] there (#390
+//! part 6, option A): dockerd's pulls and the containers reach it as slirp4netns's
+//! `10.0.2.2`, which reaches the namespace's own `127.0.0.1` because the unit turns host
+//! loopback on. That loopback holds the proxy and the engine's own published ports, nothing
+//! of the host's or of another engine's. While the daemon is stopped, nothing listens there:
+//! pulls and containers fail closed.
 
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -20,6 +27,13 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{Account, ENGINES_DIR, EngineUser, MASKS_SOCKET_UNIT};
+
+/// The port the relay listens on for the engine's proxy, in the engine's network namespace.
+pub const ENGINE_EGRESS_PORT: u16 = 3128;
+
+/// The engine namespace's `127.0.0.1` as rootlesskit's slirp4netns shows it to dockerd and
+/// the containers.
+const SLIRP4NETNS_HOST: &str = "10.0.2.2";
 
 /// Folders both units make inaccessible.
 const HIDDEN_FOLDERS: [&str; 7] = [
@@ -131,6 +145,8 @@ pub fn setup_script(plan: &SetupPlan<'_>) -> Result<String, String> {
         .replace("{relay_program}", &relay_program)
         .replace("{relay_socket}", &relay_socket)
         .replace("{owner_uid}", &plan.owner.uid.to_string())
+        .replace("{egress_port}", &ENGINE_EGRESS_PORT.to_string())
+        .replace("{slirp4netns_host}", SLIRP4NETNS_HOST)
         .replace("{inaccessible}", &inaccessible)
         .replace("{record}", plan.record_command))
 }
@@ -277,8 +293,16 @@ Environment=HOME=/var/lib/%i
 Environment=XDG_RUNTIME_DIR=/run/%i
 RuntimeDirectory=%i
 RuntimeDirectoryMode=0700
+# Host loopback on: the containers reach the namespace's 127.0.0.1 as {slirp4netns_host}, where
+# only Torlek's proxy and this engine's published ports listen.
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=false
+# Pulls go through Torlek's proxy for the project, which passes what you allowed always.
+Environment=HTTP_PROXY=http://{slirp4netns_host}:{egress_port}
+Environment=HTTPS_PROXY=http://{slirp4netns_host}:{egress_port}
 ExecStart=$dockerd_rootless --exec-opt native.cgroupdriver=cgroupfs
-# No route out until Torlek's egress proxy serves the engine: pulls fail closed.
+# No route out but Torlek's proxy, which listens only while Torlek runs: pulls and containers
+# fail closed while it is stopped.
 PrivateNetwork=yes
 PrivateTmp=yes
 # No home and no checkout: Torlek's masks helper shows the engine each checkout a session
@@ -313,7 +337,8 @@ cat >"$unit_dir/torlek-engine-relay@.service" <<UNIT
 Description=Torlek's relay to the ports of the rootless Docker engine for %i
 BindsTo=torlek-engine@%i.service
 After=torlek-engine@%i.service
-# The engine's network namespace: its 127.0.0.1 holds only that engine's published ports.
+# The engine's network namespace: its 127.0.0.1 holds only that engine's published ports
+# and the port it opens for Torlek's proxy.
 JoinsNamespaceOf=torlek-engine@%i.service
 
 [Service]
@@ -334,8 +359,9 @@ cat >"$unit_dir/torlek-engine-relay@$user.service.d/torlek.conf" <<UNIT
 [Service]
 # Your installed program, read-only: whatever can write it runs as $user.
 {hide_home_relay}BindReadOnlyPaths=$relay_program
-# Serves you alone ({owner_uid}); the socket's folder lets nobody else in either.
-ExecStart=$relay_program engine-relay {relay_socket} {owner_uid}
+# Serves you alone ({owner_uid}); the socket's folder lets nobody else in either. It opens the
+# engine's port {egress_port} for Torlek's proxy.
+ExecStart=$relay_program engine-relay {relay_socket} {owner_uid} {egress_port}
 UNIT
 
 # Torlek's masks helper shows this engine the project's checkouts from what it records here.
@@ -509,13 +535,43 @@ mod tests {
         );
         assert!(script.contains("relay_program='/home/theo/.local/bin/torlek-sandbox'"));
         assert!(script.contains("BindReadOnlyPaths=$relay_program\n"));
-        assert!(
-            script
-                .contains("ExecStart=$relay_program engine-relay /run/torlek-e3/relay.sock 1000\n")
-        );
+        assert!(script.contains(
+            "ExecStart=$relay_program engine-relay /run/torlek-e3/relay.sock 1000 3128\n"
+        ));
         assert!(script.contains("Upholds=torlek-engine-relay@%i.service\n"));
         assert!(script.contains("BindsTo=torlek-engine@%i.service\n"));
         assert!(script.contains("-perm -0001"));
+    }
+
+    /// Containers reach the engine namespace's 127.0.0.1, where the relay listens for the
+    /// engine's proxy, as slirp4netns's 10.0.2.2.
+    #[test]
+    fn the_engines_containers_reach_its_egress_port_through_slirp4netns() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+
+        assert!(
+            script.contains("Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns\n"),
+            "{script}"
+        );
+        assert!(
+            script
+                .contains("Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=false\n"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn the_engines_pulls_go_through_its_proxy() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+
+        assert!(
+            script.contains("Environment=HTTP_PROXY=http://10.0.2.2:3128\n"),
+            "{script}"
+        );
+        assert!(
+            script.contains("Environment=HTTPS_PROXY=http://10.0.2.2:3128\n"),
+            "{script}"
+        );
     }
 
     #[test]

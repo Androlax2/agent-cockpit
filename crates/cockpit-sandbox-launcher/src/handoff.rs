@@ -38,7 +38,7 @@ const SOCKET_NAME: &str = "handoff.sock";
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What stage 2 sends with the listener, and the launcher answers once it holds it.
-const LISTENER_BYTE: u8 = b'L';
+pub(crate) const LISTENER_BYTE: u8 = b'L';
 const RECEIVED_BYTE: u8 = b'R';
 
 /// The launcher asks the binder for a listener with this byte and the port, big-endian; the
@@ -196,7 +196,10 @@ fn ask_binder(stream: &UnixStream, port: u16) -> std::io::Result<Result<TcpListe
 }
 
 /// One byte and the descriptors that came with it, at most `most`.
-fn receive(stream: &UnixStream, most: usize) -> std::io::Result<(u8, Vec<std::os::fd::OwnedFd>)> {
+pub(crate) fn receive(
+    stream: &UnixStream,
+    most: usize,
+) -> std::io::Result<(u8, Vec<std::os::fd::OwnedFd>)> {
     let mut byte = [0_u8; 1];
     let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1 + MAX_FORWARDS))];
     let mut control = RecvAncillaryBuffer::new(&mut space);
@@ -381,7 +384,7 @@ pub fn serve_binds(stream: &UnixStream) -> Result<(), String> {
     }
 }
 
-fn send_listener(stream: &UnixStream, listener: &TcpListener) -> std::io::Result<()> {
+pub(crate) fn send_listener(stream: &UnixStream, listener: &TcpListener) -> std::io::Result<()> {
     let descriptors = [listener.as_fd()];
     let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
     let mut control = SendAncillaryBuffer::new(&mut space);
