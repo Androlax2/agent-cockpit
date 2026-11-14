@@ -219,15 +219,23 @@ async fn egress_evidence(home: &Home, root: &Path, user: &str) -> String {
         .take(2)
         .collect::<Vec<_>>()
         .join("\n");
-    let daemon = home.stderr();
-    let proxy_lines = daemon
+    // The daemon writes its records to its log file; its standard error holds only a panic.
+    let daemon_log = std::fs::read_to_string(home.state_dir().join("logs/daemon/cockpit.log"))
+        .unwrap_or_else(|error| format!("unreadable: {error}"));
+    let proxies = std::process::Command::new("ps")
+        .args(["-eo", "pid,user,args"])
+        .output()
+        .expect("ps runs");
+    let proxy_processes = text(&proxies.stdout)
         .lines()
-        .filter(|line| line.contains("engine"))
+        .filter(|line| line.contains("engine-proxy") || line.contains("engine-relay"))
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "\ndoctor: {egress}\n{}\nthe daemon about engines:\n{proxy_lines}\n{}",
+        "\ndoctor: {egress}\n{}\nthe daemon's log:\n{daemon_log}\nits standard error:\n{}\n\
+         engine proxy and relay processes:\n{proxy_processes}\n{}",
         text(&report.stderr),
+        home.stderr(),
         engine_state(user).await
     )
 }
@@ -248,7 +256,8 @@ async fn engine_state(user: &str) -> String {
          done; \
          relay=$(systemctl show --property MainPID --value torlek-engine-relay@{user}.service); \
          echo 'TCP listeners in the relay network, then relay.sock connections:'; \
-         nsenter --net=/proc/$relay/ns/net ss -ltnp; ss -xp | grep relay.sock"
+         nsenter --net=/proc/$relay/ns/net ss -ltnp; \
+         nsenter --net=/proc/$relay/ns/net ss -xp | grep relay.sock"
     );
     let mut command = std::process::Command::new("sudo");
     command.args(["-n", "sh", "-c", &script]);
