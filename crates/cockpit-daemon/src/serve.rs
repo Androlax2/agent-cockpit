@@ -114,6 +114,15 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         tracing::error!(%error, "the owner configuration is invalid");
         StartError::Config(error)
     })?;
+    run_settings.confinement = crate::run_confinement(
+        config.agents_confined_runs.value,
+        &environment,
+        instance.options(),
+    )
+    .map_err(StartError::Config)?;
+    if run_settings.confinement == cockpit_approvals::RunConfinement::Off {
+        tracing::warn!("approved runs are not confined: they have the owner's rights");
+    }
     let tmux_socket = instance
         .tmux_socket(
             &profile.qualified_name(),

@@ -291,6 +291,8 @@ pub struct Approved {
     pub revision: i64,
     pub command: String,
     pub cwd: PathBuf,
+    /// The asking session's checkout: the one folder a confined run writes (#1387).
+    pub project_root: Option<PathBuf>,
     /// A start request (#410): the daemon starts this session in `cwd` instead of running
     /// `command`, which only describes it.
     pub start: Option<StartSession>,
@@ -990,6 +992,7 @@ pub async fn approve_run(
         revision: run.revision,
         command: run.command.clone(),
         cwd: run.cwd.clone(),
+        project_root: run.project.as_ref().map(|project| project.root.clone()),
         start: run.start.clone(),
     };
     Ok((approved, run))
@@ -1164,7 +1167,7 @@ pub async fn interrupted_runs(connection: &Connection) -> Result<Vec<Interrupted
     let mut rows = connection
         .query(
             "SELECT id, revision, command, cwd, state, execution, kind, start_prompt,
-                 start_clone, start_agent, start_model, start_effort
+                 start_clone, start_agent, start_model, start_effort, project_root
              FROM approvals_runs
              WHERE state IN ('approved', 'running') ORDER BY id",
             (),
@@ -1179,6 +1182,7 @@ pub async fn interrupted_runs(connection: &Connection) -> Result<Vec<Interrupted
                 revision: row.get(1)?,
                 command: row.get(2)?,
                 cwd: PathBuf::from(row.get::<String>(3)?),
+                project_root: row.get::<Option<String>>(12)?.map(PathBuf::from),
                 start: start_from(&row, 6)?,
             },
             state: if state == "running" {

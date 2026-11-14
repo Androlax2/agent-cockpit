@@ -7,7 +7,10 @@
 //!
 //! Each run is a `cockpit-processes` terminal execution (#163): its own session in a
 //! systemd scope or process group, led by `cockpit_processes::run_session_leader`, so it can
-//! be terminated whole and a restart can tell what became of it.
+//! be terminated whole and a restart can tell what became of it. A confined run (#1387) is
+//! a systemd user service instead, with no network, its project's checkout the one folder it
+//! writes and the owner's secrets hidden; it gets no sudo, which needs the root route that
+//! confined runs do not have yet.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -22,7 +25,8 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use cockpit_processes::{
-    EndReason, Escalation, ExecutionId, LaunchSpec, Phase, Supervisor, Terminal, Termination,
+    Confinement, EndReason, Escalation, ExecutionId, LaunchSpec, Phase, Supervisor, Terminal,
+    Termination,
 };
 use cockpit_turso::Database;
 use regex::Regex;
@@ -111,8 +115,44 @@ pub struct RunSettings {
     pub answer_lines: usize,
     pub rows: u16,
     pub columns: u16,
-    /// How `sudo` in a run asks the owner (#1374); `None` leaves sudo to the terminal.
+    /// How `sudo` in a run asks the owner (#1374); `None` leaves sudo to the terminal. A
+    /// confined run never gets it.
     pub sudo: Option<SudoAskpass>,
+    pub confinement: RunConfinement,
+}
+
+/// Whether runs are confined (#1387), and what a confined run cannot see.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunConfinement {
+    /// Each run in its own systemd user service: no network, a `/tmp` of its own, every
+    /// folder read-only but its project's checkout, `hidden` unreadable and `emptied` shown
+    /// empty but for the `reachable` folders in them. A host that cannot start one refuses
+    /// the run.
+    Required {
+        hidden: Vec<PathBuf>,
+        emptied: Vec<PathBuf>,
+        reachable: Vec<PathBuf>,
+    },
+    /// The owner's one named opt-out, `agents.confined_runs = "off"`: runs have the owner's
+    /// rights.
+    Off,
+}
+
+impl RunConfinement {
+    /// The confined folder `path` is in, if any: a run cannot start there.
+    fn hiding(&self, path: &Path) -> Option<&Path> {
+        let RunConfinement::Required {
+            hidden, emptied, ..
+        } = self
+        else {
+            return None;
+        };
+        hidden
+            .iter()
+            .chain(emptied)
+            .map(PathBuf::as_path)
+            .find(|folder| path.starts_with(folder))
+    }
 }
 
 impl RunSettings {
@@ -127,12 +167,25 @@ impl RunSettings {
             rows: 40,
             columns: 120,
             sudo: None,
+            confinement: RunConfinement::Required {
+                hidden: Vec::new(),
+                emptied: Vec::new(),
+                reachable: Vec::new(),
+            },
         }
     }
 
     /// The environment, with `git_config` passed as `GIT_CONFIG_*` so every Git in the run
     /// applies it over the repository's own configuration.
     pub fn run_environment(&self, git_config: &[String]) -> Vec<(OsString, OsString)> {
+        self.environment_with(git_config, self.sudo.as_ref())
+    }
+
+    fn environment_with(
+        &self,
+        git_config: &[String],
+        sudo: Option<&SudoAskpass>,
+    ) -> Vec<(OsString, OsString)> {
         let mut environment: Vec<(OsString, OsString)> = self
             .environment
             .iter()
@@ -148,8 +201,26 @@ impl RunSettings {
             environment.push((format!("GIT_CONFIG_KEY_{index}").into(), key.into()));
             environment.push((format!("GIT_CONFIG_VALUE_{index}").into(), value.into()));
         }
-        if let Some(sudo) = &self.sudo {
+        if let Some(sudo) = sudo {
             sudo.apply(&mut environment);
+        }
+        environment
+    }
+
+    /// The askpass a run's sudo asks through: none in a confined run.
+    fn sudo(&self) -> Option<&SudoAskpass> {
+        match self.confinement {
+            RunConfinement::Required { .. } => None,
+            RunConfinement::Off => self.sudo.as_ref(),
+        }
+    }
+
+    /// A run's environment: a confined run's `TMPDIR` is its own `/tmp`.
+    fn launch_environment(&self, git_config: &[String]) -> Vec<(OsString, OsString)> {
+        let mut environment = self.environment_with(git_config, self.sudo());
+        if let RunConfinement::Required { .. } = self.confinement {
+            environment.retain(|(name, _)| name != "TMPDIR");
+            environment.push(("TMPDIR".into(), "/tmp".into()));
         }
         environment
     }
@@ -377,9 +448,16 @@ impl Runner {
                 )));
             }
         }
+        if let Some(folder) = self.settings.confinement.hiding(&run.cwd) {
+            return Err(NoResult::NotStarted(format!(
+                "{} is in {}, which confined runs cannot see",
+                run.cwd.display(),
+                folder.display()
+            )));
+        }
         let not_started =
             |what: &str, error: std::io::Error| NoResult::NotStarted(format!("{what}: {error}"));
-        if let Some(sudo) = &self.settings.sudo {
+        if let Some(sudo) = self.settings.sudo() {
             sudo.write_launchers().map_err(|error| {
                 not_started(
                     &format!(
@@ -478,7 +556,14 @@ impl Runner {
         run: &Approved,
     ) -> Result<ExecutionId, Error> {
         let write = database.write().await?;
-        let execution = self.supervisor.reserve(&write, database.epoch()).await?;
+        let execution = match self.settings.confinement {
+            RunConfinement::Required { .. } => {
+                self.supervisor
+                    .reserve_confined(&write, database.epoch())
+                    .await?
+            }
+            RunConfinement::Off => self.supervisor.reserve(&write, database.epoch()).await?,
+        };
         start_run(&write, run, execution).await?;
         crate::runs::attribute_run_output(&write, run, execution, database.epoch()).await?;
         write.commit().await?;
@@ -499,17 +584,35 @@ impl Runner {
             program: self.settings.shell.clone(),
             arguments: vec!["-c".into(), run.command.clone().into()],
             working_dir: run.cwd.clone(),
-            environment: self.settings.run_environment(git_config),
+            environment: self.settings.launch_environment(git_config),
             terminal: Some(Terminal {
                 device: terminal,
                 leader: self.settings.leader.clone(),
                 leader_arguments: self.settings.leader_arguments.clone(),
             }),
         };
-        let launched = self
-            .supervisor
-            .launch_reserved(database, execution, &spec)
-            .await;
+        let launched = match &self.settings.confinement {
+            RunConfinement::Required {
+                hidden,
+                emptied,
+                reachable,
+            } => {
+                let confinement = Confinement {
+                    writable: run.project_root.iter().cloned().collect(),
+                    hidden: hidden.clone(),
+                    emptied: emptied.clone(),
+                    reachable: reachable.clone(),
+                };
+                self.supervisor
+                    .launch_confined(database, execution, &spec, &confinement)
+                    .await
+            }
+            RunConfinement::Off => {
+                self.supervisor
+                    .launch_reserved(database, execution, &spec)
+                    .await
+            }
+        };
         // The terminal must end with the run's processes for the reader to see the end of
         // the output: this copy goes as soon as the run has its own.
         drop(spec);
@@ -524,7 +627,7 @@ impl Runner {
             let leader = live
                 .session()
                 .and_then(|session| u32::try_from(session).ok());
-            match (&self.settings.sudo, leader) {
+            match (self.settings.sudo(), leader) {
                 (Some(askpass), Some(leader)) => sudo_unasked::watch(askpass, live, leader).await,
                 _ => std::future::pending().await,
             }

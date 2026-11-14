@@ -289,6 +289,11 @@ pub fn render(config: &EffectiveConfig) -> String {
         lines.push(line(key, &value, source));
     }
     lines.push(line(
+        "agents.confined_runs",
+        &Value::from(config.agents_confined_runs.value.as_str()).to_string(),
+        &config.agents_confined_runs.source,
+    ));
+    lines.push(line(
         "tui.attention_bell",
         &config.tui_attention_bell.value.to_string(),
         &config.tui_attention_bell.source,

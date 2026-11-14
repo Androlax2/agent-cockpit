@@ -92,6 +92,10 @@ enum Presence {
     Unidentified,
 }
 
+const NO_MANAGER: &str = "no systemd user manager answers, so there is no service to confine it";
+const SYSTEMD_TOO_OLD: &str = "this systemd-run cannot keep a service from expanding `$` in the command (systemd 254 \
+     or later can)";
+
 impl Supervisor {
     pub fn new(
         executions_dir: PathBuf,
@@ -132,10 +136,7 @@ impl Supervisor {
         if !matches!(containment, Containment::SystemdScope { .. }) {
             return false;
         }
-        *self
-            .takes_expand_environment
-            .get_or_init(|| self.systemd.takes_expand_environment())
-            .await
+        self.takes_expand_environment().await
     }
 
     pub fn launch_containment(&self) -> LaunchContainment {
@@ -188,6 +189,26 @@ impl Supervisor {
         .await
     }
 
+    /// Why this host cannot start a confined execution (#1387), or `None` when it can:
+    /// readiness names it, and a confined reservation or launch is refused for it.
+    pub async fn confinement_unavailable(&self) -> Option<String> {
+        if self.launch_containment != LaunchContainment::SystemdScope {
+            return Some(NO_MANAGER.to_owned());
+        }
+        if !self.takes_expand_environment().await {
+            return Some(SYSTEMD_TOO_OLD.to_owned());
+        }
+        None
+    }
+
+    /// Whether `systemd-run` knows `--expand-environment=`. Asked once.
+    async fn takes_expand_environment(&self) -> bool {
+        *self
+            .takes_expand_environment
+            .get_or_init(|| self.systemd.takes_expand_environment())
+            .await
+    }
+
     /// [`Supervisor::reserve`] for a confined execution (#1387), which runs in a systemd
     /// service of its own: refused unless this user's systemd manager holds new launches.
     /// Launch it with [`Supervisor::launch_confined`] only.
@@ -198,8 +219,7 @@ impl Supervisor {
     ) -> Result<ExecutionId, Error> {
         if self.launch_containment != LaunchContainment::SystemdScope {
             return Err(Error::ConfinementUnavailable {
-                reason: "no systemd user manager answers, so there is no service to confine it"
-                    .to_owned(),
+                reason: NO_MANAGER.to_owned(),
             });
         }
         let boot_id = self.boot_id().await?;
@@ -221,16 +241,10 @@ impl Supervisor {
         let Containment::SystemdService { unit } = &containment else {
             unreachable!("reserved_execution checked the containment");
         };
-        if !*self
-            .takes_expand_environment
-            .get_or_init(|| self.systemd.takes_expand_environment())
-            .await
-        {
+        if !self.takes_expand_environment().await {
             store::record_ended(database, id, EndReason::NeverStarted).await?;
             return Err(Error::ConfinementUnavailable {
-                reason: "this systemd-run cannot keep a service from expanding `$` in the \
-                         command (systemd 254 or later can)"
-                    .to_owned(),
+                reason: SYSTEMD_TOO_OLD.to_owned(),
             });
         }
         let mode = if spec.terminal.is_some() {

@@ -55,7 +55,7 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 
 pub use agent_context::{DeliveredSkillPack, opencode_hidden_skills};
-pub use approvals::{RUN_LEADER_FLAG, run_settings};
+pub use approvals::{RUN_LEADER_FLAG, run_confinement, run_settings};
 pub use askpass::{SUDO_ASKPASS_FLAG, run_sudo_askpass, sudo_askpass};
 pub use cost::CostScanning;
 pub use error::StartError;
@@ -492,7 +492,7 @@ impl Instance {
         let profile_change = Arc::new(tokio::sync::Mutex::new(()));
         let sessions = Arc::new(cockpit_sessions::Sessions::new(
             Arc::clone(&database),
-            processes,
+            processes.clone(),
             tmux,
             wiring.git.clone(),
             wiring.providers,
@@ -550,6 +550,8 @@ impl Instance {
                 &wiring.environment,
                 &wiring.sandbox_launcher,
             ),
+            run_settings: Arc::clone(&run_settings),
+            processes: processes.clone(),
         };
         // The launchers' decisions name each project's engine (#390).
         let network_containers = detected_readiness.containers.clone();

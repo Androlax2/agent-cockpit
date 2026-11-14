@@ -5,6 +5,8 @@
 
 mod candidate;
 mod common;
+#[path = "approvals/confined.rs"]
+mod confined;
 #[path = "approvals/durability.rs"]
 mod durability;
 #[path = "approvals/progress.rs"]

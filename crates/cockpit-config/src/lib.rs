@@ -185,6 +185,8 @@ pub struct EffectiveConfig {
     pub agents_desktop_session: Sourced<DesktopSession>,
     /// Whether launched agents run in the sandbox (#61); only the owner turns it off.
     pub agents_sandbox: Sourced<AgentSandbox>,
+    /// Whether approved runs are confined (#1387); only the owner turns it off.
+    pub agents_confined_runs: Sourced<ConfinedRuns>,
     /// Whether the TUI rings the terminal bell when a session needs the owner (#682).
     pub tui_attention_bell: Sourced<bool>,
     /// Below this many columns, the TUI takes its one-column phone layout (#855); 0 never.
@@ -280,6 +282,26 @@ pub enum AgentSandbox {
 }
 
 impl AgentSandbox {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::Off => "off",
+        }
+    }
+}
+
+/// Whether an approved run is confined (#1387): `required`, the product default, runs each
+/// in its own systemd user service with no network, its checkout the one folder it writes
+/// and the owner's secrets hidden, and refuses it on a host that cannot; `off` is the
+/// owner's one named opt-out, which runs it with the owner's rights.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfinedRuns {
+    Required,
+    Off,
+}
+
+impl ConfinedRuns {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Required => "required",
@@ -425,6 +447,7 @@ struct ResultsTable {
 struct AgentsTable {
     desktop_session: Option<Spanned<DesktopSession>>,
     sandbox: Option<Spanned<AgentSandbox>>,
+    confined_runs: Option<Spanned<ConfinedRuns>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -574,6 +597,7 @@ pub fn load(
         asleep_expiry: asleep_expiry(&layers)?,
         agents_desktop_session: agents_desktop_session(&layers),
         agents_sandbox: agents_sandbox(&layers),
+        agents_confined_runs: agents_confined_runs(&layers),
         tui_attention_bell: tui_attention_bell(&layers),
         checks: checks(&layers)?,
         services: services::services(&layers)?,
@@ -1023,6 +1047,22 @@ fn agents_sandbox(layers: &[Layer]) -> Sourced<AgentSandbox> {
             .agents
             .as_ref()
             .and_then(|agents| agents.get_ref().sandbox.as_ref())
+        else {
+            continue;
+        };
+        resolved = Sourced::new(*value.get_ref(), layer.source_at(value.span()));
+    }
+    resolved
+}
+
+fn agents_confined_runs(layers: &[Layer]) -> Sourced<ConfinedRuns> {
+    let mut resolved = Sourced::new(ConfinedRuns::Required, Source::ProductDefault);
+    for layer in layers {
+        let Some(value) = layer
+            .settings
+            .agents
+            .as_ref()
+            .and_then(|agents| agents.get_ref().confined_runs.as_ref())
         else {
             continue;
         };

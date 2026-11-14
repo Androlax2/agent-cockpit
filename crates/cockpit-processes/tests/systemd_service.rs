@@ -25,6 +25,7 @@ fn confinement(home: &Home) -> Confinement {
         writable: vec![folder(home, "clone dir")],
         hidden: vec![folder(home, "secrets")],
         emptied: vec![folder(home, "state")],
+        reachable: vec![folder(home, "state/sockets")],
     }
 }
 
@@ -113,6 +114,7 @@ async fn a_confined_execution_gets_its_limits_as_service_properties() {
         format!("TemporaryFileSystem=\"{}:ro\"", path(&limits.emptied[0])),
         format!("BindPaths=\"{}\"", path(&limits.writable[0])),
         format!("BindPaths=\"{}\"", path(&execution_dir)),
+        format!("BindReadOnlyPaths=\"{}\"", path(&limits.reachable[0])),
     ] {
         assert!(property(&arguments, &expected), "{expected}: {arguments:?}");
     }
@@ -286,16 +288,25 @@ async fn a_real_confined_execution_is_held_to_its_limits() {
         cockpit_processes::LaunchContainment::SystemdScope,
         tools,
     );
-    let limits = confinement(&home);
+    let mut limits = confinement(&home);
+    let mounts = limits.reachable[0].join("mounts");
+    std::fs::create_dir(&mounts).unwrap();
+    std::fs::write(mounts.join("source"), "mounted").unwrap();
+    limits.hidden.push(mounts.clone());
     std::fs::write(limits.hidden[0].join("id_test"), "secret").unwrap();
+    std::fs::write(limits.reachable[0].join("socket"), "reached").unwrap();
     let report = limits.writable[0].join("report");
     let id = reserve_confined(&supervisor, &database).await;
     let script = format!(
         "{{ cat '{hidden}' && echo read; echo x > '{outside}' && echo wrote; \
          echo y > /tmp/scratch && echo temp; \
+         cat '{reachable}' && echo z > '{reachable}' && echo overwrote; \
+         cat '{mounted}' && echo listed; \
          exec 3<>/dev/tcp/1.1.1.1/53 && echo connected; }} > '{report}' 2>&1",
         hidden = limits.hidden[0].join("id_test").display(),
         outside = home.path().join("outside").display(),
+        reachable = limits.reachable[0].join("socket").display(),
+        mounted = mounts.join("source").display(),
         report = report.display(),
     );
     let mut spec = shell(&home, &script);
@@ -318,6 +329,9 @@ async fn a_real_confined_execution_is_held_to_its_limits() {
     assert!(!seen.contains("\nread"), "{seen}");
     assert!(seen.contains("Read-only file system"), "{seen}");
     assert!(seen.contains("temp"), "{seen}");
+    assert!(seen.contains("reached"), "{seen}");
+    assert!(!seen.contains("overwrote"), "{seen}");
+    assert!(!seen.contains("mounted"), "{seen}");
     assert!(!seen.contains("connected"), "{seen}");
 }
 
@@ -359,4 +373,45 @@ async fn an_execution_recorded_before_services_keeps_its_scope() {
         }
     );
     assert_eq!(kept.phase, Phase::Ended(EndReason::Exited));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_with_a_systemd_manager_can_confine() {
+    let home = Home::new();
+    let fakes = FakeSystemd::new();
+    let supervisor = home.scope_supervisor(&fakes);
+
+    assert_eq!(supervisor.confinement_unavailable().await, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_without_a_systemd_manager_says_it_cannot_confine() {
+    let home = Home::new();
+    let supervisor = home.process_group_supervisor();
+
+    let reason = supervisor.confinement_unavailable().await;
+
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("systemd user manager")),
+        "{reason:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_with_systemd_before_254_says_it_cannot_confine() {
+    let home = Home::new();
+    let fakes = FakeSystemd::new();
+    fakes.report_version(253);
+    let supervisor = home.scope_supervisor(&fakes);
+
+    let reason = supervisor.confinement_unavailable().await;
+
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("254")),
+        "{reason:?}"
+    );
 }

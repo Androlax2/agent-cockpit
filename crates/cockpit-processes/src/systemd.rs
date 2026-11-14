@@ -233,6 +233,9 @@ fn service_properties(
     {
         properties.push(format!("BindPaths=\"{}\"", text_of(path)?));
     }
+    for path in &confinement.reachable {
+        properties.push(format!("BindReadOnlyPaths=\"{}\"", text_of(path)?));
+    }
     Ok(properties)
 }
 

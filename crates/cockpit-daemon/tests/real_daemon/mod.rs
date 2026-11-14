@@ -147,6 +147,8 @@ esac
 pub struct Home {
     /// The temporary directory, canonical: the daemon compares paths it is sent with it.
     root: PathBuf,
+    /// Whether the harness writes the owner's config, `confined_runs = "off"` among it.
+    has_owner_config: bool,
     _dir: tempfile::TempDir,
 }
 
@@ -162,8 +164,9 @@ impl Home {
     /// daemon and its profiles create. The daemon then reads the host's free space against the
     /// product default floor (#838), so such a test must not depend on the guard's outcome.
     pub fn without_owner_config() -> Home {
-        let home = Home::new();
+        let mut home = Home::new();
         std::fs::remove_dir_all(home.path().join("config")).unwrap();
+        home.has_owner_config = false;
         home
     }
 
@@ -171,6 +174,7 @@ impl Home {
         let dir = tempfile::tempdir().expect("a temporary home");
         let home = Home {
             root: dir.path().canonicalize().unwrap(),
+            has_owner_config: true,
             _dir: dir,
         };
         for dir in ["run", "tmux", "bin"] {
@@ -566,6 +570,17 @@ impl Home {
                 .expect("a profile name")
                 .qualified_name(),
         };
+        // A home without the owner's config keeps none: its tests assert the layout the
+        // daemon creates, and run no approved command that would need the opt-out.
+        if self.has_owner_config {
+            candidate::unconfine_runs(
+                &self
+                    .path()
+                    .join("config")
+                    .join(&profile_dir)
+                    .join("config.toml"),
+            );
+        }
         let mut command = Process::new(candidate::program("torlek-daemon"));
         command
             .args(

@@ -89,6 +89,8 @@ async fn started() -> Asking {
         vec![RUN_LEADER_FLAG.into()],
     );
     run_settings.environment = vec![("PATH".into(), "/usr/bin:/bin".into())];
+    // A confined run gets no sudo (#1387): the owner's opt-out keeps the askpass in force.
+    run_settings.confinement = cockpit_approvals::RunConfinement::Off;
     run_settings.sudo = Some(SudoAskpass::with_stand_in(
         sudo.clone(),
         std::fs::metadata(&sudo).unwrap().uid(),

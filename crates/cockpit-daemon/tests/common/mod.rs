@@ -127,6 +127,16 @@ impl TestHome {
             .expect("the state database opens")
     }
 
+    /// The owner's `config.toml` the daemon reads.
+    pub fn config_file(&self) -> PathBuf {
+        let config_home = if self.sets_xdg_dirs {
+            self.home().join("config")
+        } else {
+            self.home().join(".config")
+        };
+        config_home.join(BUILD_PROFILE_DIR).join("config.toml")
+    }
+
     pub fn log_file(&self) -> PathBuf {
         self.state_home()
             .join(BUILD_PROFILE_DIR)
@@ -165,6 +175,7 @@ impl TestHome {
 
     /// Starts the daemon and waits for its `ready` line.
     pub fn start(&self) -> RunningDaemon {
+        candidate::unconfine_runs(&self.config_file());
         let mut child = self.command().spawn().expect("the daemon binary runs");
         let stdout = child.stdout.take().expect("stdout is piped");
         let (lines, ready) = mpsc::channel();
@@ -358,6 +369,16 @@ pub fn unsandboxed_settings() -> cockpit_sessions::Settings {
     }
 }
 
+/// The product's run settings with the owner's one named opt-out, `agents.confined_runs =
+/// "off"` (#1387): an in-process daemon's supervisor is the test's, and the tests of
+/// confined runs give theirs a fake systemd.
+pub fn unconfined_run_settings() -> cockpit_approvals::RunSettings {
+    cockpit_approvals::RunSettings {
+        confinement: cockpit_approvals::RunConfinement::Off,
+        ..cockpit_daemon::run_settings(Vec::new()).unwrap()
+    }
+}
+
 /// What an in-process daemon is wired with in tests: a private tmux server in `dir`, never
 /// the user's, `providers`, and a home of its own in `dir/home`.
 pub fn wiring_in(
@@ -382,7 +403,7 @@ pub fn wiring_in(
         session_tick: Duration::from_secs(3600),
         quota_resume_tick: Duration::from_secs(3600),
         exit_sweep: cockpit_daemon::EXIT_SWEEP,
-        run_settings: cockpit_daemon::run_settings(Vec::new()).unwrap(),
+        run_settings: unconfined_run_settings(),
         environment: cockpit_config::Environment {
             home: Some(dir.join("home").into()),
             ..cockpit_config::Environment::default()

@@ -827,3 +827,38 @@ async fn torlek_alone_with_a_step_open_lists_the_sign_in_of_every_provider() {
         "{checklist}"
     );
 }
+
+/// #1387: a test home reaches no systemd user manager, so required confined runs cannot
+/// start; doctor blocks, naming the owner's opt-out, rather than let them run unconfined.
+#[tokio::test(flavor = "multi_thread")]
+async fn confined_runs_without_a_systemd_manager_block_doctor_naming_the_opt_out() {
+    let home = Home::new();
+    home.write_owner_config("[agents]\nconfined_runs = \"required\"\n");
+    let _daemon = home.start();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    assert_eq!(doctor.status.code(), Some(1), "{report}");
+    let (line, next) = requirement(&report, "confined runs");
+    assert_eq!(status(line), "missing-prerequisite", "{line}");
+    assert!(line.contains("systemd user manager"), "{line}");
+    assert!(
+        next.unwrap().contains("agents.confined_runs = \"off\""),
+        "{report}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unconfined_runs_are_reported_loudly_without_blocking() {
+    let home = Home::new();
+    let _daemon = home.start();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    assert!(doctor.status.success(), "{report}");
+    let (line, _) = requirement(&report, "confined runs");
+    assert_eq!(status(line), "available", "{line}");
+    assert!(line.contains("OFF"), "{line}");
+}

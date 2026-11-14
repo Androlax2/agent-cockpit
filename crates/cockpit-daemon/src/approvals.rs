@@ -52,6 +52,68 @@ pub fn run_settings(environment: Vec<(OsString, OsString)>) -> std::io::Result<R
     Ok(settings)
 }
 
+/// The owner's secrets under their home that a confined run cannot read (#1387): keys,
+/// GitHub's CLI tokens, keyrings and browser profiles.
+const HIDDEN_FROM_RUNS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".config/gh",
+    ".local/share/keyrings",
+    ".local/share/kwalletd",
+    ".mozilla",
+    ".config/google-chrome",
+    ".config/chromium",
+    ".config/BraveSoftware",
+    ".config/vivaldi",
+    ".config/microsoft-edge",
+];
+
+/// What a confined run cannot see, or the owner's opt-out `off` (#1387). Hidden: the
+/// owner's secrets ([`HIDDEN_FROM_RUNS`]), the tokens in Torlek's configuration and the
+/// sessions' mount sources. Emptied: Torlek's state (its database, the sessions' homes and
+/// temporary folders) and the owner's runtime folder, with its sockets and buses, through
+/// which a run could start what is not confined. Reachable read-only: the daemon's sockets,
+/// so `torlek` in a run still asks the daemon.
+pub fn run_confinement(
+    setting: cockpit_config::ConfinedRuns,
+    environment: &cockpit_config::Environment,
+    options: &crate::Options,
+) -> Result<cockpit_approvals::RunConfinement, cockpit_config::ConfigError> {
+    if setting == cockpit_config::ConfinedRuns::Off {
+        return Ok(cockpit_approvals::RunConfinement::Off);
+    }
+    let home = environment.home_dir()?;
+    let config_dir = cockpit_config::Layout::resolve(environment, &home)
+        .config_dir
+        .value;
+    let hidden = HIDDEN_FROM_RUNS
+        .iter()
+        .map(|path| home.join(path))
+        .chain(
+            [
+                cockpit_config::GITHUB_TOKENS_DIR,
+                cockpit_config::GITHUB_API_TOKENS_DIR,
+                cockpit_config::PROVIDER_CREDENTIALS_DIR,
+            ]
+            .map(|folder| config_dir.join(folder)),
+        )
+        .chain([options.mount_sources()])
+        .collect();
+    let user_runtime = environment
+        .xdg_runtime_dir
+        .as_ref()
+        .map(PathBuf::from)
+        .filter(|folder| folder.is_absolute());
+    Ok(cockpit_approvals::RunConfinement::Required {
+        hidden,
+        emptied: [options.state_dir.clone()]
+            .into_iter()
+            .chain(user_runtime)
+            .collect(),
+        reachable: vec![options.runtime_dir.clone()],
+    })
+}
+
 /// A request that failed, as the wire tells it.
 pub(crate) struct Failed(pub(crate) ProtocolError);
 

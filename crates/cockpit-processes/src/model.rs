@@ -153,6 +153,9 @@ pub struct Confinement {
     /// Folders shown as empty and read-only, except the `writable` folders inside them: a
     /// hidden folder cannot hold a writable one.
     pub emptied: Vec<PathBuf>,
+    /// Folders the execution reads but cannot write, even inside an `emptied` one: the
+    /// daemon's sockets, for one the owner runs `torlek` in. Each must exist.
+    pub reachable: Vec<PathBuf>,
 }
 
 /// A terminal an execution runs in, as its controlling terminal, so prompts such as `sudo`'s
