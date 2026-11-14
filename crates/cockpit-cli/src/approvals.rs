@@ -293,7 +293,8 @@ fn hidden_name(kind: HiddenView) -> &'static str {
 }
 
 /// What the owner should weigh before approving, beyond the text: the rule scan's findings
-/// (#1388), files the session can edit that its sudo runs as root, build files the session changed that the command runs, a
+/// (#1388), files the session can edit that its sudo runs as root, the other files it runs
+/// that the session can edit, pinned (#1387), build files the session changed that the command runs, a
 /// `timeout` that would take the terminal from it, and a shell that could not check the
 /// command.
 fn run_hints(run: &RunRequestView) -> String {
@@ -304,6 +305,7 @@ fn run_hints(run: &RunRequestView) -> String {
     if let Some(root_runs) = &run.root_runs {
         text.push_str(&root_runs_hints(root_runs));
     }
+    text.push_str(&pinned_hints(run));
     if let Some(files) = &run.changed_build_files {
         if !files.is_empty() {
             let _ = writeln!(
@@ -381,6 +383,29 @@ fn root_runs_hints(root_runs: &RootRunsView) -> String {
             }
             (None, Some(_)) => text.push_str("    (not text)\n"),
             (None, None) => {}
+        }
+    }
+    text
+}
+
+/// Each other file the command runs that the session can edit, pinned with its hash (#1387):
+/// one that changes before the run starts refuses it.
+fn pinned_hints(run: &RunRequestView) -> String {
+    let mut text = String::new();
+    for file in run.pinned_beyond_root() {
+        let _ = writeln!(
+            text,
+            "  Pinned: {} sha256 {}",
+            file.shown_path.text,
+            hash_text(file.sha256.as_deref())
+        );
+        text.push_str(&warnings(&file.shown_path));
+        if file.changed_since_asked() {
+            let _ = writeln!(
+                text,
+                "  ! {}",
+                changed_since_asked_warning(&file.shown_path.text)
+            );
         }
     }
     text

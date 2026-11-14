@@ -603,6 +603,36 @@ fn m_shows_the_file_s_first_lines_and_hash_and_a_change_is_warned_of() {
 }
 
 #[test]
+fn a_changed_pinned_script_is_warned_of_and_m_shows_its_hash_once() {
+    let now = Instant::now();
+    let changed_hash = "0".repeat(64);
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+    let mut asked = run(3, SESSION, "sh ./build.sh && sudo -A -k ./x.sh");
+    asked.root_runs = Some(RootRunsView {
+        editable: vec![root_file("x.sh", SCRIPT_HASH)],
+        cannot_tell: false,
+    });
+    asked.pinned = Some(vec![
+        root_file("build.sh", &changed_hash),
+        root_file("x.sh", SCRIPT_HASH),
+    ]);
+    shown_with_keys(&mut app, vec![asked], Vec::new(), now);
+
+    let folded = screen_text(&app, after_grace(now));
+    app.key(Key::Char('m'), after_grace(now));
+    let expanded = screen_text(&app, after_grace(now));
+
+    let warning = "Warning: build.sh changed since it was asked: approving it refuses the run";
+    assert!(folded.contains(warning), "{folded}");
+    assert!(!folded.contains("Pinned:"), "{folded}");
+    assert!(expanded.contains("Pinned: build.sh"), "{expanded}");
+    assert!(
+        !expanded.contains("Pinned: x.sh"),
+        "a file sudo runs is shown once, as run as root: {expanded}"
+    );
+}
+
+#[test]
 fn within_the_grace_the_pane_says_to_read_first() {
     let now = Instant::now();
     let app = app_asking(now);

@@ -105,6 +105,7 @@ pub fn run(id: i64, session: &str, command: &str) -> RunRequestView {
         sudo_ran_unasked: 0,
         typed_secret_redacted: 0,
         root_runs: None,
+        pinned: None,
         findings: None,
         decision: None,
         result: None,

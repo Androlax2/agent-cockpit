@@ -26,7 +26,7 @@ use crate::rows::{
     refreshed_expiry, session_from, state_at, still_asking, stored_row,
 };
 use crate::rule_scan::Finding;
-use crate::sudo_editable::RootRuns;
+use crate::sudo_editable::{RootFile, RootRuns};
 use crate::{Error, Refusal};
 
 /// An approval is refused this long after the request was asked or last edited (#156,
@@ -45,7 +45,7 @@ const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, p
         output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant,
         kind, start_prompt, start_clone, start_agent, start_model, start_effort, decided_at,
         decided_through, output_retired_at, stopped_by_owner_at, sudo_ran_unasked,
-        typed_secret_redacted, root_runs, findings, card_writes, card_hosts, limit_hits";
+        typed_secret_redacted, root_runs, findings, card_writes, card_hosts, limit_hits, pinned";
 /// The most folders, and the most hosts, a card names (#1387).
 pub const REACH_MAX_ENTRIES: usize = 16;
 /// The longest folder or host a card names.
@@ -194,6 +194,10 @@ pub struct RunRequest {
     pub findings: Option<Vec<Finding>>,
     /// What the card names beyond the checkout (#1387); empty for a start request.
     pub reach: Reach,
+    /// The files any part of this revision runs as code that the asking session can change,
+    /// with their hashes when recorded (#1387), with [`record_checks`]; `None` until then,
+    /// and for a start request. A run is refused when one of them changed.
+    pub pinned: Option<Vec<RootFile>>,
 }
 
 /// The owner's decision on a request: only the owner decides, so what it records is whether,
@@ -978,7 +982,7 @@ pub async fn edit_run(
     stored_run(
         write,
         "UPDATE approvals_runs SET command = ?2, revision = revision + 1, revised_at = ?3,
-                root_runs = NULL, findings = NULL
+                root_runs = NULL, findings = NULL, pinned = NULL
              WHERE id = ?1",
         (id.0, command.as_str(), now),
         now,
@@ -987,15 +991,16 @@ pub async fn edit_run(
 }
 
 /// Records the checks of `revision` of the command request `id` while it asks: what it runs
-/// as root that its asking session can change (#1383) and what the rule scan found (#1388).
-/// The daemon checks each revision before the owner reads it, in the transaction that filed
-/// or edited it.
+/// as root that its asking session can change (#1383), what the rule scan found (#1388) and
+/// the files it runs that the session can change, pinned (#1387). The daemon checks each
+/// revision before the owner reads it, in the transaction that filed or edited it.
 pub async fn record_checks(
     write: &WriteTransaction<'_>,
     id: RunId,
     revision: i64,
     runs: &RootRuns,
     findings: &[Finding],
+    pinned: &[RootFile],
     now: i64,
 ) -> Result<RunRequest, Error> {
     let run = undecided(write, id, now).await?;
@@ -1010,11 +1015,12 @@ pub async fn record_checks(
     }
     stored_run(
         write,
-        "UPDATE approvals_runs SET root_runs = ?2, findings = ?3 WHERE id = ?1",
+        "UPDATE approvals_runs SET root_runs = ?2, findings = ?3, pinned = ?4 WHERE id = ?1",
         (
             id.0,
             crate::sudo_editable::encode(runs),
             crate::rule_scan::encode(findings),
+            crate::sudo_editable::encode_pinned(pinned),
         ),
         now,
     )
@@ -1563,6 +1569,13 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
             None => None,
         },
         reach: reach_from(row, 34)?,
+        pinned: match row.get::<Option<String>>(37)? {
+            Some(text) => Some(
+                crate::sudo_editable::decode_pinned(&text)
+                    .ok_or_else(|| invalid_row(TABLE, format!("pinned {text:?}")))?,
+            ),
+            None => None,
+        },
     })
 }
 

@@ -236,6 +236,7 @@ async fn the_owner_sees_the_request_in_the_queue_with_the_display_rules_applied(
             cannot_tell: false,
         }),
         findings: Some(Vec::new()),
+        pinned: Some(Vec::new()),
         ..request.clone()
     };
     assert_eq!(runs, [checked_for_root]);
@@ -996,6 +997,71 @@ async fn a_file_sudo_runs_that_changed_since_the_ask_refuses_the_run() {
             .editable[0]
             .sha256,
         recorded.root_runs.unwrap().editable[0].sha256
+    );
+}
+
+/// #1387: a script any run names is pinned, not only one sudo runs; the test's session runs
+/// unsandboxed, so a file in its directory is one it can edit.
+#[tokio::test]
+async fn the_owner_reads_the_script_a_run_names_pinned_by_its_hash() {
+    let asking = started(true).await;
+    std::fs::write(asking.cwd.path().join("x.sh"), "echo build\n").unwrap();
+    let asked = asking.asked("sh ./x.sh").await;
+
+    let shown = shown_to_owner(&asking, asked.id).await;
+
+    assert_eq!(asked.pinned, None, "the agent's answer leaves it out");
+    let pinned = shown
+        .pinned
+        .expect("the owner's view carries the pinned files");
+    let [file] = pinned.as_slice() else {
+        panic!("one pinned file: {pinned:?}");
+    };
+    assert_eq!(file.shown_path.text, "./x.sh");
+    assert!(file.sha256.is_some());
+    assert!(!file.changed_since_asked());
+    assert_eq!(
+        shown.root_runs.map(|runs| runs.editable),
+        Some(Vec::new()),
+        "no sudo, so nothing runs as root"
+    );
+}
+
+#[tokio::test]
+async fn editing_a_pinned_script_after_the_card_is_shown_refuses_the_approval() {
+    let asking = started(true).await;
+    let script = asking.cwd.path().join("x.sh");
+    std::fs::write(&script, "echo build\n").unwrap();
+    let asked = asking.asked("sh ./x.sh").await;
+    let shown = shown_to_owner(&asking, asked.id).await;
+
+    std::fs::write(&script, "echo replaced\n").unwrap();
+    let refusal = refused(asking.approve(&shown).await);
+
+    assert_eq!(refusal.code, ErrorCode::StaleRevision, "{refusal:?}");
+    assert_eq!(
+        shown_to_owner(&asking, asked.id).await.state,
+        RunStateView::Asking
+    );
+}
+
+#[tokio::test]
+async fn a_pinned_script_that_changed_since_the_ask_refuses_the_run() {
+    let asking = started(true).await;
+    let script = asking.cwd.path().join("x.sh");
+    std::fs::write(&script, "echo build\n").unwrap();
+    let asked = asking.asked("sh ./x.sh").await;
+
+    std::fs::write(&script, "echo replaced\n").unwrap();
+    let shown = shown_to_owner(&asking, asked.id).await;
+    assert!(shown.pinned.as_ref().unwrap()[0].changed_since_asked());
+    run(asking.approve(&shown).await);
+    let ended = asking.ended(asked.id).await;
+
+    assert_eq!(ended.state, RunStateView::NotRun, "{ended:?}");
+    assert_eq!(
+        ended.note.as_deref(),
+        Some("./x.sh changed since it was asked")
     );
 }
 

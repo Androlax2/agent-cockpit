@@ -181,6 +181,7 @@ fn finished_run() -> RunRequestView {
         sudo_ran_unasked: 0,
         typed_secret_redacted: 0,
         root_runs: None,
+        pinned: None,
         findings: None,
         decision: None,
         result: Some(RunResultView {

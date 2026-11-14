@@ -1,12 +1,14 @@
 //! The checks a command request gets before the owner reads it, at the daemon: each revision
 //! is checked in the transaction that filed or edited it, for what its sudo runs that the
-//! asking session can edit (#1383, `cockpit_approvals::root_runs`) and by the rule scan
-//! (#1388, `cockpit_approvals::scan`), which lists the first among its findings. The owner's
-//! views read each file sudo runs as it is now, and their digest names what they read; an
-//! approval must name the files as they are when it arrives, and a run is refused when one no
-//! longer has its recorded hash.
+//! asking session can edit (#1383, `cockpit_approvals::root_runs`), by the rule scan
+//! (#1388, `cockpit_approvals::scan`), which lists the first among its findings, and for the
+//! files any part of it runs that the session can edit, pinned by their hashes (#1387,
+//! `cockpit_approvals::pinned_files`). The owner's views read each pinned file and each file
+//! sudo runs as it is now, and their digest names what they read; an approval must name the
+//! files as they are when it arrives, and a run is refused when one no longer has its
+//! recorded hash.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cockpit_approvals::{
@@ -33,18 +35,17 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// `work` on a blocking thread, or `None` once [`READ_TIMEOUT`] passed.
 async fn bounded<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
     match tokio::time::timeout(READ_TIMEOUT, tokio::task::spawn_blocking(work)).await {
-        Ok(done) => Some(done.expect("reading the files a command runs as root does not panic")),
+        Ok(done) => Some(done.expect("reading the files a command runs does not panic")),
         Err(_) => {
-            tracing::warn!(
-                "reading the files a command's sudo runs took longer than {READ_TIMEOUT:?}"
-            );
+            tracing::warn!("reading the files a command runs took longer than {READ_TIMEOUT:?}");
             None
         }
     }
 }
 
-/// Checks the revision `run` now has: what it runs as root that its session can change, and
-/// the rule scan's findings; records both with the request.
+/// Checks the revision `run` now has: what it runs as root that its session can change, the
+/// rule scan's findings and the files it runs that the session can change; records them with
+/// the request.
 pub(super) async fn record(
     write: &WriteTransaction<'_>,
     sessions: &Sessions,
@@ -54,28 +55,51 @@ pub(super) async fn record(
         return Ok(run.clone());
     }
     let clone = run.project.as_ref().map(|project| project.root.clone());
-    let (runs, findings) = check(sessions, &run.session, &run.command, &run.cwd, clone).await;
-    Ok(
-        cockpit_approvals::record_checks(write, run.id, run.revision, &runs, &findings, now())
-            .await?,
+    let checks = check(sessions, &run.session, &run.command, &run.cwd, clone).await;
+    Ok(cockpit_approvals::record_checks(
+        write,
+        run.id,
+        run.revision,
+        &checks.root_runs,
+        &checks.findings,
+        &checks.pinned,
+        now(),
     )
+    .await?)
 }
 
-/// What `command`, run in `cwd`, runs as root that `session` can change, and what the scan
-/// finds in it, read now; `clone` is the session's checkout. The run gets the daemon's own
-/// environment, so its `PATH` and `HOME` resolve the command's words.
+/// What one revision's checks found.
+struct Checks {
+    root_runs: RootRuns,
+    findings: Vec<Finding>,
+    pinned: Vec<RootFile>,
+}
+
+/// What `command`, run in `cwd`, runs as root that `session` can change, what the scan finds
+/// in it and the files it runs that the session can change, read now; `clone` is the
+/// session's checkout. The run gets the daemon's own environment, so its `PATH` and `HOME`
+/// resolve the command's words.
 async fn check(
     sessions: &Sessions,
     session: &SessionId,
     command: &str,
     cwd: &Path,
-    clone: Option<std::path::PathBuf>,
-) -> (RootRuns, Vec<Finding>) {
+    clone: Option<PathBuf>,
+) -> Checks {
     let writes = session_writes(sessions, session);
     let command = std::sync::Arc::<str>::from(command);
     let cwd = std::sync::Arc::<Path>::from(cwd);
     // Each check has its own bound, so a scan that does not end in time leaves the files
     // sudo runs pinned by their hashes.
+    let pinned = bounded({
+        let (command, cwd, writes) = (command.clone(), cwd.clone(), writes.clone());
+        move || {
+            with_lookup(&cwd, |lookup| {
+                cockpit_approvals::pinned_files(&command, lookup, &writes)
+            })
+        }
+    })
+    .await;
     let runs = bounded({
         let (command, cwd) = (command.clone(), cwd.clone());
         move || {
@@ -89,7 +113,7 @@ async fn check(
         editable: Vec::new(),
         cannot_tell: true,
     });
-    let findings = bounded({
+    let mut findings = bounded({
         let (runs, cwd) = (runs.clone(), cwd.clone());
         move || {
             with_lookup(&cwd, |lookup| {
@@ -103,7 +127,14 @@ async fn check(
         findings.push(cockpit_approvals::scan_unfinished());
         findings
     });
-    (runs, findings)
+    if pinned.is_none() {
+        findings.push(cockpit_approvals::pinning_unfinished());
+    }
+    Checks {
+        root_runs: runs,
+        findings,
+        pinned: pinned.unwrap_or_default(),
+    }
 }
 
 /// `work` given the daemon's own environment, whose `PATH` and `HOME` the run gets.
@@ -111,7 +142,7 @@ fn with_lookup<T>(cwd: &Path, work: impl FnOnce(Lookup<'_>) -> T) -> T {
     // Without `PATH`, a shell and sudo search the C library's default, glibc's
     // `confstr(_CS_PATH)`.
     let search_path = std::env::var_os("PATH").unwrap_or_else(|| DEFAULT_PATH.into());
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
     work(Lookup {
         cwd,
         search_path: Some(&search_path),
@@ -179,50 +210,84 @@ fn session_writes(sessions: &Sessions, session: &SessionId) -> SessionWrites {
     }
 }
 
-/// The recorded check as the owner reads it, and the digest an approval of what it shows
-/// names. While the request asks, each file is read now. `None` when the revision was not
-/// checked.
-pub(super) async fn owner_view(run: &RunRequest) -> Option<(RootRunsView, String)> {
-    let runs = run.root_runs.clone()?;
-    if run.state != RunState::Asking {
-        let view = RootRunsView {
-            editable: runs
-                .editable
-                .iter()
-                .map(|file| file_view(file, &run.cwd, None))
-                .collect(),
-            cannot_tell: runs.cannot_tell,
-        };
-        return Some((view, run.digest()));
+/// The recorded checks as the owner reads them: the files sudo runs, the pinned files, and the
+/// digest an approval of what they show names. While the request asks, each file is read now,
+/// once for both. `None` when the revision was not checked.
+pub(super) async fn owner_view(run: &RunRequest) -> Option<OwnerView> {
+    if run.root_runs.is_none() && run.pinned.is_none() {
+        return None;
     }
-    let paths: Vec<_> = runs.editable.iter().map(|file| file.path.clone()).collect();
-    let reads = bounded(move || {
-        paths
-            .iter()
-            .map(|path| {
-                cockpit_approvals::file_now(path)
-                    // Debug, not warn: the owner's views poll; the view says it is unreadable.
-                    .inspect_err(|error| tracing::debug!(%error, path = %path.display(), "cannot read a file sudo runs"))
-                    .ok()
-            })
-            .collect::<Vec<_>>()
+    let views = |read_of: &dyn Fn(&Path) -> Option<Option<FileNow>>| {
+        let files = |files: &[RootFile]| {
+            files
+                .iter()
+                .map(|file| file_view(file, &run.cwd, read_of(&file.path)))
+                .collect()
+        };
+        let root_runs = run.root_runs.as_ref().map(|runs| RootRunsView {
+            editable: files(&runs.editable),
+            cannot_tell: runs.cannot_tell,
+        });
+        (root_runs, run.pinned.as_deref().map(files))
+    };
+    if run.state != RunState::Asking {
+        let (root_runs, pinned) = views(&|_| None);
+        return Some(OwnerView {
+            root_runs,
+            pinned,
+            digest: run.digest(),
+        });
+    }
+    let bound = bound_files(run);
+    let paths: Vec<PathBuf> = bound.iter().map(|file| file.path.clone()).collect();
+    let reads = bounded({
+        let paths = paths.clone();
+        move || {
+            paths
+                .iter()
+                .map(|path| {
+                    cockpit_approvals::file_now(path)
+                        // Debug, not warn: the owner's views poll; the view says it is unreadable.
+                        .inspect_err(|error| tracing::debug!(%error, path = %path.display(), "cannot read a file a command runs"))
+                        .ok()
+                })
+                .collect::<Vec<_>>()
+        }
     })
     .await
-    .unwrap_or_else(|| vec![None; runs.editable.len()]);
+    .unwrap_or_else(|| vec![None; bound.len()]);
     let contents: Vec<Contents> = reads.iter().map(contents_of).collect();
-    let view = RootRunsView {
-        editable: runs
-            .editable
+    let read_of = |path: &Path| {
+        paths
             .iter()
-            .zip(reads)
-            .map(|(file, read)| file_view(file, &run.cwd, Some(read)))
-            .collect(),
-        cannot_tell: runs.cannot_tell,
+            .position(|read| read == path)
+            .map(|at| reads[at].clone())
     };
-    Some((
-        view,
-        cockpit_approvals::digest_as_read(&run.digest(), &contents),
-    ))
+    let (root_runs, pinned) = views(&read_of);
+    Some(OwnerView {
+        root_runs,
+        pinned,
+        digest: cockpit_approvals::digest_as_read(&run.digest(), &contents),
+    })
+}
+
+/// A request's checks as the owner's views show them.
+pub(super) struct OwnerView {
+    pub(super) root_runs: Option<RootRunsView>,
+    pub(super) pinned: Option<Vec<RootFileView>>,
+    pub(super) digest: String,
+}
+
+/// The files an approval of `run` is bound to and its run is refused over: those it pins,
+/// then any file its sudo runs that they leave out (a revision checked before pinning).
+fn bound_files(run: &RunRequest) -> Vec<RootFile> {
+    let mut files: Vec<RootFile> = run.pinned.clone().unwrap_or_default();
+    for file in run.root_runs.iter().flat_map(|runs| &runs.editable) {
+        if !files.iter().any(|bound| bound.path == file.path) {
+            files.push(file.clone());
+        }
+    }
+    files
 }
 
 fn contents_of(read: &Option<FileNow>) -> Contents {
@@ -260,7 +325,7 @@ fn file_view(file: &RootFile, cwd: &Path, read: Option<Option<FileNow>>) -> Root
     }
 }
 
-/// The files `run`'s sudo runs as an approval arriving now finds them.
+/// The files `run` is bound to as an approval arriving now finds them.
 pub(super) struct AsApproved {
     /// What the owner's view must have named for the approval to be of these contents.
     pub(super) digest: String,
@@ -268,18 +333,17 @@ pub(super) struct AsApproved {
     pub(super) changed: Option<String>,
 }
 
-/// The editable files `run`'s sudo runs, read for an approval; `None` when there are none.
+/// The files `run` is bound to, read for an approval; `None` when there are none.
 pub(super) async fn as_approved(run: &RunRequest) -> Option<AsApproved> {
-    let runs = run
-        .root_runs
-        .clone()
-        .filter(|runs| !runs.editable.is_empty())?;
-    let paths: Vec<_> = runs.editable.iter().map(|file| file.path.clone()).collect();
+    let bound = bound_files(run);
+    if bound.is_empty() {
+        return None;
+    }
+    let paths: Vec<_> = bound.iter().map(|file| file.path.clone()).collect();
     let contents = bounded(move || paths.iter().map(|path| Contents::read(path)).collect())
         .await
-        .unwrap_or_else(|| vec![Contents::Unreadable; runs.editable.len()]);
-    let changed = runs
-        .editable
+        .unwrap_or_else(|| vec![Contents::Unreadable; bound.len()]);
+    let changed = bound
         .iter()
         .zip(&contents)
         .find(|(file, now)| **now != Contents::recorded(file))
@@ -295,12 +359,15 @@ pub(super) async fn as_approved(run: &RunRequest) -> Option<AsApproved> {
     })
 }
 
-/// Why an approved run must not start: a file its sudo runs no longer has its recorded hash.
+/// Why an approved run must not start: a file it runs no longer has its recorded hash.
 pub(super) async fn changed_after_approval(run: &RunRequest) -> Option<String> {
-    let runs = run.root_runs.clone()?;
+    let bound = bound_files(run);
+    if bound.is_empty() {
+        return None;
+    }
     let cwd = run.cwd.clone();
     bounded(move || {
-        cockpit_approvals::changed_file(&runs.editable).map(|path| {
+        cockpit_approvals::changed_file(&bound).map(|path| {
             format!(
                 "{} changed after you approved",
                 cockpit_approvals::path_from(path, &cwd)
@@ -308,5 +375,5 @@ pub(super) async fn changed_after_approval(run: &RunRequest) -> Option<String> {
         })
     })
     .await
-    .unwrap_or_else(|| Some("the files its sudo runs could not be read in time".to_owned()))
+    .unwrap_or_else(|| Some("the files it runs could not be read in time".to_owned()))
 }

@@ -109,9 +109,9 @@ pub struct RunRequestView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub limits: Vec<ShownText>,
     /// SHA-256 of this revision's directory and command, and of the `writes` and `hosts`
-    /// when it names any; an approval names it. In the owner's views of a request whose sudo
-    /// runs files its session can edit (`root_runs`), bound to those files as the view read
-    /// them: an approval names what it was shown.
+    /// when it names any; an approval names it. In the owner's views of a request that runs
+    /// files its session can edit (`pinned`, `root_runs`), bound to those files as the view
+    /// read them: an approval names what it was shown.
     pub digest: String,
     /// Seconds since 1970.
     pub asked_at: i64,
@@ -147,6 +147,12 @@ pub struct RunRequestView {
     /// before the scan).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub findings: Option<Vec<FindingView>>,
+    /// The files any part of this revision runs as code that the asking session can change
+    /// (#1387), each hashed before the owner read it: one that changes before the run starts
+    /// refuses it. Those sudo runs are in `root_runs` too. In the owner's views only; `None`
+    /// there when the revision was not checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<Vec<RootFileView>>,
     pub result: Option<RunResultView>,
     /// Why the request ended without a result, or what is known about it.
     pub note: Option<String>,
@@ -180,7 +186,7 @@ pub struct RootRunsView {
     pub cannot_tell: bool,
 }
 
-/// One file sudo runs that the asking session can change.
+/// One file a request runs, or its sudo runs, that the asking session can change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootFileView {
     /// Absolute.
@@ -276,7 +282,17 @@ pub fn finding_line(finding: &FindingView, excerpt: &str) -> String {
 /// What a scanned request without a finding reads: a clean scan proves nothing safe.
 pub const NO_KNOWN_RISKY_PATTERN: &str = "Scan: no known risky pattern";
 
-/// The card's line for a file sudo runs that changed after it was recorded.
+impl RunRequestView {
+    /// The pinned files not already shown as run by sudo.
+    pub fn pinned_beyond_root(&self) -> impl Iterator<Item = &RootFileView> {
+        let root = self.root_runs.as_ref().map(|runs| runs.editable.as_slice());
+        self.pinned.iter().flatten().filter(move |file| {
+            !root.is_some_and(|root| root.iter().any(|sudo| sudo.path == file.path))
+        })
+    }
+}
+
+/// The card's line for a file a request runs that changed after it was recorded.
 pub fn changed_since_asked_warning(path: &str) -> String {
     format!("{path} changed since it was asked: approving it refuses the run")
 }

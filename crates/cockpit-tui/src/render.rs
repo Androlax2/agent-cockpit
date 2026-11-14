@@ -830,6 +830,39 @@ pub(crate) fn run_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> 
     if let Some(root_runs) = &run.root_runs {
         lines.extend(root_runs_lines(root_runs, is_expanded));
     }
+    lines.extend(pinned_lines(run, is_expanded));
+    lines
+}
+
+/// The other files a request runs that the asking session can change, pinned (#1387): a file
+/// changed since the ask, and hidden characters in their names; expanded, each file's hash.
+fn pinned_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    for file in run
+        .pinned_beyond_root()
+        .filter(|file| file.changed_since_asked())
+    {
+        let room = ROOT_LINE_COLUMNS
+            .saturating_sub(WARNING.len() + changed_since_asked_warning("").chars().count());
+        lines.push(format!(
+            "{WARNING}{}",
+            changed_since_asked_warning(&shortened(&file.shown_path.text, room))
+        ));
+    }
+    let shown: Vec<&ShownText> = run
+        .pinned_beyond_root()
+        .map(|file| &file.shown_path)
+        .collect();
+    let hidden = warnings(&shown);
+    if !hidden.is_empty() {
+        lines.push(format!("{WARNING}in the pinned files: {hidden}"));
+    }
+    if is_expanded {
+        for file in run.pinned_beyond_root() {
+            lines.push(format!("Pinned: {}", file.shown_path.text));
+            lines.push(format!("  sha256 {}", hash_text(file.sha256.as_deref())));
+        }
+    }
     lines
 }
 
