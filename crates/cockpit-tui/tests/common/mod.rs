@@ -110,6 +110,9 @@ pub fn run(id: i64, session: &str, command: &str) -> RunRequestView {
         result: None,
         note: None,
         already_asked: false,
+        writes: Vec::new(),
+        hosts: Vec::new(),
+        limits: Vec::new(),
     }
 }
 

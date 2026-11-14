@@ -32,9 +32,11 @@ const DEFAULT_WAIT: Duration = Duration::from_secs(540);
 const POLL_EVERY: Duration = Duration::from_millis(500);
 const DEADLINE: Duration = Duration::from_secs(10);
 
-/// `cockpit ask run [--cwd DIR] [--no-wait] --reason TEXT COMMAND | --wait ID | --check`.
-/// With `--no-wait` the agent files the request and goes on with other work: it exits 124
-/// at once, naming the `--wait ID` that collects the answer (#156).
+/// `cockpit ask run [--cwd DIR] [--write DIR]... [--host HOST]... [--no-wait] --reason TEXT
+/// COMMAND | --wait ID | --check`. With `--no-wait` the agent files the request and goes on
+/// with other work: it exits 124 at once, naming the `--wait ID` that collects the answer
+/// (#156). `--write` and `--host` name what a confined run may write besides its checkout and
+/// reach (#1387); the owner approves them with the command.
 pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     let words = utf8(arguments)?;
     match words.as_slice() {
@@ -153,6 +155,8 @@ struct RunAsked {
     command: String,
     cwd: String,
     reason: String,
+    writes: Vec<String>,
+    hosts: Vec<String>,
     waits: bool,
 }
 
@@ -160,12 +164,25 @@ fn parse_ask_run(words: &[&str]) -> Result<RunAsked, String> {
     let mut cwd = None;
     let mut reason = None;
     let mut command = None;
+    let mut writes = Vec::new();
+    let mut hosts = Vec::new();
     let mut waits = true;
     let mut words = words.iter();
     while let Some(word) = words.next() {
         let slot = match *word {
             "--no-wait" if waits => {
                 waits = false;
+                continue;
+            }
+            "--write" | "--host" => {
+                let value = words
+                    .next()
+                    .ok_or_else(|| format!("{word} needs a value"))?;
+                if *word == "--write" {
+                    writes.push(absolute(value)?);
+                } else {
+                    hosts.push((*value).to_owned());
+                }
                 continue;
             }
             "--no-wait" => return Err("--no-wait given twice".to_owned()),
@@ -191,6 +208,8 @@ fn parse_ask_run(words: &[&str]) -> Result<RunAsked, String> {
         command,
         cwd,
         reason,
+        writes,
+        hosts,
         waits,
     })
 }
@@ -276,6 +295,8 @@ impl Agent {
             command: asked.command,
             cwd: asked.cwd,
             reason: asked.reason,
+            writes: asked.writes,
+            hosts: asked.hosts,
         });
         match asked {
             Ok(Reply::RunRequest { request }) if request.already_asked => {
@@ -471,6 +492,9 @@ fn run_answer(request: &RunRequestView) -> Option<ExitCode> {
                     "torlek: {}",
                     typed_secret_redacted_notice(result.typed_secret_redacted)
                 );
+            }
+            for hit in &result.limit_hits {
+                eprintln!("torlek: the run hit a limit: {hit}");
             }
             if result.output_retired {
                 eprintln!("torlek: database retention removed this run's output");

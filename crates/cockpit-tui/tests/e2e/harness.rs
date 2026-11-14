@@ -244,12 +244,13 @@ impl Cockpit {
         for plain in ["bin", "conversations", "projects"] {
             std::fs::create_dir(root.join(plain)).unwrap();
         }
-        // The owner's one opt-out of the sandbox (#61): these tests drive the TUI, not the
-        // sandbox, and must not depend on the product default.
+        // The owner's opt-outs of the sandbox (#61) and of confined runs (#1387): these tests
+        // drive the TUI, not the sandbox nor a systemd user manager, and must not depend on
+        // the product default.
         std::fs::create_dir(root.join("config/torlek-dev")).unwrap();
         std::fs::write(
             root.join("config/torlek-dev/config.toml"),
-            "[agents]\nsandbox = \"off\"\n",
+            "[agents]\nsandbox = \"off\"\nconfined_runs = \"off\"\n",
         )
         .unwrap();
         link_system_programs(&root.join("system"));

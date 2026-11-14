@@ -50,6 +50,7 @@ async fn finished(fixture: &Fixture, command: &str, shown: &str, ended_at: i64) 
         stopped_by_owner: false,
         sudo_ran_unasked: 0,
         typed_secret_redacted: 0,
+        limit_hits: Vec::new(),
     };
     finish_run(&write, &approved, &result, ended_at)
         .await

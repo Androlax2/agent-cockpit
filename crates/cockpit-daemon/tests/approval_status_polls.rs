@@ -37,6 +37,8 @@ async fn relaunched() -> Relaunched {
                 command: "true".to_owned(),
                 cwd: cwd.to_str().unwrap().to_owned(),
                 reason: "Waits for the owner across a relaunch.".to_owned(),
+                writes: Vec::new(),
+                hosts: Vec::new(),
             },
             GENEROUS,
         )

@@ -45,7 +45,11 @@ const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, p
         output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant,
         kind, start_prompt, start_clone, start_agent, start_model, start_effort, decided_at,
         decided_through, output_retired_at, stopped_by_owner_at, sudo_ran_unasked,
-        typed_secret_redacted, root_runs, findings";
+        typed_secret_redacted, root_runs, findings, card_writes, card_hosts, limit_hits";
+/// The most folders, and the most hosts, a card names (#1387).
+pub const REACH_MAX_ENTRIES: usize = 16;
+/// The longest folder or host a card names.
+const REACH_ENTRY_MAX_BYTES: usize = 4096;
 const START_PROMPT_MAX_CHARS: usize = 4000;
 const START_KIND: &str = "start-session";
 
@@ -114,6 +118,23 @@ pub struct RunAsk {
     pub cwd: PathBuf,
     pub reason: String,
     pub project: Option<Project>,
+    pub reach: Reach,
+}
+
+/// What a confined run's card names beyond its checkout (#1387): the folders it may also
+/// write and the hosts it may reach, `NAME`, `ADDRESS` or `[IPV6]`, with an optional `:PORT`.
+/// The daemon resolves the folders and checks the hosts before filing; here each is kept as
+/// it was named, in order, and the digest binds them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reach {
+    pub writes: Vec<PathBuf>,
+    pub hosts: Vec<String>,
+}
+
+impl Reach {
+    pub fn is_empty(&self) -> bool {
+        self.writes.is_empty() && self.hosts.is_empty()
+    }
 }
 
 /// What a finished run returns to the agent: its exit code and its output, redacted,
@@ -133,6 +154,9 @@ pub struct RunResult {
     /// How many times a secret the owner typed for the command appeared in its output and was
     /// replaced by `[redacted]` (#1386).
     pub typed_secret_redacted: u64,
+    /// What the confined run tried that its limits refused (#1387), in the order it hit them:
+    /// `crate::limit_hits` and the refusals of its egress proxy.
+    pub limit_hits: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +192,8 @@ pub struct RunRequest {
     /// What the rule scan found in this revision (#1388), recorded with [`record_checks`],
     /// kept with the owner's decision; `None` until then, and for a start request.
     pub findings: Option<Vec<Finding>>,
+    /// What the card names beyond the checkout (#1387); empty for a start request.
+    pub reach: Reach,
 }
 
 /// The owner's decision on a request: only the owner decides, so what it records is whether,
@@ -266,9 +292,10 @@ impl RunRequest {
 }
 
 impl RunRequest {
-    /// The digest a decision binds: this revision's working directory and command.
+    /// The digest a decision binds: this revision's working directory and command, and
+    /// what its card names beyond the checkout (#1387).
     pub fn digest(&self) -> String {
-        action_digest(&self.cwd, &self.command)
+        run_digest(&self.cwd, &self.command, &self.reach)
     }
 
     pub fn is_outside_project(&self) -> bool {
@@ -288,11 +315,15 @@ impl RunRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Approved {
     pub id: RunId,
+    /// The session that asked: a confined run's proxy names it (#1387).
+    pub session: SessionId,
     pub revision: i64,
     pub command: String,
     pub cwd: PathBuf,
-    /// The asking session's checkout: the one folder a confined run writes (#1387).
+    /// The asking session's checkout: the folder a confined run writes (#1387).
     pub project_root: Option<PathBuf>,
+    /// What the card named beyond the checkout, approved with the command.
+    pub reach: Reach,
     /// A start request (#410): the daemon starts this session in `cwd` instead of running
     /// `command`, which only describes it.
     pub start: Option<StartSession>,
@@ -311,20 +342,77 @@ pub fn action_digest(cwd: &Path, command: &str) -> String {
     crate::sudo_editable::hex(&hasher.finalize())
 }
 
+/// [`action_digest`] when the card names nothing beyond the checkout, so a request filed
+/// before cards keeps its digest; otherwise the same encoding at v2, each folder and host
+/// after the command, counted.
+fn run_digest(cwd: &Path, command: &str, reach: &Reach) -> String {
+    if reach.is_empty() {
+        return action_digest(cwd, command);
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"cockpit-approvals run v2\0");
+    let mut part = |bytes: &[u8]| {
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    };
+    part(cwd.as_os_str().as_encoded_bytes());
+    part(command.as_bytes());
+    for (count, entries) in [
+        (
+            reach.writes.len(),
+            reach
+                .writes
+                .iter()
+                .map(|folder| folder.as_os_str().as_encoded_bytes())
+                .collect::<Vec<_>>(),
+        ),
+        (
+            reach.hosts.len(),
+            reach.hosts.iter().map(|host| host.as_bytes()).collect(),
+        ),
+    ] {
+        part(&(count as u64).to_be_bytes());
+        for entry in entries {
+            part(entry);
+        }
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 /// The directory a command would run in, resolved now: symbolic links followed, so the
 /// owner reads where it runs. Refused unless it is an existing directory named absolutely.
 pub fn resolve_cwd(cwd: &str) -> Result<PathBuf, Refusal> {
-    let path = Path::new(cwd);
+    resolve_directory("cwd", cwd)
+}
+
+/// A folder a confined run's card names for it to write (#1387), resolved as
+/// [`resolve_cwd`] resolves the directory; the reason names the folder.
+pub fn resolve_write(write: &str) -> Result<PathBuf, Refusal> {
+    resolve_directory("writes", write).map_err(|refused| match refused {
+        Refusal::InvalidRequest { field, reason } => Refusal::InvalidRequest {
+            field,
+            reason: format!("{write} {reason}"),
+        },
+        other => other,
+    })
+}
+
+fn resolve_directory(field: &'static str, directory: &str) -> Result<PathBuf, Refusal> {
+    let path = Path::new(directory);
     if !path.is_absolute() {
-        return Err(invalid("cwd", "must be an absolute path"));
+        return Err(invalid(field, "must be an absolute path"));
     }
     let resolved = std::fs::canonicalize(path)
-        .map_err(|error| invalid("cwd", format!("cannot be resolved: {error}")))?;
+        .map_err(|error| invalid(field, format!("cannot be resolved: {error}")))?;
     if !resolved.is_dir() {
-        return Err(invalid("cwd", "is not a directory"));
+        return Err(invalid(field, "is not a directory"));
     }
     if resolved.to_str().is_none() {
-        return Err(invalid("cwd", "is not UTF-8"));
+        return Err(invalid(field, "is not UTF-8"));
     }
     Ok(resolved)
 }
@@ -360,6 +448,7 @@ async fn authorized_ask(
 ) -> Result<Option<i64>, Error> {
     validate_command("command", &ask.command)?;
     validate_reason(&ask.reason)?;
+    validate_reach(&ask.reach)?;
     asking_grant(write, session).await
 }
 
@@ -408,7 +497,7 @@ async fn pending_identical(
             &format!(
                 "SELECT {RUN_COLUMNS} FROM approvals_runs
                  WHERE session = ?1 AND kind = 'command' AND asked_command = ?2 AND command = asked_command
-                    AND cwd = ?3
+                    AND cwd = ?3 AND card_writes IS ?5 AND card_hosts IS ?6
                     AND state = 'asking' AND expires_at > ?4
                  ORDER BY id LIMIT 1"
             ),
@@ -417,6 +506,8 @@ async fn pending_identical(
                 ask.command.as_str(),
                 text_of(&ask.cwd)?,
                 now,
+                writes_column(&ask.reach)?,
+                lines_column(&ask.reach.hosts),
             ),
         )
         .await?;
@@ -445,6 +536,7 @@ pub async fn ask_start(
         cwd: ask.dir,
         reason: ask.reason,
         project: ask.project,
+        reach: Reach::default(),
     };
     let run = insert_run(write, session, &run_ask, Some(asked_under.value()), now).await?;
     stored_run(
@@ -675,8 +767,8 @@ pub(crate) async fn insert_run(
         write,
         "INSERT INTO approvals_runs (id, session, revision, command, asked_command, cwd,
                 project, project_root, reason, state, asked_at, revised_at, expires_at,
-                asking_grant)
-             VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, 'asking', ?8, ?8, ?9, ?10)",
+                asking_grant, card_writes, card_hosts)
+             VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, 'asking', ?8, ?8, ?9, ?10, ?11, ?12)",
         (
             id,
             session.as_str(),
@@ -688,6 +780,8 @@ pub(crate) async fn insert_run(
             now,
             now + EXPIRES_AFTER_SECONDS,
             asking_grant,
+            writes_column(&ask.reach)?,
+            lines_column(&ask.reach.hosts),
         ),
         now,
     )
@@ -989,10 +1083,12 @@ pub async fn approve_run(
     .await?;
     let approved = Approved {
         id,
+        session: run.session.clone(),
         revision: run.revision,
         command: run.command.clone(),
         cwd: run.cwd.clone(),
         project_root: run.project.as_ref().map(|project| project.root.clone()),
+        reach: run.reach.clone(),
         start: run.start.clone(),
     };
     Ok((approved, run))
@@ -1030,7 +1126,7 @@ pub async fn finish_run(
         "UPDATE approvals_runs SET state = 'finished', exit_code = ?3, output = ?4,
             output_omitted_lines = ?5, output_truncated_bytes = ?6, redacted = ?7,
             ended_at = ?8, stopped_by_owner_at = ?9, sudo_ran_unasked = ?10,
-            typed_secret_redacted = ?11
+            typed_secret_redacted = ?11, limit_hits = ?12
          WHERE id = ?1 AND revision = ?2 AND state = 'running'",
         (
             run.id.0,
@@ -1044,6 +1140,7 @@ pub async fn finish_run(
             result.stopped_by_owner.then_some(now),
             (result.sudo_ran_unasked > 0).then(|| count_column(result.sudo_ran_unasked)),
             (result.typed_secret_redacted > 0).then(|| count_column(result.typed_secret_redacted)),
+            lines_column(&result.limit_hits),
         ),
     )
     .await
@@ -1167,7 +1264,8 @@ pub async fn interrupted_runs(connection: &Connection) -> Result<Vec<Interrupted
     let mut rows = connection
         .query(
             "SELECT id, revision, command, cwd, state, execution, kind, start_prompt,
-                 start_clone, start_agent, start_model, start_effort, project_root
+                 start_clone, start_agent, start_model, start_effort, project_root,
+                 card_writes, card_hosts, session
              FROM approvals_runs
              WHERE state IN ('approved', 'running') ORDER BY id",
             (),
@@ -1179,10 +1277,12 @@ pub async fn interrupted_runs(connection: &Connection) -> Result<Vec<Interrupted
         interrupted.push(Interrupted {
             run: Approved {
                 id: RunId(row.get(0)?),
+                session: session_from(&row, 15, TABLE)?,
                 revision: row.get(1)?,
                 command: row.get(2)?,
                 cwd: PathBuf::from(row.get::<String>(3)?),
                 project_root: row.get::<Option<String>>(12)?.map(PathBuf::from),
+                reach: reach_from(&row, 13)?,
                 start: start_from(&row, 6)?,
             },
             state: if state == "running" {
@@ -1322,6 +1422,56 @@ pub(crate) fn validate_command(field: &'static str, command: &str) -> Result<(),
     Ok(())
 }
 
+/// Each folder absolute, each entry one line, and at most [`REACH_MAX_ENTRIES`] of each.
+fn validate_reach(reach: &Reach) -> Result<(), Refusal> {
+    let entries = |field: &'static str, entries: Vec<&str>| {
+        if entries.len() > REACH_MAX_ENTRIES {
+            return Err(invalid(
+                field,
+                format!(
+                    "names {} entries; at most {REACH_MAX_ENTRIES}",
+                    entries.len()
+                ),
+            ));
+        }
+        for entry in entries {
+            if entry.trim().is_empty() {
+                return Err(invalid(field, "names an empty entry"));
+            }
+            if entry.len() > REACH_ENTRY_MAX_BYTES {
+                return Err(invalid(
+                    field,
+                    format!("names an entry of more than {REACH_ENTRY_MAX_BYTES} bytes"),
+                ));
+            }
+            if entry.chars().any(char::is_control) {
+                return Err(invalid(
+                    field,
+                    format!("{entry:?} contains a control character"),
+                ));
+            }
+        }
+        Ok(())
+    };
+    let writes = reach
+        .writes
+        .iter()
+        .map(|folder| {
+            if !folder.is_absolute() {
+                return Err(invalid(
+                    "writes",
+                    format!("{} is not an absolute path", folder.display()),
+                ));
+            }
+            folder
+                .to_str()
+                .ok_or_else(|| invalid("writes", "is not UTF-8"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    entries("writes", writes)?;
+    entries("hosts", reach.hosts.iter().map(String::as_str).collect())
+}
+
 pub(crate) fn validate_reason(reason: &str) -> Result<(), Refusal> {
     if reason.trim().is_empty() {
         return Err(invalid(
@@ -1380,6 +1530,7 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
                 Some(_) => count(31)?,
                 None => 0,
             },
+            limit_hits: lines_from(row, 36)?,
         }),
         None => None,
     };
@@ -1415,7 +1566,45 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
             ),
             None => None,
         },
+        reach: reach_from(row, 34)?,
     })
+}
+
+/// The card's folders and hosts read from `card_writes, card_hosts` at `first`.
+fn reach_from(row: &Row, first: usize) -> Result<Reach, Error> {
+    Ok(Reach {
+        writes: lines_from(row, first)?
+            .into_iter()
+            .map(PathBuf::from)
+            .collect(),
+        hosts: lines_from(row, first + 1)?,
+    })
+}
+
+/// A column of lines: NULL when there are none.
+fn lines_from(row: &Row, column: usize) -> Result<Vec<String>, Error> {
+    Ok(match row.get::<Option<String>>(column)? {
+        Some(text) => text.split('\n').map(str::to_owned).collect(),
+        None => Vec::new(),
+    })
+}
+
+fn lines_column(lines: &[String]) -> Option<String> {
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn writes_column(reach: &Reach) -> Result<Option<String>, Refusal> {
+    let writes = reach
+        .writes
+        .iter()
+        .map(|folder| {
+            folder
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| invalid("writes", "is not UTF-8"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(lines_column(&writes))
 }
 
 /// The decision read from `decided_at, decided_through` at `first`; `None` while asking.

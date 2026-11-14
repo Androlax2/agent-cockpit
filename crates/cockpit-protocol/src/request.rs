@@ -294,13 +294,19 @@ pub enum Command {
         checkout: i64,
     },
     /// Agent socket only: ask the owner to run `command` in `cwd` (absolute) on the host.
-    /// `reason` says what it does and why.
+    /// `reason` says what it does and why. A confined run (#1387) writes only its project's
+    /// checkout, a `/tmp` of its own and the `writes` folders (absolute), and reaches only the
+    /// `hosts` (`host` or `host:port`); the owner approves them with the command.
     AskRun {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         launch_token: Option<String>,
         command: String,
         cwd: String,
         reason: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        writes: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hosts: Vec<String>,
     },
     /// Agent socket only: hand the owner `guide`, in the `ask-to-guide` format, to do by hand.
     AskGuide {

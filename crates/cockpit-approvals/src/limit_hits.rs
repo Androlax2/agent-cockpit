@@ -21,6 +21,7 @@ static HOST_REACHED: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"Could not resolve host: ([^\s'/:]+)",
         r"|Failed to connect to ([^\s'/]+) port",
+        r"|Failed to connect to ([^\s'/:]+):\d+ after",
         r"|Could not resolve hostname ([^\s'/:]+)",
         r"|unable to access '[a-z]+://([^/'@:]+)",
         r"|getaddrinfo (?:ENOTFOUND|EAI_AGAIN) ([^\s'/:]+)",
@@ -50,6 +51,21 @@ pub fn limit_hits(output: &str, hidden: &[PathBuf]) -> Vec<String> {
             if hits.len() < MAX_HITS && !hits.contains(&hit) {
                 hits.push(hit);
             }
+        }
+    }
+    hits
+}
+
+/// The hit naming a destination a run's proxy refused: its card does not name it.
+pub(crate) fn refused_by_proxy(destination: &str) -> String {
+    format!("tried to reach {destination}, which the run's card does not name")
+}
+
+/// `hits`, then each of `more` not among them, at most [`MAX_HITS`] in all.
+pub(crate) fn merged(mut hits: Vec<String>, more: Vec<String>) -> Vec<String> {
+    for hit in more {
+        if hits.len() < MAX_HITS && !hits.contains(&hit) {
+            hits.push(hit);
         }
     }
     hits

@@ -73,11 +73,14 @@ const HIDDEN_FROM_RUNS: &[&str] = &[
 /// sessions' mount sources. Emptied: Torlek's state (its database, the sessions' homes and
 /// temporary folders) and the owner's runtime folder, with its sockets and buses, through
 /// which a run could start what is not confined. Reachable read-only: the daemon's sockets,
-/// so `torlek` in a run still asks the daemon.
+/// so `torlek` in a run still asks the daemon. A run whose card names hosts reaches them
+/// through its own proxy, `sandbox_launcher run-egress`, whose folders are in Torlek's state:
+/// emptied, so no run sees another's.
 pub fn run_confinement(
     setting: cockpit_config::ConfinedRuns,
     environment: &cockpit_config::Environment,
     options: &crate::Options,
+    sandbox_launcher: &Path,
 ) -> Result<cockpit_approvals::RunConfinement, cockpit_config::ConfigError> {
     if setting == cockpit_config::ConfinedRuns::Off {
         return Ok(cockpit_approvals::RunConfinement::Off);
@@ -111,8 +114,15 @@ pub fn run_confinement(
             .chain(user_runtime)
             .collect(),
         reachable: vec![options.runtime_dir.clone()],
+        egress: Some(cockpit_approvals::EgressProxy {
+            launcher: sandbox_launcher.to_path_buf(),
+            folders: options.state_dir.join(RUN_EGRESS_DIR),
+        }),
     })
 }
+
+/// The folder of Torlek's state each approved run's proxy folder is made in (#1387).
+const RUN_EGRESS_DIR: &str = "run-egress";
 
 /// A request that failed, as the wire tells it.
 pub(crate) struct Failed(pub(crate) ProtocolError);
@@ -221,6 +231,8 @@ pub(crate) fn route_ask(
                 command,
                 cwd,
                 reason,
+                writes,
+                hosts,
             } => {
                 ask_run(
                     &database,
@@ -231,6 +243,7 @@ pub(crate) fn route_ask(
                     command,
                     cwd,
                     reason,
+                    Card { writes, hosts },
                 )
                 .await
             }
@@ -325,6 +338,34 @@ async fn poll_guide_status(
     Ok(guide)
 }
 
+/// What an `AskRun` names beyond its directory (#1387), as the agent wrote it.
+struct Card {
+    writes: Vec<String>,
+    hosts: Vec<String>,
+}
+
+impl Card {
+    /// Each folder resolved as the directory is, each host checked as the run's proxy will
+    /// read it: a card the run could not honour is refused before the owner sees it.
+    fn reach(self) -> Result<cockpit_approvals::Reach, Refusal> {
+        let writes = self
+            .writes
+            .iter()
+            .map(|write| cockpit_approvals::resolve_write(write))
+            .collect::<Result<_, _>>()?;
+        for host in &self.hosts {
+            cockpit_sandbox::card_entry(host, 0).map_err(|reason| Refusal::InvalidRequest {
+                field: "hosts",
+                reason: format!("{host}: {reason}"),
+            })?;
+        }
+        Ok(cockpit_approvals::Reach {
+            writes,
+            hosts: self.hosts,
+        })
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "one ask's fields beside the daemon's parts; a struct for its single call site adds nothing"
@@ -338,8 +379,10 @@ async fn ask_run(
     command: String,
     cwd: String,
     reason: String,
+    card: Card,
 ) -> Answer {
     let cwd = cockpit_approvals::resolve_cwd(&cwd)?;
+    let reach = card.reach()?;
     check_syntax(runner, &command).await?;
     let sender = Sender::read(connector).await;
     let write = database.write().await?;
@@ -350,6 +393,7 @@ async fn ask_run(
         cwd,
         reason,
         project,
+        reach,
     };
     let mut filed = cockpit_approvals::ask_run_unless_pending(&write, &session, ask, now()).await?;
     if !filed.already_pending {
@@ -1168,6 +1212,18 @@ fn run_view(
         reason: run.reason.clone(),
         project: run.project.as_ref().map(|project| project.name.clone()),
         outside_project: run.is_outside_project(),
+        writes: run
+            .reach
+            .writes
+            .iter()
+            .map(|write| crate::projects::text(write))
+            .collect(),
+        hosts: run.reach.hosts.clone(),
+        limits: runner
+            .card_limits(run)
+            .iter()
+            .map(|limit| shown(limit))
+            .collect(),
         digest: run.digest(),
         asked_at: run.asked_at,
         expires_at: run.expires_at,
@@ -1202,6 +1258,7 @@ fn run_view(
             stopped_by_owner: result.stopped_by_owner,
             sudo_ran_unasked: result.sudo_ran_unasked,
             typed_secret_redacted: result.typed_secret_redacted,
+            limit_hits: result.limit_hits.clone(),
         }),
         note: run.note.clone(),
         already_asked: false,

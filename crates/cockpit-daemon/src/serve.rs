@@ -114,10 +114,12 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         tracing::error!(%error, "the owner configuration is invalid");
         StartError::Config(error)
     })?;
+    let sandbox_launcher = serve.programs_dir.join("torlek-sandbox");
     run_settings.confinement = crate::run_confinement(
         config.agents_confined_runs.value,
         &environment,
         instance.options(),
+        &sandbox_launcher,
     )
     .map_err(StartError::Config)?;
     if run_settings.confinement == cockpit_approvals::RunConfinement::Off {
@@ -163,7 +165,6 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     // The plugin folder exists only once OpenCode was found and its plugin written: a missing
     // path handed to the sandbox would fail every launch, OpenCode or not.
     let opencode_plugin_dir = plugin_dir.is_dir().then_some(plugin_dir);
-    let sandbox_launcher = serve.programs_dir.join("torlek-sandbox");
     let sandbox = sandbox(
         &instance,
         &environment,

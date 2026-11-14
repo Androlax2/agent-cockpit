@@ -30,7 +30,7 @@ the capability crates whose verbs must work without the daemon, listed in
 | `torlek usage quota`: each provider account's plan windows as the daemon last read them (used share, state, reset, the queue's pace through it), whether the reading is current, and the last failed refresh; owner-only (#58) | no | `cockpit-usage`, read by the daemon |
 | `torlek usage cost [--days N]`: what each account's replies cost at the provider's API prices, one line per UTC day, provider, account and project over the last N days (7 by default, at most 366), then the exact total; replies of a model with no known price are counted and named, never priced by guess; owner-only (#699) | no | `cockpit-usage`, read by the daemon |
 | `torlek usage digest [--days N]`: each UTC day's time with the agent (overlapping sessions counted once), sessions, turns, approvals granted and cost, one indented line per project, and the provider incidents of the day, over the last N days (7 by default, at most 366); a day with nothing says so; owner-only (#700) | no | `cockpit-usage`, read by the daemon |
-| `torlek ask run [--cwd DIR] [--no-wait] --reason TEXT COMMAND`, `--wait ID`, `--check` (agent socket) | no | `cockpit-approvals` |
+| `torlek ask run [--cwd DIR] [--write DIR]... [--host HOST]... [--no-wait] --reason TEXT COMMAND`, `--wait ID`, `--check` (agent socket) | no | `cockpit-approvals` |
 | `torlek ask guide [--cwd DIR]` (steps on standard input), `--wait ID` (agent socket) | no | `cockpit-approvals` |
 | `torlek ask service NAME --reason TEXT` (agent socket): asks ahead for a service the project declares, #880; `containers --port PORT` asks for a port the project's verified engine publishes, #390 | no | `cockpit-sandbox`, `cockpit-containers` |
 | `torlek approval list [--all [--since TIME]]`, `show ID`, `approve ID --revision R --digest D`, `decline ID`, `edit ID --revision R COMMAND`, `input ID` (the line typed comes from standard input) | no | `cockpit-approvals` |
@@ -81,6 +81,11 @@ ran command's own 75 looks the same), 1 any other refusal. `--no-wait` files the
 and exits 124 at once, so the agent goes on working and collects the answer with `--wait ID`.
 An identical ask (same session, command and directory) while one is pending files nothing: it
 prints `already asked`, with the pending id and a note that the new reason was dropped (#1335).
+An approved run is confined (#1387): it writes only its project's checkout, a `/tmp` of its
+own and each `--write DIR`, and reaches only each `--host HOST` (`host` or `host:port`). The
+folders and hosts are on the owner's card and in the digest. Each limit the run hit is printed
+as `torlek: the run hit a limit: ...`, and `approval show` lists the card's `limits:` and the
+result's `hit a limit:` lines.
 `torlek ask service` does not wait: it exits 124 while the owner is asked, 0 once the service is
 allowed, 125 denied.
 `approval show` lists the kinds of hidden characters escaped, the changed build files the

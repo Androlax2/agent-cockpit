@@ -217,6 +217,8 @@ async fn a_request_to_run_a_command_moves_the_approvals_stamp() {
                 command: "true".to_owned(),
                 cwd: cwd.to_str().unwrap().to_owned(),
                 reason: "Moves the approvals stamp.".to_owned(),
+                writes: Vec::new(),
+                hosts: Vec::new(),
             },
             GENEROUS,
         )

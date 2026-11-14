@@ -36,9 +36,10 @@ use rustix::pty::OpenptFlags;
 use rustix::termios::{LocalModes, Winsize};
 use tokio::sync::oneshot;
 
+use crate::egress::{self, EgressProxy, RunEgress};
 use crate::error::invalid;
 use crate::redact::{redact_secrets, redact_secrets_after_cut, strip_terminal_controls};
-use crate::runs::{Approved, RunId, RunResult, start_run};
+use crate::runs::{Approved, RunId, RunRequest, RunResult, start_run};
 use crate::sudo::{SudoAskpass, SudoAsks};
 use crate::sudo_unasked::{self, SudoSightings};
 use crate::typed_secret::{TypedSecrets, wipe};
@@ -132,6 +133,9 @@ pub enum RunConfinement {
         hidden: Vec<PathBuf>,
         emptied: Vec<PathBuf>,
         reachable: Vec<PathBuf>,
+        /// The proxy a run whose card names hosts reaches them through; `None` refuses such
+        /// a run.
+        egress: Option<EgressProxy>,
     },
     /// The owner's one named opt-out, `agents.confined_runs = "off"`: runs have the owner's
     /// rights.
@@ -153,6 +157,22 @@ impl RunConfinement {
             .map(PathBuf::as_path)
             .find(|folder| path.starts_with(folder))
     }
+
+    /// What a confined run's `output` says its limits refused; nothing for an unconfined run.
+    fn limit_hits_in(&self, output: &[u8]) -> Vec<String> {
+        let RunConfinement::Required {
+            hidden, emptied, ..
+        } = self
+        else {
+            return Vec::new();
+        };
+        let text = strip_terminal_controls(&String::from_utf8_lossy(output));
+        let unseen: Vec<PathBuf> = hidden.iter().chain(emptied).cloned().collect();
+        crate::limit_hits(&text, &unseen)
+            .into_iter()
+            .map(|hit| redact_secrets(&hit).0)
+            .collect()
+    }
 }
 
 impl RunSettings {
@@ -171,6 +191,7 @@ impl RunSettings {
                 hidden: Vec::new(),
                 emptied: Vec::new(),
                 reachable: Vec::new(),
+                egress: None,
             },
         }
     }
@@ -215,12 +236,21 @@ impl RunSettings {
         }
     }
 
-    /// A run's environment: a confined run's `TMPDIR` is its own `/tmp`.
-    fn launch_environment(&self, git_config: &[String]) -> Vec<(OsString, OsString)> {
+    /// A run's environment: a confined run's `TMPDIR` is its own `/tmp`, and one with a
+    /// proxy sends its clients through it.
+    fn launch_environment(
+        &self,
+        git_config: &[String],
+        has_proxy: bool,
+    ) -> Vec<(OsString, OsString)> {
         let mut environment = self.environment_with(git_config, self.sudo());
         if let RunConfinement::Required { .. } = self.confinement {
             environment.retain(|(name, _)| name != "TMPDIR");
             environment.push(("TMPDIR".into(), "/tmp".into()));
+        }
+        if has_proxy {
+            environment.retain(|(name, _)| !egress::is_proxy_variable(name));
+            environment.extend(egress::proxy_variables());
         }
         environment
     }
@@ -408,6 +438,51 @@ impl Runner {
         )))
     }
 
+    /// What `run` may do once approved, one line each, as its card shows the owner.
+    pub fn card_limits(&self, run: &RunRequest) -> Vec<String> {
+        let RunConfinement::Required {
+            hidden, emptied, ..
+        } = &self.settings.confinement
+        else {
+            return vec![
+                "UNCONFINED: runs with your rights (`agents.confined_runs = \"off\"`)".to_owned(),
+            ];
+        };
+        let writes: Vec<String> = run
+            .project
+            .iter()
+            .map(|project| project.root.display().to_string())
+            .chain(
+                run.reach
+                    .writes
+                    .iter()
+                    .map(|write| write.display().to_string()),
+            )
+            .chain(["a /tmp of its own".to_owned()])
+            .collect();
+        let unseen: Vec<String> = hidden
+            .iter()
+            .chain(emptied)
+            .map(|folder| folder.display().to_string())
+            .collect();
+        let network = if run.reach.hosts.is_empty() {
+            "no network".to_owned()
+        } else {
+            format!("reaches only {}", run.reach.hosts.join(", "))
+        };
+        [
+            Some(format!("writes only {}", listed(&writes))),
+            (!unseen.is_empty()).then(|| format!("cannot see {}", unseen.join(", "))),
+            Some(network),
+            Some(
+                "no sudo: it needs the root route, which confined runs do not have yet".to_owned(),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
     /// The shell, when [`Runner::check_syntax`] does not give it commands, so they reach the
     /// owner unchecked. A shell that cannot be resolved is named too: it checks nothing.
     pub fn unchecked_shell(&self) -> Option<&Path> {
@@ -448,12 +523,14 @@ impl Runner {
                 )));
             }
         }
-        if let Some(folder) = self.settings.confinement.hiding(&run.cwd) {
-            return Err(NoResult::NotStarted(format!(
-                "{} is in {}, which confined runs cannot see",
-                run.cwd.display(),
-                folder.display()
-            )));
+        for path in std::iter::once(&run.cwd).chain(&run.reach.writes) {
+            if let Some(folder) = self.settings.confinement.hiding(path) {
+                return Err(NoResult::NotStarted(format!(
+                    "{} is in {}, which confined runs cannot see",
+                    path.display(),
+                    folder.display()
+                )));
+            }
         }
         let not_started =
             |what: &str, error: std::io::Error| NoResult::NotStarted(format!("{what}: {error}"));
@@ -468,6 +545,19 @@ impl Runner {
                 )
             })?;
         }
+        let egress = match &self.settings.confinement {
+            RunConfinement::Required { egress, .. } if !run.reach.hosts.is_empty() => {
+                let proxy = egress.as_ref().ok_or_else(|| {
+                    NoResult::NotStarted(
+                        "its card names hosts, and this daemon has no proxy to reach them \
+                         through (`torlek-sandbox`)"
+                            .to_owned(),
+                    )
+                })?;
+                Some(proxy.start(run).await.map_err(NoResult::NotStarted)?)
+            }
+            RunConfinement::Required { .. } | RunConfinement::Off => None,
+        };
         let (master, terminal) = open_terminal(self.settings.rows, self.settings.columns)
             .map_err(|error| not_started("cannot open a terminal for the command", error))?;
         let reader = master
@@ -497,8 +587,12 @@ impl Runner {
             .insert(run.id, Arc::clone(&live));
         let drained = drain(reader, Arc::clone(&live), self.settings.kept_bytes);
         let exited = self
-            .launch(database, run, &live, terminal, git_config)
+            .launch(database, run, &live, terminal, git_config, egress.as_ref())
             .await;
+        let refused = match egress {
+            Some(egress) => egress.end().await,
+            None => Ok(Vec::new()),
+        };
         // Read as the exit is observed: a stop sent after it did not end the command.
         let is_stopped_by_owner = live.is_stopped_by_owner.load(Ordering::SeqCst);
         let terminal_held_open = tokio::time::timeout(DRAIN_AFTER_EXIT, drained)
@@ -531,6 +625,18 @@ impl Runner {
         kept.typed = TypedSecrets::default();
         kept.is_finished = true;
         let tail = &kept.bytes[kept.bytes.len().saturating_sub(self.settings.kept_bytes)..];
+        let limit_hits = crate::limit_hits::merged(
+            self.settings.confinement.limit_hits_in(tail),
+            match refused {
+                Ok(refused) => refused
+                    .iter()
+                    .map(|destination| crate::limit_hits::refused_by_proxy(destination))
+                    .collect(),
+                Err(error) => vec![format!(
+                    "its proxy could not say which hosts it refused: {error}"
+                )],
+            },
+        );
         Ok(Ran {
             result: RunResult {
                 exit_code,
@@ -543,6 +649,7 @@ impl Runner {
                     sightings.end();
                     sightings.ran_unasked()
                 },
+                limit_hits,
             },
             terminal_held_open,
             leftover: is_left_running.then_some(execution),
@@ -578,17 +685,29 @@ impl Runner {
         live: &LiveRun,
         terminal: OwnedFd,
         git_config: &[String],
+        egress: Option<&RunEgress>,
     ) -> Result<i32, NoResult> {
         let execution = live.execution;
+        let (leader, leader_arguments) = match egress {
+            Some(egress) => {
+                egress.handing_over(&self.settings.leader, &self.settings.leader_arguments)
+            }
+            None => (
+                self.settings.leader.clone(),
+                self.settings.leader_arguments.clone(),
+            ),
+        };
         let spec = LaunchSpec {
             program: self.settings.shell.clone(),
             arguments: vec!["-c".into(), run.command.clone().into()],
             working_dir: run.cwd.clone(),
-            environment: self.settings.launch_environment(git_config),
+            environment: self
+                .settings
+                .launch_environment(git_config, egress.is_some()),
             terminal: Some(Terminal {
                 device: terminal,
-                leader: self.settings.leader.clone(),
-                leader_arguments: self.settings.leader_arguments.clone(),
+                leader,
+                leader_arguments,
             }),
         };
         let launched = match &self.settings.confinement {
@@ -596,12 +715,22 @@ impl Runner {
                 hidden,
                 emptied,
                 reachable,
+                ..
             } => {
                 let confinement = Confinement {
-                    writable: run.project_root.iter().cloned().collect(),
+                    writable: run
+                        .project_root
+                        .iter()
+                        .chain(&run.reach.writes)
+                        .cloned()
+                        .collect(),
                     hidden: hidden.clone(),
                     emptied: emptied.clone(),
-                    reachable: reachable.clone(),
+                    reachable: reachable
+                        .iter()
+                        .cloned()
+                        .chain(egress.map(RunEgress::handoff_folder))
+                        .collect(),
                 };
                 self.supervisor
                     .launch_confined(database, execution, &spec, &confinement)
@@ -1064,5 +1193,14 @@ mod tests {
             // A cursor reset discards the previous frame, including its secret label.
             assert_eq!(prompt_line(line).as_deref(), Some("private-value ok? "));
         }
+    }
+}
+
+/// `items` as prose: `a`, `a and b`, `a, b and c`.
+fn listed(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [first @ .., last] => format!("{} and {last}", first.join(", ")),
     }
 }

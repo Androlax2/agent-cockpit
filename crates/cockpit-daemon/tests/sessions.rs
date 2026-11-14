@@ -395,6 +395,7 @@ impl Home {
                 cwd: cwd.to_owned(),
                 reason: "the acceptance walk asks".to_owned(),
                 project: None,
+                reach: cockpit_approvals::Reach::default(),
             },
             unix_now(),
         )

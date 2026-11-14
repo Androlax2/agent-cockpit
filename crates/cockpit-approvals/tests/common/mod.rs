@@ -103,6 +103,7 @@ impl Fixture {
             cwd: self.cwd(),
             reason: "Lists the files so the agent can see the layout.".to_owned(),
             project: None,
+            reach: cockpit_approvals::Reach::default(),
         }
     }
 }

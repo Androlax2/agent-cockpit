@@ -141,6 +141,8 @@ impl Asking {
                     command: command.to_owned(),
                     cwd: cwd.to_str().unwrap().to_owned(),
                     reason: "Proves sudo asks the owner through Torlek.".to_owned(),
+                    writes: Vec::new(),
+                    hosts: Vec::new(),
                 },
                 GENEROUS,
             )

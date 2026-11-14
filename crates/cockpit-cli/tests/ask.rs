@@ -146,6 +146,9 @@ fn request(state: RunStateView) -> RunRequestView {
         result: None,
         note: None,
         already_asked: false,
+        writes: Vec::new(),
+        hosts: Vec::new(),
+        limits: Vec::new(),
     }
 }
 
@@ -167,6 +170,7 @@ fn finished(exit_code: i32, output: &str) -> Outcome {
             stopped_by_owner: false,
             sudo_ran_unasked: 0,
             typed_secret_redacted: 0,
+            limit_hits: Vec::new(),
         }),
         ..request(RunStateView::Finished)
     })
@@ -235,6 +239,8 @@ async fn ask_run_files_the_request_with_the_token_and_exits_with_the_commands_co
             command: "make test".to_owned(),
             cwd: home.cwd(),
             reason: "tests".to_owned(),
+            writes: Vec::new(),
+            hosts: Vec::new(),
         }
     );
     assert_eq!(
@@ -1050,6 +1056,7 @@ fn retired(exit_code: i32) -> Outcome {
             stopped_by_owner: false,
             sudo_ran_unasked: 0,
             typed_secret_redacted: 0,
+            limit_hits: Vec::new(),
         }),
         ..request(RunStateView::Finished)
     })
@@ -1098,6 +1105,7 @@ fn stopped_by_the_owner() -> Outcome {
             stopped_by_owner: true,
             sudo_ran_unasked: 0,
             typed_secret_redacted: 0,
+            limit_hits: Vec::new(),
         }),
         ..request(RunStateView::Finished)
     })
@@ -1151,6 +1159,7 @@ fn sudo_ran_unasked() -> Outcome {
             stopped_by_owner: false,
             sudo_ran_unasked: 1,
             typed_secret_redacted: 0,
+            limit_hits: Vec::new(),
         }),
         ..request(RunStateView::Finished)
     })
@@ -1215,6 +1224,7 @@ fn typed_secret_redacted() -> Outcome {
             stopped_by_owner: false,
             sudo_ran_unasked: 0,
             typed_secret_redacted: 1,
+            limit_hits: Vec::new(),
         }),
         ..request(RunStateView::Finished)
     })
@@ -1651,4 +1661,124 @@ async fn the_decided_network_list_shows_host_decision_and_wait() {
          network\t4\tdenied\ts1\tapp\tcrates.io:443\t45s\n"
     );
     assert_eq!(daemon.await.unwrap(), [Command::NetworkDecided]);
+}
+
+/// #1387: a confined run's card names the folders it may also write and the hosts it may
+/// reach; the daemon resolves the folders.
+#[tokio::test]
+async fn ask_run_sends_the_folders_and_hosts_its_card_names() {
+    let home = Home::new();
+    let daemon = scripted_conversation(
+        &home.agent_socket(),
+        vec![run_reply(request(RunStateView::Asking))],
+    );
+
+    let output = home
+        .cockpit(
+            &[
+                "ask",
+                "run",
+                "--no-wait",
+                "--write",
+                "out",
+                "--write",
+                "/srv/cache",
+                "--host",
+                "example.com",
+                "--host",
+                "127.0.0.2:8080",
+                "--reason",
+                "fetch",
+                "make fetch",
+            ],
+            "",
+        )
+        .await;
+
+    assert_eq!(output.status.code(), Some(124), "{}", text(&output.stderr));
+    let received = daemon.await.unwrap();
+    assert_eq!(
+        received[0],
+        Command::AskRun {
+            launch_token: Some("the-token".to_owned()),
+            command: "make fetch".to_owned(),
+            cwd: home.cwd(),
+            reason: "fetch".to_owned(),
+            writes: vec![format!("{}/out", home.cwd()), "/srv/cache".to_owned()],
+            hosts: vec!["example.com".to_owned(), "127.0.0.2:8080".to_owned()],
+        }
+    );
+}
+
+fn hit_a_limit() -> Outcome {
+    run_reply(RunRequestView {
+        result: Some(RunResultView {
+            exit_code: 1,
+            output: "cat: /home/owner/.ssh/id_ed25519: Permission denied".to_owned(),
+            omitted_lines: 0,
+            truncated_bytes: 0,
+            redacted: 0,
+            output_retired: false,
+            stopped_by_owner: false,
+            sudo_ran_unasked: 0,
+            typed_secret_redacted: 0,
+            limit_hits: vec![
+                "tried to read /home/owner/.ssh/id_ed25519, which confined runs cannot see"
+                    .to_owned(),
+            ],
+        }),
+        ..request(RunStateView::Finished)
+    })
+}
+
+#[tokio::test]
+async fn the_agent_is_told_which_limit_its_run_hit() {
+    let home = Home::new();
+    let _daemon = scripted_conversation(&home.agent_socket(), vec![hit_a_limit()]);
+
+    let output = home.cockpit(&["ask", "run", "--wait", "7"], "").await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        text(&output.stderr).contains(
+            "torlek: the run hit a limit: tried to read /home/owner/.ssh/id_ed25519, which \
+             confined runs cannot see"
+        ),
+        "{}",
+        text(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn the_owner_reads_which_limit_a_run_hit() {
+    let Outcome::Ok(Reply::RunRequest { request }) = hit_a_limit() else {
+        unreachable!()
+    };
+
+    let shown = shown_to_owner(*request).await;
+
+    assert!(
+        shown.contains(
+            "hit a limit: tried to read /home/owner/.ssh/id_ed25519, which confined runs \
+             cannot see"
+        ),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn the_owner_reads_what_a_run_may_do_before_approving() {
+    let shown = shown_to_owner(RunRequestView {
+        limits: vec![
+            shown("writes only /p and a /tmp of its own"),
+            shown("no network"),
+        ],
+        ..request(RunStateView::Asking)
+    })
+    .await;
+
+    assert!(
+        shown.contains("limits:\n  writes only /p and a /tmp of its own\n  no network\n"),
+        "{shown}"
+    );
 }

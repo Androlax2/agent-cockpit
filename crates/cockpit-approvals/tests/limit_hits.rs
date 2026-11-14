@@ -91,6 +91,10 @@ fn a_host_reached_is_named() {
             "curl: (7) Failed to connect to example.com port 443 after 1 ms: Couldn't connect",
         ),
         (
+            "curl 8's connect",
+            "curl: (7) Failed to connect to example.com:443 after 0 ms: Could not connect to server",
+        ),
+        (
             "git",
             "fatal: unable to access 'https://example.com/owner/repo.git/': Could not resolve \
              host: example.com",

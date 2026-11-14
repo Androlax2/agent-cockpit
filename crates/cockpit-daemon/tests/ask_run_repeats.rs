@@ -28,6 +28,8 @@ impl Agent {
                     command: command.to_owned(),
                     cwd: cwd.to_owned(),
                     reason: reason.to_owned(),
+                    writes: Vec::new(),
+                    hosts: Vec::new(),
                 },
                 GENEROUS,
             )

@@ -98,9 +98,20 @@ pub struct RunRequestView {
     /// the owner's views of an asking request; `None` when it was not or could not be read.
     #[serde(default)]
     pub changed_build_files: Option<Vec<String>>,
-    /// SHA-256 of this revision's directory and command; an approval names it. In the
-    /// owner's views of a request whose sudo runs files its session can edit (`root_runs`),
-    /// bound to those files as the view read them: an approval names what it was shown.
+    /// The folders a confined run may write besides its checkout and the hosts it may reach
+    /// (#1387), as the agent asked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
+    /// What the run may do once approved, one line each under the display rules, as the
+    /// daemon's settings now confine runs (#1387); an unconfined run says so.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<ShownText>,
+    /// SHA-256 of this revision's directory and command, and of the `writes` and `hosts`
+    /// when it names any; an approval names it. In the owner's views of a request whose sudo
+    /// runs files its session can edit (`root_runs`), bound to those files as the view read
+    /// them: an approval names what it was shown.
     pub digest: String,
     /// Seconds since 1970.
     pub asked_at: i64,
@@ -335,6 +346,10 @@ pub struct RunResultView {
     /// was replaced by `[redacted]` (#1386): a sign the command handles it badly.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub typed_secret_redacted: u64,
+    /// What the run's confinement refused it (#1387), each once: the path it could not read
+    /// or write, the host it could not reach. Redacted, terminal controls stripped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limit_hits: Vec<String>,
 }
 
 #[expect(

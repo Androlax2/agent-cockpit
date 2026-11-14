@@ -9,7 +9,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use cockpit_approvals::{
-    Approved, NoResult, Project, RunConfinement, RunSettings, Runner, approve_run,
+    Approved, EgressProxy, NoResult, Project, Reach, RunConfinement, RunRequest, RunSettings,
+    Runner, approve_run,
 };
 use cockpit_processes::{LaunchContainment, Supervisor, SystemdTools};
 use cockpit_turso::Database;
@@ -45,6 +46,26 @@ case $2 in
 esac
 "#;
 
+/// `torlek-sandbox` as the runner drives it: `run-egress` records its arguments, says it is
+/// ready, and once its input closes names one destination it refused; `hand-over` records its
+/// socket and runs the rest in its place. The real hand-off is proved in
+/// `cockpit-sandbox-launcher`.
+const FAKE_SANDBOX: &str = r#"#!/bin/sh
+state=@STATE@
+case $1 in
+  run-egress)
+    # As the real one: it opens its socket in FOLDER, which must exist.
+    [ -d "$2" ] || { echo "cannot create $2/proxy-handoff" >&2; exit 125; }
+    shift; printf '%s\n' "$@" > "$state/egress"
+    echo ready
+    cat > /dev/null
+    echo "refused other.example:443" ;;
+  hand-over)
+    printf '%s\n' "$2" > "$state/handed-over"
+    shift 2; exec "$@" ;;
+esac
+"#;
+
 struct Confined {
     fixture: common::Fixture,
     fakes: tempfile::TempDir,
@@ -77,6 +98,7 @@ impl Confined {
         for (name, script) in [
             ("systemd-run", FAKE_SYSTEMD_RUN),
             ("systemctl", FAKE_SYSTEMCTL),
+            ("torlek-sandbox", FAKE_SANDBOX),
         ] {
             let path = fakes.path().join(name);
             std::fs::write(
@@ -110,6 +132,7 @@ impl Confined {
             hidden: vec![self.secrets.clone()],
             emptied: Vec::new(),
             reachable: Vec::new(),
+            egress: None,
         };
         settings
     }
@@ -129,6 +152,31 @@ impl Confined {
 
     /// `command`, asked from the checkout's project in `cwd` and approved.
     async fn approved(&self, command: &str, cwd: &Path) -> Approved {
+        self.approved_reaching(command, cwd, Reach::default()).await
+    }
+
+    /// The settings of a daemon whose runs reach their card's hosts through the fake proxy.
+    fn settings_with_proxy(&self) -> RunSettings {
+        let mut settings = self.settings();
+        if let RunConfinement::Required { egress, .. } = &mut settings.confinement {
+            *egress = Some(EgressProxy {
+                launcher: self.fakes.path().join("torlek-sandbox"),
+                folders: self.fixture.cwd().join("run-egress"),
+            });
+        }
+        settings
+    }
+
+    fn recorded(&self, name: &str) -> Vec<String> {
+        std::fs::read_to_string(self.fakes.path().join(name))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// `command`, asked from the checkout's project in `cwd` with `reach` on its card.
+    async fn asked_reaching(&self, command: &str, cwd: &Path, reach: Reach) -> RunRequest {
         let asker = session("s1");
         self.fixture.grant(&asker).await;
         let mut ask = self.fixture.ask(command);
@@ -137,6 +185,25 @@ impl Confined {
             name: "demo".to_owned(),
             root: self.checkout.clone(),
         });
+        ask.reach = reach;
+        let write = self.fixture.database.write().await.unwrap();
+        let asked = cockpit_approvals::ask_run(&write, &asker, ask, NOW)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+        asked
+    }
+
+    async fn approved_reaching(&self, command: &str, cwd: &Path, reach: Reach) -> Approved {
+        let asker = session("s1");
+        self.fixture.grant(&asker).await;
+        let mut ask = self.fixture.ask(command);
+        ask.cwd = cwd.to_owned();
+        ask.project = Some(Project {
+            name: "demo".to_owned(),
+            root: self.checkout.clone(),
+        });
+        ask.reach = reach;
         let write = self.fixture.database.write().await.unwrap();
         let asked = cockpit_approvals::ask_run(&write, &asker, ask, NOW)
             .await
@@ -253,4 +320,221 @@ async fn a_confined_run_in_a_hidden_folder_is_not_started() {
         "{reason}"
     );
     assert!(confined.arguments().is_empty(), "systemd-run was called");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_the_card_names_is_written_besides_the_checkout() {
+    let confined = Confined::new().await;
+    let runner = confined.runner(confined.settings(), LaunchContainment::SystemdScope);
+    let named = confined.fixture.cwd().join("build-cache");
+    std::fs::create_dir(&named).unwrap();
+    let approved = confined
+        .approved_reaching(
+            "true",
+            &confined.checkout,
+            Reach {
+                writes: vec![named.clone()],
+                hosts: Vec::new(),
+            },
+        )
+        .await;
+
+    runner
+        .run(&confined.fixture.database, &approved, &[])
+        .await
+        .unwrap();
+
+    let arguments = confined.arguments();
+    for writable in [&confined.checkout, &named] {
+        assert!(
+            has_property(&arguments, &format!("BindPaths=\"{}\"", writable.display())),
+            "{arguments:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_the_card_names_in_a_hidden_one_is_not_started() {
+    let confined = Confined::new().await;
+    let runner = confined.runner(confined.settings(), LaunchContainment::SystemdScope);
+    let approved = confined
+        .approved_reaching(
+            "true",
+            &confined.checkout,
+            Reach {
+                writes: vec![confined.secrets.clone()],
+                hosts: Vec::new(),
+            },
+        )
+        .await;
+
+    let ended = runner.run(&confined.fixture.database, &approved, &[]).await;
+
+    let Err(NoResult::NotStarted(reason)) = ended else {
+        panic!("expected a run that never started, got {ended:?}");
+    };
+    assert!(reason.contains("cannot see"), "{reason}");
+    assert!(confined.arguments().is_empty(), "systemd-run was called");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_card_naming_hosts_without_a_proxy_is_not_started() {
+    let confined = Confined::new().await;
+    let runner = confined.runner(confined.settings(), LaunchContainment::SystemdScope);
+    let approved = confined
+        .approved_reaching(
+            "true",
+            &confined.checkout,
+            Reach {
+                writes: Vec::new(),
+                hosts: vec!["example.com".to_owned()],
+            },
+        )
+        .await;
+
+    let ended = runner.run(&confined.fixture.database, &approved, &[]).await;
+
+    let Err(NoResult::NotStarted(reason)) = ended else {
+        panic!("expected a run that never started, got {ended:?}");
+    };
+    assert!(reason.contains("proxy"), "{reason}");
+    assert!(confined.arguments().is_empty(), "systemd-run was called");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_card_host_is_reached_through_the_runs_own_proxy() {
+    let confined = Confined::new().await;
+    let runner = confined.runner(
+        confined.settings_with_proxy(),
+        LaunchContainment::SystemdScope,
+    );
+    let approved = confined
+        .approved_reaching(
+            "echo \"proxy=$HTTPS_PROXY\"",
+            &confined.checkout,
+            Reach {
+                writes: Vec::new(),
+                hosts: vec!["example.com".to_owned()],
+            },
+        )
+        .await;
+
+    let ran = runner
+        .run(&confined.fixture.database, &approved, &[])
+        .await
+        .unwrap();
+
+    assert!(
+        ran.result
+            .output
+            .shown
+            .contains("proxy=http://127.0.0.1:3128"),
+        "{ran:?}"
+    );
+    let folder = confined
+        .fixture
+        .cwd()
+        .join("run-egress")
+        .join(format!("run-{}", approved.id.0));
+    assert_eq!(
+        confined.recorded("egress"),
+        [
+            folder.display().to_string(),
+            "s1".to_owned(),
+            approved.id.0.to_string(),
+            "example.com".to_owned()
+        ]
+    );
+    let handoff = folder.join("proxy-handoff");
+    assert_eq!(
+        confined.recorded("handed-over"),
+        [handoff.join("handoff.sock").display().to_string()]
+    );
+    let arguments = confined.arguments();
+    assert!(
+        has_property(
+            &arguments,
+            &format!("BindReadOnlyPaths=\"{}\"", handoff.display())
+        ),
+        "{arguments:?}"
+    );
+    assert_eq!(
+        ran.result.limit_hits,
+        ["tried to reach other.example:443, which the run's card does not name"]
+    );
+    assert!(!folder.exists(), "the run's proxy folder was left behind");
+}
+
+/// The card says what a confined run may do, in the same words in the pane and `approval
+/// show`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confined_card_names_the_runs_limits() {
+    let confined = Confined::new().await;
+    let runner = confined.runner(
+        confined.settings_with_proxy(),
+        LaunchContainment::SystemdScope,
+    );
+    let named = confined.fixture.cwd().join("build-cache");
+    let asked = confined
+        .asked_reaching(
+            "make",
+            &confined.checkout,
+            Reach {
+                writes: vec![named.clone()],
+                hosts: vec!["example.com".to_owned(), "127.0.0.2:8080".to_owned()],
+            },
+        )
+        .await;
+
+    assert_eq!(
+        runner.card_limits(&asked),
+        [
+            format!(
+                "writes only {}, {} and a /tmp of its own",
+                confined.checkout.display(),
+                named.display()
+            ),
+            format!("cannot see {}", confined.secrets.display()),
+            "reaches only example.com, 127.0.0.2:8080".to_owned(),
+            "no sudo: it needs the root route, which confined runs do not have yet".to_owned(),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confined_card_without_hosts_says_it_has_no_network() {
+    let confined = Confined::new().await;
+    let runner = confined.runner(confined.settings(), LaunchContainment::SystemdScope);
+    let asked = confined
+        .asked_reaching("make", &confined.checkout, Reach::default())
+        .await;
+
+    let limits = runner.card_limits(&asked);
+
+    assert_eq!(
+        limits[0],
+        format!(
+            "writes only {} and a /tmp of its own",
+            confined.checkout.display()
+        )
+    );
+    assert_eq!(limits[2], "no network");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unconfined_card_says_the_run_has_the_owners_rights() {
+    let confined = Confined::new().await;
+    let settings = RunSettings {
+        confinement: RunConfinement::Off,
+        ..confined.settings()
+    };
+    let runner = confined.runner(settings, LaunchContainment::SystemdScope);
+    let asked = confined
+        .asked_reaching("make", &confined.checkout, Reach::default())
+        .await;
+
+    assert_eq!(
+        runner.card_limits(&asked),
+        ["UNCONFINED: runs with your rights (`agents.confined_runs = \"off\"`)"]
+    );
 }

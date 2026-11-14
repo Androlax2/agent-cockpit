@@ -37,6 +37,8 @@ fn an_ask_run_round_trips_through_its_wire_form() {
             command: "make test".to_owned(),
             cwd: "/home/theo/project".to_owned(),
             reason: "Runs the tests the sandbox cannot.".to_owned(),
+            writes: Vec::new(),
+            hosts: Vec::new(),
         }
     );
     assert_eq!(serde_json::to_value(request).unwrap(), wire);
@@ -191,9 +193,13 @@ fn finished_run() -> RunRequestView {
             stopped_by_owner: false,
             sudo_ran_unasked: 0,
             typed_secret_redacted: 0,
+            limit_hits: Vec::new(),
         }),
         note: None,
         already_asked: false,
+        writes: Vec::new(),
+        hosts: Vec::new(),
+        limits: Vec::new(),
     }
 }
 

@@ -791,8 +791,14 @@ pub(crate) fn run_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> 
     if let Some(asked) = &run.asked_command {
         lines.push(format!("Edited from what the agent asked: {asked}"));
     }
+    lines.extend(
+        run.limits
+            .iter()
+            .map(|limit| format!("Limit: {}", limit.text)),
+    );
     let mut shown_texts = vec![&run.shown_command, &run.shown_cwd, &run.shown_reason];
     shown_texts.extend(prompt);
+    shown_texts.extend(&run.limits);
     let warnings = warnings(&shown_texts);
     if !warnings.is_empty() {
         lines.push(format!("Warning: {warnings}"));
