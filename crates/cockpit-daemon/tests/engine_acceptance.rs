@@ -402,6 +402,13 @@ async fn a_projects_engine_runs_its_sessions_containers_inside_the_sandboxs_boun
     let client = home.connect().await;
     let (root, _) = home.project(&client, COMMANDED_PROJECT).await;
     std::fs::write(root.join(".env"), format!("TOKEN={CHECKOUT_SECRET}\n")).unwrap();
+    // A project that declares Docker is the one whose engine readiness examines and sets up.
+    std::fs::create_dir_all(root.join(".torlek")).unwrap();
+    std::fs::write(
+        root.join(".torlek/config.toml"),
+        "[execution]\nenvironment = \"docker\"\n",
+    )
+    .unwrap();
 
     owner_succeeds(&home, &["setup", "engine-masks"]).await;
     let (script, user) = written_setup(&home, &root).await;
