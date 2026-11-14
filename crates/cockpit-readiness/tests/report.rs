@@ -6,9 +6,10 @@ use std::path::PathBuf;
 
 use cockpit_config::{AgentSandbox, EffectiveConfig, Environment};
 use cockpit_readiness::{
-    CheckoutFacts, ComposeFile, ControlFacts, DockerEngine, EngineRemedy, EngineState, HostFacts,
-    MasksGap, Platform, PresetFacts, ProjectEngine, ProjectFacts, ProjectNeeds, ProviderFacts,
-    ProviderFound, ProviderUnusable, Report, Requirement, Status, Trust, assess, needs_docker,
+    CheckoutFacts, ComposeFile, ControlFacts, DockerEngine, EngineEgress, EngineRemedy,
+    EngineState, HostFacts, MasksGap, Platform, PresetFacts, ProjectEngine, ProjectFacts,
+    ProjectNeeds, ProviderFacts, ProviderFound, ProviderUnusable, Report, Requirement, Status,
+    Trust, assess, needs_docker,
 };
 use tempfile::TempDir;
 
@@ -1134,6 +1135,7 @@ fn a_projects_own_engine_reports_each_state_with_its_next_step() {
             EngineState::Verified {
                 engine: engine(true),
                 masks: Ok(()),
+                egress: EngineEgress::Serving,
             },
             Status::Available,
             "",
@@ -1145,6 +1147,7 @@ fn a_projects_own_engine_reports_each_state_with_its_next_step() {
                     "Torlek's masks helper is not installed: no /run/torlek-engine-masks.sock"
                         .to_owned(),
                 )),
+                egress: EngineEgress::Serving,
             },
             Status::MissingPrerequisite,
             "run `torlek setup engine-masks`, which installs Torlek's masks helper as root and \
@@ -1156,6 +1159,7 @@ fn a_projects_own_engine_reports_each_state_with_its_next_step() {
                 masks: Err(MasksGap::OutOfDate {
                     stale: vec!["/usr/local/lib/torlek/bin/torlek-sandbox".to_owned()],
                 }),
+                egress: EngineEgress::Serving,
             },
             Status::MissingPrerequisite,
             "run `torlek setup engine-masks` again",
@@ -1167,6 +1171,7 @@ fn a_projects_own_engine_reports_each_state_with_its_next_step() {
                     "cannot read /etc/systemd/system/torlek-engine-masks.socket: permission denied"
                         .to_owned(),
                 )),
+                egress: EngineEgress::Serving,
             },
             Status::Unknown,
             "then run `torlek doctor` again",
@@ -1175,6 +1180,7 @@ fn a_projects_own_engine_reports_each_state_with_its_next_step() {
             EngineState::Verified {
                 engine: engine(true),
                 masks: Err(MasksGap::Shadowed),
+                egress: EngineEgress::Serving,
             },
             Status::MissingPrerequisite,
             "`torlek setup engine-masks --uninstall`",
@@ -1186,6 +1192,7 @@ fn a_projects_own_engine_reports_each_state_with_its_next_step() {
                     reason: "the helper has no record of this engine".to_owned(),
                     setup: Ok(script.clone()),
                 }),
+                egress: EngineEgress::Serving,
             },
             Status::MissingPrerequisite,
             "run `sudo sh /state/containers/torlek-e3-setup.sh` again",
@@ -1209,6 +1216,70 @@ fn a_projects_own_engine_reports_each_state_with_its_next_step() {
         let shown_next = docker.next.as_deref().unwrap_or_default();
         assert!(shown_next.contains(next), "{state:?}: {docker:#?}");
     }
+}
+
+/// #390 part 6c: a verified engine's pulls and containers reach out only while the daemon's
+/// proxy for it serves.
+#[test]
+fn a_verified_engines_container_egress_follows_its_proxy() {
+    let cases = [
+        (EngineEgress::Serving, Status::Available, "allowed always"),
+        (EngineEgress::Starting, Status::Unknown, "starting"),
+        (
+            EngineEgress::Down {
+                reason: "the engine's relay answered: refused: this relay serves no egress; \
+                         run the engine's setup again (#390)"
+                    .to_owned(),
+            },
+            Status::MissingPrerequisite,
+            "this relay serves no egress",
+        ),
+    ];
+    for (egress, status, detail) in cases {
+        let fixture = Fixture::new();
+        fixture.configure("[execution]\nenvironment = \"docker\"\n", None);
+        let mut project = fixture.facts();
+        project.engine = Some(Ok(ProjectEngine {
+            project: "project".to_owned(),
+            user: "torlek-e3".to_owned(),
+            record_command: "torlek containers record project".to_owned(),
+            state: EngineState::Verified {
+                engine: engine(true),
+                masks: Ok(()),
+                egress: egress.clone(),
+            },
+        }));
+
+        let report = fixture.report(&ready_host(), &project);
+
+        let shown = requirement(&report, "container egress");
+        assert_eq!(shown.status, status, "{egress:?}: {shown:#?}");
+        assert!(shown.detail.contains(detail), "{egress:?}: {shown:#?}");
+    }
+}
+
+/// An engine that is not verified has no egress to report: `docker` names what it lacks.
+#[test]
+fn an_engine_not_verified_reports_no_container_egress() {
+    let fixture = Fixture::new();
+    fixture.configure("[execution]\nenvironment = \"docker\"\n", None);
+    let mut project = fixture.facts();
+    project.engine = Some(Ok(ProjectEngine {
+        project: "project".to_owned(),
+        user: "torlek-e3".to_owned(),
+        record_command: "torlek containers record project".to_owned(),
+        state: EngineState::Unrecorded(engine(true)),
+    }));
+
+    let report = fixture.report(&ready_host(), &project);
+
+    assert!(
+        report
+            .requirements
+            .iter()
+            .all(|shown| shown.name != "container egress"),
+        "{report:#?}"
+    );
 }
 
 #[test]

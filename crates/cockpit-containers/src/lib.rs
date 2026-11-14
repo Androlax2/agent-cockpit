@@ -26,4 +26,4 @@ pub use masks_install::{
 };
 pub use setup::{ENGINE_EGRESS_PORT, SetupPlan, setup_script, write_setup_script};
 #[cfg(feature = "persistence")]
-pub use store::{MIGRATIONS, record_engine, recorded_engine};
+pub use store::{MIGRATIONS, record_engine, recorded_engine, recorded_engines};

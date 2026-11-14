@@ -7,8 +7,8 @@ use cockpit_config::{AgentSandbox, EffectiveConfig, ExecutionEnvironment};
 
 use crate::host::listed;
 use crate::{
-    CheckoutFacts, DockerEngine, EngineRemedy, EngineState, HostFacts, MasksGap, Platform,
-    PresetFacts, ProjectEngine, ProjectFacts, ProviderFound, Requirement, Status, Trust,
+    CheckoutFacts, DockerEngine, EngineEgress, EngineRemedy, EngineState, HostFacts, MasksGap,
+    Platform, PresetFacts, ProjectEngine, ProjectFacts, ProviderFound, Requirement, Status, Trust,
 };
 
 /// Whether the project or one of its checks runs in Docker, so the daemon probes the engine.
@@ -41,6 +41,13 @@ pub(crate) fn requirements(
     }
     if let Some(engine) = &project.engine {
         requirements.push(project_engine(engine));
+        if let Ok(ProjectEngine {
+            state: EngineState::Verified { egress, .. },
+            ..
+        }) = engine
+        {
+            requirements.push(container_egress(egress));
+        }
     }
     requirements.extend(crate::compose::requirements(&project.compose));
     match &project.launch {
@@ -333,6 +340,32 @@ fn docker(docker: &Result<DockerEngine, String>, platform: &Platform) -> Require
 /// The project's own engine under `agents.sandbox = "required"` (#390, #856's table). A
 /// verified engine is available once Torlek's masks helper is installed: a session reaches
 /// it only after the helper shows it the session's checkout masked.
+fn container_egress(egress: &EngineEgress) -> Requirement {
+    match egress {
+        EngineEgress::Serving => Requirement::available(
+            "container egress",
+            "Torlek's proxy serves the engine's pulls and containers: only the hosts allowed \
+             always for the project pass",
+        ),
+        EngineEgress::Starting => Requirement::needs(
+            "container egress",
+            Status::Unknown,
+            "Torlek's proxy for the engine is starting; until it serves, the engine's pulls \
+             and containers reach nothing",
+            "run `torlek doctor` again in a few seconds",
+        ),
+        EngineEgress::Down { reason } => Requirement::needs(
+            "container egress",
+            Status::MissingPrerequisite,
+            format!(
+                "Torlek's proxy for the engine does not serve, so the engine's pulls and \
+                 containers reach nothing: {reason}"
+            ),
+            "fix what it names; Torlek starts the proxy again within 10 seconds",
+        ),
+    }
+}
+
 fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
     let engine = match engine {
         Ok(engine) => engine,
@@ -402,6 +435,7 @@ fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
         EngineState::Verified {
             engine: found,
             masks: Ok(()),
+            ..
         } => Requirement::available(
             "docker",
             format!(
@@ -413,6 +447,7 @@ fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
         EngineState::Verified {
             engine: found,
             masks: Err(gap),
+            ..
         } => {
             let missing = Status::MissingPrerequisite;
             let (status, reason, next) = match gap {

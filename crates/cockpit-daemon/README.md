@@ -242,6 +242,22 @@ not share code.
   it ends.
 - A daemon that stops while a check runs records nothing for it (#351).
 
+## Project engines' egress (#390)
+
+- A supervised worker (`src/engine_proxies.rs`) runs one `torlek-sandbox engine-proxy` per
+  recorded engine whose user has an account, comparing the record with what runs every 2 s.
+  Each proxy takes the listener its engine's relay hands it and serves the engine's pulls and
+  containers from the owner's side. It runs with its own folder beside the sessions' mount
+  sources (`engine-<project>`, owner only, its last proxy's requests and counters removed),
+  and with a pipe from the daemon as its standard input: a daemon that stops, even killed,
+  closes the pipe, the proxy ends and the engine's egress port closes, so pulls and
+  containers fail closed. An engine no longer recorded has its proxy ended; one that ends is
+  started again after 10 s.
+- What a proxy refuses is a network request of the project's containers (`network.rs`): the
+  owner allows it always, a project grant, or denies it, and the daemon writes the
+  project's grants to the proxy's folder. Readiness shows `container egress` for a verified
+  engine: available while its proxy serves, starting, or down with the proxy's last word.
+
 ## Scheduling (#43)
 
 - A pass runs every `Wiring::scheduling` interval and on `queue-dispatch`, owner only. The

@@ -346,6 +346,16 @@ impl Home {
             .join(cockpit_config::DAEMON_SOCKET)
     }
 
+    /// The folder `project`'s engine proxy shares with the daemon (#390), in the daemon's mount
+    /// sources; the daemon makes it when it starts that proxy.
+    pub fn engine_proxy_folder(&self, project: &str) -> PathBuf {
+        self.path()
+            .join("run")
+            .join(BUILD_PROFILE_DIR)
+            .join("mounts")
+            .join(format!("engine-{project}"))
+    }
+
     /// The directory of session `id`, which its launch creates.
     pub fn session_dir(&self, id: &str) -> PathBuf {
         self.path()

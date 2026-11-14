@@ -1,16 +1,19 @@
 //! `torlek-sandbox engine-proxy RELAY_SOCKET ENGINE_UID PROJECT FOLDER EGRESS_PORT` (#390
-//! part 6b): the egress proxy of one project's engine, for the owner's daemon to run (part 6c;
-//! no daemon runs it yet). It asks the engine's relay (`engine_relay.rs`) for the listener on
-//! `127.0.0.1:EGRESS_PORT` in the engine's network namespace, where dockerd's pulls reach it,
-//! and containers told it is their proxy (part 6d), and serves it as a session's proxy is served, for the subject "the containers of
-//! PROJECT": only what the owner allowed always for the project passes (#856 Q4 A), and an
-//! unknown host is refused at once and asked of the owner.
+//! part 6b): the egress proxy of one project's engine, run by the owner's daemon
+//! (`cockpit-daemon`'s `engine_proxies.rs`). It asks the engine's relay (`engine_relay.rs`)
+//! for the listener on `127.0.0.1:EGRESS_PORT` in the engine's network namespace, where
+//! dockerd's pulls reach it, and containers told it is their proxy (part 6d), and serves it as
+//! a session's proxy is served, for the subject "the containers of PROJECT": only what the
+//! owner allowed always for the project passes (#856 Q4 A), and an unknown host is refused at
+//! once and asked of the owner.
 //!
 //! `FOLDER` holds the files the daemon and the proxy share, as a session's mount folder
 //! does: the owner's decisions (`cockpit_sandbox::DECISIONS_FILE`), the requests
-//! (`REQUESTS_FILE`) and the counters (`EGRESS_FILE`). The proxy ends when the relay's
-//! connection ends, so a stopped engine leaves no proxy, and the listener closes with the
-//! proxy, so containers have no egress while the daemon is stopped.
+//! (`REQUESTS_FILE`) and the counters (`EGRESS_FILE`). Once it holds the listener it prints
+//! `serving` on its standard output. It ends when the relay's connection ends, so a stopped
+//! engine leaves no proxy, or when its standard input, the daemon's pipe, closes, so a
+//! stopped daemon, even killed, leaves none either; the listener closes with it, so the
+//! engine's containers have no egress while the daemon is stopped.
 
 use std::ffi::OsStr;
 use std::net::{SocketAddr, TcpListener};
@@ -63,13 +66,40 @@ pub fn run(arguments: &[std::ffi::OsString]) -> Result<std::convert::Infallible,
         .name("egress-listener".to_owned())
         .spawn(move || serving.serve(listener))
         .map_err(|error| format!("cannot start the engine's proxy: {error}"))?;
-    let held = std::io::copy(&mut relay, &mut std::io::sink());
+    let ended = held_until_either_ends(relay)?;
     // The last counters; the report thread may not have written them yet.
     let _ = proxy.write_report(&report);
-    Err(match held {
-        Ok(_) => "the engine's relay closed: the engine stopped".to_owned(),
-        Err(error) => format!("the engine's relay failed: {error}"),
-    })
+    Err(ended)
+}
+
+/// Says `serving`, then waits until the relay's connection or the daemon's pipe ends; why.
+fn held_until_either_ends(mut relay: UnixStream) -> Result<String, String> {
+    use std::io::Write;
+    let (ended, why) = std::sync::mpsc::channel();
+    let daemon_ended = ended.clone();
+    std::thread::Builder::new()
+        .name("relay-held".to_owned())
+        .spawn(move || {
+            let _ = ended.send(match std::io::copy(&mut relay, &mut std::io::sink()) {
+                Ok(_) => "the engine's relay closed: the engine stopped".to_owned(),
+                Err(error) => format!("the engine's relay failed: {error}"),
+            });
+        })
+        .map_err(|error| format!("cannot hold the engine's relay: {error}"))?;
+    std::thread::Builder::new()
+        .name("daemon-held".to_owned())
+        .spawn(move || {
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            let _ = daemon_ended.send("the daemon's pipe closed: the daemon stopped".to_owned());
+        })
+        .map_err(|error| format!("cannot hold the daemon's pipe: {error}"))?;
+    let mut said = std::io::stdout().lock();
+    said.write_all(b"serving\n")
+        .and_then(|()| said.flush())
+        .map_err(|error| format!("cannot tell the daemon it serves: {error}"))?;
+    drop(said);
+    why.recv()
+        .map_err(|_| "both holding threads ended without a reason".to_owned())
 }
 
 fn parse(arguments: &[std::ffi::OsString]) -> Result<Arguments, String> {

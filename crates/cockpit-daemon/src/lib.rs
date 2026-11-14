@@ -18,6 +18,7 @@ mod database_retention;
 mod digest;
 mod disk_guard;
 mod end_sweep;
+mod engine_proxies;
 mod error;
 mod feed;
 mod instance;
@@ -269,6 +270,7 @@ pub struct Daemon {
     publishing_drafts: tokio::task::JoinHandle<()>,
     publishing_view_stamps: tokio::task::JoinHandle<()>,
     keeping_network: tokio::task::JoinHandle<()>,
+    running_engine_proxies: tokio::task::JoinHandle<()>,
     retaining: tokio::task::JoinHandle<()>,
     sweeping: tokio::task::JoinHandle<()>,
     dispatching: tokio::task::JoinHandle<()>,
@@ -723,6 +725,22 @@ impl Instance {
             faults.clone(),
             move || view_stamp_feed::publish_forever(Arc::clone(&stamped_database)),
         ));
+        let proxies_database = Arc::clone(&database);
+        let proxies_sandbox = sessions.sandbox().clone();
+        let proxies_decided = Arc::clone(&network_decided);
+        let proxies_containers = network_containers.clone();
+        let running_engine_proxies = tokio::spawn(supervisor::supervise(
+            "engine-proxies",
+            faults.clone(),
+            move || {
+                engine_proxies::keep_forever(
+                    Arc::clone(&proxies_database),
+                    proxies_containers.clone(),
+                    proxies_sandbox.clone(),
+                    Arc::clone(&proxies_decided),
+                )
+            },
+        ));
         let network_database = Arc::clone(&database);
         let network_sandbox = sessions.sandbox().clone();
         let keeping_network = tokio::spawn(supervisor::supervise(
@@ -893,6 +911,7 @@ impl Instance {
             publishing_drafts,
             publishing_view_stamps,
             keeping_network,
+            running_engine_proxies,
             retaining,
             sweeping,
             dispatching,
@@ -1027,6 +1046,8 @@ impl Drop for Daemon {
         self.publishing_drafts.abort();
         self.publishing_view_stamps.abort();
         self.keeping_network.abort();
+        // Its proxies end with the pipes it drops.
+        self.running_engine_proxies.abort();
         self.retaining.abort();
         self.sweeping.abort();
         self.dispatching.abort();
