@@ -582,6 +582,9 @@ pub(crate) fn docker_engine(
         server_version: engine.server_version,
         rootless: engine.rootless,
         in_desktop_vm: engine.in_desktop_vm,
+        cgroup_driver: engine.cgroup_driver,
+        enforces_memory_limit: engine.enforces_memory_limit,
+        enforces_cpu_quota: engine.enforces_cpu_quota,
     }
 }
 

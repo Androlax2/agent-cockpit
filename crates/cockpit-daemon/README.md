@@ -279,7 +279,11 @@ not share code.
 - What a proxy refuses is a network request of the project's containers (`network.rs`): the
   owner allows it always, a project grant, or denies it, and the daemon writes the
   project's grants to the proxy's folder. Readiness shows `container egress` for a verified
-  engine: available while its proxy serves, starting, or down with the proxy's last word.
+  engine: available while its proxy serves, starting, or down with the proxy's last word,
+  and `container limits`: whether the engine enforces `docker run --cpus` and `--memory`,
+  from its `/info` (`MemoryLimit`, `CpuCfsQuota`, `CgroupDriver`). A rootless engine runs
+  with the `none` driver unless it uses systemd's, and the engine unit does not yet, so
+  that line is unsupported today (report 10).
 
 ## Scheduling (#43)
 

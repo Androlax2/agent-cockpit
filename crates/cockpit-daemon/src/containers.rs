@@ -701,6 +701,9 @@ mod tests {
             server_version: "28.0.0".to_owned(),
             rootless: true,
             in_desktop_vm: false,
+            cgroup_driver: Some("none".to_owned()),
+            enforces_memory_limit: false,
+            enforces_cpu_quota: false,
         }
     }
 

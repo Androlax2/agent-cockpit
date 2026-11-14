@@ -42,11 +42,12 @@ pub(crate) fn requirements(
     if let Some(engine) = &project.engine {
         requirements.push(project_engine(engine));
         if let Ok(ProjectEngine {
-            state: EngineState::Verified { egress, .. },
+            state: EngineState::Verified { engine, egress, .. },
             ..
         }) = engine
         {
             requirements.push(container_egress(egress));
+            requirements.push(container_limits(engine));
         }
     }
     requirements.extend(crate::compose::requirements(&project.compose));
@@ -363,6 +364,51 @@ fn container_egress(egress: &EngineEgress) -> Requirement {
             "fix what it names; Torlek starts the proxy again within 10 seconds",
         ),
     }
+}
+
+/// Whether a verified engine enforces `docker run --cpus` and `--memory` (#390, report 10),
+/// as it reports them: a rootless engine holds cgroups only under systemd's driver, and runs
+/// with `none` otherwise, which Torlek's engine unit does today.
+fn container_limits(engine: &DockerEngine) -> Requirement {
+    let unenforced: Vec<&str> = [
+        (!engine.enforces_cpu_quota).then_some("`--cpus`"),
+        (!engine.enforces_memory_limit).then_some("`--memory`"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if unenforced.is_empty() {
+        return Requirement::available(
+            "container limits",
+            "`docker run --cpus` and `--memory` are enforced: the engine reports CPU quota and \
+             memory limit support",
+        );
+    }
+    let verb = if unenforced.len() == 1 { "is" } else { "are" };
+    let flags = unenforced.join(" and ");
+    if engine.cgroup_driver.as_deref() == Some("none") {
+        return Requirement::needs(
+            "container limits",
+            Status::Unsupported,
+            format!(
+                "`docker run` {flags} {verb} not enforced: the engine runs without cgroups \
+                 (cgroup driver `none`), as a rootless engine does unless it uses systemd's"
+            ),
+            "none in this release: Torlek's engine unit does not run the engine under systemd's \
+             cgroup driver yet, so a container's CPU and memory are bounded only by the host",
+        );
+    }
+    let driver = engine.cgroup_driver.as_deref().unwrap_or("unnamed");
+    Requirement::needs(
+        "container limits",
+        Status::MissingPrerequisite,
+        format!(
+            "`docker run` {flags} {verb} not enforced: the engine (cgroup driver `{driver}`) \
+             reports no support for it"
+        ),
+        "check that `/sys/fs/cgroup/cgroup.controllers` names `cpu` and `memory`, run the \
+         engine's setup again, then `torlek doctor`",
+    )
 }
 
 /// The project's own engine under `agents.sandbox = "required"` (#390, #856's table). A

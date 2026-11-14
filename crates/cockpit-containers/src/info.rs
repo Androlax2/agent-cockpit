@@ -22,6 +22,12 @@ pub struct EngineInfo {
     pub rootless: bool,
     /// Docker Desktop: the engine runs in a Linux VM of its own, not on this host.
     pub in_desktop_vm: bool,
+    /// The cgroup driver the engine names: `none` is a rootless engine without systemd's.
+    pub cgroup_driver: Option<String>,
+    /// It enforces `docker run --memory` (report 10).
+    pub enforces_memory_limit: bool,
+    /// It enforces `docker run --cpus`, a CPU quota (report 10).
+    pub enforces_cpu_quota: bool,
 }
 
 /// Asks `program` for its engine's identity, within `deadline`. The reason when it does not
@@ -61,6 +67,8 @@ pub(crate) fn parse_info(output: &str) -> Result<EngineInfo, String> {
             .map(str::to_owned)
             .ok_or_else(|| format!("its answer names no {field}"))
     };
+    // Moby leaves a limit out under the `none` driver: no field, no limit.
+    let is_set = |field: &str| info.get(field).and_then(serde_json::Value::as_bool) == Some(true);
     let rootless = info
         .get("SecurityOptions")
         .and_then(serde_json::Value::as_array)
@@ -79,6 +87,9 @@ pub(crate) fn parse_info(output: &str) -> Result<EngineInfo, String> {
             .get("OperatingSystem")
             .and_then(serde_json::Value::as_str)
             == Some("Docker Desktop"),
+        cgroup_driver: text("CgroupDriver").ok(),
+        enforces_memory_limit: is_set("MemoryLimit"),
+        enforces_cpu_quota: is_set("CpuCfsQuota"),
     })
 }
 
@@ -203,5 +214,34 @@ mod tests {
             error.contains("Cannot connect to the Docker daemon"),
             "{error}"
         );
+    }
+
+    /// Report 10: `--cpus` needs the CPU quota (CFS) controller, `--memory` the memory one; the
+    /// engine says which it holds.
+    #[test]
+    fn an_engine_reports_which_container_limits_it_enforces() {
+        let engine = parse_info(
+            r#"{"ID":"abc","Name":"host","ServerVersion":"28.1.1","CgroupDriver":"systemd",
+                "MemoryLimit":true,"CpuCfsQuota":false}"#,
+        )
+        .unwrap();
+
+        assert!(engine.enforces_memory_limit);
+        assert!(!engine.enforces_cpu_quota);
+        assert_eq!(engine.cgroup_driver.as_deref(), Some("systemd"));
+    }
+
+    /// Moby leaves the limit fields out under the `none` driver a rootless engine without
+    /// systemd's driver runs with: no field is no limit.
+    #[test]
+    fn an_engine_that_names_no_limit_enforces_none() {
+        let engine = parse_info(
+            r#"{"ID":"abc","Name":"host","ServerVersion":"28.1.1","CgroupDriver":"none"}"#,
+        )
+        .unwrap();
+
+        assert!(!engine.enforces_memory_limit);
+        assert!(!engine.enforces_cpu_quota);
+        assert_eq!(engine.cgroup_driver.as_deref(), Some("none"));
     }
 }

@@ -17,7 +17,10 @@ system user of its own, shared by its clones:
 - `EngineUser::for_project` names it after the profile and the project's id: `torlek-e3`,
   `torlek-next-e12` (at most 32 characters, as `useradd` takes). Its unit is
   `torlek-engine@<user>.service`; its socket `/run/<user>/docker.sock`.
-- `ask_socket` asks that socket who listens (the kernel's `SO_PEERCRED`) and for `/info`.
+- `ask_socket` asks that socket who listens (the kernel's `SO_PEERCRED`) and for `/info`,
+  which also says whether the engine enforces `--memory` and `--cpus` (`EngineInfo`'s
+  `enforces_memory_limit` and `enforces_cpu_quota`; moby leaves both out under the `none`
+  cgroup driver).
   `verify` accepts only the project user's rootless engine, never root's or the owner's, and
   only the engine ID the owner recorded. Each refusal names its remedy: set up, start, record.
 - `record_engine` keeps the ID the owner recorded with `torlek containers record PROJECT`;

@@ -130,6 +130,12 @@ pub struct DockerEngine {
     pub rootless: bool,
     /// Docker Desktop: the engine runs in a Linux VM of its own, not on this host.
     pub in_desktop_vm: bool,
+    /// The cgroup driver the engine names: `none` is a rootless engine without systemd's.
+    pub cgroup_driver: Option<String>,
+    /// It enforces `docker run --memory` (report 10).
+    pub enforces_memory_limit: bool,
+    /// It enforces `docker run --cpus`, a CPU quota (report 10).
+    pub enforces_cpu_quota: bool,
 }
 
 /// A project's own engine under `agents.sandbox = "required"` (#390): rootless Docker under
