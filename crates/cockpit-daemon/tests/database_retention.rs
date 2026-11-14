@@ -102,6 +102,7 @@ async fn finish_an_old_run(home: &TestHome, database: &cockpit_turso::Database, 
         output_retired: false,
         stopped_by_owner: false,
         sudo_ran_unasked: 0,
+        typed_secret_redacted: 0,
     };
     cockpit_approvals::finish_run(&write, &approved, &result, decided_at + 1)
         .await

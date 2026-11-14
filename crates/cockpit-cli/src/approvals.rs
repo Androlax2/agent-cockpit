@@ -11,6 +11,7 @@ use chrono::{DateTime, Local};
 use cockpit_protocol::{
     Command, DecidedRunView, DecidedThroughView, GuideStateView, GuideView, HiddenView, Reply,
     RunDecisionView, RunRequestView, RunStateView, SecretText, ShownText, sudo_ran_unasked_warning,
+    typed_secret_redacted_notice,
 };
 
 /// The command a verb sends, or the usage problem that stops it.
@@ -366,6 +367,14 @@ fn run_detail(run: &RunRequestView) -> String {
     let ran_unasked = run.sudo_ran_unasked_so_far();
     if ran_unasked > 0 {
         let _ = writeln!(text, "{}", sudo_ran_unasked_warning(ran_unasked));
+    }
+    let typed_secret_redacted = run.typed_secret_redacted_so_far();
+    if typed_secret_redacted > 0 {
+        let _ = writeln!(
+            text,
+            "{}",
+            typed_secret_redacted_notice(typed_secret_redacted)
+        );
     }
     if let Some(result) = &run.result {
         if result.stopped_by_owner {

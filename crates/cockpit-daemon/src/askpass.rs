@@ -153,21 +153,27 @@ async fn answer(mut stream: UnixStream, runner: &Runner, owner_uid: u32) {
             return;
         }
     };
-    let reply = match asked {
+    let mut reply = match asked {
         Ok(answered) => {
             tracing::info!(
                 request = answered.request.0,
                 ask = answered.ask,
                 "sudo's askpass got the owner's password"
             );
-            [ANSWERED, answered.password.as_bytes()].concat()
+            let mut password = answered.password.into_bytes();
+            let reply = [ANSWERED, &password].concat();
+            cockpit_approvals::wipe_vec(&mut password);
+            reply
         }
         Err(refused) => {
             tracing::info!(helper, %refused, "refused sudo's askpass");
             [REFUSED, refused.as_bytes()].concat()
         }
     };
-    if let Err(error) = write_half.write_all(&reply).await {
+    let written = write_half.write_all(&reply).await;
+    // The reply may hold the owner's password (#1386).
+    cockpit_approvals::wipe_vec(&mut reply);
+    if let Err(error) = written {
         tracing::info!(helper, %error, "an askpass helper went before its answer");
     }
 }

@@ -329,6 +329,22 @@ async fn the_password_reaches_no_output_state_or_runtime_file() {
     );
 }
 
+/// #1386: a command that prints the password anyway (here the stand-in's own copy of it)
+/// shows `[redacted]`, and the result counts it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_password_printed_by_the_command_is_redacted_and_counted() {
+    let asking = started().await;
+    let expected = asking.fixture.path().join("expected");
+
+    let ended = asking
+        .ran_answering(&format!("sudo cat '{}'", expected.display()), 1)
+        .await;
+
+    let result = ended.result.expect("a result");
+    assert_eq!(result.output, "[redacted]");
+    assert_eq!(result.typed_secret_redacted, 1);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_helper_run_by_the_command_itself_is_refused_and_asks_nothing() {
     let asking = started().await;

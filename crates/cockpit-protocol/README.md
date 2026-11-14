@@ -42,7 +42,9 @@ the wire. Report 14 treats this contract as stable from the first release.
    `approval-edit` (a new revision), `approval-input` and `approval-sudo-password` (the
    `password` for a running request's open `sudo_ask`, a `SecretText`, #1374; a run request's
    `sudo_ran_unasked`, and its result's, count sudo processes that ended having asked the
-   owner nothing); guides with `guide-answer` and
+   owner nothing; their `typed_secret_redacted` counts a secret the owner typed for the run
+   that appeared in its output and was redacted, #1386; a `SecretText` overwrites its value
+   when dropped); guides with `guide-answer` and
    `guide-stuck` (naming the step shown) and `guide-close`. Views carry the display rules'
    `ShownText` beside the exact text, with the kinds escaped as `warnings`; a run request
    carries `folded_command`, `timeout_without_foreground`, `unchecked_shell` (#494) and,

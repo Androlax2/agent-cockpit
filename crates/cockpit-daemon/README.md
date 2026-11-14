@@ -315,6 +315,8 @@ incidents) for `torlek usage digest`.
 - Framing is `cockpit-protocol`'s: one JSON line, at most `MAX_FRAME_BYTES`. A larger frame
   is answered `malformed-frame` and closes the connection; an unreadable one is answered and
   the connection stays open. A `hello` must arrive within the handshake deadline.
+  The frame reader wipes every byte it read once it handed the byte on, and each frame once
+  it is decoded: a frame may carry a secret the owner typed (#1386).
 - A [`Handler`] routes each command to an immediate answer or to a lane. `control` (input,
   status, stop, approval) and `bulk` have separate workers and separate bounded queues, so
   saturated bulk work never takes control capacity. A full lane answers `busy` at once.

@@ -138,6 +138,7 @@ fn request(state: RunStateView) -> RunRequestView {
         waiting_prompt: None,
         sudo_ask: None,
         sudo_ran_unasked: 0,
+        typed_secret_redacted: 0,
         decision: None,
         result: None,
         note: None,
@@ -162,6 +163,7 @@ fn finished(exit_code: i32, output: &str) -> Outcome {
             output_retired: false,
             stopped_by_owner: false,
             sudo_ran_unasked: 0,
+            typed_secret_redacted: 0,
         }),
         ..request(RunStateView::Finished)
     })
@@ -939,6 +941,7 @@ fn retired(exit_code: i32) -> Outcome {
             output_retired: true,
             stopped_by_owner: false,
             sudo_ran_unasked: 0,
+            typed_secret_redacted: 0,
         }),
         ..request(RunStateView::Finished)
     })
@@ -986,6 +989,7 @@ fn stopped_by_the_owner() -> Outcome {
             output_retired: false,
             stopped_by_owner: true,
             sudo_ran_unasked: 0,
+            typed_secret_redacted: 0,
         }),
         ..request(RunStateView::Finished)
     })
@@ -1038,6 +1042,7 @@ fn sudo_ran_unasked() -> Outcome {
             output_retired: false,
             stopped_by_owner: false,
             sudo_ran_unasked: 1,
+            typed_secret_redacted: 0,
         }),
         ..request(RunStateView::Finished)
     })
@@ -1084,6 +1089,57 @@ async fn the_owner_reads_that_a_sudo_ran_without_asking_while_the_command_still_
 
     assert!(
         text(&output.stdout).contains("sudo ran without asking you: 2 sudo"),
+        "{}",
+        text(&output.stdout)
+    );
+}
+
+/// A run that printed a secret the owner typed for it once (#1386).
+fn typed_secret_redacted() -> Outcome {
+    run_reply(RunRequestView {
+        result: Some(RunResultView {
+            exit_code: 0,
+            output: "[redacted]".to_owned(),
+            omitted_lines: 0,
+            truncated_bytes: 0,
+            redacted: 0,
+            output_retired: false,
+            stopped_by_owner: false,
+            sudo_ran_unasked: 0,
+            typed_secret_redacted: 1,
+        }),
+        ..request(RunStateView::Finished)
+    })
+}
+
+#[tokio::test]
+async fn the_agent_is_told_the_owners_typed_secret_was_redacted_from_the_output() {
+    let home = Home::new();
+    let _daemon = scripted_conversation(&home.agent_socket(), vec![typed_secret_redacted()]);
+
+    let output = home.cockpit(&["ask", "run", "--wait", "7"], "").await;
+
+    assert!(
+        text(&output.stderr)
+            .contains("torlek: your typed secret appeared in the output 1 time and was redacted"),
+        "{}",
+        text(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn the_owner_reads_that_the_typed_secret_was_redacted_while_the_command_still_runs() {
+    let home = Home::new();
+    let running = run_reply(RunRequestView {
+        typed_secret_redacted: 3,
+        ..request(RunStateView::Running)
+    });
+    let _daemon = scripted_conversation(&home.owner_socket(), vec![running]);
+
+    let output = home.cockpit_as_owner(&["approval", "show", "7"], "").await;
+
+    assert!(
+        text(&output.stdout).contains("your typed secret appeared in the output 3 times"),
         "{}",
         text(&output.stdout)
     );

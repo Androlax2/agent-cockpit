@@ -71,6 +71,7 @@ impl From<Refusal> for Failed {
             | Refusal::InputWouldShow { .. }
             | Refusal::NoSudoAsk { .. }
             | Refusal::SudoStoppedAsking { .. }
+            | Refusal::SecretUnprotected { .. }
             | Refusal::NotStoppable { .. }
             | Refusal::StopUnconfirmed { .. }
             | Refusal::NoStoredOutput { .. } => ErrorCode::Conflict,
@@ -518,7 +519,10 @@ pub(crate) fn route_decision(
                 text,
                 shown,
             } => {
-                runner.send_input(RunId(request), &text, shown)?;
+                let sent = runner.send_input(RunId(request), &text, shown);
+                // The text may be a password (#1386): no copy outlives its use.
+                cockpit_approvals::wipe_vec(&mut text.into_bytes());
+                sent?;
                 let read = database.read().await?;
                 Ok(run_reply(&existing_run(&read, request).await?, &runner))
             }
@@ -1060,6 +1064,7 @@ fn run_view(
                 prompt: shown(&ask.prompt),
             }),
         sudo_ran_unasked: runner.sudo_ran_unasked(run.id),
+        typed_secret_redacted: runner.typed_secret_redacted(run.id),
         decision: run.decision.map(|decision| RunDecisionView {
             approved: decision.approved,
             at: decision.at,
@@ -1074,6 +1079,7 @@ fn run_view(
             output_retired: result.output_retired,
             stopped_by_owner: result.stopped_by_owner,
             sudo_ran_unasked: result.sudo_ran_unasked,
+            typed_secret_redacted: result.typed_secret_redacted,
         }),
         note: run.note.clone(),
         already_asked: false,

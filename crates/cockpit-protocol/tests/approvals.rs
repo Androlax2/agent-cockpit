@@ -177,6 +177,7 @@ fn finished_run() -> RunRequestView {
         waiting_prompt: None,
         sudo_ask: None,
         sudo_ran_unasked: 0,
+        typed_secret_redacted: 0,
         decision: None,
         result: Some(RunResultView {
             exit_code: 2,
@@ -187,6 +188,7 @@ fn finished_run() -> RunRequestView {
             output_retired: false,
             stopped_by_owner: false,
             sudo_ran_unasked: 0,
+            typed_secret_redacted: 0,
         }),
         note: None,
         already_asked: false,
@@ -205,6 +207,21 @@ fn a_finished_run_request_reply_round_trips() {
     assert_eq!(wire["ok"]["request"]["state"], "finished");
     assert_eq!(wire["ok"]["request"]["result"]["exit_code"], 2);
     assert_eq!(serde_json::from_value::<Outcome>(wire).unwrap(), reply);
+}
+
+#[test]
+fn the_typed_secret_redactions_are_counted_live_then_by_the_result() {
+    let running = RunRequestView {
+        state: RunStateView::Running,
+        result: None,
+        typed_secret_redacted: 2,
+        ..finished_run()
+    };
+    let mut finished = finished_run();
+    finished.result.as_mut().unwrap().typed_secret_redacted = 3;
+
+    assert_eq!(running.typed_secret_redacted_so_far(), 2);
+    assert_eq!(finished.typed_secret_redacted_so_far(), 3);
 }
 
 #[test]

@@ -103,6 +103,7 @@ pub fn run(id: i64, session: &str, command: &str) -> RunRequestView {
         waiting_prompt: None,
         sudo_ask: None,
         sudo_ran_unasked: 0,
+        typed_secret_redacted: 0,
         decision: None,
         result: None,
         note: None,

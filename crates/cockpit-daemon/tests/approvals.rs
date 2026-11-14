@@ -13,6 +13,8 @@ mod progress;
 mod stopping;
 #[path = "approvals/typed_input.rs"]
 mod typed_input;
+#[path = "approvals/typed_secret.rs"]
+mod typed_secret;
 
 use std::time::Instant;
 

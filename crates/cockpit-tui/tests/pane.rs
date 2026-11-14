@@ -753,6 +753,24 @@ fn a_run_whose_sudo_ran_unasked_is_flagged_while_it_waits_on_the_owner() {
 }
 
 #[test]
+fn a_run_that_printed_the_typed_secret_says_so_while_it_waits_on_the_owner() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+    let flagged = RunRequestView {
+        typed_secret_redacted: 2,
+        ..waiting_run(5, SESSION)
+    };
+    shown_with_keys(&mut app, vec![flagged], Vec::new(), now);
+
+    let screen = screen_text(&app, after_grace(now));
+
+    assert!(
+        screen.contains("your typed secret appeared in the output 2 times and was redacted"),
+        "{screen}"
+    );
+}
+
+#[test]
 fn sudos_password_is_sent_to_its_ask_not_the_terminal() {
     let now = Instant::now();
     let (mut app, ready) = typed_sudo_password(now);
