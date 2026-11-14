@@ -165,21 +165,40 @@ async fn run_as_root(script: &Path) {
 }
 
 /// Records the project's engine once it answers after its setup restarted it.
-async fn record_engine(home: &Home) -> String {
+async fn record_engine(home: &Home, user: &str) -> String {
     let deadline = Instant::now() + ENGINE_WITHIN;
     loop {
         let output = owner(home, &["containers", "record", COMMANDED_PROJECT]).await;
         if output.status.success() {
             return text(&output.stdout);
         }
-        assert!(
-            Instant::now() < deadline,
-            "the engine was not recordable: {}{}",
-            text(&output.stdout),
-            text(&output.stderr)
-        );
+        if Instant::now() >= deadline {
+            panic!(
+                "the engine was not recordable: {}{}\n{}",
+                text(&output.stdout),
+                text(&output.stderr),
+                engine_state(user).await
+            );
+        }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+/// What root sees of `user`'s engine: its units, its journal and its socket's folder, for a
+/// failure's message.
+async fn engine_state(user: &str) -> String {
+    let script = format!(
+        "systemctl status --no-pager --full torlek-engine@{user}.service \
+         torlek-engine-relay@{user}.service; \
+         journalctl --no-pager --lines 60 --unit torlek-engine@{user}.service; \
+         ls -la /run/{user}; getfacl --absolute-names /run/{user} /run/{user}/docker.sock"
+    );
+    let mut command = std::process::Command::new("sudo");
+    command.args(["-n", "sh", "-c", &script]);
+    let output = tokio::task::spawn_blocking(move || command.output().expect("sudo runs"))
+        .await
+        .unwrap();
+    format!("{}{}", text(&output.stdout), text(&output.stderr))
 }
 
 /// Pulls [`IMAGE`] in the agent; the engine's proxy starts within seconds of the record. A
@@ -413,7 +432,7 @@ async fn a_projects_engine_runs_its_sessions_containers_inside_the_sandboxs_boun
     owner_succeeds(&home, &["setup", "engine-masks"]).await;
     let (script, user) = written_setup(&home, &root).await;
     run_as_root(&script).await;
-    println!("{}", record_engine(&home).await);
+    println!("{}", record_engine(&home, &user).await);
     owner_succeeds(
         &home,
         &["network", "grant", COMMANDED_PROJECT, "docker-hub"],
