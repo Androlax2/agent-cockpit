@@ -191,6 +191,7 @@ async fn pending_recovery_waits_for_a_cancelled_readers_actual_blocking_work() {
                 command: "printf protected".into(),
                 working_directory: ".".into(),
                 environment: "native".into(),
+                image: None,
             },
             source: cockpit_verification::Source {
                 head: "fixture".into(),

@@ -445,7 +445,7 @@ async fn the_gate_tells_the_owner_how_a_native_check_can_run_under_a_required_sa
 }
 
 #[tokio::test]
-async fn the_gate_tells_the_owner_a_docker_check_waits_for_torlek_to_run_it() {
+async fn the_gate_tells_the_owner_a_docker_check_runs_only_under_a_required_sandbox() {
     let verification = started().await;
     verification.run("contained").await;
 
@@ -458,7 +458,7 @@ async fn the_gate_tells_the_owner_a_docker_check_waits_for_torlek_to_run_it() {
         .expect("the docker check is in the gate");
     assert_eq!(
         contained.next_action.as_deref(),
-        Some("declare `environment = \"sandbox\"` until Torlek runs docker checks (#1392)")
+        Some("set `agents.sandbox = \"required\"`, or declare `environment = \"native\"`")
     );
 }
 

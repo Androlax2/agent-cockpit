@@ -208,6 +208,7 @@ async fn reservation_before_launch_survives_restore_and_needs_current_epoch_reco
                 command: "true".into(),
                 working_directory: ".".into(),
                 environment: "native".into(),
+                image: None,
             },
             source: cockpit_verification::Source {
                 head: "fixture".into(),

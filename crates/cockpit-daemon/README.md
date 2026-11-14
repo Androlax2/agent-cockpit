@@ -247,9 +247,17 @@ not share code.
   `native` is recorded `unavailable`, never run on the host, and the gate's next action says
   to declare `sandbox` or turn the sandbox off. Under `"off"` every check but `docker` runs
   on the host with the approved commands' environment (Git settings included) and the risk
-  is logged. A `docker` check names its `image` and is `unavailable` until the project's
-  engine runs it (#856, #1392): no run reaches the engine before #390's checkout masks and
-  container egress exist.
+  is logged. A `docker` check names its `image`, which runs in a container of the
+  project's engine (#856, #1392): the host's `docker` client runs through `torlek-sandbox`
+  as the check run, with the engine's socket bound as a session's (`containers.rs`,
+  `check_engine`: verified against the owner's record, shown the checkout masked). The
+  container is removed when it ends, binds the checkout at its own path and starts in the
+  check's working directory with `/bin/sh -c`; the client's configuration gives it the
+  engine's proxy and no credential, so a host it is refused is the project's containers'
+  request. The receipt records `docker` and the engine's user and id; the image is part of
+  the check's definition, so a changed image makes a result stale. Without a verified,
+  masked engine or a `docker` client, the run is `unavailable` naming the owner's step;
+  under `"off"` a docker check is `unavailable` too.
   A sandbox that cannot start is `unavailable` with its reason, and no process ran.
 - The receipt records where the command ran (`ran in sandbox: <backend>`, or `native` with
   the sandbox off); a run that never started records nowhere.

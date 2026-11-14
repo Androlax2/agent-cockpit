@@ -46,6 +46,9 @@ const PROBE_CHECK: &str =
 const CONFINED_CHECK: &str =
     "[[checks]]\nname = \"confined\"\ncommand = \"sh confined.sh\"\nenvironment = \"sandbox\"\n";
 
+const DOCKER_CHECK: &str = "[[checks]]\nname = \"contained\"\ncommand = \"touch ran\"\n\
+                            environment = \"docker\"\nimage = \"alpine:3.20\"\n";
+
 const ASKING_CHECK: &str =
     "[[checks]]\nname = \"asking\"\ncommand = \"sh asking.sh\"\nenvironment = \"sandbox\"\n";
 
@@ -216,6 +219,37 @@ async fn a_check_on_a_host_without_the_sandbox_is_recorded_unavailable_and_never
     assert_eq!(receipt.ran_environment, None);
     assert!(receipt.output.contains("sandbox"), "{receipt:?}");
     assert!(!marker(&home).exists());
+    drop(daemon);
+    let execution = execution_of(&home, &receipt.run).await;
+    assert_eq!(
+        execution.phase,
+        cockpit_processes::Phase::Ended(cockpit_processes::EndReason::NeverStarted)
+    );
+    assert_eq!(execution.process_group, None, "{execution:?}");
+}
+
+/// #1392: a docker check runs in its project's engine or not at all; until the owner sets the
+/// engine up, its receipt names that step.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_docker_check_without_its_projects_engine_is_unavailable_and_never_runs() {
+    let (home, daemon) = started(REQUIRED, DOCKER_CHECK, Home::start).await;
+
+    let receipt = home.run_check("app", "contained").await;
+
+    assert_eq!(
+        receipt.outcome,
+        CheckOutcomeView::Unavailable,
+        "{receipt:?}"
+    );
+    assert_eq!(receipt.ran_environment, None);
+    let root = home.path().join("projects").join("app");
+    assert!(
+        receipt
+            .output
+            .contains(&format!("`torlek-dev doctor --project {}`", root.display())),
+        "{receipt:?}"
+    );
+    assert!(!root.join("ran").exists());
     drop(daemon);
     let execution = execution_of(&home, &receipt.run).await;
     assert_eq!(

@@ -72,10 +72,13 @@ async fn a_changed_check_definition_makes_its_receipts_stale() {
     other_directory.working_directory = "crates".to_owned();
     let mut other_environment = recorded.clone();
     other_environment.environment = "sandbox:default".to_owned();
+    let mut an_image = recorded.clone();
+    an_image.image = Some("rust:1.91".to_owned());
     for (case, current) in [
         ("command", other_command),
         ("working directory", other_directory),
         ("environment", other_environment),
+        ("image", an_image),
     ] {
         let fixture = Fixture::new().await;
         fixture
@@ -87,6 +90,37 @@ async fn a_changed_check_definition_makes_its_receipts_stale() {
             CheckStatus::Stale(StaleReason::CheckChanged),
             "{case}"
         );
+    }
+}
+
+/// #1392: a docker check's result holds for the image it ran, and only that one.
+#[tokio::test]
+async fn a_docker_checks_receipt_applies_to_its_image_only() {
+    let mut recorded = check("test");
+    recorded.environment = "docker".to_owned();
+    recorded.image = Some("rust:1.91".to_owned());
+    let mut moved = recorded.clone();
+    moved.image = Some("rust:1.92".to_owned());
+    for (case, current, expected) in [
+        (
+            "same image",
+            recorded.clone(),
+            CheckStatus::Checked(Outcome::Passed),
+        ),
+        (
+            "other image",
+            moved,
+            CheckStatus::Stale(StaleReason::CheckChanged),
+        ),
+    ] {
+        let fixture = Fixture::new().await;
+        fixture
+            .record_run("run-1", &recorded, &clean_source(), &[], Outcome::Passed)
+            .await;
+
+        let report = fixture.gate(&clean_source(), &[current]).await;
+
+        assert_eq!(report.checks[0].status, expected, "{case}");
     }
 }
 

@@ -13,6 +13,9 @@
 //!
 //! A second project's session reaches no engine.
 //!
+//! A `docker` check of the project runs its image in that engine (#1392): on the checkout,
+//! recorded as the engine's run and passing the gate, and reaching only granted hosts.
+//!
 //! Ignored by default: it needs root through `sudo -n`, systemd, rootless Docker's programs
 //! and the internet, and it leaves the engine's user and units on the host. CI's Linux sandbox
 //! job runs it on its disposable runner with `--run-ignored only`. It is one test because the
@@ -25,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::{Duration, Instant};
 
-use cockpit_protocol::{Command, NetworkSubjectView, Reply};
+use cockpit_protocol::{CheckOutcomeView, CheckStatusView, Command, NetworkSubjectView, Reply};
 use real_daemon::{COMMANDED_PROJECT, GENEROUS, Home, new_session};
 
 const REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
@@ -120,13 +123,17 @@ fn fetch_in_container(host: &str) -> String {
     ))
 }
 
-/// The owner's home with a key no container may read, `required` set, and the Claude
-/// credential no container may hold.
+/// The owner's home with a key no container may read, `required` set, the project's checkout
+/// trusted to run its checks, and the Claude credential no container may hold.
 fn prepare(home: &Home) {
     let ssh = home.path().join(".ssh");
     std::fs::create_dir_all(&ssh).unwrap();
     std::fs::write(ssh.join("id_ed25519"), format!("{OWNER_KEY}\n")).unwrap();
-    home.write_owner_config(REQUIRED);
+    let root = home.path().join("projects").join(COMMANDED_PROJECT);
+    home.write_owner_config(&format!(
+        "{REQUIRED}\n[projects]\ntrusted = [{:?}]\n",
+        root.display().to_string()
+    ));
     home.write_provider_credential(
         "claude",
         "CLAUDE_CODE_OAUTH_TOKEN",
@@ -484,6 +491,79 @@ async fn another_project_reaches_no_engine(home: &Home, user: &str) {
     assert_eq!(printed, "host=unset\nexit=0\n");
 }
 
+/// The project's file: Docker declared, and docker checks of [`IMAGE`] that prove where they
+/// ran, reach the granted host, and reach an unknown one.
+fn project_file() -> String {
+    let check = |name: &str, command: &str| {
+        format!(
+            "\n[[checks]]\nname = \"{name}\"\ncommand = {command:?}\nenvironment = \"docker\"\n\
+             image = \"{IMAGE}\"\n"
+        )
+    };
+    let fetch = |host: &str| format!("curl -sS -o /dev/null --max-time 20 https://{host}/");
+    [
+        "[execution]\nenvironment = \"docker\"\n".to_owned(),
+        check("in-image", "curl --version >/dev/null && test -f README"),
+        check("granted", &fetch(GRANTED_HOST)),
+        check("ungranted", &fetch(UNKNOWN_HOST)),
+    ]
+    .concat()
+}
+
+/// #1392: a docker check runs its image in the project's engine, on the checkout, and its
+/// receipt names that engine and passes the gate.
+async fn a_docker_check_runs_in_the_engine(home: &Home, user: &str) {
+    let receipt = home.run_check(COMMANDED_PROJECT, "in-image").await;
+
+    assert_eq!(receipt.outcome, CheckOutcomeView::Passed, "{receipt:?}");
+    assert_eq!(receipt.ran_environment.as_deref(), Some("docker"));
+    let isolation = receipt.ran_isolation.clone().unwrap_or_default();
+    assert!(
+        isolation.starts_with(&format!("project engine of {user} (engine ")),
+        "{isolation}"
+    );
+    let gate = match home
+        .connect()
+        .await
+        .request(
+            Command::CheckGate {
+                launch_token: None,
+                project: Some(COMMANDED_PROJECT.to_owned()),
+                checkout: None,
+            },
+            GENEROUS,
+        )
+        .await
+    {
+        Ok(Reply::CheckGate { gate }) => *gate,
+        other => panic!("expected a gate, got {other:?}"),
+    };
+    let in_image = gate
+        .checks
+        .iter()
+        .find(|check| check.name == "in-image")
+        .unwrap_or_else(|| panic!("no in-image check in {gate:?}"));
+    assert_eq!(
+        in_image.status,
+        CheckStatusView::Checked {
+            outcome: CheckOutcomeView::Passed
+        },
+        "{gate:?}"
+    );
+    assert_eq!(in_image.receipt, Some(receipt.id), "{gate:?}");
+}
+
+/// #1392: a docker check's container goes out through the engine's proxy as a session's
+/// containers do: the granted host answers, an unknown one is refused.
+async fn a_docker_check_reaches_only_granted_hosts(home: &Home) {
+    let granted = home.run_check(COMMANDED_PROJECT, "granted").await;
+    let ungranted = home.run_check(COMMANDED_PROJECT, "ungranted").await;
+
+    assert_eq!(granted.outcome, CheckOutcomeView::Passed, "{granted:?}");
+    assert_eq!(ungranted.outcome, CheckOutcomeView::Failed, "{ungranted:?}");
+    assert!(ungranted.output.contains("403"), "{ungranted:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "live: needs sudo, systemd, rootless Docker and the internet; CI's Linux job runs it (#390)"]
 async fn a_projects_engine_runs_its_sessions_containers_inside_the_sandboxs_bounds() {
@@ -495,11 +575,7 @@ async fn a_projects_engine_runs_its_sessions_containers_inside_the_sandboxs_boun
     std::fs::write(root.join(".env"), format!("TOKEN={CHECKOUT_SECRET}\n")).unwrap();
     // A project that declares Docker is the one whose engine readiness examines and sets up.
     std::fs::create_dir_all(root.join(".torlek")).unwrap();
-    std::fs::write(
-        root.join(".torlek/config.toml"),
-        "[execution]\nenvironment = \"docker\"\n",
-    )
-    .unwrap();
+    std::fs::write(root.join(".torlek/config.toml"), project_file()).unwrap();
 
     owner_succeeds(&home, &["setup", "engine-masks"]).await;
     let (script, user) = written_setup(&home, &root).await;
@@ -529,5 +605,7 @@ async fn a_projects_engine_runs_its_sessions_containers_inside_the_sandboxs_boun
     proxy_passes_only_grants(&home, &root).await;
     unknown_host_is_filed(&home).await;
     container_environment(&home, &root).await;
+    a_docker_check_runs_in_the_engine(&home, &user).await;
+    a_docker_check_reaches_only_granted_hosts(&home).await;
     another_project_reaches_no_engine(&home, &user).await;
 }
