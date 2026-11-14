@@ -158,11 +158,26 @@ pub enum EngineState {
     Verified {
         engine: DockerEngine,
         masks: Result<(), MasksGap>,
+        /// Whether the daemon's proxy for the engine serves its pulls and containers.
+        egress: EngineEgress,
     },
     /// What failed, by name, and what makes it usable.
     Refused {
         reason: String,
         remedy: EngineRemedy,
+    },
+}
+
+/// The daemon's proxy for a verified engine (#390): the engine's pulls and containers reach
+/// out only through it, so they have no egress while it does not serve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineEgress {
+    Serving,
+    /// Started and not yet holding the engine's egress listener, or not started yet.
+    Starting,
+    /// Ended or refused to start, with its last word; the daemon starts it again.
+    Down {
+        reason: String,
     },
 }
 

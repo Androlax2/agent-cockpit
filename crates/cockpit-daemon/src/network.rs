@@ -557,14 +557,11 @@ fn requests_of(sandbox: &Sandbox, subject: &Subject) -> Result<Option<EgressRequ
     match subject {
         Subject::Session { session } => sandbox.egress_requests(session),
         Subject::Check { run, .. } => sandbox.check_egress_requests(run),
-        // TODO(#390 part 6c): read the engine proxy's folder once the daemon runs one.
-        Subject::Containers { project } => Err(format!(
-            "the daemon runs no proxy for the containers of {project} yet"
-        )),
+        Subject::Containers { project } => sandbox.engine_egress_requests(project),
     }
 }
 
-/// Rewrites the decisions file of every live session and sandboxed check run that has a
+/// Rewrites the decisions file of every live session, sandboxed check run and engine proxy that has a
 /// sandbox folder. One whose decisions cannot be read or written is logged and the others
 /// still get theirs.
 async fn write_decisions(
@@ -585,10 +582,9 @@ async fn write_decisions(
             let written = match &subject {
                 Subject::Session { session } => writing.write_egress_decisions(session, &decisions),
                 Subject::Check { run, .. } => writing.write_check_egress_decisions(run, &decisions),
-                // TODO(#390 part 6c): write the engine proxy's folder once the daemon runs one.
-                Subject::Containers { project } => Err(format!(
-                    "the daemon runs no proxy for the containers of {project} yet"
-                )),
+                Subject::Containers { project } => {
+                    writing.write_engine_egress_decisions(project, &decisions)
+                }
             };
             if let Err(error) = written {
                 tracing::warn!(?subject, %error, "the owner's network decisions were not written");
@@ -607,6 +603,7 @@ async fn decisions_of_live_subjects(
 ) -> Result<Vec<(Subject, EgressDecisions)>, String> {
     let read = database.read().await.map_err(|error| error.to_string())?;
     let mut all = decisions_of_check_runs(&read).await?;
+    all.extend(decisions_of_engines(&read).await?);
     let live = live_sessions(&read).await?;
     let held = cockpit_sessions::live_port_blocks(&read)
         .await
@@ -682,15 +679,58 @@ async fn decisions_of_check_runs(
     Ok(all)
 }
 
-/// Every subject whose launcher may still ask the owner: each live session and each
-/// sandboxed check run not yet sealed (#352), with its project's name.
+/// The decisions of each recorded engine's proxy (#390 part 6c): the project's host grants
+/// and what the owner denied its containers. Its containers are given no forward, so service
+/// grants are left out.
+async fn decisions_of_engines(
+    read: &Connection,
+) -> Result<Vec<(Subject, EgressDecisions)>, String> {
+    let mut all = Vec::new();
+    for (subject, project) in engines_containers(read).await? {
+        match cockpit_sandbox::egress_decisions(read, &project, &subject).await {
+            Ok(decisions) => all.push((
+                subject,
+                EgressDecisions {
+                    services: cockpit_sandbox::ServiceDecisions::default(),
+                    ..decisions
+                },
+            )),
+            Err(error) => {
+                tracing::warn!(?subject, %error, "the owner's network decisions were not read");
+            }
+        }
+    }
+    Ok(all)
+}
+
+/// Every subject whose launcher may still ask the owner: each live session, each sandboxed
+/// check run not yet sealed (#352) and each recorded engine's containers (#390), with its
+/// project's name.
 async fn live_subjects(connection: &Connection) -> Result<HashMap<Subject, String>, String> {
     let sessions = live_sessions(connection).await?;
     let runs = live_check_runs(connection).await?;
+    let engines = engines_containers(connection).await?;
     Ok(sessions
         .into_iter()
         .map(|(session, project)| (Subject::Session { session }, project))
         .chain(runs)
+        .chain(engines)
+        .collect())
+}
+
+/// The containers of each project with a recorded engine, whose proxy the daemon runs.
+async fn engines_containers(connection: &Connection) -> Result<Vec<(Subject, String)>, String> {
+    let engines = cockpit_containers::recorded_engines(connection)
+        .await
+        .map_err(|error| format!("the recorded engines could not be read: {error}"))?;
+    Ok(engines
+        .into_iter()
+        .map(|engine| {
+            let subject = Subject::Containers {
+                project: engine.project.clone(),
+            };
+            (subject, engine.project)
+        })
         .collect())
 }
 

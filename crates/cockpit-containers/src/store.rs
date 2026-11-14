@@ -40,6 +40,23 @@ pub async fn recorded_engine(
     }
 }
 
+/// Every recorded engine, by project name.
+pub async fn recorded_engines(
+    connection: &Connection,
+) -> Result<Vec<RecordedEngine>, cockpit_turso::sql::Error> {
+    let mut rows = connection
+        .query(
+            &format!("SELECT {COLUMNS} FROM container_engines ORDER BY project"),
+            (),
+        )
+        .await?;
+    let mut engines = Vec::new();
+    while let Some(row) = rows.next().await? {
+        engines.push(engine_from(&row)?);
+    }
+    Ok(engines)
+}
+
 /// Records `engine` for its project, replacing the one recorded before, which it returns.
 /// The caller verified it and owns the transaction.
 pub async fn record_engine(

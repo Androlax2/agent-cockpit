@@ -2,7 +2,8 @@
 //! engine takes the egress listener its relay binds in the engine's network namespace and
 //! serves it from the owner's side with the project's decisions, filing what it refuses as
 //! the project's containers' requests. Here relay and proxy share this test's network
-//! namespace and user, which stands for both the owner and the engine's user.
+//! namespace and user, which stands for both the owner and the engine's user. The proxy's
+//! standard input is the daemon's pipe (part 6c), held open by each test while it runs.
 #![cfg(target_os = "linux")]
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -10,7 +11,7 @@ use std::net::{IpAddr, TcpListener, TcpStream};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use cockpit_sandbox::{AllowEntry, AllowSource, EgressDecisions, EgressRequests, Subject, Target};
@@ -45,7 +46,8 @@ impl Engine {
         std::fs::metadata(self.dir.path()).unwrap().uid()
     }
 
-    /// Starts the proxy for project `app`, as the daemon does, as `engine_uid`.
+    /// Starts the proxy for project `app`, as the daemon does, as `engine_uid`: its standard
+    /// input a pipe the test holds, its standard output read by the test.
     fn proxy_as(&self, engine_uid: u32) -> Running {
         Running(
             Command::new(LAUNCHER)
@@ -55,6 +57,8 @@ impl Engine {
                 .arg("app")
                 .arg(self.folder())
                 .arg(self.port.to_string())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
                 .spawn()
                 .unwrap(),
         )
@@ -242,6 +246,43 @@ fn the_proxy_ends_with_its_relay_and_the_egress_port_closes_with_it() {
     let ended = wait_for(&mut proxy, Duration::from_secs(10));
     assert!(ended.is_some_and(|status| !status.success()), "{ended:?}");
     assert!(TcpStream::connect(("127.0.0.1", engine.port)).is_err());
+}
+
+/// A daemon that ends, even killed, closes the pipe: no proxy outlives it with the owner's
+/// last decisions.
+#[test]
+fn the_proxy_ends_when_its_daemons_pipe_closes_and_the_egress_port_closes_with_it() {
+    let engine = engine();
+    let mut proxy = engine.proxy();
+    drop(connect(&engine));
+
+    drop(proxy.0.stdin.take());
+
+    let ended = wait_for(&mut proxy, Duration::from_secs(10));
+    assert!(ended.is_some_and(|status| !status.success()), "{ended:?}");
+    assert!(TcpStream::connect(("127.0.0.1", engine.port)).is_err());
+}
+
+/// The daemon tells a proxy that serves from one that has not yet taken its listener.
+#[test]
+fn the_proxy_says_it_serves_once_it_holds_the_listener() {
+    let engine = engine();
+    let mut proxy = engine.proxy();
+
+    let stdout = proxy.0.stdout.take().unwrap();
+    let (said, heard) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = said.send(line);
+    });
+
+    assert_eq!(
+        heard.recv_timeout(Duration::from_secs(10)).as_deref(),
+        Ok("serving\n")
+    );
+    let (status, _) = tunnel(&engine, "unknown.example.com:443");
+    assert!(status.starts_with("HTTP/1.1 403"), "{status}");
 }
 
 #[test]

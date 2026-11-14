@@ -40,6 +40,8 @@ pub(crate) struct Host {
     pub(crate) relay_program: PathBuf,
     /// Torlek's masks helper, which shows an engine each session's checkout masked.
     pub(crate) masks: MasksHelper,
+    /// The state of each recorded engine's egress proxy, which `engine_proxies.rs` runs.
+    pub(crate) proxies: crate::engine_proxies::EngineProxies,
 }
 
 impl Host {
@@ -56,6 +58,7 @@ impl Host {
             scripts_dir: state_dir.join("containers"),
             relay_program: sandbox_launcher.to_path_buf(),
             masks: MasksHelper::installed(),
+            proxies: crate::engine_proxies::EngineProxies::default(),
         }
     }
 
@@ -179,6 +182,11 @@ pub(crate) async fn project_engine(
                     setup: setup().await,
                 }),
             },
+            // A recorded engine the reconciler has not reached yet: within 2 s it starts.
+            egress: host
+                .proxies
+                .state(project)
+                .unwrap_or(cockpit_readiness::EngineEgress::Starting),
         },
         EngineState::Refused(refusal) => cockpit_readiness::EngineState::Refused {
             reason: refusal.to_string(),

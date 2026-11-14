@@ -320,6 +320,66 @@ impl Sandbox {
         self.write_decisions_into(&folder, decisions)
     }
 
+    /// Makes `project`'s engine proxy's folder (#390 part 6c), owner-only, before the daemon
+    /// starts that proxy on it: the last proxy's refused hosts and counters are removed, so
+    /// the daemon files only this one's, and its decisions too, so the new proxy allows
+    /// nothing until the daemon writes them as they stand. None when the daemon read no host
+    /// paths.
+    pub fn prepare_engine_proxy_folder(&self, project: &str) -> Result<Option<PathBuf>, String> {
+        let Some(host) = self.host.as_ref() else {
+            return Ok(None);
+        };
+        let folder =
+            engine_proxy_folder(&host.mount_sources, project).map_err(|refusal| refusal.reason)?;
+        let failed =
+            |error: std::io::Error| format!("cannot prepare {}: {error}", folder.display());
+        let mut folders = std::fs::DirBuilder::new();
+        std::os::unix::fs::DirBuilderExt::mode(folders.recursive(true), 0o700)
+            .create(&folder)
+            .map_err(failed)?;
+        for stale in [
+            crate::REQUESTS_FILE,
+            crate::EGRESS_FILE,
+            crate::DECISIONS_FILE,
+        ] {
+            match std::fs::remove_file(folder.join(stale)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(failed(error)),
+            }
+        }
+        Ok(Some(folder))
+    }
+
+    /// The hosts `project`'s engine proxy refused, as [`Sandbox::egress_requests`] reads a
+    /// session's.
+    pub fn engine_egress_requests(
+        &self,
+        project: &str,
+    ) -> Result<Option<crate::EgressRequests>, String> {
+        let Some(host) = self.host.as_ref() else {
+            return Ok(None);
+        };
+        let folder =
+            engine_proxy_folder(&host.mount_sources, project).map_err(|refusal| refusal.reason)?;
+        read_egress_requests(&folder)
+    }
+
+    /// Replaces the decisions `project`'s engine proxy enforces; false, writing nothing, until
+    /// [`Sandbox::prepare_engine_proxy_folder`] made its folder.
+    pub fn write_engine_egress_decisions(
+        &self,
+        project: &str,
+        decisions: &crate::EgressDecisions,
+    ) -> Result<bool, String> {
+        let Some(host) = self.host.as_ref() else {
+            return Ok(false);
+        };
+        let folder =
+            engine_proxy_folder(&host.mount_sources, project).map_err(|refusal| refusal.reason)?;
+        self.write_decisions_into(&folder, decisions)
+    }
+
     fn write_decisions_into(
         &self,
         folder: &std::path::Path,
@@ -618,6 +678,18 @@ fn check_folder(parent: &std::path::Path, run: &str) -> Result<PathBuf, Refusal>
         ));
     }
     Ok(parent.join(format!("check-{run}")))
+}
+
+/// `project`'s engine proxy's folder in `parent`, beside sessions' and check runs' folders:
+/// `engine-` names neither.
+fn engine_proxy_folder(parent: &std::path::Path, project: &str) -> Result<PathBuf, Refusal> {
+    if !is_plain_name(project) {
+        return Err(Refusal::new(
+            format!("project {project}"),
+            "a project's name must be one plain name to name its engine proxy's folder",
+        ));
+    }
+    Ok(parent.join(format!("engine-{project}")))
 }
 
 fn is_plain_name(name: &str) -> bool {

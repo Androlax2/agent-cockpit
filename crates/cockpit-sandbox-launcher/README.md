@@ -30,9 +30,9 @@ start and runs it in the agent's place under `agents.sandbox = "required"`.
   listener (`engine_relay.rs`, below). Without `EGRESS_PORT`, as an earlier setup's unit
   runs it, the egress listener is refused, naming the setup to run again.
 - `torlek-sandbox engine-proxy RELAY_SOCKET ENGINE_UID PROJECT FOLDER EGRESS_PORT`: the egress
-  proxy of a project's engine (#390), for the owner's daemon to run (part 6c: no daemon runs it
-  yet); serves the listener the relay
-  hands it until the relay's connection ends (`engine_proxy.rs`, below).
+  proxy of a project's engine (#390), run by the owner's daemon for each recorded engine;
+  serves the listener the relay hands it until the relay's connection or the daemon's pipe on
+  its standard input ends, and prints `serving` once it holds it (`engine_proxy.rs`, below).
 - `torlek-sandbox engine-masks ENGINES_DIR`: the root helper of the project engines (#390),
   run once per connection with the connection as its standard input; it masks one checkout
   per request for the engine the request names, answering only that engine's owner (below).
