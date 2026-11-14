@@ -22,6 +22,9 @@
 //! - `torlek-sandbox engine-masks ENGINES_DIR`: run as root by the engine masks' unit for each
 //!   connection (#390); shows a project's engine one checkout through the session baseline's
 //!   masks.
+//! - `torlek-sandbox run-egress FOLDER SESSION RUN HOST...` and `torlek-sandbox hand-over
+//!   SOCKET PROGRAM ARGUMENT...` (#1387): the proxy of an approved run whose card names hosts,
+//!   and the run's side that hands it the listener (`run_egress.rs`).
 
 #[cfg(target_os = "linux")]
 mod authority;
@@ -43,6 +46,8 @@ mod plan;
 mod probe;
 #[cfg(target_os = "linux")]
 mod proxy;
+#[cfg(target_os = "linux")]
+mod run_egress;
 #[cfg(target_os = "linux")]
 mod stage2;
 
@@ -105,6 +110,10 @@ fn main() -> ExitCode {
         Some((verb, rest)) if verb == "engine-proxy" => {
             engine_proxy::run(rest).map(|never| match never {})
         }
+        Some((verb, rest)) if verb == "run-egress" => run_egress::run(rest),
+        Some((verb, rest)) if verb == "hand-over" => {
+            run_egress::hand_over(rest).map(|never| match never {})
+        }
         Some((verb, rest)) if verb == "engine-masks" => engine_masks::engines_dir(rest)
             .and_then(|folder| engine_masks::serve(&folder))
             .map(|()| ExitCode::SUCCESS),
@@ -112,7 +121,8 @@ fn main() -> ExitCode {
             "usage: torlek-sandbox run SPEC | torlek-sandbox probe BWRAP | torlek-sandbox \
              engine-relay SOCKET OWNER_UID [EGRESS_PORT] | torlek-sandbox engine-proxy \
              RELAY_SOCKET ENGINE_UID PROJECT FOLDER EGRESS_PORT | torlek-sandbox engine-masks ENGINES_DIR \
-             (stage2 is internal)"
+             | torlek-sandbox run-egress FOLDER SESSION RUN HOST... | torlek-sandbox hand-over \
+             SOCKET PROGRAM ARGUMENT... (stage2 is internal)"
                 .to_owned(),
         ),
     };

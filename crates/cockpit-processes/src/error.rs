@@ -46,6 +46,11 @@ pub enum Error {
     InvalidEnvironment {
         name: String,
     },
+    /// A confined execution cannot be reserved or launched here; `reason` says why (no
+    /// systemd user manager, a `systemd-run` too old, a path it cannot pass).
+    ConfinementUnavailable {
+        reason: String,
+    },
     Io {
         action: &'static str,
         path: PathBuf,
@@ -98,6 +103,9 @@ impl fmt::Display for Error {
             }
             Error::HostCommand { command, reason } => {
                 write!(formatter, "`{command}` failed: {reason}")
+            }
+            Error::ConfinementUnavailable { reason } => {
+                write!(formatter, "a confined execution cannot run here: {reason}")
             }
             Error::Io {
                 action,

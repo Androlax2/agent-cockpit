@@ -26,8 +26,8 @@ pub use egress::{
     AllowEntry, AllowSource, Allowed, Allowlist, AskedDestination, AskingDestination,
     Counters as EgressCounters, DECISIONS_FILE, DeniedDestination, EGRESS_FILE, EgressDecisions,
     EgressReport, EgressRequests, MAX_ASKED_DESTINATIONS, MAX_REPORTED_DESTINATIONS, PROXY_ADDRESS,
-    REQUESTS_FILE, Refusal as EgressRefusal, TLS_PORT, Target, destination, is_askable_destination,
-    non_public_class, normalized_name,
+    REQUESTS_FILE, Refusal as EgressRefusal, TLS_PORT, Target, card_allowlist, card_entry,
+    destination, is_askable_destination, non_public_class, normalized_name,
 };
 pub use evidence::{AppliedRule, Enforcement, Evidence};
 #[cfg(feature = "persistence")]

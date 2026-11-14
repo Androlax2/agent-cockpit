@@ -1,10 +1,11 @@
-//! The systemd user manager as a containment: one transient scope per execution.
+//! The systemd user manager as a containment: one transient scope per execution, or one
+//! transient service per confined execution (#1387).
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::platform::host_command;
-use crate::{Error, Signal};
+use crate::{Confinement, Error, Signal};
 
 /// The first systemd whose `systemd-run` takes `--expand-environment`.
 const MINIMUM_SYSTEMD: u32 = 254;
@@ -110,6 +111,39 @@ impl SystemdTools {
         arguments
     }
 
+    /// `systemd-run` set up to start a confined execution (#1387): a transient service in
+    /// `unit`, its standard streams the caller's own (`--pipe`, so a terminal stays the
+    /// caller's), waited for so its exit status is `systemd-run`'s (`--wait`), held to
+    /// `confinement`, and given `writable_too` besides its writable folders. A service
+    /// expands `$` in its command line unless told not to, so `systemd-run` must take
+    /// `--expand-environment=`: the caller checks [`SystemdTools::takes_expand_environment`].
+    /// The service starts from the manager's environment, not the caller's: the program
+    /// must clear it.
+    pub(crate) fn service_launcher(
+        &self,
+        unit: &str,
+        working_dir: &Path,
+        confinement: &Confinement,
+        writable_too: &Path,
+    ) -> Result<tokio::process::Command, Error> {
+        let mut command = tokio::process::Command::new(&self.systemd_run);
+        command.args([
+            "--user",
+            "--pipe",
+            "--wait",
+            "--collect",
+            "--quiet",
+            "--expand-environment=no",
+        ]);
+        command.arg(format!("--unit={unit}"));
+        command.arg(format!("--working-directory={}", text_of(working_dir)?));
+        for property in service_properties(confinement, writable_too)? {
+            command.args(["-p", &property]);
+        }
+        command.arg("--");
+        Ok(command)
+    }
+
     /// Signals every process of the scope's cgroup, whatever process group it is in.
     pub(crate) async fn signal(
         &self,
@@ -168,6 +202,67 @@ pub fn find_in_path(program: &str) -> Option<PathBuf> {
         .flat_map(std::env::split_paths)
         .map(|dir| dir.join(program))
         .find(|candidate| candidate.is_file())
+}
+
+/// The sandboxing properties of a confined execution's service. Each path is quoted, so a
+/// space stays in it; one systemd would read otherwise is refused.
+fn service_properties(
+    confinement: &Confinement,
+    writable_too: &Path,
+) -> Result<Vec<String>, Error> {
+    let mut properties: Vec<String> = [
+        "PrivateUsers=yes",
+        "PrivateNetwork=yes",
+        "PrivateTmp=yes",
+        "ReadOnlyPaths=/",
+    ]
+    .map(str::to_owned)
+    .into();
+    for path in &confinement.hidden {
+        properties.push(format!("InaccessiblePaths=-\"{}\"", text_of(path)?));
+    }
+    for path in &confinement.emptied {
+        properties.push(format!("TemporaryFileSystem=\"{}:ro\"", text_of(path)?));
+    }
+    // Binds, not `ReadWritePaths=`: a bind stays writable inside an emptied folder.
+    for path in confinement
+        .writable
+        .iter()
+        .map(PathBuf::as_path)
+        .chain([writable_too])
+    {
+        properties.push(format!("BindPaths=\"{}\"", text_of(path)?));
+    }
+    for path in &confinement.reachable {
+        properties.push(format!("BindReadOnlyPaths=\"{}\"", text_of(path)?));
+    }
+    Ok(properties)
+}
+
+/// `path` as systemd may read it in a property: absolute, UTF-8, and without what its
+/// parser gives a meaning (quotes, escapes, specifiers, the bind separator `:`) or a
+/// control character.
+fn text_of(path: &Path) -> Result<&str, Error> {
+    let refused = |why: &str| Error::ConfinementUnavailable {
+        reason: format!("{} {why}", path.display()),
+    };
+    let text = path.to_str().ok_or_else(|| refused("is not UTF-8"))?;
+    if !path.is_absolute() {
+        return Err(refused("is not absolute"));
+    }
+    if let Some(character) = text.chars().find(|character| {
+        matches!(character, '"' | '\'' | '\\' | '%' | ':') || character.is_control()
+    }) {
+        return Err(refused(&format!(
+            "holds {character:?}, which systemd would read as more than a path"
+        )));
+    }
+    Ok(text)
+}
+
+/// The service of one confined execution, named as its scope would be.
+pub(crate) fn service_unit(epoch: &str, id: crate::ExecutionId) -> String {
+    format!("cockpit-{epoch}-{}.service", id.0)
 }
 
 /// The scope of one execution. It embeds the database epoch and the row id, so a restart

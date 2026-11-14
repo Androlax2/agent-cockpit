@@ -5,6 +5,8 @@
 
 mod candidate;
 mod common;
+#[path = "approvals/confined.rs"]
+mod confined;
 #[path = "approvals/durability.rs"]
 mod durability;
 #[path = "approvals/progress.rs"]
@@ -100,6 +102,8 @@ impl Asking {
                     command: command.to_owned(),
                     cwd: self.cwd_text(),
                     reason: "Proves the approvals path end to end.".to_owned(),
+                    writes: Vec::new(),
+                    hosts: Vec::new(),
                 },
                 GENEROUS,
             )

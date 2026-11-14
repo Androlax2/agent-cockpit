@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 
 use cockpit_config::{
-    AgentSandbox, ConfigError, DesktopSession, EffectiveConfig, Environment, Source,
+    AgentSandbox, ConfigError, ConfinedRuns, DesktopSession, EffectiveConfig, Environment, Source,
 };
 use tempfile::TempDir;
 
@@ -175,6 +175,69 @@ fn config_show_prints_the_sandbox_setting_with_its_source() {
 
     assert!(
         shown.contains("agents.sandbox = \"off\"  # product default\n"),
+        "{shown}"
+    );
+}
+
+/// Approved runs are confined by default (#1387): a host that cannot confine one refuses it,
+/// never runs it unconfined unless the owner says so.
+#[test]
+fn a_clean_home_confines_approved_runs() {
+    let home = TempDir::new().unwrap();
+
+    let config = load(home.path(), None).unwrap();
+
+    assert_eq!(
+        config.agents_confined_runs,
+        cockpit_config::Sourced::new(ConfinedRuns::Required, Source::ProductDefault)
+    );
+}
+
+#[test]
+fn the_owner_file_turns_confined_runs_off_with_its_line() {
+    let home = TempDir::new().unwrap();
+    write_user_config(home.path(), "[agents]\nconfined_runs = \"off\"\n");
+
+    let config = load(home.path(), None).unwrap();
+
+    assert_eq!(config.agents_confined_runs.value, ConfinedRuns::Off);
+    assert_eq!(
+        config.agents_confined_runs.source,
+        Source::UserFile {
+            path: config.user_file.path.clone(),
+            line: 2
+        }
+    );
+}
+
+/// The agent asking for a run writes its project's file: it must never unconfine the run.
+#[test]
+fn a_project_file_cannot_turn_confined_runs_off() {
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    fs::create_dir_all(project.path().join(".torlek")).unwrap();
+    fs::write(
+        project.path().join(".torlek/config.toml"),
+        "[agents]\nconfined_runs = \"off\"\n",
+    )
+    .unwrap();
+
+    let error = load(home.path(), Some(project.path())).unwrap_err();
+
+    assert!(
+        matches!(error, ConfigError::OwnerOnly { key: "agents", .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn config_show_prints_the_confined_runs_setting_with_its_source() {
+    let home = TempDir::new().unwrap();
+
+    let shown = cockpit_config::render(&load(home.path(), None).unwrap());
+
+    assert!(
+        shown.contains("agents.confined_runs = \"required\"  # product default\n"),
         "{shown}"
     );
 }

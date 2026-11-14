@@ -38,6 +38,9 @@ pub(crate) struct Context {
     pub(crate) early_answer: Arc<tokio::sync::Semaphore>,
     /// The owner and the folder a project's engine is checked and set up with (#390).
     pub(crate) containers: crate::containers::Host,
+    /// Whether approved runs are confined, and the supervisor that starts them (#1387).
+    pub(crate) run_settings: Arc<cockpit_approvals::RunSettings>,
+    pub(crate) processes: cockpit_processes::Supervisor,
 }
 
 impl Context {
@@ -155,6 +158,10 @@ async fn report(
             .await
             .map_err(|error| error.to_string())?
     };
+    let daemon_lines: Vec<cockpit_readiness::Requirement> = clipboard
+        .into_iter()
+        .chain([confined_runs_requirement(&context).await])
+        .collect();
     let mut host = host_facts(&context);
     // Each provider's status command takes its own time (opencode's most of a second), so
     // they are asked together and the report waits for the slowest, not for their sum (#1048).
@@ -222,7 +229,7 @@ async fn report(
         return Ok(with_daemon_lines(
             cockpit_readiness::assess(&host, &config, None),
             &context,
-            clipboard,
+            daemon_lines,
         ));
     };
     let checkout = match (&config, checkout) {
@@ -284,7 +291,7 @@ async fn report(
     Ok(with_daemon_lines(
         cockpit_readiness::assess(&host, &config, Some(&project)),
         &context,
-        clipboard,
+        daemon_lines,
     ))
 }
 
@@ -307,17 +314,51 @@ fn compose_files(dir: &Path) -> Vec<cockpit_readiness::ComposeFile> {
         .collect()
 }
 
-/// `report` with what only the daemon knows: the disk guard's reading and `clipboard`.
+/// `report` with what only the daemon knows: the disk guard's reading and `lines`, the
+/// clipboard's and the confined runs'.
 fn with_daemon_lines(
     mut report: Report,
     context: &Context,
-    clipboard: [cockpit_readiness::Requirement; 2],
+    lines: Vec<cockpit_readiness::Requirement>,
 ) -> Report {
     report
         .requirements
         .extend(disk_requirement(&context.admission));
-    report.requirements.extend(clipboard);
+    report.requirements.extend(lines);
     report
+}
+
+/// Whether approved runs are confined (#1387). Required on a host that cannot confine them
+/// blocks: every approved run is refused there, never run unconfined.
+async fn confined_runs_requirement(context: &Context) -> cockpit_readiness::Requirement {
+    const NAME: &str = "confined runs";
+    if context.run_settings.confinement == cockpit_approvals::RunConfinement::Off {
+        return cockpit_readiness::Requirement::available(
+            NAME,
+            "OFF: approved runs have your rights, unconfined (`agents.confined_runs = \"off\"`)",
+        )
+        .with_advice(
+            "to confine them, remove `agents.confined_runs` from your configuration, then \
+             restart the daemon",
+        );
+    }
+    match context.processes.confinement_unavailable().await {
+        None => cockpit_readiness::Requirement::available(
+            NAME,
+            "each approved run starts in a systemd user service of its own: it writes only \
+             its checkout and the folders its card names, reaches only the hosts its card \
+             names, cannot see your keys or Torlek's state, and has no sudo, which needs the \
+             root route confined runs do not have yet",
+        ),
+        Some(reason) => cockpit_readiness::Requirement::needs(
+            NAME,
+            Status::MissingPrerequisite,
+            format!("every approved run is refused: {reason}"),
+            "run the daemon under your systemd user manager (a login session, or `loginctl \
+             enable-linger`), then restart it; or set `agents.confined_runs = \"off\"` to run \
+             approved commands with your rights",
+        ),
+    }
 }
 
 /// Copy out of a session and image paste into it (#848): optional, so neither blocks. Runs

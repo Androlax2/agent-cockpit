@@ -527,6 +527,7 @@ pub async fn answer_step(
                 cwd: guide.cwd.clone(),
                 reason: run_reason(&guide, step),
                 project: guide.project.clone(),
+                reach: crate::Reach::default(),
             };
             Some(
                 insert_run(write, &guide.session, &ask, guide.asking_grant, now)

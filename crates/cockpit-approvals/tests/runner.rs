@@ -7,7 +7,9 @@ mod common;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use cockpit_approvals::{NoResult, RunSettings, Runner, approve_run, ended_after_restart};
+use cockpit_approvals::{
+    NoResult, RunConfinement, RunSettings, Runner, approve_run, ended_after_restart,
+};
 use cockpit_processes::{EndReason, LaunchContainment, Supervisor, SystemdTools};
 use cockpit_turso::Database;
 use common::{NOW, session};
@@ -57,7 +59,13 @@ async fn a_leader_that_fails_leaves_the_run_not_run_with_what_it_printed() {
         LaunchContainment::ProcessGroup,
         SystemdTools::from_path(),
     );
-    let runner = Runner::new(settings, supervisor);
+    let runner = Runner::new(
+        RunSettings {
+            confinement: RunConfinement::Off,
+            ..settings
+        },
+        supervisor,
+    );
 
     let ended = runner.run(&fixture.database, &approved, &[]).await;
 

@@ -97,6 +97,21 @@ impl Waiting {
         child: &mut Child,
         forward_ports: &[u16],
     ) -> Result<Option<Received>, String> {
+        self.receive_unless(forward_ports, || {
+            child
+                .try_wait()
+                .map(|ended| ended.is_some())
+                .map_err(|error| format!("cannot watch bubblewrap: {error}"))
+        })
+    }
+
+    /// As [`Waiting::receive`], for a sender that is no child of the launcher: None once
+    /// `has_ended` says the sender is gone.
+    pub fn receive_unless(
+        self,
+        forward_ports: &[u16],
+        mut has_ended: impl FnMut() -> Result<bool, String>,
+    ) -> Result<Option<Received>, String> {
         self.listener
             .set_nonblocking(true)
             .map_err(|error| format!("cannot wait for the proxy listener: {error}"))?;
@@ -107,10 +122,7 @@ impl Waiting {
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(format!("cannot take the proxy listener: {error}")),
             }
-            let ended = child
-                .try_wait()
-                .map_err(|error| format!("cannot watch bubblewrap: {error}"))?;
-            if ended.is_some() {
+            if has_ended()? {
                 return Ok(None);
             }
             if Instant::now() > deadline {

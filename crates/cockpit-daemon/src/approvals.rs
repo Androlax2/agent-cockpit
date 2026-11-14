@@ -52,6 +52,97 @@ pub fn run_settings(environment: Vec<(OsString, OsString)>) -> std::io::Result<R
     Ok(settings)
 }
 
+/// The owner's secrets under their home that a confined run cannot read (#1387): keys,
+/// the credentials of Git, GitHub's CLI, cloud and container tools, package registries and
+/// agent providers, keyrings and browser profiles. A list cannot name every tool's secret:
+/// the guide says so.
+const HIDDEN_FROM_RUNS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".config/gh",
+    ".netrc",
+    ".git-credentials",
+    ".config/git/credentials",
+    ".aws",
+    ".azure",
+    ".config/gcloud",
+    ".docker",
+    ".kube",
+    ".password-store",
+    ".local/share/password-store",
+    ".npmrc",
+    ".pypirc",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".claude/.credentials.json",
+    ".codex/auth.json",
+    ".local/share/keyrings",
+    ".local/share/kwalletd",
+    ".mozilla",
+    ".config/google-chrome",
+    ".config/chromium",
+    ".config/BraveSoftware",
+    ".config/vivaldi",
+    ".config/microsoft-edge",
+];
+
+/// What a confined run cannot see, or the owner's opt-out `off` (#1387). Hidden: the
+/// owner's secrets (`HIDDEN_FROM_RUNS`), the tokens in Torlek's configuration and the
+/// sessions' mount sources. Emptied: Torlek's state (its database, the sessions' homes and
+/// temporary folders), the owner's runtime folder and the system's `/run`, with their
+/// sockets and buses, through which a run could start what is not confined. Reachable
+/// read-only: the agent socket's folder only, so `torlek` in a run still asks the daemon as
+/// an agent; the owner's socket and the askpass socket stay out of reach. A run whose card names hosts reaches them
+/// through its own proxy, `sandbox_launcher run-egress`, whose folders are in Torlek's state:
+/// emptied, so no run sees another's.
+pub fn run_confinement(
+    setting: cockpit_config::ConfinedRuns,
+    environment: &cockpit_config::Environment,
+    options: &crate::Options,
+    sandbox_launcher: &Path,
+) -> Result<cockpit_approvals::RunConfinement, cockpit_config::ConfigError> {
+    if setting == cockpit_config::ConfinedRuns::Off {
+        return Ok(cockpit_approvals::RunConfinement::Off);
+    }
+    let home = environment.home_dir()?;
+    let config_dir = cockpit_config::Layout::resolve(environment, &home)
+        .config_dir
+        .value;
+    let hidden = HIDDEN_FROM_RUNS
+        .iter()
+        .map(|path| home.join(path))
+        .chain(
+            [
+                cockpit_config::GITHUB_TOKENS_DIR,
+                cockpit_config::GITHUB_API_TOKENS_DIR,
+                cockpit_config::PROVIDER_CREDENTIALS_DIR,
+            ]
+            .map(|folder| config_dir.join(folder)),
+        )
+        .chain([options.mount_sources()])
+        .collect();
+    let user_runtime = environment
+        .xdg_runtime_dir
+        .as_ref()
+        .map(PathBuf::from)
+        .filter(|folder| folder.is_absolute());
+    Ok(cockpit_approvals::RunConfinement::Required {
+        hidden,
+        emptied: [options.state_dir.clone(), PathBuf::from("/run")]
+            .into_iter()
+            .chain(user_runtime)
+            .collect(),
+        reachable: vec![options.agent_socket_dir()],
+        egress: Some(cockpit_approvals::EgressProxy {
+            launcher: sandbox_launcher.to_path_buf(),
+            folders: options.state_dir.join(RUN_EGRESS_DIR),
+        }),
+    })
+}
+
+/// The folder of Torlek's state each approved run's proxy folder is made in (#1387).
+const RUN_EGRESS_DIR: &str = "run-egress";
+
 /// A request that failed, as the wire tells it.
 pub(crate) struct Failed(pub(crate) ProtocolError);
 
@@ -159,6 +250,8 @@ pub(crate) fn route_ask(
                 command,
                 cwd,
                 reason,
+                writes,
+                hosts,
             } => {
                 ask_run(
                     &database,
@@ -169,6 +262,7 @@ pub(crate) fn route_ask(
                     command,
                     cwd,
                     reason,
+                    Card { writes, hosts },
                 )
                 .await
             }
@@ -263,6 +357,47 @@ async fn poll_guide_status(
     Ok(guide)
 }
 
+/// What an `AskRun` names beyond its directory (#1387), as the agent wrote it.
+struct Card {
+    writes: Vec<String>,
+    hosts: Vec<String>,
+}
+
+impl Card {
+    /// Each folder resolved as the directory is, each host checked as the run's proxy will
+    /// read it: a card the run could not honour is refused before the owner sees it.
+    fn reach(self, runner: &Runner) -> Result<cockpit_approvals::Reach, Refusal> {
+        let writes: Vec<PathBuf> = self
+            .writes
+            .iter()
+            .map(|write| cockpit_approvals::resolve_write(write))
+            .collect::<Result<_, _>>()?;
+        for write in &writes {
+            if let Some(folder) = runner.folder_hidden_from_runs(write) {
+                return Err(Refusal::InvalidRequest {
+                    field: "writes",
+                    reason: format!(
+                        "{} is in {}, which confined runs cannot see",
+                        write.display(),
+                        folder.display()
+                    ),
+                });
+            }
+        }
+        for host in &self.hosts {
+            // The run is not filed yet; its id only labels the entry, which is dropped.
+            cockpit_sandbox::card_entry(host, 0).map_err(|reason| Refusal::InvalidRequest {
+                field: "hosts",
+                reason,
+            })?;
+        }
+        Ok(cockpit_approvals::Reach {
+            writes,
+            hosts: self.hosts,
+        })
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "one ask's fields beside the daemon's parts; a struct for its single call site adds nothing"
@@ -276,8 +411,10 @@ async fn ask_run(
     command: String,
     cwd: String,
     reason: String,
+    card: Card,
 ) -> Answer {
     let cwd = cockpit_approvals::resolve_cwd(&cwd)?;
+    let reach = card.reach(runner)?;
     check_syntax(runner, &command).await?;
     let sender = Sender::read(connector).await;
     let write = database.write().await?;
@@ -288,6 +425,7 @@ async fn ask_run(
         cwd,
         reason,
         project,
+        reach,
     };
     let mut filed = cockpit_approvals::ask_run_unless_pending(&write, &session, ask, now()).await?;
     if !filed.already_pending {
@@ -1106,6 +1244,18 @@ fn run_view(
         reason: run.reason.clone(),
         project: run.project.as_ref().map(|project| project.name.clone()),
         outside_project: run.is_outside_project(),
+        writes: run
+            .reach
+            .writes
+            .iter()
+            .map(|write| crate::projects::text(write))
+            .collect(),
+        hosts: run.reach.hosts.clone(),
+        limits: runner
+            .card_limits(run)
+            .iter()
+            .map(|limit| shown(limit))
+            .collect(),
         digest: run.digest(),
         asked_at: run.asked_at,
         expires_at: run.expires_at,
@@ -1140,6 +1290,7 @@ fn run_view(
             stopped_by_owner: result.stopped_by_owner,
             sudo_ran_unasked: result.sudo_ran_unasked,
             typed_secret_redacted: result.typed_secret_redacted,
+            limit_hits: result.limit_hits.clone(),
         }),
         note: run.note.clone(),
         already_asked: false,

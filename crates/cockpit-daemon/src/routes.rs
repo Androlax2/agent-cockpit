@@ -145,6 +145,8 @@ impl Routes {
             manager: Arc::clone(&capabilities.manager),
             early_answer: readiness::Context::early_answer(),
             containers,
+            run_settings: Arc::clone(&capabilities.run_settings),
+            processes: capabilities.processes.clone(),
         };
         Routes {
             is_restoring: capabilities.is_restoring,

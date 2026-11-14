@@ -414,6 +414,13 @@ fn run_detail(run: &RunRequestView) -> String {
     ));
     let _ = writeln!(text, "reason: {}", run.shown_reason.text);
     text.push_str(&warnings(&run.shown_reason));
+    if !run.limits.is_empty() {
+        text.push_str("limits:\n");
+        for limit in &run.limits {
+            let _ = writeln!(text, "  {}", limit.text);
+            text.push_str(&warnings(limit));
+        }
+    }
     let _ = writeln!(text, "digest: {}", run.digest);
     if let Some(sudo) = &run.sudo_ask {
         let _ = writeln!(
@@ -464,6 +471,9 @@ fn run_detail(run: &RunRequestView) -> String {
                 result.redacted,
                 result.output
             );
+        }
+        for hit in &result.limit_hits {
+            let _ = writeln!(text, "hit a limit: {hit}");
         }
     }
     if let Some(note) = &run.note {

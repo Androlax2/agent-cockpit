@@ -1332,3 +1332,48 @@ fn hidden_characters_in_a_file_sudo_runs_are_warned_of_on_the_card() {
         ["Warning: in what runs as root: direction controls escaped"]
     );
 }
+
+/// #1387: the owner reads what a confined run may do before approving it.
+#[test]
+fn a_run_card_lists_the_runs_limits() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+    let confined = RunRequestView {
+        limits: vec![
+            shown("writes only /p/app and a /tmp of its own"),
+            shown("reaches only example.com"),
+        ],
+        ..run(3, SESSION, "make fetch")
+    };
+    queue(&mut app, vec![confined], Vec::new(), now);
+
+    let screen = screen_text(&app, after_grace(now));
+
+    assert!(
+        screen.contains("Limit: writes only /p/app and a /tmp of its own"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("Limit: reaches only example.com"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_limit_with_hidden_characters_is_flagged_on_the_card() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+    let confined = RunRequestView {
+        limits: vec![hidden(
+            "reaches only exa\\u{202e}mple.com",
+            vec![HiddenView::BidiControl],
+            Vec::new(),
+        )],
+        ..run(3, SESSION, "make fetch")
+    };
+    queue(&mut app, vec![confined], Vec::new(), now);
+
+    let screen = screen_text(&app, after_grace(now));
+
+    assert!(screen.contains("direction controls escaped"), "{screen}");
+}

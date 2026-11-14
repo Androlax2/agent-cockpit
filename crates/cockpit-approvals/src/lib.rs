@@ -1,9 +1,11 @@
 #![doc = include_str!("../README.md")]
 
 mod display;
+mod egress;
 mod error;
 mod guides;
 mod hints;
+mod limit_hits;
 mod pty;
 mod redact;
 mod restart;
@@ -21,6 +23,7 @@ mod typed_secret;
 use cockpit_turso::{Migration, MigrationSet};
 
 pub use display::{FOLD_CHARS, FOLD_LINES, Folded, Hidden, Shown, fold, is_outside_project, show};
+pub use egress::EgressProxy;
 pub use error::{Error, Refusal, UnblockedBy};
 pub use guides::{
     Guide, GuideId, GuideRequest, GuideState, GuideStep, Step, answer_step, ask_guide, close_guide,
@@ -28,7 +31,10 @@ pub use guides::{
     shown_guide,
 };
 pub use hints::{build_files_run, timeout_without_foreground};
-pub use pty::{NoResult, Output, PROMPT_MAX_CHARS, Ran, RunSettings, Runner, Syntax, present};
+pub use limit_hits::limit_hits;
+pub use pty::{
+    NoResult, Output, PROMPT_MAX_CHARS, Ran, RunConfinement, RunSettings, Runner, Syntax, present,
+};
 pub use redact::{redact_secrets, strip_terminal_controls};
 pub use restart::ended_after_restart;
 pub use retention::{RunOutputs, retirable_run_outputs, retire_run_outputs};
@@ -36,12 +42,13 @@ pub use rows::{EXPIRES_AFTER_SECONDS, Project, REFRESH_AFTER_SECONDS};
 pub use rule_scan::{Finding, path_from, scan, scan_unfinished, sudo_findings};
 pub use rules::Severity;
 pub use runs::{
-    APPROVAL_GRACE_SECONDS, Approved, DecidedThrough, FiledRun, Interrupted, RunAsk, RunDecision,
-    RunId, RunRequest, RunResult, RunState, StartAsk, StartSession, action_digest, approve_run,
-    ask_run, ask_run_unless_pending, ask_start, decided_runs, decline_run, edit_run, finish_run,
-    finish_start, interrupted_runs, may_ask, open_runs, purge_run_output, queue_order,
-    reconcile_run, record_checks, record_not_run, record_outcome_unknown, resolve_cwd, run_request,
-    run_status, run_status_if_fresh, shown_run, start_run, validate_start,
+    APPROVAL_GRACE_SECONDS, Approved, DecidedThrough, FiledRun, Interrupted, REACH_MAX_ENTRIES,
+    Reach, RunAsk, RunDecision, RunId, RunRequest, RunResult, RunState, StartAsk, StartSession,
+    action_digest, approve_run, ask_run, ask_run_unless_pending, ask_start, decided_runs,
+    decline_run, edit_run, finish_run, finish_start, interrupted_runs, may_ask, open_runs,
+    purge_run_output, queue_order, reconcile_run, record_checks, record_not_run,
+    record_outcome_unknown, resolve_cwd, resolve_write, run_request, run_status,
+    run_status_if_fresh, shown_run, start_run, validate_start,
 };
 pub use sudo::{
     SudoAnswered, SudoAsk, SudoAskpass, SudoHelper, TRUSTED_SUDO, sudo_asks_every_time,
@@ -222,6 +229,18 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 14,
             sql: "ALTER TABLE approvals_runs ADD COLUMN findings TEXT
                 CHECK (findings IS NULL OR substr(findings, 1, 2) = 'v1');",
+        },
+        // #1387: the folders a confined run's card names to write beyond its checkout and the
+        // hosts it reaches, one per line, NULL when none; and the limits a finished run hit,
+        // one per line, NULL when none.
+        Migration {
+            version: 15,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN card_writes TEXT
+                CHECK (card_writes IS NULL OR length(card_writes) > 0);
+                ALTER TABLE approvals_runs ADD COLUMN card_hosts TEXT
+                CHECK (card_hosts IS NULL OR length(card_hosts) > 0);
+                ALTER TABLE approvals_runs ADD COLUMN limit_hits TEXT
+                CHECK (limit_hits IS NULL OR (length(limit_hits) > 0 AND state = 'finished'));",
         },
     ],
 };

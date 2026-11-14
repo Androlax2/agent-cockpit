@@ -36,6 +36,16 @@ start and runs it in the agent's place under `agents.sandbox = "required"`.
 - `torlek-sandbox engine-masks ENGINES_DIR`: the root helper of the project engines (#390),
   run once per connection with the connection as its standard input; it masks one checkout
   per request for the engine the request names, answering only that engine's owner (below).
+- `torlek-sandbox run-egress FOLDER SESSION RUN HOST...` (#1387): an approved run's proxy,
+  started by the daemon on the host's network before the run. It opens the hand-off socket
+  in `FOLDER/proxy-handoff`, prints `ready`, takes the listener the run hands over and
+  serves it with the card's hosts as its only entries (`cockpit_sandbox::card_allowlist`),
+  filing no network request. When its standard input closes it prints `refused DEST` for
+  each destination it refused, then exits (`run_egress.rs`).
+- `torlek-sandbox hand-over SOCKET PROGRAM ARGUMENT...` (#1387): the first program of an
+  approved run's service. It binds `127.0.0.1:3128` in the service's network namespace,
+  sends the listener to `run-egress` on `SOCKET` (stage 2's hand-off, `handoff.rs`) and
+  runs `PROGRAM` in its place, keeping no copy.
 - `torlek-sandbox probe BWRAP`: the daemon's start-up probe. Prints
   `{"bubblewrap":"<version>","landlock_abi":<n>}`; a failure is the reason every launch under
   `required` is refused.

@@ -73,6 +73,7 @@ async fn finish_an_old_run(home: &TestHome, database: &cockpit_turso::Database, 
         cwd: home.home().canonicalize().unwrap(),
         reason: "the retention test asks".to_owned(),
         project: None,
+        reach: cockpit_approvals::Reach::default(),
     };
     let run = cockpit_approvals::ask_run(&write, &session, ask, asked_at)
         .await
@@ -103,6 +104,7 @@ async fn finish_an_old_run(home: &TestHome, database: &cockpit_turso::Database, 
         stopped_by_owner: false,
         sudo_ran_unasked: 0,
         typed_secret_redacted: 0,
+        limit_hits: Vec::new(),
     };
     cockpit_approvals::finish_run(&write, &approved, &result, decided_at + 1)
         .await

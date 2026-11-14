@@ -31,8 +31,8 @@ pub use diagnostics::{
 };
 pub use error::Error;
 pub use model::{
-    Containment, EndReason, Escalation, Execution, ExecutionId, HostedLaunch, Identity, LaunchSpec,
-    Phase, Reconciled, Signal, Terminal, Termination,
+    Confinement, Containment, EndReason, Escalation, Execution, ExecutionId, HostedLaunch,
+    Identity, LaunchSpec, Phase, Reconciled, Signal, Terminal, Termination,
 };
 pub use output::{OutputKind, OutputLimits, OutputRead, OutputStream};
 pub use session::run_session_leader;

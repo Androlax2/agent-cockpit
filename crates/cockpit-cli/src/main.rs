@@ -102,7 +102,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek storage database [prune]
        torlek storage prune CHECKOUT [--dry-run] | --plan ID --revision N --epoch E --confirm | status ID | abandon ID --revision N --epoch E
        torlek usage quota | cost [--days N] | digest [--days N]
-       torlek ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check
+       torlek ask run [--cwd DIR] [--write DIR]... [--host HOST]... [--no-wait] --reason TEXT COMMAND | --wait ID | --check
        torlek ask guide [--cwd DIR] < GUIDE | --wait ID
        torlek ask service NAME --reason TEXT
        torlek ask service containers --port PORT --reason TEXT

@@ -540,6 +540,7 @@ async fn pending_run(
             cwd: root,
             reason: "fixture".into(),
             project: None,
+            reach: cockpit_approvals::Reach::default(),
         },
         unix_now() - cockpit_approvals::APPROVAL_GRACE_SECONDS - 1,
     )

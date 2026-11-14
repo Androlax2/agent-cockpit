@@ -69,7 +69,7 @@ impl Options {
         self.agent_socket_dir().join(cockpit_config::AGENT_SOCKET)
     }
 
-    fn agent_socket_dir(&self) -> PathBuf {
+    pub(crate) fn agent_socket_dir(&self) -> PathBuf {
         self.runtime_dir.join(cockpit_config::AGENT_SOCKET_DIR)
     }
 

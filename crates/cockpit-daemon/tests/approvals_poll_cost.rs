@@ -61,6 +61,8 @@ async fn measure_status_polls_and_the_owner_queue() {
                 command: "true".to_owned(),
                 cwd: cwd.clone(),
                 reason: "Measures the poll cost.".to_owned(),
+                writes: Vec::new(),
+                hosts: Vec::new(),
             },
             GENEROUS,
         )
@@ -145,6 +147,7 @@ async fn asked_by_sessions(home: &TestHome, cwd: &Path, sessions: usize, ended: 
             cwd: cwd.to_path_buf(),
             reason: "Measures the queue.".to_owned(),
             project: None,
+            reach: cockpit_approvals::Reach::default(),
         };
         cockpit_approvals::ask_run(&write, session, run, now)
             .await

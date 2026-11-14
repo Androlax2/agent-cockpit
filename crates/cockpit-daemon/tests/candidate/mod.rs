@@ -36,3 +36,28 @@ pub fn assert_running_candidate(pid: u32) {
     #[cfg(not(target_os = "linux"))]
     let _ = pid;
 }
+
+/// Gives the owner's `config.toml` at `path` the owner's named opt-out `agents.confined_runs
+/// = "off"` (#1387), unless it sets that key itself: a daemon in a test home reaches no
+/// systemd user manager, so it would refuse every approved run. Tests of confined runs set
+/// the key.
+pub fn unconfine_runs(path: &Path) {
+    const OPT_OUT: &str = "confined_runs = \"off\"\n";
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => panic!("{}: {error}", path.display()),
+    };
+    if contents.contains("confined_runs") {
+        return;
+    }
+    let contents = match contents.find("[agents]\n") {
+        Some(at) => {
+            let (before, after) = contents.split_at(at + "[agents]\n".len());
+            format!("{before}{OPT_OUT}{after}")
+        }
+        None => format!("{contents}\n[agents]\n{OPT_OUT}"),
+    };
+    std::fs::create_dir_all(path.parent().expect("a config file has a folder")).unwrap();
+    std::fs::write(path, contents).unwrap();
+}

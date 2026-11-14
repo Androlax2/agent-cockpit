@@ -499,7 +499,9 @@ impl Backend {
         limits: &Limits,
         controls: &[Control],
     ) -> Result<(), Error> {
-        let Containment::SystemdScope { unit } = &execution.containment else {
+        let (Containment::SystemdScope { unit } | Containment::SystemdService { unit }) =
+            &execution.containment
+        else {
             return Ok(());
         };
         // An unrequested limit is reset to systemd's default, so a profile change also
@@ -681,7 +683,9 @@ impl Backend {
 
     /// Where the tasks of a running execution are listed, resolved once per change.
     async fn task_source(&self, execution: &Execution) -> Result<TaskSource, Error> {
-        if let Containment::SystemdScope { unit } = &execution.containment {
+        if let Containment::SystemdScope { unit } | Containment::SystemdService { unit } =
+            &execution.containment
+        {
             let dir = self
                 .scope_dir(unit)
                 .await
@@ -812,7 +816,9 @@ impl Backend {
     /// leader's scheduling fields.
     pub async fn inspect(&self, execution: &Execution, limits: &Limits) -> ExecutionReport {
         let scope_dir = match &execution.containment {
-            Containment::SystemdScope { unit } => Some(self.scope_dir(unit).await),
+            Containment::SystemdScope { unit } | Containment::SystemdService { unit } => {
+                Some(self.scope_dir(unit).await)
+            }
             Containment::ProcessGroup => None,
         };
         let in_scope = scope_dir.is_some();
@@ -861,7 +867,7 @@ impl Backend {
 
     async fn set_frozen(&self, execution: &Execution, frozen: bool) -> Result<(), Error> {
         match &execution.containment {
-            Containment::SystemdScope { unit } => {
+            Containment::SystemdScope { unit } | Containment::SystemdService { unit } => {
                 let verb = if frozen { "freeze" } else { "thaw" };
                 self.systemctl(&["--user", verb, unit]).await.map(drop)
             }
