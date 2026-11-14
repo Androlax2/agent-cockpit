@@ -184,6 +184,31 @@ async fn record_engine(home: &Home, user: &str) -> String {
     }
 }
 
+/// Waits, as the owner does when doctor says the proxy is starting, until doctor shows the
+/// daemon's proxy serving the engine's pulls and containers.
+async fn egress_serves(home: &Home, root: &Path, user: &str) {
+    let deadline = Instant::now() + ENGINE_WITHIN;
+    loop {
+        let report = owner(home, &["doctor", "--project", &root.display().to_string()]).await;
+        let printed = text(&report.stdout);
+        let egress = printed
+            .lines()
+            .find(|line| line.contains("  container egress: "))
+            .and_then(|line| line.split_whitespace().next());
+        if egress == Some("available") {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "the engine's egress never served: {printed}{}\n{}",
+                text(&report.stderr),
+                engine_state(user).await
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
 /// What root sees of `user`'s engine: its units, their journal and its socket's folder, for
 /// a failure's message.
 async fn engine_state(user: &str) -> String {
@@ -435,6 +460,7 @@ async fn a_projects_engine_runs_its_sessions_containers_inside_the_sandboxs_boun
     let (script, user) = written_setup(&home, &root).await;
     run_as_root(&script).await;
     println!("{}", record_engine(&home, &user).await);
+    egress_serves(&home, &root, &user).await;
     owner_succeeds(
         &home,
         &["network", "grant", COMMANDED_PROJECT, "docker-hub"],
