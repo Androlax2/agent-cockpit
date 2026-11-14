@@ -131,7 +131,9 @@ not share code.
 - Approved runs are confined unless `agents.confined_runs = "off"` (#1387, `run_confinement`):
   hidden are the owner's keys, tokens, keyrings and browser profiles under their home
   (`HIDDEN_FROM_RUNS`), Torlek's token folders and the sessions' mount sources; emptied are
-  Torlek's state and the owner's runtime folder; reachable read-only, the daemon's sockets.
+  Torlek's state, the owner's runtime folder and `/run`; reachable read-only, the agent
+  socket's folder alone, never the owner's or the askpass socket. `ask-run` refuses a card
+  folder inside what runs cannot see.
   A card's hosts go through `torlek-sandbox run-egress`, its folders under
   `<state>/run-egress`. `ask-run` resolves each card folder as it resolves the directory
   and checks each host as the proxy will read it (`cockpit_sandbox::card_entry`).

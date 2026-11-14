@@ -53,11 +53,29 @@ pub fn run_settings(environment: Vec<(OsString, OsString)>) -> std::io::Result<R
 }
 
 /// The owner's secrets under their home that a confined run cannot read (#1387): keys,
-/// GitHub's CLI tokens, keyrings and browser profiles.
+/// the credentials of Git, GitHub's CLI, cloud and container tools, package registries and
+/// agent providers, keyrings and browser profiles. A list cannot name every tool's secret:
+/// the guide says so.
 const HIDDEN_FROM_RUNS: &[&str] = &[
     ".ssh",
     ".gnupg",
     ".config/gh",
+    ".netrc",
+    ".git-credentials",
+    ".config/git/credentials",
+    ".aws",
+    ".azure",
+    ".config/gcloud",
+    ".docker",
+    ".kube",
+    ".password-store",
+    ".local/share/password-store",
+    ".npmrc",
+    ".pypirc",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".claude/.credentials.json",
+    ".codex/auth.json",
     ".local/share/keyrings",
     ".local/share/kwalletd",
     ".mozilla",
@@ -71,9 +89,10 @@ const HIDDEN_FROM_RUNS: &[&str] = &[
 /// What a confined run cannot see, or the owner's opt-out `off` (#1387). Hidden: the
 /// owner's secrets (`HIDDEN_FROM_RUNS`), the tokens in Torlek's configuration and the
 /// sessions' mount sources. Emptied: Torlek's state (its database, the sessions' homes and
-/// temporary folders) and the owner's runtime folder, with its sockets and buses, through
-/// which a run could start what is not confined. Reachable read-only: the daemon's sockets,
-/// so `torlek` in a run still asks the daemon. A run whose card names hosts reaches them
+/// temporary folders), the owner's runtime folder and the system's `/run`, with their
+/// sockets and buses, through which a run could start what is not confined. Reachable
+/// read-only: the agent socket's folder only, so `torlek` in a run still asks the daemon as
+/// an agent; the owner's socket and the askpass socket stay out of reach. A run whose card names hosts reaches them
 /// through its own proxy, `sandbox_launcher run-egress`, whose folders are in Torlek's state:
 /// emptied, so no run sees another's.
 pub fn run_confinement(
@@ -109,11 +128,11 @@ pub fn run_confinement(
         .filter(|folder| folder.is_absolute());
     Ok(cockpit_approvals::RunConfinement::Required {
         hidden,
-        emptied: [options.state_dir.clone()]
+        emptied: [options.state_dir.clone(), PathBuf::from("/run")]
             .into_iter()
             .chain(user_runtime)
             .collect(),
-        reachable: vec![options.runtime_dir.clone()],
+        reachable: vec![options.agent_socket_dir()],
         egress: Some(cockpit_approvals::EgressProxy {
             launcher: sandbox_launcher.to_path_buf(),
             folders: options.state_dir.join(RUN_EGRESS_DIR),
@@ -347,12 +366,24 @@ struct Card {
 impl Card {
     /// Each folder resolved as the directory is, each host checked as the run's proxy will
     /// read it: a card the run could not honour is refused before the owner sees it.
-    fn reach(self) -> Result<cockpit_approvals::Reach, Refusal> {
-        let writes = self
+    fn reach(self, runner: &Runner) -> Result<cockpit_approvals::Reach, Refusal> {
+        let writes: Vec<PathBuf> = self
             .writes
             .iter()
             .map(|write| cockpit_approvals::resolve_write(write))
             .collect::<Result<_, _>>()?;
+        for write in &writes {
+            if let Some(folder) = runner.folder_hidden_from_runs(write) {
+                return Err(Refusal::InvalidRequest {
+                    field: "writes",
+                    reason: format!(
+                        "{} is in {}, which confined runs cannot see",
+                        write.display(),
+                        folder.display()
+                    ),
+                });
+            }
+        }
         for host in &self.hosts {
             // The run is not filed yet; its id only labels the entry, which is dropped.
             cockpit_sandbox::card_entry(host, 0).map_err(|reason| Refusal::InvalidRequest {
@@ -383,7 +414,7 @@ async fn ask_run(
     card: Card,
 ) -> Answer {
     let cwd = cockpit_approvals::resolve_cwd(&cwd)?;
-    let reach = card.reach()?;
+    let reach = card.reach(runner)?;
     check_syntax(runner, &command).await?;
     let sender = Sender::read(connector).await;
     let write = database.write().await?;

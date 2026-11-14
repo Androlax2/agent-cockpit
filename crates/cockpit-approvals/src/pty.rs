@@ -256,6 +256,23 @@ impl RunSettings {
     }
 }
 
+/// Refuses a folder the owner approved that now resolves elsewhere: a link swapped in since
+/// would point the run, or its writes, at a folder the owner never read.
+fn still_resolves_to_itself(approved: &Path) -> Result<(), NoResult> {
+    match std::fs::canonicalize(approved) {
+        Ok(resolved) if resolved == approved => Ok(()),
+        Ok(resolved) => Err(NoResult::NotStarted(format!(
+            "{} now resolves to {}, not the approved directory",
+            approved.display(),
+            resolved.display()
+        ))),
+        Err(error) => Err(NoResult::NotStarted(format!(
+            "{}: {error}",
+            approved.display()
+        ))),
+    }
+}
+
 /// What a run produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ran {
@@ -438,6 +455,12 @@ impl Runner {
         )))
     }
 
+    /// The folder confined runs cannot see that `path` is in, if any: a run cannot write
+    /// there, so a card naming it is refused before the owner is asked.
+    pub fn folder_hidden_from_runs(&self, path: &Path) -> Option<&Path> {
+        self.settings.confinement.hiding(path)
+    }
+
     /// What `run` may do once approved, one line each, as its card shows the owner.
     pub fn card_limits(&self, run: &RunRequest) -> Vec<String> {
         let RunConfinement::Required {
@@ -507,23 +530,8 @@ impl Runner {
                 "a start request is carried out by the daemon, not run as a command".to_owned(),
             ));
         }
-        match std::fs::canonicalize(&run.cwd) {
-            Ok(resolved) if resolved == run.cwd => {}
-            Ok(resolved) => {
-                return Err(NoResult::NotStarted(format!(
-                    "{} now resolves to {}, not the approved directory",
-                    run.cwd.display(),
-                    resolved.display()
-                )));
-            }
-            Err(error) => {
-                return Err(NoResult::NotStarted(format!(
-                    "{}: {error}",
-                    run.cwd.display()
-                )));
-            }
-        }
         for path in std::iter::once(&run.cwd).chain(&run.reach.writes) {
+            still_resolves_to_itself(path)?;
             if let Some(folder) = self.settings.confinement.hiding(path) {
                 return Err(NoResult::NotStarted(format!(
                     "{} is in {}, which confined runs cannot see",

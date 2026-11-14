@@ -73,7 +73,7 @@ impl EgressProxy {
             .mode(0o700)
             .create(&folder)
             .map_err(|error| format!("cannot create {}: {error}", folder.display()))?;
-        let mut child = tokio::process::Command::new(&self.launcher)
+        let spawned = tokio::process::Command::new(&self.launcher)
             .arg("run-egress")
             .arg(&folder)
             .arg(run.session.as_str())
@@ -82,20 +82,28 @@ impl EgressProxy {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| format!("cannot start {}: {error}", self.launcher.display()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .expect("its stdout is piped")
-            .into_owned_fd()
-            .map_err(|error| format!("cannot read the run's proxy: {error}"))?;
+            .spawn();
+        let child = match spawned {
+            Ok(child) => child,
+            Err(error) => {
+                // No `RunEgress` owns the folder yet to remove it when dropped.
+                let _ = std::fs::remove_dir_all(&folder);
+                return Err(format!("cannot start {}: {error}", self.launcher.display()));
+            }
+        };
         let mut egress = RunEgress {
             child,
             stdout: None,
             folder,
             launcher: self.launcher.clone(),
         };
+        let stdout = egress
+            .child
+            .stdout
+            .take()
+            .expect("its stdout is piped")
+            .into_owned_fd()
+            .map_err(|error| format!("cannot read the run's proxy: {error}"))?;
         let reading = tokio::task::spawn_blocking(move || {
             let mut stdout = BufReader::new(File::from(stdout));
             let mut line = String::new();

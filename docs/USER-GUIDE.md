@@ -102,7 +102,8 @@ Provider-native permission dialogs are separate and remain in the provider termi
 On Linux an approved command runs in a systemd user service of its own (#1387), so its limits hold for every process it starts:
 
 - It writes only the asking session's project checkout, a `/tmp` of its own and each folder the agent named with `torlek ask run --write DIR`. Everything else is read-only.
-- It cannot read your keys and tokens (`~/.ssh`, `~/.gnupg`, `~/.config/gh`, keyrings, browser profiles, Torlek's token folders), and it sees Torlek's state and your runtime folder empty.
+- It cannot read the keys and tokens Torlek knows the places of: `~/.ssh`, `~/.gnupg`, Git, GitHub CLI, cloud, container and package-registry credentials (`~/.netrc`, `~/.aws`, `~/.docker`, `~/.kube`, `~/.npmrc` and others), agent providers' sign-ins, keyrings, browser profiles and Torlek's token folders. A secret a tool keeps anywhere else stays readable, so the command can print it.
+- It sees Torlek's state, your runtime folder and `/run` empty, so it reaches no socket or bus of yours or the system's, but the agent socket: `torlek` in the command asks as an agent, never as you.
 - It has no network. Each host the agent named with `--host HOST` (`host` or `host:port`) is reached through a proxy of the command's own, which lets out only those hosts. Clients find the proxy through `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY`, and it carries `CONNECT` alone, so a plain `http://` URL needs a client that tunnels (`curl -p`).
 - It gets no `sudo`: that needs a route to root that confined runs do not have yet.
 
@@ -110,6 +111,7 @@ The request lists these limits as `Limit:` lines in the pane and under `limits:`
 When the command hits a limit, the stored request, `approval show` (`hit a limit:`) and the agent's answer name the path it could not read or write or the host it could not reach.
 Torlek reads paths from what the command printed, so a program that hides its errors leaves no hit. Hosts the proxy refused are always named.
 
+The proxy belongs to the daemon: a daemon that stops ends it, and the command reaches no host from then on.
 Where no systemd user manager answers, `torlek doctor` names it under `confined runs`, and approved commands are refused, never run unconfined.
 `confined_runs = "off"` under `[agents]` in the owner configuration runs them with your rights instead, with `sudo` through Torlek's helper (below).
 

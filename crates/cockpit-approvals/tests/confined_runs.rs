@@ -354,6 +354,34 @@ async fn a_folder_the_card_names_is_written_besides_the_checkout() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_folder_the_card_names_that_now_resolves_elsewhere_is_not_started() {
+    let confined = Confined::new().await;
+    let runner = confined.runner(confined.settings(), LaunchContainment::SystemdScope);
+    let named = confined.fixture.cwd().join("build-cache");
+    let elsewhere = confined.fixture.cwd().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &named).unwrap();
+    let approved = confined
+        .approved_reaching(
+            "true",
+            &confined.checkout,
+            Reach {
+                writes: vec![named.clone()],
+                hosts: Vec::new(),
+            },
+        )
+        .await;
+
+    let ended = runner.run(&confined.fixture.database, &approved, &[]).await;
+
+    let Err(NoResult::NotStarted(reason)) = ended else {
+        panic!("expected a run that never started, got {ended:?}");
+    };
+    assert!(reason.contains("now resolves to"), "{reason}");
+    assert!(confined.arguments().is_empty(), "systemd-run was called");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_folder_the_card_names_in_a_hidden_one_is_not_started() {
     let confined = Confined::new().await;
     let runner = confined.runner(confined.settings(), LaunchContainment::SystemdScope);
@@ -399,6 +427,40 @@ async fn a_card_naming_hosts_without_a_proxy_is_not_started() {
     };
     assert!(reason.contains("proxy"), "{reason}");
     assert!(confined.arguments().is_empty(), "systemd-run was called");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proxy_that_cannot_start_leaves_no_folder_behind() {
+    let confined = Confined::new().await;
+    let mut settings = confined.settings_with_proxy();
+    if let RunConfinement::Required {
+        egress: Some(proxy),
+        ..
+    } = &mut settings.confinement
+    {
+        proxy.launcher = confined.fakes.path().join("no-such-sandbox");
+    }
+    let runner = confined.runner(settings, LaunchContainment::SystemdScope);
+    let approved = confined
+        .approved_reaching(
+            "true",
+            &confined.checkout,
+            Reach {
+                writes: Vec::new(),
+                hosts: vec!["example.com".to_owned()],
+            },
+        )
+        .await;
+
+    let ended = runner.run(&confined.fixture.database, &approved, &[]).await;
+
+    assert!(matches!(ended, Err(NoResult::NotStarted(_))), "{ended:?}");
+    let folder = confined
+        .fixture
+        .cwd()
+        .join("run-egress")
+        .join(format!("run-{}", approved.id.0));
+    assert!(!folder.exists(), "{} was left behind", folder.display());
 }
 
 #[tokio::test(flavor = "multi_thread")]

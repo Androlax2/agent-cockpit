@@ -376,11 +376,7 @@ fn run_digest(cwd: &Path, command: &str, reach: &Reach) -> String {
             part(entry);
         }
     }
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::sudo_editable::hex(&hasher.finalize())
 }
 
 /// The directory a command would run in, resolved now: symbolic links followed, so the

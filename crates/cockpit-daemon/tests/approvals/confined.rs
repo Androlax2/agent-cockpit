@@ -100,6 +100,20 @@ async fn a_card_naming_a_relative_folder_is_refused_before_the_owner_is_asked() 
 }
 
 #[tokio::test]
+async fn a_card_naming_a_folder_confined_runs_cannot_see_is_refused_before_the_owner_is_asked() {
+    let asking = confining(TestHome::new()).await;
+    let keys = asking.home.home().join(".ssh");
+    std::fs::create_dir(&keys).unwrap();
+
+    let refusal =
+        refused(ask_reaching(&asking, vec![keys.to_str().unwrap().to_owned()], Vec::new()).await);
+
+    assert_eq!(refusal.code, ErrorCode::InvalidArgument);
+    assert!(refusal.message.contains("writes"), "{refusal:?}");
+    assert!(refusal.message.contains("cannot see"), "{refusal:?}");
+}
+
+#[tokio::test]
 async fn a_card_naming_no_usable_host_is_refused_before_the_owner_is_asked() {
     let asking = confining(TestHome::new()).await;
 
@@ -186,6 +200,24 @@ async fn a_real_confined_run_writes_a_folder_its_card_names() {
     let result = ended.result.unwrap();
     assert_eq!(result.exit_code, 0, "{result:?}");
     assert!(named.join("entry").exists(), "{result:?}");
+}
+
+#[tokio::test]
+#[ignore = "needs a reachable systemd user manager"]
+async fn a_real_confined_run_reaches_the_agent_socket_but_not_the_owners() {
+    let asking = confining(with_the_real_manager()).await;
+
+    let ended = asking
+        .ran(&format!(
+            "test -S '{}' && echo agent-socket; test -e '{}' || echo no-owner-socket",
+            asking.home.agent_socket_path().display(),
+            asking.home.socket_path().display()
+        ))
+        .await;
+
+    let result = ended.result.unwrap();
+    assert!(result.output.contains("agent-socket"), "{result:?}");
+    assert!(result.output.contains("no-owner-socket"), "{result:?}");
 }
 
 /// The run's network namespace has a loopback of its own: a listener on the host's is out
@@ -311,4 +343,80 @@ async fn a_real_confined_run_names_the_host_its_card_does_not() {
         )),
         "{result:?}"
     );
+}
+
+/// The daemon's confinement for an owner whose home is `/home/owner` and whose runtime
+/// folder is `/run/user/1000`.
+fn product_confinement() -> (cockpit_daemon::Options, cockpit_approvals::RunConfinement) {
+    let environment = cockpit_config::Environment {
+        home: Some("/home/owner".into()),
+        xdg_runtime_dir: Some("/run/user/1000".into()),
+        ..cockpit_config::Environment::default()
+    };
+    let options = cockpit_daemon::Options::from_environment(&environment).unwrap();
+    let confinement = cockpit_daemon::run_confinement(
+        cockpit_config::ConfinedRuns::Required,
+        &environment,
+        &options,
+        std::path::Path::new("/usr/bin/torlek-sandbox"),
+    )
+    .unwrap();
+    (options, confinement)
+}
+
+fn reachable_of(confinement: &cockpit_approvals::RunConfinement) -> &[PathBuf] {
+    match confinement {
+        cockpit_approvals::RunConfinement::Required { reachable, .. } => reachable,
+        cockpit_approvals::RunConfinement::Off => panic!("confined runs are required"),
+    }
+}
+
+#[test]
+fn a_confined_run_reaches_the_agent_socket_but_not_the_owners() {
+    let (options, confinement) = product_confinement();
+    let reachable = reachable_of(&confinement);
+
+    let reaches =
+        |socket: &std::path::Path| reachable.iter().any(|folder| socket.starts_with(folder));
+    assert!(reaches(&options.agent_socket_path()), "{reachable:?}");
+    assert!(!reaches(&options.socket_path()), "{reachable:?}");
+    assert!(!reaches(&options.askpass_socket_path()), "{reachable:?}");
+}
+
+#[test]
+fn a_confined_run_sees_no_system_socket() {
+    let (_, confinement) = product_confinement();
+    let cockpit_approvals::RunConfinement::Required { emptied, .. } = &confinement else {
+        panic!("confined runs are required");
+    };
+
+    assert!(emptied.contains(&PathBuf::from("/run")), "{emptied:?}");
+}
+
+#[test]
+fn a_confined_run_cannot_see_the_owners_cloud_and_package_credentials() {
+    let (_, confinement) = product_confinement();
+    let cockpit_approvals::RunConfinement::Required { hidden, .. } = &confinement else {
+        panic!("confined runs are required");
+    };
+
+    for secret in [
+        ".aws",
+        ".netrc",
+        ".git-credentials",
+        ".config/git/credentials",
+        ".docker",
+        ".kube",
+        ".password-store",
+        ".config/gcloud",
+        ".azure",
+        ".npmrc",
+        ".pypirc",
+        ".cargo/credentials.toml",
+        ".claude/.credentials.json",
+        ".codex/auth.json",
+    ] {
+        let path = PathBuf::from("/home/owner").join(secret);
+        assert!(hidden.contains(&path), "{secret}: {hidden:?}");
+    }
 }
