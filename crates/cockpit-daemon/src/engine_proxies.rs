@@ -40,6 +40,13 @@ pub(crate) struct Wanted {
     pub(crate) engine_uid: u32,
 }
 
+/// A recorded engine the daemon runs no proxy for, and why: readiness names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unrunnable {
+    pub(crate) project: String,
+    pub(crate) reason: String,
+}
+
 /// Each project's engine proxy state, shared with readiness. Only [`Proxies::reconcile`]
 /// writes it.
 #[derive(Debug, Clone, Default)]
@@ -62,11 +69,11 @@ impl EngineProxies {
             .insert(project.to_owned(), state);
     }
 
-    fn retain(&self, wanted: &[Wanted]) {
+    fn retain(&self, is_recorded: impl Fn(&str) -> bool) {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|project, _| wanted.iter().any(|engine| engine.project == *project));
+            .retain(|project, _| is_recorded(project));
     }
 }
 
@@ -86,8 +93,14 @@ pub(crate) struct Proxies {
     sandbox: Sandbox,
     states: EngineProxies,
     running: HashMap<String, Running>,
+    /// Proxies whose pipe was dropped and that may still hold their engine's listener: a
+    /// project's next proxy starts once its last one ended.
+    stopping: HashMap<String, Receiver<String>>,
     /// When each project's ended proxy may start again.
     retry_at: HashMap<String, Instant>,
+    /// The reason last logged for each project that has no serving proxy, so a proxy that
+    /// keeps failing the same way is logged once.
+    reported: HashMap<String, String>,
 }
 
 impl Proxies {
@@ -103,19 +116,45 @@ impl Proxies {
             sandbox,
             states,
             running: HashMap::new(),
+            stopping: HashMap::new(),
             retry_at: HashMap::new(),
+            reported: HashMap::new(),
         }
     }
 
     /// Runs exactly the proxies `wanted` names: ends the others, notes the ones that ended
-    /// and starts the missing ones whose restart delay passed. True when it started one.
-    /// Blocks on the file system and on starting processes.
-    pub(crate) fn reconcile(&mut self, wanted: &[Wanted], now: Instant) -> bool {
-        self.running
-            .retain(|_, running| wanted.contains(&running.wanted));
-        self.retry_at
-            .retain(|project, _| wanted.iter().any(|engine| engine.project == *project));
-        self.states.retain(wanted);
+    /// and starts the missing ones whose restart delay passed, each once its last proxy
+    /// ended. `unrunnable` are down with their reason. True when it started one. Blocks on
+    /// the file system and on starting processes.
+    pub(crate) fn reconcile(
+        &mut self,
+        wanted: &[Wanted],
+        unrunnable: &[Unrunnable],
+        now: Instant,
+    ) -> bool {
+        let is_recorded = |project: &str| {
+            wanted.iter().any(|engine| engine.project == project)
+                || unrunnable.iter().any(|engine| engine.project == project)
+        };
+        let unwanted: Vec<String> = self
+            .running
+            .iter()
+            .filter(|(_, running)| !wanted.contains(&running.wanted))
+            .map(|(project, _)| project.clone())
+            .collect();
+        for project in unwanted {
+            if let Some(Running { ended, .. }) = self.running.remove(&project) {
+                self.stopping.insert(project, ended);
+            }
+        }
+        self.stopping
+            .retain(|_, ended| matches!(ended.try_recv(), Err(TryRecvError::Empty)));
+        self.retry_at.retain(|project, _| is_recorded(project));
+        self.reported.retain(|project, _| is_recorded(project));
+        self.states.retain(is_recorded);
+        for engine in unrunnable {
+            self.down(&engine.project, engine.reason.clone());
+        }
         let mut ended = Vec::new();
         for (project, running) in &self.running {
             match running.ended.try_recv() {
@@ -126,14 +165,14 @@ impl Proxies {
                 )),
                 Err(TryRecvError::Empty) if running.is_serving.load(Ordering::Acquire) => {
                     self.states.set(project, EngineEgress::Serving);
+                    self.reported.remove(project);
                 }
                 Err(TryRecvError::Empty) => {}
             }
         }
         for (project, reason) in ended {
             self.running.remove(&project);
-            tracing::warn!(project, reason, "an engine's proxy ended");
-            self.states.set(&project, EngineEgress::Down { reason });
+            self.down(&project, reason);
             self.retry_at.insert(project, now + RESTART_DELAY);
         }
         let mut is_started = false;
@@ -142,7 +181,10 @@ impl Proxies {
                 .retry_at
                 .get(&engine.project)
                 .is_some_and(|retry_at| now < *retry_at);
-            if self.running.contains_key(&engine.project) || is_waiting {
+            if self.running.contains_key(&engine.project)
+                || self.stopping.contains_key(&engine.project)
+                || is_waiting
+            {
                 continue;
             }
             match self.start(engine) {
@@ -153,19 +195,22 @@ impl Proxies {
                     is_started = true;
                 }
                 Err(reason) => {
-                    tracing::warn!(
-                        project = engine.project,
-                        reason,
-                        "an engine's proxy did not start"
-                    );
-                    self.states
-                        .set(&engine.project, EngineEgress::Down { reason });
+                    self.down(&engine.project, reason);
                     self.retry_at
                         .insert(engine.project.clone(), now + RESTART_DELAY);
                 }
             }
         }
         is_started
+    }
+
+    /// `project` has no serving proxy, for `reason`; logged when the reason is new.
+    fn down(&mut self, project: &str, reason: String) {
+        if self.reported.get(project) != Some(&reason) {
+            tracing::warn!(project, reason, "an engine's proxy does not serve");
+            self.reported.insert(project.to_owned(), reason.clone());
+        }
+        self.states.set(project, EngineEgress::Down { reason });
     }
 
     fn start(&self, engine: &Wanted) -> Result<Running, String> {
@@ -201,6 +246,7 @@ impl Proxies {
             .ok_or("the proxy has no standard error")?;
         let is_serving = Arc::new(AtomicBool::new(false));
         let said_serving = Arc::clone(&is_serving);
+        let project = engine.project.clone();
         std::thread::Builder::new()
             .name("engine-proxy-out".to_owned())
             .spawn(move || {
@@ -210,7 +256,10 @@ impl Proxies {
                             said_serving.store(true, Ordering::Release)
                         }
                         Ok(_) => {}
-                        Err(_) => return,
+                        Err(error) => {
+                            tracing::warn!(project, %error, "an engine proxy's output was not read");
+                            return;
+                        }
                     }
                 }
             })
@@ -272,13 +321,13 @@ pub(crate) async fn keep_forever(
     )));
     loop {
         match wanted(&database, &host).await {
-            Ok(wanted) => {
+            Ok((wanted, unrunnable)) => {
                 let reconciling = Arc::clone(&proxies);
                 let started = tokio::task::spawn_blocking(move || {
                     reconciling
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .reconcile(&wanted, Instant::now())
+                        .reconcile(&wanted, &unrunnable, Instant::now())
                 })
                 .await;
                 match started {
@@ -295,20 +344,21 @@ pub(crate) async fn keep_forever(
 }
 
 /// A proxy for each recorded engine whose user has an account, as the launchers' decisions
-/// name its relay.
+/// name its relay; the other recorded engines, with why none runs.
 async fn wanted(
     database: &Database,
     host: &crate::containers::Host,
-) -> Result<Vec<Wanted>, String> {
+) -> Result<(Vec<Wanted>, Vec<Unrunnable>), String> {
     let read = database.read().await.map_err(|error| error.to_string())?;
     let engines = cockpit_containers::recorded_engines(&read)
         .await
         .map_err(|error| format!("the recorded engines could not be read: {error}"))?;
     if engines.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let passwd = crate::containers::read_passwd().await?;
     let mut wanted = Vec::new();
+    let mut unrunnable = Vec::new();
     for engine in engines {
         match crate::containers::engine_relay(&read, host, &passwd, &engine.project).await {
             Ok(Some(relay)) => wanted.push(Wanted {
@@ -316,13 +366,19 @@ async fn wanted(
                 relay_socket: relay.socket,
                 engine_uid: relay.uid,
             }),
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(project = engine.project, %error, "a recorded engine's relay was not found");
-            }
+            Ok(None) => unrunnable.push(Unrunnable {
+                project: engine.project,
+                reason: "the engine recorded is not the project's engine user's, or that user \
+                         has no account"
+                    .to_owned(),
+            }),
+            Err(error) => unrunnable.push(Unrunnable {
+                project: engine.project,
+                reason: format!("the engine's relay was not found: {error}"),
+            }),
         }
     }
-    Ok(wanted)
+    Ok((wanted, unrunnable))
 }
 
 #[cfg(test)]
@@ -350,7 +406,7 @@ mod tests {
         fn until(&mut self, wanted: &[Wanted], is_done: impl Fn(&Fixture) -> bool) {
             let started = Instant::now();
             loop {
-                self.proxies.reconcile(wanted, Instant::now());
+                self.proxies.reconcile(wanted, &[], Instant::now());
                 if is_done(self) {
                     return;
                 }
@@ -407,6 +463,9 @@ mod tests {
     /// Says it serves, then holds until its pipe closes, as `engine-proxy` does.
     const SERVES: &str =
         "echo serving\ncat >/dev/null\necho ended >> \"$(dirname \"$0\")/log\"\nexit 125";
+
+    /// As [`SERVES`], and takes a while to let go of the listener once its pipe closes.
+    const SLOW_TO_END: &str = "echo serving\ncat >/dev/null\nsleep 0.3\necho ended >> \"$(dirname \"$0\")/log\"\nexit 125";
 
     const REFUSED: &str = "echo 'torlek-sandbox: the engine'\\''s relay answered: refused: this relay serves no egress' >&2\nexit 125";
 
@@ -467,6 +526,49 @@ mod tests {
     }
 
     #[test]
+    fn a_recorded_engine_no_proxy_can_run_for_is_down_with_why() {
+        let mut fixture = fixture(SERVES);
+        let unrunnable = Unrunnable {
+            project: "app".to_owned(),
+            reason: "no account is named torlek-e3".to_owned(),
+        };
+
+        let is_started = fixture
+            .proxies
+            .reconcile(&[], &[unrunnable], Instant::now());
+
+        assert!(!is_started);
+        assert_eq!(
+            fixture.states.state("app"),
+            Some(EngineEgress::Down {
+                reason: "no account is named torlek-e3".to_owned()
+            })
+        );
+        assert!(fixture.log().is_empty(), "{:?}", fixture.log());
+    }
+
+    /// The old proxy holds the engine's listener until it exits: the new one would be refused.
+    #[test]
+    fn a_changed_engines_new_proxy_starts_only_once_the_old_one_ended() {
+        let mut fixture = fixture(SLOW_TO_END);
+        fixture.until(&[app()], |fixture| {
+            fixture.states.state("app") == Some(EngineEgress::Serving)
+        });
+        let moved = Wanted {
+            engine_uid: 992,
+            ..app()
+        };
+
+        fixture.until(std::slice::from_ref(&moved), |fixture| {
+            fixture.log().len() == 3
+        });
+
+        let log = fixture.log();
+        assert_eq!(log[1], "ended", "{log:?}");
+        assert!(log[2].contains(" 992 app "), "{log:?}");
+    }
+
+    #[test]
     fn an_ended_proxy_starts_again_only_after_the_restart_delay() {
         let mut fixture = fixture(REFUSED);
         fixture.until(&[app()], |fixture| {
@@ -474,10 +576,12 @@ mod tests {
         });
         let ended_at = Instant::now();
 
-        let is_started_early = fixture.proxies.reconcile(&[app()], ended_at);
-        let is_started_late = fixture
-            .proxies
-            .reconcile(&[app()], ended_at + RESTART_DELAY + Duration::from_secs(1));
+        let is_started_early = fixture.proxies.reconcile(&[app()], &[], ended_at);
+        let is_started_late = fixture.proxies.reconcile(
+            &[app()],
+            &[],
+            ended_at + RESTART_DELAY + Duration::from_secs(1),
+        );
 
         assert!(!is_started_early);
         assert!(is_started_late);

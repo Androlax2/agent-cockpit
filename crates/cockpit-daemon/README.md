@@ -248,11 +248,14 @@ not share code.
   recorded engine whose user has an account, comparing the record with what runs every 2 s.
   Each proxy takes the listener its engine's relay hands it and serves the engine's pulls and
   containers from the owner's side. It runs with its own folder beside the sessions' mount
-  sources (`engine-<project>`, owner only, its last proxy's requests and counters removed),
+  sources (`engine-<project>`, owner only, its last proxy's requests, counters and decisions
+  removed, so it allows nothing until the daemon writes the decisions as they stand),
   and with a pipe from the daemon as its standard input: a daemon that stops, even killed,
   closes the pipe, the proxy ends and the engine's egress port closes, so pulls and
   containers fail closed. An engine no longer recorded has its proxy ended; one that ends is
-  started again after 10 s.
+  started again after 10 s, and a changed engine's once its last proxy ended. A recorded
+  engine no proxy can run for (its user has no account) is down with why; a proxy that
+  keeps failing the same way is logged once.
 - What a proxy refuses is a network request of the project's containers (`network.rs`): the
   owner allows it always, a project grant, or denies it, and the daemon writes the
   project's grants to the proxy's folder. Readiness shows `container egress` for a verified

@@ -322,7 +322,9 @@ impl Sandbox {
 
     /// Makes `project`'s engine proxy's folder (#390 part 6c), owner-only, before the daemon
     /// starts that proxy on it: the last proxy's refused hosts and counters are removed, so
-    /// the daemon files only this one's. None when the daemon read no host paths.
+    /// the daemon files only this one's, and its decisions too, so the new proxy allows
+    /// nothing until the daemon writes them as they stand. None when the daemon read no host
+    /// paths.
     pub fn prepare_engine_proxy_folder(&self, project: &str) -> Result<Option<PathBuf>, String> {
         let Some(host) = self.host.as_ref() else {
             return Ok(None);
@@ -335,7 +337,11 @@ impl Sandbox {
         std::os::unix::fs::DirBuilderExt::mode(folders.recursive(true), 0o700)
             .create(&folder)
             .map_err(failed)?;
-        for stale in [crate::REQUESTS_FILE, crate::EGRESS_FILE] {
+        for stale in [
+            crate::REQUESTS_FILE,
+            crate::EGRESS_FILE,
+            crate::DECISIONS_FILE,
+        ] {
             match std::fs::remove_file(folder.join(stale)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

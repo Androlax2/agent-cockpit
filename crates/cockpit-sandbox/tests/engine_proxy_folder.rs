@@ -54,9 +54,11 @@ fn an_engines_proxy_folder_is_made_for_the_owner_alone() {
     assert_eq!(mode & 0o777, 0o700);
 }
 
-/// A restarted proxy asks afresh: what the last one refused is filed already.
+/// A restarted proxy asks afresh: what the last one refused is filed already. It starts
+/// allowing nothing until the daemon writes the owner's decisions as they stand: a grant
+/// revoked while no daemon ran passes nothing.
 #[test]
-fn a_prepared_folder_holds_no_request_or_counters_of_the_last_proxy() {
+fn a_prepared_folder_holds_no_request_decision_or_counters_of_the_last_proxy() {
     let mounts = tempfile::tempdir().unwrap();
     let sandbox = sandbox_in(mounts.path());
     let folder = sandbox.prepare_engine_proxy_folder("app").unwrap().unwrap();
@@ -66,11 +68,15 @@ fn a_prepared_folder_holds_no_request_or_counters_of_the_last_proxy() {
     )
     .unwrap();
     std::fs::write(folder.join(cockpit_sandbox::EGRESS_FILE), b"{}").unwrap();
+    sandbox
+        .write_engine_egress_decisions("app", &EgressDecisions::default())
+        .unwrap();
 
     sandbox.prepare_engine_proxy_folder("app").unwrap();
 
     assert_eq!(sandbox.engine_egress_requests("app"), Ok(None));
     assert!(!folder.join(cockpit_sandbox::EGRESS_FILE).exists());
+    assert!(!folder.join(cockpit_sandbox::DECISIONS_FILE).exists());
 }
 
 #[test]

@@ -337,9 +337,8 @@ fn docker(docker: &Result<DockerEngine, String>, platform: &Platform) -> Require
     )
 }
 
-/// The project's own engine under `agents.sandbox = "required"` (#390, #856's table). A
-/// verified engine is available once Torlek's masks helper is installed: a session reaches
-/// it only after the helper shows it the session's checkout masked.
+/// A verified engine's way out (#390 part 6c): the daemon's proxy for it, whose pulls and
+/// containers reach nothing while it does not serve.
 fn container_egress(egress: &EngineEgress) -> Requirement {
     match egress {
         EngineEgress::Serving => Requirement::available(
@@ -366,6 +365,9 @@ fn container_egress(egress: &EngineEgress) -> Requirement {
     }
 }
 
+/// The project's own engine under `agents.sandbox = "required"` (#390, #856's table). A
+/// verified engine is available once Torlek's masks helper is installed: a session reaches
+/// it only after the helper shows it the session's checkout masked.
 fn project_engine(engine: &Result<ProjectEngine, String>) -> Requirement {
     let engine = match engine {
         Ok(engine) => engine,
