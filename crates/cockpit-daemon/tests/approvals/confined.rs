@@ -400,7 +400,7 @@ fn a_confined_run_cannot_see_the_owners_cloud_and_package_credentials() {
         panic!("confined runs are required");
     };
 
-    for secret in [
+    for place in [
         ".aws",
         ".netrc",
         ".git-credentials",
@@ -416,7 +416,7 @@ fn a_confined_run_cannot_see_the_owners_cloud_and_package_credentials() {
         ".claude/.credentials.json",
         ".codex/auth.json",
     ] {
-        let path = PathBuf::from("/home/owner").join(secret);
-        assert!(hidden.contains(&path), "{secret}: {hidden:?}");
+        let path = PathBuf::from("/home/owner").join(place);
+        assert!(hidden.contains(&path), "{place}: {hidden:?}");
     }
 }
