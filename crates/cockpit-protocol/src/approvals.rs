@@ -98,7 +98,9 @@ pub struct RunRequestView {
     /// the owner's views of an asking request; `None` when it was not or could not be read.
     #[serde(default)]
     pub changed_build_files: Option<Vec<String>>,
-    /// SHA-256 of this revision's directory and command; an approval names it.
+    /// SHA-256 of this revision's directory and command; an approval names it. In the
+    /// owner's views of a request whose sudo runs files its session can edit (`root_runs`),
+    /// bound to those files as the view read them: an approval names what it was shown.
     pub digest: String,
     /// Seconds since 1970.
     pub asked_at: i64,
@@ -123,6 +125,11 @@ pub struct RunRequestView {
     /// output and was redacted (#1386). Its result counts them once it finished.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub typed_secret_redacted: u64,
+    /// What this revision's sudo runs that the asking session can change (#1383), recorded
+    /// before the owner read it. In the owner's views only; `None` there when the revision
+    /// was not checked (a start request, or one filed before the check).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_runs: Option<RootRunsView>,
     pub result: Option<RunResultView>,
     /// Why the request ended without a result, or what is known about it.
     pub note: Option<String>,
@@ -142,6 +149,76 @@ pub struct SudoAskView {
     pub ask: u64,
     /// sudo's prompt as a terminal would show it, redacted, under the display rules.
     pub prompt: ShownText,
+}
+
+/// What a run request's sudo runs that the asking session can change (#1383). It warns; the
+/// owner decides. A run whose recorded file no longer has its hash is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootRunsView {
+    /// Files sudo runs that the session can change, in the order the command names them.
+    pub editable: Vec<RootFileView>,
+    /// Part of what runs as root cannot be resolved from the command line (an expansion,
+    /// `eval`, code read from a pipe): never shown as clean.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cannot_tell: bool,
+}
+
+/// One file sudo runs that the asking session can change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootFileView {
+    /// Absolute.
+    pub path: String,
+    /// As the owner reads it: from the request's directory when inside it (`./x.sh`), under
+    /// the display rules.
+    pub shown_path: ShownText,
+    /// SHA-256 when recorded; `None` when the file did not exist, which the session could
+    /// still create.
+    pub sha256: Option<String>,
+    /// What the file holds now, read for the owner's views of an asking request; `None`
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<FileNowView>,
+}
+
+impl RootFileView {
+    /// The file no longer has the hash recorded: approving it refuses the run.
+    pub fn changed_since_asked(&self) -> bool {
+        self.now
+            .as_ref()
+            .is_some_and(|now| now.unreadable || now.sha256 != self.sha256)
+    }
+}
+
+/// A file as it is now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileNowView {
+    /// `None` when the file is not there.
+    pub sha256: Option<String>,
+    /// Its first 200 lines under the display rules; `None` when absent or not UTF-8 text.
+    pub head: Option<ShownText>,
+    /// Lines after `head`.
+    pub more_lines: u64,
+    /// It could not be read (not a regular file, no permission, too slow): neither `sha256`
+    /// nor `head` say anything, and the run will be refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unreadable: bool,
+}
+
+/// The card's line for a request whose sudo runs `first` and `more` other files the asking
+/// session can change (#1383): the same words in the pane and `approval show`.
+pub fn editable_as_root_warning(first: &str, more: usize) -> String {
+    match more {
+        0 => format!("runs {first}, which this session can edit, as root"),
+        _ => format!("runs {first} and {more} more, which this session can edit, as root"),
+    }
+}
+
+/// The card's line for a request whose root part cannot be resolved from its command line.
+pub const CANNOT_TELL_AS_ROOT: &str = "can't tell what runs as root";
+
+/// The card's line for a file sudo runs that changed after it was recorded.
+pub fn changed_since_asked_warning(path: &str) -> String {
+    format!("{path} changed since it was asked: approving it refuses the run")
 }
 
 /// One decided run request as `approval list --all` reads it (#1252): what it was, how long

@@ -178,6 +178,7 @@ fn finished_run() -> RunRequestView {
         sudo_ask: None,
         sudo_ran_unasked: 0,
         typed_secret_redacted: 0,
+        root_runs: None,
         decision: None,
         result: Some(RunResultView {
             exit_code: 2,

@@ -25,6 +25,7 @@ use crate::rows::{
     AskState, EXPIRES_AFTER_SECONDS, Project, invalid_row, next_id, not_found, project_from,
     refreshed_expiry, session_from, state_at, still_asking, stored_row,
 };
+use crate::sudo_editable::RootRuns;
 use crate::{Error, Refusal};
 
 /// An approval is refused this long after the request was asked or last edited (#156,
@@ -43,7 +44,7 @@ const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, p
         output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant,
         kind, start_prompt, start_clone, start_agent, start_model, start_effort, decided_at,
         decided_through, output_retired_at, stopped_by_owner_at, sudo_ran_unasked,
-        typed_secret_redacted";
+        typed_secret_redacted, root_runs";
 const START_PROMPT_MAX_CHARS: usize = 4000;
 const START_KIND: &str = "start-session";
 
@@ -160,6 +161,9 @@ pub struct RunRequest {
     pub start: Option<StartSession>,
     /// The owner's decision (#657); `None` until the request leaves `asking`.
     pub decision: Option<RunDecision>,
+    /// What this revision's sudo runs that the asking session can change (#1383), recorded
+    /// with [`record_root_runs`]; `None` until then, and for a start request.
+    pub root_runs: Option<RootRuns>,
 }
 
 /// The owner's decision on a request: only the owner decides, so what it records is whether,
@@ -298,11 +302,7 @@ pub fn action_digest(cwd: &Path, command: &str) -> String {
         hasher.update((part.len() as u64).to_be_bytes());
         hasher.update(part);
     }
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::sudo_editable::hex(&hasher.finalize())
 }
 
 /// The directory a command would run in, resolved now: symbolic links followed, so the
@@ -881,9 +881,39 @@ pub async fn edit_run(
     validate_command("command", &command)?;
     stored_run(
         write,
-        "UPDATE approvals_runs SET command = ?2, revision = revision + 1, revised_at = ?3
+        "UPDATE approvals_runs SET command = ?2, revision = revision + 1, revised_at = ?3,
+                root_runs = NULL
              WHERE id = ?1",
         (id.0, command.as_str(), now),
+        now,
+    )
+    .await
+}
+
+/// Records what `revision` of the command request `id` runs as root that its asking session
+/// can change (#1383), while it asks: the daemon checks each revision before the owner reads
+/// it, in the transaction that filed or edited it.
+pub async fn record_root_runs(
+    write: &WriteTransaction<'_>,
+    id: RunId,
+    revision: i64,
+    runs: &RootRuns,
+    now: i64,
+) -> Result<RunRequest, Error> {
+    let run = undecided(write, id, now).await?;
+    if run.revision != revision {
+        return Err(Refusal::StaleRevision {
+            current: run.revision,
+        }
+        .into());
+    }
+    if run.start.is_some() {
+        return Err(invalid("request", "is a start request, which runs no command").into());
+    }
+    stored_run(
+        write,
+        "UPDATE approvals_runs SET root_runs = ?2 WHERE id = ?1",
+        (id.0, crate::sudo_editable::encode(runs)),
         now,
     )
     .await
@@ -1357,6 +1387,13 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
         asking_grant: row.get(19)?,
         start: start_from(row, 20)?,
         decision: decision_from(row, stored, 26)?,
+        root_runs: match row.get::<Option<String>>(32)? {
+            Some(text) => Some(
+                crate::sudo_editable::decode(&text)
+                    .ok_or_else(|| invalid_row(TABLE, format!("root runs {text:?}")))?,
+            ),
+            None => None,
+        },
     })
 }
 

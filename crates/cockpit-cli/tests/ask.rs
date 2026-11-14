@@ -11,11 +11,11 @@ use std::process::{Output, Stdio};
 mod scripted;
 
 use cockpit_protocol::{
-    Command, DecidedRunView, DecidedThroughView, ErrorCode, FoldedView, GuideStateView,
-    GuideStepView, GuideView, HiddenView, NetworkDecisionView, NetworkGrantView,
+    Command, DecidedRunView, DecidedThroughView, ErrorCode, FileNowView, FoldedView,
+    GuideStateView, GuideStepView, GuideView, HiddenView, NetworkDecisionView, NetworkGrantView,
     NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, NetworkTargetView, Outcome,
-    ProtocolError, Reply, RunDecisionView, RunRequestView, RunResultView, RunStateView, SecretText,
-    ShownText, SudoAskView, Unblock, UnblockedBy,
+    ProtocolError, Reply, RootFileView, RootRunsView, RunDecisionView, RunRequestView,
+    RunResultView, RunStateView, SecretText, ShownText, SudoAskView, Unblock, UnblockedBy,
 };
 use scripted::{scripted_conversation, text};
 
@@ -139,6 +139,7 @@ fn request(state: RunStateView) -> RunRequestView {
         sudo_ask: None,
         sudo_ran_unasked: 0,
         typed_secret_redacted: 0,
+        root_runs: None,
         decision: None,
         result: None,
         note: None,
@@ -689,6 +690,71 @@ async fn the_owner_is_warned_of_the_changed_build_files_a_command_runs() {
         shown.contains(
             "! runs files changed in this checkout, not on the default branch: Makefile, build.rs"
         ),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn the_owner_reads_each_editable_file_sudo_runs_as_it_is_now() {
+    let shown = shown_to_owner(RunRequestView {
+        root_runs: Some(RootRunsView {
+            editable: vec![
+                RootFileView {
+                    path: "/p/x.sh".to_owned(),
+                    shown_path: shown("./x.sh"),
+                    sha256: Some("a".repeat(64)),
+                    now: Some(FileNowView {
+                        sha256: Some("b".repeat(64)),
+                        head: Some(shown("#!/bin/sh\necho hi")),
+                        more_lines: 3,
+                        unreadable: false,
+                    }),
+                },
+                RootFileView {
+                    path: "/p/later.sh".to_owned(),
+                    shown_path: shown("./later.sh"),
+                    sha256: None,
+                    now: Some(FileNowView {
+                        sha256: None,
+                        head: None,
+                        more_lines: 0,
+                        unreadable: false,
+                    }),
+                },
+            ],
+            cannot_tell: false,
+        }),
+        ..request(RunStateView::Asking)
+    })
+    .await;
+
+    let expected = format!(
+        "  ! runs ./x.sh, which this session can edit, as root\n\
+         \x20 ! ./x.sh changed since it was asked: approving it refuses the run\n\
+         \x20   sha256 {}\n\
+         \x20   | #!/bin/sh\n\
+         \x20   | echo hi\n\
+         \x20   ... 3 more lines\n\
+         \x20 ! runs ./later.sh, which this session can edit, as root\n\
+         \x20   sha256 none: the file is not there\n",
+        "b".repeat(64)
+    );
+    assert!(shown.contains(&expected), "{shown}");
+}
+
+#[tokio::test]
+async fn the_owner_is_told_when_what_sudo_runs_cannot_be_told() {
+    let shown = shown_to_owner(RunRequestView {
+        root_runs: Some(RootRunsView {
+            editable: Vec::new(),
+            cannot_tell: true,
+        }),
+        ..request(RunStateView::Asking)
+    })
+    .await;
+
+    assert!(
+        shown.contains("  ! can't tell what runs as root\n"),
         "{shown}"
     );
 }

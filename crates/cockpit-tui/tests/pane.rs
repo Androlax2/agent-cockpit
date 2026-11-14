@@ -7,8 +7,8 @@ mod common;
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
-    Command, DecidedThroughView, GuideView, HiddenView, ManagerPaneView, Reply, RunRequestView,
-    SecretText, SudoAskView,
+    Command, DecidedThroughView, FileNowView, GuideView, HiddenView, ManagerPaneView, Reply,
+    RootFileView, RootRunsView, RunRequestView, SecretText, ShownText, SudoAskView,
 };
 use cockpit_tui::{App, Focus, INPUT_GRACE, Key, Shown};
 use common::{
@@ -413,6 +413,123 @@ fn the_pane_shows_every_warning_from_the_wire_and_folds_the_command_behind_more(
     }
     assert!(!expanded_screen.contains("… more"), "{expanded_screen}");
     assert!(expanded_screen.contains("lines"), "{expanded_screen}");
+}
+
+const SCRIPT_HASH: &str = "5f1c0bd1e3a1f8a24f70e0a95f6f3e0d2d6b3c1e9a4f8b7c6d5e4f3a2b1c0d9e";
+
+fn root_file(shown_path: &str, now_hash: &str) -> RootFileView {
+    RootFileView {
+        path: format!("/clone/{shown_path}"),
+        shown_path: shown(shown_path),
+        sha256: Some(SCRIPT_HASH.to_owned()),
+        now: Some(FileNowView {
+            sha256: Some(now_hash.to_owned()),
+            head: Some(shown("#!/bin/sh\necho setup")),
+            more_lines: 340,
+            unreadable: false,
+        }),
+    }
+}
+
+/// A request whose sudo runs `files`, shown after the grace.
+fn app_running_as_root(files: Vec<RootFileView>, cannot_tell: bool, now: Instant) -> App {
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+    let mut asked = run(3, SESSION, "sudo -A -k ./x.sh");
+    asked.root_runs = Some(RootRunsView {
+        editable: files,
+        cannot_tell,
+    });
+    shown_with_keys(&mut app, vec![asked], Vec::new(), now);
+    app
+}
+
+/// The rows of the screen at 80 columns that hold `text`, borders and padding gone.
+fn rows_holding(app: &App, now: Instant, text: &str) -> Vec<String> {
+    screen(app, now, 80)
+        .into_iter()
+        .map(|row| row.replace('│', " ").trim().to_owned())
+        .filter(|row| row.contains(text))
+        .collect()
+}
+
+#[test]
+fn a_script_the_session_can_edit_run_as_root_is_named_on_one_line_before_the_keys() {
+    let now = Instant::now();
+    let app = app_running_as_root(vec![root_file("x.sh", SCRIPT_HASH)], false, now);
+    let screen = screen(&app, after_grace(now), 80);
+
+    let warning = screen
+        .iter()
+        .position(|row| row.contains("Warning: runs x.sh, which this session can edit, as root"))
+        .unwrap_or_else(|| panic!("{}", screen.join("\n")));
+    let keys = screen
+        .iter()
+        .position(|row| row.contains("y approve   x decline   m more"))
+        .unwrap();
+    assert!(warning < keys, "{}", screen.join("\n"));
+    assert!(
+        !screen.join("\n").contains("echo setup"),
+        "m shows the contents"
+    );
+}
+
+#[test]
+fn a_long_path_and_a_count_fit_the_card_line_in_80_columns() {
+    let now = Instant::now();
+    let long = "deeply/nested/folders/of/the/clone/that/go/on/for/a/while/setup.sh";
+    let app = app_running_as_root(
+        vec![root_file(long, SCRIPT_HASH), root_file("x.sh", SCRIPT_HASH)],
+        false,
+        now,
+    );
+
+    let rows = rows_holding(
+        &app,
+        after_grace(now),
+        "which this session can edit, as root",
+    );
+
+    assert_eq!(
+        rows.len(),
+        1,
+        "{rows:?}\n{}",
+        screen(&app, after_grace(now), 80).join("\n")
+    );
+    assert!(rows[0].starts_with("Warning: runs …"), "{rows:?}");
+    assert!(rows[0].contains("setup.sh and 1 more,"), "{rows:?}");
+    assert!(rows[0].chars().count() <= 78, "{rows:?}");
+}
+
+#[test]
+fn what_cannot_be_told_shows_as_such() {
+    let now = Instant::now();
+    let app = app_running_as_root(Vec::new(), true, now);
+
+    assert_eq!(
+        rows_holding(&app, after_grace(now), "can't tell"),
+        ["Warning: can't tell what runs as root"]
+    );
+}
+
+#[test]
+fn m_shows_the_file_s_first_lines_and_hash_and_a_change_is_warned_of() {
+    let now = Instant::now();
+    let changed_hash = "0".repeat(64);
+    let mut app = app_running_as_root(vec![root_file("x.sh", &changed_hash)], false, now);
+
+    app.key(Key::Char('m'), after_grace(now));
+    let expanded = screen_text(&app, after_grace(now));
+
+    for expected in [
+        "Warning: x.sh changed since it was asked: approving it refuses the run",
+        "Runs as root: x.sh",
+        &format!("sha256 {changed_hash}"),
+        "| #!/bin/sh",
+        "| echo setup",
+        "… 340 more lines",
+    ] {
+        assert!(expanded.contains(expected), "{expected:?} in\n{expanded}");
+    }
 }
 
 #[test]
@@ -1126,4 +1243,22 @@ fn a_refusal_arriving_after_a_new_line_was_started_keeps_the_new_line() {
 
     assert_eq!(app.pane().typing().map(|(_, typed)| typed), Some("next"));
     assert_eq!(app.pane().input_refusal(), None);
+}
+
+#[test]
+fn hidden_characters_in_a_file_sudo_runs_are_warned_of_on_the_card() {
+    let now = Instant::now();
+    let mut file = root_file("x.sh", SCRIPT_HASH);
+    file.now.as_mut().unwrap().head = Some(ShownText {
+        text: "echo ok # \\u{202e}".to_owned(),
+        has_hidden_characters: true,
+        non_ascii: Vec::new(),
+        warnings: vec![HiddenView::BidiControl],
+    });
+    let app = app_running_as_root(vec![file], false, now);
+
+    assert_eq!(
+        rows_holding(&app, after_grace(now), "in what runs as root"),
+        ["Warning: in what runs as root: direction controls escaped"]
+    );
 }

@@ -121,6 +121,16 @@ Once Torlek has checked the helper's program and output, the helper closes itsel
 The checks come first because they read the helper's program and open files, which the closing then hides: a process running as you could attach to the helper in the moment between its start and its closing, and leave again before the check, unseen.
 The limit: after sudo accepts the password, the approved command runs as root, so approve only commands whose content you trust with `sudo`.
 
+When a command's `sudo` would run, as root, a file the asking session can edit, the request warns "runs ./x.sh, which this session can edit, as root" (#1383): in the pane, in `torlek approval show ID` and on the phone.
+That covers the program sudo runs, a script handed to a shell or interpreter (`sudo bash x.sh`, `sudo sh -c './x.sh'`, `sudo python3 x.py`, a heredoc or `< x.sh` fed to a shell), a makefile or justfile `sudo make` or `sudo just` reads, a link to a system program, and a file not created yet that the session could create.
+A sandboxed session can edit what its sandbox binds read-write; an unsandboxed one, anything whose folders are not root's alone.
+Press `m` on the request to read each file's SHA-256 and first 200 lines as they are now; a file that changed since the agent asked is named.
+Your approval names each file as your view of the request read it: if one changed between that read and the approval, the approval is refused and you read the request again.
+A file that changed since the agent asked refuses the run, "./x.sh changed since it was asked", and so does one that changed between your approval and the run, "./x.sh changed after you approved"; the agent must ask again.
+A command line Torlek cannot resolve (`sudo $CMD`, `sudo "$(which foo)"`, `curl … | sudo sh`, `sudo -s`, `xargs sudo`, `pushd`, a glob, `python3 -m`), or a file it cannot read as a regular file in 10 seconds, is marked "can't tell what runs as root".
+Neither blocks the request: the flag warns, you decide.
+The limits: words resolve through the daemon's `PATH`, not sudo's `secure_path`; a program the session puts earlier on that `PATH` later is not watched; files a script runs or sources in turn are not followed; and a file changed between the last hash and the moment it runs is not caught.
+
 A script in the command can still call `/usr/bin/sudo` by its path, without `-k`, and reuse an unlock an earlier `sudo` in the same command left (about 5 minutes), or hand sudo a password itself (its own askpass, `-S`); Torlek cannot prevent that, so it reports it.
 While a command runs, Torlek watches its processes for `/usr/bin/sudo`, every 10 ms. A sudo that ended having asked you nothing through Torlek's helper marks the command "sudo ran without asking you": in the pane while the command waits for you, in `torlek approval show ID`, in the stored request, and in the answer the agent reads.
 That includes a sudo that asked nothing because it needed nothing (`sudo -V`, a sudoers rule without a password, a `sudo -n` that was refused), a sudo still running when the command ends, and another program named `sudo` that runs as root, so the mark means "look at what this command did", not proof of a reused unlock.

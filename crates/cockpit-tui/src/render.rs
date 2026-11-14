@@ -5,9 +5,10 @@
 use std::time::Instant;
 
 use cockpit_protocol::{
-    CompactionStatus, GuideView, HiddenView, NetworkRequestView, NetworkSubjectView,
-    NetworkTargetView, RunRequestView, SessionReport, SessionStateView, SessionView, ShownText,
-    sudo_ran_unasked_warning, typed_secret_redacted_notice,
+    CANNOT_TELL_AS_ROOT, CompactionStatus, GuideView, HiddenView, NetworkRequestView,
+    NetworkSubjectView, NetworkTargetView, RootRunsView, RunRequestView, SessionReport,
+    SessionStateView, SessionView, ShownText, changed_since_asked_warning,
+    editable_as_root_warning, sudo_ran_unasked_warning, typed_secret_redacted_notice,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -817,7 +818,97 @@ pub(crate) fn run_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> 
             files.join(", ")
         ));
     }
+    if let Some(root_runs) = &run.root_runs {
+        lines.extend(root_runs_lines(root_runs, is_expanded));
+    }
     lines
+}
+
+/// The width the card's warnings about what runs as root keep to, a long path shortened:
+/// the pane's inside on an 80-column terminal, its borders taking two.
+const ROOT_LINE_COLUMNS: usize = 78;
+const WARNING: &str = "Warning: ";
+
+/// What a request's sudo runs that the asking session can change (#1383), last before the
+/// keys; expanded, each file's hash and first lines.
+fn root_runs_lines(root_runs: &RootRunsView, is_expanded: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(first) = root_runs.editable.first() {
+        let more = root_runs.editable.len() - 1;
+        let room = ROOT_LINE_COLUMNS
+            .saturating_sub(WARNING.len() + editable_as_root_warning("", more).chars().count());
+        lines.push(format!(
+            "{WARNING}{}",
+            editable_as_root_warning(&shortened(&first.shown_path.text, room), more)
+        ));
+    }
+    for file in root_runs
+        .editable
+        .iter()
+        .filter(|file| file.changed_since_asked())
+    {
+        let room = ROOT_LINE_COLUMNS
+            .saturating_sub(WARNING.len() + changed_since_asked_warning("").chars().count());
+        lines.push(format!(
+            "{WARNING}{}",
+            changed_since_asked_warning(&shortened(&file.shown_path.text, room))
+        ));
+    }
+    if root_runs.cannot_tell {
+        lines.push(format!("{WARNING}{CANNOT_TELL_AS_ROOT}"));
+    }
+    let shown: Vec<&ShownText> = root_runs
+        .editable
+        .iter()
+        .flat_map(|file| {
+            let head = file.now.as_ref().and_then(|now| now.head.as_ref());
+            std::iter::once(&file.shown_path).chain(head)
+        })
+        .collect();
+    let hidden = warnings(&shown);
+    if !hidden.is_empty() {
+        lines.push(format!("{WARNING}in what runs as root: {hidden}"));
+    }
+    if !is_expanded {
+        return lines;
+    }
+    for file in &root_runs.editable {
+        lines.push(format!("Runs as root: {}", file.shown_path.text));
+        let Some(now) = &file.now else {
+            lines.push(format!("  sha256 {}", hash_text(file.sha256.as_deref())));
+            continue;
+        };
+        if now.unreadable {
+            lines.push("  sha256 unknown: it cannot be read now".to_owned());
+            continue;
+        }
+        lines.push(format!("  sha256 {}", hash_text(now.sha256.as_deref())));
+        match (&now.head, &now.sha256) {
+            (Some(head), _) => {
+                lines.extend(head.text.lines().map(|line| format!("  | {line}")));
+                if now.more_lines > 0 {
+                    lines.push(format!("  … {} more lines", now.more_lines));
+                }
+            }
+            (None, Some(_)) => lines.push("  (not text)".to_owned()),
+            (None, None) => {}
+        }
+    }
+    lines
+}
+
+fn hash_text(sha256: Option<&str>) -> &str {
+    sha256.unwrap_or("none: the file is not there")
+}
+
+/// `path` within `room` characters: its end kept, an ellipsis for what was cut.
+fn shortened(path: &str, room: usize) -> String {
+    let count = path.chars().count();
+    if count <= room {
+        return path.to_owned();
+    }
+    let kept: String = path.chars().skip(count - room.saturating_sub(1)).collect();
+    format!("…{kept}")
 }
 
 /// Every warning the display rules raised, each kind once, and the non-ASCII characters.

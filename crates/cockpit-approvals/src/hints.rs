@@ -120,7 +120,7 @@ fn names_file(word: &str, changed: &str) -> bool {
 }
 
 /// The program a word names: its last path component (`/usr/bin/make` is `make`).
-fn program_name(word: &str) -> &str {
+pub(crate) fn program_name(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
 

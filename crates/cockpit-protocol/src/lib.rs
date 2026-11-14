@@ -31,9 +31,11 @@ pub use agent::{
     QuestionSource, SessionReport, TurnOutcome,
 };
 pub use approvals::{
-    DecidedRunView, DecidedThroughView, FoldedView, GuideStateView, GuideStepView, GuideView,
-    HiddenView, RunDecisionView, RunRequestView, RunResultView, RunStateView, ShownText,
-    SudoAskView, sudo_ran_unasked_warning, typed_secret_redacted_notice,
+    CANNOT_TELL_AS_ROOT, DecidedRunView, DecidedThroughView, FileNowView, FoldedView,
+    GuideStateView, GuideStepView, GuideView, HiddenView, RootFileView, RootRunsView,
+    RunDecisionView, RunRequestView, RunResultView, RunStateView, ShownText, SudoAskView,
+    changed_since_asked_warning, editable_as_root_warning, sudo_ran_unasked_warning,
+    typed_secret_redacted_notice,
 };
 pub use bug_reports::{
     BugBundleView, BugFiledView, BugIssueView, BugKindView, BugOriginView, BugReportView,
