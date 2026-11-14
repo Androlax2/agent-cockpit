@@ -341,3 +341,17 @@ fn only_a_container_ports_record_names_one() {
         assert_eq!(Forward::container_port_of(record), None, "{record}");
     }
 }
+
+/// #390: a project's containers run in its engine; a spec naming them is a daemon bug.
+#[test]
+fn a_spec_for_a_projects_containers_is_refused() {
+    let mut containers = spec(Vec::new());
+    containers.subject = Subject::Containers {
+        project: "app".to_owned(),
+    };
+
+    assert_eq!(
+        refusal(&containers),
+        "a project's containers run in its engine, never in a sandbox launch"
+    );
+}

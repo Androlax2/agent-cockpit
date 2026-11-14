@@ -154,3 +154,19 @@ fn ask_service_names_the_service_and_the_reason() {
         json!({"kind": "ask-service", "service": "figcraft", "reason": "read the design file"})
     );
 }
+
+/// #390: a project's containers ask through its engine's proxy; the wire names the project.
+#[test]
+fn a_containers_request_names_its_project_as_the_subject() {
+    let containers = NetworkSubjectView::Containers {
+        project: "app".to_owned(),
+    };
+
+    let wire = serde_json::to_value(&containers).unwrap();
+
+    assert_eq!(wire, json!({"kind": "containers", "project": "app"}));
+    assert_eq!(
+        serde_json::from_value::<NetworkSubjectView>(wire).unwrap(),
+        containers
+    );
+}

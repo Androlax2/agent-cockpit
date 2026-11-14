@@ -597,6 +597,24 @@ fn a_check_runs_refused_host_is_a_hold_naming_the_check_and_the_host() {
     assert_eq!(told[0].detail.as_deref(), Some("unknown.example.com:443"));
 }
 
+/// #390: a project's containers wait on no session either.
+#[test]
+fn a_containers_refused_host_is_a_hold_naming_the_projects_containers() {
+    let mut notifier = running();
+    let request = NetworkRequestView {
+        subject: NetworkSubjectView::Containers {
+            project: "app".to_owned(),
+        },
+        ..network_request(7, WORKER)
+    };
+
+    let told = set_network(&mut notifier, vec![request]);
+
+    assert_eq!(events(&told), [Event::Hold]);
+    assert_eq!(told[0].name, "containers of app");
+    assert_eq!(told[0].detail.as_deref(), Some("unknown.example.com:443"));
+}
+
 #[test]
 fn a_closed_service_is_a_hold_naming_its_record() {
     let mut notifier = running();

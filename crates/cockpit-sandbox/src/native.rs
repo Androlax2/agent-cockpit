@@ -1022,6 +1022,7 @@ fn program_name(subject: &Subject, profile: &Profile) -> String {
     match subject {
         Subject::Session { .. } => profile.provider.clone().unwrap_or_default(),
         Subject::Check { check, .. } => format!("check {check}"),
+        Subject::Containers { project } => format!("containers of project {project}"),
     }
 }
 
@@ -1036,6 +1037,7 @@ fn subject(subject: &Subject, profile: &Profile) -> String {
             "subject: check run {run} of check {check}; no provider, agent socket, launch token \
              or session identity"
         ),
+        Subject::Containers { project } => format!("subject: containers of project {project}"),
     }
 }
 
@@ -1073,6 +1075,7 @@ fn evidence(
             match spec.subject {
                 Subject::Session { .. } => "the session's own folder, kept across its relaunches,",
                 Subject::Check { .. } => "the run's own folder",
+                Subject::Containers { .. } => "the containers' folder",
             },
             spec.home_source.display()
         ),
@@ -1229,6 +1232,10 @@ fn evidence(
         Subject::Check { run, .. } => {
             (&format!("check-{run}"), format!("subject: check run {run}"))
         }
+        Subject::Containers { project } => (
+            &format!("containers-{project}"),
+            format!("subject: containers of project {project}"),
+        ),
     };
     Evidence {
         enforcement: Enforcement::Sandboxed {

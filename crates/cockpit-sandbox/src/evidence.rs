@@ -74,6 +74,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 7,
             sql: crate::network::CHECK_SUBJECTS_MIGRATION_SQL,
         },
+        // #390: a project engine's proxy files its containers' network requests (#856 Q4).
+        Migration {
+            version: 8,
+            sql: crate::network::CONTAINERS_SUBJECTS_MIGRATION_SQL,
+        },
     ],
 };
 

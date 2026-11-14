@@ -1044,3 +1044,186 @@ async fn requests_made_before_check_subjects_stay_their_sessions() {
     assert_eq!(decided.subject, session("s1"));
     assert_eq!(decided.state, NetworkRequestState::Asking);
 }
+
+fn containers(project: &str) -> Subject {
+    Subject::Containers {
+        project: project.to_owned(),
+    }
+}
+
+/// #390 (#856, the note on #674): a project engine's proxy files a refused host naming the
+/// project's containers.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_containers_refused_destination_is_filed_naming_the_projects_containers() {
+    let store = store().await;
+
+    let request = store.file_for(&containers("app"), "app").await;
+
+    let read = store.database.read().await.unwrap();
+    let asking = cockpit_sandbox::asking_network_requests(&read)
+        .await
+        .unwrap();
+    assert_eq!(asking.len(), 1);
+    assert_eq!(asking[0].id, request.unwrap());
+    assert_eq!(asking[0].subject, containers("app"));
+    assert_eq!(asking[0].project, "app");
+}
+
+/// #390: the engine outlives sessions, so "once" would last until a reboot with no grant to
+/// revoke.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_containers_request_is_not_allowed_once() {
+    let store = store().await;
+    let request = store.file_for(&containers("app"), "app").await.unwrap();
+
+    let allowed = store.allow(request, false, DECIDED_AT).await;
+
+    assert!(
+        matches!(
+            allowed,
+            Err(NetworkError::Refused(NetworkRefusal::OnceForContainers))
+        ),
+        "{allowed:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_containers_ask_once_per_host_while_a_request_stands() {
+    let store = store().await;
+    store.file_for(&containers("app"), "app").await;
+
+    let again = store.file_for(&containers("app"), "app").await;
+    let other_project = store.file_for(&containers("web"), "web").await;
+
+    assert_eq!(again, None);
+    assert!(other_project.is_some());
+}
+
+/// #390 Q4 A: the containers get the project's "allow always" grants, the same a session's
+/// request creates.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_containers_allow_always_grants_the_project_its_sessions_included() {
+    let store = store().await;
+    let request = store.file_for(&containers("app"), "app").await.unwrap();
+
+    store.allow(request, true, DECIDED_AT).await.unwrap();
+
+    let read = store.database.read().await.unwrap();
+    let grant = cockpit_sandbox::network_request(&read, request)
+        .await
+        .unwrap()
+        .grant
+        .expect("allow always made a grant");
+    let granted = vec![entry(AllowSource::Grant {
+        grant: grant.to_string(),
+    })];
+    let for_containers = cockpit_sandbox::egress_decisions(&read, "app", &containers("app"))
+        .await
+        .unwrap();
+    drop(read);
+    assert_eq!(for_containers.allowed, granted);
+    assert_eq!(store.decisions("s1", "app").await.allowed, granted);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_containers_request_reaches_the_engines_proxy_and_no_session() {
+    let store = store().await;
+    let request = store.file_for(&containers("app"), "app").await.unwrap();
+
+    store.deny(request).await;
+
+    let read = store.database.read().await.unwrap();
+    let for_containers = cockpit_sandbox::egress_decisions(&read, "app", &containers("app"))
+        .await
+        .unwrap();
+    drop(read);
+    assert_eq!(
+        for_containers.denied,
+        vec![DeniedDestination {
+            host: "unknown.example.com".to_owned(),
+            port: 443,
+            request,
+        }]
+    );
+    assert_eq!(store.decisions("s1", "app").await.denied, vec![]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_projects_containers_ask_ahead_for_no_service() {
+    let store = store().await;
+    let write = store.database.write().await.unwrap();
+
+    let asked = cockpit_sandbox::ask_service(
+        &write,
+        &containers("app"),
+        "app",
+        &figcraft_port(),
+        "needs it",
+        ASKED_AT,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            asked,
+            Err(NetworkError::Refused(NetworkRefusal::NotASession))
+        ),
+        "{asked:?}"
+    );
+}
+
+/// #390: the store holds no containers request allowed once, whatever writes it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_store_refuses_a_containers_request_allowed_once() {
+    let store = store().await;
+    let request = store.file_for(&containers("app"), "app").await.unwrap();
+    let write = store.database.write().await.unwrap();
+
+    let once = write
+        .execute(
+            "UPDATE sandbox_network_requests SET state = 'allowed-once', decided_at = ?2
+             WHERE id = ?1",
+            (request, DECIDED_AT),
+        )
+        .await;
+
+    assert!(once.is_err(), "{once:?}");
+}
+
+/// #390: the migration that lets a project's containers ask keeps the sessions' and check
+/// runs' requests as they were.
+#[tokio::test(flavor = "multi_thread")]
+async fn requests_made_before_containers_subjects_keep_their_subjects() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let earlier = cockpit_turso::MigrationSet {
+        owner: MIGRATIONS.owner,
+        migrations: &MIGRATIONS.migrations[..7],
+    };
+    let database = Database::open(&path, &[earlier]).await.unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO sandbox_network_requests
+                (id, subject_kind, subject, subject_check, project, kind, host, port, state,
+                 asked_at)
+             VALUES (1, 'session', 's1', NULL, 'app', 'host', 'unknown.example.com', 443,
+                'asking', ?1),
+                (2, 'check', 'execution-1', 'test', 'app', 'host', 'unknown.example.com', 443,
+                'asking', ?1)",
+            [ASKED_AT],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(database);
+
+    let database = Database::open(&path, &[MIGRATIONS]).await.unwrap();
+
+    let read = database.read().await.unwrap();
+    let session_request = cockpit_sandbox::network_request(&read, 1).await.unwrap();
+    let check_request = cockpit_sandbox::network_request(&read, 2).await.unwrap();
+    assert_eq!(session_request.subject, session("s1"));
+    assert_eq!(check_request.subject, check_run("execution-1"));
+    assert_eq!(check_request.state, NetworkRequestState::Asking);
+}

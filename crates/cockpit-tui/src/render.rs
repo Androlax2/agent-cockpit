@@ -715,6 +715,9 @@ pub(crate) fn network_lines(request: &NetworkRequestView) -> Vec<String> {
             project, until `torlek network revoke`; run the check again. Deny: its next runs \
             are refused it too."
             .to_owned(),
+        NetworkSubjectView::Containers { .. } => "Allow always: the project's containers and \
+            sessions, until `torlek network revoke`. Deny: its containers stay refused it."
+            .to_owned(),
     });
     lines
 }

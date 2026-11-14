@@ -60,7 +60,7 @@ impl From<NetworkError> for Failed {
                 ErrorCode::Refused,
                 format!("read the request, then allow it again in {wait_seconds} s"),
             ),
-            NetworkRefusal::OnceForACheck => (
+            NetworkRefusal::OnceForACheck | NetworkRefusal::OnceForContainers => (
                 ErrorCode::Refused,
                 "allow it always (`--always`, a in the TUI) or deny it".to_owned(),
             ),
@@ -95,8 +95,9 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
                         .filter(|request| match &request.subject {
                             Subject::Session { session } => live.contains_key(session),
                             // A run ends long before the owner reads its request, which
-                            // stands for its check's next runs (#352).
-                            Subject::Check { .. } => true,
+                            // stands for its check's next runs (#352); a project's containers
+                            // keep asking while its engine runs (#390).
+                            Subject::Check { .. } | Subject::Containers { .. } => true,
                         })
                         .map(request_view)
                         .collect(),
@@ -519,12 +520,13 @@ pub(crate) async fn file_listed(
             );
         }
     }
-    if matches!(subject, Subject::Check { .. }) {
-        // A check run is given no forward, so its launcher has no service to close.
+    if matches!(subject, Subject::Check { .. } | Subject::Containers { .. }) {
+        // A check run and an engine's proxy are given no forward, so neither has a service to
+        // close.
         if !requests.services.is_empty() {
             tracing::warn!(
                 ?subject,
-                "a check run's requests file lists services; ignored"
+                "a requests file without forwards lists services; ignored"
             );
         }
         return Ok(is_filed);
@@ -555,6 +557,10 @@ fn requests_of(sandbox: &Sandbox, subject: &Subject) -> Result<Option<EgressRequ
     match subject {
         Subject::Session { session } => sandbox.egress_requests(session),
         Subject::Check { run, .. } => sandbox.check_egress_requests(run),
+        // TODO(#390 part 6c): read the engine proxy's folder once the daemon runs one.
+        Subject::Containers { project } => Err(format!(
+            "the daemon runs no proxy for the containers of {project} yet"
+        )),
     }
 }
 
@@ -579,6 +585,10 @@ async fn write_decisions(
             let written = match &subject {
                 Subject::Session { session } => writing.write_egress_decisions(session, &decisions),
                 Subject::Check { run, .. } => writing.write_check_egress_decisions(run, &decisions),
+                // TODO(#390 part 6c): write the engine proxy's folder once the daemon runs one.
+                Subject::Containers { project } => Err(format!(
+                    "the daemon runs no proxy for the containers of {project} yet"
+                )),
             };
             if let Err(error) = written {
                 tracing::warn!(?subject, %error, "the owner's network decisions were not written");
@@ -749,6 +759,9 @@ fn subject_view(subject: &Subject) -> NetworkSubjectView {
         Subject::Check { run, check } => NetworkSubjectView::Check {
             run: run.clone(),
             check: check.clone(),
+        },
+        Subject::Containers { project } => NetworkSubjectView::Containers {
+            project: project.clone(),
         },
     }
 }

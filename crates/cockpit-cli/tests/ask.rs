@@ -1492,6 +1492,34 @@ async fn the_network_list_names_a_check_runs_request_by_its_check_and_run() {
     assert_eq!(daemon.await.unwrap(), [Command::NetworkDecided]);
 }
 
+/// #390: a project's containers ask through its engine's proxy, which no session runs.
+#[tokio::test]
+async fn the_network_list_names_a_containers_request_by_its_project() {
+    let home = Home::new();
+    let request = NetworkRequestView {
+        subject: NetworkSubjectView::Containers {
+            project: "app".to_owned(),
+        },
+        ..decided_network_request(6, NetworkRequestStateView::Denied)
+    };
+    let daemon = scripted_conversation(
+        &home.owner_socket(),
+        vec![Outcome::Ok(Reply::NetworkRequests {
+            requests: vec![request],
+        })],
+    );
+
+    let output = home
+        .cockpit_as_owner(&["network", "list", "--all"], "")
+        .await;
+
+    assert_eq!(
+        text(&output.stdout),
+        "network\t6\tdenied\tcontainers of app\tapp\tcrates.io:443\t45s\n"
+    );
+    assert_eq!(daemon.await.unwrap(), [Command::NetworkDecided]);
+}
+
 #[tokio::test]
 async fn the_decided_network_list_shows_host_decision_and_wait() {
     let home = Home::new();
