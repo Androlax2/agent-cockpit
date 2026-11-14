@@ -289,6 +289,9 @@ pub enum AllowSource {
     /// The owner's "allow once" of a network request (#674): the host stays allowed for the
     /// rest of the session that asked.
     Request { request: i64 },
+    /// A host the card of approved run `run` named (#1387): the owner approved it with the
+    /// command, for that run alone.
+    Card { run: i64 },
 }
 
 impl fmt::Display for AllowSource {
@@ -305,6 +308,7 @@ impl fmt::Display for AllowSource {
                     "network request {request}, allowed for this session"
                 )
             }
+            AllowSource::Card { run } => write!(formatter, "approved run {run}'s card"),
         }
     }
 }
@@ -494,6 +498,64 @@ impl Allowlist {
                 && matches!(entry.target, Target::Address(granted) if canonical(granted) == address)
         })
     }
+}
+
+/// What approved run `run`'s egress proxy allows (#1387): the hosts its card names, nothing
+/// else.
+pub fn card_allowlist(run: i64, hosts: &[String]) -> Result<Allowlist, String> {
+    Ok(Allowlist {
+        program: format!("approved run {run}"),
+        entries: hosts
+            .iter()
+            .map(|host| card_entry(host, run))
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+/// The entry a host on approved run `run`'s card allows: `NAME`, `ADDRESS`, `[IPV6]`, each
+/// with `:PORT` or on [`TLS_PORT`]. A card names single destinations: no wildcard.
+pub fn card_entry(host: &str, run: i64) -> Result<AllowEntry, String> {
+    let refused = |why: &str| format!("{host:?} is no host: {why}");
+    let (name, port) = if let Some(bracketed) = host.strip_prefix('[') {
+        let (address, rest) = bracketed
+            .split_once(']')
+            .ok_or_else(|| refused("its `[` has no `]`"))?;
+        match rest {
+            "" => (address, None),
+            _ => (
+                address,
+                Some(
+                    rest.strip_prefix(':')
+                        .ok_or_else(|| refused("`]` is followed by no `:PORT`"))?,
+                ),
+            ),
+        }
+    } else if host.matches(':').count() == 1 {
+        let (name, port) = host.split_once(':').expect("counted one");
+        (name, Some(port))
+    } else {
+        (host, None)
+    };
+    let port = match port {
+        None => TLS_PORT,
+        Some(port) => port
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or_else(|| refused("its port is not 1 to 65535"))?,
+    };
+    let target = match name.parse::<IpAddr>() {
+        Ok(address) => Target::Address(address),
+        Err(_) => Target::Name(
+            normalized_name(name)
+                .ok_or_else(|| refused("name a DNS name or an IP address, without a wildcard"))?,
+        ),
+    };
+    Ok(AllowEntry {
+        target,
+        port,
+        source: AllowSource::Card { run },
+    })
 }
 
 /// `host:port`, an IPv6 address in brackets: how counters and refusals name a destination.
