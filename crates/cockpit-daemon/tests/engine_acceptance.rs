@@ -200,13 +200,36 @@ async fn egress_serves(home: &Home, root: &Path, user: &str) {
         }
         if Instant::now() >= deadline {
             panic!(
-                "the engine's egress never served: {printed}{}\n{}",
-                text(&report.stderr),
-                engine_state(user).await
+                "the engine's egress never served: {}",
+                egress_evidence(home, root, user).await
             );
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+/// Why the engine's pulls reach no proxy: doctor's line for the daemon's proxy, what the
+/// daemon logged about it, and root's view of the relay's port and socket.
+async fn egress_evidence(home: &Home, root: &Path, user: &str) -> String {
+    let report = owner(home, &["doctor", "--project", &root.display().to_string()]).await;
+    let doctor = text(&report.stdout);
+    let egress = doctor
+        .lines()
+        .skip_while(|line| !line.contains("  container egress: "))
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let daemon = home.stderr();
+    let proxy_lines = daemon
+        .lines()
+        .filter(|line| line.contains("engine"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "\ndoctor: {egress}\n{}\nthe daemon about engines:\n{proxy_lines}\n{}",
+        text(&report.stderr),
+        engine_state(user).await
+    )
 }
 
 /// What root sees of `user`'s engine: its units, their journal and its socket's folder, for
@@ -218,7 +241,14 @@ async fn engine_state(user: &str) -> String {
          journalctl --no-pager --lines 60 --unit torlek-engine@{user}.service \
          --unit torlek-engine-relay@{user}.service; \
          systemctl show --property Upholds torlek-engine@{user}.service; \
-         ls -la /run/{user}; getfacl --absolute-names /run/{user} /run/{user}/docker.sock"
+         ls -la /run/{user}; getfacl --absolute-names /run/{user} /run/{user}/docker.sock; \
+         for unit in torlek-engine@{user} torlek-engine-relay@{user}; do \
+           pid=$(systemctl show --property MainPID --value $unit.service); \
+           echo \"$unit: main pid $pid, network $(readlink /proc/$pid/ns/net)\"; \
+         done; \
+         relay=$(systemctl show --property MainPID --value torlek-engine-relay@{user}.service); \
+         echo 'TCP listeners in the relay network, then relay.sock connections:'; \
+         nsenter --net=/proc/$relay/ns/net ss -ltnp; ss -xp | grep relay.sock"
     );
     let mut command = std::process::Command::new("sudo");
     command.args(["-n", "sh", "-c", &script]);
@@ -230,7 +260,7 @@ async fn engine_state(user: &str) -> String {
 
 /// Pulls [`IMAGE`] in the agent; the engine's proxy starts within seconds of the record. A
 /// stalled pull is ended and tried again: the agent runs its lines one at a time.
-async fn pull(home: &Home, root: &Path) -> String {
+async fn pull(home: &Home, root: &Path, user: &str) -> String {
     let mut printed = String::new();
     for _ in 0..3 {
         printed = run_in_agent(
@@ -245,7 +275,10 @@ async fn pull(home: &Home, root: &Path) -> String {
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
-    panic!("the pull failed: {printed}; {}", home.stderr());
+    panic!(
+        "the pull failed: {printed}{}",
+        egress_evidence(home, root, user).await
+    );
 }
 
 /// The host's `/` bound into a container shows neither the owner's home nor Torlek's state.
@@ -475,7 +508,7 @@ async fn a_projects_engine_runs_its_sessions_containers_inside_the_sandboxs_boun
         "the launch reached no engine; {}",
         home.stderr()
     );
-    println!("{}", pull(&home, &root).await);
+    println!("{}", pull(&home, &root, &user).await);
 
     host_root_hides_the_owners_files(&home, &root).await;
     checkout_masks_hold(&home, &root).await;
