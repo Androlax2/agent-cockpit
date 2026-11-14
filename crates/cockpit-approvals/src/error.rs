@@ -51,6 +51,11 @@ pub enum Refusal {
     /// The approval came within the grace after the request appeared or changed: it may be a
     /// keystroke meant for something else (#156).
     TooSoon { wait_seconds: i64 },
+    /// The owner asked to approve the request always (#1387), but an "always" could not
+    /// narrow it to its exact command and files: `why`. Nothing was approved.
+    NotAlways { why: String },
+    /// The "always" approval was revoked already; it approves nothing more.
+    AlwaysRevoked,
 }
 
 /// Who can lift a refusal.
@@ -151,6 +156,16 @@ impl Refusal {
                 UnblockedBy::Owner,
                 format!("read the request, then approve it again in {wait_seconds} s"),
             ),
+            Refusal::NotAlways { .. } => (
+                UnblockedBy::Owner,
+                "approve it once instead (y in the TUI, `torlek approval approve` without \
+                 --always), or decline it"
+                    .to_owned(),
+            ),
+            Refusal::AlwaysRevoked => (
+                UnblockedBy::Owner,
+                "nothing to do: it approves nothing more".to_owned(),
+            ),
         }
     }
 }
@@ -229,6 +244,13 @@ impl fmt::Display for Refusal {
                 "the request appeared or changed just now; an approval counts {wait_seconds} s \
                  from now"
             ),
+            Refusal::NotAlways { why } => write!(
+                formatter,
+                "the request cannot be approved always: {why}; nothing was approved"
+            ),
+            Refusal::AlwaysRevoked => {
+                formatter.write_str("the always approval was revoked already")
+            }
         }
     }
 }

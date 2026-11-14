@@ -60,6 +60,10 @@ the wire. Report 14 treats this contract as stable from the first release.
    `FindingView`s, high first, each with its rule id, severity, reason, matching text and,
    in a script, file and line; `finding_line` and `NO_KNOWN_RISKY_PATTERN` are the clients'
    shared wording, and a severity this client does not know reads as `unknown`.
+   `approval-approve` with `always` (#1387) also approves the project's later asks of exactly
+   that request: `approval-always` lists them as `AlwaysApprovalView`s and
+   `approval-always-revoke` ends one; a request one approved carries its id in
+   `decision.always`.
    An approval within the daemon's grace after
    the request appeared or changed is refused with code `refused`. A decision may name the
    owner client it came `through` (`tui`, `cli`); a decided request's view carries it in

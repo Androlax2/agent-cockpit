@@ -3,6 +3,8 @@
 //! pseudo-terminal on the host, its output redacted. This test process plays the agent.
 #![cfg(target_os = "linux")]
 
+#[path = "approvals/always.rs"]
+mod always;
 mod candidate;
 mod common;
 #[path = "approvals/confined.rs"]
@@ -122,6 +124,7 @@ impl Asking {
                     revision: request.revision,
                     digest: request.digest.clone(),
                     through: None,
+                    always: false,
                 },
                 GENEROUS,
             )
@@ -622,6 +625,7 @@ async fn only_the_owner_decides_and_only_agents_ask() {
                     revision: request.revision,
                     digest: request.digest.clone(),
                     through: None,
+                    always: false,
                 },
                 GENEROUS,
             )

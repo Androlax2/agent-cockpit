@@ -11,9 +11,9 @@ use std::process::{Output, Stdio};
 mod scripted;
 
 use cockpit_protocol::{
-    Command, DecidedRunView, DecidedThroughView, ErrorCode, FileNowView, FindingSeverityView,
-    FindingView, FoldedView, GuideStateView, GuideStepView, GuideView, HiddenView,
-    NetworkDecisionView, NetworkGrantView, NetworkRequestStateView, NetworkRequestView,
+    AlwaysApprovalView, Command, DecidedRunView, DecidedThroughView, ErrorCode, FileNowView,
+    FindingSeverityView, FindingView, FoldedView, GuideStateView, GuideStepView, GuideView,
+    HiddenView, NetworkDecisionView, NetworkGrantView, NetworkRequestStateView, NetworkRequestView,
     NetworkSubjectView, NetworkTargetView, Outcome, ProtocolError, Reply, RootFileView,
     RootRunsView, RunDecisionView, RunRequestView, RunResultView, RunStateView, SecretText,
     ShownText, SudoAskView, Unblock, UnblockedBy,
@@ -412,6 +412,7 @@ async fn the_owner_approves_naming_the_revision_and_digest_read() {
             revision: 1,
             digest,
             through: Some(DecidedThroughView::Cli),
+            always: false,
         }]
     );
 }
@@ -631,6 +632,7 @@ async fn the_owner_reads_the_decision_that_let_a_request_run() {
             approved: true,
             at: 1_800_000_000,
             through: Some(DecidedThroughView::Tui),
+            always: None,
         }),
         ..request(RunStateView::Finished)
     })
@@ -651,6 +653,7 @@ async fn a_decline_from_a_client_that_did_not_name_itself_says_so() {
             approved: false,
             at: 1_800_000_000,
             through: None,
+            always: None,
         }),
         ..request(RunStateView::Declined)
     })
@@ -1511,6 +1514,7 @@ fn decided_run(id: i64, state: RunStateView, exit_code: Option<i32>) -> DecidedR
             approved: state != RunStateView::Declined,
             at: 112,
             through: Some(DecidedThroughView::Cli),
+            always: None,
         },
         exit_code,
     }
@@ -1820,6 +1824,181 @@ async fn the_owner_reads_what_a_run_may_do_before_approving() {
 
     assert!(
         shown.contains("limits:\n  writes only /p and a /tmp of its own\n  no network\n"),
+        "{shown}"
+    );
+}
+
+/// #1387: `--always` goes anywhere among the approval's options.
+#[tokio::test]
+async fn the_owner_approves_always_with_the_option_in_any_place() {
+    let digest = "d".repeat(64);
+    for options in [
+        ["--revision", "1", "--digest", digest.as_str(), "--always"],
+        ["--always", "--digest", digest.as_str(), "--revision", "1"],
+        ["--revision", "1", "--always", "--digest", digest.as_str()],
+    ] {
+        let home = Home::new();
+        let daemon = scripted_conversation(
+            &home.owner_socket(),
+            vec![run_reply(request(RunStateView::Approved))],
+        );
+        let arguments = [&["approval", "approve", "7"][..], &options[..]].concat();
+
+        let output = home.cockpit_as_owner(&arguments, "").await;
+
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert_eq!(
+            daemon.await.unwrap(),
+            [Command::ApprovalApprove {
+                request: 7,
+                revision: 1,
+                digest: digest.clone(),
+                through: Some(DecidedThroughView::Cli),
+                always: true,
+            }],
+            "{options:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_approval_without_its_digest_or_with_an_option_twice_is_a_usage_error() {
+    let digest = "d".repeat(64);
+    for options in [
+        vec!["--revision", "1", "--always"],
+        vec![
+            "--revision",
+            "1",
+            "--digest",
+            digest.as_str(),
+            "--always",
+            "--always",
+        ],
+        vec![
+            "--revision",
+            "1",
+            "--revision",
+            "2",
+            "--digest",
+            digest.as_str(),
+        ],
+    ] {
+        let home = Home::new();
+        let arguments = [&["approval", "approve", "7"][..], &options[..]].concat();
+
+        let output = home.cockpit_as_owner(&arguments, "").await;
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{options:?}: {}",
+            text(&output.stderr)
+        );
+    }
+}
+
+fn always_approval(revoked_at: Option<i64>) -> AlwaysApprovalView {
+    AlwaysApprovalView {
+        id: 4,
+        project: "app".to_owned(),
+        project_root: "/p".to_owned(),
+        command: "sh ./x.sh".to_owned(),
+        cwd: "/p".to_owned(),
+        shown_command: shown("sh ./x.sh"),
+        shown_cwd: shown("/p"),
+        writes: Vec::new(),
+        hosts: vec!["crates.io".to_owned()],
+        files: vec![RootFileView {
+            path: "/p/x.sh".to_owned(),
+            shown_path: shown("./x.sh"),
+            sha256: Some("a".repeat(64)),
+            now: None,
+        }],
+        request: 7,
+        granted_at: 1_800_000_000,
+        granted_through: Some(DecidedThroughView::Tui),
+        revoked_at,
+    }
+}
+
+#[tokio::test]
+async fn the_owner_lists_each_always_approval_with_its_files_and_how_to_revoke_it() {
+    let home = Home::new();
+    let daemon = scripted_conversation(
+        &home.owner_socket(),
+        vec![Outcome::Ok(Reply::ApprovalAlways {
+            approvals: vec![always_approval(None)],
+        })],
+    );
+
+    let output = home.cockpit_as_owner(&["approval", "always"], "").await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let shown = text(&output.stdout);
+    let expected = format!(
+        "always 4 (approves) for project app, from request 7, approved at 2027-01-15 08:00:00 \
+         +00:00\n\
+         command:\nsh ./x.sh\n\
+         directory: /p\n\
+         checkout: /p\n\
+         reaches: crates.io\n\
+         \x20 Pinned: ./x.sh\n\
+         \x20   sha256 {}\n\
+         revoke: torlek approval always revoke 4\n",
+        "a".repeat(64)
+    );
+    assert_eq!(shown, expected);
+    assert_eq!(daemon.await.unwrap(), [Command::ApprovalAlways]);
+}
+
+#[tokio::test]
+async fn the_owner_revokes_an_always_approval_naming_the_cli() {
+    let home = Home::new();
+    let daemon = scripted_conversation(
+        &home.owner_socket(),
+        vec![Outcome::Ok(Reply::AlwaysApproval {
+            approval: Box::new(always_approval(Some(1_800_000_060))),
+        })],
+    );
+
+    let output = home
+        .cockpit_as_owner(&["approval", "always", "revoke", "4"], "")
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let shown = text(&output.stdout);
+    assert!(
+        shown.starts_with("always 4 (revoked at 2027-01-15 08:01:00 +00:00)"),
+        "{shown}"
+    );
+    assert!(!shown.contains("revoke: "), "{shown}");
+    assert_eq!(
+        daemon.await.unwrap(),
+        [Command::ApprovalAlwaysRevoke {
+            always: 4,
+            through: Some(DecidedThroughView::Cli),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn the_owner_reads_that_an_always_approval_let_a_request_run() {
+    let shown = shown_to_owner(RunRequestView {
+        decision: Some(RunDecisionView {
+            approved: true,
+            at: 1_800_000_000,
+            through: None,
+            always: Some(4),
+        }),
+        ..request(RunStateView::Finished)
+    })
+    .await;
+
+    assert!(
+        shown.contains(
+            "decided: approved by always approval 4 at 2027-01-15 08:00:00 +00:00 \
+             (torlek approval always)\n"
+        ),
         "{shown}"
     );
 }

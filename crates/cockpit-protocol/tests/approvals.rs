@@ -90,6 +90,7 @@ fn each_owner_decision_has_its_kebab_case_kind() {
                 revision: 2,
                 digest: "d".to_owned(),
                 through: None,
+                always: false,
             },
         ),
         (

@@ -63,6 +63,7 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
                 revision: 0,
                 digest: String::new(),
                 through: None,
+                always: false,
             },
         ),
         (

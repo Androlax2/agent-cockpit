@@ -121,7 +121,10 @@ not share code.
   `cockpit_approvals::pinned_files`, beside the sudo check under its own 10 seconds; past
   them, or for a file it could not record, a `cannot-tell` finding): the owner's views read each pinned file and each file sudo runs once, bind the
   `digest` to all of them, and an approval or a run is refused the same way when one
-  changed.
+  changed. Once checked, an ask matching an always approval (#1387,
+  `cockpit_approvals::approve_by_always`) is approved in the same lane and run as an owner's
+  approval would be; `approval-approve` with `always` records one in the approval's
+  transaction, refused when a file changed since the ask.
 - An approval commits the run intent, then the run starts outside the lanes: a long command
   holds no control worker. It is a `cockpit-processes` terminal execution (#163) of the
   daemon's one supervisor: a pseudo-terminal under `torlek-daemon --run-leader`

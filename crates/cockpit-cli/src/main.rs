@@ -108,7 +108,8 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek ask service containers --port PORT --reason TEXT
        torlek approval list [--all [--since 2h|RFC3339]] | show ID | decline ID | input ID [--shown] < LINE
        torlek approval stop ID | purge-output ID | sudo-password ID ASK < PASSWORD
-       torlek approval approve ID --revision REVISION --digest DIGEST
+       torlek approval approve ID --revision REVISION --digest DIGEST [--always]
+       torlek approval always [revoke ID]
        torlek approval edit ID --revision REVISION COMMAND
        torlek guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID
        torlek account sign-in PROVIDER ACCOUNT | grant PROJECT PROVIDER ACCOUNT | grants [PROJECT] | revoke GRANT

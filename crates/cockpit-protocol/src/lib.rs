@@ -31,11 +31,11 @@ pub use agent::{
     QuestionSource, SessionReport, TurnOutcome,
 };
 pub use approvals::{
-    DecidedRunView, DecidedThroughView, FileNowView, FindingSeverityView, FindingView, FoldedView,
-    GuideStateView, GuideStepView, GuideView, HiddenView, NO_KNOWN_RISKY_PATTERN, RootFileView,
-    RootRunsView, RunDecisionView, RunRequestView, RunResultView, RunStateView, ShownText,
-    SudoAskView, changed_since_asked_warning, finding_line, sudo_ran_unasked_warning,
-    typed_secret_redacted_notice,
+    AlwaysApprovalView, DecidedRunView, DecidedThroughView, FileNowView, FindingSeverityView,
+    FindingView, FoldedView, GuideStateView, GuideStepView, GuideView, HiddenView,
+    NO_KNOWN_RISKY_PATTERN, RootFileView, RootRunsView, RunDecisionView, RunRequestView,
+    RunResultView, RunStateView, ShownText, SudoAskView, changed_since_asked_warning, finding_line,
+    sudo_ran_unasked_warning, typed_secret_redacted_notice,
 };
 pub use bug_reports::{
     BugBundleView, BugFiledView, BugIssueView, BugKindView, BugOriginView, BugReportView,

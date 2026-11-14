@@ -254,7 +254,11 @@ pub(super) async fn owner_view(run: &RunRequest) -> Option<OwnerView> {
             digest: run.digest(),
         });
     }
-    let paths: Vec<PathBuf> = bound_files(run).into_iter().map(|file| file.path).collect();
+    let paths: Vec<PathBuf> = run
+        .bound_files()
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
     let count = paths.len();
     let reads = bounded(move || {
         paths
@@ -301,19 +305,6 @@ pub(super) struct OwnerView {
     pub(super) digest: String,
 }
 
-/// The files an approval of `run` is bound to and its run is refused over: those it pins,
-/// then any file its sudo runs that they leave out (a program sudo finds on `PATH`, or a
-/// revision checked before pinning).
-fn bound_files(run: &RunRequest) -> Vec<RootFile> {
-    let mut files: Vec<RootFile> = run.pinned.clone().unwrap_or_default();
-    for file in run.root_runs.iter().flat_map(|runs| &runs.editable) {
-        if !files.iter().any(|bound| bound.path == file.path) {
-            files.push(file.clone());
-        }
-    }
-    files
-}
-
 fn contents_of(read: &Option<FileNow>) -> Contents {
     match read {
         Some(FileNow {
@@ -323,6 +314,11 @@ fn contents_of(read: &Option<FileNow>) -> Contents {
         Some(FileNow { sha256: None, .. }) => Contents::Absent,
         None => Contents::Unreadable,
     }
+}
+
+/// `file` as recorded, not read now: what an "always" approval (#1387) is bound to.
+pub(super) fn recorded_file_view(file: &RootFile, cwd: &Path) -> RootFileView {
+    file_view(file, cwd, None)
 }
 
 /// `read`: `None` when not read, `Some(None)` when it could not be.
@@ -359,7 +355,7 @@ pub(super) struct AsApproved {
 
 /// The files `run` is bound to, read for an approval; `None` when there are none.
 pub(super) async fn as_approved(run: &RunRequest) -> Option<AsApproved> {
-    let bound = bound_files(run);
+    let bound = run.bound_files();
     if bound.is_empty() {
         return None;
     }
@@ -385,7 +381,7 @@ pub(super) async fn as_approved(run: &RunRequest) -> Option<AsApproved> {
 
 /// Why an approved run must not start: a file it runs no longer has its recorded hash.
 pub(super) async fn changed_after_approval(run: &RunRequest) -> Option<String> {
-    let bound = bound_files(run);
+    let bound = run.bound_files();
     if bound.is_empty() {
         return None;
     }

@@ -5,7 +5,7 @@ use crate::harness::{Cockpit, ManagerPane};
 
 /// The pane's grace hint, as far as the list column shows it on one line.
 const GRACE_HINT: &str = "Read it first:";
-const RUN_KEYS: &str = "y approve   x decline   m more";
+const RUN_KEYS: &str = "y run   a always   x decline   m more";
 /// The command of the guide's section 4, with a token the run's output must not show.
 const HOST_COMMAND: &str = r#"!torlek ask run --reason "acceptance check" 'printf "hello from the host\nGITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n"'"#;
 

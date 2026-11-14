@@ -1519,6 +1519,7 @@ async fn approve(owner: &Connection, request: &RunRequestView) {
                     revision: request.revision,
                     digest: request.digest.clone(),
                     through: Some(DecidedThroughView::Tui),
+                    always: false,
                 },
                 GENEROUS,
             )

@@ -210,7 +210,7 @@ fn the_key_hint_line_fits_40_columns_uncut() {
     let rows = sized_screen(&app, after_grace(now), 40, 20);
 
     let hint = rows.last().unwrap();
-    assert_eq!(hint, "y approve   x decline   m more");
+    assert_eq!(hint, "y run   a always   x decline   m more");
     assert!(!hint.ends_with('…'));
 }
 
@@ -232,6 +232,7 @@ fn an_approval_through_the_phone_layout_sends_what_the_desktop_sends() {
             revision: 1,
             digest: "digest-3-1".to_owned(),
             through: Some(DecidedThroughView::Tui),
+            always: false,
         }]
     );
     assert_eq!(from_phone, from_desktop);
@@ -271,6 +272,32 @@ fn y_waits_until_the_end_of_a_card_taller_than_the_screen_is_on_screen() {
         matches!(
             approved.as_slice(),
             [Command::ApprovalApprove { request: 3, .. }]
+        ),
+        "{approved:?}"
+    );
+}
+
+/// #1387: an approval always waits for the card's end like `y`.
+#[test]
+fn a_waits_until_the_end_of_a_card_taller_than_the_screen_is_on_screen() {
+    let now = Instant::now();
+    let mut app = phone_app(40, 8, now);
+    asking(&mut app, vec![run(3, SESSION, LONG_COMMAND)], now);
+    let later = after_grace(now);
+
+    let unseen = sent(&press(&mut app, &[Key::Char('a')], later));
+    sent(&press(&mut app, &[Key::Char('j'); 20], later));
+    let approved = sent(&press(&mut app, &[Key::Char('a')], later));
+
+    assert_eq!(unseen, []);
+    assert!(
+        matches!(
+            approved.as_slice(),
+            [Command::ApprovalApprove {
+                request: 3,
+                always: true,
+                ..
+            }]
         ),
         "{approved:?}"
     );

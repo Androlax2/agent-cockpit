@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod always;
 mod display;
 mod egress;
 mod error;
@@ -22,6 +23,9 @@ mod typed_secret;
 
 use cockpit_turso::{Migration, MigrationSet};
 
+pub use always::{
+    AlwaysApproval, OwnerAct, always_approvals, approve_always, approve_by_always, revoke_always,
+};
 pub use display::{FOLD_CHARS, FOLD_LINES, Folded, Hidden, Shown, fold, is_outside_project, show};
 pub use egress::EgressProxy;
 pub use error::{Error, Refusal, UnblockedBy};
@@ -249,6 +253,34 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 16,
             sql: "ALTER TABLE approvals_runs ADD COLUMN pinned TEXT
                 CHECK (pinned IS NULL OR substr(pinned, 1, 2) = 'v1');",
+        },
+        // #1387: the owner's "always" approvals of a project's exact command line, each bound
+        // to its directory, card, checkout and files with their hashes (`always.rs`); one
+        // active per command line, directory, card and checkout. A request one approved names
+        // it; NULL for the owner's own decisions and earlier rows.
+        Migration {
+            version: 17,
+            sql: "CREATE TABLE approvals_always (
+                id INTEGER PRIMARY KEY,
+                project TEXT NOT NULL CHECK (project <> ''),
+                project_root TEXT NOT NULL CHECK (substr(project_root, 1, 1) = '/'),
+                cwd TEXT NOT NULL CHECK (substr(cwd, 1, 1) = '/'),
+                command TEXT NOT NULL CHECK (command <> ''),
+                card_writes TEXT CHECK (card_writes IS NULL OR length(card_writes) > 0),
+                card_hosts TEXT CHECK (card_hosts IS NULL OR length(card_hosts) > 0),
+                files TEXT NOT NULL CHECK (substr(files, 1, 2) = 'v1'),
+                digest TEXT NOT NULL CHECK (length(digest) = 64),
+                request INTEGER NOT NULL,
+                granted_at INTEGER NOT NULL,
+                granted_through TEXT CHECK (granted_through IN ('tui', 'cli')),
+                revoked_at INTEGER,
+                revoked_through TEXT CHECK (revoked_through IN ('tui', 'cli')),
+                CHECK (revoked_at IS NOT NULL OR revoked_through IS NULL)
+            );
+            CREATE UNIQUE INDEX approvals_always_one_active
+                ON approvals_always (project, project_root, digest) WHERE revoked_at IS NULL;
+            ALTER TABLE approvals_runs ADD COLUMN approved_always INTEGER
+                CHECK (approved_always IS NULL OR approved_digest IS NOT NULL);",
         },
     ],
 };

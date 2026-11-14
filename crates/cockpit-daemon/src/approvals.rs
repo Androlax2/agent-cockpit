@@ -11,15 +11,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cockpit_agent_channel::{PeerAncestry, ProcessError, ProcessIdentity};
 use cockpit_approvals::{
-    Approved, DecidedThrough, GuideId, GuideRequest, GuideState, Hidden, NoResult, Project,
-    Refusal, RunAsk, RunId, RunRequest, RunResult, RunSettings, RunState, Runner, Shown, Syntax,
+    AlwaysApproval, Approved, DecidedThrough, GuideId, GuideRequest, GuideState, Hidden, NoResult,
+    Project, Refusal, RunAsk, RunId, RunRequest, RunResult, RunSettings, RunState, Runner, Shown,
+    Syntax,
 };
 use cockpit_authorization::SessionId;
 use cockpit_processes::{ExecutionId, Termination};
 use cockpit_protocol::{
-    Command, DecidedRunView, DecidedThroughView, ErrorCode, FoldedView, GuideStateView,
-    GuideStepView, GuideView, HiddenView, Outcome, ProtocolError, Reply, RunDecisionView,
-    RunRequestView, RunResultView, RunStateView, ShownText, SudoAskView, Unblock, UnblockedBy,
+    AlwaysApprovalView, Command, DecidedRunView, DecidedThroughView, ErrorCode, FoldedView,
+    GuideStateView, GuideStepView, GuideView, HiddenView, Outcome, ProtocolError, Reply,
+    RunDecisionView, RunRequestView, RunResultView, RunStateView, ShownText, SudoAskView, Unblock,
+    UnblockedBy,
 };
 use cockpit_turso::sql::Connection;
 use cockpit_turso::{Database, WriteTransaction};
@@ -167,8 +169,9 @@ impl From<Refusal> for Failed {
             | Refusal::SecretUnprotected { .. }
             | Refusal::NotStoppable { .. }
             | Refusal::StopUnconfirmed { .. }
-            | Refusal::NoStoredOutput { .. } => ErrorCode::Conflict,
-            Refusal::TooSoon { .. } => ErrorCode::Refused,
+            | Refusal::NoStoredOutput { .. }
+            | Refusal::AlwaysRevoked => ErrorCode::Conflict,
+            Refusal::TooSoon { .. } | Refusal::NotAlways { .. } => ErrorCode::Refused,
         };
         let (by, action) = refused.unblock();
         Failed(ProtocolError {
@@ -403,7 +406,7 @@ impl Card {
     reason = "one ask's fields beside the daemon's parts; a struct for its single call site adds nothing"
 )]
 async fn ask_run(
-    database: &Database,
+    database: &Arc<Database>,
     runner: &Runner,
     sessions: &cockpit_sessions::Sessions,
     connector: Result<ProcessIdentity, ProcessError>,
@@ -428,16 +431,33 @@ async fn ask_run(
         reach,
     };
     let mut filed = cockpit_approvals::ask_run_unless_pending(&write, &session, ask, now()).await?;
+    let mut approved_always = None;
     if !filed.already_pending {
         filed.run = root_runs::record(&write, sessions, &filed.run).await?;
+        if let Some((approved, run)) =
+            cockpit_approvals::approve_by_always(&write, &filed.run, now()).await?
+        {
+            filed.run = run;
+            approved_always = Some(approved);
+        }
     }
     write.commit().await?;
     tracing::info!(
         request = filed.run.id.0,
         session = session.as_str(),
         already_pending = filed.already_pending,
+        always = filed.run.decision.and_then(|decision| decision.always),
         "an agent asked to run"
     );
+    if let Some(approved) = approved_always {
+        tokio::spawn(execute(
+            Arc::clone(database),
+            runner.clone(),
+            approved,
+            filed.run.clone(),
+            None,
+        ));
+    }
     let mut request = run_view(&filed.run, runner, &runner.waiting_for_input(), None);
     request.already_asked = filed.already_pending;
     Ok(Reply::RunRequest {
@@ -632,12 +652,38 @@ pub(crate) fn route_decision(
                 revision,
                 digest,
                 through,
+                always,
             } => {
-                let through = through.map(decided_through);
-                approve(
-                    database, runner, sessions, request, revision, &digest, through,
+                let decision = Decision {
+                    request,
+                    revision,
+                    digest,
+                    through: through.map(decided_through),
+                    always,
+                };
+                approve(database, runner, sessions, decision).await
+            }
+            Command::ApprovalAlways => {
+                let read = database.read().await?;
+                let approvals = cockpit_approvals::always_approvals(&read).await?;
+                Ok(Reply::ApprovalAlways {
+                    approvals: approvals.iter().map(always_view).collect(),
+                })
+            }
+            Command::ApprovalAlwaysRevoke { always, through } => {
+                let write = database.write().await?;
+                let revoked = cockpit_approvals::revoke_always(
+                    &write,
+                    always,
+                    through.map(decided_through),
+                    now(),
                 )
-                .await
+                .await?;
+                write.commit().await?;
+                tracing::info!(always, "the owner revoked an always approval");
+                Ok(Reply::AlwaysApproval {
+                    approval: Box::new(always_view(&revoked)),
+                })
             }
             Command::ApprovalDecline { request, through } => {
                 let write = database.write().await?;
@@ -822,18 +868,32 @@ fn through_view(through: DecidedThrough) -> DecidedThroughView {
     }
 }
 
+/// The owner's approval as `ApprovalApprove` names it.
+struct Decision {
+    request: i64,
+    revision: i64,
+    digest: String,
+    through: Option<DecidedThrough>,
+    always: bool,
+}
+
 /// Consumes the request with the run intent, then starts the run. The run is not the
 /// request's work: it outlives the reply, and a long command must not hold a control
-/// worker. A restart before it starts leaves it `not-run`, never repeated.
+/// worker. A restart before it starts leaves it `not-run`, never repeated. An `always`
+/// approval is made in the same transaction, or refuses the approval as a whole.
 async fn approve(
     database: Arc<Database>,
     runner: Runner,
     sessions: Arc<cockpit_sessions::Sessions>,
-    request: i64,
-    revision: i64,
-    digest: &str,
-    through: Option<DecidedThrough>,
+    decision: Decision,
 ) -> Answer {
+    let Decision {
+        request,
+        revision,
+        digest,
+        through,
+        always,
+    } = decision;
     // The files the request runs are read before the transaction, which a slow read
     // must not hold. An edit in between makes a new revision, which `approve_run` refuses.
     let read = database.read().await?;
@@ -846,8 +906,14 @@ async fn approve(
             }
             (asked.digest(), as_approved.changed)
         }
-        _ => (digest.to_owned(), None),
+        _ => (digest, None),
     };
+    if always && let Some(changed) = &changed_since_asked {
+        return Err(Refusal::NotAlways {
+            why: changed.clone(),
+        }
+        .into());
+    }
     let write = database.write().await?;
     // Approval creates a durable future execution before Runner reserves its process.
     // Serialize that intent with maintenance on the same writer, not an earlier read.
@@ -872,12 +938,21 @@ async fn approve(
         cockpit_approvals::approve_run(&write, through, RunId(request), revision, &digest, now())
             .await?;
     crate::coordination::record_decision(&write, &run).await?;
+    let made_always = match always {
+        true => Some(cockpit_approvals::approve_always(&write, &run, through, now()).await?),
+        false => None,
+    };
     // Statistics never stand between the owner and a run: a failure is logged, not returned.
     if let Err(Failed(error)) = record_granted_approval(&write, &run, request).await {
         tracing::warn!(request, error = %error.message, "the approval was not counted in the digest");
     }
     write.commit().await?;
-    tracing::info!(request, revision, "the owner approved a run");
+    tracing::info!(
+        request,
+        revision,
+        always = made_always.map(|approval| approval.id),
+        "the owner approved a run"
+    );
     let reply = run_reply(&run, &runner);
     if approved.start.is_some() {
         // A start request (#410) starts a session; it never runs as a command.
@@ -1278,11 +1353,7 @@ fn run_view(
         root_runs: None,
         pinned: None,
         findings: None,
-        decision: run.decision.map(|decision| RunDecisionView {
-            approved: decision.approved,
-            at: decision.at,
-            through: decision.through.map(through_view),
-        }),
+        decision: run.decision.map(decision_view),
         result: run.result.as_ref().map(|result| RunResultView {
             exit_code: result.exit_code,
             output: result.output.shown.clone(),
@@ -1316,13 +1387,47 @@ fn decided_run_view(run: &RunRequest) -> Result<DecidedRunView, Failed> {
         digest: run.digest(),
         shown_command: shown(&run.command),
         asked_at: run.asked_at,
-        decision: RunDecisionView {
-            approved: decision.approved,
-            at: decision.at,
-            through: decision.through.map(through_view),
-        },
+        decision: decision_view(decision),
         exit_code: run.result.as_ref().map(|result| result.exit_code),
     })
+}
+
+fn decision_view(decision: cockpit_approvals::RunDecision) -> RunDecisionView {
+    RunDecisionView {
+        approved: decision.approved,
+        at: decision.at,
+        through: decision.through.map(through_view),
+        always: decision.always,
+    }
+}
+
+fn always_view(approval: &AlwaysApproval) -> AlwaysApprovalView {
+    let cwd = crate::projects::text(&approval.cwd);
+    AlwaysApprovalView {
+        id: approval.id,
+        project: approval.project.name.clone(),
+        project_root: crate::projects::text(&approval.project.root),
+        command: approval.command.clone(),
+        shown_command: shown(&approval.command),
+        shown_cwd: shown(&cwd),
+        writes: approval
+            .reach
+            .writes
+            .iter()
+            .map(|write| crate::projects::text(write))
+            .collect(),
+        hosts: approval.reach.hosts.clone(),
+        files: approval
+            .files
+            .iter()
+            .map(|file| root_runs::recorded_file_view(file, &approval.cwd))
+            .collect(),
+        cwd,
+        request: approval.request.0,
+        granted_at: approval.granted.at,
+        granted_through: approval.granted.through.map(through_view),
+        revoked_at: approval.revoked.map(|revoked| revoked.at),
+    }
 }
 
 fn guide_view(guide: &GuideRequest) -> GuideView {

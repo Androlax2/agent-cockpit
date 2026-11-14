@@ -484,8 +484,9 @@ impl App {
         self.list_key(key)
     }
 
-    /// On the phone, the card the keys decide scrolls with `j` and `k`, and its keys (`y`, `x`,
-    /// `i` and `s`) wait until its end is on screen: nothing is decided on unseen text (#855).
+    /// On the phone, the card the keys decide scrolls with `j` and `k`, and its keys (`y`, `a`,
+    /// `x`, `i` and `s`) wait until its end is on screen: nothing is decided on unseen text
+    /// (#855).
     fn phone_card_key(&mut self, key: Key) -> Option<Step> {
         if !self.is_phone_view() || self.pane.typing().is_some() || self.pane.shown().is_none() {
             return None;
@@ -499,7 +500,7 @@ impl App {
                 self.phone_scroll = self.phone_scroll.saturating_sub(1);
                 Some(Step::used("phone-scroll"))
             }
-            Key::Char('y' | 'x' | 'i' | 's') if !self.is_phone_card_seen() => {
+            Key::Char('y' | 'a' | 'x' | 'i' | 's') if !self.is_phone_card_seen() => {
                 Some(Step::used("phone-read-to-the-end"))
             }
             _ => None,

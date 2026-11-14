@@ -115,6 +115,13 @@ pub fn pinning_incomplete(in_time: bool) -> Finding {
     })
 }
 
+/// Whether `finding` says part of what the command runs cannot be told, as root or not: an
+/// "always" approval (#1387) could not then bind every file it runs.
+pub(crate) fn says_cannot_tell(finding: &Finding) -> bool {
+    rule_where(|pattern| matches!(pattern, Pattern::CannotTell | Pattern::SudoCannotTell))
+        .any(|rule| rule.id == finding.rule)
+}
+
 fn cannot_tell_because(why: &str) -> Finding {
     let rule = rule_where(|pattern| matches!(pattern, Pattern::CannotTell))
         .next()

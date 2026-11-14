@@ -50,6 +50,9 @@ Workflows
   x                  cancel it (confirm with y);  Esc goes back
 Approval pane (Tab moves between the list and the pane)
   y                  approve the command shown / done with the guide step
+  a                  approve the command always: its project's later asks of exactly
+                     this command and these files run with no prompt
+                     (torlek approval always lists and revokes them)
   x                  decline the command / close the guide
   m                  show the whole command, or fold it again
   i                  type a line for a command waiting for input; Enter sends it
@@ -60,7 +63,7 @@ Approval pane (Tab moves between the list and the pane)
   Keys are ignored for a moment after a request appears or the pane takes focus.
 Phone layout (narrower than tui.phone_below_columns, 60 columns by default)
   Requests and questions come first, each whole; sessions one line each below
-  j / k              scroll a long request; y and x wait until its end shows
+  j / k              scroll a long request; y, a and x wait until its end shows
   Tab                between the request and the sessions
   Enter              open the selected session full screen, read-only
   i                  type into it: Enter sends the line; Esc, leaving it or
@@ -667,7 +670,7 @@ pub(crate) fn pane_keys(pane: &Pane) -> &'static str {
             waiting_for_input: true,
             ..
         }) => "i type a line   x stop it   m more",
-        Some(Shown::Run { .. }) => "y approve   x decline   m more",
+        Some(Shown::Run { .. }) => "y run   a always   x decline   m more",
         Some(Shown::Guide { asks: true, .. }) => "y answer   s stuck   x close",
         Some(Shown::Guide { .. }) => "y done   s stuck   x close",
         Some(Shown::Network {

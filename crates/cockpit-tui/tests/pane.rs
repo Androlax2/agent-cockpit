@@ -240,6 +240,29 @@ fn the_last_column_focus_answer_lets_y_approve_after_its_grace() {
     assert_eq!(approved.used, Some("approval-approve"));
 }
 
+/// #1387: `a` approves the revision and digest shown always.
+#[test]
+fn a_after_the_grace_approves_the_revision_and_digest_shown_always() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+
+    let early = app.key(Key::Char('a'), now);
+    let approved = app.key(Key::Char('a'), after_grace(now));
+
+    assert_eq!(early.used, Some("approval-ignored-in-grace"));
+    assert_eq!(approved.used, Some("approval-approve-always"));
+    assert_eq!(
+        approved.send,
+        [Command::ApprovalApprove {
+            request: 3,
+            revision: 1,
+            digest: "digest-3-1".to_owned(),
+            through: Some(DecidedThroughView::Tui),
+            always: true,
+        }]
+    );
+}
+
 #[test]
 fn y_after_the_grace_approves_the_revision_and_digest_shown() {
     let now = Instant::now();
@@ -254,6 +277,7 @@ fn y_after_the_grace_approves_the_revision_and_digest_shown() {
             revision: 1,
             digest: "digest-3-1".to_owned(),
             through: Some(DecidedThroughView::Tui),
+            always: false,
         }]
     );
 }
@@ -319,6 +343,7 @@ fn an_edited_revision_starts_the_grace_again_and_the_approval_names_it() {
             revision: 2,
             digest: "digest-3-2".to_owned(),
             through: Some(DecidedThroughView::Tui),
+            always: false,
         }]
     );
 }
@@ -405,7 +430,7 @@ fn the_pane_shows_every_warning_from_the_wire_and_folds_the_command_behind_more(
         "Warning: not syntax-checked: /usr/bin/nu has no known parse-only mode",
         "changed outside the default branch: Makefile",
         "[outside the project]",
-        "y approve   x decline   m more",
+        "y run   a always   x decline   m more",
     ] {
         assert!(
             folded_screen.contains(expected),
@@ -515,7 +540,7 @@ fn findings_show_one_line_each_within_80_columns_before_the_keys() {
             .unwrap_or_else(|| panic!("{text:?} in\n{}", screen.join("\n")))
     };
     assert!(row_of("High:") < row_of("Warn:"));
-    assert!(row_of("Warn:") < row_of("y approve   x decline   m more"));
+    assert!(row_of("Warn:") < row_of("y run   a always   x decline   m more"));
 }
 
 #[test]
