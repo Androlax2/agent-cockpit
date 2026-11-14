@@ -1141,6 +1141,15 @@ fn is_withheld_variable(name: &OsStr) -> bool {
         .any(|withheld| name == *withheld)
 }
 
+/// `items` as prose: `a`, `a and b`, `a, b and c`.
+fn listed(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [first @ .., last] => format!("{} and {last}", first.join(", ")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1193,14 +1202,5 @@ mod tests {
             // A cursor reset discards the previous frame, including its secret label.
             assert_eq!(prompt_line(line).as_deref(), Some("private-value ok? "));
         }
-    }
-}
-
-/// `items` as prose: `a`, `a and b`, `a, b and c`.
-fn listed(items: &[String]) -> String {
-    match items {
-        [] => String::new(),
-        [only] => only.clone(),
-        [first @ .., last] => format!("{} and {last}", first.join(", ")),
     }
 }

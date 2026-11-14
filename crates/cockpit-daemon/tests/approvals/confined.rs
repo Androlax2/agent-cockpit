@@ -75,7 +75,7 @@ async fn a_card_shows_the_owner_its_folders_resolved_its_hosts_and_the_runs_limi
     let request = run(ask_reaching(&asking, vec![link], vec!["example.com".to_owned()]).await);
 
     let resolved = named.canonicalize().unwrap().to_str().unwrap().to_owned();
-    assert_eq!(request.writes, [resolved.clone()]);
+    assert_eq!(request.writes, std::slice::from_ref(&resolved));
     assert_eq!(request.hosts, ["example.com"]);
     let limits: Vec<&str> = request
         .limits

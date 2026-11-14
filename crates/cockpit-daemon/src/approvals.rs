@@ -69,7 +69,7 @@ const HIDDEN_FROM_RUNS: &[&str] = &[
 ];
 
 /// What a confined run cannot see, or the owner's opt-out `off` (#1387). Hidden: the
-/// owner's secrets ([`HIDDEN_FROM_RUNS`]), the tokens in Torlek's configuration and the
+/// owner's secrets (`HIDDEN_FROM_RUNS`), the tokens in Torlek's configuration and the
 /// sessions' mount sources. Emptied: Torlek's state (its database, the sessions' homes and
 /// temporary folders) and the owner's runtime folder, with its sockets and buses, through
 /// which a run could start what is not confined. Reachable read-only: the daemon's sockets,
