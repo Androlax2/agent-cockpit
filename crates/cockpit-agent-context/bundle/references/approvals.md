@@ -15,6 +15,9 @@ exactly what you ask.
   Name what else it needs when you ask: `--write DIR` for each other folder it writes,
   `--host HOST` (`host` or `host:port`) for each host it reaches through the proxy. The owner
   approves them with the command. A limit the run hit is printed as `the run hit a limit`.
+- The scripts, makefiles and other code files your command runs are hashed when you ask.
+  Finish editing them first: one that changes before the run starts refuses it ("FILE
+  changed since it was asked" or "changed after you approved"), and you ask again.
 - `torlek ask guide [--cwd DIR] < GUIDE` hands the owner manual steps (a browser, a
   console) one at a time and returns their answers or the step they got stuck on.
   Prefer `ask run` whenever a command can do the step.

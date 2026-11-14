@@ -31,6 +31,11 @@ request here, so nothing is re-read from the sandbox.
    column `root_runs`; an owner edit clears it until checked again), shows each file as it is
    now (`file_now`), binds the owner's approval to those reads (`digest_as_read`) and
    refuses an approved run when `changed_file` names one. Only regular files are read.
+   `pinned_files` (#1387) reads the same for every command of the line, sudo or not, but
+   for a program found by searching `PATH`, and keeps each file the session can change with
+   its SHA-256 or as absent (column `pinned`, cleared by an owner edit), or `cannot_tell`
+   when one could not be recorded; the daemon binds the approval to those files and the files
+   sudo runs alike, and refuses the run when `changed_file` names one.
    `scan` (`src/rule_scan.rs`, #1388) reads the command line as shell (`src/shell.rs`:
    pipes, lists, subshells, substitutions, `-c` strings, redirections) and the shell scripts
    it runs or sources (at most 1 MiB each, not those found on `PATH`, not the scripts they
@@ -141,8 +146,8 @@ bound to its index), reports being stuck there (`report_stuck`) or closes the gu
 
 - `tests/display.rs`, `tests/redaction.rs`: the display and redaction rules.
 - `tests/hints.rs`: the `timeout` hint and the changed build files a command runs.
-- `tests/sudo_editable.rs`: what a command's sudo runs that the session can edit, against
-  real files, and the hashes that tell a change.
+- `tests/sudo_editable.rs`: what a command's sudo runs that the session can edit, the
+  files any command pins (#1387), against real files, and the hashes that tell a change.
 - `tests/rule_scan.rs`: each rule with its matches and near misses, what cannot be told,
   and the file and line of a match in a script.
 - `tests/runs.rs`: the run state machine on a real state database, report 04's

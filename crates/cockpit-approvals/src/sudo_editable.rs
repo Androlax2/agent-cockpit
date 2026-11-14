@@ -20,6 +20,10 @@
 //! interpreter's code names indirectly, are not followed; nor are commands sudo reaches as an
 //! argument of another program (`xargs sudo`, `find -exec sudo`), only reported as "can't
 //! tell". A command naming no `sudo` word is never parsed.
+//!
+//! [`pinned_files`] (#1387) reads every command of the line as this reads what sudo runs, so
+//! a run of `./build.sh` or `make` is bound to the files it runs as they were when the owner
+//! read the request, with the same limits.
 
 use std::ffi::OsStr;
 use std::io::{ErrorKind, Read as _};
@@ -115,11 +119,56 @@ pub fn root_runs(command: &str, lookup: Lookup<'_>, writes: &SessionWrites) -> R
         found: &mut found,
     }
     .script(command, lookup.cwd, Context::Owner, 0);
-    let mut runs = RootRuns {
-        editable: Vec::new(),
-        cannot_tell: found.cannot_tell,
-    };
-    for path in found.files {
+    let (editable, is_unrecorded) = editable_files(found.files, writes);
+    RootRuns {
+        editable,
+        cannot_tell: found.cannot_tell || is_unrecorded,
+    }
+}
+
+/// The files a command line pins (#1387).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pinned {
+    /// Files it runs that the session can change, hashed, in the order the command names
+    /// them.
+    pub files: Vec<RootFile>,
+    /// A file it runs that the session can change could not be recorded (not a regular file,
+    /// unreadable, a path with a line break): a change there would not refuse the run. What
+    /// the command line leaves unresolved is the rule scan's to report.
+    pub cannot_tell: bool,
+}
+
+/// The files any part of `command` runs as code that a session writing `writes` can change,
+/// hashed now, so a run is refused when one changed after the owner read it (#1387): what
+/// [`root_runs`] reads for sudo, read for every command of the line, except a program found
+/// by searching `PATH` (`cargo`, `node`), which the owner reads by name and which would be
+/// hashed again at every view of the request. Reads the filesystem.
+pub fn pinned_files(command: &str, lookup: Lookup<'_>, writes: &SessionWrites) -> Pinned {
+    let mut found = Found::default();
+    Walk {
+        lookup,
+        found: &mut found,
+    }
+    // Every command counts, as in a shell sudo started.
+    .script(command, lookup.cwd, Context::Root, 0);
+    let named: Vec<PathBuf> = found
+        .files
+        .into_iter()
+        .filter(|path| !found.searched.contains(path))
+        .collect();
+    let (files, is_unrecorded) = editable_files(named, writes);
+    Pinned {
+        files,
+        cannot_tell: is_unrecorded,
+    }
+}
+
+/// Those of `files` a session writing `writes` can change, each hashed now, and whether one
+/// of them could not be recorded.
+fn editable_files(files: Vec<PathBuf>, writes: &SessionWrites) -> (Vec<RootFile>, bool) {
+    let mut editable = Vec::new();
+    let mut is_unrecorded = false;
+    for path in files {
         // As named, by name with `..` taken back (a file not there yet has no other form),
         // and through its links.
         let resolved = std::fs::canonicalize(&path).ok();
@@ -132,15 +181,15 @@ pub fn root_runs(command: &str, lookup: Lookup<'_>, writes: &SessionWrites) -> R
             continue;
         }
         if path.to_str().is_none_or(|text| text.contains('\n')) {
-            runs.cannot_tell = true;
+            is_unrecorded = true;
             continue;
         }
         match file_sha256(&path) {
-            Ok(sha256) => runs.editable.push(RootFile { path, sha256 }),
-            Err(_) => runs.cannot_tell = true,
+            Ok(sha256) => editable.push(RootFile { path, sha256 }),
+            Err(_) => is_unrecorded = true,
         }
     }
-    runs
+    (editable, is_unrecorded)
 }
 
 /// The first recorded file whose contents are no longer what was recorded: changed, removed,
@@ -361,12 +410,7 @@ pub(crate) fn encode(runs: &RootRuns) -> String {
             "known"
         }
     );
-    for file in &runs.editable {
-        text.push('\n');
-        text.push_str(file.sha256.as_deref().unwrap_or(ABSENT));
-        text.push(' ');
-        text.push_str(&file.path.to_string_lossy());
-    }
+    push_files(&mut text, &runs.editable);
     text
 }
 
@@ -378,7 +422,40 @@ pub(crate) fn decode(text: &str) -> Option<RootRuns> {
         " cannot-tell" => true,
         _ => return None,
     };
-    let editable = lines
+    Some(RootRuns {
+        editable: files_from(lines)?,
+        cannot_tell,
+    })
+}
+
+/// The stored form of the files a run pins (#1387): a first line `v1`, then the lines of
+/// [`encode`]'s files.
+pub(crate) fn encode_pinned(files: &[RootFile]) -> String {
+    let mut text = STORED_VERSION.to_owned();
+    push_files(&mut text, files);
+    text
+}
+
+/// The stored pinned files read back; `None` when it is not one [`encode_pinned`] writes.
+pub(crate) fn decode_pinned(text: &str) -> Option<Vec<RootFile>> {
+    let mut lines = text.split('\n');
+    if lines.next()? != STORED_VERSION {
+        return None;
+    }
+    files_from(lines)
+}
+
+fn push_files(text: &mut String, files: &[RootFile]) {
+    for file in files {
+        text.push('\n');
+        text.push_str(file.sha256.as_deref().unwrap_or(ABSENT));
+        text.push(' ');
+        text.push_str(&file.path.to_string_lossy());
+    }
+}
+
+fn files_from<'a>(lines: impl Iterator<Item = &'a str>) -> Option<Vec<RootFile>> {
+    lines
         .map(|line| {
             let (sha256, path) = line.split_once(' ')?;
             let sha256 = match sha256 {
@@ -391,11 +468,7 @@ pub(crate) fn decode(text: &str) -> Option<RootRuns> {
             let path = PathBuf::from(path);
             path.is_absolute().then_some(RootFile { path, sha256 })
         })
-        .collect::<Option<Vec<_>>>()?;
-    Some(RootRuns {
-        editable,
-        cannot_tell,
-    })
+        .collect()
 }
 
 /// How deep `-c` strings and nested sudos are followed before the rest counts as unknown.
@@ -405,12 +478,22 @@ const DEPTH_MAX: usize = 8;
 #[derive(Debug, Default)]
 struct Found {
     files: Vec<PathBuf>,
+    /// Those of `files` only found by searching `PATH` for a program's name.
+    searched: Vec<PathBuf>,
     cannot_tell: bool,
 }
 
 impl Found {
     fn file(&mut self, path: PathBuf) {
+        self.searched.retain(|searched| *searched != path);
         if !self.files.contains(&path) {
+            self.files.push(path);
+        }
+    }
+
+    fn searched_program(&mut self, path: PathBuf) {
+        if !self.files.contains(&path) {
+            self.searched.push(path.clone());
             self.files.push(path);
         }
     }
@@ -577,6 +660,7 @@ impl Walk<'_, '_> {
             return;
         }
         match self.program(&program.text, cwd) {
+            Some(path) if !program.text.contains('/') => self.found.searched_program(path),
             Some(path) => self.found.file(path),
             None => {
                 self.found.cannot_tell = true;
@@ -830,5 +914,23 @@ mod tests {
         assert_eq!(decode("v2 known"), None);
         assert_eq!(decode("v1 known\nabc /x"), None);
         assert_eq!(decode("v1 known\nabsent relative"), None);
+    }
+
+    #[test]
+    fn the_stored_pinned_files_read_back() {
+        let files = vec![
+            RootFile {
+                path: PathBuf::from("/clone/x y.sh"),
+                sha256: Some("b".repeat(64)),
+            },
+            RootFile {
+                path: PathBuf::from("/clone/justfile"),
+                sha256: None,
+            },
+        ];
+        assert_eq!(decode_pinned(&encode_pinned(&files)), Some(files));
+        assert_eq!(decode_pinned(&encode_pinned(&[])), Some(Vec::new()));
+        assert_eq!(decode_pinned("v1 known"), None);
+        assert_eq!(decode_pinned("v1\nabsent relative"), None);
     }
 }

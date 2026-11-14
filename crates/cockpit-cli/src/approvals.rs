@@ -10,8 +10,8 @@ use std::process::ExitCode;
 use chrono::{DateTime, Local};
 use cockpit_protocol::{
     Command, DecidedRunView, DecidedThroughView, FindingView, GuideStateView, GuideView,
-    HiddenView, NO_KNOWN_RISKY_PATTERN, Reply, RootRunsView, RunDecisionView, RunRequestView,
-    RunStateView, SecretText, ShownText, changed_since_asked_warning, finding_line,
+    HiddenView, NO_KNOWN_RISKY_PATTERN, Reply, RootFileView, RootRunsView, RunDecisionView,
+    RunRequestView, RunStateView, SecretText, ShownText, changed_since_asked_warning, finding_line,
     sudo_ran_unasked_warning, typed_secret_redacted_notice,
 };
 
@@ -293,7 +293,8 @@ fn hidden_name(kind: HiddenView) -> &'static str {
 }
 
 /// What the owner should weigh before approving, beyond the text: the rule scan's findings
-/// (#1388), files the session can edit that its sudo runs as root, build files the session changed that the command runs, a
+/// (#1388), files the session can edit that its sudo runs as root, the other files it runs
+/// that the session can edit, pinned (#1387), build files the session changed that the command runs, a
 /// `timeout` that would take the terminal from it, and a shell that could not check the
 /// command.
 fn run_hints(run: &RunRequestView) -> String {
@@ -304,6 +305,7 @@ fn run_hints(run: &RunRequestView) -> String {
     if let Some(root_runs) = &run.root_runs {
         text.push_str(&root_runs_hints(root_runs));
     }
+    text.push_str(&pinned_hints(run));
     if let Some(files) = &run.changed_build_files {
         if !files.is_empty() {
             let _ = writeln!(
@@ -349,9 +351,21 @@ fn findings_hints(findings: &[FindingView]) -> String {
 /// Each file the session can edit that the command's sudo runs, with its hash and, while the
 /// request asks, its first lines as they are now (#1383). That sudo runs it is a finding.
 fn root_runs_hints(root_runs: &RootRunsView) -> String {
+    file_hints(root_runs.editable.iter(), "Runs as root")
+}
+
+/// Each other file the command runs that the session can edit, pinned (#1387), shown as the
+/// files sudo runs are.
+fn pinned_hints(run: &RunRequestView) -> String {
+    file_hints(run.pinned_beyond_root(), "Pinned")
+}
+
+/// Each of `files` under `label`, with its hash and, while the request asks, its first lines
+/// as they are now; one changed since the ask is named.
+fn file_hints<'a>(files: impl Iterator<Item = &'a RootFileView>, label: &str) -> String {
     let mut text = String::new();
-    for file in &root_runs.editable {
-        let _ = writeln!(text, "  Runs as root: {}", file.shown_path.text);
+    for file in files {
+        let _ = writeln!(text, "  {label}: {}", file.shown_path.text);
         text.push_str(&warnings(&file.shown_path));
         if file.changed_since_asked() {
             let _ = writeln!(

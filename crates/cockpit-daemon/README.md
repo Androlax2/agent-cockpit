@@ -116,7 +116,12 @@ not share code.
   a scan that does not end in time records a `cannot-tell` finding and leaves the sudo
   check's files pinned. The owner's views carry the findings with the display rules
   applied (`root_runs::findings_view`; a revision checked before the scan existed gets
-  the sudo findings of its `root_runs`); the agent's do not.
+  the sudo findings of its `root_runs`); the agent's do not. The files any part of the
+  revision runs that the session can edit are pinned in the same transaction (#1387,
+  `cockpit_approvals::pinned_files`, beside the sudo check under its own 10 seconds; past
+  them, or for a file it could not record, a `cannot-tell` finding): the owner's views read each pinned file and each file sudo runs once, bind the
+  `digest` to all of them, and an approval or a run is refused the same way when one
+  changed.
 - An approval commits the run intent, then the run starts outside the lanes: a long command
   holds no control worker. It is a `cockpit-processes` terminal execution (#163) of the
   daemon's one supervisor: a pseudo-terminal under `torlek-daemon --run-leader`

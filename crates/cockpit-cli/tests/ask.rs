@@ -141,6 +141,7 @@ fn request(state: RunStateView) -> RunRequestView {
         sudo_ran_unasked: 0,
         typed_secret_redacted: 0,
         root_runs: None,
+        pinned: None,
         findings: None,
         decision: None,
         result: None,
@@ -748,6 +749,46 @@ async fn the_owner_reads_each_editable_file_sudo_runs_as_it_is_now() {
         "b".repeat(64)
     );
     assert!(shown.contains(&expected), "{shown}");
+}
+
+#[tokio::test]
+async fn the_owner_reads_each_pinned_file_as_it_is_now_and_whether_it_changed() {
+    let pinned_file = |name: &str, recorded: &str, now: &str| RootFileView {
+        path: format!("/p/{name}"),
+        shown_path: shown(&format!("./{name}")),
+        sha256: Some(recorded.repeat(64)),
+        now: Some(FileNowView {
+            sha256: Some(now.repeat(64)),
+            head: Some(shown("echo build")),
+            more_lines: 0,
+            unreadable: false,
+        }),
+    };
+    let shown = shown_to_owner(RunRequestView {
+        root_runs: Some(RootRunsView {
+            editable: vec![pinned_file("root.sh", "c", "c")],
+            cannot_tell: false,
+        }),
+        pinned: Some(vec![
+            pinned_file("build.sh", "a", "b"),
+            pinned_file("root.sh", "c", "c"),
+        ]),
+        ..request(RunStateView::Asking)
+    })
+    .await;
+
+    let expected = format!(
+        "  Pinned: ./build.sh\n\
+         \x20 ! ./build.sh changed since it was asked: approving it refuses the run\n\
+         \x20   sha256 {}\n\
+         \x20   | echo build\n",
+        "b".repeat(64)
+    );
+    assert!(shown.contains(&expected), "{shown}");
+    assert!(
+        !shown.contains("Pinned: ./root.sh"),
+        "a file sudo runs is shown once: {shown}"
+    );
 }
 
 fn finding(severity: FindingSeverityView, reason: &str, excerpt: &str) -> FindingView {

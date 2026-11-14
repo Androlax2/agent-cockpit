@@ -6,9 +6,10 @@ use std::time::Instant;
 
 use cockpit_protocol::{
     CompactionStatus, FindingView, GuideView, HiddenView, NO_KNOWN_RISKY_PATTERN,
-    NetworkRequestView, NetworkSubjectView, NetworkTargetView, RootRunsView, RunRequestView,
-    SessionReport, SessionStateView, SessionView, ShownText, changed_since_asked_warning,
-    finding_line, sudo_ran_unasked_warning, typed_secret_redacted_notice,
+    NetworkRequestView, NetworkSubjectView, NetworkTargetView, RootFileView, RootRunsView,
+    RunRequestView, SessionReport, SessionStateView, SessionView, ShownText,
+    changed_since_asked_warning, finding_line, sudo_ran_unasked_warning,
+    typed_secret_redacted_notice,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -830,9 +831,16 @@ pub(crate) fn run_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> 
     if let Some(root_runs) = &run.root_runs {
         lines.extend(root_runs_lines(root_runs, is_expanded));
     }
+    lines.extend(pinned_lines(run, is_expanded));
     lines
 }
 
+/// The other files a request runs that the asking session can change, pinned (#1387), shown
+/// as the files sudo runs are.
+fn pinned_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> {
+    let files: Vec<&RootFileView> = run.pinned_beyond_root().collect();
+    file_lines(&files, "Pinned", "the pinned files", is_expanded)
+}
 /// The width the card's findings and warnings about what runs as root keep to, a long text
 /// shortened: the pane's inside on an 80-column terminal, its borders taking two.
 const ROOT_LINE_COLUMNS: usize = 78;
@@ -916,15 +924,18 @@ fn cut_end(text: &str, room: usize) -> String {
 }
 
 /// What a request's sudo runs that the asking session can change (#1383), last before the
-/// keys: a file changed since the ask, and hidden characters; expanded, each file's hash and
-/// first lines. That it runs them is among the findings.
+/// keys. That it runs them is among the findings.
 fn root_runs_lines(root_runs: &RootRunsView, is_expanded: bool) -> Vec<String> {
+    let files: Vec<&RootFileView> = root_runs.editable.iter().collect();
+    file_lines(&files, "Runs as root", "what runs as root", is_expanded)
+}
+
+/// Files a request runs that the asking session can change: a file changed since the ask,
+/// and hidden characters; expanded, each file's hash and first lines under `label`. `place`
+/// names them in the hidden-character warning.
+fn file_lines(files: &[&RootFileView], label: &str, place: &str, is_expanded: bool) -> Vec<String> {
     let mut lines = Vec::new();
-    for file in root_runs
-        .editable
-        .iter()
-        .filter(|file| file.changed_since_asked())
-    {
+    for file in files.iter().filter(|file| file.changed_since_asked()) {
         let room = ROOT_LINE_COLUMNS
             .saturating_sub(WARNING.len() + changed_since_asked_warning("").chars().count());
         lines.push(format!(
@@ -932,8 +943,7 @@ fn root_runs_lines(root_runs: &RootRunsView, is_expanded: bool) -> Vec<String> {
             changed_since_asked_warning(&shortened(&file.shown_path.text, room))
         ));
     }
-    let shown: Vec<&ShownText> = root_runs
-        .editable
+    let shown: Vec<&ShownText> = files
         .iter()
         .flat_map(|file| {
             let head = file.now.as_ref().and_then(|now| now.head.as_ref());
@@ -942,13 +952,13 @@ fn root_runs_lines(root_runs: &RootRunsView, is_expanded: bool) -> Vec<String> {
         .collect();
     let hidden = warnings(&shown);
     if !hidden.is_empty() {
-        lines.push(format!("{WARNING}in what runs as root: {hidden}"));
+        lines.push(format!("{WARNING}in {place}: {hidden}"));
     }
     if !is_expanded {
         return lines;
     }
-    for file in &root_runs.editable {
-        lines.push(format!("Runs as root: {}", file.shown_path.text));
+    for file in files {
+        lines.push(format!("{label}: {}", file.shown_path.text));
         let Some(now) = &file.now else {
             lines.push(format!("  sha256 {}", hash_text(file.sha256.as_deref())));
             continue;

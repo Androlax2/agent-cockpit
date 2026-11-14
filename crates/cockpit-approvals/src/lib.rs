@@ -39,7 +39,7 @@ pub use redact::{redact_secrets, strip_terminal_controls};
 pub use restart::ended_after_restart;
 pub use retention::{RunOutputs, retirable_run_outputs, retire_run_outputs};
 pub use rows::{EXPIRES_AFTER_SECONDS, Project, REFRESH_AFTER_SECONDS};
-pub use rule_scan::{Finding, path_from, scan, scan_unfinished, sudo_findings};
+pub use rule_scan::{Finding, path_from, pinning_incomplete, scan, scan_unfinished, sudo_findings};
 pub use rules::Severity;
 pub use runs::{
     APPROVAL_GRACE_SECONDS, Approved, DecidedThrough, FiledRun, Interrupted, REACH_MAX_ENTRIES,
@@ -54,8 +54,8 @@ pub use sudo::{
     SudoAnswered, SudoAsk, SudoAskpass, SudoHelper, TRUSTED_SUDO, sudo_asks_every_time,
 };
 pub use sudo_editable::{
-    Contents, FILE_HEAD_LINES, FileNow, Lookup, RootFile, RootRuns, SessionWrites, changed_file,
-    digest_as_read, file_now, file_sha256, root_runs,
+    Contents, FILE_HEAD_LINES, FileNow, Lookup, Pinned, RootFile, RootRuns, SessionWrites,
+    changed_file, digest_as_read, file_now, file_sha256, pinned_files, root_runs,
 };
 pub use sudo_unasked::unasked_sudo_watch_holds;
 pub use typed_secret::{wipe, wipe_vec};
@@ -241,6 +241,14 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 CHECK (card_hosts IS NULL OR length(card_hosts) > 0);
                 ALTER TABLE approvals_runs ADD COLUMN limit_hits TEXT
                 CHECK (limit_hits IS NULL OR (length(limit_hits) > 0 AND state = 'finished'));",
+        },
+        // #1387: the files any part of the revision runs as code that its asking session can
+        // change, each with its hash (`sudo_editable::encode_pinned`); a run is refused when
+        // one changed. NULL when not checked: a start request or an earlier row.
+        Migration {
+            version: 16,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN pinned TEXT
+                CHECK (pinned IS NULL OR substr(pinned, 1, 2) = 'v1');",
         },
     ],
 };

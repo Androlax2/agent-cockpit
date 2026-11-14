@@ -1043,6 +1043,19 @@ fn flagged() -> RootRuns {
     }
 }
 
+fn pins() -> Vec<RootFile> {
+    vec![
+        RootFile {
+            path: "/clone/x.sh".into(),
+            sha256: Some("ab".repeat(32)),
+        },
+        RootFile {
+            path: "/clone/Makefile".into(),
+            sha256: None,
+        },
+    ]
+}
+
 fn found() -> Vec<Finding> {
     vec![Finding {
         rule: "download-runs".to_owned(),
@@ -1058,15 +1071,19 @@ fn found() -> Vec<Finding> {
 async fn what_a_revision_runs_as_root_and_its_findings_are_kept_with_the_request() {
     let fixture = Fixture::new().await;
     let run = fixture.asked(&session("s1"), "sudo ./x.sh").await;
-    assert_eq!((&run.root_runs, &run.findings), (&None, &None));
+    assert_eq!(
+        (&run.root_runs, &run.findings, &run.pinned),
+        (&None, &None, &None)
+    );
     let write = fixture.database.write().await.unwrap();
 
-    let recorded = record_checks(&write, run.id, 1, &flagged(), &found(), NOW)
+    let recorded = record_checks(&write, run.id, 1, &flagged(), &found(), &pins(), NOW)
         .await
         .unwrap();
 
     assert_eq!(recorded.root_runs, Some(flagged()));
     assert_eq!(recorded.findings, Some(found()));
+    assert_eq!(recorded.pinned, Some(pins()));
     assert_eq!(recorded, stored(&write, run.id).await);
 }
 
@@ -1075,7 +1092,7 @@ async fn an_edit_drops_what_the_old_revision_ran_as_root_and_its_findings() {
     let fixture = Fixture::new().await;
     let run = fixture.asked(&session("s1"), "sudo ./x.sh").await;
     let write = fixture.database.write().await.unwrap();
-    record_checks(&write, run.id, 1, &flagged(), &found(), NOW)
+    record_checks(&write, run.id, 1, &flagged(), &found(), &pins(), NOW)
         .await
         .unwrap();
 
@@ -1083,9 +1100,12 @@ async fn an_edit_drops_what_the_old_revision_ran_as_root_and_its_findings() {
         .await
         .unwrap();
 
-    assert_eq!((&edited.root_runs, &edited.findings), (&None, &None));
     assert_eq!(
-        refusal(record_checks(&write, run.id, 1, &flagged(), &found(), NOW).await),
+        (&edited.root_runs, &edited.findings, &edited.pinned),
+        (&None, &None, &None)
+    );
+    assert_eq!(
+        refusal(record_checks(&write, run.id, 1, &flagged(), &found(), &pins(), NOW).await),
         Refusal::StaleRevision { current: 2 }
     );
 }
@@ -1095,7 +1115,7 @@ async fn an_approval_keeps_what_the_run_runs_as_root_and_its_findings_in_the_rec
     let fixture = Fixture::new().await;
     let run = fixture.asked(&session("s1"), "sudo ./x.sh").await;
     let write = fixture.database.write().await.unwrap();
-    record_checks(&write, run.id, 1, &flagged(), &found(), NOW)
+    record_checks(&write, run.id, 1, &flagged(), &found(), &pins(), NOW)
         .await
         .unwrap();
 
@@ -1106,9 +1126,21 @@ async fn an_approval_keeps_what_the_run_runs_as_root_and_its_findings_in_the_rec
 
     assert_eq!(approved.root_runs, Some(flagged()));
     assert_eq!(approved.findings, Some(found()));
+    assert_eq!(approved.pinned, Some(pins()));
     assert!(approved.decision.is_some_and(|decision| decision.approved));
     assert!(matches!(
-        refusal(record_checks(&write, run.id, 1, &RootRuns::default(), &[], approved_at).await),
+        refusal(
+            record_checks(
+                &write,
+                run.id,
+                1,
+                &RootRuns::default(),
+                &[],
+                &[],
+                approved_at
+            )
+            .await
+        ),
         Refusal::AlreadyDecided { .. }
     ));
 }

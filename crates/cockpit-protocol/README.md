@@ -53,7 +53,10 @@ the wire. Report 14 treats this contract as stable from the first release.
    edit, each with the hash recorded at the check and, while it asks, `now` (hash and first
    lines as read for this view, or `unreadable`), and `cannot_tell`; the view's `digest` is
    then bound to what it read, so an approval names it; `changed_since_asked_warning` is
-   the clients' shared wording. They carry `findings` (#1388), the rule scan's
+   the clients' shared wording. They carry `pinned` (#1387): every file the request runs
+   that its session can edit, as `RootFileView`s bound into the `digest` the same way
+   (`RunRequestView::pinned_beyond_root` leaves out those `root_runs` already shows). They
+   carry `findings` (#1388), the rule scan's
    `FindingView`s, high first, each with its rule id, severity, reason, matching text and,
    in a script, file and line; `finding_line` and `NO_KNOWN_RISKY_PATTERN` are the clients'
    shared wording, and a severity this client does not know reads as `unknown`.

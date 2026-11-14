@@ -598,9 +598,10 @@ pub(crate) fn route_decision(
                 for run in &runs {
                     let mut view =
                         run_view(run, &runner, &waiting, changes.build_files_run(run).await);
-                    if let Some((root_runs, digest)) = root_runs::owner_view(run).await {
-                        view.root_runs = Some(root_runs);
-                        view.digest = digest;
+                    if let Some(checks) = root_runs::owner_view(run).await {
+                        view.root_runs = checks.root_runs;
+                        view.pinned = checks.pinned;
+                        view.digest = checks.digest;
                     }
                     view.findings = root_runs::findings_view(run);
                     views.push(view);
@@ -833,7 +834,7 @@ async fn approve(
     digest: &str,
     through: Option<DecidedThrough>,
 ) -> Answer {
-    // The files the request's sudo runs are read before the transaction, which a slow read
+    // The files the request runs are read before the transaction, which a slow read
     // must not hold. An edit in between makes a new revision, which `approve_run` refuses.
     let read = database.read().await?;
     let asked = existing_run(&read, request).await?;
@@ -920,8 +921,8 @@ async fn record_granted_approval(
     Ok(())
 }
 
-/// Runs an approved command, unless `refused` says why it must not start: a file its sudo
-/// runs had changed since the ask when the approval arrived.
+/// Runs an approved command, unless `refused` says why it must not start: a file it runs had
+/// changed since the ask when the approval arrived.
 async fn execute(
     database: Arc<Database>,
     runner: Runner,
@@ -1116,9 +1117,10 @@ pub(crate) fn run_reply(run: &RunRequest, runner: &Runner) -> Reply {
 async fn owner_run_reply(run: &RunRequest, runner: &Runner) -> Reply {
     let changed = CheckoutChanges::default().build_files_run(run).await;
     let mut view = run_view(run, runner, &runner.waiting_for_input(), changed);
-    if let Some((root_runs, digest)) = root_runs::owner_view(run).await {
-        view.root_runs = Some(root_runs);
-        view.digest = digest;
+    if let Some(checks) = root_runs::owner_view(run).await {
+        view.root_runs = checks.root_runs;
+        view.pinned = checks.pinned;
+        view.digest = checks.digest;
     }
     view.findings = root_runs::findings_view(run);
     Reply::RunRequest {
@@ -1274,6 +1276,7 @@ fn run_view(
         sudo_ran_unasked: runner.sudo_ran_unasked(run.id),
         typed_secret_redacted: runner.typed_secret_redacted(run.id),
         root_runs: None,
+        pinned: None,
         findings: None,
         decision: run.decision.map(|decision| RunDecisionView {
             approved: decision.approved,

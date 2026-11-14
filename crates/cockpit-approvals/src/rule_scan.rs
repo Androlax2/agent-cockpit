@@ -102,13 +102,27 @@ pub fn sudo_findings(root_runs: &RootRuns, cwd: &Path) -> Vec<Finding> {
 
 /// The finding recorded when the scan did not end in time.
 pub fn scan_unfinished() -> Finding {
+    cannot_tell_because("the scan did not end in time")
+}
+
+/// The finding recorded when the files a command runs could not all be pinned (#1387): a
+/// change to them would not refuse the run. `in_time` is false when pinning did not end.
+pub fn pinning_incomplete(in_time: bool) -> Finding {
+    cannot_tell_because(if in_time {
+        "some files it runs could not be pinned"
+    } else {
+        "the files it runs could not be pinned in time"
+    })
+}
+
+fn cannot_tell_because(why: &str) -> Finding {
     let rule = rule_where(|pattern| matches!(pattern, Pattern::CannotTell))
         .next()
         .expect("the rules hold the cannot-tell rule");
     Finding {
         rule: rule.id.to_owned(),
         severity: rule.severity,
-        reason: format!("{}: the scan did not end in time", rule.reason),
+        reason: format!("{}: {why}", rule.reason),
         excerpt: String::new(),
         file: None,
         line: None,

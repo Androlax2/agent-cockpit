@@ -5,8 +5,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use cockpit_approvals::{
-    Contents, FILE_HEAD_LINES, Lookup, RootFile, RootRuns, SessionWrites, changed_file,
-    digest_as_read, file_now, root_runs,
+    Contents, FILE_HEAD_LINES, Lookup, Pinned, RootFile, RootRuns, SessionWrites, changed_file,
+    digest_as_read, file_now, pinned_files, root_runs,
 };
 
 /// A session folder the session writes, holding scripts, and a system folder it does not,
@@ -88,6 +88,45 @@ impl Host {
                     .unwrap_or(&file.path)
                     .to_string_lossy()
                     .into_owned()
+            })
+            .collect()
+    }
+}
+
+impl Host {
+    fn pin(&self, command: &str) -> Pinned {
+        pinned_files(
+            command,
+            Lookup {
+                cwd: &self.session,
+                search_path: Some(self.system.as_os_str()),
+                home: None,
+            },
+            &self.writes(),
+        )
+    }
+
+    /// The files `command` pins (#1387), relative to the session folder, absent ones marked.
+    fn pinned(&self, command: &str) -> Vec<String> {
+        let pinned = self.pin(command);
+        assert!(
+            !pinned.cannot_tell,
+            "{command:?} could not be told: {pinned:?}"
+        );
+        pinned
+            .files
+            .iter()
+            .map(|file| {
+                let path = file
+                    .path
+                    .strip_prefix(&self.session)
+                    .unwrap_or(&file.path)
+                    .to_string_lossy()
+                    .into_owned();
+                match file.sha256 {
+                    Some(_) => path,
+                    None => format!("{path} (absent)"),
+                }
             })
             .collect()
     }
@@ -419,4 +458,95 @@ fn a_file_is_text_only_when_it_all_is_and_a_cut_line_counts_as_more() {
     let cut = file_now(&cut_tail).unwrap();
     assert_eq!(cut.head.as_deref(), Some(""));
     assert_eq!(cut.more_lines, 1);
+}
+
+#[test]
+fn every_run_pins_the_code_files_it_names_that_the_session_can_edit() {
+    let host = Host::new();
+    for (command, pinned) in [
+        ("./x.sh", vec!["x.sh"]),
+        ("bash sub/y.sh --flag", vec!["sub/y.sh"]),
+        ("cd sub && ./y.sh", vec!["sub/y.sh"]),
+        ("python3 x.py", vec!["x.py"]),
+        ("make -f build.mk all", vec!["build.mk"]),
+        ("just test", vec!["justfile"]),
+        ("bash -c './x.sh; . sub/y.sh'", vec!["x.sh", "sub/y.sh"]),
+        ("ls && ./x.sh | cat", vec!["x.sh"]),
+        ("sudo ./x.sh", vec!["x.sh"]),
+    ] {
+        assert_eq!(host.pinned(command), pinned, "{command:?}");
+    }
+}
+
+#[test]
+fn a_run_naming_only_system_programs_pins_nothing() {
+    let host = Host::new();
+
+    assert_eq!(
+        host.pinned("ls -l && curl example.com | cat"),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_makefile_the_session_could_still_create_is_pinned_as_absent() {
+    let host = Host::new();
+
+    assert_eq!(
+        host.pinned("make -C sub"),
+        [
+            "sub/GNUmakefile (absent)",
+            "sub/makefile (absent)",
+            "sub/Makefile (absent)"
+        ]
+    );
+}
+
+#[test]
+fn a_pinned_script_edited_after_the_ask_is_named_changed() {
+    let host = Host::new();
+    let pinned = host.pin("./x.sh").files;
+    assert_eq!(changed_file(&pinned), None);
+
+    std::fs::write(host.session.join("x.sh"), "rm -rf ~\n").unwrap();
+
+    assert_eq!(
+        changed_file(&pinned),
+        Some(host.session.join("x.sh").as_path())
+    );
+}
+
+#[test]
+fn a_script_the_session_can_edit_but_not_hash_is_not_shown_as_pinned() {
+    let host = Host::new();
+    std::fs::create_dir(host.session.join("dir.sh")).unwrap();
+
+    let pinned = host.pin("sh ./dir.sh");
+
+    assert!(pinned.cannot_tell, "{pinned:?}");
+    assert!(pinned.files.is_empty(), "{pinned:?}");
+}
+
+#[test]
+fn a_program_found_on_path_is_not_pinned_but_one_named_by_path_is() {
+    let host = Host::new();
+    executable(&host.session.join("tool"), "#!/bin/sh\n");
+    let lookup = Lookup {
+        cwd: &host.session,
+        search_path: Some(host.session.as_os_str()),
+        home: None,
+    };
+
+    let searched = pinned_files("tool build", lookup, &host.writes());
+    let named = pinned_files("./tool build && tool test", lookup, &host.writes());
+
+    assert_eq!(searched, Pinned::default());
+    assert_eq!(
+        named
+            .files
+            .iter()
+            .map(|file| &file.path)
+            .collect::<Vec<_>>(),
+        [&host.session.join("tool")]
+    );
 }
