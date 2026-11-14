@@ -1,4 +1,5 @@
-//! "Runs a file this session can edit, as root" (#1383): an approved `sudo ./setup.sh`
+//! "sudo runs a file this session can edit" (#1383), one of the rule scan's rules (#1388,
+//! `rules.rs`), which reads its result instead of repeating the check: an approved `sudo ./setup.sh`
 //! grants whatever the agent put in `setup.sh`, while `sudo systemctl start foo` grants what
 //! it says. Before the owner reads a request, its command line is parsed for what sudo runs:
 //! the program, a script handed to an interpreter (`sh`, `bash`, `python3`, `node`, …), the
@@ -18,8 +19,7 @@
 //! folder is not looked for; files a script or makefile runs in turn, and what a non-shell
 //! interpreter's code names indirectly, are not followed; nor are commands sudo reaches as an
 //! argument of another program (`xargs sudo`, `find -exec sudo`), only reported as "can't
-//! tell". A command naming no `sudo` word is never parsed. #1388 moves this check into the
-//! rule scan's list.
+//! tell". A command naming no `sudo` word is never parsed.
 
 use std::ffi::OsStr;
 use std::io::{ErrorKind, Read as _};

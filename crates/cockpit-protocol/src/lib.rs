@@ -31,10 +31,10 @@ pub use agent::{
     QuestionSource, SessionReport, TurnOutcome,
 };
 pub use approvals::{
-    CANNOT_TELL_AS_ROOT, DecidedRunView, DecidedThroughView, FileNowView, FoldedView,
-    GuideStateView, GuideStepView, GuideView, HiddenView, RootFileView, RootRunsView,
-    RunDecisionView, RunRequestView, RunResultView, RunStateView, ShownText, SudoAskView,
-    changed_since_asked_warning, editable_as_root_warning, sudo_ran_unasked_warning,
+    DecidedRunView, DecidedThroughView, FileNowView, FindingSeverityView, FindingView, FoldedView,
+    GuideStateView, GuideStepView, GuideView, HiddenView, NO_KNOWN_RISKY_PATTERN, RootFileView,
+    RootRunsView, RunDecisionView, RunRequestView, RunResultView, RunStateView, ShownText,
+    SudoAskView, changed_since_asked_warning, finding_line, sudo_ran_unasked_warning,
     typed_secret_redacted_notice,
 };
 pub use bug_reports::{

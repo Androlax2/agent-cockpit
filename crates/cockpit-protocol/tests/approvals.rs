@@ -1,8 +1,8 @@
 //! The wire form of `ask run`, `ask guide` and the owner's decisions (#34): requests name no
 //! session, and an approval names the revision and digest it was made on.
 use cockpit_protocol::{
-    Command, FoldedView, HiddenView, Outcome, Reply, RunRequestView, RunResultView, RunStateView,
-    ShownText, decode_request,
+    Command, FindingSeverityView, FindingView, FoldedView, HiddenView, Outcome, Reply,
+    RunRequestView, RunResultView, RunStateView, ShownText, decode_request, finding_line,
 };
 use serde_json::json;
 
@@ -179,6 +179,7 @@ fn finished_run() -> RunRequestView {
         sudo_ran_unasked: 0,
         typed_secret_redacted: 0,
         root_runs: None,
+        findings: None,
         decision: None,
         result: Some(RunResultView {
             exit_code: 2,
@@ -263,6 +264,48 @@ fn each_hidden_kind_has_its_kebab_case_name_and_an_unknown_one_is_kept_as_a_warn
     }
     let later: HiddenView = serde_json::from_value(json!("lookalike-script")).unwrap();
     assert_eq!(later, HiddenView::Unknown);
+}
+
+#[test]
+fn a_finding_round_trips_and_an_unknown_severity_is_kept() {
+    let finding = FindingView {
+        rule: "download-runs".to_owned(),
+        severity: FindingSeverityView::High,
+        reason: "runs code it downloads".to_owned(),
+        excerpt: shown("curl x | sh"),
+        file: Some(shown("setup.sh")),
+        line: Some(4),
+    };
+
+    let wire = serde_json::to_value(&finding).unwrap();
+    assert_eq!(wire["severity"], json!("high"));
+    assert_eq!(
+        serde_json::from_value::<FindingView>(wire).unwrap(),
+        finding
+    );
+    let later: FindingSeverityView = serde_json::from_value(json!("critical")).unwrap();
+    assert_eq!(later, FindingSeverityView::Unknown);
+}
+
+#[test]
+fn a_finding_reads_as_one_line_with_its_place_and_its_matching_text() {
+    let finding = FindingView {
+        rule: "download-runs".to_owned(),
+        severity: FindingSeverityView::High,
+        reason: "runs code it downloads".to_owned(),
+        excerpt: shown("curl x | sh"),
+        file: Some(shown("setup.sh")),
+        line: Some(4),
+    };
+
+    assert_eq!(
+        finding_line(&finding, &finding.excerpt.text),
+        "High: runs code it downloads in setup.sh:4: `curl x | sh`"
+    );
+    assert_eq!(
+        finding_line(&finding, ""),
+        "High: runs code it downloads in setup.sh:4"
+    );
 }
 
 #[test]

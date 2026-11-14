@@ -5,10 +5,10 @@
 use std::time::Instant;
 
 use cockpit_protocol::{
-    CANNOT_TELL_AS_ROOT, CompactionStatus, GuideView, HiddenView, NetworkRequestView,
-    NetworkSubjectView, NetworkTargetView, RootRunsView, RunRequestView, SessionReport,
-    SessionStateView, SessionView, ShownText, changed_since_asked_warning,
-    editable_as_root_warning, sudo_ran_unasked_warning, typed_secret_redacted_notice,
+    CompactionStatus, FindingView, GuideView, HiddenView, NO_KNOWN_RISKY_PATTERN,
+    NetworkRequestView, NetworkSubjectView, NetworkTargetView, RootRunsView, RunRequestView,
+    SessionReport, SessionStateView, SessionView, ShownText, changed_since_asked_warning,
+    finding_line, sudo_ran_unasked_warning, typed_secret_redacted_notice,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -818,30 +818,102 @@ pub(crate) fn run_lines(run: &RunRequestView, is_expanded: bool) -> Vec<String> 
             files.join(", ")
         ));
     }
+    if let Some(findings) = &run.findings {
+        lines.extend(findings_lines(findings, is_expanded));
+    }
     if let Some(root_runs) = &run.root_runs {
         lines.extend(root_runs_lines(root_runs, is_expanded));
     }
     lines
 }
 
-/// The width the card's warnings about what runs as root keep to, a long path shortened:
-/// the pane's inside on an 80-column terminal, its borders taking two.
+/// The width the card's findings and warnings about what runs as root keep to, a long text
+/// shortened: the pane's inside on an 80-column terminal, its borders taking two.
 const ROOT_LINE_COLUMNS: usize = 78;
 const WARNING: &str = "Warning: ";
 
+/// The findings the card shows before `m` shows them all.
+const FINDINGS_FOLDED: usize = 3;
+
+/// What the rule scan found (#1388), high first, one line each within 78 columns with the
+/// matching text marked; expanded, every finding with its whole text.
+fn findings_lines(findings: &[FindingView], is_expanded: bool) -> Vec<String> {
+    if findings.is_empty() {
+        return vec![NO_KNOWN_RISKY_PATTERN.to_owned()];
+    }
+    let mut lines: Vec<String> = if is_expanded {
+        findings
+            .iter()
+            .map(|finding| finding_line(finding, &finding.excerpt.text))
+            .collect()
+    } else {
+        findings
+            .iter()
+            .take(FINDINGS_FOLDED)
+            .map(folded_finding_line)
+            .collect()
+    };
+    let more = findings.len().saturating_sub(FINDINGS_FOLDED);
+    if !is_expanded && more > 0 {
+        lines.push(format!("  … {more} more findings (m shows them)"));
+    }
+    let shown: Vec<&ShownText> = findings
+        .iter()
+        .flat_map(|finding| std::iter::once(&finding.excerpt).chain(&finding.file))
+        .collect();
+    let hidden = warnings(&shown);
+    if !hidden.is_empty() {
+        lines.push(format!("{WARNING}in the findings: {hidden}"));
+    }
+    lines
+}
+
+/// One finding within [`ROOT_LINE_COLUMNS`]: its file shortened at its start when it would
+/// leave the matching text less than [`EXCERPT_ROOM_MIN`], then the matching text cut at its
+/// end.
+fn folded_finding_line(finding: &FindingView) -> String {
+    let whole = finding_line(finding, &finding.excerpt.text);
+    if columns(&whole) <= ROOT_LINE_COLUMNS {
+        return whole;
+    }
+    let mut folded = finding.clone();
+    let over = (columns(&finding_line(&folded, "")) + EXCERPT_FRAME + EXCERPT_ROOM_MIN)
+        .saturating_sub(ROOT_LINE_COLUMNS);
+    if let Some(file) = folded.file.as_mut().filter(|_| over > 0) {
+        file.text = shortened(&file.text, columns(&file.text).saturating_sub(over));
+    }
+    let room =
+        ROOT_LINE_COLUMNS.saturating_sub(columns(&finding_line(&folded, "")) + EXCERPT_FRAME);
+    let excerpt = cut_end(&folded.excerpt.text, room);
+    finding_line(&folded, &excerpt)
+}
+
+/// What [`finding_line`] puts around the matching text: `: ` and two backticks.
+const EXCERPT_FRAME: usize = 4;
+
+/// The least of a finding's matching text a long file name leaves.
+const EXCERPT_ROOM_MIN: usize = 20;
+
+/// `text` within `room` columns: its start kept, an ellipsis for what was cut.
+fn cut_end(text: &str, room: usize) -> String {
+    if columns(text) <= room {
+        return text.to_owned();
+    }
+    let mut kept = String::new();
+    for character in text.chars() {
+        if columns(&kept) + columns(&character.to_string()) + 1 > room {
+            break;
+        }
+        kept.push(character);
+    }
+    format!("{kept}…")
+}
+
 /// What a request's sudo runs that the asking session can change (#1383), last before the
-/// keys; expanded, each file's hash and first lines.
+/// keys: a file changed since the ask, and hidden characters; expanded, each file's hash and
+/// first lines. That it runs them is among the findings.
 fn root_runs_lines(root_runs: &RootRunsView, is_expanded: bool) -> Vec<String> {
     let mut lines = Vec::new();
-    if let Some(first) = root_runs.editable.first() {
-        let more = root_runs.editable.len() - 1;
-        let room = ROOT_LINE_COLUMNS
-            .saturating_sub(WARNING.len() + editable_as_root_warning("", more).chars().count());
-        lines.push(format!(
-            "{WARNING}{}",
-            editable_as_root_warning(&shortened(&first.shown_path.text, room), more)
-        ));
-    }
     for file in root_runs
         .editable
         .iter()
@@ -853,9 +925,6 @@ fn root_runs_lines(root_runs: &RootRunsView, is_expanded: bool) -> Vec<String> {
             "{WARNING}{}",
             changed_since_asked_warning(&shortened(&file.shown_path.text, room))
         ));
-    }
-    if root_runs.cannot_tell {
-        lines.push(format!("{WARNING}{CANNOT_TELL_AS_ROOT}"));
     }
     let shown: Vec<&ShownText> = root_runs
         .editable

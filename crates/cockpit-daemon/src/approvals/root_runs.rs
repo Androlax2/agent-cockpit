@@ -1,18 +1,22 @@
-//! "Runs a file this session can edit, as root" (#1383) at the daemon: each revision of a
-//! command request is checked against the asking session's writes before the owner reads it,
-//! in the transaction that filed or edited it; the owner's views read each recorded file as it
-//! is now, and their digest names what they read; an approval must name the files as they
-//! are when it arrives, and a run is refused when one no longer has its recorded hash. The
-//! rule itself is `cockpit_approvals::root_runs`.
+//! The checks a command request gets before the owner reads it, at the daemon: each revision
+//! is checked in the transaction that filed or edited it, for what its sudo runs that the
+//! asking session can edit (#1383, `cockpit_approvals::root_runs`) and by the rule scan
+//! (#1388, `cockpit_approvals::scan`), which lists the first among its findings. The owner's
+//! views read each file sudo runs as it is now, and their digest names what they read; an
+//! approval must name the files as they are when it arrives, and a run is refused when one no
+//! longer has its recorded hash.
 
 use std::path::Path;
 use std::time::Duration;
 
 use cockpit_approvals::{
-    Contents, FileNow, Lookup, RootFile, RootRuns, RunRequest, RunState, SessionWrites,
+    Contents, FileNow, Finding, Lookup, RootFile, RootRuns, RunRequest, RunState, SessionWrites,
+    Severity,
 };
 use cockpit_authorization::SessionId;
-use cockpit_protocol::{FileNowView, RootFileView, RootRunsView};
+use cockpit_protocol::{
+    FileNowView, FindingSeverityView, FindingView, RootFileView, RootRunsView, ShownText,
+};
 use cockpit_sessions::Sessions;
 use cockpit_turso::WriteTransaction;
 
@@ -20,7 +24,7 @@ use super::{Failed, now, shown};
 
 const DEFAULT_PATH: &str = "/bin:/usr/bin";
 
-/// How long a check or a read of the files waits: a huge file or a stalled filesystem must
+/// How long the checks or a read of the files wait: a huge file or a stalled filesystem must
 /// not hold the write transaction, the queue or a run past it. Files are opened without
 /// waiting on a FIFO (`cockpit_approvals::file_now`); a read past the bound is left to end
 /// on its own thread.
@@ -39,8 +43,8 @@ async fn bounded<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -
     }
 }
 
-/// Checks what the revision `run` now has runs as root that its session can change, and
-/// records it with the request.
+/// Checks the revision `run` now has: what it runs as root that its session can change, and
+/// the rule scan's findings; records both with the request.
 pub(super) async fn record(
     write: &WriteTransaction<'_>,
     sessions: &Sessions,
@@ -49,13 +53,24 @@ pub(super) async fn record(
     if run.start.is_some() {
         return Ok(run.clone());
     }
-    let runs = check(sessions, &run.session, &run.command, &run.cwd).await;
-    Ok(cockpit_approvals::record_root_runs(write, run.id, run.revision, &runs, now()).await?)
+    let clone = run.project.as_ref().map(|project| project.root.clone());
+    let (runs, findings) = check(sessions, &run.session, &run.command, &run.cwd, clone).await;
+    Ok(
+        cockpit_approvals::record_checks(write, run.id, run.revision, &runs, &findings, now())
+            .await?,
+    )
 }
 
-/// What `command`, run in `cwd`, runs as root that `session` can change, read now. The run
-/// gets the daemon's own environment, so its `PATH` and `HOME` resolve the command's words.
-async fn check(sessions: &Sessions, session: &SessionId, command: &str, cwd: &Path) -> RootRuns {
+/// What `command`, run in `cwd`, runs as root that `session` can change, and what the scan
+/// finds in it, read now; `clone` is the session's checkout. The run gets the daemon's own
+/// environment, so its `PATH` and `HOME` resolve the command's words.
+async fn check(
+    sessions: &Sessions,
+    session: &SessionId,
+    command: &str,
+    cwd: &Path,
+    clone: Option<std::path::PathBuf>,
+) -> (RootRuns, Vec<Finding>) {
     let writes = session_writes(sessions, session);
     let command = command.to_owned();
     let cwd = cwd.to_path_buf();
@@ -69,13 +84,46 @@ async fn check(sessions: &Sessions, session: &SessionId, command: &str, cwd: &Pa
             search_path: Some(&search_path),
             home: home.as_deref(),
         };
-        cockpit_approvals::root_runs(&command, lookup, &writes)
+        let runs = cockpit_approvals::root_runs(&command, lookup, &writes);
+        let findings = cockpit_approvals::scan(&command, lookup, clone.as_deref(), &runs);
+        (runs, findings)
     })
     .await
-    .unwrap_or(RootRuns {
-        editable: Vec::new(),
-        cannot_tell: true,
+    .unwrap_or_else(|| {
+        let runs = RootRuns {
+            editable: Vec::new(),
+            cannot_tell: true,
+        };
+        (runs, vec![cockpit_approvals::scan_unfinished()])
     })
+}
+
+/// The recorded findings as the owner reads them; `None` when the revision was not scanned.
+pub(super) fn findings_view(run: &RunRequest) -> Option<Vec<FindingView>> {
+    let findings = run.findings.as_ref()?;
+    Some(
+        findings
+            .iter()
+            .map(|finding| FindingView {
+                rule: finding.rule.clone(),
+                severity: match finding.severity {
+                    Severity::High => FindingSeverityView::High,
+                    Severity::Warn => FindingSeverityView::Warn,
+                },
+                reason: finding.reason.clone(),
+                excerpt: shown(&finding.excerpt),
+                file: finding
+                    .file
+                    .as_deref()
+                    .map(|file| shown_path(file, &run.cwd)),
+                line: finding.line.map(|line| line as u64),
+            })
+            .collect(),
+    )
+}
+
+fn shown_path(path: &Path, cwd: &Path) -> ShownText {
+    shown(&cockpit_approvals::path_from(path, cwd))
 }
 
 /// Where `session` can write: the folders its sandbox's launch spec binds read-write, while
@@ -180,17 +228,9 @@ fn file_view(file: &RootFile, cwd: &Path, read: Option<Option<FileNow>>) -> Root
     });
     RootFileView {
         path: file.path.to_string_lossy().into_owned(),
-        shown_path: shown(&path_from(&file.path, cwd)),
+        shown_path: shown_path(&file.path, cwd),
         sha256: file.sha256.clone(),
         now,
-    }
-}
-
-/// `path` as the owner reads it: `./x.sh` inside the request's directory, else absolute.
-fn path_from(path: &Path, cwd: &Path) -> String {
-    match path.strip_prefix(cwd) {
-        Ok(inside) => format!("./{}", inside.display()),
-        Err(_) => path.display().to_string(),
     }
 }
 
@@ -220,7 +260,7 @@ pub(super) async fn as_approved(run: &RunRequest) -> Option<AsApproved> {
         .map(|(file, _)| {
             format!(
                 "{} changed since it was asked",
-                path_from(&file.path, &run.cwd)
+                cockpit_approvals::path_from(&file.path, &run.cwd)
             )
         });
     Some(AsApproved {
@@ -234,8 +274,12 @@ pub(super) async fn changed_after_approval(run: &RunRequest) -> Option<String> {
     let runs = run.root_runs.clone()?;
     let cwd = run.cwd.clone();
     bounded(move || {
-        cockpit_approvals::changed_file(&runs.editable)
-            .map(|path| format!("{} changed after you approved", path_from(path, &cwd)))
+        cockpit_approvals::changed_file(&runs.editable).map(|path| {
+            format!(
+                "{} changed after you approved",
+                cockpit_approvals::path_from(path, &cwd)
+            )
+        })
     })
     .await
     .unwrap_or_else(|| Some("the files its sudo runs could not be read in time".to_owned()))

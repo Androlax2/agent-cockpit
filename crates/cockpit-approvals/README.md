@@ -30,9 +30,18 @@ request here, so nothing is re-read from the sandbox.
    resolve is `cannot_tell`. The daemon records it with the revision (`record_root_runs`,
    column `root_runs`; an owner edit clears it until checked again), shows each file as it is
    now (`file_now`), binds the owner's approval to those reads (`digest_as_read`) and
-   refuses an approved run when `changed_file` names one. Only regular files are read. The
-   module is
-   the one place the later rule scan (#1388) takes the rule from.
+   refuses an approved run when `changed_file` names one. Only regular files are read.
+   `scan` (`src/rule_scan.rs`, #1388) reads the command line as shell (`src/shell.rs`:
+   pipes, lists, subshells, substitutions, `-c` strings, redirections) and the shell scripts
+   it runs or sources (at most 1 MiB each, not those found on `PATH`, not the scripts they
+   run in turn), and returns a `Finding` for each match of the rules in `src/rules.rs`:
+   each rule has an id, a one-line reason and a `Severity`, high first; a rule's patterns
+   and their programs and paths are data in that one table. A program, code or script it
+   cannot resolve without running the command (an expansion where the program is, `eval`,
+   code from a pipe) is the `cannot-tell` finding, never clean. The sudo rules read
+   `root_runs` rather than check again. The daemon records the findings with `root_runs`
+   (`record_checks`, column `findings`, cleared by an owner edit) and keeps them with the
+   decision.
 3. `approve_run` needs the request's current revision and its `action_digest` (SHA-256 of
    the directory and command). It consumes the request with the run intent in one
    transaction; a second decision, an older revision or another digest is refused. The
@@ -117,6 +126,8 @@ bound to its index), reports being stuck there (`report_stuck`) or closes the gu
 - `tests/hints.rs`: the `timeout` hint and the changed build files a command runs.
 - `tests/sudo_editable.rs`: what a command's sudo runs that the session can edit, against
   real files, and the hashes that tell a change.
+- `tests/rule_scan.rs`: each rule with its matches and near misses, what cannot be told,
+  and the file and line of a match in a script.
 - `tests/runs.rs`: the run state machine on a real state database, report 04's
   stale-approval walkthrough and the restart decisions from each execution phase included.
 - `tests/guides.rs`: the guide format and step answers.

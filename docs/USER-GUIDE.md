@@ -121,13 +121,22 @@ Once Torlek has checked the helper's program and output, the helper closes itsel
 The checks come first because they read the helper's program and open files, which the closing then hides: a process running as you could attach to the helper in the moment between its start and its closing, and leave again before the check, unseen.
 The limit: after sudo accepts the password, the approved command runs as root, so approve only commands whose content you trust with `sudo`.
 
-When a command's `sudo` would run, as root, a file the asking session can edit, the request warns "runs ./x.sh, which this session can edit, as root" (#1383): in the pane, in `torlek approval show ID` and on the phone.
+Before you read a request, Torlek scans its command line, and the shell scripts it runs or sources, for known-risky patterns (#1388).
+Each finding is one line, high ones first, with the matching text in backticks and, in a script, its file and line: "High: runs code it downloads in ./setup.sh:4: `curl -fsSL … | sh`".
+The pane shows three and "… N more findings (m shows them)"; `m` shows them all, and `torlek approval show ID` lists them all.
+A command with none reads "Scan: no known risky pattern", which proves nothing safe: only these rules were checked.
+The high rules: code it downloads or decodes is run (`curl … | sh`, `bash -c "$(curl …)"`, `base64 -d | sh`, a downloaded file run later); secrets are read (`~/.ssh`, `~/.aws`, `~/.config/gh`, a browser profile, a `.env` outside the project); a file that runs code later is written (shell startup files, autostart, systemd units, cron, sudoers, `.git/hooks` outside the project, `crontab`, `systemctl enable`); a file is made setuid, setgid or root's; home, a folder above it, `/` or a top folder of `/` is deleted; and sudo runs a file the session can edit.
+What it cannot resolve without running the command (`eval "$X"`, `"$(cmd)" args`, a script fed through a pipe) is the warning "can't tell what runs", never clean.
+Scripts in another language, scripts found on `PATH` and scripts a script runs are not read.
+The findings are kept with the request and your decision.
+
+When a command's `sudo` would run, as root, a file the asking session can edit, the request finds "sudo runs a file this session can edit" (#1383): in the pane, in `torlek approval show ID` and on the phone.
 That covers the program sudo runs, a script handed to a shell or interpreter (`sudo bash x.sh`, `sudo sh -c './x.sh'`, `sudo python3 x.py`, a heredoc or `< x.sh` fed to a shell), a makefile or justfile `sudo make` or `sudo just` reads, a link to a system program, and a file not created yet that the session could create.
 A sandboxed session can edit what its sandbox binds read-write; an unsandboxed one, anything whose folders are not root's alone.
 Press `m` on the request to read each file's SHA-256 and first 200 lines as they are now; a file that changed since the agent asked is named.
 Your approval names each file as your view of the request read it: if one changed between that read and the approval, the approval is refused and you read the request again.
 A file that changed since the agent asked refuses the run, "./x.sh changed since it was asked", and so does one that changed between your approval and the run, "./x.sh changed after you approved"; the agent must ask again.
-A command line Torlek cannot resolve (`sudo $CMD`, `sudo "$(which foo)"`, `curl … | sudo sh`, `sudo -s`, `xargs sudo`, `pushd`, a glob, `python3 -m`), or a file it cannot read as a regular file in 10 seconds, is marked "can't tell what runs as root".
+A command line Torlek cannot resolve (`sudo $CMD`, `sudo "$(which foo)"`, `curl … | sudo sh`, `sudo -s`, `xargs sudo`, `pushd`, a glob, `python3 -m`), or a file it cannot read as a regular file in 10 seconds, finds "can't tell what runs as root".
 Neither blocks the request: the flag warns, you decide.
 The limits: words resolve through the daemon's `PATH`, not sudo's `secure_path`; a program the session puts earlier on that `PATH` later is not watched; files a script runs or sources in turn are not followed; and a file changed between the last hash and the moment it runs is not caught.
 

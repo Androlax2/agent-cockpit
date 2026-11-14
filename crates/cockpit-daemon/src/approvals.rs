@@ -464,6 +464,7 @@ pub(crate) fn route_decision(
                         view.root_runs = Some(root_runs);
                         view.digest = digest;
                     }
+                    view.findings = root_runs::findings_view(run);
                     views.push(view);
                 }
                 Ok(Reply::ApprovalQueue {
@@ -981,6 +982,7 @@ async fn owner_run_reply(run: &RunRequest, runner: &Runner) -> Reply {
         view.root_runs = Some(root_runs);
         view.digest = digest;
     }
+    view.findings = root_runs::findings_view(run);
     Reply::RunRequest {
         request: Box::new(view),
     }
@@ -1122,6 +1124,7 @@ fn run_view(
         sudo_ran_unasked: runner.sudo_ran_unasked(run.id),
         typed_secret_redacted: runner.typed_secret_redacted(run.id),
         root_runs: None,
+        findings: None,
         decision: run.decision.map(|decision| RunDecisionView {
             approved: decision.approved,
             at: decision.at,
