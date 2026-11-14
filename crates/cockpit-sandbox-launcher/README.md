@@ -145,7 +145,7 @@ and `DOCKER_HOST` names it. A spec for a check run, or an engine run as root, is
 ### The project engine's egress
 
 Issue #390, option A (Theo, 2026-11-14). The engine's network namespace has no route out;
-dockerd, and the containers once told it is their proxy (part 6d), reach slirp4netns's
+dockerd, and the containers and builds a session's Docker client points at it, reach slirp4netns's
 `10.0.2.2`, which is that namespace's `127.0.0.1`. `engine-proxy` connects to the relay's socket, refuses it unless its peer is
 `ENGINE_UID`, and asks `egress`. The relay listens on `127.0.0.1:EGRESS_PORT` in the engine's
 namespace and sends the listener over (`handoff::LISTENER_BYTE`), keeping no copy, then holds

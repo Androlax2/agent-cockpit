@@ -436,6 +436,14 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         through: Option<DecidedThroughView>,
     },
+    /// Owner only: grant `project` Docker Hub's pull hosts on 443 always without a request
+    /// (#390), as `containers record` offers, one grant per host: those it holds already are
+    /// left as they are.
+    NetworkGrantDockerHub {
+        project: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<DecidedThroughView>,
+    },
     /// Owner only: revoke a network grant; its open tunnels close.
     NetworkRevoke {
         grant: i64,

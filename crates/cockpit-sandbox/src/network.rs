@@ -309,6 +309,15 @@ impl NetworkTarget {
 /// token binds to for fetches, so the token reaches the project's first sandboxed launch.
 pub const GITHUB_HOST: &str = "github.com";
 
+/// Docker Hub's pull hosts (#390, decided 2026-11-09, B): its registry, its token service and
+/// its blobs' CDN. No default host: a registry takes pushes with a credential the caller
+/// supplies, so the owner grants them per project, at its engine's setup.
+pub const DOCKER_HUB_HOSTS: [&str; 3] = [
+    "registry-1.docker.io",
+    "auth.docker.io",
+    "production.cloudflare.docker.com",
+];
+
 /// Where a request stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkRequestState {
@@ -927,6 +936,46 @@ pub async fn grant_github(
     )
     .await?;
     network_grant(write, id).await
+}
+
+/// The owner grants `project` [`DOCKER_HUB_HOSTS`] on 443 always, without a request: the
+/// answer `containers record` asks for (#390), so the engine's pulls from Docker Hub pass
+/// without a request per host; a blob Docker Hub serves from another host is still refused
+/// and filed. One grant per host, each revoked on its own; a host the project holds already is
+/// left as it is. The caller checks that `project` is registered. Refused, naming the first,
+/// when the project holds them all.
+pub async fn grant_docker_hub(
+    write: &WriteTransaction<'_>,
+    project: &str,
+    through: Option<OwnerClient>,
+    now: i64,
+) -> Result<Vec<NetworkGrant>, NetworkError> {
+    let mut held = None;
+    let mut granted = Vec::new();
+    for host in DOCKER_HUB_HOSTS {
+        let target = NetworkTarget::Host {
+            host: host.to_owned(),
+            port: crate::egress::TLS_PORT,
+        };
+        if let Some(grant) = active_grant(write, project, &target).await? {
+            held.get_or_insert(grant);
+            continue;
+        }
+        let id = new_grant(
+            write,
+            project,
+            &target,
+            None,
+            now,
+            through.map(OwnerClient::as_str),
+        )
+        .await?;
+        granted.push(network_grant(write, id).await?);
+    }
+    match held {
+        Some(grant) if granted.is_empty() => Err(NetworkRefusal::AlreadyGranted { grant }.into()),
+        _ => Ok(granted),
+    }
 }
 
 async fn network_grant(connection: &Connection, id: i64) -> Result<NetworkGrant, NetworkError> {

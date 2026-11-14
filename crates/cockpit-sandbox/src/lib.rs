@@ -51,11 +51,12 @@ pub use native::{
 };
 #[cfg(feature = "persistence")]
 pub use network::{
-    GITHUB_HOST, NETWORK_ALLOW_GRACE_SECONDS, NetworkError, NetworkGrant, NetworkRefusal,
-    NetworkRequest, NetworkRequestState, NetworkTarget, OwnerClient, OwnerDecision, ServiceAsk,
-    allow_network_request, ask_service, asking_network_requests, decided_network_requests,
-    deny_network_request, egress_decisions, file_network_request, file_service_request,
-    grant_github, network_grants, network_request, revoke_network_grant, standing_check_request,
+    DOCKER_HUB_HOSTS, GITHUB_HOST, NETWORK_ALLOW_GRACE_SECONDS, NetworkError, NetworkGrant,
+    NetworkRefusal, NetworkRequest, NetworkRequestState, NetworkTarget, OwnerClient, OwnerDecision,
+    ServiceAsk, allow_network_request, ask_service, asking_network_requests,
+    decided_network_requests, deny_network_request, egress_decisions, file_network_request,
+    file_service_request, grant_docker_hub, grant_github, network_grants, network_request,
+    revoke_network_grant, standing_check_request,
 };
 #[cfg(feature = "persistence")]
 pub use observations::{ObservationError, record_observations};

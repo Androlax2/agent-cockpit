@@ -300,7 +300,7 @@ const MAX_COMPOSE_BYTES: u64 = 1024 * 1024;
 
 /// Each of [`cockpit_readiness::COMPOSE_FILES`] in `dir`. An agent writes the checkout, so a
 /// file is read only as a plain file of its own, never through a symbolic link. Blocks.
-fn compose_files(dir: &Path) -> Vec<cockpit_readiness::ComposeFile> {
+pub(crate) fn compose_files(dir: &Path) -> Vec<cockpit_readiness::ComposeFile> {
     cockpit_readiness::COMPOSE_FILES
         .iter()
         .filter_map(|name| {

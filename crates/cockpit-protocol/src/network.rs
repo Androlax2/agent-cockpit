@@ -88,8 +88,8 @@ pub struct NetworkGrantView {
     pub allows: NetworkTargetView,
     /// `host:port`, or the service's whole record.
     pub target: String,
-    /// The request whose decision created it; `None` for the github.com grant the owner made
-    /// without a request (#1256).
+    /// The request whose decision created it; `None` for a grant the owner made without a
+    /// request: github.com (#1256) or Docker Hub's pull hosts (#390).
     pub request: Option<i64>,
     pub granted: NetworkDecisionView,
     pub revoked: Option<NetworkDecisionView>,

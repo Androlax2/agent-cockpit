@@ -167,6 +167,23 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
                     grant: Box::new(grant_view(&granted)),
                 })
             }
+            Command::NetworkGrantDockerHub { project, through } => {
+                let write = database.write().await?;
+                registered(&write, &project).await?;
+                let granted = cockpit_sandbox::grant_docker_hub(
+                    &write,
+                    &project,
+                    through.map(owner_client),
+                    now(),
+                )
+                .await?;
+                write.commit().await?;
+                decided.notify_one();
+                tracing::info!(grants = granted.len(), %project, "the owner granted Docker Hub");
+                Ok(Reply::NetworkGrants {
+                    grants: granted.iter().map(grant_view).collect(),
+                })
+            }
             Command::NetworkRevoke { grant, through } => {
                 let write = database.write().await?;
                 let revoked = cockpit_sandbox::revoke_network_grant(

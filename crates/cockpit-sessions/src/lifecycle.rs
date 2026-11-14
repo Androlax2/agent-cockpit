@@ -2403,6 +2403,25 @@ impl Sessions {
         let engine = self
             .launch_engine(setting, &output_project, &checkout.path)
             .await;
+        {
+            let engines = engine
+                .as_ref()
+                .and_then(|_| self.project_engines.get())
+                .map(Arc::clone);
+            let reading = checkout.path.clone();
+            let session_temp = temp_dir.clone();
+            let counted = TerminalStep::start(&self.session_lock(id));
+            self.blocking("configure the session's Docker client", move || {
+                let _counted = counted;
+                let config = engines.map(|engines| engines.docker_client_config(&reading));
+                set_docker_client_config(&session_temp, config.as_deref())
+            })
+            .await?;
+        }
+        let environment = match engine {
+            Some(_) => with_session_docker_config(environment, &temp_dir),
+            None => environment,
+        };
         let environment = match self.launch_port_block(setting, id, &output_project).await? {
             Some(block) => with_container_ports(environment, &output_project, id, block),
             None => environment,
@@ -4467,7 +4486,44 @@ fn kept_account(
 /// denies the owner's `~/.docker/config.json`, and `docker` warns on every call while that
 /// file is unreadable; an empty folder has nothing to warn about and nothing to widen.
 fn docker_config_dir(temp_dir: &Path) -> PathBuf {
-    temp_dir.join("docker-config")
+    temp_dir.join(DOCKER_CONFIG_FOLDER)
+}
+
+/// The name of [`docker_config_dir`] in the session's temp folder.
+const DOCKER_CONFIG_FOLDER: &str = "docker-config";
+
+/// `environment` with the session's own `DOCKER_CONFIG`, in place of one a launcher provides,
+/// for a launch that reaches its project's engine (#390 part 6d): only the session's names
+/// the engine's proxy, the one way out the engine's containers and builds have.
+fn with_session_docker_config(
+    mut environment: Vec<(OsString, OsString)>,
+    temp_dir: &Path,
+) -> Vec<(OsString, OsString)> {
+    environment.retain(|(name, _)| name != "DOCKER_CONFIG");
+    environment.push(("DOCKER_CONFIG".into(), docker_config_dir(temp_dir).into()));
+    environment
+}
+
+/// The Docker client's configuration file in its `DOCKER_CONFIG` folder.
+const DOCKER_CLIENT_CONFIG: &str = "config.json";
+
+/// Writes `config` as the session's Docker client configuration in `temp_dir`'s
+/// [`docker_config_dir`] (#390 part 6d), or removes the one an earlier launch wrote when this
+/// launch reaches no engine. The session's agent writes that folder, so neither it nor the
+/// file is followed through a link; the file is replaced whole, so a `docker login` the agent
+/// made there is gone at its next launch.
+fn set_docker_client_config(temp_dir: &Path, config: Option<&str>) -> Result<(), Error> {
+    cockpit_projects::replace_agent_folder_file(
+        temp_dir,
+        DOCKER_CONFIG_FOLDER,
+        DOCKER_CLIENT_CONFIG,
+        config,
+    )
+    .map_err(|source| Error::Io {
+        action: if config.is_some() { "write" } else { "remove" },
+        path: docker_config_dir(temp_dir).join(DOCKER_CLIENT_CONFIG),
+        source,
+    })
 }
 
 /// A launch's bound credentials file (#832), removed if the launch returns before its agent is
@@ -5209,6 +5265,52 @@ fn forward_of(service: cockpit_config::Service) -> cockpit_sandbox::Forward {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #390 part 6d: the Docker client a session runs gives the engine's containers and
+    /// builds what the engine names as their proxy.
+    #[test]
+    fn a_launch_reaching_an_engine_gives_its_docker_client_the_engines_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker_config = docker_config_dir(temp.path());
+        std::fs::create_dir(&docker_config).unwrap();
+
+        set_docker_client_config(temp.path(), Some("{\"proxies\":{}}")).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(docker_config.join(DOCKER_CLIENT_CONFIG)).unwrap(),
+            "{\"proxies\":{}}"
+        );
+    }
+
+    /// A relaunch that reaches no engine leaves no proxy its last launch was told.
+    #[test]
+    fn a_launch_reaching_no_engine_leaves_its_docker_client_unconfigured() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker_config = docker_config_dir(temp.path());
+        std::fs::create_dir(&docker_config).unwrap();
+        set_docker_client_config(temp.path(), Some("{}")).unwrap();
+
+        set_docker_client_config(temp.path(), None).unwrap();
+        set_docker_client_config(temp.path(), None).unwrap();
+
+        assert!(!docker_config.join(DOCKER_CLIENT_CONFIG).exists());
+    }
+
+    /// A launcher's own `DOCKER_CONFIG` names a proxy the engine's containers cannot reach.
+    #[test]
+    fn a_launch_reaching_an_engine_gives_its_docker_client_the_sessions_configuration() {
+        let provided = vec![("DOCKER_CONFIG".into(), "/launcher/docker".into())];
+        let environment = with_temp_dir(provided, Path::new("/session/tmp"));
+
+        let environment = with_session_docker_config(environment, Path::new("/session/tmp"));
+
+        let docker_configs: Vec<_> = environment
+            .iter()
+            .filter(|(name, _)| name == "DOCKER_CONFIG")
+            .collect();
+        assert_eq!(docker_configs.len(), 1);
+        assert_eq!(docker_configs[0].1, "/session/tmp/docker-config");
+    }
 
     #[test]
     fn a_provided_docker_config_is_kept() {

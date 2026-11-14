@@ -1,10 +1,10 @@
 //! Network requests and the owner's decisions on them (#674), through the crate's storage API.
 
 use cockpit_sandbox::{
-    AllowEntry, AllowSource, AskedDestination, AskingDestination, DeniedDestination,
-    EgressDecisions, GITHUB_HOST, MIGRATIONS, NETWORK_ALLOW_GRACE_SECONDS, NetworkError,
-    NetworkGrant, NetworkRefusal, NetworkRequest, NetworkRequestState, NetworkTarget, OwnerClient,
-    OwnerDecision, ServiceAsk, Subject, Target,
+    AllowEntry, AllowSource, AskedDestination, AskingDestination, DOCKER_HUB_HOSTS,
+    DeniedDestination, EgressDecisions, GITHUB_HOST, MIGRATIONS, NETWORK_ALLOW_GRACE_SECONDS,
+    NetworkError, NetworkGrant, NetworkRefusal, NetworkRequest, NetworkRequestState, NetworkTarget,
+    OwnerClient, OwnerDecision, ServiceAsk, Subject, Target,
 };
 use cockpit_sandbox::{AllowedService, AskedService, DecidedService, Endpoint, Forward};
 use cockpit_turso::Database;
@@ -69,6 +69,15 @@ impl Store {
         let write = self.database.write().await.unwrap();
         let granted =
             cockpit_sandbox::grant_github(&write, project, Some(OwnerClient::Cli), DECIDED_AT)
+                .await?;
+        write.commit().await.unwrap();
+        Ok(granted)
+    }
+
+    async fn grant_docker_hub(&self, project: &str) -> Result<Vec<NetworkGrant>, NetworkError> {
+        let write = self.database.write().await.unwrap();
+        let granted =
+            cockpit_sandbox::grant_docker_hub(&write, project, Some(OwnerClient::Cli), DECIDED_AT)
                 .await?;
         write.commit().await.unwrap();
         Ok(granted)
@@ -366,6 +375,92 @@ async fn a_github_grant_without_a_request_allows_the_projects_sessions_only() {
         .await
         .unwrap();
     assert_eq!(filed, None, "the grant covers it");
+}
+
+/// #390, decided 2026-11-09 (B): Docker Hub's pull hosts are no default host; the owner
+/// grants them a project at its engine's setup, each a grant revoked on its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn docker_hub_is_granted_a_project_as_one_grant_per_pull_host() {
+    let store = store().await;
+
+    let granted = store.grant_docker_hub("app").await.unwrap();
+
+    let hosts: Vec<_> = granted
+        .iter()
+        .map(|grant| (grant.project.as_str(), grant.target.clone(), grant.request))
+        .collect();
+    let expected: Vec<_> = DOCKER_HUB_HOSTS
+        .iter()
+        .map(|host| {
+            let target = NetworkTarget::Host {
+                host: (*host).to_owned(),
+                port: 443,
+            };
+            ("app", target, None)
+        })
+        .collect();
+    assert_eq!(hosts, expected);
+    let allowed: Vec<_> = store
+        .decisions("s1", "app")
+        .await
+        .allowed
+        .into_iter()
+        .map(|entry| (entry.target, entry.port))
+        .collect();
+    let docker_hub: Vec<_> = DOCKER_HUB_HOSTS
+        .iter()
+        .map(|host| (Target::Name((*host).to_owned()), 443))
+        .collect();
+    assert_eq!(allowed, docker_hub);
+    assert_eq!(
+        store.decisions("s2", "other").await,
+        EgressDecisions::default()
+    );
+}
+
+#[test]
+fn docker_hubs_pull_hosts_are_its_registry_auth_and_blob_hosts() {
+    assert_eq!(
+        DOCKER_HUB_HOSTS,
+        [
+            "registry-1.docker.io",
+            "auth.docker.io",
+            "production.cloudflare.docker.com"
+        ]
+    );
+}
+
+/// A host the owner allowed always already keeps its grant; only the others are added.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_docker_hub_grant_adds_only_the_pull_hosts_the_project_does_not_hold() {
+    let store = store().await;
+    let first = store.grant_docker_hub("app").await.unwrap();
+    let write = store.database.write().await.unwrap();
+    cockpit_sandbox::revoke_network_grant(&write, first[1].id, None, DECIDED_AT)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let again = store.grant_docker_hub("app").await.unwrap();
+
+    assert_eq!(again.len(), 1, "{again:?}");
+    assert_eq!(again[0].target, first[1].target);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_docker_hub_grant_the_project_holds_whole_is_refused_naming_the_first() {
+    let store = store().await;
+    let first = store.grant_docker_hub("app").await.unwrap();
+
+    let again = store.grant_docker_hub("app").await;
+
+    assert!(
+        matches!(
+            &again,
+            Err(NetworkError::Refused(NetworkRefusal::AlreadyGranted { grant })) if *grant == first[0].id
+        ),
+        "{again:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

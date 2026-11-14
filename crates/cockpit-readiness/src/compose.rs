@@ -114,6 +114,37 @@ pub fn scan(text: &str) -> Vec<ComposeFinding> {
     findings
 }
 
+/// The services `text` defines: each key directly under its top-level `services:`, the name
+/// other containers of the compose project reach the service by.
+pub fn service_names(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut is_services = false;
+    let mut service_indent = None;
+    for raw in text.lines() {
+        let line = without_comment(raw);
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed == "---" {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent == 0 {
+            is_services = matches!(key_value(trimmed), Some(("services", _)));
+            continue;
+        }
+        if !is_services || *service_indent.get_or_insert(indent) != indent {
+            continue;
+        }
+        let Some((key, _)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let name = unquoted(key);
+        if is_word(name) {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
 enum Section {
     /// Top-level `volumes:` or `networks:`.
     Named(NamedSection),
@@ -236,12 +267,16 @@ fn literal_port(text: &str) -> Option<String> {
 /// `key: value` or `key:`, the key a plain word: not a quoted string or a list item.
 fn key_value(text: &str) -> Option<(&str, &str)> {
     let (key, value) = text.split_once(':')?;
-    let is_word = !key.is_empty()
-        && key
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || "_-.".contains(character));
     let is_mapping = value.is_empty() || value.starts_with(' ');
-    (is_word && is_mapping).then(|| (key, value.trim()))
+    (is_word(key) && is_mapping).then(|| (key, value.trim()))
+}
+
+/// A plain key: letters, digits, `_`, `-` and `.`, as a compose service is named.
+fn is_word(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "_-.".contains(character))
 }
 
 fn unquoted(text: &str) -> &str {

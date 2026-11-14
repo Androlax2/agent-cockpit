@@ -2,7 +2,7 @@
 //! the scan names the line of each fixed name and literal host port, and readiness the
 //! variable form that fixes it.
 
-use cockpit_readiness::{ComposeFinding, ComposeProblem, scan};
+use cockpit_readiness::{ComposeFinding, ComposeProblem, scan, service_names};
 
 fn literal(line: usize, port: &str) -> ComposeFinding {
     ComposeFinding {
@@ -168,4 +168,38 @@ fn a_fixed_name_is_found_on_the_last_entry_and_before_the_next_section() {
             },
         ]
     );
+}
+
+#[test]
+fn a_compose_files_service_names_are_the_keys_directly_under_services() {
+    for (case, text, expected) in [
+        (
+            "two services",
+            "services:\n  web:\n    image: nginx\n  db:\n    image: postgres\n",
+            vec!["web", "db"],
+        ),
+        (
+            "keys deeper than a service are not services",
+            "services:\n  web:\n    environment:\n      api: http://db\n  db:\n    image: postgres\n",
+            vec!["web", "db"],
+        ),
+        (
+            "other top-level sections are not services",
+            "volumes:\n  data:\nservices:\n  web:\n    image: nginx\nnetworks:\n  front:\n",
+            vec!["web"],
+        ),
+        (
+            "comments, blank lines and quoted keys",
+            "# app\nservices:\n\n  web: # front\n    image: nginx\n  \"worker\":\n    image: app\n",
+            vec!["web", "worker"],
+        ),
+        (
+            "windows line endings",
+            "services:\r\n  web:\r\n    image: nginx\r\n",
+            vec!["web"],
+        ),
+        ("no services", "volumes:\n  data:\n", vec![]),
+    ] {
+        assert_eq!(service_names(text), expected, "{case}");
+    }
 }

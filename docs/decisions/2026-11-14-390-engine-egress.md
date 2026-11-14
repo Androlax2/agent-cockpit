@@ -6,8 +6,13 @@ Issue #390, part 6 (the egress design of #856, Q4 A and Q5 A). Decided by Theo t
 coordinator, answering the worker's proposals. Built so far: the relay's hand-off, the
 `engine-proxy` verb and the engine unit (part 6b), and the daemon running one proxy per
 recorded engine, ended by its pipe when the daemon stops (part 6c,
-`crates/cockpit-daemon/src/engine_proxies.rs`). Proposed until built: the containers' proxy
-configuration (part 6d).
+`crates/cockpit-daemon/src/engine_proxies.rs`), and the containers' proxy configuration
+(part 6d): a session reaching its engine gets a Docker client `config.json` whose `proxies`
+give the containers and builds it runs `HTTP(S)_PROXY` at the engine's proxy, with
+`NO_PROXY` loopback plus the compose service names its checkout defines at launch
+(`cockpit_containers::engine_client_config`), and Docker Hub's pull hosts are one
+revocable per-project grant the owner gives with `torlek network grant PROJECT docker-hub`
+or at `torlek containers record` (`cockpit_sandbox::grant_docker_hub`).
 
 - **The daemon runs one proxy per engine; the relay hands it the listener** (A). The relay
   unit, in the engine's network namespace, listens on `127.0.0.1:3128` there when the owner's

@@ -5,6 +5,7 @@
 //! offered so, as `project add` does.
 
 use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use cockpit_protocol::{
@@ -28,7 +29,7 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Command, String> {
         ["grants", project] => Command::NetworkGrants {
             project: Some((*project).to_owned()),
         },
-        ["grant", project, host] => grant_github(project, host)?,
+        ["grant", project, host] => grant_without_request(project, host)?,
         ["revoke", grant] => Command::NetworkRevoke {
             grant: id_of(grant)?,
             through: Some(DecidedThroughView::Cli),
@@ -50,17 +51,30 @@ fn allow(id: &str, always: bool) -> Result<Command, String> {
 pub(crate) const GITHUB_HOST: &str = "github.com";
 const GITHUB_PORT: u16 = 443;
 
-/// Only github.com is granted without a request: any other host is decided on the request a
-/// session's refusal filed, so the owner sees who asked for it.
-fn grant_github(project: &str, host: &str) -> Result<Command, String> {
+/// The word `network grant` takes for Docker Hub's pull hosts (#390).
+pub(crate) const DOCKER_HUB: &str = "docker-hub";
+
+/// Only github.com and Docker Hub's pull hosts are granted without a request: any other host
+/// is decided on the request a refusal filed, so the owner sees who asked for it.
+fn grant_without_request(project: &str, host: &str) -> Result<Command, String> {
+    if host == DOCKER_HUB {
+        return Ok(docker_hub_grant_command(project));
+    }
     if host != GITHUB_HOST {
         return Err(format!(
-            "only {} is granted without a request, not {host}; allow another host from its \
-             request with `torlek network allow ID --always`",
-            GITHUB_HOST
+            "only {GITHUB_HOST} and {DOCKER_HUB} are granted without a request, not {host}; \
+             allow another host from its request with `torlek network allow ID --always`"
         ));
     }
     Ok(github_grant_command(project))
+}
+
+/// The command that grants `project` Docker Hub's pull hosts always, from this client.
+pub(crate) fn docker_hub_grant_command(project: &str) -> Command {
+    Command::NetworkGrantDockerHub {
+        project: project.to_owned(),
+        through: Some(DecidedThroughView::Cli),
+    }
 }
 
 /// The command that grants `project` github.com always, from this client.
@@ -80,6 +94,88 @@ pub(crate) fn holds_github_grant(grants: &[NetworkGrantView], project: &str) -> 
         );
         grant.project == project && is_github && grant.revoked.is_none()
     })
+}
+
+/// The hosts the daemon grants for `network grant PROJECT docker-hub`, on 443. The daemon's
+/// list is `cockpit_sandbox::DOCKER_HUB_HOSTS`; the CLI keeps its own copy, as it does
+/// [`GITHUB_HOST`], since it does not depend on the sandbox crate.
+pub(crate) const DOCKER_HUB_HOSTS: [&str; 3] = [
+    "registry-1.docker.io",
+    "auth.docker.io",
+    "production.cloudflare.docker.com",
+];
+
+/// Whether `project` holds an active grant of each of Docker Hub's pull hosts among `grants`.
+pub(crate) fn holds_docker_hub(grants: &[NetworkGrantView], project: &str) -> bool {
+    DOCKER_HUB_HOSTS.iter().all(|docker_hub| {
+        grants.iter().any(|grant| {
+            let is_host = matches!(
+                &grant.allows,
+                NetworkTargetView::Host { host, port } if host == docker_hub && *port == 443
+            );
+            grant.project == project && is_host && grant.revoked.is_none()
+        })
+    })
+}
+
+/// A grant offered once, after the verb it follows succeeded (#1256, #390).
+pub(crate) struct GrantOffer<'offer> {
+    pub(crate) project: &'offer str,
+    /// Printed when the project's grants cannot be read.
+    pub(crate) not_offered: String,
+    /// Whether the project already holds the grant, so nothing is offered.
+    pub(crate) holds: fn(&[NetworkGrantView], &str) -> bool,
+    /// The `[y/N]` question asked on a terminal.
+    pub(crate) question: String,
+    /// The command that grants later, named whenever nothing is granted.
+    pub(crate) offer: String,
+    pub(crate) grant: Command,
+}
+
+/// Asks `offer` on a terminal, where declining is the default; elsewhere only names it, so a
+/// script never grants. The verb it follows succeeded either way, so only a grant the owner
+/// said yes to and that failed exits 1.
+pub(crate) fn offer_grant(offer: GrantOffer<'_>) -> ExitCode {
+    let not_offered = || {
+        eprintln!("{}", offer.not_offered);
+        ExitCode::SUCCESS
+    };
+    let Ok(reply) = crate::daemon::request(
+        Command::NetworkGrants {
+            project: Some(offer.project.to_owned()),
+        },
+        crate::daemon::CONTROL_DEADLINE,
+    ) else {
+        return not_offered();
+    };
+    let Reply::NetworkGrants { grants } = &reply else {
+        crate::daemon::unexpected(&reply);
+        return not_offered();
+    };
+    if (offer.holds)(grants, offer.project) {
+        return ExitCode::SUCCESS;
+    }
+    let is_interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    if !is_interactive {
+        eprintln!("{}", offer.offer);
+        return ExitCode::SUCCESS;
+    }
+    eprint!("{} [y/N] ", offer.question);
+    let mut answer = String::new();
+    if let Err(error) = std::io::stdin().read_line(&mut answer) {
+        eprintln!("no answer read ({error}): not granted. {}", offer.offer);
+        return ExitCode::SUCCESS;
+    }
+    if !is_yes(&answer) {
+        eprintln!("not granted. {}", offer.offer);
+        return ExitCode::SUCCESS;
+    }
+    run(offer.grant)
+}
+
+/// Only `y` or `yes`, in any case, grants; an empty line or anything else declines.
+fn is_yes(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// Whether the owner's configuration may sandbox sessions, so a network grant matters: not
@@ -296,5 +392,20 @@ fn state_name(state: NetworkRequestStateView) -> &'static str {
         NetworkRequestStateView::AllowedOnce => "allowed-once",
         NetworkRequestStateView::AllowedAlways => "allowed-always",
         NetworkRequestStateView::Denied => "denied",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_yes;
+
+    #[test]
+    fn only_y_or_yes_accepts_an_offered_grant() {
+        for accepted in ["y\n", "Y\n", "yes\n", " YES \r\n"] {
+            assert!(is_yes(accepted), "{accepted:?}");
+        }
+        for declined in ["\n", "", "n\n", "no\n", "yep\n", "y es\n"] {
+            assert!(!is_yes(declined), "{declined:?}");
+        }
     }
 }

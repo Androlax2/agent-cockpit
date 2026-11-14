@@ -210,7 +210,7 @@ torlek network grant PROJECT github.com   # all of github.com:443 for the projec
 ```
 
 Fetches then work from the first launch. Pushes stay refused, and `torlek network revoke GRANT` takes the grant back.
-github.com is the only host granted without a request.
+Only github.com and Docker Hub's pull hosts (below) are granted without a request.
 
 ### A project's container engine
 
@@ -222,7 +222,15 @@ sudo sh ~/.local/state/torlek/containers/torlek-e3-setup.sh
 torlek containers record PROJECT   # records the engine that now answers as the project's
 ```
 
-The engine sees only the project's checkout and clones folder, and no network yet. Its one way out is port 3128 of the engine's own network (`10.0.2.2:3128` from its containers), served by a proxy the Torlek daemon runs for each recorded engine (#390). That proxy passes only the hosts you allowed always for the project; a host it refuses shows in `torlek network list` as a request of the project's containers, which you allow always or deny. While the daemon is stopped the port is closed, so the engine's pulls fail instead of reaching out. `torlek doctor --project DIR` shows the proxy as `container egress`. Docker's pulls go through it now; the containers themselves do not use it yet. The engine's containers can reach that port and the engine's own published ports, but nothing else on your host and no other project's engine. An engine set up before this release needs its setup script run again to get that port.
+On a terminal, `torlek containers record` then offers Docker Hub once (`y` grants, Enter declines): `registry-1.docker.io`, `auth.docker.io` and `production.cloudflare.docker.com` on 443, one "allow always" grant each for the project, which `torlek network revoke GRANT` takes back one by one. Docker Hub is no default host because a registry also takes pushes made with a credential the caller supplies. Elsewhere it is only named:
+
+```sh
+torlek network grant PROJECT docker-hub   # Docker Hub's pull hosts for the project
+```
+
+Without it, the engine's first pull from Docker Hub files a request per host. A blob served from a host not on that list is refused and filed the same way.
+
+The engine sees only the project's checkout and clones folder, and no network yet. Its one way out is port 3128 of the engine's own network (`10.0.2.2:3128` from its containers), served by a proxy the Torlek daemon runs for each recorded engine (#390). That proxy passes only the hosts you allowed always for the project; a host it refuses shows in `torlek network list` as a request of the project's containers, which you allow always or deny. While the daemon is stopped the port is closed, so the engine's pulls fail instead of reaching out. `torlek doctor --project DIR` shows the proxy as `container egress`. Docker's pulls go through it, and so do the containers and builds a sandboxed session runs: its Docker client tells them the proxy, keeping loopback and the compose service names its checkout defines direct, since those stay on the engine's own network. The names are read when the session launches: a service added later goes through the proxy, is refused and filed, until the session is launched again. The engine's containers can reach that port and the engine's own published ports, but nothing else on your host and no other project's engine. An engine set up before this release needs its setup script run again to get that port.
 Beside it, `torlek-engine-relay@<user>.service` runs your installed `torlek-sandbox` as the engine's user, inside the engine's network namespace, to relay you to the ports the engine published; it serves your user alone.
 It runs the program from your install, read-only, so an upgrade applies when the engine restarts; the trade-off is that whatever can write your Torlek install can run as the project's engine user.
 Run the setup script again if Torlek's programs move.
