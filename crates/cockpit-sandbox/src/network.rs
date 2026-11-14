@@ -215,7 +215,7 @@ pub(crate) const CHECK_SUBJECTS_MIGRATION_SQL: &str =
 /// The `sandbox` migration set's version 8 (#390, #856 Q4): the proxy of a project's engine
 /// files its containers' requests; the row's subject is the project. Like a check's, none is
 /// allowed once: the engine outlives sessions, and "once" would last until a reboot with no
-/// grant to revoke.
+/// grant to revoke. They ask for hosts only: an engine's proxy serves no forward.
 pub(crate) const CONTAINERS_SUBJECTS_MIGRATION_SQL: &str =
     "CREATE TABLE sandbox_network_requests_containers (
         id INTEGER PRIMARY KEY,
@@ -244,7 +244,8 @@ pub(crate) const CONTAINERS_SUBJECTS_MIGRATION_SQL: &str =
         CHECK ((kind = 'service') = (record IS NOT NULL)),
         CHECK ((subject_kind = 'check') = (subject_check IS NOT NULL)),
         CHECK (subject_kind = 'session' OR state <> 'allowed-once'),
-        CHECK (subject_kind <> 'containers' OR subject = project)
+        CHECK (subject_kind <> 'containers' OR subject = project),
+        CHECK (subject_kind <> 'containers' OR kind = 'host')
     );
     INSERT INTO sandbox_network_requests_containers (id, subject_kind, subject, subject_check,
             project, kind, host, port, service, record, state, asked_at, decided_at,
@@ -483,6 +484,12 @@ impl std::fmt::Display for NetworkRefusal {
 pub enum NetworkError {
     Refused(NetworkRefusal),
     InvalidRow(String),
+    /// A project's containers asked as another project: the caller's bug, not the owner's
+    /// refusal (#390).
+    OtherProject {
+        containers: String,
+        project: String,
+    },
     Sql(cockpit_turso::sql::Error),
 }
 
@@ -493,6 +500,13 @@ impl std::fmt::Display for NetworkError {
             NetworkError::InvalidRow(reason) => {
                 write!(formatter, "a stored network row is invalid: {reason}")
             }
+            NetworkError::OtherProject {
+                containers,
+                project,
+            } => write!(
+                formatter,
+                "the containers of project {containers} asked as project {project}"
+            ),
             NetworkError::Sql(error) => write!(formatter, "network requests database: {error}"),
         }
     }
@@ -619,8 +633,9 @@ async fn standing_request(
     target: &NetworkTarget,
 ) -> Result<Option<NetworkRequest>, NetworkError> {
     let (kind, host, port, service, record) = target.columns();
+    let (subject_kind, subject_id) = subject_columns(subject);
     let mut standing = match subject {
-        Subject::Session { session } | Subject::Containers { project: session } => {
+        Subject::Session { .. } | Subject::Containers { .. } => {
             connection
                 .query(
                     &format!(
@@ -629,15 +644,7 @@ async fn standing_request(
                             AND host IS ?4 AND port IS ?5 AND service IS ?6 AND record IS ?7
                             AND state IN ('asking', 'allowed-once', 'denied')"
                     ),
-                    (
-                        subject_columns(subject).0,
-                        session.as_str(),
-                        kind,
-                        host,
-                        port,
-                        service,
-                        record,
-                    ),
+                    (subject_kind, subject_id, kind, host, port, service, record),
                 )
                 .await?
         }
@@ -688,6 +695,14 @@ async fn insert_request(
     reason: Option<&str>,
     now: i64,
 ) -> Result<NetworkRequest, NetworkError> {
+    if let Subject::Containers { project: asking } = subject
+        && asking != project
+    {
+        return Err(NetworkError::OtherProject {
+            containers: asking.clone(),
+            project: project.to_owned(),
+        });
+    }
     let (subject_kind, subject_id) = subject_columns(subject);
     let subject_check = match subject {
         Subject::Session { .. } | Subject::Containers { .. } => None,

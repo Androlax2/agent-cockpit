@@ -95,8 +95,8 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
                         .filter(|request| match &request.subject {
                             Subject::Session { session } => live.contains_key(session),
                             // A run ends long before the owner reads its request, which
-                            // stands for its check's next runs (#352); a project's containers
-                            // keep asking while its engine runs (#390).
+                            // stands for its check's next runs (#352); a project's containers'
+                            // request stands until the owner decides it, like a check's (#390).
                             Subject::Check { .. } | Subject::Containers { .. } => true,
                         })
                         .map(request_view)

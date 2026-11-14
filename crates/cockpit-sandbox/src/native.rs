@@ -1037,7 +1037,9 @@ fn subject(subject: &Subject, profile: &Profile) -> String {
             "subject: check run {run} of check {check}; no provider, agent socket, launch token \
              or session identity"
         ),
-        Subject::Containers { project } => format!("subject: containers of project {project}"),
+        Subject::Containers { .. } => {
+            unreachable!("LaunchSpec::validate refuses a launch for a project's containers")
+        }
     }
 }
 
@@ -1075,7 +1077,7 @@ fn evidence(
             match spec.subject {
                 Subject::Session { .. } => "the session's own folder, kept across its relaunches,",
                 Subject::Check { .. } => "the run's own folder",
-                Subject::Containers { .. } => "the containers' folder",
+                Subject::Containers { .. } => unreachable!("LaunchSpec::validate refuses a launch for a project's containers"),
             },
             spec.home_source.display()
         ),
@@ -1232,10 +1234,9 @@ fn evidence(
         Subject::Check { run, .. } => {
             (&format!("check-{run}"), format!("subject: check run {run}"))
         }
-        Subject::Containers { project } => (
-            &format!("containers-{project}"),
-            format!("subject: containers of project {project}"),
-        ),
+        Subject::Containers { .. } => {
+            unreachable!("LaunchSpec::validate refuses a launch for a project's containers")
+        }
     };
     Evidence {
         enforcement: Enforcement::Sandboxed {
