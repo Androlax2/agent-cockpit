@@ -92,10 +92,15 @@ launch, `torlek doctor` and `torlek init` say so.
    before the owner decides, so a check's request is filed once per project, check, host
    and port, whichever run asked, stands while asking or denied, and is never allowed once
    (`NetworkRefusal::OnceForACheck`, and a unique index and a constraint in the store);
-   `standing_check_request` is what decides a host for the check's next run. Only a session
-   asks ahead for a service. The owner's `allow_network_request` (for the rest of the
-   session, or `always`: a project grant for that host and port), `deny_network_request` and `revoke_network_grant` record who decided, when and through
-   which client; an allow within `NETWORK_ALLOW_GRACE_SECONDS` of the request is refused.
+   `standing_check_request` is what decides a host for the check's next run. Since
+   migration 8 the subject can be a project's containers too (#390, `Subject::Containers`),
+   filed by the proxy of the project's engine: the row's subject is the project, one request
+   stands per project, host and port, it asks for hosts only, and it is never allowed once
+   either, since the engine outlives sessions (`NetworkRefusal::OnceForContainers`); a
+   launch spec naming them is refused. Only a session asks ahead for a service. The owner's
+   `allow_network_request` (for the rest of the session, or `always`: a project grant for
+   that host and port), `deny_network_request` and `revoke_network_grant` record who
+   decided, when and through which client; an allow within `NETWORK_ALLOW_GRACE_SECONDS` of the request is refused.
    `egress_decisions` is what the session's launcher is given: `Staged::write` writes it
    as `egress-decisions.json`, with the requests still asking, which allow nothing; the
    daemon rewrites it after each decision and each request it files.

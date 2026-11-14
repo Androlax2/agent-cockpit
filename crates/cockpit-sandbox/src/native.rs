@@ -1022,6 +1022,7 @@ fn program_name(subject: &Subject, profile: &Profile) -> String {
     match subject {
         Subject::Session { .. } => profile.provider.clone().unwrap_or_default(),
         Subject::Check { check, .. } => format!("check {check}"),
+        Subject::Containers { project } => format!("containers of project {project}"),
     }
 }
 
@@ -1036,6 +1037,9 @@ fn subject(subject: &Subject, profile: &Profile) -> String {
             "subject: check run {run} of check {check}; no provider, agent socket, launch token \
              or session identity"
         ),
+        Subject::Containers { .. } => {
+            unreachable!("LaunchSpec::validate refuses a launch for a project's containers")
+        }
     }
 }
 
@@ -1073,6 +1077,7 @@ fn evidence(
             match spec.subject {
                 Subject::Session { .. } => "the session's own folder, kept across its relaunches,",
                 Subject::Check { .. } => "the run's own folder",
+                Subject::Containers { .. } => unreachable!("LaunchSpec::validate refuses a launch for a project's containers"),
             },
             spec.home_source.display()
         ),
@@ -1228,6 +1233,9 @@ fn evidence(
         Subject::Session { session } => (session, format!("subject: session {session}")),
         Subject::Check { run, .. } => {
             (&format!("check-{run}"), format!("subject: check run {run}"))
+        }
+        Subject::Containers { .. } => {
+            unreachable!("LaunchSpec::validate refuses a launch for a project's containers")
         }
     };
     Evidence {

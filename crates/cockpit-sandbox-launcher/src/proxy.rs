@@ -956,6 +956,7 @@ impl<U: Upstream> Proxy<U> {
         let subject = match &self.subject {
             Subject::Session { session } => format!("session {session}"),
             Subject::Check { run, check } => format!("check run {run} of check {check}"),
+            Subject::Containers { project } => format!("the containers of project {project}"),
         };
         let target = if destination.is_empty() {
             String::new()

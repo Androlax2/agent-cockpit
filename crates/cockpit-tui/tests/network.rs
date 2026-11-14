@@ -195,6 +195,44 @@ fn check_request(id: i64) -> NetworkRequestView {
     }
 }
 
+fn containers_request(id: i64) -> NetworkRequestView {
+    NetworkRequestView {
+        subject: NetworkSubjectView::Containers {
+            project: "app".to_owned(),
+        },
+        ..asking(id)
+    }
+}
+
+/// #390: the engine outlives sessions, so a containers request is allowed always or denied.
+#[test]
+fn the_pane_names_a_containers_request_and_offers_always_or_deny() {
+    let now = Instant::now();
+    let app = app_asked_for(containers_request(10), now);
+
+    let screen = screen_text(&app, after_grace(now));
+
+    for expected in [
+        "Network request 10 from containers of app (project app)",
+        "Allow always: the project's containers and sessions",
+        "a allow always   x deny",
+    ] {
+        assert!(screen.contains(expected), "{expected:?} not in:\n{screen}");
+    }
+    assert!(!screen.contains("allow once"), "{screen}");
+    assert!(!app.board().needs_you(SESSION));
+}
+
+#[test]
+fn y_on_a_containers_request_sends_nothing() {
+    let now = Instant::now();
+    let mut app = app_asked_for(containers_request(10), now);
+
+    let pressed = app.key(Key::Char('y'), after_grace(now));
+
+    assert_eq!(pressed.send, Vec::new());
+}
+
 #[test]
 fn a_session_with_an_asking_network_request_needs_the_owner() {
     let now = Instant::now();

@@ -49,6 +49,9 @@ pub enum Subject {
     /// A run of a project's check (#862): no provider, agent socket, launch token or session
     /// identity.
     Check { run: String, check: String },
+    /// A project's containers (#390): the proxy of the project's engine asks for them. They
+    /// never launch a sandbox of their own, so no launch spec names them.
+    Containers { project: String },
 }
 
 /// Where the program's declared needs came from (#861): the evidence names it.
@@ -192,13 +195,18 @@ impl std::fmt::Display for InvalidSpec {
 impl std::error::Error for InvalidSpec {}
 
 impl LaunchSpec {
-    /// Refuses a spec the launcher cannot enforce as written: another version, a relative
-    /// path, a Landlock ABI below the floor, a protected or hidden path outside every bound
-    /// folder, a working directory outside the writable ones, a forward the launcher cannot
-    /// serve as written, an allowlist entry that is no host name or address and a port, or a
+    /// Refuses a spec the launcher cannot enforce as written: one for a project's containers
+    /// (#390), another version, a relative path, a Landlock ABI below the floor, a protected
+    /// or hidden path outside every bound folder, a working directory outside the writable
+    /// ones, a forward the launcher cannot serve as written, an allowlist entry that is no host name or address and a port, or a
     /// credential bound to a host neither the allowlist nor the owner's `decisions` at launch
     /// (#674) let through.
     pub fn validate(&self, decisions: &EgressDecisions) -> Result<(), InvalidSpec> {
+        if let Subject::Containers { .. } = self.subject {
+            return Err(InvalidSpec(
+                "a project's containers run in its engine, never in a sandbox launch".to_owned(),
+            ));
+        }
         if self.version != SPEC_VERSION {
             return Err(InvalidSpec(format!(
                 "spec version {} is not this launcher's {SPEC_VERSION}",

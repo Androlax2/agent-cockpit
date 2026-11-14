@@ -35,14 +35,17 @@ pub struct NetworkRequestView {
     pub shown_reason: Option<ShownText>,
 }
 
-/// Who was refused: a session, or a run of a project's check (#352, #862 Q2). A check's
-/// request stands for its next runs, which file no second one; its "allow always" is a
-/// project grant the sessions get too, and it is never allowed once.
+/// Who was refused: a session, a run of a project's check (#352, #862 Q2), or a project's
+/// containers, through its engine's proxy (#390). A check's request stands for its next runs,
+/// which file no second one; its "allow always" is a project grant the sessions get too, and
+/// it is never allowed once. A containers request is never allowed once either: the engine
+/// outlives sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum NetworkSubjectView {
     Session { id: String },
     Check { run: String, check: String },
+    Containers { project: String },
 }
 
 /// What a request asks for and a grant allows, by `kind`: a host and port, or a declared

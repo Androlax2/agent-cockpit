@@ -459,11 +459,12 @@ fn decode<View: serde::de::DeserializeOwned>(
     View::deserialize(state).map_err(|error| error.to_string())
 }
 
-/// The session a network request came from; `None` for a check run's.
+/// The session a network request came from; `None` for a check run's or a project's
+/// containers'.
 fn network_session(request: &NetworkRequestView) -> Option<&str> {
     match &request.subject {
         NetworkSubjectView::Session { id } => Some(id),
-        NetworkSubjectView::Check { .. } => None,
+        NetworkSubjectView::Check { .. } | NetworkSubjectView::Containers { .. } => None,
     }
 }
 
@@ -472,5 +473,6 @@ pub(crate) fn network_requester(request: &NetworkRequestView) -> String {
     match &request.subject {
         NetworkSubjectView::Session { id } => id.clone(),
         NetworkSubjectView::Check { run, check } => format!("check {check} (run {run})"),
+        NetworkSubjectView::Containers { project } => format!("containers of {project}"),
     }
 }

@@ -269,19 +269,24 @@ pub(crate) fn decided(verdict: &str, decision: NetworkDecisionView) -> String {
     )
 }
 
-/// `session ID`, or `check NAME (run RUN)` for a check run's request (#352).
+/// `session ID`, `check NAME (run RUN)` for a check run's request (#352), or
+/// `containers of PROJECT` for a project's containers' (#390).
 fn requester(subject: &NetworkSubjectView) -> String {
     match subject {
         NetworkSubjectView::Session { id } => format!("session {id}"),
-        NetworkSubjectView::Check { .. } => self::subject(subject),
+        NetworkSubjectView::Check { .. } | NetworkSubjectView::Containers { .. } => {
+            self::subject(subject)
+        }
     }
 }
 
-/// The session's id, or `check NAME (run RUN)` for a check run's request (#352).
+/// The session's id, `check NAME (run RUN)` for a check run's request (#352), or
+/// `containers of PROJECT` for a project's containers' (#390).
 fn subject(subject: &NetworkSubjectView) -> String {
     match subject {
         NetworkSubjectView::Session { id } => id.clone(),
         NetworkSubjectView::Check { run, check } => format!("check {check} (run {run})"),
+        NetworkSubjectView::Containers { project } => format!("containers of {project}"),
     }
 }
 

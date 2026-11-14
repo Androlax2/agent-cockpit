@@ -399,6 +399,9 @@ impl Board {
                     NetworkSubjectView::Check { check, .. } => {
                         Some(format!("check {check} of {}", request.project))
                     }
+                    NetworkSubjectView::Containers { project } => {
+                        Some(format!("containers of {project}"))
+                    }
                     NetworkSubjectView::Session { .. } => None,
                 })
                 .unwrap_or_else(|| self.name_of(&raised.session)),
@@ -481,11 +484,11 @@ fn decode<View: serde::de::DeserializeOwned>(
         .map_err(|error| error.to_string())
 }
 
-/// The session a network request came from; `None` for a check run's, which no session waits
-/// on.
+/// The session a network request came from; `None` for a check run's or a project's
+/// containers', which no session waits on.
 fn network_session(request: &NetworkRequestView) -> Option<&str> {
     match &request.subject {
         NetworkSubjectView::Session { id } => Some(id),
-        NetworkSubjectView::Check { .. } => None,
+        NetworkSubjectView::Check { .. } | NetworkSubjectView::Containers { .. } => None,
     }
 }

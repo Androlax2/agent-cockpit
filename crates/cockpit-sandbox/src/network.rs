@@ -212,6 +212,59 @@ pub(crate) const CHECK_SUBJECTS_MIGRATION_SQL: &str =
         ON sandbox_network_requests (subject_kind, subject, service, record)
         WHERE kind = 'service' AND state IN ('asking', 'allowed-once', 'denied');";
 
+/// The `sandbox` migration set's version 8 (#390, #856 Q4): the proxy of a project's engine
+/// files its containers' requests; the row's subject is the project. Like a check's, none is
+/// allowed once: the engine outlives sessions, and "once" would last until a reboot with no
+/// grant to revoke. They ask for hosts only: an engine's proxy serves no forward.
+pub(crate) const CONTAINERS_SUBJECTS_MIGRATION_SQL: &str =
+    "CREATE TABLE sandbox_network_requests_containers (
+        id INTEGER PRIMARY KEY,
+        subject_kind TEXT NOT NULL CHECK (subject_kind IN ('session', 'check', 'containers')),
+        subject TEXT NOT NULL CHECK (subject <> ''),
+        subject_check TEXT CHECK (subject_check <> ''),
+        project TEXT NOT NULL CHECK (project <> ''),
+        kind TEXT NOT NULL CHECK (kind IN ('host', 'service')),
+        host TEXT CHECK (host <> ''),
+        port INTEGER CHECK (port BETWEEN 1 AND 65535),
+        service TEXT CHECK (service <> ''),
+        record TEXT CHECK (record <> ''),
+        state TEXT NOT NULL CHECK (state IN ('asking', 'allowed-once', 'allowed-always',
+            'denied')),
+        asked_at INTEGER NOT NULL,
+        decided_at INTEGER,
+        decided_through TEXT CHECK (decided_through IN ('tui', 'cli')),
+        grant_id INTEGER REFERENCES sandbox_network_grants (id),
+        reason TEXT CHECK (reason <> ''),
+        CHECK ((state = 'asking') = (decided_at IS NULL)),
+        CHECK ((state = 'allowed-always') = (grant_id IS NOT NULL)),
+        CHECK (decided_at IS NOT NULL OR decided_through IS NULL),
+        CHECK ((kind = 'host') = (host IS NOT NULL)),
+        CHECK ((kind = 'host') = (port IS NOT NULL)),
+        CHECK ((kind = 'service') = (service IS NOT NULL)),
+        CHECK ((kind = 'service') = (record IS NOT NULL)),
+        CHECK ((subject_kind = 'check') = (subject_check IS NOT NULL)),
+        CHECK (subject_kind = 'session' OR state <> 'allowed-once'),
+        CHECK (subject_kind <> 'containers' OR subject = project),
+        CHECK (subject_kind <> 'containers' OR kind = 'host')
+    );
+    INSERT INTO sandbox_network_requests_containers (id, subject_kind, subject, subject_check,
+            project, kind, host, port, service, record, state, asked_at, decided_at,
+            decided_through, grant_id, reason)
+        SELECT id, subject_kind, subject, subject_check, project, kind, host, port, service,
+            record, state, asked_at, decided_at, decided_through, grant_id, reason
+        FROM sandbox_network_requests;
+    DROP TABLE sandbox_network_requests;
+    ALTER TABLE sandbox_network_requests_containers RENAME TO sandbox_network_requests;
+    CREATE UNIQUE INDEX sandbox_network_requests_one_standing_check
+        ON sandbox_network_requests (project, subject_check, host, port)
+        WHERE subject_kind = 'check' AND kind = 'host' AND state IN ('asking', 'denied');
+    CREATE UNIQUE INDEX sandbox_network_requests_one_standing
+        ON sandbox_network_requests (subject_kind, subject, host, port)
+        WHERE kind = 'host' AND state IN ('asking', 'allowed-once', 'denied');
+    CREATE UNIQUE INDEX sandbox_network_requests_one_standing_service
+        ON sandbox_network_requests (subject_kind, subject, service, record)
+        WHERE kind = 'service' AND state IN ('asking', 'allowed-once', 'denied');";
+
 /// What a request asks for and a grant allows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkTarget {
@@ -389,6 +442,9 @@ pub enum NetworkRefusal {
     /// A check run ends before the owner can decide, so its check's request is allowed
     /// always or denied, never for one run (#352).
     OnceForACheck,
+    /// A project's containers' request is allowed always or denied (#390): the engine
+    /// outlives sessions, so "once" would last until a reboot with no grant to revoke.
+    OnceForContainers,
 }
 
 impl std::fmt::Display for NetworkRefusal {
@@ -417,6 +473,9 @@ impl std::fmt::Display for NetworkRefusal {
             }
             NetworkRefusal::OnceForACheck => formatter
                 .write_str("a check's network request is allowed always or denied, not once"),
+            NetworkRefusal::OnceForContainers => formatter.write_str(
+                "a project's containers' network request is allowed always or denied, not once",
+            ),
         }
     }
 }
@@ -425,6 +484,12 @@ impl std::fmt::Display for NetworkRefusal {
 pub enum NetworkError {
     Refused(NetworkRefusal),
     InvalidRow(String),
+    /// A project's containers asked as another project: the caller's bug, not the owner's
+    /// refusal (#390).
+    OtherProject {
+        containers: String,
+        project: String,
+    },
     Sql(cockpit_turso::sql::Error),
 }
 
@@ -435,6 +500,13 @@ impl std::fmt::Display for NetworkError {
             NetworkError::InvalidRow(reason) => {
                 write!(formatter, "a stored network row is invalid: {reason}")
             }
+            NetworkError::OtherProject {
+                containers,
+                project,
+            } => write!(
+                formatter,
+                "the containers of project {containers} asked as project {project}"
+            ),
             NetworkError::Sql(error) => write!(formatter, "network requests database: {error}"),
         }
     }
@@ -561,17 +633,18 @@ async fn standing_request(
     target: &NetworkTarget,
 ) -> Result<Option<NetworkRequest>, NetworkError> {
     let (kind, host, port, service, record) = target.columns();
+    let (subject_kind, subject_id) = subject_columns(subject);
     let mut standing = match subject {
-        Subject::Session { session } => {
+        Subject::Session { .. } | Subject::Containers { .. } => {
             connection
                 .query(
                     &format!(
                         "SELECT {REQUEST_COLUMNS} FROM sandbox_network_requests
-                         WHERE subject_kind = 'session' AND subject = ?1 AND kind = ?2
-                            AND host IS ?3 AND port IS ?4 AND service IS ?5 AND record IS ?6
+                         WHERE subject_kind = ?1 AND subject = ?2 AND kind = ?3
+                            AND host IS ?4 AND port IS ?5 AND service IS ?6 AND record IS ?7
                             AND state IN ('asking', 'allowed-once', 'denied')"
                     ),
-                    (session.as_str(), kind, host, port, service, record),
+                    (subject_kind, subject_id, kind, host, port, service, record),
                 )
                 .await?
         }
@@ -622,9 +695,17 @@ async fn insert_request(
     reason: Option<&str>,
     now: i64,
 ) -> Result<NetworkRequest, NetworkError> {
+    if let Subject::Containers { project: asking } = subject
+        && asking != project
+    {
+        return Err(NetworkError::OtherProject {
+            containers: asking.clone(),
+            project: project.to_owned(),
+        });
+    }
     let (subject_kind, subject_id) = subject_columns(subject);
     let subject_check = match subject {
-        Subject::Session { .. } => None,
+        Subject::Session { .. } | Subject::Containers { .. } => None,
         Subject::Check { check, .. } => Some(check.as_str()),
     };
     let (kind, host, port, service, record) = target.columns();
@@ -725,8 +806,12 @@ pub async fn allow_network_request(
     now: i64,
 ) -> Result<NetworkRequest, NetworkError> {
     let request = undecided(write, id).await?;
-    if !always && matches!(request.subject, Subject::Check { .. }) {
-        return Err(NetworkRefusal::OnceForACheck.into());
+    if !always {
+        match request.subject {
+            Subject::Session { .. } => {}
+            Subject::Check { .. } => return Err(NetworkRefusal::OnceForACheck.into()),
+            Subject::Containers { .. } => return Err(NetworkRefusal::OnceForContainers.into()),
+        }
     }
     let wait_seconds = request.asked_at + NETWORK_ALLOW_GRACE_SECONDS - now;
     if wait_seconds > 0 {
@@ -1066,11 +1151,13 @@ async fn decided(
     request_from(&row)
 }
 
-/// The `subject_kind, subject` columns: a check run is named by its run, unique to it.
+/// The `subject_kind, subject` columns: a check run is named by its run, unique to it, and a
+/// project's containers by the project.
 fn subject_columns(subject: &Subject) -> (&'static str, &str) {
     match subject {
         Subject::Session { session } => ("session", session.as_str()),
         Subject::Check { run, .. } => ("check", run.as_str()),
+        Subject::Containers { project } => ("containers", project.as_str()),
     }
 }
 
@@ -1080,6 +1167,9 @@ fn request_from(row: &Row) -> Result<NetworkRequest, NetworkError> {
     let subject = match subject_kind.as_str() {
         "session" => Subject::Session {
             session: subject_id,
+        },
+        "containers" => Subject::Containers {
+            project: subject_id,
         },
         "check" => Subject::Check {
             run: subject_id,
