@@ -112,10 +112,11 @@ not share code.
   owner's views read each recorded file again and bind their `digest` to what they read
   (`digest_as_read`); an approval is refused unless the files still read that way, and the
   run is not started when one no longer has its recorded hash. The rule scan (#1388) runs
-  in the same check and its 10 seconds, against the request's project root as the clone;
-  one that does not end in time records a `cannot-tell` finding. The owner's views carry
-  the findings with the display rules applied (`root_runs::findings_view`); the agent's
-  do not.
+  after it, against the request's project root as the clone, under its own 10 seconds, so
+  a scan that does not end in time records a `cannot-tell` finding and leaves the sudo
+  check's files pinned. The owner's views carry the findings with the display rules
+  applied (`root_runs::findings_view`; a revision checked before the scan existed gets
+  the sudo findings of its `root_runs`); the agent's do not.
 - An approval commits the run intent, then the run starts outside the lanes: a long command
   holds no control worker. It is a `cockpit-processes` terminal execution (#163) of the
   daemon's one supervisor: a pseudo-terminal under `torlek-daemon --run-leader`

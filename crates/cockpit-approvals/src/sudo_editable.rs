@@ -30,9 +30,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::hints::program_name;
 use crate::shell::{
-    Interpreter, InterpreterCode, SHELL_BUILTINS, ShellCode, Simple, Stdin, Word, absolute,
-    interpreter, interpreter_code, is_shell, lex, logical_directory, shell_arguments,
-    skip_assignments, skip_keywords, skip_wrappers, sudo_options,
+    DirectoryChange, Interpreter, InterpreterCode, SHELL_BUILTINS, ShellCode, Simple, Stdin, Word,
+    absolute, directory_change, interpreter, interpreter_code, is_shell, lex, logical_directory,
+    shell_arguments, skip_assignments, skip_keywords, skip_wrappers, sudo_options,
 };
 
 /// What a command runs as root that its asking session can change, as recorded for one
@@ -456,59 +456,17 @@ impl Walk<'_, '_> {
     /// Whether `command` is a `cd`, which moves the commands after it to `cwd`; `pushd` and
     /// `popd` move it where the command line does not say.
     fn changed_directory(&mut self, command: &Simple, cwd: &mut PathBuf) -> bool {
-        let words = skip_assignments(skip_keywords(&command.words));
-        let Some((program, rest)) = words.split_first() else {
-            return false;
-        };
-        if !program.is_literal {
-            return false;
-        }
-        match program.text.as_str() {
-            "cd" => {}
-            "pushd" | "popd" => {
+        match directory_change(command, cwd, self.lookup.home) {
+            DirectoryChange::None => false,
+            DirectoryChange::To(moved) => {
+                *cwd = moved;
+                true
+            }
+            DirectoryChange::CannotTell => {
                 self.found.cannot_tell = true;
-                return true;
+                true
             }
-            _ => return false,
         }
-        // `cd`'s own options, grouped or not: `-P` follows links, `-L` (the default) does not,
-        // the last one given wins; `-e` and `-@` change neither.
-        let mut is_physical = false;
-        let mut operands = rest.iter();
-        let directory = loop {
-            match operands.next() {
-                Some(word) if word.is_literal && word.text == "--" => break operands.next(),
-                Some(word)
-                    if word.is_literal
-                        && word.text.len() > 1
-                        && word.text.starts_with('-')
-                        && word.text[1..].chars().all(|option| "LPe@".contains(option)) =>
-                {
-                    if let Some(last) = word
-                        .text
-                        .chars()
-                        .rev()
-                        .find(|option| "LP".contains(*option))
-                    {
-                        is_physical = last == 'P';
-                    }
-                }
-                other => break other,
-            }
-        };
-        match (directory, self.lookup.home) {
-            (Some(directory), _) if directory.is_literal && directory.text != "-" => {
-                *cwd = if is_physical {
-                    let path = absolute(cwd, &directory.text);
-                    std::fs::canonicalize(&path).unwrap_or(path)
-                } else {
-                    logical_directory(cwd, &directory.text)
-                };
-            }
-            (None, Some(home)) => *cwd = home.to_path_buf(),
-            _ => self.found.cannot_tell = true,
-        }
-        true
     }
 
     /// A command the owner's user runs: what follows a `sudo` program runs as root. A `sudo`

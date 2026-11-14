@@ -69,6 +69,9 @@ pub(crate) struct Source {
     pub(crate) programs: &'static [&'static str],
     /// Only with one of these options (`base64 -d`); any use when empty.
     pub(crate) with_option: &'static [&'static str],
+    /// Whether single letters group behind one dash (`base64 -di`); otherwise an option is
+    /// one word, and `openssl -md` is not `-d`.
+    pub(crate) groups_letters: bool,
 }
 
 /// A path the scan looks for.
@@ -112,24 +115,29 @@ pub(crate) enum Written {
 pub(crate) const DOWNLOADERS: &[Source] = &[Source {
     programs: &["curl", "wget", "fetch", "http", "https", "xh"],
     with_option: &[],
+    groups_letters: true,
 }];
 
 const DECODERS: &[Source] = &[
     Source {
         programs: &["base64", "base32", "basenc"],
         with_option: &["-d", "--decode", "-D"],
+        groups_letters: true,
     },
     Source {
         programs: &["xxd"],
         with_option: &["-r", "-revert"],
+        groups_letters: true,
     },
     Source {
         programs: &["openssl"],
         with_option: &["-d"],
+        groups_letters: false,
     },
     Source {
         programs: &["uudecode"],
         with_option: &[],
+        groups_letters: true,
     },
 ];
 
@@ -270,8 +278,15 @@ pub(crate) const WRITERS: &[Writer] = &[
     },
 ];
 
-/// Every rule, in the order the card lists findings of one severity.
+/// Every rule, in the order the card lists findings of one severity: sudo running an
+/// editable file first, so the card's first lines always hold #1383's warning.
 pub(crate) const RULES: &[Rule] = &[
+    Rule {
+        id: "sudo-runs-editable",
+        severity: Severity::High,
+        reason: "sudo runs a file this session can edit",
+        patterns: &[Pattern::SudoRunsEditable],
+    },
     Rule {
         id: "download-runs",
         severity: Severity::High,
@@ -286,12 +301,6 @@ pub(crate) const RULES: &[Rule] = &[
         severity: Severity::High,
         reason: "runs code it decodes",
         patterns: &[Pattern::RunsOutputOf(DECODERS)],
-    },
-    Rule {
-        id: "sudo-runs-editable",
-        severity: Severity::High,
-        reason: "sudo runs a file this session can edit",
-        patterns: &[Pattern::SudoRunsEditable],
     },
     Rule {
         id: "reads-secrets",

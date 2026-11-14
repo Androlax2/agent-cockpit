@@ -1063,6 +1063,74 @@ impl Lexer<'_> {
     }
 }
 
+/// What a command does to the directory the commands after it run in.
+pub(crate) enum DirectoryChange {
+    /// It is not `cd`, `pushd` or `popd`.
+    None,
+    /// `cd` moves them here.
+    To(PathBuf),
+    /// Where it moves them cannot be told without running it: an expansion, `cd -`, `pushd`,
+    /// `popd`, or `cd` alone without a home.
+    CannotTell,
+}
+
+/// Where `command` moves the commands after it, from `cwd`.
+pub(crate) fn directory_change(
+    command: &Simple,
+    cwd: &Path,
+    home: Option<&Path>,
+) -> DirectoryChange {
+    let words = skip_assignments(skip_keywords(&command.words));
+    let Some((program, rest)) = words.split_first() else {
+        return DirectoryChange::None;
+    };
+    if !program.is_literal {
+        return DirectoryChange::None;
+    }
+    match program.text.as_str() {
+        "cd" => {}
+        "pushd" | "popd" => return DirectoryChange::CannotTell,
+        _ => return DirectoryChange::None,
+    }
+    // `cd`'s own options, grouped or not: `-P` follows links, `-L` (the default) does not,
+    // the last one given wins; `-e` and `-@` change neither.
+    let mut is_physical = false;
+    let mut operands = rest.iter();
+    let directory = loop {
+        match operands.next() {
+            Some(word) if word.is_literal && word.text == "--" => break operands.next(),
+            Some(word)
+                if word.is_literal
+                    && word.text.len() > 1
+                    && word.text.starts_with('-')
+                    && word.text[1..].chars().all(|option| "LPe@".contains(option)) =>
+            {
+                if let Some(last) = word
+                    .text
+                    .chars()
+                    .rev()
+                    .find(|option| "LP".contains(*option))
+                {
+                    is_physical = last == 'P';
+                }
+            }
+            other => break other,
+        }
+    };
+    match (directory, home) {
+        (Some(directory), _) if directory.is_literal && directory.text != "-" => {
+            DirectoryChange::To(if is_physical {
+                let path = absolute(cwd, &directory.text);
+                std::fs::canonicalize(&path).unwrap_or(path)
+            } else {
+                logical_directory(cwd, &directory.text)
+            })
+        }
+        (None, Some(home)) => DirectoryChange::To(home.to_path_buf()),
+        _ => DirectoryChange::CannotTell,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

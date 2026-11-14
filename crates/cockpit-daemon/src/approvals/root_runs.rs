@@ -72,35 +72,61 @@ async fn check(
     clone: Option<std::path::PathBuf>,
 ) -> (RootRuns, Vec<Finding>) {
     let writes = session_writes(sessions, session);
-    let command = command.to_owned();
-    let cwd = cwd.to_path_buf();
-    bounded(move || {
-        // Without `PATH`, a shell and sudo search the C library's default, glibc's
-        // `confstr(_CS_PATH)`.
-        let search_path = std::env::var_os("PATH").unwrap_or_else(|| DEFAULT_PATH.into());
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        let lookup = Lookup {
-            cwd: &cwd,
-            search_path: Some(&search_path),
-            home: home.as_deref(),
-        };
-        let runs = cockpit_approvals::root_runs(&command, lookup, &writes);
-        let findings = cockpit_approvals::scan(&command, lookup, clone.as_deref(), &runs);
-        (runs, findings)
+    let command = std::sync::Arc::<str>::from(command);
+    let cwd = std::sync::Arc::<Path>::from(cwd);
+    // Each check has its own bound, so a scan that does not end in time leaves the files
+    // sudo runs pinned by their hashes.
+    let runs = bounded({
+        let (command, cwd) = (command.clone(), cwd.clone());
+        move || {
+            with_lookup(&cwd, |lookup| {
+                cockpit_approvals::root_runs(&command, lookup, &writes)
+            })
+        }
+    })
+    .await
+    .unwrap_or(RootRuns {
+        editable: Vec::new(),
+        cannot_tell: true,
+    });
+    let findings = bounded({
+        let (runs, cwd) = (runs.clone(), cwd.clone());
+        move || {
+            with_lookup(&cwd, |lookup| {
+                cockpit_approvals::scan(&command, lookup, clone.as_deref(), &runs)
+            })
+        }
     })
     .await
     .unwrap_or_else(|| {
-        let runs = RootRuns {
-            editable: Vec::new(),
-            cannot_tell: true,
-        };
-        (runs, vec![cockpit_approvals::scan_unfinished()])
+        let mut findings = cockpit_approvals::sudo_findings(&runs, &cwd);
+        findings.push(cockpit_approvals::scan_unfinished());
+        findings
+    });
+    (runs, findings)
+}
+
+/// `work` given the daemon's own environment, whose `PATH` and `HOME` the run gets.
+fn with_lookup<T>(cwd: &Path, work: impl FnOnce(Lookup<'_>) -> T) -> T {
+    // Without `PATH`, a shell and sudo search the C library's default, glibc's
+    // `confstr(_CS_PATH)`.
+    let search_path = std::env::var_os("PATH").unwrap_or_else(|| DEFAULT_PATH.into());
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    work(Lookup {
+        cwd,
+        search_path: Some(&search_path),
+        home: home.as_deref(),
     })
 }
 
-/// The recorded findings as the owner reads them; `None` when the revision was not scanned.
+/// The recorded findings as the owner reads them. A revision checked before the scan existed
+/// gets the sudo findings its `root_runs` holds; one never checked, `None`.
 pub(super) fn findings_view(run: &RunRequest) -> Option<Vec<FindingView>> {
-    let findings = run.findings.as_ref()?;
+    let findings = match (&run.findings, &run.root_runs) {
+        (Some(findings), _) => findings.clone(),
+        (None, Some(runs)) => cockpit_approvals::sudo_findings(runs, &run.cwd),
+        (None, None) => return None,
+    };
     Some(
         findings
             .iter()

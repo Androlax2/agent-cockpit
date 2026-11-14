@@ -23,9 +23,9 @@ use crate::rules::{
     DOWNLOADERS, Invocation, Pattern, Place, RULES, Rule, Severity, Source, WRITERS, Written,
 };
 use crate::shell::{
-    InterpreterCode, ShellCode, Simple, Stdin, Word, absolute, interpreter, interpreter_code,
-    is_shell, lex, logical_directory, shell_arguments, skip_assignments, skip_keywords,
-    skip_wrappers, sudo_options,
+    DirectoryChange, InterpreterCode, ShellCode, Simple, Stdin, Word, absolute, directory_change,
+    interpreter, interpreter_code, is_shell, lex, logical_directory, shell_arguments,
+    skip_assignments, skip_keywords, skip_wrappers, sudo_options,
 };
 use crate::sudo_editable::{Lookup, RootRuns, open_regular};
 
@@ -61,21 +61,43 @@ pub fn scan(
         findings: Vec::new(),
     };
     scan.script(command, lookup.cwd, At::CommandLine, 0);
-    for file in &root_runs.editable {
-        scan.flag(
-            |pattern| matches!(pattern, Pattern::SudoRunsEditable),
-            &path_from(&file.path, lookup.cwd),
-            (None, None),
-        );
-    }
-    if root_runs.cannot_tell {
-        scan.flag(
-            |pattern| matches!(pattern, Pattern::SudoCannotTell),
-            "",
-            (None, None),
-        );
-    }
+    scan.findings.extend(sudo_findings(root_runs, lookup.cwd));
     in_order(scan.findings)
+}
+
+/// The findings of the rules that read #1383's check: a file sudo runs that the session can
+/// edit, and what sudo runs that cannot be told.
+pub fn sudo_findings(root_runs: &RootRuns, cwd: &Path) -> Vec<Finding> {
+    let finding = |is: fn(&Pattern) -> bool, excerpt: String| {
+        let rule = rule_where(is)
+            .next()
+            .expect("the rules hold the sudo rules");
+        Finding {
+            rule: rule.id.to_owned(),
+            severity: rule.severity,
+            reason: rule.reason.to_owned(),
+            excerpt,
+            file: None,
+            line: None,
+        }
+    };
+    let mut findings: Vec<Finding> = root_runs
+        .editable
+        .iter()
+        .map(|file| {
+            finding(
+                |pattern| matches!(pattern, Pattern::SudoRunsEditable),
+                path_from(&file.path, cwd),
+            )
+        })
+        .collect();
+    if root_runs.cannot_tell {
+        findings.push(finding(
+            |pattern| matches!(pattern, Pattern::SudoCannotTell),
+            String::new(),
+        ));
+    }
+    findings
 }
 
 /// The finding recorded when the scan did not end in time.
@@ -102,7 +124,7 @@ pub fn path_from(path: &Path, cwd: &Path) -> String {
 }
 
 /// Each finding once; "can't tell" left out where another finding names the same text; high
-/// first.
+/// first, then in the order of [`RULES`], then as the command reads.
 fn in_order(findings: Vec<Finding>) -> Vec<Finding> {
     let is_cannot_tell = |finding: &Finding| {
         rule_where(|pattern| matches!(pattern, Pattern::CannotTell))
@@ -121,7 +143,8 @@ fn in_order(findings: Vec<Finding>) -> Vec<Finding> {
             kept.push(finding.clone());
         }
     }
-    kept.sort_by_key(|finding| finding.severity);
+    let rule_at = |finding: &Finding| RULES.iter().position(|rule| rule.id == finding.rule);
+    kept.sort_by_key(|finding| (finding.severity, rule_at(finding)));
     kept
 }
 
@@ -316,31 +339,34 @@ impl Scan<'_> {
             saved: Vec::new(),
         };
         for index in 0..script.commands.len() {
-            if let Some(moved) = self.moved_to(&script.commands[index], &state.cwd) {
-                state.cwd = moved;
-                continue;
+            let command = &script.commands[index];
+            match directory_change(command, &state.cwd, self.lookup.home) {
+                DirectoryChange::None => self.command(&script, index, &mut state, at, depth),
+                DirectoryChange::To(moved) => {
+                    self.substitutions(command, &state.cwd, at, depth);
+                    state.cwd = moved;
+                }
+                DirectoryChange::CannotTell => {
+                    self.substitutions(command, &state.cwd, at, depth);
+                    self.cannot_tell(&script.text(index, index), at.location(command));
+                }
             }
-            self.command(&script, index, &mut state, at, depth);
         }
     }
 
-    /// Where a `cd` moves the commands after it; `None` for any other command. A directory
-    /// that is an expansion leaves the scan where it was.
-    fn moved_to(&self, command: &Simple, cwd: &Path) -> Option<PathBuf> {
-        let words = skip_assignments(skip_keywords(&command.words));
-        let (program, rest) = words.split_first()?;
-        if !program.is_literal || program.text != "cd" {
-            return None;
-        }
-        let directory = rest
+    /// The code `command`'s substitutions run, in its words, redirections and input.
+    fn substitutions(&mut self, command: &Simple, cwd: &Path, at: At<'_>, depth: usize) {
+        let inside = at.inside(command);
+        for word in command
+            .words
             .iter()
-            .find(|word| word.text == "--" || !word.text.starts_with('-'))
-            .filter(|word| word.text != "--");
-        Some(match directory {
-            Some(word) if word.is_literal => logical_directory(cwd, &word.text),
-            Some(_) => cwd.to_path_buf(),
-            None => self.lookup.home.unwrap_or(cwd).to_path_buf(),
-        })
+            .chain(&command.writes)
+            .chain(stdin_word(&command.stdin))
+        {
+            for code in &word.substitutions {
+                self.script(code, cwd, inside, depth + 1);
+            }
+        }
     }
 
     fn command(
@@ -354,17 +380,7 @@ impl Scan<'_> {
         let command = &script.commands[index];
         let excerpt = script.text(index, index);
         let location = at.location(command);
-        let inside = at.inside(command);
-        for word in command
-            .words
-            .iter()
-            .chain(&command.writes)
-            .chain(stdin_word(&command.stdin))
-        {
-            for code in &word.substitutions {
-                self.script(code, &state.cwd, inside, depth + 1);
-            }
-        }
+        self.substitutions(command, &state.cwd, at, depth);
         let redirected: Vec<PathBuf> = command
             .writes
             .iter()
@@ -387,7 +403,7 @@ impl Scan<'_> {
             }
         };
         let name = program_name(&program.text);
-        let mut written = redirected;
+        let mut written = redirected.clone();
         written.extend(self.written_by(name, arguments, &cwd));
         self.writes(&written, &excerpt, &location);
         self.program_rules(name, arguments, &command.stdin, &cwd, &excerpt, &location);
@@ -395,17 +411,17 @@ impl Scan<'_> {
             .iter()
             .any(|source| source.programs.contains(&name))
         {
-            for saved in self.saved_by(name, arguments, &cwd).into_iter().chain(
-                command
-                    .writes
-                    .iter()
-                    .map(|target| self.path(&target.text, &cwd)),
-            ) {
+            // The shell opens a redirection where it is, before `sudo -D` moves the program.
+            for saved in self
+                .saved_by(name, arguments, &cwd)
+                .into_iter()
+                .chain(redirected)
+            {
                 state.saved.push((saved, index));
             }
         }
         if program.text.contains('/') {
-            let path = absolute(&cwd, &program.text);
+            let path = self.path(&program.text, &cwd);
             self.runs_file(&path, Runs::AsProgram, script, index, state, at, depth);
         }
         self.code(
@@ -526,7 +542,7 @@ impl Scan<'_> {
                 self.substituted_or_cannot_tell(word, cwd, &excerpt, location, depth);
             }
             Code::Script { word, is_shell } => {
-                let path = absolute(cwd, &word.text);
+                let path = self.path(&word.text, cwd);
                 let runs = if is_shell {
                     Runs::ByShell
                 } else {
@@ -541,7 +557,7 @@ impl Scan<'_> {
                     self.substituted_or_cannot_tell(word, cwd, &excerpt, location, depth);
                 }
                 Stdin::File(word) => {
-                    let path = absolute(cwd, &word.text);
+                    let path = self.path(&word.text, cwd);
                     let runs = if is_shell {
                         Runs::ByShell
                     } else {
@@ -826,7 +842,7 @@ impl Scan<'_> {
                 if !deletes {
                     return false;
                 }
-                let starts: Vec<&Word> = arguments
+                let starts: Vec<&Word> = find_start_paths(arguments)
                     .iter()
                     .take_while(|word| {
                         !word.text.starts_with('-') && word.text != "(" && word.text != "!"
@@ -914,10 +930,13 @@ fn stdin_word(stdin: &Stdin) -> Option<&Word> {
 fn is_source(source: &Source, name: &str, arguments: &[Word]) -> bool {
     source.programs.contains(&name)
         && (source.with_option.is_empty()
-            || source
-                .with_option
-                .iter()
-                .any(|option| has_option(arguments, option)))
+            || source.with_option.iter().any(|option| {
+                if source.groups_letters {
+                    has_option(arguments, option)
+                } else {
+                    has_exact_option(arguments, option)
+                }
+            }))
 }
 
 fn is_invocation(invocation: &Invocation, name: &str, arguments: &[Word]) -> bool {
@@ -976,6 +995,15 @@ fn has_option(arguments: &[Word], option: &str) -> bool {
         })
 }
 
+/// Whether `option` is given before `--` as a word of its own, for a program whose options
+/// have one dash and several letters (`openssl enc -d`, not `-md`).
+fn has_exact_option(arguments: &[Word], option: &str) -> bool {
+    arguments
+        .iter()
+        .take_while(|word| word.text != "--")
+        .any(|word| word.text == option)
+}
+
 /// The value of the short option `letter` (`-t DIR`, `-tDIR`) or `long` (`--long DIR`,
 /// `--long=DIR`), the first one given.
 fn option_value<'w>(arguments: &'w [Word], letter: char, long: &str) -> Option<&'w str> {
@@ -1021,11 +1049,53 @@ fn url_file_name(word: &str) -> Option<&str> {
 }
 
 /// `chmod`'s mode sets the setuid or setgid bit: `u+s`, `g=s`, `+s`, `4755`, `2755`.
+/// Whether `chmod`'s mode, its first operand, sets the setuid or setgid bit.
 fn sets_setuid(arguments: &[Word]) -> bool {
-    arguments.iter().any(|word| {
+    let Some(mode) = chmod_mode(arguments) else {
+        return false;
+    };
+    is_octal_setuid(&mode.text) || mode.text.split(',').any(is_symbolic_setuid)
+}
+
+/// `chmod`'s mode: its first word that is not an option, a mode taking away (`-s`) included,
+/// or none with `--reference`, which takes the mode from a file.
+fn chmod_mode(arguments: &[Word]) -> Option<&Word> {
+    let mut words = arguments.iter();
+    while let Some(word) = words.next() {
         let text = word.text.as_str();
-        is_octal_setuid(text) || text.split(',').any(is_symbolic_setuid)
-    })
+        if text == "--" {
+            return words.next();
+        }
+        if text.starts_with("--reference") {
+            return None;
+        }
+        let is_option = text.starts_with("--")
+            || (text.len() > 1
+                && text.starts_with('-')
+                && text[1..].chars().all(|option| "cfvR".contains(option)));
+        if !is_option {
+            return Some(word);
+        }
+    }
+    None
+}
+
+/// `find`'s words after its leading options (`-H`, `-L`, `-P`, `-D debug`, `-O3`), where its
+/// start paths begin.
+fn find_start_paths(arguments: &[Word]) -> &[Word] {
+    let mut at = 0;
+    while let Some(word) = arguments.get(at) {
+        let Some(option) = word.text.strip_prefix('-') else {
+            break;
+        };
+        match option {
+            "H" | "L" | "P" => at += 1,
+            "D" => at += 2,
+            level if level.starts_with('O') => at += 1,
+            _ => break,
+        }
+    }
+    arguments.get(at..).unwrap_or_default()
 }
 
 fn is_octal_setuid(text: &str) -> bool {
@@ -1071,11 +1141,12 @@ fn read_script(path: &Path) -> Result<Option<String>, ()> {
     file.take(SCRIPT_BYTES_MAX + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| ())?;
-    if bytes.len() as u64 > SCRIPT_BYTES_MAX {
-        return Err(());
-    }
+    // A program is not a script whatever its size: a large one must not read as "can't tell".
     if bytes.contains(&0) {
         return Ok(None);
+    }
+    if bytes.len() as u64 > SCRIPT_BYTES_MAX {
+        return Err(());
     }
     Ok(String::from_utf8(bytes).ok())
 }
