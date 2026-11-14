@@ -1032,6 +1032,10 @@ fn engine(rootless: bool) -> DockerEngine {
         server_version: "28.1.1".to_owned(),
         rootless,
         in_desktop_vm: false,
+        // What every engine Torlek's unit runs reports today: no cgroups, no limit.
+        cgroup_driver: Some("none".to_owned()),
+        enforces_memory_limit: false,
+        enforces_cpu_quota: false,
     }
 }
 
@@ -1256,6 +1260,103 @@ fn a_verified_engines_container_egress_follows_its_proxy() {
         assert_eq!(shown.status, status, "{egress:?}: {shown:#?}");
         assert!(shown.detail.contains(detail), "{egress:?}: {shown:#?}");
     }
+}
+
+/// #390, report 10: readiness says whether the verified engine enforces `docker run --cpus`
+/// and `--memory`, as the engine reports it. No session requires a limit yet, so a limit not
+/// enforced informs and blocks nothing.
+#[test]
+fn a_verified_engines_container_limits_are_reported_without_blocking() {
+    let cases = [
+        (Some("systemd"), true, true, "are enforced"),
+        (
+            Some("none"),
+            false,
+            false,
+            "`--cpus` and `--memory` are not enforced: the engine runs without cgroups",
+        ),
+        (Some("systemd"), true, false, "`--cpus` is not enforced"),
+        (Some("cgroupfs"), false, true, "`--memory` is not enforced"),
+        (None, false, false, "names no cgroup driver"),
+    ];
+    for (driver, memory, cpus, detail) in cases {
+        let fixture = Fixture::new();
+        fixture.configure("[execution]\nenvironment = \"docker\"\n", None);
+        let mut project = fixture.facts();
+        project.engine = Some(Ok(ProjectEngine {
+            project: "project".to_owned(),
+            user: "torlek-e3".to_owned(),
+            record_command: "torlek containers record project".to_owned(),
+            state: EngineState::Verified {
+                engine: DockerEngine {
+                    cgroup_driver: driver.map(str::to_owned),
+                    enforces_memory_limit: memory,
+                    enforces_cpu_quota: cpus,
+                    ..engine(true)
+                },
+                masks: Ok(()),
+                egress: EngineEgress::Serving,
+            },
+        }));
+
+        let report = fixture.report(&ready_host(), &project);
+
+        let shown = requirement(&report, "container limits");
+        let case = format!("{driver:?} {memory} {cpus}");
+        assert!(!shown.status.blocks(), "{case}: {shown:#?}");
+        assert!(shown.detail.contains(detail), "{case}: {shown:#?}");
+    }
+}
+
+/// The engine every setup runs today enforces no limit; its project stays ready.
+#[test]
+fn a_verified_engine_without_cgroups_leaves_its_project_ready() {
+    let fixture = Fixture::new();
+    fixture.configure("[execution]\nenvironment = \"docker\"\n", None);
+    let mut project = fixture.facts();
+    project.engine = Some(Ok(ProjectEngine {
+        project: "project".to_owned(),
+        user: "torlek-e3".to_owned(),
+        record_command: "torlek containers record project".to_owned(),
+        state: EngineState::Verified {
+            engine: engine(true),
+            masks: Ok(()),
+            egress: EngineEgress::Serving,
+        },
+    }));
+
+    let report = fixture.report(&ready_host(), &project);
+
+    let blocking: Vec<_> = report
+        .requirements
+        .iter()
+        .filter(|shown| shown.status.blocks())
+        .collect();
+    assert!(blocking.is_empty(), "{blocking:#?}");
+}
+
+/// An engine that is not verified has no limits to report: `docker` names what it lacks.
+#[test]
+fn an_engine_not_verified_reports_no_container_limits() {
+    let fixture = Fixture::new();
+    fixture.configure("[execution]\nenvironment = \"docker\"\n", None);
+    let mut project = fixture.facts();
+    project.engine = Some(Ok(ProjectEngine {
+        project: "project".to_owned(),
+        user: "torlek-e3".to_owned(),
+        record_command: "torlek containers record project".to_owned(),
+        state: EngineState::Unrecorded(engine(true)),
+    }));
+
+    let report = fixture.report(&ready_host(), &project);
+
+    assert!(
+        report
+            .requirements
+            .iter()
+            .all(|shown| shown.name != "container limits"),
+        "{report:#?}"
+    );
 }
 
 /// An engine that is not verified has no egress to report: `docker` names what it lacks.
