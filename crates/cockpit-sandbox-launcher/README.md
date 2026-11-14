@@ -24,9 +24,15 @@ start and runs it in the agent's place under `agents.sandbox = "required"`.
   hold, on the hand-off socket. It binds the sandbox's `127.0.0.1` ports the launcher asks for
   (a live container port, below) and hands each listener back; the program keeps no
   descriptor to it.
-- `torlek-sandbox engine-relay SOCKET OWNER_UID`: run by a project engine's relay unit (#390)
-  in the engine's network namespace; serves only `OWNER_UID`, which names one port per
-  connection and gets that port's bytes (`engine_relay.rs`).
+- `torlek-sandbox engine-relay SOCKET OWNER_UID [EGRESS_PORT]`: run by a project engine's
+  relay unit (#390) in the engine's network namespace; serves only `OWNER_UID`, which names
+  one port per connection and gets that port's bytes, or asks for the engine's egress
+  listener (`engine_relay.rs`, below). Without `EGRESS_PORT`, as an earlier setup's unit
+  runs it, the egress listener is refused, naming the setup to run again.
+- `torlek-sandbox engine-proxy RELAY_SOCKET ENGINE_UID PROJECT FOLDER EGRESS_PORT`: the egress
+  proxy of a project's engine (#390), for the owner's daemon to run (part 6c: no daemon runs it
+  yet); serves the listener the relay
+  hands it until the relay's connection ends (`engine_proxy.rs`, below).
 - `torlek-sandbox engine-masks ENGINES_DIR`: the root helper of the project engines (#390),
   run once per connection with the connection as its standard input; it masks one checkout
   per request for the engine the request names, answering only that engine's owner (below).
@@ -125,6 +131,22 @@ connects to that socket and refuses the launch unless its peer is the engine's u
 (`proxy::check_engine_socket`); bubblewrap then binds the socket read-only, alone in its
 folder, at `cockpit_sandbox::ENGINE_SOCKET_INSIDE`, stage 2 lets the program connect there,
 and `DOCKER_HOST` names it. A spec for a check run, or an engine run as root, is refused.
+
+### The project engine's egress
+
+Issue #390, option A (Theo, 2026-11-14). The engine's network namespace has no route out;
+dockerd, and the containers once told it is their proxy (part 6d), reach slirp4netns's
+`10.0.2.2`, which is that namespace's `127.0.0.1`. `engine-proxy` connects to the relay's socket, refuses it unless its peer is
+`ENGINE_UID`, and asks `egress`. The relay listens on `127.0.0.1:EGRESS_PORT` in the engine's
+namespace and sends the listener over (`handoff::LISTENER_BYTE`), keeping no copy, then holds
+the connection: the port is open exactly while that proxy runs, a second proxy is refused
+while the first holds it, and the proxy exits when the relay ends. The proxy checks the
+listener is on `127.0.0.1:EGRESS_PORT`, then serves it as a session's proxy for the subject
+`Subject::Containers`, with no allowlist of its own: only the project's "allow always"
+decisions pass (#856 Q4 A); an unknown host is refused at once and filed in `FOLDER`'s
+requests file, beside the decisions and counters files the daemon shares with it. A
+`FOLDER` that is no folder is refused before the listener is asked for
+(`tests/engine_proxy.rs`).
 
 ### The project engine's masks
 

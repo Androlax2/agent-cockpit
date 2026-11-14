@@ -24,13 +24,16 @@ system user of its own, shared by its clones:
   recording again replaces it, which is how a reinstalled engine is accepted.
 - `setup_script` writes a POSIX `sh` script the owner reviews and runs with `sudo`: the
   system user, its subordinate ids, access to the project's checkout and clones folder, and
-  the unit. The unit sees an empty `/home` and has no network until the egress proxy
-  exists. The script records the engine for Torlek's masks helper in
+  the unit. The unit sees an empty `/home` and no network but slirp4netns's `10.0.2.2`, its
+  own `127.0.0.1` with host loopback turned on, where only the engine's proxy
+  (`ENGINE_EGRESS_PORT`) and its published ports listen; dockerd's `HTTP(S)_PROXY` name that
+  proxy. The script records the engine for Torlek's masks helper in
   `/etc/torlek/engines/<user>.conf` and lets only the owner connect to the helper's socket,
   refusing when the helper already serves another user of the host.
   A second unit, `torlek-engine-relay@`, joins the engine's network
   namespace and runs the owner's installed `torlek-sandbox engine-relay`, bound read-only,
-  on `EngineUser::relay_socket`: it relays the owner to one port the engine published.
+  on `EngineUser::relay_socket`: it relays the owner to one port the engine published, and
+  opens `ENGINE_EGRESS_PORT` for the engine's proxy.
 
 - `MasksHelper::show_masked` asks Torlek's masks helper (`torlek-sandbox engine-masks`, root,
   behind `torlek-engine-masks.socket`) to show the engine one checkout through the session's

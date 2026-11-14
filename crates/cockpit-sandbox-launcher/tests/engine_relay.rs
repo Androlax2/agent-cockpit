@@ -34,16 +34,29 @@ fn own_uid(dir: &Path) -> u32 {
 /// A relay serving `owner_uid`, once its socket answers. `prepare` runs on the socket's
 /// path before the relay starts.
 fn relay_for(owner_uid: impl Fn(&Path) -> u32, prepare: impl FnOnce(&Path)) -> Relay {
+    relay_with(owner_uid, prepare, None)
+}
+
+/// A relay that also hands the egress listener on `egress_port` over, as an engine's relay
+/// unit runs it since #390 part 6b; `None` as an earlier setup's unit runs it.
+fn relay_with(
+    owner_uid: impl Fn(&Path) -> u32,
+    prepare: impl FnOnce(&Path),
+    egress_port: Option<u16>,
+) -> Relay {
     // A socket path must fit the kernel's 108 bytes, which the target folder may not.
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("relay.sock");
     prepare(&socket);
-    let child = Command::new(LAUNCHER)
+    let mut command = Command::new(LAUNCHER);
+    command
         .arg("engine-relay")
         .arg(&socket)
-        .arg(owner_uid(dir.path()).to_string())
-        .spawn()
-        .unwrap();
+        .arg(owner_uid(dir.path()).to_string());
+    if let Some(port) = egress_port {
+        command.arg(port.to_string());
+    }
+    let child = command.spawn().unwrap();
     let relay = Relay {
         _dir: dir,
         socket,
@@ -182,4 +195,43 @@ fn a_socket_left_by_a_stopped_relay_is_replaced() {
 
     assert_eq!(answer, "ok\n");
     reader.get_ref().shutdown(Shutdown::Both).unwrap();
+}
+
+/// A loopback port nothing listens on now.
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// #390 part 6b: a relay an earlier setup started has no egress port to listen on.
+#[test]
+fn a_relay_without_an_egress_port_refuses_the_egress_listener_naming_the_setup() {
+    let relay = relay();
+
+    let (answer, _) = ask(&relay, b"egress\n");
+
+    assert!(
+        answer.starts_with("refused: this relay serves no egress; run the engine's setup again"),
+        "{answer}"
+    );
+}
+
+/// #390 part 6b: one proxy per engine; a second asking while the first holds the listener is
+/// told why.
+#[test]
+fn the_egress_listener_is_refused_while_another_holds_its_port() {
+    let port = free_port();
+    let held = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let relay = relay_with(own_uid, |_| {}, Some(port));
+
+    let (answer, _) = ask(&relay, b"egress\n");
+
+    assert!(
+        answer.starts_with(&format!("refused: cannot listen on 127.0.0.1:{port}")),
+        "{answer}"
+    );
+    drop(held);
 }
