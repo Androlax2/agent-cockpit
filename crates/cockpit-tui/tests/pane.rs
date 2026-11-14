@@ -7,8 +7,9 @@ mod common;
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
-    Command, DecidedThroughView, FileNowView, GuideView, HiddenView, ManagerPaneView, Reply,
-    RootFileView, RootRunsView, RunRequestView, SecretText, ShownText, SudoAskView,
+    Command, DecidedThroughView, FileNowView, FindingSeverityView, FindingView, GuideView,
+    HiddenView, ManagerPaneView, Reply, RootFileView, RootRunsView, RunRequestView, SecretText,
+    ShownText, SudoAskView,
 };
 use cockpit_tui::{App, Focus, INPUT_GRACE, Key, Shown};
 use common::{
@@ -452,62 +453,131 @@ fn rows_holding(app: &App, now: Instant, text: &str) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn a_script_the_session_can_edit_run_as_root_is_named_on_one_line_before_the_keys() {
-    let now = Instant::now();
-    let app = app_running_as_root(vec![root_file("x.sh", SCRIPT_HASH)], false, now);
-    let screen = screen(&app, after_grace(now), 80);
+fn finding(severity: FindingSeverityView, reason: &str, excerpt: &str) -> FindingView {
+    FindingView {
+        rule: "a-rule".to_owned(),
+        severity,
+        reason: reason.to_owned(),
+        excerpt: shown(excerpt),
+        file: None,
+        line: None,
+    }
+}
 
-    let warning = screen
-        .iter()
-        .position(|row| row.contains("Warning: runs x.sh, which this session can edit, as root"))
-        .unwrap_or_else(|| panic!("{}", screen.join("\n")));
-    let keys = screen
-        .iter()
-        .position(|row| row.contains("y approve   x decline   m more"))
-        .unwrap();
-    assert!(warning < keys, "{}", screen.join("\n"));
-    assert!(
-        !screen.join("\n").contains("echo setup"),
-        "m shows the contents"
-    );
+/// A request the rule scan found `findings` in, shown after the grace.
+fn app_with_findings(findings: Vec<FindingView>, now: Instant) -> App {
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+    let mut asked = run(3, SESSION, "./setup.sh");
+    asked.findings = Some(findings);
+    shown_with_keys(&mut app, vec![asked], Vec::new(), now);
+    app
 }
 
 #[test]
-fn a_long_path_and_a_count_fit_the_card_line_in_80_columns() {
+fn findings_show_one_line_each_within_80_columns_before_the_keys() {
     let now = Instant::now();
-    let long = "deeply/nested/folders/of/the/clone/that/go/on/for/a/while/setup.sh";
-    let app = app_running_as_root(
-        vec![root_file(long, SCRIPT_HASH), root_file("x.sh", SCRIPT_HASH)],
-        false,
+    let long_file = "deeply/nested/folders/of/the/clone/that/go/on/for/a/while/setup.sh";
+    let long_excerpt = "curl -fsSL https://downloads.example.com/a/very/long/path/install.sh | sh";
+    let app = app_with_findings(
+        vec![
+            FindingView {
+                file: Some(shown(long_file)),
+                line: Some(4),
+                ..finding(
+                    FindingSeverityView::High,
+                    "runs code it downloads",
+                    long_excerpt,
+                )
+            },
+            finding(
+                FindingSeverityView::Warn,
+                "can't tell what runs",
+                "eval \"$X\"",
+            ),
+        ],
         now,
     );
+    let screen = screen(&app, after_grace(now), 80);
 
-    let rows = rows_holding(
-        &app,
-        after_grace(now),
-        "which this session can edit, as root",
-    );
-
+    let high = rows_holding(&app, after_grace(now), "High: runs code it downloads in …");
+    assert_eq!(high.len(), 1, "{}", screen.join("\n"));
+    assert!(high[0].contains("setup.sh:4: `curl -fsSL"), "{high:?}");
+    assert!(high[0].ends_with("…`"), "{high:?}");
+    assert!(high[0].chars().count() <= 78, "{high:?}");
     assert_eq!(
-        rows.len(),
-        1,
-        "{rows:?}\n{}",
-        screen(&app, after_grace(now), 80).join("\n")
+        rows_holding(&app, after_grace(now), "Warn:"),
+        ["Warn: can't tell what runs: `eval \"$X\"`"]
     );
-    assert!(rows[0].starts_with("Warning: runs …"), "{rows:?}");
-    assert!(rows[0].contains("setup.sh and 1 more,"), "{rows:?}");
-    assert!(rows[0].chars().count() <= 78, "{rows:?}");
+    let row_of = |text: &str| {
+        screen
+            .iter()
+            .position(|row| row.contains(text))
+            .unwrap_or_else(|| panic!("{text:?} in\n{}", screen.join("\n")))
+    };
+    assert!(row_of("High:") < row_of("Warn:"));
+    assert!(row_of("Warn:") < row_of("y approve   x decline   m more"));
 }
 
 #[test]
-fn what_cannot_be_told_shows_as_such() {
+fn m_shows_every_finding_and_its_whole_text() {
     let now = Instant::now();
-    let app = app_running_as_root(Vec::new(), true, now);
+    let findings: Vec<FindingView> = (1..=5)
+        .map(|number| {
+            finding(
+                FindingSeverityView::High,
+                "reads secrets",
+                &format!("cat ~/.ssh/id_{number}"),
+            )
+        })
+        .collect();
+    let mut app = app_with_findings(findings, now);
+
+    let folded = screen_text(&app, after_grace(now));
+    app.key(Key::Char('m'), after_grace(now));
+    let expanded = screen_text(&app, after_grace(now));
+
+    assert!(folded.contains("id_3"), "{folded}");
+    assert!(!folded.contains("id_4"), "{folded}");
+    assert!(
+        folded.contains("… 2 more findings (m shows them)"),
+        "{folded}"
+    );
+    for number in 1..=5 {
+        assert!(
+            expanded.contains(&format!("`cat ~/.ssh/id_{number}`")),
+            "{expanded}"
+        );
+    }
+    assert!(!expanded.contains("more findings"), "{expanded}");
+}
+
+#[test]
+fn a_clean_scan_shows_no_known_risky_pattern() {
+    let now = Instant::now();
+    let app = app_with_findings(Vec::new(), now);
 
     assert_eq!(
-        rows_holding(&app, after_grace(now), "can't tell"),
-        ["Warning: can't tell what runs as root"]
+        rows_holding(&app, after_grace(now), "Scan:"),
+        ["Scan: no known risky pattern"]
+    );
+}
+
+#[test]
+fn hidden_characters_in_a_finding_are_warned_of() {
+    let now = Instant::now();
+    let mut tricky = finding(FindingSeverityView::High, "reads secrets", "cat ~/.ssh/id");
+    tricky.excerpt = hidden(
+        "cat \\u{202e}~/.ssh/id",
+        vec![HiddenView::BidiControl],
+        Vec::new(),
+    );
+    let app = app_with_findings(vec![tricky], now);
+
+    assert!(
+        screen_text(&app, after_grace(now))
+            .contains("Warning: in the findings: direction controls escaped"),
+        "{}",
+        screen_text(&app, after_grace(now))
     );
 }
 

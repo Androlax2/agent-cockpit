@@ -130,6 +130,12 @@ pub struct RunRequestView {
     /// was not checked (a start request, or one filed before the check).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_runs: Option<RootRunsView>,
+    /// What the rule scan found in this revision (#1388), high first, recorded before the
+    /// owner read it: empty reads "no known risky pattern", never "safe". In the owner's views
+    /// only; `None` there when the revision was not scanned (a start request, or one filed
+    /// before the scan).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub findings: Option<Vec<FindingView>>,
     pub result: Option<RunResultView>,
     /// Why the request ended without a result, or what is known about it.
     pub note: Option<String>,
@@ -204,17 +210,60 @@ pub struct FileNowView {
     pub unreadable: bool,
 }
 
-/// The card's line for a request whose sudo runs `first` and `more` other files the asking
-/// session can change (#1383): the same words in the pane and `approval show`.
-pub fn editable_as_root_warning(first: &str, more: usize) -> String {
-    match more {
-        0 => format!("runs {first}, which this session can edit, as root"),
-        _ => format!("runs {first} and {more} more, which this session can edit, as root"),
+/// One known-risky pattern the rule scan found in a run request (#1388). It warns; the owner
+/// decides.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindingView {
+    /// The rule's id (`download-runs`).
+    pub rule: String,
+    pub severity: FindingSeverityView,
+    /// The line the owner reads (`runs code it downloads`).
+    pub reason: String,
+    /// The text that matched, on one line, under the display rules; empty when nothing in
+    /// particular matched.
+    pub excerpt: ShownText,
+    /// The script it is in, as the owner reads it (`./setup.sh`); `None` on the command line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<ShownText>,
+    /// The script's line it starts on, from 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u64>,
+}
+
+/// How much a finding weighs: high ones come first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FindingSeverityView {
+    High,
+    Warn,
+    /// A severity this client does not know yet; shown as a finding all the same.
+    #[serde(other)]
+    Unknown,
+}
+
+/// A finding as the card and `approval show` read it, its matching text `excerpt` (the
+/// finding's, or a shortened one) marked with backticks: `High: runs code it downloads:
+/// `curl … | sh``, `High: reads secrets in ./setup.sh:4: `cat ~/.ssh/id_rsa``.
+pub fn finding_line(finding: &FindingView, excerpt: &str) -> String {
+    let severity = match finding.severity {
+        FindingSeverityView::High => "High",
+        FindingSeverityView::Warn => "Warn",
+        FindingSeverityView::Unknown => "Finding",
+    };
+    let place = match (&finding.file, finding.line) {
+        (Some(file), Some(line)) => format!(" in {}:{line}", file.text),
+        (Some(file), None) => format!(" in {}", file.text),
+        (None, _) => String::new(),
+    };
+    if excerpt.is_empty() {
+        format!("{severity}: {}{place}", finding.reason)
+    } else {
+        format!("{severity}: {}{place}: `{excerpt}`", finding.reason)
     }
 }
 
-/// The card's line for a request whose root part cannot be resolved from its command line.
-pub const CANNOT_TELL_AS_ROOT: &str = "can't tell what runs as root";
+/// What a scanned request without a finding reads: a clean scan proves nothing safe.
+pub const NO_KNOWN_RISKY_PATTERN: &str = "Scan: no known risky pattern";
 
 /// The card's line for a file sudo runs that changed after it was recorded.
 pub fn changed_since_asked_warning(path: &str) -> String {

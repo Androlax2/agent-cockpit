@@ -52,8 +52,11 @@ the wire. Report 14 treats this contract as stable from the first release.
    views carry `root_runs` (#1383): the files the request's `sudo` runs that its session can
    edit, each with the hash recorded at the check and, while it asks, `now` (hash and first
    lines as read for this view, or `unreadable`), and `cannot_tell`; the view's `digest` is
-   then bound to what it read, so an approval names it; `editable_as_root_warning`,
-   `changed_since_asked_warning` and `CANNOT_TELL_AS_ROOT` are the clients' shared wording.
+   then bound to what it read, so an approval names it; `changed_since_asked_warning` is
+   the clients' shared wording. They carry `findings` (#1388), the rule scan's
+   `FindingView`s, high first, each with its rule id, severity, reason, matching text and,
+   in a script, file and line; `finding_line` and `NO_KNOWN_RISKY_PATTERN` are the clients'
+   shared wording, and a severity this client does not know reads as `unknown`.
    An approval within the daemon's grace after
    the request appeared or changed is refused with code `refused`. A decision may name the
    owner client it came `through` (`tui`, `cli`); a decided request's view carries it in

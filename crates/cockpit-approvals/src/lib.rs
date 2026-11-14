@@ -9,7 +9,10 @@ mod redact;
 mod restart;
 mod retention;
 mod rows;
+mod rule_scan;
+mod rules;
 mod runs;
+mod shell;
 mod sudo;
 mod sudo_editable;
 mod sudo_unasked;
@@ -30,13 +33,15 @@ pub use redact::{redact_secrets, strip_terminal_controls};
 pub use restart::ended_after_restart;
 pub use retention::{RunOutputs, retirable_run_outputs, retire_run_outputs};
 pub use rows::{EXPIRES_AFTER_SECONDS, Project, REFRESH_AFTER_SECONDS};
+pub use rule_scan::{Finding, path_from, scan, scan_unfinished, sudo_findings};
+pub use rules::Severity;
 pub use runs::{
     APPROVAL_GRACE_SECONDS, Approved, DecidedThrough, FiledRun, Interrupted, RunAsk, RunDecision,
     RunId, RunRequest, RunResult, RunState, StartAsk, StartSession, action_digest, approve_run,
     ask_run, ask_run_unless_pending, ask_start, decided_runs, decline_run, edit_run, finish_run,
     finish_start, interrupted_runs, may_ask, open_runs, purge_run_output, queue_order,
-    reconcile_run, record_not_run, record_outcome_unknown, record_root_runs, resolve_cwd,
-    run_request, run_status, run_status_if_fresh, shown_run, start_run, validate_start,
+    reconcile_run, record_checks, record_not_run, record_outcome_unknown, resolve_cwd, run_request,
+    run_status, run_status_if_fresh, shown_run, start_run, validate_start,
 };
 pub use sudo::{
     SudoAnswered, SudoAsk, SudoAskpass, SudoHelper, TRUSTED_SUDO, sudo_asks_every_time,
@@ -209,6 +214,14 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 13,
             sql: "ALTER TABLE approvals_runs ADD COLUMN root_runs TEXT
                 CHECK (root_runs IS NULL OR substr(root_runs, 1, 3) = 'v1 ');",
+        },
+        // #1388: what the rule scan found in the revision, one finding a line
+        // (`rule_scan::encode`), kept with the decision. NULL when not scanned: a start
+        // request or an earlier row.
+        Migration {
+            version: 14,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN findings TEXT
+                CHECK (findings IS NULL OR substr(findings, 1, 2) = 'v1');",
         },
     ],
 };

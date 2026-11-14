@@ -25,6 +25,7 @@ use crate::rows::{
     AskState, EXPIRES_AFTER_SECONDS, Project, invalid_row, next_id, not_found, project_from,
     refreshed_expiry, session_from, state_at, still_asking, stored_row,
 };
+use crate::rule_scan::Finding;
 use crate::sudo_editable::RootRuns;
 use crate::{Error, Refusal};
 
@@ -44,7 +45,7 @@ const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, p
         output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant,
         kind, start_prompt, start_clone, start_agent, start_model, start_effort, decided_at,
         decided_through, output_retired_at, stopped_by_owner_at, sudo_ran_unasked,
-        typed_secret_redacted, root_runs";
+        typed_secret_redacted, root_runs, findings";
 const START_PROMPT_MAX_CHARS: usize = 4000;
 const START_KIND: &str = "start-session";
 
@@ -162,8 +163,11 @@ pub struct RunRequest {
     /// The owner's decision (#657); `None` until the request leaves `asking`.
     pub decision: Option<RunDecision>,
     /// What this revision's sudo runs that the asking session can change (#1383), recorded
-    /// with [`record_root_runs`]; `None` until then, and for a start request.
+    /// with [`record_checks`]; `None` until then, and for a start request.
     pub root_runs: Option<RootRuns>,
+    /// What the rule scan found in this revision (#1388), recorded with [`record_checks`],
+    /// kept with the owner's decision; `None` until then, and for a start request.
+    pub findings: Option<Vec<Finding>>,
 }
 
 /// The owner's decision on a request: only the owner decides, so what it records is whether,
@@ -882,7 +886,7 @@ pub async fn edit_run(
     stored_run(
         write,
         "UPDATE approvals_runs SET command = ?2, revision = revision + 1, revised_at = ?3,
-                root_runs = NULL
+                root_runs = NULL, findings = NULL
              WHERE id = ?1",
         (id.0, command.as_str(), now),
         now,
@@ -890,14 +894,16 @@ pub async fn edit_run(
     .await
 }
 
-/// Records what `revision` of the command request `id` runs as root that its asking session
-/// can change (#1383), while it asks: the daemon checks each revision before the owner reads
-/// it, in the transaction that filed or edited it.
-pub async fn record_root_runs(
+/// Records the checks of `revision` of the command request `id` while it asks: what it runs
+/// as root that its asking session can change (#1383) and what the rule scan found (#1388).
+/// The daemon checks each revision before the owner reads it, in the transaction that filed
+/// or edited it.
+pub async fn record_checks(
     write: &WriteTransaction<'_>,
     id: RunId,
     revision: i64,
     runs: &RootRuns,
+    findings: &[Finding],
     now: i64,
 ) -> Result<RunRequest, Error> {
     let run = undecided(write, id, now).await?;
@@ -912,8 +918,12 @@ pub async fn record_root_runs(
     }
     stored_run(
         write,
-        "UPDATE approvals_runs SET root_runs = ?2 WHERE id = ?1",
-        (id.0, crate::sudo_editable::encode(runs)),
+        "UPDATE approvals_runs SET root_runs = ?2, findings = ?3 WHERE id = ?1",
+        (
+            id.0,
+            crate::sudo_editable::encode(runs),
+            crate::rule_scan::encode(findings),
+        ),
         now,
     )
     .await
@@ -1391,6 +1401,13 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
             Some(text) => Some(
                 crate::sudo_editable::decode(&text)
                     .ok_or_else(|| invalid_row(TABLE, format!("root runs {text:?}")))?,
+            ),
+            None => None,
+        },
+        findings: match row.get::<Option<String>>(33)? {
+            Some(text) => Some(
+                crate::rule_scan::decode(&text)
+                    .ok_or_else(|| invalid_row(TABLE, format!("findings {text:?}")))?,
             ),
             None => None,
         },

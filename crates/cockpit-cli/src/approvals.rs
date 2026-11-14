@@ -9,10 +9,10 @@ use std::process::ExitCode;
 
 use chrono::{DateTime, Local};
 use cockpit_protocol::{
-    CANNOT_TELL_AS_ROOT, Command, DecidedRunView, DecidedThroughView, GuideStateView, GuideView,
-    HiddenView, Reply, RootRunsView, RunDecisionView, RunRequestView, RunStateView, SecretText,
-    ShownText, changed_since_asked_warning, editable_as_root_warning, sudo_ran_unasked_warning,
-    typed_secret_redacted_notice,
+    Command, DecidedRunView, DecidedThroughView, FindingView, GuideStateView, GuideView,
+    HiddenView, NO_KNOWN_RISKY_PATTERN, Reply, RootRunsView, RunDecisionView, RunRequestView,
+    RunStateView, SecretText, ShownText, changed_since_asked_warning, finding_line,
+    sudo_ran_unasked_warning, typed_secret_redacted_notice,
 };
 
 /// The command a verb sends, or the usage problem that stops it.
@@ -292,12 +292,15 @@ fn hidden_name(kind: HiddenView) -> &'static str {
     }
 }
 
-/// What the owner should weigh before approving, beyond the text: files the session can edit
-/// that its sudo runs as root, build files the session changed that the command runs, a
+/// What the owner should weigh before approving, beyond the text: the rule scan's findings
+/// (#1388), files the session can edit that its sudo runs as root, build files the session changed that the command runs, a
 /// `timeout` that would take the terminal from it, and a shell that could not check the
 /// command.
 fn run_hints(run: &RunRequestView) -> String {
     let mut text = String::new();
+    if let Some(findings) = &run.findings {
+        text.push_str(&findings_hints(findings));
+    }
     if let Some(root_runs) = &run.root_runs {
         text.push_str(&root_runs_hints(root_runs));
     }
@@ -327,16 +330,28 @@ fn run_hints(run: &RunRequestView) -> String {
     text
 }
 
+/// Every finding of the rule scan, high first, or that it found none.
+fn findings_hints(findings: &[FindingView]) -> String {
+    if findings.is_empty() {
+        return format!("  {NO_KNOWN_RISKY_PATTERN}\n");
+    }
+    let mut text = String::new();
+    for finding in findings {
+        let _ = writeln!(text, "  ! {}", finding_line(finding, &finding.excerpt.text));
+        text.push_str(&warnings(&finding.excerpt));
+        if let Some(file) = &finding.file {
+            text.push_str(&warnings(file));
+        }
+    }
+    text
+}
+
 /// Each file the session can edit that the command's sudo runs, with its hash and, while the
-/// request asks, its first lines as they are now (#1383).
+/// request asks, its first lines as they are now (#1383). That sudo runs it is a finding.
 fn root_runs_hints(root_runs: &RootRunsView) -> String {
     let mut text = String::new();
     for file in &root_runs.editable {
-        let _ = writeln!(
-            text,
-            "  ! {}",
-            editable_as_root_warning(&file.shown_path.text, 0)
-        );
+        let _ = writeln!(text, "  Runs as root: {}", file.shown_path.text);
         text.push_str(&warnings(&file.shown_path));
         if file.changed_since_asked() {
             let _ = writeln!(
@@ -367,9 +382,6 @@ fn root_runs_hints(root_runs: &RootRunsView) -> String {
             (None, Some(_)) => text.push_str("    (not text)\n"),
             (None, None) => {}
         }
-    }
-    if root_runs.cannot_tell {
-        let _ = writeln!(text, "  ! {CANNOT_TELL_AS_ROOT}");
     }
     text
 }
