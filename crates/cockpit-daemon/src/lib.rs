@@ -242,10 +242,9 @@ pub struct Capabilities {
     pub bug_report_facts: Arc<cockpit_bug_reports::Facts>,
     /// `$XDG_STATE_HOME/cockpit`, where bug report bundles are written beside the logs.
     pub state_dir: PathBuf,
-    /// The user this daemon runs as: no project's engine may run as it (#390).
-    pub owner_uid: u32,
-    /// What each project engine's relay unit runs (#390).
-    pub sandbox_launcher: PathBuf,
+    /// The host's project engines (#390): the one the engine proxies write their states to,
+    /// so the readiness the routes answer shows them.
+    pub(crate) containers: containers::Host,
     /// The optional skill pack as this start delivered it (#786).
     pub skill_pack: Arc<DeliveredSkillPack>,
     /// The policy the quota worker judges readings under; `None` when it reads none (#58).
@@ -596,8 +595,7 @@ impl Instance {
                 network_decided: Arc::clone(&network_decided),
                 bug_report_facts: Arc::clone(&bug_report_facts),
                 state_dir: options.state_dir.clone(),
-                owner_uid: self.owner_uid,
-                sandbox_launcher: wiring.sandbox_launcher.clone(),
+                containers: network_containers.clone(),
                 skill_pack,
                 quota_policy: wiring.quota.as_ref().map(|polling| polling.policy.clone()),
                 project_shares: project_shares(wiring.quota.as_ref()),
