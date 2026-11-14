@@ -3,20 +3,11 @@
 //! which is how a reinstalled engine is accepted.
 
 use std::ffi::OsString;
-use std::io::IsTerminal;
 use std::process::ExitCode;
 
-use cockpit_protocol::{Command, DecidedThroughView, NetworkGrantView, NetworkTargetView, Reply};
+use cockpit_protocol::{Command, DecidedThroughView, Reply};
 
-use crate::daemon::{CONTROL_DEADLINE, request, unexpected};
-
-/// The hosts the daemon grants for `network grant PROJECT docker-hub`
-/// (`cockpit_sandbox::DOCKER_HUB_HOSTS`), on 443.
-const DOCKER_HUB_HOSTS: [&str; 3] = [
-    "registry-1.docker.io",
-    "auth.docker.io",
-    "production.cloudflare.docker.com",
-];
+use crate::network::DOCKER_HUB_HOSTS;
 
 /// The command a `containers` verb sends, or the usage problem that stops it.
 pub(crate) fn parse(arguments: &[OsString]) -> Result<Command, String> {
@@ -55,64 +46,21 @@ pub(crate) fn run(command: Command) -> ExitCode {
 }
 
 /// #390, decided 2026-11-09 (B): the engine's setup asks once whether the project's engine
-/// may pull from Docker Hub, a revocable grant per host. Asked on a terminal, where declining
-/// is the default; elsewhere only named, so a script never grants. The engine is recorded
-/// either way, so only a grant the owner said yes to and that failed exits 1.
+/// may pull from Docker Hub, a revocable grant per host.
 fn offer_docker_hub_grant(project: &str) -> ExitCode {
-    let not_offered = || {
-        eprintln!("{project}'s engine is recorded; Docker Hub was not offered");
-        ExitCode::SUCCESS
-    };
-    let Ok(reply) = request(
-        Command::NetworkGrants {
-            project: Some(project.to_owned()),
-        },
-        CONTROL_DEADLINE,
-    ) else {
-        return not_offered();
-    };
-    let Reply::NetworkGrants { grants } = &reply else {
-        unexpected(&reply);
-        return not_offered();
-    };
-    if holds_docker_hub(grants, project) {
-        return ExitCode::SUCCESS;
-    }
-    let offer = docker_hub_offer(&crate::profile::command(), project);
-    let is_interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
-    if !is_interactive {
-        eprintln!("{offer}");
-        return ExitCode::SUCCESS;
-    }
-    eprint!(
-        "Allow Docker Hub ({}, on 443) always for {project}'s engine? Its pulls from Docker \
-         Hub work at once; a registry also takes pushes made with a credential the caller \
-         supplies. `{} network revoke GRANT` takes each host back. [y/N] ",
-        DOCKER_HUB_HOSTS.join(", "),
-        crate::profile::command()
-    );
-    let mut answer = String::new();
-    if let Err(error) = std::io::stdin().read_line(&mut answer) {
-        eprintln!("no answer read ({error}): not granted. {offer}");
-        return ExitCode::SUCCESS;
-    }
-    if !crate::projects::is_yes(&answer) {
-        eprintln!("not granted. {offer}");
-        return ExitCode::SUCCESS;
-    }
-    crate::network::run(crate::network::docker_hub_grant_command(project))
-}
-
-/// Whether `project` holds an active grant of each of Docker Hub's pull hosts among `grants`.
-fn holds_docker_hub(grants: &[NetworkGrantView], project: &str) -> bool {
-    DOCKER_HUB_HOSTS.iter().all(|docker_hub| {
-        grants.iter().any(|grant| {
-            let is_host = matches!(
-                &grant.allows,
-                NetworkTargetView::Host { host, port } if host == docker_hub && *port == 443
-            );
-            grant.project == project && is_host && grant.revoked.is_none()
-        })
+    let command = crate::profile::command();
+    crate::network::offer_grant(crate::network::GrantOffer {
+        project,
+        not_offered: format!("{project}'s engine is recorded; Docker Hub was not offered"),
+        holds: crate::network::holds_docker_hub,
+        question: format!(
+            "Allow Docker Hub ({}, on 443) always for {project}'s engine? Its pulls from Docker \
+             Hub reach those hosts at once (a blob served from another host still asks); a \
+             registry also takes pushes made with a credential the caller supplies. `{command} network revoke GRANT` takes each host back.",
+            DOCKER_HUB_HOSTS.join(", "),
+        ),
+        offer: docker_hub_offer(&command, project),
+        grant: crate::network::docker_hub_grant_command(project),
     })
 }
 
@@ -128,9 +76,10 @@ fn docker_hub_offer(command: &str, project: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::NetworkDecisionView;
+    use cockpit_protocol::{NetworkDecisionView, NetworkGrantView, NetworkTargetView};
 
     use super::*;
+    use crate::network::holds_docker_hub;
 
     fn words(text: &str) -> Vec<OsString> {
         text.split_whitespace().map(OsString::from).collect()

@@ -939,8 +939,9 @@ pub async fn grant_github(
 }
 
 /// The owner grants `project` [`DOCKER_HUB_HOSTS`] on 443 always, without a request: the
-/// answer `containers record` asks for (#390), so the engine's first pull from Docker Hub
-/// passes. One grant per host, each revoked on its own; a host the project holds already is
+/// answer `containers record` asks for (#390), so the engine's pulls from Docker Hub pass
+/// without a request per host; a blob Docker Hub serves from another host is still refused
+/// and filed. One grant per host, each revoked on its own; a host the project holds already is
 /// left as it is. The caller checks that `project` is registered. Refused, naming the first,
 /// when the project holds them all.
 pub async fn grant_docker_hub(

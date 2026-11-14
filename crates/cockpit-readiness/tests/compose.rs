@@ -193,6 +193,11 @@ fn a_compose_files_service_names_are_the_keys_directly_under_services() {
             "# app\nservices:\n\n  web: # front\n    image: nginx\n  \"worker\":\n    image: app\n",
             vec!["web", "worker"],
         ),
+        (
+            "windows line endings",
+            "services:\r\n  web:\r\n    image: nginx\r\n",
+            vec!["web"],
+        ),
         ("no services", "volumes:\n  data:\n", vec![]),
     ] {
         assert_eq!(service_names(text), expected, "{case}");
