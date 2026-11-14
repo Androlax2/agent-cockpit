@@ -42,8 +42,8 @@ pub use sudo::{
     SudoAnswered, SudoAsk, SudoAskpass, SudoHelper, TRUSTED_SUDO, sudo_asks_every_time,
 };
 pub use sudo_editable::{
-    FILE_HEAD_LINES, FileNow, Lookup, RootFile, RootRuns, SessionWrites, changed_file, file_now,
-    file_sha256, root_runs,
+    Contents, FILE_HEAD_LINES, FileNow, Lookup, RootFile, RootRuns, SessionWrites, changed_file,
+    digest_as_read, file_now, file_sha256, root_runs,
 };
 pub use sudo_unasked::unasked_sudo_watch_holds;
 pub use typed_secret::{wipe, wipe_vec};

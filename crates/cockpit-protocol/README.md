@@ -51,7 +51,8 @@ the wire. Report 14 treats this contract as stable from the first release.
    in the owner's views of an asking request, `changed_build_files` (#156). The owner's
    views carry `root_runs` (#1383): the files the request's `sudo` runs that its session can
    edit, each with the hash recorded at the check and, while it asks, `now` (hash and first
-   lines as read for this view), and `cannot_tell`; `editable_as_root_warning`,
+   lines as read for this view, or `unreadable`), and `cannot_tell`; the view's `digest` is
+   then bound to what it read, so an approval names it; `editable_as_root_warning`,
    `changed_since_asked_warning` and `CANNOT_TELL_AS_ROOT` are the clients' shared wording.
    An approval within the daemon's grace after
    the request appeared or changed is refused with code `refused`. A decision may name the

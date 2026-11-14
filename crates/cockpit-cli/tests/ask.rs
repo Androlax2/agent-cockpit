@@ -707,6 +707,7 @@ async fn the_owner_reads_each_editable_file_sudo_runs_as_it_is_now() {
                         sha256: Some("b".repeat(64)),
                         head: Some(shown("#!/bin/sh\necho hi")),
                         more_lines: 3,
+                        unreadable: false,
                     }),
                 },
                 RootFileView {
@@ -717,6 +718,7 @@ async fn the_owner_reads_each_editable_file_sudo_runs_as_it_is_now() {
                         sha256: None,
                         head: None,
                         more_lines: 0,
+                        unreadable: false,
                     }),
                 },
             ],

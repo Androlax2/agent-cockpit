@@ -98,7 +98,9 @@ pub struct RunRequestView {
     /// the owner's views of an asking request; `None` when it was not or could not be read.
     #[serde(default)]
     pub changed_build_files: Option<Vec<String>>,
-    /// SHA-256 of this revision's directory and command; an approval names it.
+    /// SHA-256 of this revision's directory and command; an approval names it. In the
+    /// owner's views of a request whose sudo runs files its session can edit (`root_runs`),
+    /// bound to those files as the view read them: an approval names what it was shown.
     pub digest: String,
     /// Seconds since 1970.
     pub asked_at: i64,
@@ -173,7 +175,7 @@ pub struct RootFileView {
     /// still create.
     pub sha256: Option<String>,
     /// What the file holds now, read for the owner's views of an asking request; `None`
-    /// otherwise, or when it could not be read.
+    /// otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub now: Option<FileNowView>,
 }
@@ -183,7 +185,7 @@ impl RootFileView {
     pub fn changed_since_asked(&self) -> bool {
         self.now
             .as_ref()
-            .is_some_and(|now| now.sha256 != self.sha256)
+            .is_some_and(|now| now.unreadable || now.sha256 != self.sha256)
     }
 }
 
@@ -196,6 +198,10 @@ pub struct FileNowView {
     pub head: Option<ShownText>,
     /// Lines after `head`.
     pub more_lines: u64,
+    /// It could not be read (not a regular file, no permission, too slow): neither `sha256`
+    /// nor `head` say anything, and the run will be refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unreadable: bool,
 }
 
 /// The card's line for a request whose sudo runs `first` and `more` other files the asking

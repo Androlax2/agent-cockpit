@@ -859,34 +859,52 @@ async fn an_owner_edit_is_checked_for_what_its_sudo_runs() {
 }
 
 #[tokio::test]
-async fn a_file_sudo_runs_that_changed_after_the_card_refuses_the_run() {
+async fn a_file_sudo_runs_that_changed_since_the_ask_refuses_the_run() {
     let asking = started(true).await;
     let script = asking.cwd.path().join("x.sh");
     std::fs::write(&script, "echo setup\n").unwrap();
     let asked = asking.asked("sudo ./x.sh").await;
-    let shown = shown_to_owner(&asking, asked.id).await;
+    let recorded = shown_to_owner(&asking, asked.id).await;
 
     std::fs::write(&script, "echo replaced\n").unwrap();
-    assert!(
-        shown_to_owner(&asking, asked.id)
-            .await
-            .root_runs
-            .unwrap()
-            .editable[0]
-            .changed_since_asked()
-    );
+    let shown = shown_to_owner(&asking, asked.id).await;
+    assert!(shown.root_runs.as_ref().unwrap().editable[0].changed_since_asked());
     run(asking.approve(&shown).await);
     let ended = asking.ended(asked.id).await;
 
     assert_eq!(ended.state, RunStateView::NotRun, "{ended:?}");
     assert_eq!(
         ended.note.as_deref(),
-        Some("./x.sh changed after you approved")
+        Some("./x.sh changed since it was asked")
     );
-    let record = shown_to_owner(&asking, asked.id).await.root_runs.unwrap();
     assert_eq!(
-        record.editable[0].sha256,
-        shown.root_runs.unwrap().editable[0].sha256
+        shown_to_owner(&asking, asked.id)
+            .await
+            .root_runs
+            .unwrap()
+            .editable[0]
+            .sha256,
+        recorded.root_runs.unwrap().editable[0].sha256
+    );
+}
+
+#[tokio::test]
+async fn an_approval_must_name_the_files_sudo_runs_as_the_owner_read_them() {
+    let asking = started(true).await;
+    let script = asking.cwd.path().join("x.sh");
+    std::fs::write(&script, "echo asked\n").unwrap();
+    let asked = asking.asked("sudo ./x.sh").await;
+
+    // The owner reads a harmless change; the asked contents come back before the approval.
+    std::fs::write(&script, "echo harmless\n").unwrap();
+    let shown = shown_to_owner(&asking, asked.id).await;
+    std::fs::write(&script, "echo asked\n").unwrap();
+    let refusal = refused(asking.approve(&shown).await);
+
+    assert_eq!(refusal.code, ErrorCode::StaleRevision, "{refusal:?}");
+    assert_eq!(
+        shown_to_owner(&asking, asked.id).await.state,
+        RunStateView::Asking
     );
 }
 

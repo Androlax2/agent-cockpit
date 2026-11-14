@@ -108,8 +108,10 @@ not share code.
 - What a request's `sudo` runs that its session can edit (#1383, `src/approvals/root_runs.rs`)
   is checked inside the write transaction that files, edits or (by a guide's `run:` step)
   files the revision, against the read-write folders of the session's staged launch spec,
-  or as unsandboxed when there is none; the check reads files. The owner's views read each
-  recorded file again, and an approved run whose recorded file changed is not started.
+  or as unsandboxed when there is none; the check reads files, at most 10 seconds. The
+  owner's views read each recorded file again and bind their `digest` to what they read
+  (`digest_as_read`); an approval is refused unless the files still read that way, and the
+  run is not started when one no longer has its recorded hash.
 - An approval commits the run intent, then the run starts outside the lanes: a long command
   holds no control worker. It is a `cockpit-processes` terminal execution (#163) of the
   daemon's one supervisor: a pseudo-terminal under `torlek-daemon --run-leader`

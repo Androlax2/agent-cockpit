@@ -302,11 +302,7 @@ pub fn action_digest(cwd: &Path, command: &str) -> String {
         hasher.update((part.len() as u64).to_be_bytes());
         hasher.update(part);
     }
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::sudo_editable::hex(&hasher.finalize())
 }
 
 /// The directory a command would run in, resolved now: symbolic links followed, so the

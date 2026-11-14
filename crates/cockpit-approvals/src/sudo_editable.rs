@@ -28,6 +28,8 @@ use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest as _, Sha256};
 
+use crate::hints::program_name;
+
 /// What a command runs as root that its asking session can change, as recorded for one
 /// revision of its request.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -138,22 +140,92 @@ pub fn root_runs(command: &str, lookup: Lookup<'_>, writes: &SessionWrites) -> R
 pub fn changed_file(files: &[RootFile]) -> Option<&Path> {
     files
         .iter()
-        .find(|file| file_sha256(&file.path).ok().as_ref() != Some(&file.sha256))
+        .find(|file| Contents::read(&file.path) != Contents::recorded(file))
         .map(|file| file.path.as_path())
 }
 
-/// Lower-case hex SHA-256 of the file `path` names (links followed); `None` when there is
-/// none.
-pub fn file_sha256(path: &Path) -> std::io::Result<Option<String>> {
-    match std::fs::File::open(path) {
-        Ok(mut file) => {
-            let mut hasher = Sha256::new();
-            std::io::copy(&mut file, &mut hasher)?;
-            Ok(Some(hex(&hasher.finalize())))
+/// A recorded file's contents as one read found them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Contents {
+    /// Lower-case hex SHA-256.
+    Hash(String),
+    /// No file there.
+    Absent,
+    /// It could not be read: not a regular file, no permission, or too slow.
+    Unreadable,
+}
+
+impl Contents {
+    /// What `path` holds now.
+    pub fn read(path: &Path) -> Contents {
+        match file_sha256(path) {
+            Ok(Some(sha256)) => Contents::Hash(sha256),
+            Ok(None) => Contents::Absent,
+            Err(_) => Contents::Unreadable,
         }
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
     }
+
+    /// What `file` held when it was recorded.
+    pub fn recorded(file: &RootFile) -> Contents {
+        file.sha256.clone().map_or(Contents::Absent, Contents::Hash)
+    }
+}
+
+/// The digest an owner approves a request with when its sudo runs files the session can
+/// edit: the request's `digest`, bound to each of those files as the owner's view read them,
+/// so an approval names the contents it was shown. `digest` itself when there are none.
+pub fn digest_as_read(digest: &str, files: &[Contents]) -> String {
+    if files.is_empty() {
+        return digest.to_owned();
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"cockpit-approvals run as read v1\0");
+    hasher.update(digest.as_bytes());
+    for file in files {
+        match file {
+            Contents::Hash(sha256) => {
+                hasher.update(b"\0hash ");
+                hasher.update(sha256.as_bytes());
+            }
+            Contents::Absent => hasher.update(b"\0absent"),
+            Contents::Unreadable => hasher.update(b"\0unreadable"),
+        }
+    }
+    hex(&hasher.finalize())
+}
+
+/// Lower-case hex SHA-256 of the file `path` names (links followed); `None` when there is
+/// none. Anything but a regular file is an error.
+pub fn file_sha256(path: &Path) -> std::io::Result<Option<String>> {
+    let Some(mut file) = open_regular(path)? else {
+        return Ok(None);
+    };
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    Ok(Some(hex(&hasher.finalize())))
+}
+
+/// `path` opened for reading when it is a regular file; `None` when there is none. Checked
+/// before opening, which would wait for a writer on a FIFO, and again on what was opened,
+/// which a device or a swapped-in link would otherwise make an endless read. A FIFO swapped
+/// in between the two still blocks the open: the daemon bounds how long it waits.
+fn open_regular(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+    let not_regular = || std::io::Error::new(ErrorKind::InvalidInput, "not a regular file");
+    match std::fs::metadata(path) {
+        Ok(metadata) if !metadata.is_file() => return Err(not_regular()),
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(not_regular());
+    }
+    Ok(Some(file))
 }
 
 /// The lines of a file the owner reads before deciding.
@@ -170,38 +242,67 @@ pub struct FileNow {
     pub more_lines: u64,
 }
 
-/// Reads `path` once: its hash, and its first lines when it is text.
+/// The most of a file kept in memory to show its first lines; the rest is hashed and its
+/// lines counted as it streams by.
+const HEAD_BYTES_MAX: usize = 256 * 1024;
+
+/// Reads `path` once: its hash, and its first lines when it is text (valid UTF-8 without a
+/// NUL byte). Anything but a regular file is an error.
 pub fn file_now(path: &Path) -> std::io::Result<FileNow> {
-    let mut contents = Vec::new();
-    match std::fs::File::open(path) {
-        Ok(mut file) => file.read_to_end(&mut contents)?,
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            return Ok(FileNow {
-                sha256: None,
-                head: None,
-                more_lines: 0,
-            });
-        }
-        Err(error) => return Err(error),
+    let Some(mut file) = open_regular(path)? else {
+        return Ok(FileNow {
+            sha256: None,
+            head: None,
+            more_lines: 0,
+        });
     };
-    let sha256 = Some(hex(&Sha256::digest(&contents)));
-    let Ok(text) = std::str::from_utf8(&contents) else {
+    let mut hasher = Sha256::new();
+    let mut kept = Vec::new();
+    let mut is_text = true;
+    let mut line_breaks: u64 = 0;
+    let mut last_byte = None;
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let read = match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        let chunk = &buffer[..read];
+        hasher.update(chunk);
+        is_text &= !chunk.contains(&0);
+        line_breaks += chunk.iter().filter(|byte| **byte == b'\n').count() as u64;
+        last_byte = chunk.last().copied();
+        let room = HEAD_BYTES_MAX.saturating_sub(kept.len());
+        kept.extend_from_slice(&chunk[..room.min(read)]);
+    }
+    let sha256 = Some(hex(&hasher.finalize()));
+    let all_lines = line_breaks + u64::from(last_byte.is_some_and(|byte| byte != b'\n'));
+    let text = match std::str::from_utf8(&kept) {
+        Ok(text) => Some(text),
+        // A character cut at the end of what was kept is still text.
+        Err(error) if error.error_len().is_none() => {
+            std::str::from_utf8(&kept[..error.valid_up_to()]).ok()
+        }
+        Err(_) => None,
+    };
+    let Some(text) = text.filter(|_| is_text) else {
         return Ok(FileNow {
             sha256,
             head: None,
             more_lines: 0,
         });
     };
-    let mut lines = text.lines();
-    let head: Vec<&str> = lines.by_ref().take(FILE_HEAD_LINES).collect();
+    let head: Vec<&str> = text.lines().take(FILE_HEAD_LINES).collect();
     Ok(FileNow {
         sha256,
         head: Some(head.join("\n")),
-        more_lines: lines.count() as u64,
+        more_lines: all_lines.saturating_sub(head.len() as u64),
     })
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
@@ -311,18 +412,57 @@ impl Walk<'_, '_> {
         }
     }
 
-    /// Whether `command` is a `cd`, which moves the commands after it to `cwd`.
+    /// Whether `command` is a `cd`, which moves the commands after it to `cwd`; `pushd` and
+    /// `popd` move it where the command line does not say.
     fn changed_directory(&mut self, command: &Simple, cwd: &mut PathBuf) -> bool {
         let words = skip_assignments(skip_keywords(&command.words));
         let Some((program, rest)) = words.split_first() else {
             return false;
         };
-        if !program.is_literal || program.text != "cd" {
+        if !program.is_literal {
             return false;
         }
-        match (rest.first(), self.lookup.home) {
+        match program.text.as_str() {
+            "cd" => {}
+            "pushd" | "popd" => {
+                self.found.cannot_tell = true;
+                return true;
+            }
+            _ => return false,
+        }
+        // `cd`'s own options, grouped or not: `-P` follows links, `-L` (the default) does not,
+        // the last one given wins; `-e` and `-@` change neither.
+        let mut is_physical = false;
+        let mut operands = rest.iter();
+        let directory = loop {
+            match operands.next() {
+                Some(word) if word.is_literal && word.text == "--" => break operands.next(),
+                Some(word)
+                    if word.is_literal
+                        && word.text.len() > 1
+                        && word.text.starts_with('-')
+                        && word.text[1..].chars().all(|option| "LPe@".contains(option)) =>
+                {
+                    if let Some(last) = word
+                        .text
+                        .chars()
+                        .rev()
+                        .find(|option| "LP".contains(*option))
+                    {
+                        is_physical = last == 'P';
+                    }
+                }
+                other => break other,
+            }
+        };
+        match (directory, self.lookup.home) {
             (Some(directory), _) if directory.is_literal && directory.text != "-" => {
-                *cwd = absolute(cwd, &directory.text);
+                *cwd = if is_physical {
+                    let path = absolute(cwd, &directory.text);
+                    std::fs::canonicalize(&path).unwrap_or(path)
+                } else {
+                    logical_directory(cwd, &directory.text)
+                };
             }
             (None, Some(home)) => *cwd = home.to_path_buf(),
             _ => self.found.cannot_tell = true,
@@ -538,6 +678,27 @@ impl Walk<'_, '_> {
                 words.next();
                 continue;
             }
+            if text.len() > 2 && text.starts_with('-') && !text.starts_with("--") {
+                match grouped_flags(interpreter, &text[1..]) {
+                    Grouped::Flags => continue,
+                    Grouped::TakesNext => {
+                        words.next();
+                        continue;
+                    }
+                    Grouped::Code(Some(code)) => return self.files_named(code, cwd),
+                    Grouped::Code(None) => match words.next() {
+                        Some(code) if code.is_literal => return self.files_named(&code.text, cwd),
+                        _ => {
+                            self.found.cannot_tell = true;
+                            return;
+                        }
+                    },
+                    Grouped::Module => {
+                        self.found.cannot_tell = true;
+                        return;
+                    }
+                }
+            }
             if text.starts_with('-') {
                 continue;
             }
@@ -684,8 +845,17 @@ fn is_executable_file(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
-/// `word` as an absolute path from `cwd`, `.` and `..` resolved by name.
+/// `word` as an absolute path from `cwd`, as the kernel opens it: `..` is left for the
+/// kernel to resolve through links, so the file hashed is the file run.
 fn absolute(cwd: &Path, word: &str) -> PathBuf {
+    cwd.join(word)
+        .components()
+        .filter(|component| *component != Component::CurDir)
+        .collect()
+}
+
+/// The directory a shell's `cd` moves to: `..` resolved by name, as `cd` does without `-P`.
+fn logical_directory(cwd: &Path, word: &str) -> PathBuf {
     let mut path = PathBuf::new();
     for component in cwd.join(word).components() {
         match component {
@@ -697,11 +867,6 @@ fn absolute(cwd: &Path, word: &str) -> PathBuf {
         }
     }
     path
-}
-
-/// The program a word names: its last path component (`/usr/bin/make` is `make`).
-fn program_name(word: &str) -> &str {
-    word.rsplit('/').next().unwrap_or(word)
 }
 
 fn is_shell(name: &str) -> bool {
@@ -838,6 +1003,41 @@ fn interpreter(name: &str) -> Option<Interpreter> {
         },
         _ => return None,
     })
+}
+
+/// What a word of single-letter options grouped behind one `-` (`perl -ne`, `python3 -Bc`)
+/// holds, its letters read in turn as the interpreter's own flags.
+enum Grouped<'w> {
+    /// Flags alone.
+    Flags,
+    /// The last letter takes the next word as its value.
+    TakesNext,
+    /// A letter takes inline code: the rest of the word, else (`None`) the next word.
+    Code(Option<&'w str>),
+    /// A letter runs a module from a search path.
+    Module,
+}
+
+fn grouped_flags<'w>(interpreter: &Interpreter, letters: &'w str) -> Grouped<'w> {
+    for (index, letter) in letters.char_indices() {
+        let flag = format!("-{letter}");
+        let rest = &letters[index + letter.len_utf8()..];
+        let is = |flags: &[&str]| flags.contains(&flag.as_str());
+        if is(interpreter.inline_code) {
+            return Grouped::Code(Some(rest).filter(|code| !code.is_empty()));
+        }
+        if is(interpreter.runs_module) {
+            return Grouped::Module;
+        }
+        if is(interpreter.takes_value) {
+            return if rest.is_empty() {
+                Grouped::TakesNext
+            } else {
+                Grouped::Flags
+            };
+        }
+    }
+    Grouped::Flags
 }
 
 /// What `sudo`'s options say: where the command starts, whether it runs nothing (`-e`, `-l`,

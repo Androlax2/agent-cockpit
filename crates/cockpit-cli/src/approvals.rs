@@ -349,6 +349,10 @@ fn root_runs_hints(root_runs: &RootRunsView) -> String {
             let _ = writeln!(text, "    sha256 {}", hash_text(file.sha256.as_deref()));
             continue;
         };
+        if now.unreadable {
+            text.push_str("    sha256 unknown: it cannot be read now\n");
+            continue;
+        }
         let _ = writeln!(text, "    sha256 {}", hash_text(now.sha256.as_deref()));
         match (&now.head, &now.sha256) {
             (Some(head), _) => {

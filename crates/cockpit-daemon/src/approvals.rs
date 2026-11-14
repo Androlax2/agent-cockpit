@@ -460,7 +460,10 @@ pub(crate) fn route_decision(
                 for run in &runs {
                     let mut view =
                         run_view(run, &runner, &waiting, changes.build_files_run(run).await);
-                    view.root_runs = root_runs::owner_view(run).await;
+                    if let Some((root_runs, digest)) = root_runs::owner_view(run).await {
+                        view.root_runs = Some(root_runs);
+                        view.digest = digest;
+                    }
                     views.push(view);
                 }
                 Ok(Reply::ApprovalQueue {
@@ -691,6 +694,20 @@ async fn approve(
     digest: &str,
     through: Option<DecidedThrough>,
 ) -> Answer {
+    // The files the request's sudo runs are read before the transaction, which a slow read
+    // must not hold. An edit in between makes a new revision, which `approve_run` refuses.
+    let read = database.read().await?;
+    let asked = existing_run(&read, request).await?;
+    drop(read);
+    let (digest, changed_since_asked) = match root_runs::as_approved(&asked).await {
+        Some(as_approved) if asked.revision == revision => {
+            if digest != as_approved.digest {
+                return Err(Refusal::DigestMismatch.into());
+            }
+            (asked.digest(), as_approved.changed)
+        }
+        _ => (digest.to_owned(), None),
+    };
     let write = database.write().await?;
     // Approval creates a durable future execution before Runner reserves its process.
     // Serialize that intent with maintenance on the same writer, not an earlier read.
@@ -712,7 +729,7 @@ async fn approve(
             ))
         })?;
     let (approved, run) =
-        cockpit_approvals::approve_run(&write, through, RunId(request), revision, digest, now())
+        cockpit_approvals::approve_run(&write, through, RunId(request), revision, &digest, now())
             .await?;
     crate::coordination::record_decision(&write, &run).await?;
     // Statistics never stand between the owner and a run: a failure is logged, not returned.
@@ -732,7 +749,13 @@ async fn approve(
             run.asking_grant(),
         ));
     } else {
-        tokio::spawn(execute(database, runner, approved, run));
+        tokio::spawn(execute(
+            database,
+            runner,
+            approved,
+            run,
+            changed_since_asked,
+        ));
     }
     Ok(reply)
 }
@@ -760,12 +783,21 @@ async fn record_granted_approval(
 
 /// Runs `approved`, unless a file its sudo runs changed since `run`, the request as approved,
 /// recorded it (#1383).
-async fn execute(database: Arc<Database>, runner: Runner, approved: Approved, run: RunRequest) {
+/// Runs an approved command, unless `refused` says why it must not start: a file its sudo
+/// runs had changed since the ask when the approval arrived.
+async fn execute(
+    database: Arc<Database>,
+    runner: Runner,
+    approved: Approved,
+    run: RunRequest,
+    refused: Option<String>,
+) {
     let request = approved.id.0;
-    let ended = match (
-        safe_git_config(&approved.cwd).await,
-        root_runs::changed_after_approval(&run).await,
-    ) {
+    let changed = match refused {
+        Some(reason) => Some(reason),
+        None => root_runs::changed_after_approval(&run).await,
+    };
+    let ended = match (safe_git_config(&approved.cwd).await, changed) {
         (Ok(_), Some(changed)) => Err(NoResult::NotStarted(changed)),
         (Ok(git_config), None) => runner.run(&database, &approved, &git_config).await,
         (Err(reason), _) => Err(NoResult::NotStarted(reason)),
@@ -947,7 +979,10 @@ pub(crate) fn run_reply(run: &RunRequest, runner: &Runner) -> Reply {
 async fn owner_run_reply(run: &RunRequest, runner: &Runner) -> Reply {
     let changed = CheckoutChanges::default().build_files_run(run).await;
     let mut view = run_view(run, runner, &runner.waiting_for_input(), changed);
-    view.root_runs = root_runs::owner_view(run).await;
+    if let Some((root_runs, digest)) = root_runs::owner_view(run).await {
+        view.root_runs = Some(root_runs);
+        view.digest = digest;
+    }
     Reply::RunRequest {
         request: Box::new(view),
     }

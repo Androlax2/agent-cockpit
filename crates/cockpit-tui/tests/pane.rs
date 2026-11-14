@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
     Command, DecidedThroughView, FileNowView, GuideView, HiddenView, ManagerPaneView, Reply,
-    RootFileView, RootRunsView, RunRequestView, SecretText, SudoAskView,
+    RootFileView, RootRunsView, RunRequestView, SecretText, ShownText, SudoAskView,
 };
 use cockpit_tui::{App, Focus, INPUT_GRACE, Key, Shown};
 use common::{
@@ -426,6 +426,7 @@ fn root_file(shown_path: &str, now_hash: &str) -> RootFileView {
             sha256: Some(now_hash.to_owned()),
             head: Some(shown("#!/bin/sh\necho setup")),
             more_lines: 340,
+            unreadable: false,
         }),
     }
 }
@@ -1242,4 +1243,22 @@ fn a_refusal_arriving_after_a_new_line_was_started_keeps_the_new_line() {
 
     assert_eq!(app.pane().typing().map(|(_, typed)| typed), Some("next"));
     assert_eq!(app.pane().input_refusal(), None);
+}
+
+#[test]
+fn hidden_characters_in_a_file_sudo_runs_are_warned_of_on_the_card() {
+    let now = Instant::now();
+    let mut file = root_file("x.sh", SCRIPT_HASH);
+    file.now.as_mut().unwrap().head = Some(ShownText {
+        text: "echo ok # \\u{202e}".to_owned(),
+        has_hidden_characters: true,
+        non_ascii: Vec::new(),
+        warnings: vec![HiddenView::BidiControl],
+    });
+    let app = app_running_as_root(vec![file], false, now);
+
+    assert_eq!(
+        rows_holding(&app, after_grace(now), "in what runs as root"),
+        ["Warning: in what runs as root: direction controls escaped"]
+    );
 }

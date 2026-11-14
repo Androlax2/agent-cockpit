@@ -857,6 +857,18 @@ fn root_runs_lines(root_runs: &RootRunsView, is_expanded: bool) -> Vec<String> {
     if root_runs.cannot_tell {
         lines.push(format!("{WARNING}{CANNOT_TELL_AS_ROOT}"));
     }
+    let shown: Vec<&ShownText> = root_runs
+        .editable
+        .iter()
+        .flat_map(|file| {
+            let head = file.now.as_ref().and_then(|now| now.head.as_ref());
+            std::iter::once(&file.shown_path).chain(head)
+        })
+        .collect();
+    let hidden = warnings(&shown);
+    if !hidden.is_empty() {
+        lines.push(format!("{WARNING}in what runs as root: {hidden}"));
+    }
     if !is_expanded {
         return lines;
     }
@@ -866,6 +878,10 @@ fn root_runs_lines(root_runs: &RootRunsView, is_expanded: bool) -> Vec<String> {
             lines.push(format!("  sha256 {}", hash_text(file.sha256.as_deref())));
             continue;
         };
+        if now.unreadable {
+            lines.push("  sha256 unknown: it cannot be read now".to_owned());
+            continue;
+        }
         lines.push(format!("  sha256 {}", hash_text(now.sha256.as_deref())));
         match (&now.head, &now.sha256) {
             (Some(head), _) => {

@@ -29,7 +29,9 @@ request here, so nothing is re-read from the sandbox.
    root's alone when unsandboxed) is kept with its SHA-256, or as absent; what it cannot
    resolve is `cannot_tell`. The daemon records it with the revision (`record_root_runs`,
    column `root_runs`; an owner edit clears it until checked again), shows each file as it is
-   now (`file_now`) and refuses an approved run when `changed_file` names one. The module is
+   now (`file_now`), binds the owner's approval to those reads (`digest_as_read`) and
+   refuses an approved run when `changed_file` names one. Only regular files are read. The
+   module is
    the one place the later rule scan (#1388) takes the rule from.
 3. `approve_run` needs the request's current revision and its `action_digest` (SHA-256 of
    the directory and command). It consumes the request with the run intent in one

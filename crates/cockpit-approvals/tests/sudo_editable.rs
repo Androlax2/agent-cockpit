@@ -5,7 +5,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use cockpit_approvals::{
-    FILE_HEAD_LINES, Lookup, RootFile, RootRuns, SessionWrites, changed_file, file_now, root_runs,
+    Contents, FILE_HEAD_LINES, Lookup, RootFile, RootRuns, SessionWrites, changed_file,
+    digest_as_read, file_now, root_runs,
 };
 
 /// A session folder the session writes, holding scripts, and a system folder it does not,
@@ -29,6 +30,7 @@ impl Host {
             "bash",
             "sh",
             "python3",
+            "perl",
             "make",
             "just",
             "env",
@@ -165,6 +167,14 @@ fn the_files_sudo_runs_are_found_wherever_the_command_names_them() {
         ("sudo ./x.sh; sudo bash ./x.sh", vec!["x.sh"]),
         ("sudo sudo ./x.sh", vec!["x.sh"]),
         ("if true; then sudo ./x.sh; fi", vec!["x.sh"]),
+        ("cd -P sub && sudo ./y.sh", vec!["sub/y.sh"]),
+        ("cd -- sub && sudo ./y.sh", vec!["sub/y.sh"]),
+        ("cd sub/.. && sudo ./x.sh", vec!["x.sh"]),
+        (r#"sudo perl -ne 'system("./x.sh")' f"#, vec!["x.sh"]),
+        (
+            r#"sudo python3 -Bc 'exec(open("./x.py").read())'"#,
+            vec!["x.py"],
+        ),
     ] {
         assert_eq!(host.editable(command), expected, "{command:?}");
     }
@@ -224,6 +234,8 @@ fn what_runs_as_root_that_cannot_be_resolved_is_not_shown_as_clean() {
         "sudo bash -c 'unterminated",
         "sudo bash <<EOF\n./$X\nEOF",
         "sudo env -S './x.sh'",
+        "pushd sub && sudo ./y.sh",
+        "sudo perl -Mstrict -e \"$CODE\"",
     ] {
         let runs = host.check(command);
         assert!(runs.cannot_tell, "{command:?}: {runs:?}");
@@ -310,4 +322,54 @@ fn the_owner_reads_a_file_s_first_lines_and_how_many_follow() {
     assert_eq!(now.sha256, cockpit_approvals::file_sha256(&long).unwrap());
     assert_eq!(file_now(&binary).unwrap().head, None);
     assert_eq!(file_now(&host.session.join("absent")).unwrap().sha256, None);
+}
+
+#[test]
+fn a_path_through_a_link_and_back_is_hashed_where_the_kernel_runs_it() {
+    let host = Host::new();
+    std::fs::create_dir(host.system.join("dir")).unwrap();
+    std::fs::write(host.system.join("x.sh"), "echo elsewhere\n").unwrap();
+    std::os::unix::fs::symlink(host.system.join("dir"), host.session.join("l")).unwrap();
+
+    let runs = host.check("sudo ./l/../x.sh");
+
+    assert_eq!(
+        runs.editable,
+        [RootFile {
+            path: host.session.join("l/../x.sh"),
+            sha256: cockpit_approvals::file_sha256(&host.system.join("x.sh")).unwrap(),
+        }]
+    );
+}
+
+#[test]
+fn a_fifo_or_a_device_sudo_runs_is_not_read_and_cannot_be_told() {
+    let host = Host::new();
+    let made = std::process::Command::new("mkfifo")
+        .arg(host.session.join("pipe.sh"))
+        .status()
+        .unwrap();
+    assert!(made.success());
+
+    for runs in [
+        host.check("sudo bash ./pipe.sh"),
+        host.check_as("sudo /bin/sh /dev/zero", &SessionWrites::Unsandboxed),
+    ] {
+        assert!(runs.cannot_tell && runs.editable.is_empty(), "{runs:?}");
+    }
+    assert!(file_now(&host.session.join("pipe.sh")).is_err());
+}
+
+#[test]
+fn the_digest_an_owner_approves_names_the_contents_read() {
+    let digest = "d".repeat(64);
+    let asked = Contents::Hash("a".repeat(64));
+    let changed = Contents::Hash("b".repeat(64));
+
+    assert_eq!(digest_as_read(&digest, &[]), digest);
+    let read = digest_as_read(&digest, std::slice::from_ref(&asked));
+    assert_ne!(read, digest);
+    for other in [changed, Contents::Absent, Contents::Unreadable] {
+        assert_ne!(digest_as_read(&digest, &[other]), read);
+    }
 }

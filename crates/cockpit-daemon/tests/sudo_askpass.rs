@@ -145,8 +145,18 @@ impl Asking {
             .await)
     }
 
-    /// Approves `request` as soon as the grace after its ask allows.
+    /// Approves `request` as the owner reads it, as soon as the grace after its ask allows.
     async fn approve(&self, request: &RunRequestView) {
+        // The owner's view binds its digest to the files the command's sudo runs (#1383).
+        let request = &run(self
+            .owner
+            .request(
+                Command::ApprovalShow {
+                    request: request.id,
+                },
+                GENEROUS,
+            )
+            .await);
         let deadline = Instant::now() + GENEROUS;
         loop {
             let reply = self
