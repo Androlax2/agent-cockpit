@@ -124,7 +124,7 @@ pub const ROOT_NEVER_HOLDS: &[&str] = &[
     "/home",
 ];
 
-/// The oldest systemd whose units take [`FLOOR_PROPERTIES`]: `PrivatePIDs=` came in 257.
+/// The oldest systemd whose units take the floor's properties: `PrivatePIDs=` came in 257.
 pub const ROOT_RUN_MIN_SYSTEMD: u32 = 257;
 
 /// The system's runtime folder, emptied: its sockets and buses (systemd's, D-Bus, a container
@@ -187,7 +187,7 @@ pub struct RootRunRequest {
 
 /// The limits no request lowers: the owner's secrets, Torlek's folders and root's hidden;
 /// [`ROOT_NEVER_WRITES`] read-only; [`ROOT_NEVER_HOLDS`] and the owner's home never written as a
-/// whole; `/run` emptied; and [`FLOOR_PROPERTIES`].
+/// whole; `/run` emptied; and the sandboxing every root part gets (`FLOOR_PROPERTIES`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootFloor {
     hidden: Vec<PathBuf>,
