@@ -309,13 +309,24 @@ impl NetworkTarget {
 /// token binds to for fetches, so the token reaches the project's first sandboxed launch.
 pub const GITHUB_HOST: &str = "github.com";
 
-/// Docker Hub's pull hosts (#390, decided 2026-11-09, B): its registry, its token service and
-/// its blobs' CDN. No default host: a registry takes pushes with a credential the caller
-/// supplies, so the owner grants them per project, at its engine's setup.
-pub const DOCKER_HUB_HOSTS: [&str; 3] = [
+/// Docker Hub's pull hosts (#390), exact names, no wildcard:
+/// - `registry-1.docker.io`: Docker's allowlist (docs.docker.com/desktop/setup/allow-list),
+///   "Docker Pull/Push";
+/// - `auth.docker.io`: that allowlist, "Authentication", the registry's token service;
+/// - `production.cloudflare.docker.com`: a blob CDN, decided 2026-11-09 (B);
+/// - `docker-images-prod.s3.dualstack.us-east-1.amazonaws.com`: where Docker Hub sent CI's
+///   blob downloads from AWS, decided 2026-11-14 (A);
+/// - `production.cloudfront.docker.com`: that allowlist, "Docker Pull/Push", where a later
+///   CI run's blobs went, decided 2026-11-14.
+///
+/// No default host: a registry takes pushes with a credential the caller supplies, so the
+/// owner grants them per project, at its engine's setup.
+pub const DOCKER_HUB_HOSTS: [&str; 5] = [
     "registry-1.docker.io",
     "auth.docker.io",
     "production.cloudflare.docker.com",
+    "docker-images-prod.s3.dualstack.us-east-1.amazonaws.com",
+    "production.cloudfront.docker.com",
 ];
 
 /// Where a request stands.

@@ -215,6 +215,32 @@ jobs:
         run: >-
           cargo nextest run --locked --manifest-path Cargo.toml --workspace
           --test live_enforcement --run-ignored only --no-capture --retries 2
+      - name: "Install rootless Docker's programs for a project's engine (#390)"
+        # The image installs docker-ce without its recommended rootless extras and removes
+        # Docker's repository after. The extras come from Docker's pool at the engine's version,
+        # checksum verified; the rest from Ubuntu's archive, as tmux and bubblewrap do. An image
+        # with another engine fails here: move the extras' pin with it.
+        run: |
+          set -euo pipefail
+          engine=$(docker version --format '{{.Server.Version}}')
+          test "$engine" = 29.4.2 || { echo "the image's engine is $engine, the extras 29.4.2" >&2; exit 1; }
+          cd "$(mktemp -d)"
+          extras=docker-ce-rootless-extras_29.4.2-2~ubuntu.26.04~resolute_amd64.deb
+          curl --proto '=https' --tlsv1.2 -fsSLo "$extras" \
+            "https://download.docker.com/linux/ubuntu/dists/resolute/pool/stable/amd64/$extras"
+          echo "1d72a6473a3ddc445ae8020bbc013736e265e7d922898cf6bef0d25a95d036fe  $extras" |
+            sha256sum --check --strict -
+          sudo apt-get install --no-install-recommends --yes "./$extras" uidmap slirp4netns acl
+          dockerd-rootless.sh --help > /dev/null
+          rootlesskit --version
+          slirp4netns --version
+      - name: "Set up a project's own engine as its owner does and probe its containers (#390)"
+        # Ignored in the gate: it runs the setup's root steps through sudo, which stays in this
+        # disposable runner, and pulls from Docker Hub. Not retried: a retry would set up again
+        # over the engine user and units the failed attempt left.
+        run: >-
+          cargo nextest run --locked --manifest-path Cargo.toml --workspace
+          --test engine_acceptance --run-ignored only --no-capture
 
   # The required check: it passes only when the lint job, every test shard and the sandbox job
   # passed, or when the change needs no greenfield job at all. Without `!cancelled()` a failed

@@ -17,6 +17,7 @@
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::time::Duration;
@@ -136,8 +137,14 @@ fn listen(socket: &Path) -> Result<UnixListener, String> {
         Err(error) if error.kind() == ErrorKind::NotFound => {}
         Err(error) => return Err(format!("cannot remove {}: {error}", socket.display())),
     }
-    UnixListener::bind(socket)
-        .map_err(|error| format!("cannot listen on {}: {error}", socket.display()))
+    let listener = UnixListener::bind(socket)
+        .map_err(|error| format!("cannot listen on {}: {error}", socket.display()))?;
+    // The group bits are the socket's ACL mask: `rw` lets the owner's entry, which the
+    // setup's default ACL gives it, connect; the umask would cut it to what the group class
+    // keeps. The ACL gives the group nothing, and only the owner's uid is served.
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))
+        .map_err(|error| format!("cannot set {}'s mode: {error}", socket.display()))?;
+    Ok(listener)
 }
 
 fn serve(mut client: UnixStream, owner_uid: u32, egress_port: Option<u16>) {

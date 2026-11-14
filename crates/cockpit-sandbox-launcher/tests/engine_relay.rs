@@ -197,6 +197,35 @@ fn a_socket_left_by_a_stopped_relay_is_replaced() {
     reader.get_ref().shutdown(Shutdown::Both).unwrap();
 }
 
+/// #390 acceptance: the setup gives the owner `rw` on the relay's socket through the folder's
+/// default ACL, and a socket's group bits are its ACL mask. Under the relay unit's umask the
+/// socket came out `rwxr-----`, so the owner's connect was refused; it is `rw-rw----` whatever
+/// the umask, as dockerd leaves its own socket.
+#[test]
+fn the_relays_socket_lets_its_acl_entries_write_whatever_the_umask() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("relay.sock");
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg("umask 027; exec \"$0\" engine-relay \"$1\" \"$2\"")
+        .arg(LAUNCHER)
+        .arg(&socket)
+        .arg(own_uid(dir.path()).to_string())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while UnixStream::connect(&socket).is_err() {
+        assert!(started.elapsed() < Duration::from_secs(10), "no relay");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let mode = std::fs::metadata(&socket).unwrap().mode() & 0o777;
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert_eq!(mode, 0o660, "{mode:o}");
+}
+
 /// A loopback port nothing listens on now.
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
