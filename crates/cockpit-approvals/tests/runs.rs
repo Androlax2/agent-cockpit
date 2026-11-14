@@ -7,10 +7,10 @@ use cockpit_approvals::{
     Approved, DecidedThrough, EXPIRES_AFTER_SECONDS, Error, Interrupted, Output, Refusal,
     RunDecision, RunId, RunRequest, RunResult, RunState, action_digest, approve_run, ask_run,
     decided_runs, decline_run, edit_run, finish_run, interrupted_runs, open_runs, queue_order,
-    reconcile_run, record_not_run, record_outcome_unknown, record_root_runs, resolve_cwd,
-    run_request, run_status, shown_run, start_run,
+    reconcile_run, record_checks, record_not_run, record_outcome_unknown, resolve_cwd, run_request,
+    run_status, shown_run, start_run,
 };
-use cockpit_approvals::{RootFile, RootRuns};
+use cockpit_approvals::{Finding, RootFile, RootRuns, Severity};
 use cockpit_authorization::Permission;
 use cockpit_processes::{EndReason, ExecutionId, Phase};
 use common::{Fixture, NOW, session};
@@ -1042,27 +1042,39 @@ fn flagged() -> RootRuns {
     }
 }
 
+fn found() -> Vec<Finding> {
+    vec![Finding {
+        rule: "download-runs".to_owned(),
+        severity: Severity::High,
+        reason: "runs code it downloads".to_owned(),
+        excerpt: "curl x | sh".to_owned(),
+        file: None,
+        line: None,
+    }]
+}
+
 #[tokio::test]
-async fn what_a_revision_runs_as_root_is_kept_with_the_request() {
+async fn what_a_revision_runs_as_root_and_its_findings_are_kept_with_the_request() {
     let fixture = Fixture::new().await;
     let run = fixture.asked(&session("s1"), "sudo ./x.sh").await;
-    assert_eq!(run.root_runs, None);
+    assert_eq!((&run.root_runs, &run.findings), (&None, &None));
     let write = fixture.database.write().await.unwrap();
 
-    let recorded = record_root_runs(&write, run.id, 1, &flagged(), NOW)
+    let recorded = record_checks(&write, run.id, 1, &flagged(), &found(), NOW)
         .await
         .unwrap();
 
     assert_eq!(recorded.root_runs, Some(flagged()));
+    assert_eq!(recorded.findings, Some(found()));
     assert_eq!(recorded, stored(&write, run.id).await);
 }
 
 #[tokio::test]
-async fn an_edit_drops_what_the_old_revision_ran_as_root() {
+async fn an_edit_drops_what_the_old_revision_ran_as_root_and_its_findings() {
     let fixture = Fixture::new().await;
     let run = fixture.asked(&session("s1"), "sudo ./x.sh").await;
     let write = fixture.database.write().await.unwrap();
-    record_root_runs(&write, run.id, 1, &flagged(), NOW)
+    record_checks(&write, run.id, 1, &flagged(), &found(), NOW)
         .await
         .unwrap();
 
@@ -1070,19 +1082,19 @@ async fn an_edit_drops_what_the_old_revision_ran_as_root() {
         .await
         .unwrap();
 
-    assert_eq!(edited.root_runs, None);
+    assert_eq!((&edited.root_runs, &edited.findings), (&None, &None));
     assert_eq!(
-        refusal(record_root_runs(&write, run.id, 1, &flagged(), NOW).await),
+        refusal(record_checks(&write, run.id, 1, &flagged(), &found(), NOW).await),
         Refusal::StaleRevision { current: 2 }
     );
 }
 
 #[tokio::test]
-async fn an_approval_keeps_what_the_run_runs_as_root_in_the_record() {
+async fn an_approval_keeps_what_the_run_runs_as_root_and_its_findings_in_the_record() {
     let fixture = Fixture::new().await;
     let run = fixture.asked(&session("s1"), "sudo ./x.sh").await;
     let write = fixture.database.write().await.unwrap();
-    record_root_runs(&write, run.id, 1, &flagged(), NOW)
+    record_checks(&write, run.id, 1, &flagged(), &found(), NOW)
         .await
         .unwrap();
 
@@ -1092,8 +1104,10 @@ async fn an_approval_keeps_what_the_run_runs_as_root_in_the_record() {
         .unwrap();
 
     assert_eq!(approved.root_runs, Some(flagged()));
+    assert_eq!(approved.findings, Some(found()));
+    assert!(approved.decision.is_some_and(|decision| decision.approved));
     assert!(matches!(
-        refusal(record_root_runs(&write, run.id, 1, &RootRuns::default(), approved_at).await),
+        refusal(record_checks(&write, run.id, 1, &RootRuns::default(), &[], approved_at).await),
         Refusal::AlreadyDecided { .. }
     ));
 }

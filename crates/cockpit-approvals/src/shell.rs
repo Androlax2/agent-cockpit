@@ -4,6 +4,7 @@
 //! It reads; it never runs or expands anything, and a word it cannot resolve without running
 //! the shell is marked not literal.
 
+use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
 use crate::hints::program_name;
@@ -41,13 +42,13 @@ pub(crate) fn is_shell(name: &str) -> bool {
 
 /// Where a shell reads its code from.
 pub(crate) enum ShellCode<'w> {
-    /// `-c STRING`.
+    /// `-c STRING`, which may be an expansion.
     CommandString(&'w Word),
-    /// Its first operand.
+    /// Its first operand, which may be an expansion.
     Script(&'w Word),
     /// Its input: no operand, `-s` or `-i`.
     Input,
-    /// An expansion where its code or options are.
+    /// An expansion where its options are, or `-c` without its string.
     CannotTell,
 }
 
@@ -70,8 +71,8 @@ pub(crate) fn shell_arguments(arguments: &[Word]) -> ShellArguments<'_> {
             break None;
         };
         if !word.is_literal {
-            shell.code = ShellCode::CannotTell;
-            return shell;
+            // An expansion is no option the shell can be told to have: its operand.
+            break Some(word);
         }
         let text = word.text.as_str();
         match text {
@@ -96,10 +97,10 @@ pub(crate) fn shell_arguments(arguments: &[Word]) -> ShellArguments<'_> {
         }
     };
     shell.code = match operand {
-        Some(word) if !word.is_literal => ShellCode::CannotTell,
         Some(word) if is_command_string => ShellCode::CommandString(word),
         None if is_command_string => ShellCode::CannotTell,
         Some(word) if !reads_input => ShellCode::Script(word),
+        Some(word) if !word.is_literal => ShellCode::CannotTell,
         _ => ShellCode::Input,
     };
     shell
@@ -178,9 +179,79 @@ pub(crate) fn interpreter(name: &str) -> Option<Interpreter> {
     })
 }
 
+/// Where a non-shell interpreter reads its code from.
+pub(crate) enum InterpreterCode<'w> {
+    /// Inline code (`-c`, `-e`, …), which may be an expansion.
+    Inline(Word),
+    /// Its script operand, which may be an expansion after `--`.
+    Script(&'w Word),
+    /// Its input: no script, or `-`.
+    Input,
+    /// A module from a search path (`python3 -m`), or an option that is an expansion.
+    CannotTell,
+}
+
+/// Where `interpreter`, given `arguments`, reads its code from.
+pub(crate) fn interpreter_code<'w>(
+    interpreter: &Interpreter,
+    arguments: &'w [Word],
+) -> InterpreterCode<'w> {
+    let mut words = arguments.iter();
+    while let Some(word) = words.next() {
+        if !word.is_literal {
+            return InterpreterCode::CannotTell;
+        }
+        let text = word.text.as_str();
+        if text == "--" {
+            break;
+        }
+        if text == "-" {
+            return InterpreterCode::Input;
+        }
+        if interpreter.runs_module.contains(&text) {
+            return InterpreterCode::CannotTell;
+        }
+        if interpreter.inline_code.contains(&text) {
+            return match words.next() {
+                Some(code) => InterpreterCode::Inline(code.clone()),
+                None => InterpreterCode::CannotTell,
+            };
+        }
+        if interpreter.takes_value.contains(&text) {
+            words.next();
+            continue;
+        }
+        if text.len() > 2 && text.starts_with('-') && !text.starts_with("--") {
+            match grouped_flags(interpreter, &text[1..]) {
+                Grouped::Flags => continue,
+                Grouped::TakesNext => {
+                    words.next();
+                    continue;
+                }
+                Grouped::Code(Some(code)) => return InterpreterCode::Inline(word.with_text(code)),
+                Grouped::Code(None) => {
+                    return match words.next() {
+                        Some(code) => InterpreterCode::Inline(code.clone()),
+                        None => InterpreterCode::CannotTell,
+                    };
+                }
+                Grouped::Module => return InterpreterCode::CannotTell,
+            }
+        }
+        if text.starts_with('-') {
+            continue;
+        }
+        return InterpreterCode::Script(word);
+    }
+    match words.next() {
+        Some(script) => InterpreterCode::Script(script),
+        None => InterpreterCode::Input,
+    }
+}
+
 /// What a word of single-letter options grouped behind one `-` (`perl -ne`, `python3 -Bc`)
 /// holds, its letters read in turn as the interpreter's own flags.
-pub(crate) enum Grouped<'w> {
+enum Grouped<'w> {
     /// Flags alone.
     Flags,
     /// The last letter takes the next word as its value.
@@ -191,7 +262,7 @@ pub(crate) enum Grouped<'w> {
     Module,
 }
 
-pub(crate) fn grouped_flags<'w>(interpreter: &Interpreter, letters: &'w str) -> Grouped<'w> {
+fn grouped_flags<'w>(interpreter: &Interpreter, letters: &'w str) -> Grouped<'w> {
     let is_flag = |flags: &[&str], letter: char| flags.contains(&format!("-{letter}").as_str());
     for (index, letter) in letters.char_indices() {
         let rest = &letters[index + letter.len_utf8()..];
@@ -457,6 +528,9 @@ pub(crate) struct Word {
     pub(crate) text: String,
     /// No expansion or glob: `text` is what the program gets.
     pub(crate) is_literal: bool,
+    /// The code of each command or process substitution in it (`$(…)`, a backtick pair,
+    /// `<(…)`, `>(…)`), which the shell runs to expand it.
+    pub(crate) substitutions: Vec<String>,
 }
 
 impl Word {
@@ -464,6 +538,7 @@ impl Word {
         Word {
             text: text.to_owned(),
             is_literal: self.is_literal,
+            substitutions: self.substitutions.clone(),
         }
     }
 }
@@ -481,25 +556,52 @@ pub(crate) enum Stdin {
     Text(Word),
 }
 
-/// One simple command: its words and its input.
+/// One simple command: its words, its input, the files its output goes to and where it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Simple {
     pub(crate) words: Vec<Word>,
     pub(crate) stdin: Stdin,
+    /// The files its output redirections write: `> FILE`, `>> FILE`, `>| FILE`, `&> FILE`.
+    pub(crate) writes: Vec<Word>,
+    /// Its characters in the script, from its first word or redirection to its last.
+    pub(crate) span: Range<usize>,
+    /// The line of the script it starts on, from 1.
+    pub(crate) line: usize,
+}
+
+impl Simple {
+    fn new(stdin: Stdin) -> Simple {
+        Simple {
+            words: Vec::new(),
+            stdin,
+            writes: Vec::new(),
+            span: 0..0,
+            line: 0,
+        }
+    }
 }
 
 /// The simple commands of a shell command line, in order; `None` when it does not lex (an
 /// unterminated quote or expansion).
 pub(crate) fn lex(script: &str, home: Option<&Path>) -> Option<Vec<Simple>> {
+    let characters: Vec<char> = script.chars().collect();
+    let line_starts = std::iter::once(0)
+        .chain(
+            characters
+                .iter()
+                .enumerate()
+                .filter(|(_, character)| **character == '\n')
+                .map(|(at, _)| at + 1),
+        )
+        .collect();
     Lexer {
-        characters: script.chars().collect(),
+        characters,
+        line_starts,
         position: 0,
         home,
         commands: Vec::new(),
-        current: Simple {
-            words: Vec::new(),
-            stdin: Stdin::Terminal,
-        },
+        current: Simple::new(Stdin::Terminal),
+        current_start: None,
         pending_heredocs: Vec::new(),
     }
     .run()
@@ -516,10 +618,14 @@ struct PendingHeredoc {
 
 struct Lexer<'h> {
     characters: Vec<char>,
+    /// Where each line starts.
+    line_starts: Vec<usize>,
     position: usize,
     home: Option<&'h Path>,
     commands: Vec<Simple>,
     current: Simple,
+    /// Where the current command's first word or redirection starts.
+    current_start: Option<usize>,
     pending_heredocs: Vec<PendingHeredoc>,
 }
 
@@ -528,6 +634,7 @@ enum Redirect {
     Input,
     Heredoc { strips_tabs: bool },
     HereString,
+    Output,
     Other,
 }
 
@@ -568,11 +675,13 @@ impl Lexer<'_> {
                     }
                 }
                 '&' if self.peek(1) == Some('>') => {
+                    let start = self.position;
                     self.position += 2;
                     if self.peek(0) == Some('>') {
                         self.position += 1;
                     }
-                    self.redirect_target(Redirect::Other)?;
+                    self.redirect_target(Redirect::Output)?;
+                    self.mark(start);
                 }
                 '&' => {
                     self.position += 1;
@@ -581,9 +690,15 @@ impl Lexer<'_> {
                     }
                     self.end_command(Stdin::Terminal);
                 }
-                '<' | '>' => self.redirect()?,
+                '<' | '>' => {
+                    let start = self.position;
+                    self.redirect()?;
+                    self.mark(start);
+                }
                 _ => {
+                    let start = self.position;
                     let word = self.word()?;
+                    self.mark(start);
                     let is_fd = word.is_literal
                         && !word.text.is_empty()
                         && word.text.bytes().all(|byte| byte.is_ascii_digit())
@@ -601,14 +716,17 @@ impl Lexer<'_> {
         Some(self.commands)
     }
 
+    /// The current command reaches from `start`, or where it began, to here.
+    fn mark(&mut self, start: usize) {
+        let start = *self.current_start.get_or_insert(start);
+        self.current.span = start..self.position;
+    }
+
     fn end_command(&mut self, next_stdin: Stdin) {
-        let current = std::mem::replace(
-            &mut self.current,
-            Simple {
-                words: Vec::new(),
-                stdin: next_stdin,
-            },
-        );
+        let mut current = std::mem::replace(&mut self.current, Simple::new(next_stdin));
+        if let Some(start) = self.current_start.take() {
+            current.line = self.line_starts.partition_point(|line| *line <= start);
+        }
         if !current.words.is_empty() {
             self.commands.push(current);
         }
@@ -639,16 +757,36 @@ impl Lexer<'_> {
                     _ => Redirect::Heredoc { strips_tabs: false },
                 }
             }
-            ('<', Some('&')) | ('>', Some('&')) | ('>', Some('>')) | ('>', Some('|')) => {
+            ('<', Some('&')) => {
                 self.position += 1;
                 Redirect::Other
+            }
+            ('>', Some('&')) => {
+                // `>&2` moves a descriptor; `>& FILE` writes the file.
+                self.position += 1;
+                let rest: String = self.characters[self.position..]
+                    .iter()
+                    .skip_while(|character| matches!(character, ' ' | '\t'))
+                    .take_while(|character| {
+                        !matches!(character, ' ' | '\t' | '\n' | ';' | '&' | '|')
+                    })
+                    .collect();
+                if rest == "-" || rest.chars().all(|character| character.is_ascii_digit()) {
+                    Redirect::Other
+                } else {
+                    Redirect::Output
+                }
+            }
+            ('>', Some('>')) | ('>', Some('|')) => {
+                self.position += 1;
+                Redirect::Output
             }
             ('<', Some('>')) => {
                 self.position += 1;
                 Redirect::Input
             }
             ('<', _) => Redirect::Input,
-            _ => Redirect::Other,
+            _ => Redirect::Output,
         };
         self.redirect_target(kind)
     }
@@ -679,6 +817,7 @@ impl Lexer<'_> {
                     command,
                 });
             }
+            Redirect::Output => self.current.writes.push(target),
             Redirect::Other => {}
         }
         Some(())
@@ -716,6 +855,7 @@ impl Lexer<'_> {
             let text = Stdin::Text(Word {
                 text: body,
                 is_literal,
+                substitutions: Vec::new(),
             });
             match self.commands.get_mut(heredoc.command) {
                 Some(command) => command.stdin = text,
@@ -730,6 +870,7 @@ impl Lexer<'_> {
     fn word(&mut self) -> Option<Word> {
         let mut text = String::new();
         let mut is_literal = true;
+        let mut substitutions = Vec::new();
         let start = self.position;
         while let Some(character) = self.peek(0) {
             match character {
@@ -739,7 +880,7 @@ impl Lexer<'_> {
                 '<' | '>' => {
                     is_literal = false;
                     self.position += 1;
-                    self.balanced('(', ')')?;
+                    substitutions.push(self.substitution()?);
                 }
                 '\\' => {
                     self.position += 1;
@@ -774,7 +915,7 @@ impl Lexer<'_> {
                             }
                             '$' | '`' => {
                                 is_literal = false;
-                                self.expansion(&mut text)?;
+                                self.expansion(&mut text, &mut substitutions)?;
                             }
                             quoted => {
                                 text.push(quoted);
@@ -786,7 +927,7 @@ impl Lexer<'_> {
                 }
                 '$' | '`' => {
                     is_literal = false;
-                    self.expansion(&mut text)?;
+                    self.expansion(&mut text, &mut substitutions)?;
                 }
                 '*' | '?' | '[' => {
                     is_literal = false;
@@ -811,11 +952,27 @@ impl Lexer<'_> {
                 }
             }
         }
-        Some(Word { text, is_literal })
+        Some(Word {
+            text,
+            is_literal,
+            substitutions,
+        })
     }
 
-    /// Skips an expansion at `$` or a backtick, keeping its text for display.
-    fn expansion(&mut self, text: &mut String) -> Option<()> {
+    /// The code between a `(` here and its matching `)`, which it skips.
+    fn substitution(&mut self) -> Option<String> {
+        let open = self.position;
+        self.balanced('(', ')')?;
+        Some(
+            self.characters[open + 1..self.position - 1]
+                .iter()
+                .collect(),
+        )
+    }
+
+    /// Skips an expansion at `$` or a backtick, keeping its text for display and the code of
+    /// a command substitution.
+    fn expansion(&mut self, text: &mut String, substitutions: &mut Vec<String>) -> Option<()> {
         let start = self.position;
         match (self.peek(0)?, self.peek(1)) {
             ('`', _) => {
@@ -828,10 +985,15 @@ impl Lexer<'_> {
                     }
                 }
                 self.position += 1;
+                substitutions.push(
+                    self.characters[start + 1..self.position - 1]
+                        .iter()
+                        .collect(),
+                );
             }
             ('$', Some('(')) => {
                 self.position += 1;
-                self.balanced('(', ')')?;
+                substitutions.push(self.substitution()?);
             }
             ('$', Some('{')) => {
                 self.position += 1;
@@ -909,6 +1071,7 @@ mod tests {
         Word {
             text: text.to_owned(),
             is_literal: true,
+            substitutions: Vec::new(),
         }
     }
 
@@ -923,7 +1086,8 @@ mod tests {
                 literal("b c"),
                 Word {
                     text: "d$X".to_owned(),
-                    is_literal: false
+                    is_literal: false,
+                    substitutions: Vec::new(),
                 }
             ]
         );
@@ -938,6 +1102,36 @@ mod tests {
         let commands = lex("sudo bash <<'EOF'\n./x.sh $Y\nEOF\necho done", None).unwrap();
         assert_eq!(commands[0].stdin, Stdin::Text(literal("./x.sh $Y\n")));
         assert_eq!(commands[1].words, [literal("echo"), literal("done")]);
+    }
+
+    #[test]
+    fn a_command_knows_its_characters_line_and_output_files() {
+        let script = "a > out 2>&1\n  b >> log &> both >&2 >& file\nc";
+        let commands = lex(script, None).unwrap();
+        let text = |command: &Simple| -> String {
+            script.chars().collect::<Vec<_>>()[command.span.clone()]
+                .iter()
+                .collect()
+        };
+        assert_eq!(text(&commands[0]), "a > out 2>&1");
+        assert_eq!(commands[0].writes, [literal("out")]);
+        assert_eq!(commands[1].line, 2);
+        assert_eq!(text(&commands[1]), "b >> log &> both >&2 >& file");
+        assert_eq!(
+            commands[1].writes,
+            [literal("log"), literal("both"), literal("file")]
+        );
+        assert_eq!(commands[2].line, 3);
+    }
+
+    #[test]
+    fn a_word_keeps_the_code_of_its_substitutions() {
+        let commands = lex("sh -c \"$(curl x | sh)\" `id` <(wget y) > >(tee z)", None).unwrap();
+        let words = &commands[0].words;
+        assert_eq!(words[2].substitutions, ["curl x | sh"]);
+        assert_eq!(words[3].substitutions, ["id"]);
+        assert_eq!(words[4].substitutions, ["wget y"]);
+        assert_eq!(commands[0].writes[0].substitutions, ["tee z"]);
     }
 
     #[test]

@@ -30,9 +30,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::hints::program_name;
 use crate::shell::{
-    Grouped, Interpreter, SHELL_BUILTINS, ShellCode, Simple, Stdin, Word, absolute, grouped_flags,
-    interpreter, is_shell, lex, logical_directory, shell_arguments, skip_assignments,
-    skip_keywords, skip_wrappers, sudo_options,
+    Interpreter, InterpreterCode, SHELL_BUILTINS, ShellCode, Simple, Stdin, Word, absolute,
+    interpreter, interpreter_code, is_shell, lex, logical_directory, shell_arguments,
+    skip_assignments, skip_keywords, skip_wrappers, sudo_options,
 };
 
 /// What a command runs as root that its asking session can change, as recorded for one
@@ -216,7 +216,7 @@ pub fn file_sha256(path: &Path) -> std::io::Result<Option<String>> {
 /// `path` opened for reading when it is a regular file; `None` when there is none. Opened
 /// without waiting for a writer on a FIFO (`O_NONBLOCK`), then checked on what was opened,
 /// which a device or a swapped-in link would otherwise make an endless read.
-fn open_regular(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+pub(crate) fn open_regular(path: &Path) -> std::io::Result<Option<std::fs::File>> {
     let opened = match rustix::fs::open(
         path,
         rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
@@ -528,10 +528,13 @@ impl Walk<'_, '_> {
             "sudo" => self.sudo(rest, &command.stdin, &words.cwd, depth),
             "eval" => self.found.cannot_tell = true,
             name if is_shell(name) => match shell_arguments(rest).code {
-                ShellCode::CommandString(script) => {
+                ShellCode::CommandString(script) if script.is_literal => {
                     self.script(&script.text, &words.cwd, Context::Owner, depth + 1);
                 }
-                ShellCode::CannotTell => self.found.cannot_tell = true,
+                ShellCode::CommandString(_) | ShellCode::CannotTell => {
+                    self.found.cannot_tell = true;
+                }
+                ShellCode::Script(script) if !script.is_literal => self.found.cannot_tell = true,
                 ShellCode::Script(_) | ShellCode::Input => {}
             },
             _ => {
@@ -667,11 +670,15 @@ impl Walk<'_, '_> {
             self.found.file(absolute(cwd, &file.text));
         }
         match shell.code {
-            ShellCode::CommandString(script) => {
+            ShellCode::CommandString(script) if script.is_literal => {
                 self.script(&script.text, cwd, Context::Root, depth + 1);
             }
-            ShellCode::Script(script) => self.found.file(absolute(cwd, &script.text)),
-            ShellCode::CannotTell => self.found.cannot_tell = true,
+            ShellCode::Script(script) if script.is_literal => {
+                self.found.file(absolute(cwd, &script.text));
+            }
+            ShellCode::CommandString(_) | ShellCode::Script(_) | ShellCode::CannotTell => {
+                self.found.cannot_tell = true;
+            }
             ShellCode::Input => match stdin {
                 Stdin::File(file) if file.is_literal => self.found.file(absolute(cwd, &file.text)),
                 Stdin::Text(text) if text.is_literal => {
@@ -691,65 +698,17 @@ impl Walk<'_, '_> {
         stdin: &Stdin,
         cwd: &Path,
     ) {
-        let mut words = arguments.iter();
-        while let Some(word) = words.next() {
-            if !word.is_literal {
+        match interpreter_code(interpreter, arguments) {
+            InterpreterCode::Inline(code) if code.is_literal => self.files_named(&code.text, cwd),
+            InterpreterCode::Script(script) if script.is_literal => {
+                self.found.file(absolute(cwd, &script.text));
+            }
+            InterpreterCode::Input => self.interpreter_input(stdin, cwd),
+            InterpreterCode::Inline(_)
+            | InterpreterCode::Script(_)
+            | InterpreterCode::CannotTell => {
                 self.found.cannot_tell = true;
-                return;
             }
-            let text = word.text.as_str();
-            if text == "--" {
-                break;
-            }
-            if text == "-" {
-                return self.interpreter_input(stdin, cwd);
-            }
-            if interpreter.runs_module.contains(&text) {
-                self.found.cannot_tell = true;
-                return;
-            }
-            if interpreter.inline_code.contains(&text) {
-                match words.next() {
-                    Some(code) if code.is_literal => self.files_named(&code.text, cwd),
-                    _ => self.found.cannot_tell = true,
-                }
-                return;
-            }
-            if interpreter.takes_value.contains(&text) {
-                words.next();
-                continue;
-            }
-            if text.len() > 2 && text.starts_with('-') && !text.starts_with("--") {
-                match grouped_flags(interpreter, &text[1..]) {
-                    Grouped::Flags => continue,
-                    Grouped::TakesNext => {
-                        words.next();
-                        continue;
-                    }
-                    Grouped::Code(Some(code)) => return self.files_named(code, cwd),
-                    Grouped::Code(None) => match words.next() {
-                        Some(code) if code.is_literal => return self.files_named(&code.text, cwd),
-                        _ => {
-                            self.found.cannot_tell = true;
-                            return;
-                        }
-                    },
-                    Grouped::Module => {
-                        self.found.cannot_tell = true;
-                        return;
-                    }
-                }
-            }
-            if text.starts_with('-') {
-                continue;
-            }
-            self.found.file(absolute(cwd, text));
-            return;
-        }
-        match words.next() {
-            Some(script) if script.is_literal => self.found.file(absolute(cwd, &script.text)),
-            Some(_) => self.found.cannot_tell = true,
-            None => self.interpreter_input(stdin, cwd),
         }
     }
 
