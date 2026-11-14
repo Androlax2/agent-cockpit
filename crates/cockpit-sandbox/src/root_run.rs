@@ -69,16 +69,63 @@ const ROOT_SECRETS: &[&str] = &[
     "/etc/gshadow-",
 ];
 
-/// What a root part never writes, even inside a folder it may: the boot files, sudo's rules,
-/// and Torlek's own install, this helper among them, so no root part replaces the floor.
+/// Torlek's own folders under the owner's home, as the default layout puts them: its tokens
+/// and its state. The helper hides each `torlek*` folder it finds there too, a profile's.
+const OWNER_TORLEK: &[&str] = &[".config/torlek", ".local/state/torlek"];
+
+/// What a root part never writes, even inside a folder it may: the boot files, what grants
+/// root or runs as root at boot, login or a schedule, and Torlek's own install, so no root
+/// part leaves behind what would run later outside the floor. A list cannot name every such
+/// file; [`ROOT_NEVER_HOLDS`] refuses the folders that hold them as a whole.
 pub const ROOT_NEVER_WRITES: &[&str] = &[
     "/boot",
     "/efi",
     "/etc/sudoers",
     "/etc/sudoers.d",
+    "/etc/passwd",
+    "/etc/group",
+    "/etc/pam.d",
+    "/etc/security",
+    "/etc/polkit-1",
+    "/etc/systemd",
+    "/usr/lib/systemd",
+    "/etc/udev",
+    "/usr/lib/udev",
+    "/etc/crontab",
+    "/etc/cron.d",
+    "/var/spool/cron",
+    "/etc/ld.so.preload",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/etc/profile",
+    "/etc/profile.d",
+    "/etc/environment",
     "/etc/torlek",
     "/usr/lib/torlek",
 ];
+
+/// The folders a root part never writes as a whole: the system's programs, libraries and
+/// configuration, and every home. A folder inside one may be written (`/etc/nginx`,
+/// `/usr/local`, a checkout), never one of these or one that holds them.
+pub const ROOT_NEVER_HOLDS: &[&str] = &[
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/etc",
+    "/usr",
+    "/usr/bin",
+    "/usr/sbin",
+    "/usr/lib",
+    "/usr/lib64",
+    "/usr/libexec",
+    "/var",
+    "/var/lib",
+    "/home",
+];
+
+/// The oldest systemd whose units take [`FLOOR_PROPERTIES`]: `PrivatePIDs=` came in 257.
+pub const ROOT_RUN_MIN_SYSTEMD: u32 = 257;
 
 /// The system's runtime folder, emptied: its sockets and buses (systemd's, D-Bus, a container
 /// engine's) would start what is not confined.
@@ -104,13 +151,16 @@ const FLOOR_PROPERTIES: &[&str] = &[
     "RestrictRealtime=yes",
     "LockPersonality=yes",
     "NoNewPrivileges=yes",
+    // No setuid, setgid or file-capability program left behind: it would run as root later,
+    // outside every limit here.
+    "RestrictSUIDSGID=yes",
     "KeyringMode=private",
     // What would undo the mounts above (`CAP_SYS_ADMIN`, `CAP_DAC_READ_SEARCH` with
     // `open_by_handle_at`), load code into the kernel, reach devices or other processes, or
-    // make a file root cannot change back.
+    // make a file root cannot change back or one that grants capabilities.
     "CapabilityBoundingSet=~CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_SYS_MODULE CAP_SYS_PTRACE \
      CAP_SYS_RAWIO CAP_SYS_BOOT CAP_SYS_TIME CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_MAC_ADMIN \
-     CAP_MAC_OVERRIDE CAP_MKNOD CAP_LINUX_IMMUTABLE CAP_SYSLOG CAP_AUDIT_CONTROL",
+     CAP_MAC_OVERRIDE CAP_MKNOD CAP_LINUX_IMMUTABLE CAP_SETFCAP CAP_SYSLOG CAP_AUDIT_CONTROL",
     "SystemCallFilter=~@mount @module @reboot @swap @raw-io @debug @obsolete @cpu-emulation \
      @clock open_by_handle_at",
 ];
@@ -135,12 +185,14 @@ pub struct RootRunRequest {
     pub term: Option<String>,
 }
 
-/// The limits no request lowers: the owner's secrets and root's hidden, sudo's rules, the boot
-/// files and Torlek's install read-only, `/run` emptied, and [`FLOOR_PROPERTIES`].
+/// The limits no request lowers: the owner's secrets, Torlek's folders and root's hidden;
+/// [`ROOT_NEVER_WRITES`] read-only; [`ROOT_NEVER_HOLDS`] and the owner's home never written as a
+/// whole; `/run` emptied; and [`FLOOR_PROPERTIES`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootFloor {
     hidden: Vec<PathBuf>,
     read_only: Vec<PathBuf>,
+    never_held: Vec<PathBuf>,
 }
 
 impl RootFloor {
@@ -149,17 +201,35 @@ impl RootFloor {
         RootFloor {
             hidden: OWNER_SECRETS
                 .iter()
+                .chain(OWNER_TORLEK)
                 .map(|secret| owner_home.join(secret))
                 .chain(ROOT_SECRETS.iter().map(PathBuf::from))
                 .collect(),
             read_only: ROOT_NEVER_WRITES.iter().map(PathBuf::from).collect(),
+            never_held: ROOT_NEVER_HOLDS
+                .iter()
+                .map(PathBuf::from)
+                .chain([owner_home.to_path_buf()])
+                .collect(),
         }
+    }
+
+    /// The floor hiding `paths` too.
+    pub fn hiding(mut self, paths: impl IntoIterator<Item = PathBuf>) -> RootFloor {
+        self.hidden.extend(paths);
+        self
+    }
+
+    /// The floor keeping `paths` read-only too.
+    pub fn keeping(mut self, paths: impl IntoIterator<Item = PathBuf>) -> RootFloor {
+        self.read_only.extend(paths);
+        self
     }
 
     /// The floor with each of its paths also as `resolve` gives it, so a folder reached
     /// through a symbolic link is still the floor's.
     pub fn resolved(mut self, resolve: impl Fn(&Path) -> Option<PathBuf>) -> RootFloor {
-        for paths in [&mut self.hidden, &mut self.read_only] {
+        for paths in [&mut self.hidden, &mut self.read_only, &mut self.never_held] {
             let resolved: Vec<PathBuf> = paths
                 .iter()
                 .filter_map(|path| resolve(path).filter(|resolved| resolved != path))
@@ -170,8 +240,10 @@ impl RootFloor {
     }
 
     /// The unit's properties for `request`, or why the helper refuses it. A folder the
-    /// request writes that is or lies inside one the floor keeps is refused; one that holds
-    /// such a folder is allowed, and the folder inside stays as the floor keeps it.
+    /// request writes is refused when it is or lies inside one the floor keeps or hides, or
+    /// when it is or holds one the floor never lets be written as a whole, or a secret the
+    /// floor hides, present or not. One that holds a folder the floor keeps read-only is
+    /// allowed, and that folder stays read-only inside it.
     pub fn unit_properties(&self, request: &RootRunRequest) -> Result<Vec<String>, String> {
         check_command(request)?;
         if request.writable.len() > MAX_ROOT_RUN_FOLDERS
@@ -191,35 +263,52 @@ impl RootFloor {
         for path in &self.read_only {
             properties.push(format!("ReadOnlyPaths=-\"{}\"", systemd_path(path)?));
         }
-        let emptied = Path::new(ROOT_EMPTIED);
         for path in &request.writable {
             let text = systemd_path(path)?;
-            if path == Path::new("/") {
-                return Err("a root part cannot write the whole file system".to_owned());
-            }
-            if let Some(kept) = self.read_only.iter().find(|kept| path.starts_with(kept)) {
-                return Err(format!(
-                    "a root part never writes {}: {} is kept read-only",
-                    path.display(),
-                    kept.display()
-                ));
-            }
-            if let Some(hidden) = self
-                .hidden
-                .iter()
-                .chain(&request.hidden)
-                .chain([&emptied.to_path_buf()])
-                .find(|hidden| path.starts_with(hidden))
-            {
-                return Err(format!(
-                    "a root part cannot write {}: it cannot see {}",
-                    path.display(),
-                    hidden.display()
-                ));
-            }
+            self.check_writable(path, &request.hidden)?;
             properties.push(format!("ReadWritePaths=\"{text}\""));
         }
         Ok(properties)
+    }
+
+    fn check_writable(&self, path: &Path, also_hidden: &[PathBuf]) -> Result<(), String> {
+        let shown = path.display();
+        if path == Path::new("/") {
+            return Err("a root part cannot write the whole file system".to_owned());
+        }
+        if let Some(kept) = self.read_only.iter().find(|kept| path.starts_with(kept)) {
+            return Err(format!(
+                "a root part never writes {shown}: {} is kept read-only",
+                kept.display()
+            ));
+        }
+        if let Some(whole) = self.never_held.iter().find(|whole| whole.starts_with(path)) {
+            return Err(format!(
+                "a root part never writes {shown}: it would write all of {}; name a folder \
+                 inside it",
+                whole.display()
+            ));
+        }
+        let emptied = PathBuf::from(ROOT_EMPTIED);
+        if let Some(hidden) = self
+            .hidden
+            .iter()
+            .chain(also_hidden)
+            .chain([&emptied])
+            .find(|hidden| path.starts_with(hidden))
+        {
+            return Err(format!(
+                "a root part cannot write {shown}: it cannot see {}",
+                hidden.display()
+            ));
+        }
+        if let Some(secret) = self.hidden.iter().find(|secret| secret.starts_with(path)) {
+            return Err(format!(
+                "a root part never writes {shown}: it holds {}, which stays hidden",
+                secret.display()
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -291,7 +380,7 @@ mod tests {
             argv: vec!["/usr/bin/make".to_owned(), "install".to_owned()],
             cwd: PathBuf::from("/home/owner/shop"),
             writable: writable.iter().map(PathBuf::from).collect(),
-            hidden: vec![PathBuf::from("/home/owner/.local/state/torlek")],
+            hidden: vec![PathBuf::from("/srv/more-hidden")],
             term: Some("xterm-256color".to_owned()),
         }
     }
@@ -317,7 +406,9 @@ mod tests {
             "/home/owner/.gnupg",
             "/root",
             "/etc/shadow",
+            "/home/owner/.config/torlek",
             "/home/owner/.local/state/torlek",
+            "/srv/more-hidden",
         ] {
             let property = format!("InaccessiblePaths=-\"{hidden}\"");
             assert!(properties.contains(&property), "{property}");
@@ -325,12 +416,18 @@ mod tests {
     }
 
     #[test]
-    fn a_writable_etc_keeps_sudoers_and_torleks_install_read_only() {
+    fn a_folder_inside_etc_is_written_while_what_grants_root_stays_read_only() {
         let properties = floor()
-            .unit_properties(&request(&["/etc", "/usr"]))
+            .unit_properties(&request(&["/etc/nginx", "/usr/local"]))
             .unwrap();
-        assert!(properties.contains(&"ReadWritePaths=\"/etc\"".to_owned()));
-        for kept in ["/etc/sudoers", "/etc/sudoers.d", "/usr/lib/torlek", "/boot"] {
+        assert!(properties.contains(&"ReadWritePaths=\"/etc/nginx\"".to_owned()));
+        for kept in [
+            "/etc/sudoers",
+            "/etc/passwd",
+            "/etc/systemd",
+            "/usr/lib/torlek",
+            "/boot",
+        ] {
             let property = format!("ReadOnlyPaths=-\"{kept}\"");
             assert!(properties.contains(&property), "{property}");
         }
@@ -342,11 +439,39 @@ mod tests {
             "/boot",
             "/boot/grub",
             "/etc/sudoers.d/agent",
+            "/etc/passwd",
+            "/etc/systemd/system",
+            "/usr/lib/systemd/system",
             "/usr/lib/torlek/bin",
         ] {
             let refused = floor().unit_properties(&request(&[kept])).unwrap_err();
-            assert!(refused.contains("never writes"), "{kept}: {refused}");
+            assert!(refused.contains("is kept read-only"), "{kept}: {refused}");
         }
+    }
+
+    #[test]
+    fn a_root_part_never_writes_a_system_folder_or_a_home_as_a_whole() {
+        for whole in ["/etc", "/usr", "/usr/lib", "/var", "/home", "/home/owner"] {
+            let refused = floor().unit_properties(&request(&[whole])).unwrap_err();
+            assert!(refused.contains("would write all of"), "{whole}: {refused}");
+        }
+    }
+
+    #[test]
+    fn a_root_part_never_writes_a_folder_holding_a_secret_even_one_not_made_yet() {
+        let refused = floor()
+            .unit_properties(&request(&["/home/owner/.config"]))
+            .unwrap_err();
+        assert!(refused.contains("stays hidden"), "{refused}");
+    }
+
+    #[test]
+    fn what_the_helper_keeps_read_only_cannot_be_written() {
+        let refused = floor()
+            .keeping([PathBuf::from("/opt/torlek/bin/torlek-sandbox")])
+            .unit_properties(&request(&["/opt/torlek/bin/torlek-sandbox"]))
+            .unwrap_err();
+        assert!(refused.contains("is kept read-only"), "{refused}");
     }
 
     #[test]
@@ -356,6 +481,7 @@ mod tests {
             "/root/.config",
             "/run/dbus",
             "/home/owner/.local/state/torlek/db",
+            "/srv/more-hidden/x",
         ] {
             let refused = floor().unit_properties(&request(&[hidden])).unwrap_err();
             assert!(refused.contains("cannot see"), "{hidden}: {refused}");

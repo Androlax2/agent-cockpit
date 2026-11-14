@@ -189,21 +189,35 @@ fn a_root_part_writes_only_the_folders_it_is_given() {
 
 #[test]
 #[ignore = "needs passwordless sudo and the system manager: CI's greenfield-sandbox job"]
-fn a_root_part_that_writes_etc_still_cannot_change_sudoers() {
-    let probe = format!("/etc/torlek-root-run-probe-{}", std::process::id());
-    let script = format!("touch {probe} && rm {probe} && echo etc-written; touch /etc/sudoers");
-    let answered = root_run(&request(shell(&script), &[Path::new("/etc")]));
+fn a_root_part_cannot_change_sudoers_or_leave_a_setuid_program() {
+    let folder = fixture();
+    let script = format!(
+        "touch /etc/sudoers || echo no-sudoers; cp /bin/sh {0}/sh && chmod u+s {0}/sh || echo no-setuid",
+        folder.path().display()
+    );
+    let answered = root_run(&request(shell(&script), &[folder.path()]));
     assert!(
-        answered.stdout.contains("etc-written"),
+        answered.stdout.contains("no-sudoers"),
         "{}",
         answered.printed()
     );
     assert!(
-        answered.printed().contains("Read-only file system"),
+        answered.stdout.contains("no-setuid"),
         "{}",
         answered.printed()
     );
-    assert_ne!(answered.last_answer(), "exited 0");
+}
+
+#[test]
+#[ignore = "needs passwordless sudo and the system manager: CI's greenfield-sandbox job"]
+fn a_root_part_that_asks_to_write_all_of_etc_runs_nothing() {
+    let answered = root_run(&request(shell("echo ran"), &[Path::new("/etc")]));
+    assert!(!answered.stdout.contains("ran"), "{}", answered.printed());
+    assert!(
+        answered.last_answer().contains("would write all of /etc"),
+        "{:?}",
+        answered.answers
+    );
 }
 
 #[test]

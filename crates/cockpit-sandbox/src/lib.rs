@@ -68,8 +68,9 @@ pub use profile::{
     Secret, SecretHandling, shared_desktop_refusal,
 };
 pub use root_run::{
-    MAX_ROOT_RUN_FOLDERS, MAX_ROOT_RUN_REQUEST_BYTES, OWNER_SECRETS, ROOT_NEVER_WRITES,
-    ROOT_RUN_DESCRIPTORS_BYTE, ROOT_RUN_VERB, RootFloor, RootRunRequest, root_run_unit,
+    MAX_ROOT_RUN_FOLDERS, MAX_ROOT_RUN_REQUEST_BYTES, OWNER_SECRETS, ROOT_NEVER_HOLDS,
+    ROOT_NEVER_WRITES, ROOT_RUN_DESCRIPTORS_BYTE, ROOT_RUN_MIN_SYSTEMD, ROOT_RUN_VERB, RootFloor,
+    RootRunRequest, root_run_unit,
 };
 pub use spec::{
     ENGINE_SOCKET_INSIDE, EngineSocket, Folder, InvalidSpec, LANDLOCK_ABI_FLOOR, LaunchSpec,

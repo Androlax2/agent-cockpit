@@ -9,22 +9,28 @@
 //! [`RootRunRequest`] on one line. The helper answers one line each:
 //!
 //! - `refused: ` and why, before anything ran;
-//! - `started UNIT`, once systemd runs the command, and later `exited CODE`.
+//! - `started UNIT`, once `systemd-run` is started (systemd may not have made the unit yet),
+//!   and later `exited CODE`, `systemd-run`'s, which is the command's once it ran.
 //!
 //! A daemon that closes the socket while the command runs has ended the run: the helper stops
-//! the unit. Paths the request names are resolved here, as root, before the floor is checked,
-//! so a link cannot lead a write past it.
+//! the unit, again until `systemd-run` ends, so a unit made after the first try stops too.
+//! Paths the request names are resolved here, as root, before the floor is checked, so a link
+//! cannot lead a write past it. The helper's own program and its folder are kept read-only,
+//! wherever it is installed, and Torlek's folders under the owner's home are hidden.
 
+use std::io::ErrorKind;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use cockpit_sandbox::{
-    MAX_ROOT_RUN_REQUEST_BYTES, ROOT_RUN_DESCRIPTORS_BYTE, RootFloor, RootRunRequest, root_run_unit,
+    MAX_ROOT_RUN_REQUEST_BYTES, ROOT_RUN_DESCRIPTORS_BYTE, ROOT_RUN_MIN_SYSTEMD, RootFloor,
+    RootRunRequest, root_run_unit,
 };
 
 use crate::handoff;
@@ -42,6 +48,11 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The standard input, output and error a root part gets, in that order.
 const RUN_DESCRIPTORS: usize = 3;
+
+/// How often the helper looks whether `systemd-run` ended, and tries again to stop a unit
+/// whose daemon went.
+const WAIT_POLL: Duration = Duration::from_millis(100);
+const STOP_RETRY: Duration = Duration::from_secs(1);
 
 pub fn serve(arguments: &[std::ffi::OsString]) -> Result<ExitCode, String> {
     if !arguments.is_empty() {
@@ -72,11 +83,16 @@ fn sudo_uid() -> Result<u32, String> {
     }
 }
 
-/// The effective user of this process, which `/proc/self` belongs to.
+/// The effective user of this process, the second field of `Uid:` in `/proc/self/status`.
 fn effective_uid() -> Result<u32, String> {
-    std::fs::metadata("/proc/self")
-        .map(|metadata| metadata.uid())
-        .map_err(|error| format!("cannot read /proc/self: {error}"))
+    let status = std::fs::read_to_string("/proc/self/status")
+        .map_err(|error| format!("cannot read /proc/self/status: {error}"))?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .and_then(|ids| ids.split_whitespace().nth(1))
+        .and_then(|effective| effective.parse().ok())
+        .ok_or_else(|| "/proc/self/status names no effective user".to_owned())
 }
 
 /// The standard input sudo kept: the daemon's Unix socket, its peer the owner. sudo running
@@ -123,7 +139,11 @@ fn start(daemon: &UnixStream, owner_uid: u32) -> Result<(std::process::Child, St
         ));
     }
     let request = resolved(read_request(daemon)?)?;
-    let floor = RootFloor::for_owner(&owner_home(owner_uid)?)
+    systemd_holds_the_floor()?;
+    let home = owner_home(owner_uid)?;
+    let floor = RootFloor::for_owner(&home)
+        .hiding(torlek_folders(&home))
+        .keeping(own_install()?)
         .resolved(|path| std::fs::canonicalize(path).ok());
     let properties = floor.unit_properties(&request)?;
     let unit = root_run_unit(owner_uid, &request, std::process::id());
@@ -155,7 +175,8 @@ fn read_request(daemon: &UnixStream) -> Result<RootRunRequest, String> {
     serde_json::from_slice(&line).map_err(|error| format!("the request does not parse: {error}"))
 }
 
-/// `request` with its working folder and the folders it writes as root resolves them now.
+/// `request` with its working folder and the folders it writes as root resolves them now, and
+/// each folder it hides also as it resolves, if it does.
 fn resolved(mut request: RootRunRequest) -> Result<RootRunRequest, String> {
     let resolve = |path: &Path| {
         std::fs::canonicalize(path)
@@ -167,7 +188,67 @@ fn resolved(mut request: RootRunRequest) -> Result<RootRunRequest, String> {
         .iter()
         .map(|path| resolve(path))
         .collect::<Result<Vec<PathBuf>, String>>()?;
+    let resolved_hidden: Vec<PathBuf> = request
+        .hidden
+        .iter()
+        .filter_map(|path| {
+            std::fs::canonicalize(path)
+                .ok()
+                .filter(|resolved| resolved != path)
+        })
+        .collect();
+    request.hidden.extend(resolved_hidden);
     Ok(request)
+}
+
+/// Refuses a systemd too old for the floor's properties, before the owner's password is spent
+/// on a unit that would not start.
+fn systemd_holds_the_floor() -> Result<(), String> {
+    let output = Command::new(SYSTEMCTL)
+        .arg("--version")
+        .env_clear()
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|error| format!("cannot run {SYSTEMCTL}: {error}"))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let version = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|version| version.parse::<u32>().ok())
+        .ok_or_else(|| format!("cannot tell systemd's version from {text:?}"))?;
+    if version < ROOT_RUN_MIN_SYSTEMD {
+        return Err(format!(
+            "systemd {version} is older than {ROOT_RUN_MIN_SYSTEMD}, which a root part's unit \
+             needs (PrivatePIDs=)"
+        ));
+    }
+    Ok(())
+}
+
+/// Torlek's folders under `home` a profile made: each `torlek*` in its configuration and state
+/// folders, which the floor hides as it hides the default ones.
+fn torlek_folders(home: &Path) -> Vec<PathBuf> {
+    [".config", ".local/state"]
+        .iter()
+        .filter_map(|base| std::fs::read_dir(home.join(base)).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().as_encoded_bytes().starts_with(b"torlek"))
+        .map(|entry| entry.path())
+        .collect()
+}
+
+/// This program and its folder, kept read-only so no root part replaces the floor.
+fn own_install() -> Result<Vec<PathBuf>, String> {
+    let program = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(|error| format!("cannot find root-run's own program: {error}"))?;
+    let folder = program
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or("root-run's program has no folder")?;
+    Ok(vec![program, folder])
 }
 
 /// The home the system's user database gives `uid`, its own and not the daemon's word.
@@ -240,26 +321,22 @@ fn wait(
 ) -> Result<ExitCode, String> {
     // A daemon gone already is seen below: its socket's end stops the unit.
     let _ = writeln!(&*daemon, "started {unit}");
-    let watching = daemon
-        .try_clone()
-        .map_err(|error| format!("cannot watch the daemon's socket: {error}"));
-    if let Ok(watching) = &watching {
-        let _ = watching.set_read_timeout(None);
-    }
-    let stopper = watching.map(|watching| {
-        std::thread::spawn(move || {
-            let mut rest = [0_u8; 64];
-            // Anything the daemon sends now is noise; its end is what counts.
-            while matches!((&watching).read(&mut rest), Ok(read) if read > 0) {}
+    let daemon_went = watch_for_the_end(daemon);
+    let mut last_stop: Option<Instant> = None;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("cannot wait for {SYSTEMD_RUN}: {error}"))?
+        {
+            break status;
+        }
+        let is_stop_due = last_stop.is_none_or(|stopped| stopped.elapsed() >= STOP_RETRY);
+        if daemon_went.load(Ordering::Acquire) && is_stop_due {
             stop(&unit);
-        })
-    });
-    if let Err(reason) = &stopper {
-        eprintln!("torlek-sandbox: {reason}; a daemon that goes will not stop the unit");
-    }
-    let status = child
-        .wait()
-        .map_err(|error| format!("cannot wait for {SYSTEMD_RUN}: {error}"))?;
+            last_stop = Some(Instant::now());
+        }
+        std::thread::sleep(WAIT_POLL);
+    };
     let code = status.code().unwrap_or_else(|| {
         use std::os::unix::process::ExitStatusExt;
         128 + status.signal().unwrap_or(0)
@@ -267,6 +344,41 @@ fn wait(
     writeln!(&*daemon, "exited {code}")
         .map_err(|error| format!("cannot tell the daemon the exit code {code}: {error}"))?;
     Ok(ExitCode::from(u8::try_from(code).unwrap_or(u8::MAX)))
+}
+
+/// Set once the daemon's side of the socket ends. Whatever the daemon sends now is noise; a
+/// read that was only interrupted or timed out reads again.
+fn watch_for_the_end(daemon: &UnixStream) -> Arc<AtomicBool> {
+    let went = Arc::new(AtomicBool::new(false));
+    let watching = match daemon.try_clone() {
+        Ok(watching) => watching,
+        Err(error) => {
+            eprintln!(
+                "torlek-sandbox: cannot watch the daemon's socket ({error}); a daemon that goes \
+                 will not stop the unit"
+            );
+            return went;
+        }
+    };
+    let _ = watching.set_read_timeout(None);
+    let setting = Arc::clone(&went);
+    std::thread::spawn(move || {
+        let mut rest = [0_u8; 64];
+        loop {
+            match (&watching).read(&mut rest) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut
+                    ) => {}
+                Err(_) => break,
+            }
+        }
+        setting.store(true, Ordering::Release);
+    });
+    went
 }
 
 /// Stops `unit`, which a run the daemon ended leaves behind.

@@ -44,13 +44,24 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   will read it. The owner approved them on the card, so the proxy files no request.
 - The root part of an approved run (#1387, option B, `root_run.rs`): `RootRunRequest` is
   what the daemon asks `torlek-sandbox root-run` to run as root; `RootFloor` builds the system
-  unit's properties and refuses what would lower its floor. The floor: `OWNER_SECRETS` under
-  the owner's home, `/root` and the password hashes hidden; `/boot`, `/efi`, sudo's rules and
-  Torlek's install (`ROOT_NEVER_WRITES`) read-only even inside a folder the request writes,
-  and a request to write in one refused; `/run` emptied; no network, devices or processes of
-  the host; no capability that undoes a mount or reaches the kernel. The request can hide more
-  and name folders to write, nothing else. The daemon's confined runs hide the same
-  `OWNER_SECRETS`.
+  unit's properties and refuses what would lower its floor. The floor:
+  - hidden: `OWNER_SECRETS` and Torlek's folders under the owner's home, `/root` and the
+    password hashes;
+  - read-only, even inside a folder the request writes, and refused as one to write:
+    `ROOT_NEVER_WRITES`, the boot files, sudo's rules, what grants root or runs as root at
+    boot, login or on a schedule (`/etc/passwd`, PAM, systemd's units, cron, the loader's
+    preload), and Torlek's install;
+  - never written as a whole: `ROOT_NEVER_HOLDS` (`/etc`, `/usr`, `/var`, the programs'
+    and libraries' folders, `/home`) and the owner's home; a folder inside one may be;
+  - `/run` emptied; no network, devices or processes of the host; no setuid, setgid or
+    file-capability program made; no capability that undoes a mount or reaches the kernel;
+    systemd 257 or later (`ROOT_RUN_MIN_SYSTEMD`, for `PrivatePIDs=`).
+
+  The request can hide more and name folders to write, nothing else. The floor holds
+  against a daemon bug; a list cannot name every file root could leave to run later, and
+  the owner reads the folders on the card. A package manager, which writes `/usr` and
+  `/etc` as a whole and installs setuid programs, has no root part. The daemon's confined
+  runs hide the same `OWNER_SECRETS`.
 - Toolchains and caches (#859): the caller resolves `ToolNeeds` from the toolchain table of
   `cockpit-provider-api`. The install roots `PATH` resolves the checkout's ecosystems in are
   bound read-only; every cache variable points into `caches/` of the session's temp folder;
