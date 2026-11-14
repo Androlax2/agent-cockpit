@@ -131,7 +131,6 @@ A command line Torlek cannot resolve (`sudo $CMD`, `sudo "$(which foo)"`, `curl 
 Neither blocks the request: the flag warns, you decide.
 The limits: words resolve through the daemon's `PATH`, not sudo's `secure_path`; a program the session puts earlier on that `PATH` later is not watched; files a script runs or sources in turn are not followed; and a file changed between the last hash and the moment it runs is not caught.
 
-
 A script in the command can still call `/usr/bin/sudo` by its path, without `-k`, and reuse an unlock an earlier `sudo` in the same command left (about 5 minutes), or hand sudo a password itself (its own askpass, `-S`); Torlek cannot prevent that, so it reports it.
 While a command runs, Torlek watches its processes for `/usr/bin/sudo`, every 10 ms. A sudo that ended having asked you nothing through Torlek's helper marks the command "sudo ran without asking you": in the pane while the command waits for you, in `torlek approval show ID`, in the stored request, and in the answer the agent reads.
 That includes a sudo that asked nothing because it needed nothing (`sudo -V`, a sudoers rule without a password, a `sudo -n` that was refused), a sudo still running when the command ends, and another program named `sudo` that runs as root, so the mark means "look at what this command did", not proof of a reused unlock.
