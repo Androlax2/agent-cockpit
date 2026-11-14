@@ -30,7 +30,8 @@ start and runs it in the agent's place under `agents.sandbox = "required"`.
   listener (`engine_relay.rs`, below). Without `EGRESS_PORT`, as an earlier setup's unit
   runs it, the egress listener is refused, naming the setup to run again.
 - `torlek-sandbox engine-proxy RELAY_SOCKET ENGINE_UID PROJECT FOLDER EGRESS_PORT`: the egress
-  proxy of a project's engine (#390), run by the owner's daemon; serves the listener the relay
+  proxy of a project's engine (#390), for the owner's daemon to run (part 6c: no daemon runs it
+  yet); serves the listener the relay
   hands it until the relay's connection ends (`engine_proxy.rs`, below).
 - `torlek-sandbox engine-masks ENGINES_DIR`: the root helper of the project engines (#390),
   run once per connection with the connection as its standard input; it masks one checkout
@@ -134,8 +135,8 @@ and `DOCKER_HOST` names it. A spec for a check run, or an engine run as root, is
 ### The project engine's egress
 
 Issue #390, option A (Theo, 2026-11-14). The engine's network namespace has no route out;
-its containers and dockerd reach slirp4netns's `10.0.2.2`, which is that namespace's
-`127.0.0.1`. `engine-proxy` connects to the relay's socket, refuses it unless its peer is
+dockerd, and the containers once told it is their proxy (part 6d), reach slirp4netns's
+`10.0.2.2`, which is that namespace's `127.0.0.1`. `engine-proxy` connects to the relay's socket, refuses it unless its peer is
 `ENGINE_UID`, and asks `egress`. The relay listens on `127.0.0.1:EGRESS_PORT` in the engine's
 namespace and sends the listener over (`handoff::LISTENER_BYTE`), keeping no copy, then holds
 the connection: the port is open exactly while that proxy runs, a second proxy is refused

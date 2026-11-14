@@ -16,7 +16,7 @@
 //!   relay unit inside the engine's network namespace (#390); relays the owner's connections
 //!   to the ports that engine published, and hands its egress listener to the engine's proxy.
 //! - `torlek-sandbox engine-proxy RELAY_SOCKET ENGINE_UID PROJECT FOLDER EGRESS_PORT`: run by
-//!   the owner's daemon for each project engine (#390); serves the egress listener the relay
+//!   the owner's daemon for each project engine (#390, part 6c: not yet); serves the egress listener the relay
 //!   hands it, for the project's containers, until the relay's connection ends.
 //! - `torlek-sandbox engine-masks ENGINES_DIR`: run as root by the engine masks' unit for each
 //!   connection (#390); shows a project's engine one checkout through the session baseline's

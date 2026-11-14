@@ -14,8 +14,9 @@
 //! user; Theo chose that over a root-owned copy to refresh after each upgrade.
 //!
 //! The engine's namespace has no route out. Its one way out is the engine's proxy, which the
-//! owner's daemon runs on the listener the relay opens on [`ENGINE_EGRESS_PORT`] there (#390
-//! part 6, option A): dockerd's pulls and the containers reach it as slirp4netns's
+//! owner's daemon is to run (part 6c) on the listener the relay opens on [`ENGINE_EGRESS_PORT`]
+//! there (#390 part 6, option A): dockerd's pulls, and the containers once told it is their
+//! proxy (part 6d), reach it as slirp4netns's
 //! `10.0.2.2`, which reaches the namespace's own `127.0.0.1` because the unit turns host
 //! loopback on. That loopback holds the proxy and the engine's own published ports, nothing
 //! of the host's or of another engine's. While the daemon is stopped, nothing listens there:

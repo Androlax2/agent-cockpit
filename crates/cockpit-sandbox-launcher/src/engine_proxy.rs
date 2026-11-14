@@ -1,8 +1,8 @@
 //! `torlek-sandbox engine-proxy RELAY_SOCKET ENGINE_UID PROJECT FOLDER EGRESS_PORT` (#390
-//! part 6b): the egress proxy of one project's engine, run by the owner's daemon. It asks the
-//! engine's relay (`engine_relay.rs`) for the listener on `127.0.0.1:EGRESS_PORT` in the
-//! engine's network namespace, where the engine's containers and dockerd's pulls reach it,
-//! and serves it as a session's proxy is served, for the subject "the containers of
+//! part 6b): the egress proxy of one project's engine, for the owner's daemon to run (part 6c;
+//! no daemon runs it yet). It asks the engine's relay (`engine_relay.rs`) for the listener on
+//! `127.0.0.1:EGRESS_PORT` in the engine's network namespace, where dockerd's pulls reach it,
+//! and containers told it is their proxy (part 6d), and serves it as a session's proxy is served, for the subject "the containers of
 //! PROJECT": only what the owner allowed always for the project passes (#856 Q4 A), and an
 //! unknown host is refused at once and asked of the owner.
 //!
@@ -126,8 +126,11 @@ fn egress_listener(relay: &mut UnixStream, egress_port: u16) -> Result<TcpListen
         .map_err(failed)?;
     let (byte, mut descriptors) = handoff::receive(relay, 1).map_err(failed)?;
     if byte != handoff::LISTENER_BYTE {
-        let rest = engine_relay::read_line(relay, engine_relay::MAX_ANSWER).unwrap_or_default();
-        let answer = String::from_utf8_lossy(&[&[byte][..], &rest].concat()).into_owned();
+        let answer = engine_relay::read_line(relay, engine_relay::MAX_ANSWER)
+            .map(|rest| String::from_utf8_lossy(&[&[byte][..], &rest].concat()).into_owned())
+            .map_err(|error| {
+                format!("the engine's relay refused and its answer failed: {error}")
+            })?;
         return Err(format!("the engine's relay answered: {answer}"));
     }
     let Some(listener) = descriptors.pop() else {
