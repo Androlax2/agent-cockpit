@@ -209,6 +209,12 @@ jobs:
             COCKPIT_CANDIDATE_ROOT="$root" COCKPIT_FIRST_USER_UID="$first_user" \
             "$root/sandbox-test" --include-ignored | tee "$output"
           grep -q '^test a_second_unix_user_starts_a_sandboxed_session \.\.\. ok$' "$output"
+      - name: "Run the sudo root route's helper as root in real system units (#1387)"
+        # Ignored in the gate: the tests start `torlek-sandbox root-run` with `sudo -n` and need
+        # the system manager, which only this disposable runner gives them.
+        run: >-
+          cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-sandbox-launcher
+          --test root_run --run-ignored only --no-capture
       - name: "Probe the native sandbox live: denied paths, an unknown and an allowed host, four launches (#433)"
         # Ignored in the gate because it reaches the internet; retried so a network blip is
         # reported flaky, not failed. The evidence each launch recorded prints in this log.
