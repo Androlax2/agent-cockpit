@@ -126,12 +126,24 @@ pub fn root_runs(command: &str, lookup: Lookup<'_>, writes: &SessionWrites) -> R
     }
 }
 
+/// The files a command line pins (#1387).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pinned {
+    /// Files it runs that the session can change, hashed, in the order the command names
+    /// them.
+    pub files: Vec<RootFile>,
+    /// A file it runs that the session can change could not be recorded (not a regular file,
+    /// unreadable, a path with a line break): a change there would not refuse the run. What
+    /// the command line leaves unresolved is the rule scan's to report.
+    pub cannot_tell: bool,
+}
+
 /// The files any part of `command` runs as code that a session writing `writes` can change,
 /// hashed now, so a run is refused when one changed after the owner read it (#1387): what
-/// [`root_runs`] reads for sudo, read for every command of the line. A file it could not
-/// record (a path with a line break, a file it cannot read) is left out; what cannot be
-/// resolved is the rule scan's "can't tell" finding. Reads the filesystem.
-pub fn pinned_files(command: &str, lookup: Lookup<'_>, writes: &SessionWrites) -> Vec<RootFile> {
+/// [`root_runs`] reads for sudo, read for every command of the line, except a program found
+/// by searching `PATH` (`cargo`, `node`), which the owner reads by name and which would be
+/// hashed again at every view of the request. Reads the filesystem.
+pub fn pinned_files(command: &str, lookup: Lookup<'_>, writes: &SessionWrites) -> Pinned {
     let mut found = Found::default();
     Walk {
         lookup,
@@ -139,7 +151,16 @@ pub fn pinned_files(command: &str, lookup: Lookup<'_>, writes: &SessionWrites) -
     }
     // Every command counts, as in a shell sudo started.
     .script(command, lookup.cwd, Context::Root, 0);
-    editable_files(found.files, writes).0
+    let named: Vec<PathBuf> = found
+        .files
+        .into_iter()
+        .filter(|path| !found.searched.contains(path))
+        .collect();
+    let (files, is_unrecorded) = editable_files(named, writes);
+    Pinned {
+        files,
+        cannot_tell: is_unrecorded,
+    }
 }
 
 /// Those of `files` a session writing `writes` can change, each hashed now, and whether one
@@ -457,12 +478,22 @@ const DEPTH_MAX: usize = 8;
 #[derive(Debug, Default)]
 struct Found {
     files: Vec<PathBuf>,
+    /// Those of `files` only found by searching `PATH` for a program's name.
+    searched: Vec<PathBuf>,
     cannot_tell: bool,
 }
 
 impl Found {
     fn file(&mut self, path: PathBuf) {
+        self.searched.retain(|searched| *searched != path);
         if !self.files.contains(&path) {
+            self.files.push(path);
+        }
+    }
+
+    fn searched_program(&mut self, path: PathBuf) {
+        if !self.files.contains(&path) {
+            self.searched.push(path.clone());
             self.files.push(path);
         }
     }
@@ -629,6 +660,7 @@ impl Walk<'_, '_> {
             return;
         }
         match self.program(&program.text, cwd) {
+            Some(path) if !program.text.contains('/') => self.found.searched_program(path),
             Some(path) => self.found.file(path),
             None => {
                 self.found.cannot_tell = true;

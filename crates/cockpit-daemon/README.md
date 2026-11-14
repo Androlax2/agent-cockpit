@@ -118,8 +118,8 @@ not share code.
   applied (`root_runs::findings_view`; a revision checked before the scan existed gets
   the sudo findings of its `root_runs`); the agent's do not. The files any part of the
   revision runs that the session can edit are pinned in the same transaction (#1387,
-  `cockpit_approvals::pinned_files`, its own 10 seconds; past them, a `cannot-tell`
-  finding): the owner's views read each pinned file and each file sudo runs once, bind the
+  `cockpit_approvals::pinned_files`, beside the sudo check under its own 10 seconds; past
+  them, or for a file it could not record, a `cannot-tell` finding): the owner's views read each pinned file and each file sudo runs once, bind the
   `digest` to all of them, and an approval or a run is refused the same way when one
   changed.
 - An approval commits the run intent, then the run starts outside the lanes: a long command

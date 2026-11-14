@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use cockpit_approvals::{
-    Contents, FILE_HEAD_LINES, Lookup, RootFile, RootRuns, SessionWrites, changed_file,
+    Contents, FILE_HEAD_LINES, Lookup, Pinned, RootFile, RootRuns, SessionWrites, changed_file,
     digest_as_read, file_now, pinned_files, root_runs,
 };
 
@@ -94,8 +94,7 @@ impl Host {
 }
 
 impl Host {
-    /// The files `command` pins (#1387), relative to the session folder, absent ones marked.
-    fn pinned(&self, command: &str) -> Vec<String> {
+    fn pin(&self, command: &str) -> Pinned {
         pinned_files(
             command,
             Lookup {
@@ -105,20 +104,31 @@ impl Host {
             },
             &self.writes(),
         )
-        .iter()
-        .map(|file| {
-            let path = file
-                .path
-                .strip_prefix(&self.session)
-                .unwrap_or(&file.path)
-                .to_string_lossy()
-                .into_owned();
-            match file.sha256 {
-                Some(_) => path,
-                None => format!("{path} (absent)"),
-            }
-        })
-        .collect()
+    }
+
+    /// The files `command` pins (#1387), relative to the session folder, absent ones marked.
+    fn pinned(&self, command: &str) -> Vec<String> {
+        let pinned = self.pin(command);
+        assert!(
+            !pinned.cannot_tell,
+            "{command:?} could not be told: {pinned:?}"
+        );
+        pinned
+            .files
+            .iter()
+            .map(|file| {
+                let path = file
+                    .path
+                    .strip_prefix(&self.session)
+                    .unwrap_or(&file.path)
+                    .to_string_lossy()
+                    .into_owned();
+                match file.sha256 {
+                    Some(_) => path,
+                    None => format!("{path} (absent)"),
+                }
+            })
+            .collect()
     }
 }
 
@@ -495,15 +505,7 @@ fn a_makefile_the_session_could_still_create_is_pinned_as_absent() {
 #[test]
 fn a_pinned_script_edited_after_the_ask_is_named_changed() {
     let host = Host::new();
-    let pinned = pinned_files(
-        "./x.sh",
-        Lookup {
-            cwd: &host.session,
-            search_path: Some(host.system.as_os_str()),
-            home: None,
-        },
-        &host.writes(),
-    );
+    let pinned = host.pin("./x.sh").files;
     assert_eq!(changed_file(&pinned), None);
 
     std::fs::write(host.session.join("x.sh"), "rm -rf ~\n").unwrap();
@@ -511,5 +513,40 @@ fn a_pinned_script_edited_after_the_ask_is_named_changed() {
     assert_eq!(
         changed_file(&pinned),
         Some(host.session.join("x.sh").as_path())
+    );
+}
+
+#[test]
+fn a_script_the_session_can_edit_but_not_hash_is_not_shown_as_pinned() {
+    let host = Host::new();
+    std::fs::create_dir(host.session.join("dir.sh")).unwrap();
+
+    let pinned = host.pin("sh ./dir.sh");
+
+    assert!(pinned.cannot_tell, "{pinned:?}");
+    assert!(pinned.files.is_empty(), "{pinned:?}");
+}
+
+#[test]
+fn a_program_found_on_path_is_not_pinned_but_one_named_by_path_is() {
+    let host = Host::new();
+    executable(&host.session.join("tool"), "#!/bin/sh\n");
+    let lookup = Lookup {
+        cwd: &host.session,
+        search_path: Some(host.session.as_os_str()),
+        home: None,
+    };
+
+    let searched = pinned_files("tool build", lookup, &host.writes());
+    let named = pinned_files("./tool build && tool test", lookup, &host.writes());
+
+    assert_eq!(searched, Pinned::default());
+    assert_eq!(
+        named
+            .files
+            .iter()
+            .map(|file| &file.path)
+            .collect::<Vec<_>>(),
+        [&host.session.join("tool")]
     );
 }

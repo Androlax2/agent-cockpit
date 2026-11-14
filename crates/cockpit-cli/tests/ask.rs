@@ -752,14 +752,14 @@ async fn the_owner_reads_each_editable_file_sudo_runs_as_it_is_now() {
 }
 
 #[tokio::test]
-async fn the_owner_reads_each_pinned_file_with_its_hash_and_whether_it_changed() {
+async fn the_owner_reads_each_pinned_file_as_it_is_now_and_whether_it_changed() {
     let pinned_file = |name: &str, recorded: &str, now: &str| RootFileView {
         path: format!("/p/{name}"),
         shown_path: shown(&format!("./{name}")),
         sha256: Some(recorded.repeat(64)),
         now: Some(FileNowView {
             sha256: Some(now.repeat(64)),
-            head: None,
+            head: Some(shown("echo build")),
             more_lines: 0,
             unreadable: false,
         }),
@@ -778,9 +778,11 @@ async fn the_owner_reads_each_pinned_file_with_its_hash_and_whether_it_changed()
     .await;
 
     let expected = format!(
-        "  Pinned: ./build.sh sha256 {}\n\
-         \x20 ! ./build.sh changed since it was asked: approving it refuses the run\n",
-        "a".repeat(64)
+        "  Pinned: ./build.sh\n\
+         \x20 ! ./build.sh changed since it was asked: approving it refuses the run\n\
+         \x20   sha256 {}\n\
+         \x20   | echo build\n",
+        "b".repeat(64)
     );
     assert!(shown.contains(&expected), "{shown}");
     assert!(

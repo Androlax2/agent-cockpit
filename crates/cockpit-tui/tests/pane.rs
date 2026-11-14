@@ -603,7 +603,7 @@ fn m_shows_the_file_s_first_lines_and_hash_and_a_change_is_warned_of() {
 }
 
 #[test]
-fn a_changed_pinned_script_is_warned_of_and_m_shows_its_hash_once() {
+fn a_changed_pinned_script_is_warned_of_and_m_lists_it_once() {
     let now = Instant::now();
     let changed_hash = "0".repeat(64);
     let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);

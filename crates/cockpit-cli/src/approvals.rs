@@ -10,8 +10,8 @@ use std::process::ExitCode;
 use chrono::{DateTime, Local};
 use cockpit_protocol::{
     Command, DecidedRunView, DecidedThroughView, FindingView, GuideStateView, GuideView,
-    HiddenView, NO_KNOWN_RISKY_PATTERN, Reply, RootRunsView, RunDecisionView, RunRequestView,
-    RunStateView, SecretText, ShownText, changed_since_asked_warning, finding_line,
+    HiddenView, NO_KNOWN_RISKY_PATTERN, Reply, RootFileView, RootRunsView, RunDecisionView,
+    RunRequestView, RunStateView, SecretText, ShownText, changed_since_asked_warning, finding_line,
     sudo_ran_unasked_warning, typed_secret_redacted_notice,
 };
 
@@ -351,9 +351,21 @@ fn findings_hints(findings: &[FindingView]) -> String {
 /// Each file the session can edit that the command's sudo runs, with its hash and, while the
 /// request asks, its first lines as they are now (#1383). That sudo runs it is a finding.
 fn root_runs_hints(root_runs: &RootRunsView) -> String {
+    file_hints(root_runs.editable.iter(), "Runs as root")
+}
+
+/// Each other file the command runs that the session can edit, pinned (#1387), shown as the
+/// files sudo runs are.
+fn pinned_hints(run: &RunRequestView) -> String {
+    file_hints(run.pinned_beyond_root(), "Pinned")
+}
+
+/// Each of `files` under `label`, with its hash and, while the request asks, its first lines
+/// as they are now; one changed since the ask is named.
+fn file_hints<'a>(files: impl Iterator<Item = &'a RootFileView>, label: &str) -> String {
     let mut text = String::new();
-    for file in &root_runs.editable {
-        let _ = writeln!(text, "  Runs as root: {}", file.shown_path.text);
+    for file in files {
+        let _ = writeln!(text, "  {label}: {}", file.shown_path.text);
         text.push_str(&warnings(&file.shown_path));
         if file.changed_since_asked() {
             let _ = writeln!(
@@ -383,29 +395,6 @@ fn root_runs_hints(root_runs: &RootRunsView) -> String {
             }
             (None, Some(_)) => text.push_str("    (not text)\n"),
             (None, None) => {}
-        }
-    }
-    text
-}
-
-/// Each other file the command runs that the session can edit, pinned with its hash (#1387):
-/// one that changes before the run starts refuses it.
-fn pinned_hints(run: &RunRequestView) -> String {
-    let mut text = String::new();
-    for file in run.pinned_beyond_root() {
-        let _ = writeln!(
-            text,
-            "  Pinned: {} sha256 {}",
-            file.shown_path.text,
-            hash_text(file.sha256.as_deref())
-        );
-        text.push_str(&warnings(&file.shown_path));
-        if file.changed_since_asked() {
-            let _ = writeln!(
-                text,
-                "  ! {}",
-                changed_since_asked_warning(&file.shown_path.text)
-            );
         }
     }
     text

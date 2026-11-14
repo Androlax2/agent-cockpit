@@ -90,26 +90,27 @@ async fn check(
     let command = std::sync::Arc::<str>::from(command);
     let cwd = std::sync::Arc::<Path>::from(cwd);
     // Each check has its own bound, so a scan that does not end in time leaves the files
-    // sudo runs pinned by their hashes.
-    let pinned = bounded({
-        let (command, cwd, writes) = (command.clone(), cwd.clone(), writes.clone());
-        move || {
-            with_lookup(&cwd, |lookup| {
-                cockpit_approvals::pinned_files(&command, lookup, &writes)
-            })
-        }
-    })
-    .await;
-    let runs = bounded({
-        let (command, cwd) = (command.clone(), cwd.clone());
-        move || {
-            with_lookup(&cwd, |lookup| {
-                cockpit_approvals::root_runs(&command, lookup, &writes)
-            })
-        }
-    })
-    .await
-    .unwrap_or(RootRuns {
+    // pinned by their hashes. Pinning and the sudo check run side by side: the write
+    // transaction waits for the longest, not their sum.
+    let (pinned, runs) = tokio::join!(
+        bounded({
+            let (command, cwd, writes) = (command.clone(), cwd.clone(), writes.clone());
+            move || {
+                with_lookup(&cwd, |lookup| {
+                    cockpit_approvals::pinned_files(&command, lookup, &writes)
+                })
+            }
+        }),
+        bounded({
+            let (command, cwd) = (command.clone(), cwd.clone());
+            move || {
+                with_lookup(&cwd, |lookup| {
+                    cockpit_approvals::root_runs(&command, lookup, &writes)
+                })
+            }
+        }),
+    );
+    let runs = runs.unwrap_or(RootRuns {
         editable: Vec::new(),
         cannot_tell: true,
     });
@@ -127,13 +128,28 @@ async fn check(
         findings.push(cockpit_approvals::scan_unfinished());
         findings
     });
-    if pinned.is_none() {
-        findings.push(cockpit_approvals::pinning_unfinished());
-    }
+    let is_told_cannot_tell = |findings: &[Finding], incomplete: &Finding| {
+        findings
+            .iter()
+            .any(|finding| finding.rule == incomplete.rule)
+    };
+    let pinned = match pinned {
+        Some(pinned) => {
+            let incomplete = cockpit_approvals::pinning_incomplete(true);
+            if pinned.cannot_tell && !is_told_cannot_tell(&findings, &incomplete) {
+                findings.push(incomplete);
+            }
+            pinned.files
+        }
+        None => {
+            findings.push(cockpit_approvals::pinning_incomplete(false));
+            Vec::new()
+        }
+    };
     Checks {
         root_runs: runs,
         findings,
-        pinned: pinned.unwrap_or_default(),
+        pinned,
     }
 }
 
@@ -238,31 +254,38 @@ pub(super) async fn owner_view(run: &RunRequest) -> Option<OwnerView> {
             digest: run.digest(),
         });
     }
-    let bound = bound_files(run);
-    let paths: Vec<PathBuf> = bound.iter().map(|file| file.path.clone()).collect();
-    let reads = bounded({
-        let paths = paths.clone();
-        move || {
-            paths
-                .iter()
-                .map(|path| {
-                    cockpit_approvals::file_now(path)
-                        // Debug, not warn: the owner's views poll; the view says it is unreadable.
-                        .inspect_err(|error| tracing::debug!(%error, path = %path.display(), "cannot read a file a command runs"))
-                        .ok()
-                })
-                .collect::<Vec<_>>()
-        }
-    })
-    .await
-    .unwrap_or_else(|| vec![None; bound.len()]);
-    let contents: Vec<Contents> = reads.iter().map(contents_of).collect();
-    let read_of = |path: &Path| {
+    let paths: Vec<PathBuf> = bound_files(run).into_iter().map(|file| file.path).collect();
+    let count = paths.len();
+    let reads = bounded(move || {
         paths
-            .iter()
-            .position(|read| read == path)
-            .map(|at| reads[at].clone())
+            .into_iter()
+            .map(|path| {
+                let read = cockpit_approvals::file_now(&path)
+                    // Debug, not warn: the owner's views poll; the view says it is unreadable.
+                    .inspect_err(|error| tracing::debug!(%error, path = %path.display(), "cannot read a file a command runs"))
+                    .ok();
+                (path, read)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+    let Some(reads) = reads else {
+        let (root_runs, pinned) = views(&|_| Some(None));
+        return Some(OwnerView {
+            root_runs,
+            pinned,
+            digest: cockpit_approvals::digest_as_read(
+                &run.digest(),
+                &vec![Contents::Unreadable; count],
+            ),
+        });
     };
+    let contents: Vec<Contents> = reads.iter().map(|(_, read)| contents_of(read)).collect();
+    let read_by_path: std::collections::HashMap<&Path, &Option<FileNow>> = reads
+        .iter()
+        .map(|(path, read)| (path.as_path(), read))
+        .collect();
+    let read_of = |path: &Path| read_by_path.get(path).map(|read| (*read).clone());
     let (root_runs, pinned) = views(&read_of);
     Some(OwnerView {
         root_runs,
@@ -279,7 +302,8 @@ pub(super) struct OwnerView {
 }
 
 /// The files an approval of `run` is bound to and its run is refused over: those it pins,
-/// then any file its sudo runs that they leave out (a revision checked before pinning).
+/// then any file its sudo runs that they leave out (a program sudo finds on `PATH`, or a
+/// revision checked before pinning).
 fn bound_files(run: &RunRequest) -> Vec<RootFile> {
     let mut files: Vec<RootFile> = run.pinned.clone().unwrap_or_default();
     for file in run.root_runs.iter().flat_map(|runs| &runs.editable) {
