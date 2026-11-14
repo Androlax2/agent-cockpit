@@ -101,17 +101,23 @@ fn container(options: &str, script: &str) -> String {
     format!("docker run --rm {options} --entrypoint sh {IMAGE} -c '{script}'")
 }
 
+/// curl with `arguments` in a container, its error printed only once it ended, with its exit
+/// code: CI's run 11 printed the `-w` line inside curl's error, splitting a word.
+fn curl_in_container(arguments: &str) -> String {
+    container(
+        "",
+        &format!("curl {arguments} 2>/tmp/curl.err; code=$?; cat /tmp/curl.err >&2; exit $code"),
+    )
+}
+
 /// curl of `https://<host>/` in a container: the proxy's answer to the tunnel, the server's
 /// (`000` when there was none) and the seconds it took.
 fn fetch_in_container(host: &str) -> String {
-    container(
-        "",
-        &format!(
-            "curl -sS -o /dev/null --max-time 20 \
-             -w \"tunnel=%{{http_connect}} status=%{{http_code}} seconds=%{{time_total}}\\n\" \
-             https://{host}/"
-        ),
-    )
+    curl_in_container(&format!(
+        "-sS -o /dev/null --max-time 20 \
+         -w \"tunnel=%{{http_connect}} status=%{{http_code}} seconds=%{{time_total}}\\n\" \
+         https://{host}/"
+    ))
 }
 
 /// The owner's home with a key no container may read, `required` set, and the Claude
@@ -367,13 +373,10 @@ async fn no_direct_route(home: &Home, root: &Path) {
         let printed = run_in_agent(
             home,
             root,
-            &container(
-                "",
-                &format!(
-                    "curl --noproxy \"*\" -sS -o /dev/null --max-time 10 \
-                     -w \"status=%{{http_code}}\\n\" https://{target}/"
-                ),
-            ),
+            &curl_in_container(&format!(
+                "--noproxy \"*\" -sS -o /dev/null --max-time 10 \
+                 -w \"status=%{{http_code}}\\n\" https://{target}/"
+            )),
             CONTAINER_WITHIN,
         )
         .await;
