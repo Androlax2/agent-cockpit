@@ -309,6 +309,8 @@ cat >"$unit_dir/torlek-engine@.service" <<UNIT
 # Written by Torlek's engine setup (#390); running a setup again rewrites it.
 [Unit]
 Description=Torlek's rootless Docker engine for %i
+# Its relay runs whenever it does, after its own restarts too.
+Upholds=torlek-engine-relay@%i.service
 
 [Service]
 User=%i
@@ -342,8 +344,6 @@ Delegate=yes
 KillMode=mixed
 Restart=on-failure
 RestartSec=2
-# Its relay runs whenever it does, after its own restarts too.
-Upholds=torlek-engine-relay@%i.service
 
 [Install]
 WantedBy=multi-user.target
@@ -615,9 +615,31 @@ mod tests {
         assert!(script.contains(
             "ExecStart=$relay_program engine-relay /run/torlek-e3/relay.sock 1000 3128\n"
         ));
-        assert!(script.contains("Upholds=torlek-engine-relay@%i.service\n"));
         assert!(script.contains("BindsTo=torlek-engine@%i.service\n"));
         assert!(script.contains("-perm -0001"));
+    }
+
+    /// #390 acceptance: `Upholds=` is a `[Unit]` option; under `[Service]` systemd ignored it
+    /// and never started the relay, so no proxy port opened and every pull was refused.
+    #[test]
+    fn the_engine_upholds_its_relay_from_its_unit_section() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+        let engine_unit = script
+            .split("cat >\"$unit_dir/torlek-engine@.service\" <<UNIT\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\nUNIT\n").next())
+            .expect("the engine's unit");
+        let unit_section = engine_unit
+            .split("[Unit]\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n[").next())
+            .expect("its [Unit] section");
+
+        assert!(
+            unit_section.contains("Upholds=torlek-engine-relay@%i.service\n"),
+            "{engine_unit}"
+        );
+        assert_eq!(engine_unit.matches("Upholds=").count(), 1, "{engine_unit}");
     }
 
     /// Containers reach the engine namespace's 127.0.0.1, where the relay listens for the
