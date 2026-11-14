@@ -310,12 +310,15 @@ impl NetworkTarget {
 pub const GITHUB_HOST: &str = "github.com";
 
 /// Docker Hub's pull hosts (#390, decided 2026-11-09, B): its registry, its token service and
-/// its blobs' CDN. No default host: a registry takes pushes with a credential the caller
-/// supplies, so the owner grants them per project, at its engine's setup.
-pub const DOCKER_HUB_HOSTS: [&str; 3] = [
+/// its blobs' CDN, plus the S3 host it redirects blob downloads from AWS to (decided
+/// 2026-11-14, A: that host exactly, no wildcard). No default host: a registry takes pushes
+/// with a credential the caller supplies, so the owner grants them per project, at its
+/// engine's setup.
+pub const DOCKER_HUB_HOSTS: [&str; 4] = [
     "registry-1.docker.io",
     "auth.docker.io",
     "production.cloudflare.docker.com",
+    "docker-images-prod.s3.dualstack.us-east-1.amazonaws.com",
 ];
 
 /// Where a request stands.

@@ -99,10 +99,11 @@ pub(crate) fn holds_github_grant(grants: &[NetworkGrantView], project: &str) -> 
 /// The hosts the daemon grants for `network grant PROJECT docker-hub`, on 443. The daemon's
 /// list is `cockpit_sandbox::DOCKER_HUB_HOSTS`; the CLI keeps its own copy, as it does
 /// [`GITHUB_HOST`], since it does not depend on the sandbox crate.
-pub(crate) const DOCKER_HUB_HOSTS: [&str; 3] = [
+pub(crate) const DOCKER_HUB_HOSTS: [&str; 4] = [
     "registry-1.docker.io",
     "auth.docker.io",
     "production.cloudflare.docker.com",
+    "docker-images-prod.s3.dualstack.us-east-1.amazonaws.com",
 ];
 
 /// Whether `project` holds an active grant of each of Docker Hub's pull hosts among `grants`.

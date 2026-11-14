@@ -418,6 +418,8 @@ async fn docker_hub_is_granted_a_project_as_one_grant_per_pull_host() {
     );
 }
 
+/// The S3 host is where Docker Hub redirected CI's blob downloads from AWS (#390 acceptance;
+/// owner decision 2026-11-14, A: that host exactly, no wildcard).
 #[test]
 fn docker_hubs_pull_hosts_are_its_registry_auth_and_blob_hosts() {
     assert_eq!(
@@ -425,7 +427,8 @@ fn docker_hubs_pull_hosts_are_its_registry_auth_and_blob_hosts() {
         [
             "registry-1.docker.io",
             "auth.docker.io",
-            "production.cloudflare.docker.com"
+            "production.cloudflare.docker.com",
+            "docker-images-prod.s3.dualstack.us-east-1.amazonaws.com",
         ]
     );
 }

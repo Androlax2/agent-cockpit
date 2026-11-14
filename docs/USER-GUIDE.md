@@ -222,7 +222,7 @@ sudo sh ~/.local/state/torlek/containers/torlek-e3-setup.sh
 torlek containers record PROJECT   # records the engine that now answers as the project's
 ```
 
-On a terminal, `torlek containers record` then offers Docker Hub once (`y` grants, Enter declines): `registry-1.docker.io`, `auth.docker.io` and `production.cloudflare.docker.com` on 443, one "allow always" grant each for the project, which `torlek network revoke GRANT` takes back one by one. Docker Hub is no default host because a registry also takes pushes made with a credential the caller supplies. Elsewhere it is only named:
+On a terminal, `torlek containers record` then offers Docker Hub once (`y` grants, Enter declines): `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` and `docker-images-prod.s3.dualstack.us-east-1.amazonaws.com` (where Docker Hub sends downloads from AWS) on 443, one "allow always" grant each for the project, which `torlek network revoke GRANT` takes back one by one. Docker Hub is no default host because a registry also takes pushes made with a credential the caller supplies. Elsewhere it is only named:
 
 ```sh
 torlek network grant PROJECT docker-hub   # Docker Hub's pull hosts for the project
