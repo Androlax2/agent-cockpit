@@ -65,6 +65,11 @@ output line wakes you:
 python3 .agents/skills/coordinator/scripts/coordinator_watch.py "$SESSION_TEMP/watch-state.json"
 ```
 
+Do not pipe it through a filter. Claude Code's bundled `grep` shell function (ugrep) holds the
+last line it read until the next line or the end of input, even with `--line-buffered`, so a
+`QUESTION` line can reach you minutes late or never (#1404). If a filter is unavoidable, call
+`command grep`.
+
 It prints only these lines, so every line is one to act on. A `doing` change or a PR opening
 prints nothing (`--summary-seconds N` opts in to a `SUMMARY` line every N seconds; off by default):
 

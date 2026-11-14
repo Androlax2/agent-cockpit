@@ -39,6 +39,10 @@ struct Watched {
 
 impl Watched {
     async fn new(worker_state: &str) -> Watched {
+        Watched::start(worker_state, false).await
+    }
+
+    async fn start(worker_state: &str, is_python_watcher: bool) -> Watched {
         let cockpit = cockpit_program();
         assert!(cockpit.is_file(), "{} is missing", cockpit.display());
         let home = Home::new();
@@ -64,12 +68,35 @@ impl Watched {
             worker_root,
             worker,
         };
+        let worker_root = watched.worker_root.clone();
+        let coordinator_root = watched.coordinator_root.clone();
         // In the foreground: a background job would leave the launched process tree, and
         // Torlek refuses a sender outside it. The coordinator runs nothing else.
-        let watch = format!(
-            "timeout 120 {} > {WATCH_LOG} 2> watch.err",
-            cockpit_line(&["agent", "sessions", "--watch"])
-        );
+        let watch = if is_python_watcher {
+            let bin = coordinator_root.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            let _ = std::fs::remove_file(bin.join("torlek"));
+            std::os::unix::fs::symlink(&cockpit, bin.join("torlek")).unwrap();
+            std::fs::write(bin.join("gh"), "#!/bin/sh\necho '[]'\n").unwrap();
+            std::fs::set_permissions(
+                bin.join("gh"),
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            )
+            .unwrap();
+            let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../.agents/skills/coordinator/scripts/coordinator_watch.py");
+            format!(
+                "PATH='{}':$PATH timeout 120 python3 '{}' state.json --repo o/n --worker-root '{}' --full-list-seconds 1000 > {WATCH_LOG} 2> watch.err",
+                bin.display(),
+                script.display(),
+                worker_root.parent().unwrap().display()
+            )
+        } else {
+            format!(
+                "timeout 120 {} > {WATCH_LOG} 2> watch.err",
+                cockpit_line(&["agent", "sessions", "--watch"])
+            )
+        };
         watched
             .home
             .command_agent(&watched.coordinator_root, &watch);
@@ -77,13 +104,35 @@ impl Watched {
             .report(&["--state", worker_state, "--doing", DOING])
             .await;
         assert!(reported.ends_with("exit=0\n"), "{reported}");
+        if !is_python_watcher {
+            watched
+                .wait_for_worker_line(|line| {
+                    line.contains(&format!("\t{worker_state}\t"))
+                        && line.contains(&format!("doing={DOING:?}"))
+                })
+                .await;
+        } else {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+        }
         watched
-            .wait_for_worker_line(|line| {
-                line.contains(&format!("\t{worker_state}\t"))
-                    && line.contains(&format!("doing={DOING:?}"))
-            })
-            .await;
-        watched
+    }
+
+    async fn wait_for_log_line(&self, within: Duration, wanted: &str) -> String {
+        let log = self.coordinator_root.join(WATCH_LOG);
+        let deadline = Instant::now() + within;
+        loop {
+            let printed = std::fs::read_to_string(&log).unwrap_or_default();
+            if let Some(line) = printed.lines().find(|line| line.contains(wanted)) {
+                return line.to_owned();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the watcher printed no line with {wanted}:\n{printed}\nstderr: {}",
+                std::fs::read_to_string(self.coordinator_root.join("watch.err"))
+                    .unwrap_or_default()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     async fn run(&self, root: &Path, line: &str) -> String {
@@ -102,8 +151,17 @@ impl Watched {
 
     /// The first line the watch printed for the worker that `wanted` accepts.
     async fn wait_for_worker_line(&self, wanted: impl Fn(&str) -> bool) -> String {
+        self.wait_for_worker_line_within(Duration::from_secs(30), wanted)
+            .await
+    }
+
+    async fn wait_for_worker_line_within(
+        &self,
+        within: Duration,
+        wanted: impl Fn(&str) -> bool,
+    ) -> String {
         let log = self.coordinator_root.join(WATCH_LOG);
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + within;
         loop {
             let printed = std::fs::read_to_string(&log).unwrap_or_default();
             if let Some(line) = printed
@@ -185,4 +243,63 @@ async fn the_watch_prints_a_question_from_a_worker_already_waiting() {
         .wait_for_worker_line(|line| line.contains(&format!("needs-input={ASKED:?}")))
         .await;
     assert!(line.contains("\twaiting\t"), "{line}");
+}
+
+const SECOND_ASKED: &str = "May the confined run use sudo?";
+const SECOND_QUESTION_DEADLINE: Duration = Duration::from_secs(10);
+
+fn needs_input_line(question: &str) -> impl Fn(&str) -> bool + '_ {
+    move |line| line.contains(&format!("needs-input={question:?}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_watch_prints_a_second_question_after_the_worker_is_prompted_again() {
+    let watched = Watched::new("working").await;
+    watched.report(&["--needs-input", ASKED]).await;
+    watched.wait_for_worker_line(needs_input_line(ASKED)).await;
+    watched.report(&["--prompt"]).await;
+    watched
+        .wait_for_worker_line(|line| line.contains("\tworking\t") && !line.contains("needs-input"))
+        .await;
+
+    let asked = watched.report(&["--needs-input", SECOND_ASKED]).await;
+
+    assert!(asked.ends_with("exit=0\n"), "{asked}");
+    watched
+        .wait_for_worker_line_within(SECOND_QUESTION_DEADLINE, needs_input_line(SECOND_ASKED))
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_watch_prints_a_second_question_while_the_first_is_still_open() {
+    let watched = Watched::new("working").await;
+    watched.report(&["--needs-input", ASKED]).await;
+    watched.wait_for_worker_line(needs_input_line(ASKED)).await;
+    watched.report(&["--state", "working"]).await;
+
+    let asked = watched.report(&["--needs-input", SECOND_ASKED]).await;
+
+    assert!(asked.ends_with("exit=0\n"), "{asked}");
+    watched
+        .wait_for_worker_line_within(SECOND_QUESTION_DEADLINE, needs_input_line(SECOND_ASKED))
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_coordinator_watcher_prints_a_second_question_after_the_worker_is_prompted_again() {
+    let watched = Watched::start("working", true).await;
+    watched.report(&["--needs-input", ASKED]).await;
+    watched
+        .wait_for_log_line(SECOND_QUESTION_DEADLINE, ASKED)
+        .await;
+    watched.report(&["--prompt"]).await;
+    // The watcher polls every 2 s and prints nothing for the cleared question, so wait two polls.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    let asked = watched.report(&["--needs-input", SECOND_ASKED]).await;
+
+    assert!(asked.ends_with("exit=0\n"), "{asked}");
+    watched
+        .wait_for_log_line(SECOND_QUESTION_DEADLINE, SECOND_ASKED)
+        .await;
 }
