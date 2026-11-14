@@ -283,7 +283,8 @@ not share code.
   and `container limits`: whether the engine enforces `docker run --cpus` and `--memory`,
   from its `/info` (`MemoryLimit`, `CpuCfsQuota`, `CgroupDriver`). A rootless engine runs
   with the `none` driver unless it uses systemd's, and the engine unit does not yet, so
-  that line is unsupported today (report 10).
+  that line says neither is enforced today. No session requires a limit yet, so it
+  never blocks (report 10).
 
 ## Scheduling (#43)
 

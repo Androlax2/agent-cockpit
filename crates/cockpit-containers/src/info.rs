@@ -67,7 +67,8 @@ pub(crate) fn parse_info(output: &str) -> Result<EngineInfo, String> {
             .map(str::to_owned)
             .ok_or_else(|| format!("its answer names no {field}"))
     };
-    // Moby leaves a limit out under the `none` driver: no field, no limit.
+    // Moby answers `false` for both under the `none` driver; a field it does not send is no
+    // limit either.
     let is_set = |field: &str| info.get(field).and_then(serde_json::Value::as_bool) == Some(true);
     let rootless = info
         .get("SecurityOptions")
@@ -231,17 +232,28 @@ mod tests {
         assert_eq!(engine.cgroup_driver.as_deref(), Some("systemd"));
     }
 
-    /// Moby leaves the limit fields out under the `none` driver a rootless engine without
-    /// systemd's driver runs with: no field is no limit.
+    /// Under the `none` driver a rootless engine without systemd's runs with, moby answers
+    /// `false` for both.
     #[test]
-    fn an_engine_that_names_no_limit_enforces_none() {
+    fn an_engine_without_cgroups_enforces_no_limit() {
         let engine = parse_info(
-            r#"{"ID":"abc","Name":"host","ServerVersion":"28.1.1","CgroupDriver":"none"}"#,
+            r#"{"ID":"abc","Name":"host","ServerVersion":"28.1.1","CgroupDriver":"none",
+                "MemoryLimit":false,"CpuCfsQuota":false}"#,
         )
         .unwrap();
 
         assert!(!engine.enforces_memory_limit);
         assert!(!engine.enforces_cpu_quota);
         assert_eq!(engine.cgroup_driver.as_deref(), Some("none"));
+    }
+
+    /// An engine that sends no limit field enforces none, as far as Torlek tells.
+    #[test]
+    fn an_engine_that_names_no_limit_enforces_none() {
+        let engine = parse_info(r#"{"ID":"abc","Name":"host","ServerVersion":"28.1.1"}"#).unwrap();
+
+        assert!(!engine.enforces_memory_limit);
+        assert!(!engine.enforces_cpu_quota);
+        assert_eq!(engine.cgroup_driver, None);
     }
 }

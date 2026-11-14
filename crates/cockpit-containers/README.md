@@ -19,8 +19,8 @@ system user of its own, shared by its clones:
   `torlek-engine@<user>.service`; its socket `/run/<user>/docker.sock`.
 - `ask_socket` asks that socket who listens (the kernel's `SO_PEERCRED`) and for `/info`,
   which also says whether the engine enforces `--memory` and `--cpus` (`EngineInfo`'s
-  `enforces_memory_limit` and `enforces_cpu_quota`; moby leaves both out under the `none`
-  cgroup driver).
+  `enforces_memory_limit` and `enforces_cpu_quota`; moby answers `false` for both under the
+  `none` cgroup driver).
   `verify` accepts only the project user's rootless engine, never root's or the owner's, and
   only the engine ID the owner recorded. Each refusal names its remedy: set up, start, record.
 - `record_engine` keeps the ID the owner recorded with `torlek containers record PROJECT`;
