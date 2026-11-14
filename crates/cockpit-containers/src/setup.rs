@@ -316,7 +316,9 @@ Group=%i
 Environment=HOME=/var/lib/%i
 Environment=XDG_RUNTIME_DIR=/run/%i
 RuntimeDirectory=%i
-RuntimeDirectoryMode=0700
+# systemd sets this mode again for each command it starts, which sets the folder's ACL mask:
+# 0710 keeps your x entry effective; the folder's group gets nothing (the drop-in's g::---).
+RuntimeDirectoryMode=0710
 # Host loopback on: the containers reach the namespace's 127.0.0.1 as {slirp4netns_host}, where
 # only Torlek's proxy and this engine's published ports listen.
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
@@ -352,7 +354,7 @@ cat >"$unit_dir/torlek-engine@$user.service.d/torlek.conf" <<UNIT
 # Written by Torlek's engine setup for project {project}; running it again rewrites it.
 [Service]
 # You reach the socket; nobody else does.
-ExecStartPre=+$setfacl_program -m u:$owner:x,d:u:$owner:rw /run/$user
+ExecStartPre=+$setfacl_program -m g::---,u:$owner:x,d:u:$owner:rw /run/$user
 {hide_home_engine}UNIT
 
 cat >"$unit_dir/torlek-engine-relay@.service" <<UNIT
@@ -490,6 +492,23 @@ mod tests {
         assert!(!script.contains("BindPaths="), "{script}");
         assert!(script.contains("TemporaryFileSystem=/home\n"), "{script}");
         assert!(!script.contains("TemporaryFileSystem=/home/theo"));
+    }
+
+    /// #390 acceptance: systemd sets the runtime folder's mode again for every command it
+    /// starts, which on a folder with an ACL sets its mask. Under 0700 the mask was `---` and
+    /// the owner's `x` entry was not effective, so the owner could not reach the socket; 0710
+    /// leaves `--x`, and the folder's own group holds nothing.
+    #[test]
+    fn the_owner_traverses_the_engines_runtime_folder_once_the_engine_runs() {
+        let script = script_for(&owner(), "/home/theo/shop", "/home/theo/.parallel/shop").unwrap();
+
+        assert!(script.contains("RuntimeDirectoryMode=0710\n"), "{script}");
+        assert!(
+            script.contains(
+                "ExecStartPre=+$setfacl_program -m g::---,u:$owner:x,d:u:$owner:rw /run/$user\n"
+            ),
+            "{script}"
+        );
     }
 
     /// The helper's later mounts reach rootlesskit's namespace below the unit's only so.

@@ -184,13 +184,15 @@ async fn record_engine(home: &Home, user: &str) -> String {
     }
 }
 
-/// What root sees of `user`'s engine: its units, its journal and its socket's folder, for a
-/// failure's message.
+/// What root sees of `user`'s engine: its units, their journal and its socket's folder, for
+/// a failure's message.
 async fn engine_state(user: &str) -> String {
     let script = format!(
         "systemctl status --no-pager --full torlek-engine@{user}.service \
          torlek-engine-relay@{user}.service; \
-         journalctl --no-pager --lines 60 --unit torlek-engine@{user}.service; \
+         journalctl --no-pager --lines 60 --unit torlek-engine@{user}.service \
+         --unit torlek-engine-relay@{user}.service; \
+         systemctl show --property Upholds torlek-engine@{user}.service; \
          ls -la /run/{user}; getfacl --absolute-names /run/{user} /run/{user}/docker.sock"
     );
     let mut command = std::process::Command::new("sudo");
