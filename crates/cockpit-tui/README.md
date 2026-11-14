@@ -93,6 +93,7 @@ remains reachable with Tab outside the task form.
   more, keys taken from the viewer go back to it, unless the owner tabbed to the list or has a
   form, confirmation, the task or workflow view, help or log open; keys the list already had stay (#345).
 - `y` approves the request shown, naming its revision and digest; no navigation key does.
+  `a` approves a run request always (#1387): the same approval with `always`.
 - Input is ignored for [`INPUT_GRACE`] after the pane shows a request (or a new revision),
   takes focus (in the TUI, or tmux's keys arriving) or ignored a key; the daemon refuses an
   approval within its own grace as the backstop.
@@ -121,9 +122,9 @@ and when a session opens or closes; the daemon answers whether the window is a p
   agents' own questions, each a full-width card with its command wrapped whole, never
   folded. Below them, one line per session: project, state, doing, `!` or `?` when it
   needs the owner. The hint line picks the longest variant that fits.
-- **The same decision.** `y` and `x` are the pane's keys, so an approval names the same
+- **The same decision.** `y`, `a` and `x` are the pane's keys, so an approval names the same
   revision and digest and records the TUI as on the desktop. A card taller than the screen
-  scrolls with `j`/`k`, and its keys (`y`, `x`, `i`, `s`) wait until its end has been on
+  scrolls with `j`/`k`, and its keys (`y`, `a`, `x`, `i`, `s`) wait until its end has been on
   screen.
 - **A session opens full screen and read-only.** Enter shows it under a three-row bar; the
   viewer's input is off, so keys reach no pane. `i` types one line in the bar and Enter sends

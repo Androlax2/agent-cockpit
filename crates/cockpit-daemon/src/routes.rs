@@ -408,6 +408,8 @@ impl Handler for Routes {
                 | Command::ApprovalDecided { .. }
                 | Command::ApprovalShow { .. }
                 | Command::ApprovalApprove { .. }
+                | Command::ApprovalAlways
+                | Command::ApprovalAlwaysRevoke { .. }
                 | Command::ApprovalDecline { .. }
                 | Command::ApprovalEdit { .. }
                 | Command::ApprovalInput { .. }

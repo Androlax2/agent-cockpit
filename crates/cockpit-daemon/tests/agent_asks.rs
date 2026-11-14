@@ -193,6 +193,7 @@ async fn an_ask_run_of_a_session_that_ended_cannot_be_approved() {
                 revision: run.revision,
                 digest: run.digest.clone(),
                 through: None,
+                always: false,
             },
             GENEROUS,
         )

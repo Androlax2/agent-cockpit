@@ -45,7 +45,8 @@ const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, p
         output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant,
         kind, start_prompt, start_clone, start_agent, start_model, start_effort, decided_at,
         decided_through, output_retired_at, stopped_by_owner_at, sudo_ran_unasked,
-        typed_secret_redacted, root_runs, findings, card_writes, card_hosts, limit_hits, pinned";
+        typed_secret_redacted, root_runs, findings, card_writes, card_hosts, limit_hits, pinned,
+        approved_always";
 /// The most folders, and the most hosts, a card names (#1387).
 pub const REACH_MAX_ENTRIES: usize = 16;
 /// The longest folder or host a card names.
@@ -208,6 +209,9 @@ pub struct RunDecision {
     pub at: i64,
     /// `None` when the client did not name itself, or the decision predates #657.
     pub through: Option<DecidedThrough>,
+    /// The owner's "always" approval (#1387) that approved this ask as it was filed, with no
+    /// prompt; `None` when the owner decided it.
+    pub always: Option<i64>,
 }
 
 /// The owner client a decision came through, as that client names itself.
@@ -235,7 +239,7 @@ impl DecidedThrough {
         }
     }
 
-    fn parse(text: &str) -> Option<DecidedThrough> {
+    pub(crate) fn parse(text: &str) -> Option<DecidedThrough> {
         DecidedThrough::ALL
             .into_iter()
             .find(|through| through.as_str() == text)
@@ -311,6 +315,19 @@ impl RunRequest {
 
     pub fn was_edited(&self) -> bool {
         self.command != self.asked_command
+    }
+
+    /// The files an approval of this revision is bound to and its run is refused over (#1387):
+    /// those it pins, then any file its sudo runs that they leave out (a program sudo finds on
+    /// `PATH`, or a revision checked before pinning).
+    pub fn bound_files(&self) -> Vec<RootFile> {
+        let mut files: Vec<RootFile> = self.pinned.clone().unwrap_or_default();
+        for file in self.root_runs.iter().flat_map(|runs| &runs.editable) {
+            if !files.iter().any(|bound| bound.path == file.path) {
+                files.push(file.clone());
+            }
+        }
+        files
     }
 }
 
@@ -1083,8 +1100,13 @@ pub async fn approve_run(
         now,
     )
     .await?;
-    let approved = Approved {
-        id,
+    Ok((approved_of(&run), run))
+}
+
+/// The run an approval of `run`, as it now reads, authorizes.
+pub(crate) fn approved_of(run: &RunRequest) -> Approved {
+    Approved {
+        id: run.id,
         session: run.session.clone(),
         revision: run.revision,
         command: run.command.clone(),
@@ -1092,8 +1114,7 @@ pub async fn approve_run(
         project_root: run.project.as_ref().map(|project| project.root.clone()),
         reach: run.reach.clone(),
         start: run.start.clone(),
-    };
-    Ok((approved, run))
+    }
 }
 
 /// Marks the approved run started with the execution reserved for it, in the transaction
@@ -1346,7 +1367,7 @@ pub async fn reconcile_run(
 }
 
 /// Runs `sql`, an `INSERT` or `UPDATE` of one request, and returns it as stored.
-async fn stored_run(
+pub(crate) async fn stored_run(
     write: &WriteTransaction<'_>,
     sql: &str,
     params: impl cockpit_turso::sql::IntoParams,
@@ -1494,7 +1515,7 @@ pub(crate) fn validate_reason(reason: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
-fn text_of(path: &Path) -> Result<&str, Refusal> {
+pub(crate) fn text_of(path: &Path) -> Result<&str, Refusal> {
     path.to_str().ok_or_else(|| invalid("cwd", "is not UTF-8"))
 }
 
@@ -1553,7 +1574,7 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
         note: row.get(17)?,
         asking_grant: row.get(19)?,
         start: start_from(row, 20)?,
-        decision: decision_from(row, stored, 26)?,
+        decision: decision_from(row, stored, 26, 38)?,
         root_runs: match row.get::<Option<String>>(32)? {
             Some(text) => Some(
                 crate::sudo_editable::decode(&text)
@@ -1591,18 +1612,18 @@ fn reach_from(row: &Row, first: usize) -> Result<Reach, Error> {
 }
 
 /// A column of lines: NULL when there are none.
-fn lines_from(row: &Row, column: usize) -> Result<Vec<String>, Error> {
+pub(crate) fn lines_from(row: &Row, column: usize) -> Result<Vec<String>, Error> {
     Ok(match row.get::<Option<String>>(column)? {
         Some(text) => text.split('\n').map(str::to_owned).collect(),
         None => Vec::new(),
     })
 }
 
-fn lines_column(lines: &[String]) -> Option<String> {
+pub(crate) fn lines_column(lines: &[String]) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
-fn writes_column(reach: &Reach) -> Result<Option<String>, Refusal> {
+pub(crate) fn writes_column(reach: &Reach) -> Result<Option<String>, Refusal> {
     let writes = reach
         .writes
         .iter()
@@ -1616,9 +1637,15 @@ fn writes_column(reach: &Reach) -> Result<Option<String>, Refusal> {
     Ok(lines_column(&writes))
 }
 
-/// The decision read from `decided_at, decided_through` at `first`; `None` while asking.
-/// Every state after `asking` but `declined` follows an approval.
-fn decision_from(row: &Row, stored: RunState, first: usize) -> Result<Option<RunDecision>, Error> {
+/// The decision read from `decided_at, decided_through` at `first` and `approved_always` at
+/// `always`; `None` while asking. Every state after `asking` but `declined` follows an
+/// approval.
+fn decision_from(
+    row: &Row,
+    stored: RunState,
+    first: usize,
+    always: usize,
+) -> Result<Option<RunDecision>, Error> {
     let Some(at) = row.get::<Option<i64>>(first)? else {
         return Ok(None);
     };
@@ -1633,6 +1660,7 @@ fn decision_from(row: &Row, stored: RunState, first: usize) -> Result<Option<Run
         approved: stored != RunState::Declined,
         at,
         through,
+        always: row.get(always)?,
     }))
 }
 

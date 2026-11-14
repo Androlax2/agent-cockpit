@@ -56,6 +56,14 @@ request here, so nothing is re-read from the sandbox.
    the revision appearing (ask or edit) is refused `TooSoon` (#156, #166). Asking requests expire
    `EXPIRES_AFTER_SECONDS` after the agent last asked about them (`run_status`); a poll
    moves the expiry at most once a minute, so the others write nothing.
+   `approve_always` (`src/always.rs`, #1387), in the approval's transaction, records an
+   always approval (table `approvals_always`): the request's project and checkout, directory,
+   command, card and the files `RunRequest::bound_files` names with their hashes. It refuses
+   `NotAlways`, approving nothing, for a request outside a project, one to start a session,
+   one not checked, or one whose findings say `cannot-tell`; one active approval per project,
+   checkout and digest, so approving again replaces it. `approve_by_always`, at each ask once
+   it is checked, approves a request that matches an active approval in all of these and
+   records its id in `approved_always`; `revoke_always` ends one.
    A request records the `run-commands` grant it was asked under; once that grant no longer
    covers the session (it ended, failed or lost the grant, even if granted again since),
    `open_runs` and `open_guides` leave it out, and approving, editing or answering it is

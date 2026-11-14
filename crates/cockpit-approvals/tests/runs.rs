@@ -375,6 +375,7 @@ async fn an_approval_records_when_and_through_which_client() {
             approved: true,
             at: AFTER_GRACE,
             through: Some(DecidedThrough::Tui),
+            always: None,
         })
     );
 }
@@ -393,6 +394,7 @@ async fn a_decline_records_when_and_through_which_client() {
             approved: false,
             at: NOW,
             through: Some(DecidedThrough::Cli),
+            always: None,
         })
     );
 }

@@ -3,7 +3,9 @@ use serde_json::Value;
 
 use crate::accounts::LoginGrantView;
 use crate::agent::{AgentReport, SessionReport};
-use crate::approvals::{DecidedRunView, DecidedThroughView, GuideView, RunRequestView};
+use crate::approvals::{
+    AlwaysApprovalView, DecidedRunView, DecidedThroughView, GuideView, RunRequestView,
+};
 use crate::bug_reports::{BugFiledView, BugKindView, BugReportView};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::coordination::{
@@ -358,11 +360,24 @@ pub enum Command {
         request: i64,
     },
     /// Owner only: run the request's `revision`, whose digest is `digest`. Consumed once.
-    /// `through` names the client, recorded with the decision (#657).
+    /// `through` names the client, recorded with the decision (#657). `always` (#1387) also
+    /// approves its project's later asks of exactly this command line, directory, card and
+    /// checkout while the files it runs keep their hashes; refused, approving nothing, when
+    /// Torlek cannot tell every file it runs.
     ApprovalApprove {
         request: i64,
         revision: i64,
         digest: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<DecidedThroughView>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        always: bool,
+    },
+    /// Owner only: the "always" approvals that still approve (#1387), oldest first.
+    ApprovalAlways,
+    /// Owner only: revoke "always" approval `always`; its command line asks again.
+    ApprovalAlwaysRevoke {
+        always: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         through: Option<DecidedThroughView>,
     },
@@ -1310,6 +1325,14 @@ pub enum Reply {
     /// The run requests the owner decided, oldest decision first.
     ApprovalDecided {
         runs: Vec<DecidedRunView>,
+    },
+    /// The "always" approvals that still approve (#1387), oldest first.
+    ApprovalAlways {
+        approvals: Vec<AlwaysApprovalView>,
+    },
+    /// One "always" approval, as the owner's revocation left it.
+    AlwaysApproval {
+        approval: Box<AlwaysApprovalView>,
     },
     /// The provider accepted the send or cancellation action.
     SessionAction {

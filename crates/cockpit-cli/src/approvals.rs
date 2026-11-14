@@ -9,10 +9,11 @@ use std::process::ExitCode;
 
 use chrono::{DateTime, Local};
 use cockpit_protocol::{
-    Command, DecidedRunView, DecidedThroughView, FindingView, GuideStateView, GuideView,
-    HiddenView, NO_KNOWN_RISKY_PATTERN, Reply, RootFileView, RootRunsView, RunDecisionView,
-    RunRequestView, RunStateView, SecretText, ShownText, changed_since_asked_warning, finding_line,
-    sudo_ran_unasked_warning, typed_secret_redacted_notice,
+    AlwaysApprovalView, Command, DecidedRunView, DecidedThroughView, FindingView, GuideStateView,
+    GuideView, HiddenView, NO_KNOWN_RISKY_PATTERN, Reply, RootFileView, RootRunsView,
+    RunDecisionView, RunRequestView, RunStateView, SecretText, ShownText,
+    changed_since_asked_warning, finding_line, sudo_ran_unasked_warning,
+    typed_secret_redacted_notice,
 };
 
 /// The command a verb sends, or the usage problem that stops it.
@@ -29,15 +30,12 @@ pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, Strin
         ("approval", ["show", id]) => Command::ApprovalShow {
             request: id_of(id)?,
         },
-        ("approval", ["approve", id, "--revision", revision, "--digest", digest])
-        | ("approval", ["approve", id, "--digest", digest, "--revision", revision]) => {
-            Command::ApprovalApprove {
-                request: id_of(id)?,
-                revision: id_of(revision)?,
-                digest: (*digest).to_owned(),
-                through: Some(DecidedThroughView::Cli),
-            }
-        }
+        ("approval", ["approve", id, options @ ..]) => approve_command(id, options)?,
+        ("approval", ["always"]) => Command::ApprovalAlways,
+        ("approval", ["always", "revoke", always]) => Command::ApprovalAlwaysRevoke {
+            always: id_of(always)?,
+            through: Some(DecidedThroughView::Cli),
+        },
         ("approval", ["decline", id]) => Command::ApprovalDecline {
             request: id_of(id)?,
             through: Some(DecidedThroughView::Cli),
@@ -92,6 +90,31 @@ pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, Strin
         _ => return Err(format!("unknown {verb} arguments")),
     };
     Ok(command)
+}
+
+/// `approval approve ID --revision REVISION --digest DIGEST [--always]`, its options in any
+/// order.
+fn approve_command(id: &str, options: &[&str]) -> Result<Command, String> {
+    let (mut revision, mut digest, mut always) = (None, None, false);
+    let mut words = options.iter();
+    while let Some(option) = words.next() {
+        match *option {
+            "--revision" if revision.is_none() => revision = words.next(),
+            "--digest" if digest.is_none() => digest = words.next(),
+            "--always" if !always => always = true,
+            _ => return Err("unknown approval arguments".to_owned()),
+        }
+    }
+    let (Some(revision), Some(digest)) = (revision, digest) else {
+        return Err("unknown approval arguments".to_owned());
+    };
+    Ok(Command::ApprovalApprove {
+        request: id_of(id)?,
+        revision: id_of(revision)?,
+        digest: (*digest).to_owned(),
+        through: Some(DecidedThroughView::Cli),
+        always,
+    })
 }
 
 /// The text to type into a running command, one line read from standard input: a password
@@ -183,8 +206,57 @@ pub(crate) fn run(command: Command) -> ExitCode {
             out!("{}", guide_detail(&guide));
             ExitCode::SUCCESS
         }
+        Ok(Reply::ApprovalAlways { approvals }) => {
+            if approvals.is_empty() {
+                outln!("no always approvals");
+            }
+            for approval in &approvals {
+                out!("{}", always_detail(approval));
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(Reply::AlwaysApproval { approval }) => {
+            out!("{}", always_detail(&approval));
+            ExitCode::SUCCESS
+        }
         other => crate::agent::failed(&socket, other),
     }
+}
+
+/// One "always" approval (#1387): what it approves, the files it is bound to with their
+/// hashes, and how to revoke it while it approves.
+fn always_detail(approval: &AlwaysApprovalView) -> String {
+    let state = match approval.revoked_at {
+        Some(at) => format!("revoked at {}", local_time(at)),
+        None => "approves".to_owned(),
+    };
+    let mut text = format!(
+        "always {} ({state}) for project {}, from request {}, approved at {}\n",
+        approval.id,
+        approval.project,
+        approval.request,
+        local_time(approval.granted_at)
+    );
+    let _ = writeln!(text, "command:\n{}", approval.shown_command.text);
+    text.push_str(&warnings(&approval.shown_command));
+    let _ = writeln!(text, "directory: {}", approval.shown_cwd.text);
+    text.push_str(&warnings(&approval.shown_cwd));
+    let _ = writeln!(text, "checkout: {}", approval.project_root);
+    for write in &approval.writes {
+        let _ = writeln!(text, "writes: {write}");
+    }
+    for host in &approval.hosts {
+        let _ = writeln!(text, "reaches: {host}");
+    }
+    text.push_str(&file_hints(approval.files.iter(), "Pinned"));
+    if approval.revoked_at.is_none() {
+        let _ = writeln!(
+            text,
+            "revoke: torlek approval always revoke {}",
+            approval.id
+        );
+    }
+    text
 }
 
 /// `run  id  state  session  command`, tab-separated; the command's first shown line.
@@ -496,7 +568,8 @@ fn run_detail(run: &RunRequestView) -> String {
     if run.state == RunStateView::Asking {
         let _ = writeln!(
             text,
-            "approve: torlek approval approve {} --revision {} --digest {}",
+            "approve: torlek approval approve {} --revision {} --digest {} [--always: also its \
+             project's later asks of exactly this command and these files]",
             run.id, run.revision, run.digest
         );
     }
@@ -506,6 +579,12 @@ fn run_detail(run: &RunRequestView) -> String {
 /// `decided: approved by the owner through the TUI at <local time>` (#657). Only the owner
 /// decides; the client is the one the owner used, as it named itself.
 fn decision_line(decision: &RunDecisionView) -> String {
+    if let Some(always) = decision.always {
+        return format!(
+            "decided: approved by always approval {always} at {} (torlek approval always)",
+            local_time(decision.at)
+        );
+    }
     let verdict = if decision.approved {
         "approved"
     } else {

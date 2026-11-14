@@ -491,6 +491,7 @@ async fn target_prune_guard_refuses_owner_approval_without_consuming_intent() {
             revision: run.revision,
             digest: run.digest(),
             through: None,
+            always: false,
         },
     )
     .await;
@@ -841,6 +842,7 @@ async fn paused_target_prune_keeps_candidate_checks_and_approvals_out_but_allows
                 revision: run.revision,
                 digest: run.digest(),
                 through: None,
+                always: false,
             },
         )
         .await,

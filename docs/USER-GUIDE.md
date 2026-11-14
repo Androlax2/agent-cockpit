@@ -94,7 +94,8 @@ torlek approval show ID
 Read the exact command, directory, reason and content it runs. To approve, use
 `torlek approval approve ID --revision REVISION --digest DIGEST` with the revision and digest shown by `approval show`.
 An edit requires another review; stale approval details are refused.
-Use `torlek approval decline ID` to decline. Approval runs that command once, on the host, confined (below).
+Use `torlek approval decline ID` to decline. Approval runs that command once, on the host, confined (below);
+`--always`, or `a` in the TUI pane, also approves its project's later asks of exactly that command (below).
 Provider-native permission dialogs are separate and remain in the provider terminal.
 
 ### Confined runs
@@ -163,6 +164,15 @@ A program found by searching `PATH` (`cargo`, `node`) is not pinned, unless sudo
 Each is hashed when the request is filed; press `m` to read each pinned file's SHA-256 and first 200 lines as they are now.
 Your approval names each pinned file as your view read it, and a pinned file that changed since the agent asked, or between your approval and the run, refuses the run with the same "changed since it was asked" or "changed after you approved"; the agent must ask again.
 Pinning reads what the sudo check reads, with the same limits; a command line it cannot resolve is the scan's "can't tell what runs", and so is a file it should pin but cannot read as a regular file, or pinning that does not end in 10 seconds.
+
+To stop being asked for a command you approve often, approve it always: `a` in the TUI pane, or `torlek approval approve ID --revision REVISION --digest DIGEST --always` (#1387).
+It runs this request, and from then on a new ask from any session of the same project, from the same checkout, runs with no prompt when it has exactly the same command line, directory, `--write` folders and `--host` hosts, and every pinned file has the hash it had when you approved; it runs inside the same limits as any approved command.
+A changed argument, folder, host or file, a pinned file that is new, or one that is gone asks you again; so does a request that was already waiting when you approved, and an ask while `torlek storage prune` holds its checkout. There are no patterns: `cargo test --locked` and `cargo test --locked -p app` are two approvals.
+Torlek refuses "always" and approves nothing when it could not narrow the request that far: a request outside a registered project's checkout, one to start a session, one whose pinned files were not checked, and one whose scan says "can't tell what runs" or "can't tell what runs as root", since a changed file would not ask again, and one whose scan says it runs code it downloads or decodes, which no hash binds. Approve it once instead.
+A request approved this way says "approved by always approval N" in `torlek approval show ID`, and the agent's answer is the same as after your own approval.
+Approving the same command always again, after its script changed, replaces the approval before it.
+`torlek approval always` lists the approvals that still hold, each with its command, directory, checkout, folders, hosts and pinned files; `torlek approval always revoke N` ends one, and the next ask of that command asks you again.
+The limit: a program found on `PATH` (`cargo`) is not pinned, so `cargo build` approved always runs whatever `build.rs` and dependencies the checkout holds at the next ask; approve always only commands whose every input you trust or that pin what they run.
 
 A script in the command can still call `/usr/bin/sudo` by its path, without `-k`, and reuse an unlock an earlier `sudo` in the same command left (about 5 minutes), or hand sudo a password itself (its own askpass, `-S`); Torlek cannot prevent that, so it reports it.
 While a command runs, Torlek watches its processes for `/usr/bin/sudo`, every 10 ms. A sudo that ended having asked you nothing through Torlek's helper marks the command "sudo ran without asking you": in the pane while the command waits for you, in `torlek approval show ID`, in the stored request, and in the answer the agent reads.

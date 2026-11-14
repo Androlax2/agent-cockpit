@@ -171,6 +171,7 @@ impl Asking {
                         revision: request.revision,
                         digest: request.digest.clone(),
                         through: None,
+                        always: false,
                     },
                     GENEROUS,
                 )

@@ -324,6 +324,41 @@ pub struct RunDecisionView {
     pub at: i64,
     /// `None` for a client that did not name itself, or a decision recorded before #657.
     pub through: Option<DecidedThroughView>,
+    /// The owner's "always" approval (#1387) that approved the ask as it was filed, with no
+    /// prompt; `None` when the owner decided it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always: Option<i64>,
+}
+
+/// One "always" approval the owner made (#1387): its project's later asks of exactly this
+/// command line, in this directory, with this card, from this checkout, run with no prompt
+/// while each of `files` has the hash shown. A changed file or argument asks again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlwaysApprovalView {
+    pub id: i64,
+    pub project: String,
+    /// The checkout its asks come from, canonical.
+    pub project_root: String,
+    pub command: String,
+    pub cwd: String,
+    /// The command and directory under the display rules.
+    pub shown_command: ShownText,
+    pub shown_cwd: ShownText,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
+    /// The files it is bound to, each with the hash it had when the owner approved it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<RootFileView>,
+    /// The request whose approval made it.
+    pub request: i64,
+    /// Seconds since 1970.
+    pub granted_at: i64,
+    pub granted_through: Option<DecidedThroughView>,
+    /// `None` while it still approves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<i64>,
 }
 
 /// The owner client a decision came through.

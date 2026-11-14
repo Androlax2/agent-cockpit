@@ -24,5 +24,7 @@ exactly what you ask.
 - A declined or expired ask is an answer: report it and choose another way within your
   grants, or block the workflow on `approve-operation`.
 
-An approval covers that one command, once. It never widens your grants and never carries
-over to another command or session.
+An approval covers that one command, once, unless the owner approves it always: then your
+project's later asks of exactly that command line, directory, `--write` folders, `--host`
+hosts and hashed files run without waiting for the owner. Any change asks again; there are no
+patterns. An approval never widens your grants.

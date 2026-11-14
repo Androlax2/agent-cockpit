@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "web",
         "Run request 1",
         "cargo test --locked",
-        "y approve",
+        "y run",
     ] {
         assert!(
             text.contains(expected),

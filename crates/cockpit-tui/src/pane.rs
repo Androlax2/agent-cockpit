@@ -299,6 +299,26 @@ impl Pane {
                     revision: *revision,
                     digest: digest.clone(),
                     through: Some(DecidedThroughView::Tui),
+                    always: false,
+                }),
+            ),
+            (
+                Shown::Run {
+                    id,
+                    revision,
+                    digest,
+                    waiting_for_input: false,
+                    ..
+                },
+                Key::Char('a'),
+            ) => handled(
+                "approval-approve-always",
+                Some(Command::ApprovalApprove {
+                    request: *id,
+                    revision: *revision,
+                    digest: digest.clone(),
+                    through: Some(DecidedThroughView::Tui),
+                    always: true,
                 }),
             ),
             (
