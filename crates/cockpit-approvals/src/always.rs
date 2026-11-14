@@ -70,6 +70,9 @@ fn not_always(run: &RunRequest) -> Option<&'static str> {
             "Torlek cannot tell every file it runs, so a changed file would not ask again",
         );
     }
+    if findings.iter().any(crate::rule_scan::runs_unhashed_code) {
+        return Some("it runs code it downloads or decodes, which no hash binds");
+    }
     None
 }
 
@@ -152,9 +155,10 @@ pub async fn approve_by_always(
     if run.state != RunState::Asking || not_always(run).is_some() {
         return Ok(None);
     }
-    let Some(project) = &run.project else {
-        return Ok(None);
-    };
+    let project = run
+        .project
+        .as_ref()
+        .expect("not_always refuses a request without a project");
     let digest = run.digest();
     let mut rows = write
         .query(

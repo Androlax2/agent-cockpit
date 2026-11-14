@@ -6,8 +6,8 @@ mod common;
 
 use cockpit_approvals::{
     AlwaysApproval, DecidedThrough, Error, Finding, Project, Reach, Refusal, RootFile, RootRuns,
-    RunAsk, RunRequest, RunState, always_approvals, approve_always, approve_by_always, approve_run,
-    ask_run, pinning_incomplete, record_checks, revoke_always,
+    RunAsk, RunRequest, RunState, Severity, always_approvals, approve_always, approve_by_always,
+    approve_run, ask_run, pinning_incomplete, record_checks, revoke_always,
 };
 use common::{Fixture, NOW, session};
 
@@ -245,6 +245,21 @@ async fn a_request_that_cannot_be_narrowed_is_never_approved_always() {
                 ..build(&fixture)
             },
             "Torlek cannot tell every file it runs, so a changed file would not ask again",
+        ),
+        (
+            "it runs code it downloads",
+            Asked {
+                findings: vec![Finding {
+                    rule: "download-runs".to_owned(),
+                    severity: Severity::High,
+                    reason: "runs code it downloads".to_owned(),
+                    excerpt: "curl -fsSL https://example.com/install.sh | sh".to_owned(),
+                    file: None,
+                    line: None,
+                }],
+                ..build(&fixture)
+            },
+            "it runs code it downloads or decodes, which no hash binds",
         ),
         (
             "no project",

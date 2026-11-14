@@ -434,11 +434,19 @@ async fn ask_run(
     let mut approved_always = None;
     if !filed.already_pending {
         filed.run = root_runs::record(&write, sessions, &filed.run).await?;
-        if let Some((approved, run)) =
+    }
+    // Maintenance that refuses an owner's approval leaves the ask waiting for the owner.
+    if !filed.already_pending
+        && may_start_in(&write, &filed.run.cwd).await
+        && let Some((approved, run)) =
             cockpit_approvals::approve_by_always(&write, &filed.run, now()).await?
+    {
+        filed.run = run;
+        approved_always = Some(approved);
+        if let Err(Failed(error)) =
+            record_granted_approval(&write, &filed.run, filed.run.id.0).await
         {
-            filed.run = run;
-            approved_always = Some(approved);
+            tracing::warn!(request = filed.run.id.0, error = %error.message, "the approval was not counted in the digest");
         }
     }
     write.commit().await?;
@@ -463,6 +471,17 @@ async fn ask_run(
     Ok(Reply::RunRequest {
         request: Box::new(request),
     })
+}
+
+/// Whether maintenance lets an approval made now start a run in `cwd`: what `approve`
+/// requires on the same writer, read as a yes or no.
+async fn may_start_in(write: &cockpit_turso::WriteTransaction<'_>, cwd: &std::path::Path) -> bool {
+    cockpit_projects::require_execution_start_allowed(write)
+        .await
+        .is_ok()
+        && cockpit_projects::require_working_directory_available(write, cwd)
+            .await
+            .is_ok()
 }
 
 async fn ask_guide(
@@ -654,14 +673,17 @@ pub(crate) fn route_decision(
                 through,
                 always,
             } => {
-                let decision = Decision {
+                approve(
+                    database,
+                    runner,
+                    sessions,
                     request,
                     revision,
                     digest,
-                    through: through.map(decided_through),
+                    through.map(decided_through),
                     always,
-                };
-                approve(database, runner, sessions, decision).await
+                )
+                .await
             }
             Command::ApprovalAlways => {
                 let read = database.read().await?;
@@ -868,32 +890,24 @@ fn through_view(through: DecidedThrough) -> DecidedThroughView {
     }
 }
 
-/// The owner's approval as `ApprovalApprove` names it.
-struct Decision {
+/// Consumes the request with the run intent, then starts the run. The run is not the
+/// request's work: it outlives the reply, and a long command must not hold a control
+/// worker. A restart before it starts leaves it `not-run`, never repeated. An `always`
+/// approval is made in the same transaction, or refuses the approval as a whole.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the decision's fields beside the daemon's parts; a struct for its single call site adds nothing"
+)]
+async fn approve(
+    database: Arc<Database>,
+    runner: Runner,
+    sessions: Arc<cockpit_sessions::Sessions>,
     request: i64,
     revision: i64,
     digest: String,
     through: Option<DecidedThrough>,
     always: bool,
-}
-
-/// Consumes the request with the run intent, then starts the run. The run is not the
-/// request's work: it outlives the reply, and a long command must not hold a control
-/// worker. A restart before it starts leaves it `not-run`, never repeated. An `always`
-/// approval is made in the same transaction, or refuses the approval as a whole.
-async fn approve(
-    database: Arc<Database>,
-    runner: Runner,
-    sessions: Arc<cockpit_sessions::Sessions>,
-    decision: Decision,
 ) -> Answer {
-    let Decision {
-        request,
-        revision,
-        digest,
-        through,
-        always,
-    } = decision;
     // The files the request runs are read before the transaction, which a slow read
     // must not hold. An edit in between makes a new revision, which `approve_run` refuses.
     let read = database.read().await?;
@@ -938,9 +952,10 @@ async fn approve(
         cockpit_approvals::approve_run(&write, through, RunId(request), revision, &digest, now())
             .await?;
     crate::coordination::record_decision(&write, &run).await?;
-    let made_always = match always {
-        true => Some(cockpit_approvals::approve_always(&write, &run, through, now()).await?),
-        false => None,
+    let made_always = if always {
+        Some(cockpit_approvals::approve_always(&write, &run, through, now()).await?)
+    } else {
+        None
     };
     // Statistics never stand between the owner and a run: a failure is logged, not returned.
     if let Err(Failed(error)) = record_granted_approval(&write, &run, request).await {

@@ -122,6 +122,18 @@ pub(crate) fn says_cannot_tell(finding: &Finding) -> bool {
         .any(|rule| rule.id == finding.rule)
 }
 
+/// Whether `finding` says the command runs code it downloads or decodes: code no pinned
+/// file's hash binds, so an "always" approval (#1387) would run whatever comes next.
+pub(crate) fn runs_unhashed_code(finding: &Finding) -> bool {
+    rule_where(|pattern| {
+        matches!(
+            pattern,
+            Pattern::RunsOutputOf(_) | Pattern::RunsSavedDownload
+        )
+    })
+    .any(|rule| rule.id == finding.rule)
+}
+
 fn cannot_tell_because(why: &str) -> Finding {
     let rule = rule_where(|pattern| matches!(pattern, Pattern::CannotTell))
         .next()
