@@ -941,8 +941,9 @@ async fn seal_unavailable(
 }
 
 /// Written as a session's is (`cockpit-sessions`), never through a link: the run's client
-/// writes the folder.
+/// writes the folder. The run's folder is new, so the daemon creates it first.
 fn write_docker_config(config: &DockerConfig) -> std::io::Result<()> {
+    create_owner_folder(&config.temp_dir.join(DOCKER_CONFIG_FOLDER))?;
     cockpit_projects::replace_agent_folder_file(
         &config.temp_dir,
         DOCKER_CONFIG_FOLDER,
@@ -1627,4 +1628,29 @@ async fn resolve_pending(
     Ok(Reply::CheckReceipt {
         receipt: Some(Box::new(receipt_view(&receipt, false))),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_docker_runs_client_configuration_is_written_in_its_new_run_folder() {
+        let run = tempfile::tempdir().unwrap();
+        let config = DockerConfig {
+            temp_dir: run.path().join("tmp"),
+            text: "{\"proxies\":{}}".to_owned(),
+        };
+
+        write_docker_config(&config).unwrap();
+
+        let written = std::fs::read_to_string(
+            run.path()
+                .join("tmp")
+                .join(DOCKER_CONFIG_FOLDER)
+                .join("config.json"),
+        )
+        .unwrap();
+        assert_eq!(written, config.text);
+    }
 }
