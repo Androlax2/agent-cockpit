@@ -354,9 +354,10 @@ impl Card {
             .map(|write| cockpit_approvals::resolve_write(write))
             .collect::<Result<_, _>>()?;
         for host in &self.hosts {
+            // The run is not filed yet; its id only labels the entry, which is dropped.
             cockpit_sandbox::card_entry(host, 0).map_err(|reason| Refusal::InvalidRequest {
                 field: "hosts",
-                reason: format!("{host}: {reason}"),
+                reason,
             })?;
         }
         Ok(cockpit_approvals::Reach {

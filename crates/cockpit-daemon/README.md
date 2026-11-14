@@ -128,6 +128,14 @@ not share code.
 - The run's terminal belongs to the daemon: a daemon that stops hangs the command up. One
   that ignores the hang-up is reattached at the next start; its exit code and later output
   are lost with the terminal.
+- Approved runs are confined unless `agents.confined_runs = "off"` (#1387, `run_confinement`):
+  hidden are the owner's keys, tokens, keyrings and browser profiles under their home
+  (`HIDDEN_FROM_RUNS`), Torlek's token folders and the sessions' mount sources; emptied are
+  Torlek's state and the owner's runtime folder; reachable read-only, the daemon's sockets.
+  A card's hosts go through `torlek-sandbox run-egress`, its folders under
+  `<state>/run-egress`. `ask-run` resolves each card folder as it resolves the directory
+  and checks each host as the proxy will read it (`cockpit_sandbox::card_entry`).
+  Readiness names `confined runs`: off, available, or the reason every run is refused.
 - The asking agent's project is the registered checkout holding its working directory,
   read from `/proc` after its process tree was verified, until sessions record it (#31).
 

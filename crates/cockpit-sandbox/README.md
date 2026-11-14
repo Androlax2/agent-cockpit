@@ -38,6 +38,10 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   `AllowedService::live` carries the forward the launcher opens while the session runs, read
   back from an allowed record by `Forward::container_port_of`, and `ServiceDecisions::engine`
   (`EngineRelay`) the engine it reaches, which the daemon names.
+- An approved run's card hosts (#1387, `egress.rs`): `card_allowlist` turns the hosts a
+  confined run's card names into the only entries of its own proxy (`AllowSource::Card`),
+  `host` or `host:port`, 443 when no port is named; `card_entry` checks one as that proxy
+  will read it. The owner approved them on the card, so the proxy files no request.
 - Toolchains and caches (#859): the caller resolves `ToolNeeds` from the toolchain table of
   `cockpit-provider-api`. The install roots `PATH` resolves the checkout's ecosystems in are
   bound read-only; every cache variable points into `caches/` of the session's temp folder;

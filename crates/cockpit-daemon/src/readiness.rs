@@ -345,9 +345,10 @@ async fn confined_runs_requirement(context: &Context) -> cockpit_readiness::Requ
     match context.processes.confinement_unavailable().await {
         None => cockpit_readiness::Requirement::available(
             NAME,
-            "each approved run starts in a systemd user service of its own: no network, its \
-             checkout the one folder it writes, your keys and Torlek's state hidden, and no \
-             sudo, which needs the root route confined runs do not have yet",
+            "each approved run starts in a systemd user service of its own: it writes only \
+             its checkout and the folders its card names, reaches only the hosts its card \
+             names, cannot see your keys or Torlek's state, and has no sudo, which needs the \
+             root route confined runs do not have yet",
         ),
         Some(reason) => cockpit_readiness::Requirement::needs(
             NAME,

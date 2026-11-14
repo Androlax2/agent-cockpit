@@ -17,6 +17,14 @@ never a dropped task or a timed-out launcher (report 03).
   passed where `systemd-run --version` says it is known.
 - macOS, and Linux without a reachable user manager: a process group led by the program.
   A descendant that calls `setsid` leaves it.
+- A confined execution (#1387, `Supervisor::launch_confined`, `Confinement`) runs in a
+  transient systemd user service, `systemd-run --user --pipe --wait --collect`, with
+  `PrivateUsers`, `PrivateNetwork` (a loopback of its own), `PrivateTmp` and
+  `ReadOnlyPaths=/`, then `InaccessiblePaths` for each hidden path, `TemporaryFileSystem`
+  (read-only) for each emptied folder, `BindPaths` for each writable folder (a bind stays
+  writable inside an emptied one) and `BindReadOnlyPaths` for each reachable one. It needs
+  the user manager: `confinement_unavailable` says why it cannot be used, and a confined
+  reservation or launch is then refused, never run unconfined.
 - Each execution records the containment it was launched in, so a fallback is visible and a
   restart reconciles it with the right one (docs/DECISIONS.md, 2026-10-31).
 - A systemd execution also receives `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS`, which

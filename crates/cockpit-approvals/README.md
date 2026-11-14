@@ -42,8 +42,10 @@ request here, so nothing is re-read from the sandbox.
    `root_runs` rather than check again. The daemon records the findings with `root_runs`
    (`record_checks`, column `findings`, cleared by an owner edit) and keeps them with the
    decision.
-3. `approve_run` needs the request's current revision and its `action_digest` (SHA-256 of
-   the directory and command). It consumes the request with the run intent in one
+3. `approve_run` needs the request's current revision and its digest (`RunRequest::digest`):
+   `action_digest`, SHA-256 of the directory and command, unless the card names folders or
+   hosts (`Reach`, #1387), which a second form binds too. It consumes the request with the
+   run intent in one
    transaction; a second decision, an older revision or another digest is refused. The
    owner's `edit_run` creates a new revision. An approval within `APPROVAL_GRACE_SECONDS` of
    the revision appearing (ask or edit) is refused `TooSoon` (#156, #166). Asking requests expire
@@ -83,6 +85,21 @@ request here, so nothing is re-read from the sandbox.
    becomes `[redacted]`, counted in the result's `typed_secret_redacted` (its column). The
    key and fingerprints are dropped with the run's end. `wipe` and `wipe_vec` overwrite
    buffers that held a secret; the daemon's frame reader uses them too.
+   Under `RunConfinement::Required` (#1387, the default) the run is a confined execution
+   (`Supervisor::launch_confined`): it writes only its project's checkout, a `/tmp` of its
+   own and the card's `Reach::writes`; `hidden` folders are unreadable, `emptied` ones shown
+   empty but for the `reachable` folders in them; it has no network and no sudo askpass. A
+   working directory or card folder in a hidden or emptied one is refused before it starts.
+   A card that names hosts starts the run's own proxy first (`src/egress.rs`,
+   `EgressProxy`): `torlek-sandbox run-egress` on the host's network, in a folder of its own
+   under `EgressProxy::folders`, which confined runs see emptied, so a run reaches only its
+   own hand-off socket. The run's leader becomes `torlek-sandbox hand-over`, which hands the
+   proxy the run's `127.0.0.1:3128` listener, and the run's environment names the proxy.
+   `Runner::card_limits` gives the card's limits, one line each. The result's `limit_hits`
+   (`src/limit_hits.rs`, its column) name what the run's output shows it was refused (a
+   hidden path read, a path written outside its folders, a host it could not reach, sudo)
+   and each destination its proxy refused, at most 8, redacted. `RunConfinement::Off` is the
+   owner's opt-out: the run has the owner's rights.
 5. `Runner::reconcile` at startup, after the executions were reconciled: an approved run
    never started is `not-run`; a running one follows its execution (`reconcile_run`): never
    started is `not-run`, ended is `outcome-unknown`, still running stays `running` until

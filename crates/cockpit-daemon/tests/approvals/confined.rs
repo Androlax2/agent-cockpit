@@ -42,6 +42,74 @@ async fn a_confined_run_without_a_systemd_manager_is_refused_never_run_unconfine
     assert!(!marker.exists(), "the command ran unconfined");
 }
 
+/// `command` asked with `writes` and `hosts` on its card.
+async fn ask_reaching(
+    asking: &Asking,
+    writes: Vec<String>,
+    hosts: Vec<String>,
+) -> Result<Reply, ClientError> {
+    asking
+        .agent
+        .request(
+            Command::AskRun {
+                launch_token: Some(asking.token.as_str().to_owned()),
+                command: "make fetch".to_owned(),
+                cwd: asking.cwd_text(),
+                reason: "Proves a confined run's card.".to_owned(),
+                writes,
+                hosts,
+            },
+            GENEROUS,
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_card_shows_the_owner_its_folders_resolved_its_hosts_and_the_runs_limits() {
+    let asking = confining(TestHome::new()).await;
+    let named = asking.cwd.path().join("out");
+    std::fs::create_dir(&named).unwrap();
+    std::os::unix::fs::symlink(&named, asking.cwd.path().join("link")).unwrap();
+    let link = asking.cwd.path().join("link").to_str().unwrap().to_owned();
+
+    let request = run(ask_reaching(&asking, vec![link], vec!["example.com".to_owned()]).await);
+
+    let resolved = named.canonicalize().unwrap().to_str().unwrap().to_owned();
+    assert_eq!(request.writes, [resolved.clone()]);
+    assert_eq!(request.hosts, ["example.com"]);
+    let limits: Vec<&str> = request
+        .limits
+        .iter()
+        .map(|limit| limit.text.as_str())
+        .collect();
+    assert_eq!(
+        limits[0],
+        format!("writes only {resolved} and a /tmp of its own")
+    );
+    assert_eq!(limits[2], "reaches only example.com");
+}
+
+#[tokio::test]
+async fn a_card_naming_a_relative_folder_is_refused_before_the_owner_is_asked() {
+    let asking = confining(TestHome::new()).await;
+
+    let refusal = refused(ask_reaching(&asking, vec!["out".to_owned()], Vec::new()).await);
+
+    assert_eq!(refusal.code, ErrorCode::InvalidArgument);
+    assert!(refusal.message.contains("writes"), "{refusal:?}");
+}
+
+#[tokio::test]
+async fn a_card_naming_no_usable_host_is_refused_before_the_owner_is_asked() {
+    let asking = confining(TestHome::new()).await;
+
+    let refusal =
+        refused(ask_reaching(&asking, Vec::new(), vec!["*.example.com".to_owned()]).await);
+
+    assert_eq!(refusal.code, ErrorCode::InvalidArgument);
+    assert!(refusal.message.contains("hosts"), "{refusal:?}");
+}
+
 #[tokio::test]
 #[ignore = "needs a reachable systemd user manager"]
 async fn a_real_confined_run_cannot_read_the_owners_keys() {
