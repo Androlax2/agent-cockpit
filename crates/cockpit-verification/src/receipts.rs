@@ -26,8 +26,6 @@ pub const NAME_MAX_CHARS: usize = 200;
 pub const PATH_MAX_CHARS: usize = 1_000;
 pub const COMMAND_MAX_CHARS: usize = 4_000;
 pub const STATEMENT_MAX_CHARS: usize = 2_000;
-/// A docker check's image reference, as long as the project configuration accepts (#1392).
-const IMAGE_MAX_CHARS: usize = 255;
 pub const ARTIFACTS_MAX: usize = 1_000;
 pub const OUTPUT_REFERENCES_MAX: usize = 20;
 
@@ -557,7 +555,8 @@ pub(crate) fn check_definition(check: &CheckDefinition) -> Result<(), Refusal> {
     }
     required("check.environment", &check.environment, NAME_MAX_CHARS)?;
     if let Some(image) = &check.image {
-        required("check.image", image, IMAGE_MAX_CHARS)?;
+        // The configuration bounds a reference tighter; this only keeps a row in bounds.
+        required("check.image", image, PATH_MAX_CHARS)?;
     }
     Ok(())
 }

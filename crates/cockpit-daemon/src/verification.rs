@@ -412,9 +412,7 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
         | environment::Placement::Unavailable(_) => None,
     };
     let docker = match placement {
-        environment::Placement::Docker => {
-            Some(docker_inputs(context, &target, &definition, &start_dir).await)
-        }
+        environment::Placement::Docker => Some(docker_inputs(context, &target, &definition).await?),
         environment::Placement::Host
         | environment::Placement::Sandbox
         | environment::Placement::Unavailable(_) => None,
@@ -624,7 +622,7 @@ struct CheckLaunch {
 /// container, the checkout's compose services kept direct, and no credential.
 #[derive(Clone)]
 struct DockerConfig {
-    folder: PathBuf,
+    temp_dir: PathBuf,
     text: String,
 }
 
@@ -746,12 +744,13 @@ fn sandboxed_launch(
 }
 
 /// What a docker run reads before the writer (#1392): its project's engine, verified and
-/// shown the checkout masked, the Docker client and its arguments, and the client's
-/// configuration. Otherwise why the run is `unavailable`, naming the owner's step.
+/// shown the checkout masked, the check's image, the Docker client and the client's
+/// configuration. Otherwise why the run is `unavailable`, naming the owner's step; the daemon's
+/// own failure to look fails the request instead.
 struct DockerInputs {
     engine: crate::containers::CheckEngine,
     client: PathBuf,
-    arguments: Vec<std::ffi::OsString>,
+    image: String,
     client_config: String,
 }
 
@@ -759,47 +758,44 @@ async fn docker_inputs(
     context: &Context,
     target: &Target,
     definition: &CheckDefinition,
-    start_dir: &Path,
-) -> Result<DockerInputs, String> {
-    let image = definition
-        .image
-        .as_deref()
-        .ok_or_else(|| "the docker check names no image".to_owned())?;
+) -> Result<Result<DockerInputs, String>, Failed> {
+    let Some(image) = definition.image.as_deref() else {
+        return Err(internal(
+            &"a docker check reached the run without its image",
+        ));
+    };
     let engine = crate::containers::check_engine(
         &context.database,
         &context.containers,
         &target.project,
         &target.path,
     )
-    .await?;
+    .await
+    .map_err(|reason| internal(&reason))?;
+    let checkout = target.path.clone();
+    let client_config =
+        tokio::task::spawn_blocking(move || crate::containers::client_config(&checkout))
+            .await
+            .map_err(|error| internal(&error))?;
+    Ok(engine.and_then(|engine| {
+        Ok(DockerInputs {
+            engine,
+            client: docker_client(context)?,
+            image: image.to_owned(),
+            client_config,
+        })
+    }))
+}
+
+fn docker_client(context: &Context) -> Result<PathBuf, String> {
     let path = context
         .run_settings
         .environment
         .iter()
         .find(|(name, _)| name == "PATH")
         .map(|(_, value)| value.as_os_str());
-    let client = environment::docker_client(path).ok_or_else(|| {
+    environment::docker_client(path).ok_or_else(|| {
         "no `docker` client is on the daemon's PATH; the owner installs Docker's client".to_owned()
-    })?;
-    let arguments =
-        environment::docker_arguments(image, &definition.command, &target.path, start_dir)
-            .ok_or_else(|| {
-                format!(
-                    "the checkout {} cannot be bound into a container: its path is not UTF-8 \
-                     or holds `:`",
-                    target.path.display()
-                )
-            })?;
-    let checkout = target.path.clone();
-    let client_config =
-        tokio::task::spawn_blocking(move || crate::containers::client_config(&checkout))
-            .await
-            .map_err(|error| error.to_string())?;
-    Ok(DockerInputs {
-        engine,
-        client,
-        arguments,
-        client_config,
     })
 }
 
@@ -814,19 +810,35 @@ fn docker_launch(
     start_dir: PathBuf,
     inputs: DockerInputs,
 ) -> Result<CheckLaunch, String> {
+    let arguments = environment::docker_arguments(
+        run_id,
+        &inputs.image,
+        &definition.command,
+        &target.path,
+        &start_dir,
+    )
+    .ok_or_else(|| {
+        format!(
+            "the checkout {} cannot be bound into a container: its path is not UTF-8 or holds `:`",
+            target.path.display()
+        )
+    })?;
     let folder = environment::RunFolder::new(context.sessions.session_temps(), run_id);
     let docker_config = DockerConfig {
-        folder: folder.temp_dir().join("docker-config"),
+        temp_dir: folder.temp_dir(),
         text: inputs.client_config,
     };
     let mut environment =
         environment::sandboxed_environment(&context.run_settings.environment, &folder.temp_dir());
-    environment.push(("DOCKER_CONFIG".into(), docker_config.folder.clone().into()));
+    environment.push((
+        "DOCKER_CONFIG".into(),
+        folder.temp_dir().join(DOCKER_CONFIG_FOLDER).into(),
+    ));
     let request = cockpit_sandbox::CheckRequest {
         run: run_id.to_owned(),
         check: definition.name.clone(),
         program: inputs.client,
-        arguments: inputs.arguments,
+        arguments,
         checkout: target.path.clone(),
         start_dir: start_dir.clone(),
         execution_dir: folder.root.clone(),
@@ -928,10 +940,19 @@ async fn seal_unavailable(
     Ok(())
 }
 
+/// Written as a session's is (`cockpit-sessions`), never through a link: the run's client
+/// writes the folder.
 fn write_docker_config(config: &DockerConfig) -> std::io::Result<()> {
-    create_owner_folder(&config.folder)?;
-    std::fs::write(config.folder.join("config.json"), &config.text)
+    cockpit_projects::replace_agent_folder_file(
+        &config.temp_dir,
+        DOCKER_CONFIG_FOLDER,
+        "config.json",
+        Some(&config.text),
+    )
 }
+
+/// The folder of a docker run's temp folder its client's `DOCKER_CONFIG` names.
+const DOCKER_CONFIG_FOLDER: &str = "docker-config";
 
 fn create_owner_folder(folder: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
@@ -1053,7 +1074,10 @@ async fn record_when_ended(
     (receipt.outcome, receipt.exit_code) = match exit.await {
         Ok(Ok(status)) => match status.code() {
             Some(0) => (Outcome::Passed, Some(0)),
-            Some(code) => (Outcome::Failed, Some(i64::from(code))),
+            Some(code) => (
+                environment::failed_outcome(receipt.ran.as_ref(), code),
+                Some(i64::from(code)),
+            ),
             None => (Outcome::Failed, None),
         },
         // The pending hold remains, and the run's folders with it: no timeout success.

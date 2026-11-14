@@ -261,7 +261,12 @@ pub(crate) fn client_config(checkout: &Path) -> String {
 impl LaunchEngines {
     /// The engine is verified first: the helper is asked to mask only for the project's own.
     async fn engine_socket(&self, project: &str, checkout: &Path) -> Option<EngineSocket> {
-        let (user, passwd, state) = match self.examined(project).await {
+        let Examined {
+            user,
+            passwd,
+            state,
+            ..
+        } = match examined(&self.database, &self.host, project).await {
             Ok(examined) => examined,
             Err(reason) => {
                 tracing::warn!(project, %reason, "the launch reaches no project engine");
@@ -275,14 +280,28 @@ impl LaunchEngines {
         }
         Some(socket)
     }
+}
 
-    async fn examined(&self, project: &str) -> Result<(EngineUser, String, EngineState), String> {
-        let (found, recorded) = project_and_record(&self.database, project).await?;
-        let passwd = read_passwd().await?;
-        let user = self.host.engine_user(&found)?;
-        let state = examine(&self.host, &user, &passwd, recorded.as_ref()).await;
-        Ok((user, passwd, state))
-    }
+/// `project`'s engine as it answers now, checked against the owner's record: what a session's
+/// launch and a docker check both find it by.
+struct Examined {
+    project: Project,
+    user: EngineUser,
+    passwd: String,
+    state: EngineState,
+}
+
+async fn examined(database: &Database, host: &Host, project: &str) -> Result<Examined, String> {
+    let (found, recorded) = project_and_record(database, project).await?;
+    let passwd = read_passwd().await?;
+    let user = host.engine_user(&found)?;
+    let state = examine(host, &user, &passwd, recorded.as_ref()).await;
+    Ok(Examined {
+        project: found,
+        user,
+        passwd,
+        state,
+    })
 }
 
 /// The engine a `docker` check runs its image in (#1392): its project's, as a session's
@@ -296,28 +315,43 @@ pub(crate) struct CheckEngine {
 
 /// `project`'s engine for a `docker` check working in `checkout`, as [`LaunchEngines`] finds a
 /// session's: verified against the owner's record and shown the checkout masked. Otherwise
-/// why not and the owner's step, which the check's `unavailable` receipt names.
+/// the inner error: why not and the owner's step, which the check's `unavailable` receipt
+/// names. The outer error is the daemon's own failure to look, which no owner step fixes.
 pub(crate) async fn check_engine(
     database: &Database,
     host: &Host,
     project: &str,
     checkout: &Path,
+) -> Result<Result<CheckEngine, String>, String> {
+    let Examined {
+        project: found,
+        user,
+        passwd,
+        state,
+    } = examined(database, host, project).await?;
+    Ok(verified_and_masked(host, &found, &user, &passwd, &state, checkout).await)
+}
+
+async fn verified_and_masked(
+    host: &Host,
+    found: &Project,
+    user: &EngineUser,
+    passwd: &str,
+    state: &EngineState,
+    checkout: &Path,
 ) -> Result<CheckEngine, String> {
-    let (found, recorded) = project_and_record(database, project).await?;
-    let passwd = read_passwd().await?;
-    let user = host.engine_user(&found)?;
-    let state = examine(host, &user, &passwd, recorded.as_ref()).await;
-    let EngineState::Verified(info) = &state else {
-        let (problem, action) = unverified(&state, &user, &found, host);
+    let project = &found.name;
+    let EngineState::Verified(info) = state else {
+        let (problem, action) = unverified(state, user, found, host);
         return Err(format!(
             "project {project}'s engine {user} is not verified: {problem}; {action}"
         ));
     };
-    let socket = socket_of(&user, &state, &passwd)
+    let socket = socket_of(user, state, passwd)
         .ok_or_else(|| format!("the engine's user {user} has no account in {PASSWD_FILE}"))?;
-    shown_masked(&host.masks, &user, checkout)
+    shown_masked(&host.masks, user, checkout)
         .await
-        .map_err(|reason| format!("{reason}; {}", doctor_step(host, &found)))?;
+        .map_err(|reason| format!("{reason}; {}", doctor_step(host, found)))?;
     Ok(CheckEngine {
         socket,
         engine_id: info.id.clone(),

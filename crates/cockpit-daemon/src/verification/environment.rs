@@ -119,25 +119,49 @@ pub(super) fn docker_client(path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
         })
 }
 
-/// The client's arguments that run `command` in `image` (#1392): removed when it ends, the
-/// checkout bound at its own path, so the engine sees it through its masks, and started in
-/// `start_dir` with the check's shell whatever the image's entry point is. Nothing of the
-/// daemon's environment, no credential and no CA enter the container (#856 Q5); the client's
+/// The label naming the check run a docker run's container belongs to.
+const RUN_LABEL: &str = "torlek.check-run";
+
+/// What `docker run` exits with when the client or the engine failed (no image, a refused
+/// pull, an engine gone), before the check's command ran.
+const DOCKER_RUN_FAILED: i32 = 125;
+
+/// The client's arguments that run `command` in `image` for check run `run` (#1392): labelled
+/// with the run and removed when it ends, the checkout bound at its own path, so the engine
+/// sees it through its masks, and started in `start_dir` with the check's shell whatever the
+/// image's entry point is. An init process ends the command on the stop the client passes
+/// on, so a stopped run's container does not outlive it. Nothing of the daemon's
+/// environment, no credential and no CA enter the container (#856 Q5); the client's
 /// configuration adds the engine's proxy. None for a checkout `--volume` cannot name.
 pub(super) fn docker_arguments(
+    run: &str,
     image: &str,
     command: &str,
     checkout: &Path,
     start_dir: &Path,
 ) -> Option<Vec<OsString>> {
     let checkout = checkout.to_str().filter(|path| !path.contains(':'))?;
-    let mut arguments: Vec<OsString> = ["run", "--rm", "--volume"].map(OsString::from).into();
+    let mut arguments: Vec<OsString> = ["run", "--rm", "--init", "--label"]
+        .map(OsString::from)
+        .into();
+    arguments.push(format!("{RUN_LABEL}={run}").into());
+    arguments.push("--volume".into());
     arguments.push(format!("{checkout}:{checkout}").into());
     arguments.push("--workdir".into());
     arguments.push(start_dir.into());
     arguments.extend(["--entrypoint", super::CHECK_SHELL, image, "-c"].map(OsString::from));
     arguments.push(format!("exec 2>&1\n{command}").into());
     Some(arguments)
+}
+
+/// The outcome of a run that exited with `code`, not 0: a docker run whose client failed
+/// before the command ran is `unavailable`, not a failure of the check.
+pub(super) fn failed_outcome(ran: Option<&Ran>, code: i32) -> cockpit_verification::Outcome {
+    let is_docker = ran.is_some_and(|ran| ran.environment == ExecutionEnvironment::Docker.as_str());
+    if is_docker && code == DOCKER_RUN_FAILED {
+        return cockpit_verification::Outcome::Unavailable;
+    }
+    cockpit_verification::Outcome::Failed
 }
 
 /// A sandboxed run's own folder in the daemon's folder of session temporary folders, beside
@@ -295,6 +319,7 @@ mod docker_tests {
     #[test]
     fn a_docker_check_runs_its_command_in_the_images_shell_in_the_checkout() {
         let arguments = docker_arguments(
+            "execution-e-7",
             "rust:1.91",
             "cargo test",
             Path::new("/home/owner/app"),
@@ -307,6 +332,9 @@ mod docker_tests {
             [
                 "run",
                 "--rm",
+                "--init",
+                "--label",
+                "torlek.check-run=execution-e-7",
                 "--volume",
                 "/home/owner/app:/home/owner/app",
                 "--workdir",
@@ -324,6 +352,7 @@ mod docker_tests {
     #[test]
     fn a_checkout_whose_path_holds_a_colon_is_not_bound() {
         let arguments = docker_arguments(
+            "execution-e-7",
             "rust:1.91",
             "true",
             Path::new("/home/owner/a:b"),
@@ -331,6 +360,28 @@ mod docker_tests {
         );
 
         assert_eq!(arguments, None);
+    }
+
+    #[test]
+    fn a_docker_run_whose_client_failed_is_unavailable_not_failed() {
+        use cockpit_verification::Outcome;
+        let docker = Ran {
+            environment: "docker".to_owned(),
+            isolation: "project engine of torlek-e3".to_owned(),
+        };
+        let sandbox = Ran {
+            environment: "sandbox".to_owned(),
+            isolation: "torlek-sandbox".to_owned(),
+        };
+
+        for (case, ran, code, expected) in [
+            ("client failed", Some(&docker), 125, Outcome::Unavailable),
+            ("command failed", Some(&docker), 1, Outcome::Failed),
+            ("sandboxed 125", Some(&sandbox), 125, Outcome::Failed),
+            ("host 125", None, 125, Outcome::Failed),
+        ] {
+            assert_eq!(failed_outcome(ran, code), expected, "{case}");
+        }
     }
 
     #[test]
