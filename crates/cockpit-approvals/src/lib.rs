@@ -10,6 +10,7 @@ mod restart;
 mod retention;
 mod rows;
 mod runs;
+mod shell;
 mod sudo;
 mod sudo_editable;
 mod sudo_unasked;
