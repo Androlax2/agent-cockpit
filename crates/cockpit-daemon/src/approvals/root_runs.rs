@@ -20,9 +20,10 @@ use super::{Failed, now, shown};
 
 const DEFAULT_PATH: &str = "/bin:/usr/bin";
 
-/// How long a check or a read of the files waits. A FIFO swapped in for a file blocks its
-/// open until a writer comes; the wait must not hold the write transaction, the queue or a
-/// run. The blocked thread is left behind.
+/// How long a check or a read of the files waits: a huge file or a stalled filesystem must
+/// not hold the write transaction, the queue or a run past it. Files are opened without
+/// waiting on a FIFO (`cockpit_approvals::file_now`); a read past the bound is left to end
+/// on its own thread.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// `work` on a blocking thread, or `None` once [`READ_TIMEOUT`] passed.

@@ -115,8 +115,11 @@ pub fn root_runs(command: &str, lookup: Lookup<'_>, writes: &SessionWrites) -> R
         cannot_tell: found.cannot_tell,
     };
     for path in found.files {
+        // As named, by name with `..` taken back (a file not there yet has no other form),
+        // and through its links.
         let resolved = std::fs::canonicalize(&path).ok();
         let is_editable = writes.can_edit(&path)
+            || writes.can_edit(&logical_directory(Path::new("/"), &path.to_string_lossy()))
             || resolved
                 .as_deref()
                 .is_some_and(|resolved| writes.can_edit(resolved));
@@ -205,25 +208,25 @@ pub fn file_sha256(path: &Path) -> std::io::Result<Option<String>> {
     Ok(Some(hex(&hasher.finalize())))
 }
 
-/// `path` opened for reading when it is a regular file; `None` when there is none. Checked
-/// before opening, which would wait for a writer on a FIFO, and again on what was opened,
-/// which a device or a swapped-in link would otherwise make an endless read. A FIFO swapped
-/// in between the two still blocks the open: the daemon bounds how long it waits.
+/// `path` opened for reading when it is a regular file; `None` when there is none. Opened
+/// without waiting for a writer on a FIFO (`O_NONBLOCK`), then checked on what was opened,
+/// which a device or a swapped-in link would otherwise make an endless read.
 fn open_regular(path: &Path) -> std::io::Result<Option<std::fs::File>> {
-    let not_regular = || std::io::Error::new(ErrorKind::InvalidInput, "not a regular file");
-    match std::fs::metadata(path) {
-        Ok(metadata) if !metadata.is_file() => return Err(not_regular()),
-        Ok(_) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    }
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
+    let opened = match rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(opened) => opened,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(errno) => return Err(errno.into()),
     };
+    let file = std::fs::File::from(opened);
     if !file.metadata()?.is_file() {
-        return Err(not_regular());
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
     }
     Ok(Some(file))
 }
@@ -258,7 +261,8 @@ pub fn file_now(path: &Path) -> std::io::Result<FileNow> {
     };
     let mut hasher = Sha256::new();
     let mut kept = Vec::new();
-    let mut is_text = true;
+    let mut is_cut = false;
+    let mut text = TextCheck::default();
     let mut line_breaks: u64 = 0;
     let mut last_byte = None;
     let mut buffer = vec![0; 64 * 1024];
@@ -271,35 +275,67 @@ pub fn file_now(path: &Path) -> std::io::Result<FileNow> {
         };
         let chunk = &buffer[..read];
         hasher.update(chunk);
-        is_text &= !chunk.contains(&0);
+        text.feed(chunk);
         line_breaks += chunk.iter().filter(|byte| **byte == b'\n').count() as u64;
         last_byte = chunk.last().copied();
         let room = HEAD_BYTES_MAX.saturating_sub(kept.len());
+        is_cut |= read > room;
         kept.extend_from_slice(&chunk[..room.min(read)]);
     }
     let sha256 = Some(hex(&hasher.finalize()));
-    let all_lines = line_breaks + u64::from(last_byte.is_some_and(|byte| byte != b'\n'));
-    let text = match std::str::from_utf8(&kept) {
-        Ok(text) => Some(text),
-        // A character cut at the end of what was kept is still text.
-        Err(error) if error.error_len().is_none() => {
-            std::str::from_utf8(&kept[..error.valid_up_to()]).ok()
-        }
-        Err(_) => None,
-    };
-    let Some(text) = text.filter(|_| is_text) else {
+    if !text.is_text() {
         return Ok(FileNow {
             sha256,
             head: None,
             more_lines: 0,
         });
-    };
-    let head: Vec<&str> = text.lines().take(FILE_HEAD_LINES).collect();
+    }
+    if is_cut {
+        // A line cut where `kept` ends is not shown as if whole: it counts as a line more.
+        let whole_lines = kept
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |at| at + 1);
+        kept.truncate(whole_lines);
+    }
+    let all_lines = line_breaks + u64::from(last_byte.is_some_and(|byte| byte != b'\n'));
+    let kept = String::from_utf8(kept).expect("whole lines of valid UTF-8 are valid UTF-8");
+    let head: Vec<&str> = kept.lines().take(FILE_HEAD_LINES).collect();
     Ok(FileNow {
         sha256,
         head: Some(head.join("\n")),
         more_lines: all_lines.saturating_sub(head.len() as u64),
     })
+}
+
+/// Whether a stream read in chunks is text: valid UTF-8 throughout, without a NUL byte.
+#[derive(Default)]
+struct TextCheck {
+    /// The start of a character a chunk ended within.
+    carried: Vec<u8>,
+    is_invalid: bool,
+}
+
+impl TextCheck {
+    fn feed(&mut self, chunk: &[u8]) {
+        if self.is_invalid {
+            return;
+        }
+        let mut bytes = std::mem::take(&mut self.carried);
+        bytes.extend_from_slice(chunk);
+        self.is_invalid = bytes.contains(&0);
+        match std::str::from_utf8(&bytes) {
+            Ok(_) => {}
+            Err(error) if error.error_len().is_none() => {
+                self.carried = bytes[error.valid_up_to()..].to_vec();
+            }
+            Err(_) => self.is_invalid = true,
+        }
+    }
+
+    fn is_text(&self) -> bool {
+        !self.is_invalid && self.carried.is_empty()
+    }
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -955,6 +991,8 @@ struct Interpreter {
     inline_code: &'static [&'static str],
     runs_module: &'static [&'static str],
     takes_value: &'static [&'static str],
+    /// Options whose value, if any, is the rest of their word (`perl -i.bak`).
+    attached_value: &'static [&'static str],
 }
 
 fn interpreter(name: &str) -> Option<Interpreter> {
@@ -965,41 +1003,49 @@ fn interpreter(name: &str) -> Option<Interpreter> {
             inline_code: &["-c"],
             runs_module: &["-m"],
             takes_value: &["-W", "-X", "--check-hash-based-pycs"],
+            attached_value: &[],
         },
         "perl" => Interpreter {
             inline_code: &["-e", "-E"],
             runs_module: &[],
             takes_value: &["-I", "-M", "-m"],
+            attached_value: &["-i", "-0", "-l"],
         },
         "ruby" => Interpreter {
             inline_code: &["-e"],
             runs_module: &[],
             takes_value: &["-I", "-r", "-C"],
+            attached_value: &["-i", "-0"],
         },
         "node" | "nodejs" => Interpreter {
             inline_code: &["-e", "--eval", "-p", "--print"],
             runs_module: &[],
             takes_value: &["-r", "--require", "--import", "--loader"],
+            attached_value: &[],
         },
         "php" => Interpreter {
             inline_code: &["-r"],
             runs_module: &[],
             takes_value: &["-c", "-d", "-z"],
+            attached_value: &[],
         },
         "lua" | "luajit" => Interpreter {
             inline_code: &["-e"],
             runs_module: &["-l"],
             takes_value: &[],
+            attached_value: &[],
         },
         "Rscript" => Interpreter {
             inline_code: &["-e"],
             runs_module: &[],
             takes_value: &[],
+            attached_value: &[],
         },
         "tclsh" => Interpreter {
             inline_code: &[],
             runs_module: &[],
             takes_value: &[],
+            attached_value: &[],
         },
         _ => return None,
     })
@@ -1019,12 +1065,19 @@ enum Grouped<'w> {
 }
 
 fn grouped_flags<'w>(interpreter: &Interpreter, letters: &'w str) -> Grouped<'w> {
+    let is_flag = |flags: &[&str], letter: char| flags.contains(&format!("-{letter}").as_str());
     for (index, letter) in letters.char_indices() {
-        let flag = format!("-{letter}");
         let rest = &letters[index + letter.len_utf8()..];
-        let is = |flags: &[&str]| flags.contains(&flag.as_str());
+        let is = |flags: &[&str]| is_flag(flags, letter);
         if is(interpreter.inline_code) {
-            return Grouped::Code(Some(rest).filter(|code| !code.is_empty()));
+            // `node -pe CODE`: what follows is more code flags, and the code is the next word.
+            let takes_next = rest
+                .chars()
+                .all(|letter| is_flag(interpreter.inline_code, letter));
+            return Grouped::Code((!takes_next).then_some(rest));
+        }
+        if is(interpreter.attached_value) {
+            return Grouped::Flags;
         }
         if is(interpreter.runs_module) {
             return Grouped::Module;
