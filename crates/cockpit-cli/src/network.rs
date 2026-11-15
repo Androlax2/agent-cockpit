@@ -18,7 +18,12 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Command, String> {
     let words = crate::ask::utf8(arguments)?;
     let command = match words.as_slice() {
         ["list"] => Command::NetworkList,
-        ["list", "--all"] => Command::NetworkDecided,
+        ["list", "--all"] => Command::NetworkDecided { since: None },
+        ["list", "--all", "--since", since] | ["list", "--since", since, "--all"] => {
+            Command::NetworkDecided {
+                since: Some(crate::approvals::since_of(since)?),
+            }
+        }
         ["allow", id] => allow(id, false)?,
         ["allow", id, "--always"] | ["allow", "--always", id] => allow(id, true)?,
         ["deny", id] => Command::NetworkDeny {
@@ -209,7 +214,7 @@ fn id_of(text: &str) -> Result<i64, String> {
 /// Sends `command` on the caller's socket and prints the answer: the owner's verbs, refused
 /// inside a session so that no agent decides its own request.
 pub(crate) fn run(command: Command) -> ExitCode {
-    let is_decided_list = command == Command::NetworkDecided;
+    let is_decided_list = matches!(command, Command::NetworkDecided { .. });
     let socket = match crate::agent::caller_socket() {
         Ok(socket) => socket,
         Err(code) => return code,

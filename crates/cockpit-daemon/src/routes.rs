@@ -445,7 +445,7 @@ impl Handler for Routes {
             },
             (
                 command @ (Command::NetworkList
-                | Command::NetworkDecided
+                | Command::NetworkDecided { .. }
                 | Command::NetworkAllow { .. }
                 | Command::NetworkDeny { .. }
                 | Command::NetworkGrants { .. }

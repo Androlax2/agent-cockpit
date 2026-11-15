@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
-    Command, ErrorCode, LaunchKindView, QuotaStopStatusView, Reply, SessionStateView, SessionView,
+    Command, ErrorCode, LaunchKindView, NetworkRequestView, QuotaStopStatusView, Reply,
+    SessionStateView, SessionView,
 };
 use real_daemon::{
     BUILD_PROFILE_DIR, COMMANDED_PROJECT, Daemon, GENEROUS, Home, SETTLE, added_context,
@@ -3025,6 +3026,45 @@ async fn the_decided_list_keeps_a_denied_request_the_open_list_dropped() {
     assert_eq!(owner_network(&home, &["list"]).await, "");
 }
 
+/// #1252: `list --all --since` keeps the decisions made at or after that time and leaves
+/// out the older ones, on the owner's socket and from the owner's shell.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_decided_list_since_a_time_leaves_out_the_decisions_before_it() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    asked_and_listed(&home, &agent).await;
+    owner_network(&home, &["deny", "1"]).await;
+    let owner = Connection::open(&home.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let decided_at = decided_since(&owner, None).await[0]
+        .decision
+        .expect("a denied request carries its decision")
+        .at;
+
+    let from_the_decision = decided_since(&owner, Some(decided_at)).await;
+    let after_the_decision = decided_since(&owner, Some(decided_at + 1)).await;
+    let in_the_last_hour = owner_network(&home, &["list", "--all", "--since", "1h"]).await;
+
+    let ids: Vec<i64> = from_the_decision.iter().map(|request| request.id).collect();
+    assert_eq!(ids, [1]);
+    assert!(after_the_decision.is_empty(), "{after_the_decision:?}");
+    assert!(
+        in_the_last_hour.starts_with("network\t1\tdenied\t"),
+        "{in_the_last_hour}"
+    );
+}
+
+async fn decided_since(owner: &Connection, since: Option<i64>) -> Vec<NetworkRequestView> {
+    match owner
+        .request(Command::NetworkDecided { since }, GENEROUS)
+        .await
+    {
+        Ok(Reply::NetworkRequests { requests }) => requests,
+        other => panic!("the owner reads the decided list: {other:?}"),
+    }
+}
+
 /// #674 regression: no path adds an entry without the owner. Every network verb is refused
 /// on the agents' socket; the request still asks, no grant is made, the host stays refused.
 #[tokio::test(flavor = "multi_thread")]
@@ -3038,7 +3078,8 @@ async fn no_network_verb_on_the_agent_socket_allows_a_host() {
 
     for command in [
         Command::NetworkList,
-        Command::NetworkDecided,
+        Command::NetworkDecided { since: None },
+        Command::NetworkDecided { since: Some(0) },
         Command::NetworkAllow {
             request: 1,
             always: true,

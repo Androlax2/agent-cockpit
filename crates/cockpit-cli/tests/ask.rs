@@ -1652,7 +1652,10 @@ async fn the_network_list_names_a_check_runs_request_by_its_check_and_run() {
         text(&output.stdout),
         "network\t5\tdenied\tcheck test (run execution-e-3)\tapp\tcrates.io:443\t45s\n"
     );
-    assert_eq!(daemon.await.unwrap(), [Command::NetworkDecided]);
+    assert_eq!(
+        daemon.await.unwrap(),
+        [Command::NetworkDecided { since: None }]
+    );
 }
 
 /// #390: a project's containers ask through its engine's proxy, which no session runs.
@@ -1680,7 +1683,10 @@ async fn the_network_list_names_a_containers_request_by_its_project() {
         text(&output.stdout),
         "network\t6\tdenied\tcontainers of app\tapp\tcrates.io:443\t45s\n"
     );
-    assert_eq!(daemon.await.unwrap(), [Command::NetworkDecided]);
+    assert_eq!(
+        daemon.await.unwrap(),
+        [Command::NetworkDecided { since: None }]
+    );
 }
 
 #[tokio::test]
@@ -1705,7 +1711,84 @@ async fn the_decided_network_list_shows_host_decision_and_wait() {
         "network\t3\tallowed-always\ts1\tapp\tcrates.io:443\t45s\n\
          network\t4\tdenied\ts1\tapp\tcrates.io:443\t45s\n"
     );
-    assert_eq!(daemon.await.unwrap(), [Command::NetworkDecided]);
+    assert_eq!(
+        daemon.await.unwrap(),
+        [Command::NetworkDecided { since: None }]
+    );
+}
+
+#[tokio::test]
+async fn the_decided_network_list_since_a_time_asks_for_the_decisions_from_then_on() {
+    for arguments in [
+        [
+            "network",
+            "list",
+            "--all",
+            "--since",
+            "2026-01-02T03:04:05Z",
+        ],
+        [
+            "network",
+            "list",
+            "--since",
+            "2026-01-02T03:04:05Z",
+            "--all",
+        ],
+    ] {
+        let home = Home::new();
+        let daemon = scripted_conversation(
+            &home.owner_socket(),
+            vec![Outcome::Ok(Reply::NetworkRequests {
+                requests: vec![decided_network_request(
+                    3,
+                    NetworkRequestStateView::AllowedOnce,
+                )],
+            })],
+        );
+
+        let output = home.cockpit_as_owner(&arguments, "").await;
+
+        assert_eq!(
+            text(&output.stdout),
+            "network\t3\tallowed-once\ts1\tapp\tcrates.io:443\t45s\n",
+            "{arguments:?}: {}",
+            text(&output.stderr)
+        );
+        assert_eq!(
+            daemon.await.unwrap(),
+            [Command::NetworkDecided {
+                since: Some(1_767_323_045)
+            }],
+            "{arguments:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_network_since_without_all_is_a_usage_error() {
+    let home = Home::new();
+
+    let output = home
+        .cockpit_as_owner(&["network", "list", "--since", "2h"], "")
+        .await;
+
+    assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
+}
+
+#[tokio::test]
+async fn a_network_since_that_is_no_time_is_a_usage_error() {
+    let home = Home::new();
+
+    let output = home
+        .cockpit_as_owner(&["network", "list", "--all", "--since", "soon"], "")
+        .await;
+
+    assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stderr).contains("--since soon: give a time ago"),
+        "{}",
+        text(&output.stderr)
+    );
 }
 
 /// #1387: a confined run's card names the folders it may also write and the hosts it may
