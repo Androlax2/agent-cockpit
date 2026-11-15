@@ -54,9 +54,10 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
     preload), and Torlek's install;
   - never written as a whole: `ROOT_NEVER_HOLDS` (`/etc`, `/usr`, `/var`, the programs'
     and libraries' folders, `/home`) and the owner's home; a folder inside one may be;
-  - `/run` emptied; no network, devices or processes of the host; no setuid, setgid or
-    file-capability program made; no capability that undoes a mount or reaches the kernel;
-    systemd 257 or later (`ROOT_RUN_MIN_SYSTEMD`, for `PrivatePIDs=`).
+  - the homes (`/home`, `/root`, `/run/user`) read-only like the rest; `/run` emptied; no
+    network, devices or processes of the host; no setuid, setgid or file-capability program
+    made; no capability that undoes a mount or reaches the kernel; systemd 257 or later
+    (`ROOT_RUN_MIN_SYSTEMD`, for `PrivatePIDs=`).
 
   The request can hide more and name folders to write, nothing else. The floor holds
   against a daemon bug; a list cannot name every file root could leave to run later, and

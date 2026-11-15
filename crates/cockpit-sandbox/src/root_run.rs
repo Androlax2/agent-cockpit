@@ -134,6 +134,8 @@ const ROOT_EMPTIED: &str = "/run";
 /// The sandboxing every root part's unit gets, whatever it asked.
 const FLOOR_PROPERTIES: &[&str] = &[
     "ProtectSystem=strict",
+    // `strict` leaves `/home`, `/root` and `/run/user` to `ProtectHome=`, writable without it.
+    "ProtectHome=read-only",
     "PrivateTmp=yes",
     "PrivateDevices=yes",
     "PrivateNetwork=yes",
@@ -396,6 +398,12 @@ mod tests {
             assert!(properties.iter().any(|property| property == kept), "{kept}");
         }
         assert!(properties.contains(&"TemporaryFileSystem=/run:ro".to_owned()));
+    }
+
+    #[test]
+    fn a_root_part_writes_no_home_it_is_not_given() {
+        let properties = floor().unit_properties(&request(&["/usr/local"])).unwrap();
+        assert!(properties.contains(&"ProtectHome=read-only".to_owned()));
     }
 
     #[test]
