@@ -46,6 +46,19 @@ start and runs it in the agent's place under `agents.sandbox = "required"`.
   approved run's service. It binds `127.0.0.1:3128` in the service's network namespace,
   sends the listener to `run-egress` on `SOCKET` (stage 2's hand-off, `handoff.rs`) and
   runs `PROGRAM` in its place, keeping no copy.
+- `sudo torlek-sandbox root-run` (#1387, option B): the root part of an approved run. The
+  daemon runs it through `/usr/bin/sudo -A -k`, so the owner types their password each time;
+  its standard input is the daemon's Unix socket, whose peer must be the `SUDO_UID` user, and
+  a pipe or terminal there is refused. The daemon sends `R` with the run's standard input,
+  output and error, then a `cockpit_sandbox::RootRunRequest` on one line. The helper resolves
+  the working folder and the folders to write as root, checks systemd's version and the
+  request against `cockpit_sandbox::RootFloor` for the owner's home from `getent passwd`,
+  its own program and folder kept read-only, and runs
+  `/usr/bin/systemd-run --system --pipe --wait` with the floor's properties, a fixed `PATH`
+  and nothing expanded. It answers `refused: WHY`, or `started UNIT` then `exited CODE`;
+  a daemon that closes the socket stops the unit, retried until `systemd-run` ends
+  (`root_run.rs`). `tests/root_run.rs` drives
+  it as root with `sudo -n`, ignored but for CI's `greenfield-sandbox` job.
 - `torlek-sandbox probe BWRAP`: the daemon's start-up probe. Prints
   `{"bubblewrap":"<version>","landlock_abi":<n>}`; a failure is the reason every launch under
   `required` is refused.

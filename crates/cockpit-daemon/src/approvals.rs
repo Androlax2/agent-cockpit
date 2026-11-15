@@ -54,42 +54,8 @@ pub fn run_settings(environment: Vec<(OsString, OsString)>) -> std::io::Result<R
     Ok(settings)
 }
 
-/// The owner's secrets under their home that a confined run cannot read (#1387): keys,
-/// the credentials of Git, GitHub's CLI, cloud and container tools, package registries and
-/// agent providers, keyrings and browser profiles. A list cannot name every tool's secret:
-/// the guide says so.
-const HIDDEN_FROM_RUNS: &[&str] = &[
-    ".ssh",
-    ".gnupg",
-    ".config/gh",
-    ".netrc",
-    ".git-credentials",
-    ".config/git/credentials",
-    ".aws",
-    ".azure",
-    ".config/gcloud",
-    ".docker",
-    ".kube",
-    ".password-store",
-    ".local/share/password-store",
-    ".npmrc",
-    ".pypirc",
-    ".cargo/credentials",
-    ".cargo/credentials.toml",
-    ".claude/.credentials.json",
-    ".codex/auth.json",
-    ".local/share/keyrings",
-    ".local/share/kwalletd",
-    ".mozilla",
-    ".config/google-chrome",
-    ".config/chromium",
-    ".config/BraveSoftware",
-    ".config/vivaldi",
-    ".config/microsoft-edge",
-];
-
 /// What a confined run cannot see, or the owner's opt-out `off` (#1387). Hidden: the
-/// owner's secrets (`HIDDEN_FROM_RUNS`), the tokens in Torlek's configuration and the
+/// owner's secrets (`cockpit_sandbox::OWNER_SECRETS`), the tokens in Torlek's configuration and the
 /// sessions' mount sources. Emptied: Torlek's state (its database, the sessions' homes and
 /// temporary folders), the owner's runtime folder and the system's `/run`, with their
 /// sockets and buses, through which a run could start what is not confined. Reachable
@@ -110,7 +76,7 @@ pub fn run_confinement(
     let config_dir = cockpit_config::Layout::resolve(environment, &home)
         .config_dir
         .value;
-    let hidden = HIDDEN_FROM_RUNS
+    let hidden = cockpit_sandbox::OWNER_SECRETS
         .iter()
         .map(|path| home.join(path))
         .chain(
