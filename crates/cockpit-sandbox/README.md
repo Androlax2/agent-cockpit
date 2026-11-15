@@ -46,7 +46,8 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   what the daemon asks `torlek-sandbox root-run` to run as root; `RootFloor` builds the system
   unit's properties and refuses what would lower its floor. The floor:
   - hidden: `OWNER_SECRETS` and Torlek's folders under the owner's home, `/root` and the
-    password hashes;
+    password hashes; root opens systemd's stand-in, so a hidden path reads as empty rather
+    than refused;
   - read-only, even inside a folder the request writes, and refused as one to write:
     `ROOT_NEVER_WRITES`, the boot files, sudo's rules, what grants root or runs as root at
     boot, login or on a schedule (`/etc/passwd`, PAM, systemd's units, cron, the loader's

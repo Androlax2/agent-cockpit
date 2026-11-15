@@ -223,19 +223,20 @@ fn a_root_part_that_asks_to_write_all_of_etc_runs_nothing() {
 #[test]
 #[ignore = "needs passwordless sudo and the system manager: CI's greenfield-sandbox job"]
 fn a_root_part_cannot_read_roots_home_or_the_password_hashes() {
+    // Root keeps CAP_DAC_OVERRIDE, so systemd's mode-0000 stand-ins open: hidden reads as empty.
     let answered = root_run(&request(
         shell(
-            "cat /etc/shadow > /dev/null || echo no-shadow; ls /root > /dev/null || echo no-root",
+            "echo shadow=$(cat /etc/shadow 2>/dev/null | wc -c); echo root=$(ls -A /root 2>/dev/null | wc -l)",
         ),
         &[],
     ));
     assert!(
-        answered.stdout.contains("no-shadow"),
+        answered.stdout.contains("shadow=0\n"),
         "{}",
         answered.printed()
     );
     assert!(
-        answered.stdout.contains("no-root"),
+        answered.stdout.contains("root=0\n"),
         "{}",
         answered.printed()
     );
