@@ -298,7 +298,7 @@ impl LaunchSpec {
             check_interception(interception, &self.egress.with_decisions(decisions))?;
         }
         if let Some(engine) = &self.engine {
-            check_engine(engine, &self.subject)?;
+            check_engine(engine)?;
         }
         self.check_forwards()
     }
@@ -599,14 +599,9 @@ fn is_credential_header(name: &str) -> bool {
     })
 }
 
-/// Refuses an engine a session cannot be given as written: one for a check run, run by root
-/// or by no engine user, or whose socket is no plain absolute path.
-fn check_engine(engine: &EngineSocket, subject: &Subject) -> Result<(), InvalidSpec> {
-    if !matches!(subject, Subject::Session { .. }) {
-        return Err(InvalidSpec(
-            "a check run reaches no project engine".to_owned(),
-        ));
-    }
+/// Refuses an engine a session or a `docker` check run (#1392) cannot be given as written:
+/// one run by root or by no engine user, or whose socket is no plain absolute path.
+fn check_engine(engine: &EngineSocket) -> Result<(), InvalidSpec> {
     if engine.uid == 0 {
         return Err(InvalidSpec(format!(
             "the project engine of {} runs as root",

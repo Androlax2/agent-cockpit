@@ -104,22 +104,61 @@ fn a_check_without_a_name_or_a_command_fails() {
     }
 }
 
+/// A digest the tests pin images by.
+const DIGEST: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 /// #352: a docker check runs in the image it names.
 #[test]
 fn a_docker_check_declares_its_image() {
     let home = TempDir::new().unwrap();
+    let image = format!("docker.io/library/rust:1.86@{DIGEST}");
     let project = project(
         &home,
-        "[[checks]]\nname = \"test\"\ncommand = \"cargo test\"\nenvironment = \"docker\"\n\
-         image = \"docker.io/library/rust:1.86@sha256:0123abcd\"\n",
+        &format!(
+            "[[checks]]\nname = \"test\"\ncommand = \"cargo test\"\nenvironment = \"docker\"\n\
+             image = {image:?}\n"
+        ),
     );
 
     let config = load(home.path(), Some(&project)).unwrap();
 
     assert_eq!(
         config.checks[0].value.image.as_deref(),
-        Some("docker.io/library/rust:1.86@sha256:0123abcd")
+        Some(image.as_str())
     );
+}
+
+/// #1392: an image is pinned by its digest, so a new image is a visible change to the file.
+#[test]
+fn a_docker_checks_image_without_its_digest_fails() {
+    let home = TempDir::new().unwrap();
+    let short_digest = "rust@sha256:0123abcd".to_owned();
+    let upper_digest = format!("rust@{}", DIGEST.to_uppercase().replace("SHA256", "sha256"));
+    let other_algorithm = format!("rust@{}", DIGEST.replace("sha256", "sha512"));
+    let no_name = format!("@{DIGEST}");
+    for image in [
+        "rust:1.86",
+        "rust",
+        short_digest.as_str(),
+        upper_digest.as_str(),
+        other_algorithm.as_str(),
+        no_name.as_str(),
+    ] {
+        let project = project(
+            &home,
+            &format!(
+                "[[checks]]\nname = \"test\"\ncommand = \"make\"\nenvironment = \"docker\"\n\
+                 image = {image:?}\n"
+            ),
+        );
+
+        let error = load(home.path(), Some(&project)).unwrap_err().to_string();
+
+        assert!(
+            error.contains("without its digest; pin it as `name@sha256:<64 hex digits>`"),
+            "{image:?}: {error}"
+        );
+    }
 }
 
 #[test]
@@ -127,8 +166,10 @@ fn the_shown_configuration_names_a_docker_checks_image() {
     let home = TempDir::new().unwrap();
     let project = project(
         &home,
-        "[[checks]]\nname = \"test\"\ncommand = \"make\"\nenvironment = \"docker\"\n\
-         image = \"rust:1.86\"\n",
+        &format!(
+            "[[checks]]\nname = \"test\"\ncommand = \"make\"\nenvironment = \"docker\"\n\
+             image = \"rust:1.86@{DIGEST}\"\n"
+        ),
     );
 
     let shown = cockpit_config::render(&load(home.path(), Some(&project)).unwrap());
@@ -137,7 +178,10 @@ fn the_shown_configuration_names_a_docker_checks_image() {
         .lines()
         .find(|line| line.starts_with("checks.\"test\" = "))
         .expect("the check is shown");
-    assert!(line.contains("image = \"rust:1.86\""), "{line}");
+    assert!(
+        line.contains(&format!("image = \"rust:1.86@{DIGEST}\"")),
+        "{line}"
+    );
 }
 
 #[test]

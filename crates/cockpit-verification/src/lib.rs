@@ -109,5 +109,12 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "CREATE INDEX verification_unsealed_runs
                 ON verification_run_identities (ran_environment) WHERE sealed = 0;",
         },
+        // #1392: a docker check's image is part of its definition, on its intent too.
+        Migration {
+            version: 5,
+            sql: "ALTER TABLE verification_receipts ADD COLUMN image TEXT CHECK (image <> '');
+            ALTER TABLE verification_run_identities ADD COLUMN image TEXT
+                CHECK (image <> '');",
+        },
     ],
 };

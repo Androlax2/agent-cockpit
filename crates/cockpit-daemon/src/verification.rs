@@ -49,6 +49,8 @@ pub(crate) struct Context {
     pub(crate) run_settings: Arc<RunSettings>,
     pub(crate) sessions: Arc<cockpit_sessions::Sessions>,
     pub(crate) environment: cockpit_config::Environment,
+    /// Finds the project engine a `docker` check runs its image in (#1392).
+    pub(crate) containers: crate::containers::Host,
 }
 
 /// A registered checkout of a project.
@@ -344,6 +346,7 @@ pub(crate) fn definition(check: &cockpit_config::Check) -> CheckDefinition {
         command: check.command.clone(),
         working_directory: check.working_directory.clone(),
         environment: check.environment.clone(),
+        image: check.image.clone(),
     }
 }
 
@@ -404,7 +407,15 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
         environment::Placement::Sandbox => {
             Some(sandbox_inputs(context, &target, &start_dir).await?)
         }
-        environment::Placement::Host | environment::Placement::Unavailable(_) => None,
+        environment::Placement::Host
+        | environment::Placement::Docker
+        | environment::Placement::Unavailable(_) => None,
+    };
+    let docker = match placement {
+        environment::Placement::Docker => Some(docker_inputs(context, &target, &definition).await?),
+        environment::Placement::Host
+        | environment::Placement::Sandbox
+        | environment::Placement::Unavailable(_) => None,
     };
     // The sandbox sets Git's configuration itself; only a host run applies the daemon's.
     let is_host = placement == environment::Placement::Host;
@@ -453,15 +464,18 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
     let started_at = now();
     let run_id = format!("execution-{}-{}", context.database.epoch(), execution.0);
     // Prepared under the writer, since its folders are named for the run; it writes nothing.
-    let launch = match (placement, sandboxed) {
-        (environment::Placement::Unavailable(unplaced), _) => Err(unplaced.reason.to_owned()),
-        (environment::Placement::Sandbox, Some(inputs)) => {
+    let launch = match (placement, sandboxed, docker) {
+        (environment::Placement::Unavailable(unplaced), ..) => Err(unplaced.reason.to_owned()),
+        (environment::Placement::Sandbox, Some(inputs), _) => {
             sandboxed_launch(context, &run_id, &definition, &target, start_dir, inputs)
         }
-        (environment::Placement::Sandbox, None) => {
+        (environment::Placement::Docker, _, Some(inputs)) => inputs.and_then(|inputs| {
+            docker_launch(context, &run_id, &definition, &target, start_dir, inputs)
+        }),
+        (environment::Placement::Sandbox | environment::Placement::Docker, ..) => {
             unreachable!("a sandboxed placement read its inputs")
         }
-        (environment::Placement::Host, _) => {
+        (environment::Placement::Host, ..) => {
             Ok(host_launch(context, &definition, start_dir, &git_config))
         }
     };
@@ -512,9 +526,13 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
     write.commit().await?;
     if let Some(staged) = launch.staged.clone() {
         let folder = launch.folder.as_ref().map(|folder| folder.root.clone());
+        let docker_config = launch.docker_config.clone();
         let written = tokio::task::spawn_blocking(move || {
             if let Some(folder) = &folder {
                 create_owner_folder(&folder.join("tmp"))?;
+            }
+            if let Some(config) = &docker_config {
+                write_docker_config(config)?;
             }
             staged.write()
         })
@@ -594,7 +612,18 @@ struct CheckLaunch {
     enforcement: cockpit_sandbox::Enforcement,
     staged: Option<cockpit_sandbox::Staged>,
     folder: Option<environment::RunFolder>,
+    /// A docker run's client configuration (#1392), written into its `DOCKER_CONFIG` folder
+    /// before it starts.
+    docker_config: Option<DockerConfig>,
     cleanup: Vec<PathBuf>,
+}
+
+/// The Docker client configuration a docker run's client reads: the engine's proxy for its
+/// container, the checkout's compose services kept direct, and no credential.
+#[derive(Clone)]
+struct DockerConfig {
+    temp_dir: PathBuf,
+    text: String,
 }
 
 /// On the host, with the owner's approved commands' shell and environment, as before #352.
@@ -621,6 +650,7 @@ fn host_launch(
         },
         staged: None,
         folder: None,
+        docker_config: None,
         cleanup: Vec::new(),
     }
 }
@@ -685,13 +715,12 @@ fn sandboxed_launch(
     start_dir: PathBuf,
     inputs: SandboxInputs,
 ) -> Result<CheckLaunch, String> {
-    let sandbox = context.sessions.sandbox();
     let folder = environment::RunFolder::new(context.sessions.session_temps(), run_id);
     let request = cockpit_sandbox::CheckRequest {
         run: run_id.to_owned(),
         check: definition.name.clone(),
-        shell: CHECK_SHELL.into(),
-        command: definition.command.clone(),
+        program: CHECK_SHELL.into(),
+        arguments: vec!["-c".into(), definition.command.clone().into()],
         checkout: target.path.clone(),
         start_dir: start_dir.clone(),
         execution_dir: folder.root.clone(),
@@ -703,9 +732,143 @@ fn sandboxed_launch(
         tools: inputs.tools,
         egress: inputs.egress,
         decisions: inputs.decisions,
+        engine: None,
     };
+    through_sandbox(
+        context,
+        folder,
+        &request,
+        start_dir,
+        environment::ran_in_sandbox,
+    )
+}
+
+/// What a docker run reads before the writer (#1392): its project's engine, verified and
+/// shown the checkout masked, the check's image, the Docker client and the client's
+/// configuration. Otherwise why the run is `unavailable`, naming the owner's step; the daemon's
+/// own failure to look fails the request instead.
+struct DockerInputs {
+    engine: crate::containers::CheckEngine,
+    client: PathBuf,
+    image: String,
+    client_config: String,
+}
+
+async fn docker_inputs(
+    context: &Context,
+    target: &Target,
+    definition: &CheckDefinition,
+) -> Result<Result<DockerInputs, String>, Failed> {
+    let Some(image) = definition.image.as_deref() else {
+        return Err(internal(
+            &"a docker check reached the run without its image",
+        ));
+    };
+    let engine = crate::containers::check_engine(
+        &context.database,
+        &context.containers,
+        &target.project,
+        &target.path,
+    )
+    .await
+    .map_err(|reason| internal(&reason))?;
+    let checkout = target.path.clone();
+    let client_config =
+        tokio::task::spawn_blocking(move || crate::containers::client_config(&checkout))
+            .await
+            .map_err(|error| internal(&error))?;
+    Ok(engine.and_then(|engine| {
+        Ok(DockerInputs {
+            engine,
+            client: docker_client(context)?,
+            image: image.to_owned(),
+            client_config,
+        })
+    }))
+}
+
+fn docker_client(context: &Context) -> Result<PathBuf, String> {
+    let path = context
+        .run_settings
+        .environment
+        .iter()
+        .find(|(name, _)| name == "PATH")
+        .map(|(_, value)| value.as_os_str());
+    environment::docker_client(path).ok_or_else(|| {
+        "no `docker` client is on the daemon's PATH; the owner installs Docker's client".to_owned()
+    })
+}
+
+/// The Docker client through `torlek-sandbox` (#1392), which binds the project's engine at
+/// `DOCKER_HOST`: the client reaches the engine and nothing else, and the image runs in a
+/// container of it, its egress through the engine's proxy as a session's containers' is.
+fn docker_launch(
+    context: &Context,
+    run_id: &str,
+    definition: &CheckDefinition,
+    target: &Target,
+    start_dir: PathBuf,
+    inputs: DockerInputs,
+) -> Result<CheckLaunch, String> {
+    let arguments = environment::docker_arguments(
+        run_id,
+        &inputs.image,
+        &definition.command,
+        &target.path,
+        &start_dir,
+    )
+    .ok_or_else(|| {
+        format!(
+            "the checkout {} cannot be bound into a container: its path is not UTF-8 or holds `:`",
+            target.path.display()
+        )
+    })?;
+    let folder = environment::RunFolder::new(context.sessions.session_temps(), run_id);
+    let docker_config = DockerConfig {
+        temp_dir: folder.temp_dir(),
+        text: inputs.client_config,
+    };
+    let mut environment =
+        environment::sandboxed_environment(&context.run_settings.environment, &folder.temp_dir());
+    environment.push((
+        "DOCKER_CONFIG".into(),
+        folder.temp_dir().join(DOCKER_CONFIG_FOLDER).into(),
+    ));
+    let request = cockpit_sandbox::CheckRequest {
+        run: run_id.to_owned(),
+        check: definition.name.clone(),
+        program: inputs.client,
+        arguments,
+        checkout: target.path.clone(),
+        start_dir: start_dir.clone(),
+        execution_dir: folder.root.clone(),
+        temp_dir: folder.temp_dir(),
+        environment,
+        tools: cockpit_sandbox::ToolNeeds::none(),
+        egress: Vec::new(),
+        decisions: cockpit_sandbox::EgressDecisions::default(),
+        engine: Some(inputs.engine.socket.clone()),
+    };
+    let engine = inputs.engine;
+    let mut launch = through_sandbox(context, folder, &request, start_dir, |backend| {
+        environment::ran_in_engine(backend, &engine)
+    })?;
+    launch.docker_config = Some(docker_config);
+    Ok(launch)
+}
+
+/// `request` through `torlek-sandbox`, recorded as `ran` says of the backend: the reason it
+/// cannot when the sandbox refuses it.
+fn through_sandbox(
+    context: &Context,
+    folder: environment::RunFolder,
+    request: &cockpit_sandbox::CheckRequest,
+    start_dir: PathBuf,
+    ran: impl FnOnce(&cockpit_sandbox::NativeBackend) -> cockpit_verification::Ran,
+) -> Result<CheckLaunch, String> {
+    let sandbox = context.sessions.sandbox();
     let prepared = sandbox
-        .prepare_check(cockpit_config::AgentSandbox::Required, &request)
+        .prepare_check(cockpit_config::AgentSandbox::Required, request)
         .map_err(|refusal| format!("the sandbox cannot start: {refusal}"))?;
     let cockpit_sandbox::Backend::Native(backend) = sandbox.backend() else {
         return Err("the sandbox prepared a launch without a backend".to_owned());
@@ -716,7 +879,7 @@ fn sandboxed_launch(
         .ok_or_else(|| "the sandbox prepared no launch spec".to_owned())?;
     let enforcement = prepared.evidence.enforcement.clone();
     Ok(CheckLaunch {
-        ran: environment::ran_in_sandbox(backend),
+        ran: ran(backend),
         enforcement,
         cleanup: vec![
             folder.root.clone(),
@@ -726,6 +889,7 @@ fn sandboxed_launch(
         spec: environment::launcher_spec(prepared, start_dir),
         staged: Some(staged),
         folder: Some(folder),
+        docker_config: None,
     })
 }
 
@@ -775,6 +939,21 @@ async fn seal_unavailable(
         .map_err(|e| internal(&e))?;
     Ok(())
 }
+
+/// Written as a session's is (`cockpit-sessions`), never through a link: the run's client
+/// writes the folder. The run's folder is new, so the daemon creates it first.
+fn write_docker_config(config: &DockerConfig) -> std::io::Result<()> {
+    create_owner_folder(&config.temp_dir.join(DOCKER_CONFIG_FOLDER))?;
+    cockpit_projects::replace_agent_folder_file(
+        &config.temp_dir,
+        DOCKER_CONFIG_FOLDER,
+        "config.json",
+        Some(&config.text),
+    )
+}
+
+/// The folder of a docker run's temp folder its client's `DOCKER_CONFIG` names.
+const DOCKER_CONFIG_FOLDER: &str = "docker-config";
 
 fn create_owner_folder(folder: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
@@ -896,7 +1075,10 @@ async fn record_when_ended(
     (receipt.outcome, receipt.exit_code) = match exit.await {
         Ok(Ok(status)) => match status.code() {
             Some(0) => (Outcome::Passed, Some(0)),
-            Some(code) => (Outcome::Failed, Some(i64::from(code))),
+            Some(code) => (
+                environment::failed_outcome(receipt.ran.as_ref(), code),
+                Some(i64::from(code)),
+            ),
             None => (Outcome::Failed, None),
         },
         // The pending hold remains, and the run's folders with it: no timeout success.
@@ -1075,7 +1257,9 @@ async fn gate(context: &Context, target: Target, refusal: Option<RunRefusal>) ->
                 environment::Placement::Unavailable(unplaced) => {
                     Some((check.name.as_str(), unplaced))
                 }
-                environment::Placement::Host | environment::Placement::Sandbox => None,
+                environment::Placement::Host
+                | environment::Placement::Sandbox
+                | environment::Placement::Docker => None,
             },
         )
         .collect();
@@ -1444,4 +1628,29 @@ async fn resolve_pending(
     Ok(Reply::CheckReceipt {
         receipt: Some(Box::new(receipt_view(&receipt, false))),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_docker_runs_client_configuration_is_written_in_its_new_run_folder() {
+        let run = tempfile::tempdir().unwrap();
+        let config = DockerConfig {
+            temp_dir: run.path().join("tmp"),
+            text: "{\"proxies\":{}}".to_owned(),
+        };
+
+        write_docker_config(&config).unwrap();
+
+        let written = std::fs::read_to_string(
+            run.path()
+                .join("tmp")
+                .join(DOCKER_CONFIG_FOLDER)
+                .join("config.json"),
+        )
+        .unwrap();
+        assert_eq!(written, config.text);
+    }
 }

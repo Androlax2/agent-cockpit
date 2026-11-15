@@ -74,8 +74,8 @@ impl Fixture {
         let request = CheckRequest {
             run: "r1".to_owned(),
             check: "fixture".to_owned(),
-            shell: PathBuf::from("/bin/sh"),
-            command: command.to_owned(),
+            program: PathBuf::from("/bin/sh"),
+            arguments: vec!["-c".into(), command.into()],
             checkout: self.path("checkout"),
             start_dir: self.path("checkout"),
             execution_dir: self.path("execution"),
@@ -88,6 +88,7 @@ impl Fixture {
             tools: ToolNeeds::none(),
             egress: Vec::new(),
             decisions: cockpit_sandbox::EgressDecisions::default(),
+            engine: None,
         };
         let prepared = self
             .sandbox()

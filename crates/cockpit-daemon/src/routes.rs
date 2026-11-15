@@ -128,6 +128,7 @@ impl Routes {
     pub fn new(capabilities: Capabilities, environment: cockpit_config::Environment) -> Routes {
         let provider_capabilities = Arc::new(capabilities.provider_capabilities);
         let containers = capabilities.containers;
+        let check_containers = containers.clone();
         let readiness = readiness::Context {
             database: Arc::clone(&capabilities.database),
             sessions: Arc::clone(&capabilities.sessions),
@@ -180,6 +181,7 @@ impl Routes {
                 run_settings: capabilities.run_settings,
                 sessions: Arc::clone(&capabilities.sessions),
                 environment: environment.clone(),
+                containers: check_containers,
             },
             bug_reports: bug_reports::Context {
                 database: Arc::clone(&capabilities.database),

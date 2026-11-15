@@ -271,6 +271,8 @@ Sessions of one project run its compose files side by side on that one engine. E
 A compose file runs in parallel sessions when it publishes host ports from those variables (`"${TORLEK_PORT_0:-8080}:80"`) and leaves container, volume and network names to compose; `torlek doctor --project DIR` names each line that does not, with its fix.
 A request for a port of another session's block is refused, naming that session, and a port you allowed `--always` opens only in the session whose block holds it.
 
+A check that declares `environment = "docker"` and an `image` pinned by its digest (`image = "rust:1.91@sha256:..."`; a tag alone is refused, so a new image is a change you see in the project's file) runs that image in this engine, with `agents.sandbox = "required"`: `torlek check run` starts your `docker` client in the sandbox with only the engine's socket, and the container sees the checkout masked at its own path, goes out through the engine's proxy as the project's containers do, and holds no credential. Its receipt names the engine. Until the engine is verified and sees the checkout masked, the check is `unavailable` and names the step, as `torlek doctor --project DIR` does.
+
 ## Phone status page
 
 `torlek status serve` shows your sessions on your phone, read-only: each session's project, state, label, what it is doing and its open question (flagged), the approvals waiting for you (reason and age, never the command), the daemon's readiness with the low-disk guard, and when the page was generated, so a stalled daemon shows.

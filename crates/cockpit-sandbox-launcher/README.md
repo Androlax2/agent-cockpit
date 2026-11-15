@@ -140,7 +140,8 @@ the daemon verified: its user, uid and Docker socket. Before bubblewrap starts, 
 connects to that socket and refuses the launch unless its peer is the engine's uid
 (`proxy::check_engine_socket`); bubblewrap then binds the socket read-only, alone in its
 folder, at `cockpit_sandbox::ENGINE_SOCKET_INSIDE`, stage 2 lets the program connect there,
-and `DOCKER_HOST` names it. A spec for a check run, or an engine run as root, is refused.
+and `DOCKER_HOST` names it: for a session, and for a `docker` check run's Docker client
+(#1392). A spec with an engine run as root, or by no engine user, is refused.
 
 ### The project engine's egress
 

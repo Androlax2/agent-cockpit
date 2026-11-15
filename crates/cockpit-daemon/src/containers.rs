@@ -245,7 +245,7 @@ impl cockpit_sessions::ProjectEngines for LaunchEngines {
 /// The engine's client configuration for a session working in `checkout`, its compose
 /// services named once each. A file readiness cannot read names none: `torlek doctor` says
 /// why. Blocks.
-fn client_config(checkout: &Path) -> String {
+pub(crate) fn client_config(checkout: &Path) -> String {
     let mut services: Vec<String> = Vec::new();
     for file in crate::readiness::compose_files(checkout) {
         let Ok(text) = file.text else { continue };
@@ -261,7 +261,12 @@ fn client_config(checkout: &Path) -> String {
 impl LaunchEngines {
     /// The engine is verified first: the helper is asked to mask only for the project's own.
     async fn engine_socket(&self, project: &str, checkout: &Path) -> Option<EngineSocket> {
-        let (user, passwd, state) = match self.examined(project).await {
+        let Examined {
+            user,
+            passwd,
+            state,
+            ..
+        } = match examined(&self.database, &self.host, project).await {
             Ok(examined) => examined,
             Err(reason) => {
                 tracing::warn!(project, %reason, "the launch reaches no project engine");
@@ -275,14 +280,82 @@ impl LaunchEngines {
         }
         Some(socket)
     }
+}
 
-    async fn examined(&self, project: &str) -> Result<(EngineUser, String, EngineState), String> {
-        let (found, recorded) = project_and_record(&self.database, project).await?;
-        let passwd = read_passwd().await?;
-        let user = self.host.engine_user(&found)?;
-        let state = examine(&self.host, &user, &passwd, recorded.as_ref()).await;
-        Ok((user, passwd, state))
-    }
+/// `project`'s engine as it answers now, checked against the owner's record: what a session's
+/// launch and a docker check both find it by.
+struct Examined {
+    project: Project,
+    user: EngineUser,
+    passwd: String,
+    state: EngineState,
+}
+
+async fn examined(database: &Database, host: &Host, project: &str) -> Result<Examined, String> {
+    let (found, recorded) = project_and_record(database, project).await?;
+    let passwd = read_passwd().await?;
+    let user = host.engine_user(&found)?;
+    let state = examine(host, &user, &passwd, recorded.as_ref()).await;
+    Ok(Examined {
+        project: found,
+        user,
+        passwd,
+        state,
+    })
+}
+
+/// The engine a `docker` check runs its image in (#1392): its project's, as a session's
+/// launch reaches it.
+#[derive(Debug, Clone)]
+pub(crate) struct CheckEngine {
+    pub(crate) socket: EngineSocket,
+    /// The engine's own id, which its receipt names.
+    pub(crate) engine_id: String,
+}
+
+/// `project`'s engine for a `docker` check working in `checkout`, as [`LaunchEngines`] finds a
+/// session's: verified against the owner's record and shown the checkout masked. Otherwise
+/// the inner error: why not and the owner's step, which the check's `unavailable` receipt
+/// names. The outer error is the daemon's own failure to look, which no owner step fixes.
+pub(crate) async fn check_engine(
+    database: &Database,
+    host: &Host,
+    project: &str,
+    checkout: &Path,
+) -> Result<Result<CheckEngine, String>, String> {
+    let Examined {
+        project: found,
+        user,
+        passwd,
+        state,
+    } = examined(database, host, project).await?;
+    Ok(verified_and_masked(host, &found, &user, &passwd, &state, checkout).await)
+}
+
+async fn verified_and_masked(
+    host: &Host,
+    found: &Project,
+    user: &EngineUser,
+    passwd: &str,
+    state: &EngineState,
+    checkout: &Path,
+) -> Result<CheckEngine, String> {
+    let project = &found.name;
+    let EngineState::Verified(info) = state else {
+        let (problem, action) = unverified(state, user, found, host);
+        return Err(format!(
+            "project {project}'s engine {user} is not verified: {problem}; {action}"
+        ));
+    };
+    let socket = socket_of(user, state, passwd)
+        .ok_or_else(|| format!("the engine's user {user} has no account in {PASSWD_FILE}"))?;
+    shown_masked(&host.masks, user, checkout)
+        .await
+        .map_err(|reason| format!("{reason}; {}", doctor_step(host, found)))?;
+    Ok(CheckEngine {
+        socket,
+        engine_id: info.id.clone(),
+    })
 }
 
 /// `user`'s Docker socket, when its engine answers as the one the owner recorded and
@@ -538,25 +611,7 @@ fn not_recordable(
 /// Why `project`'s engine serves no container port: it is not the one the owner recorded,
 /// answering now. The owner's step fixes it; the agent can only ask again after.
 fn not_verified(state: &EngineState, user: &EngineUser, project: &Project, host: &Host) -> Failed {
-    let doctor = format!(
-        "the owner runs `{} doctor --project {}` and the setup script it writes",
-        host.qualified_profile,
-        project.root.display()
-    );
-    let record = format!("the owner runs `{}`", record_command(host, project));
-    let (problem, action) = match state {
-        EngineState::NotSetUp { reason } => (reason.clone(), doctor),
-        EngineState::Unrecorded(_) => ("the owner has not recorded it".to_owned(), record),
-        EngineState::Refused(refusal) => (
-            refusal.to_string(),
-            match refusal.remedy() {
-                Remedy::Start => format!("the owner runs `sudo systemctl start {}`", user.unit()),
-                Remedy::Record => record,
-                Remedy::Setup => doctor,
-            },
-        ),
-        EngineState::Verified(_) => unreachable!("a verified engine serves container ports"),
-    };
+    let (problem, action) = unverified(state, user, project, host);
     Failed(ProtocolError {
         code: ErrorCode::Refused,
         message: format!(
@@ -568,6 +623,39 @@ fn not_verified(state: &EngineState, user: &EngineUser, project: &Project, host:
             by: UnblockedBy::Owner,
         }),
     })
+}
+
+/// What keeps `project`'s engine from being the one the owner recorded, answering now, and
+/// the owner's step that fixes it.
+fn unverified(
+    state: &EngineState,
+    user: &EngineUser,
+    project: &Project,
+    host: &Host,
+) -> (String, String) {
+    let doctor = doctor_step(host, project);
+    let record = format!("the owner runs `{}`", record_command(host, project));
+    match state {
+        EngineState::NotSetUp { reason } => (reason.clone(), doctor),
+        EngineState::Unrecorded(_) => ("the owner has not recorded it".to_owned(), record),
+        EngineState::Refused(refusal) => (
+            refusal.to_string(),
+            match refusal.remedy() {
+                Remedy::Start => format!("the owner runs `sudo systemctl start {}`", user.unit()),
+                Remedy::Record => record,
+                Remedy::Setup => doctor,
+            },
+        ),
+        EngineState::Verified(_) => unreachable!("a verified engine has nothing to fix"),
+    }
+}
+
+fn doctor_step(host: &Host, project: &Project) -> String {
+    format!(
+        "the owner runs `{} doctor --project {}` and the setup script it writes",
+        host.qualified_profile,
+        project.root.display()
+    )
 }
 
 fn through_name(through: DecidedThroughView) -> String {

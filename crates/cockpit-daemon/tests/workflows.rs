@@ -624,6 +624,7 @@ async fn evidence_scenario(preset: &'static cockpit_workflows::Preset, second: &
                         command: "true".into(),
                         working_directory: ".".into(),
                         environment: "sandbox".into(),
+                        image: None,
                     },
                     source: cockpit_verification::Source {
                         head: source.head.clone(),

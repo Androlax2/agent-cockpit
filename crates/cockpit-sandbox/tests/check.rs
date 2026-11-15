@@ -22,8 +22,8 @@ fn check_request() -> CheckRequest {
     CheckRequest {
         run: "r7".to_owned(),
         check: "unit".to_owned(),
-        shell: PathBuf::from("/bin/sh"),
-        command: "cargo test".to_owned(),
+        program: PathBuf::from("/bin/sh"),
+        arguments: vec!["-c".into(), "cargo test".into()],
         checkout: PathBuf::from(CHECKOUT),
         start_dir: PathBuf::from(CHECKOUT),
         execution_dir: PathBuf::from(EXECUTION),
@@ -36,6 +36,7 @@ fn check_request() -> CheckRequest {
         tools: ToolNeeds::none(),
         egress: Vec::new(),
         decisions: EgressDecisions::default(),
+        engine: None,
     }
 }
 
@@ -333,4 +334,46 @@ fn a_check_gets_no_interception_and_no_trust_variable() {
         })
         .collect();
     assert_eq!(trust_variables, Vec::<String>::new());
+}
+
+fn project_engine() -> cockpit_sandbox::EngineSocket {
+    cockpit_sandbox::EngineSocket {
+        user: "torlek-e3".to_owned(),
+        uid: 990,
+        socket: PathBuf::from("/run/torlek-e3/docker.sock"),
+    }
+}
+
+/// #1392: a `docker` check's client reaches its project's engine, as a session does.
+#[test]
+fn a_docker_checks_spec_binds_its_projects_engine() {
+    let request = CheckRequest {
+        engine: Some(project_engine()),
+        ..check_request()
+    };
+
+    let spec = Sandbox::new(Platform::Linux, agent_host_paths(), native_backend())
+        .prepare_check(AgentSandbox::Required, &request)
+        .unwrap()
+        .staged
+        .unwrap()
+        .spec;
+
+    assert_eq!(spec.engine, Some(project_engine()));
+}
+
+/// #1392: an engine handed to a check run on the host is a daemon bug, refused rather than
+/// ignored.
+#[test]
+fn the_off_setting_refuses_a_checks_project_engine() {
+    let request = CheckRequest {
+        engine: Some(project_engine()),
+        ..check_request()
+    };
+
+    let refused = Sandbox::new(Platform::Linux, agent_host_paths(), native_backend())
+        .prepare_check(AgentSandbox::Off, &request)
+        .unwrap_err();
+
+    assert_eq!(refused.rule, "project engine of torlek-e3");
 }

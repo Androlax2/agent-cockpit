@@ -289,3 +289,25 @@ async fn an_unsealed_sandboxed_run_is_listed_until_it_is_sealed() {
     let read = fixture.database.read().await.unwrap();
     assert_eq!(unsealed_runs_in(&read, "sandbox").await.unwrap(), []);
 }
+
+/// #1392: a docker check's image is kept on its intent, so a recovered run keeps it.
+#[tokio::test]
+async fn a_pending_result_keeps_its_checks_image() {
+    let fixture = Fixture::new().await;
+    let mut new = intent(&fixture);
+    new.check.environment = "docker".to_owned();
+    new.check.image = Some("rust:1.91".to_owned());
+    let write = fixture.database.write().await.unwrap();
+    reserve_result(&write, fixture.database.epoch(), 1, new.clone())
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let read = fixture.database.read().await.unwrap();
+    let reread = pending_result(&read, PROJECT, &new.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(reread.receipt.check.image.as_deref(), Some("rust:1.91"));
+}

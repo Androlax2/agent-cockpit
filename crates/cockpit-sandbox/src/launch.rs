@@ -138,9 +138,10 @@ pub struct CheckRequest {
     pub run: String,
     /// The check's name in the project file.
     pub check: String,
-    /// The shell the check's command runs in, with `-c` and the command.
-    pub shell: PathBuf,
-    pub command: String,
+    /// What runs: the shell with `-c` and the check's command, or for a `docker` check the
+    /// Docker client that runs the check's image in [`CheckRequest::engine`] (#1392).
+    pub program: PathBuf,
+    pub arguments: Vec<OsString>,
     /// The checkout the check runs in, whole: read and write.
     pub checkout: PathBuf,
     /// The folder the command starts in, inside the checkout: its declared working directory.
@@ -160,6 +161,9 @@ pub struct CheckRequest {
     /// The owner's decisions when the run starts (#674): the project's host grants. A check
     /// serves no forward, so a service decision lets nothing through.
     pub decisions: crate::EgressDecisions,
+    /// The project engine a `docker` check's client reaches at `DOCKER_HOST` (#1392),
+    /// verified by the daemon; only a sandboxed run binds one.
+    pub engine: Option<crate::EngineSocket>,
 }
 
 /// A launch ready to run: the program and arguments that start the agent and the evidence
@@ -446,9 +450,15 @@ impl Sandbox {
         setting: AgentSandbox,
         request: &CheckRequest,
     ) -> Result<Prepared, Refusal> {
-        let arguments = vec![OsString::from("-c"), OsString::from(&request.command)];
         if setting == AgentSandbox::Off {
-            return Ok(self.unsandboxed(request.shell.clone(), arguments, &request.environment));
+            if let Some(engine) = &request.engine {
+                return Err(unsandboxed_engine(engine));
+            }
+            return Ok(self.unsandboxed(
+                request.program.clone(),
+                request.arguments.clone(),
+                &request.environment,
+            ));
         }
         let native = self.native()?;
         let host = self.host()?;
@@ -492,7 +502,7 @@ impl Sandbox {
             decisions: request.decisions.clone(),
             login: None,
             forwards: Vec::new(),
-            engine: None,
+            engine: request.engine.clone(),
         };
         crate::native::prepare(
             native,
@@ -501,8 +511,8 @@ impl Sandbox {
             &launch,
             mount_dir,
             home_source,
-            request.shell.clone(),
-            arguments,
+            request.program.clone(),
+            request.arguments.clone(),
         )
     }
 
@@ -540,11 +550,7 @@ impl Sandbox {
                 ));
             }
             if let Some(engine) = &request.engine {
-                return Err(Refusal::new(
-                    format!("project engine of {}", engine.user),
-                    "only a sandboxed launch binds the project engine's socket; an \
-                     unsandboxed launch reaches the owner's own engine",
-                ));
+                return Err(unsandboxed_engine(engine));
             }
             return Ok(self.unsandboxed(program, arguments, &request.environment));
         }
@@ -666,6 +672,14 @@ fn read_egress_requests(folder: &std::path::Path) -> Result<Option<crate::Egress
     serde_json::from_slice(&text)
         .map(Some)
         .map_err(|error| format!("{} is malformed: {error}", path.display()))
+}
+
+fn unsandboxed_engine(engine: &crate::EngineSocket) -> Refusal {
+    Refusal::new(
+        format!("project engine of {}", engine.user),
+        "only a sandboxed launch binds the project engine's socket; an unsandboxed launch \
+         reaches the owner's own engine",
+    )
 }
 
 /// Check run `run`'s own folder in `parent`, beside sessions' folders: a session id is `s`

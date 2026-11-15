@@ -120,6 +120,7 @@ pub fn check(name: &str) -> CheckDefinition {
         command: format!("make {name}"),
         working_directory: ".".to_owned(),
         environment: "native".to_owned(),
+        image: None,
     }
 }
 

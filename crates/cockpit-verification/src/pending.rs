@@ -59,15 +59,16 @@ pub async fn reserve_result(
     }
     write.execute("INSERT INTO verification_run_identities
         (project,run_id,origin_epoch,execution,check_name,command,working_directory,environment,head,base,dirty,started_at,
-         ran_environment,ran_isolation)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+         ran_environment,ran_isolation,image)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
         params_from_iter([Value::Text(receipt.project.clone()), Value::Text(receipt.run_id.clone()), Value::Text(epoch.to_owned()),
          Value::Integer(execution), Value::Text(receipt.check.name.clone()), Value::Text(receipt.check.command.clone()),
          Value::Text(receipt.check.working_directory.clone()), Value::Text(receipt.check.environment.clone()),
          Value::Text(receipt.source.head.clone()), optional_text(receipt.source.base.as_deref()),
          optional_text(receipt.source.dirty.as_deref()), Value::Integer(receipt.started_at),
          optional_text(receipt.ran.as_ref().map(|ran| ran.environment.as_str())),
-         optional_text(receipt.ran.as_ref().map(|ran| ran.isolation.as_str()))])).await?;
+         optional_text(receipt.ran.as_ref().map(|ran| ran.isolation.as_str())),
+         optional_text(receipt.check.image.as_deref())])).await?;
     for artifact in &receipt.artifacts {
         write
             .execute(
@@ -97,7 +98,7 @@ pub async fn pending_result(
     run: &str,
 ) -> Result<Option<PendingResult>, Error> {
     let mut rows = read.query("SELECT origin_epoch,execution,revision,sealed,recovered,check_name,command,working_directory,environment,head,base,dirty,started_at,
-        ran_environment,ran_isolation FROM verification_run_identities WHERE project=?1 AND run_id=?2", (project,run)).await?;
+        ran_environment,ran_isolation,image FROM verification_run_identities WHERE project=?1 AND run_id=?2", (project,run)).await?;
     let Some(row) = rows.next().await? else {
         return Ok(None);
     };
@@ -116,6 +117,7 @@ pub async fn pending_result(
                 command: row.get(6)?,
                 working_directory: row.get(7)?,
                 environment: row.get(8)?,
+                image: row.get(15)?,
             },
             ran: ran_from(row.get(13)?, row.get(14)?).map_err(|reason| {
                 Error::InvalidStoredRow {

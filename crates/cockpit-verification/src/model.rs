@@ -10,6 +10,9 @@ pub struct CheckDefinition {
     pub working_directory: String,
     /// Where it runs: `native`, a sandbox profile, a container engine.
     pub environment: String,
+    /// The image a `docker` check runs (#1392), as the project declares it; None for any
+    /// other check. A changed image is another definition, so its results are stale.
+    pub image: Option<String>,
 }
 
 impl CheckDefinition {

@@ -84,9 +84,9 @@ pub(crate) async fn record_tail_unchecked_pending(
             "INSERT INTO verification_receipts (project, run_id, check_name, command,
                 working_directory, environment, head, base, dirty, outcome, exit_code, output,
                 output_bytes, started_at, finished_at, recorded_at, ran_environment,
-                ran_isolation)
+                ran_isolation, image)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                ?17, ?18)
+                ?17, ?18, ?19)
              RETURNING id",
         )
         .await?
@@ -109,6 +109,7 @@ pub(crate) async fn record_tail_unchecked_pending(
             Value::Integer(now),
             optional_text(new.ran.as_ref().map(|ran| ran.environment.as_str())),
             optional_text(new.ran.as_ref().map(|ran| ran.isolation.as_str())),
+            optional_text(new.check.image.as_deref()),
         ]))
         .await?
         .get::<i64>(0)?;
@@ -228,6 +229,7 @@ pub async fn evidence(
                 Value::Text(check.command.clone()),
                 Value::Text(check.working_directory.clone()),
                 Value::Text(check.environment.clone()),
+                optional_text(check.image.as_deref()),
             ])
             .collect();
         let receipt = load_receipts(
@@ -252,9 +254,10 @@ pub async fn evidence(
 }
 
 /// The receipts of check `?2` in project `?1` on head `?3` with uncommitted changes `?4`
-/// (`IS`: equal when both are clean), of command `?5` in `?6` on environment `?7`.
+/// (`IS`: equal when both are clean), of command `?5` in `?6` on environment `?7` with image
+/// `?8` (`IS`: equal when neither names one).
 const EXACT: &str = "project = ?1 AND check_name = ?2 AND head = ?3 AND dirty IS ?4
-    AND command = ?5 AND working_directory = ?6 AND environment = ?7";
+    AND command = ?5 AND working_directory = ?6 AND environment = ?7 AND image IS ?8";
 
 /// Newest by when the result was known: a run delivered late does not pass a newer result,
 /// and a long run finishing after a short one is the latest word.
@@ -319,7 +322,7 @@ async fn load_receipts(
             &format!(
                 "SELECT id, project, run_id, check_name, command, working_directory,
                     environment, head, base, dirty, outcome, exit_code, output, output_bytes,
-                    started_at, finished_at, recorded_at, ran_environment, ran_isolation
+                    started_at, finished_at, recorded_at, ran_environment, ran_isolation, image
                  FROM verification_receipts WHERE {condition}"
             ),
             params_from_iter(parameters),
@@ -367,6 +370,7 @@ fn receipt_from(row: &Row) -> Result<Receipt, Error> {
             command: row.get(4)?,
             working_directory: row.get(5)?,
             environment: row.get(6)?,
+            image: row.get(19)?,
         },
         ran: ran_from(row.get(17)?, row.get(18)?).map_err(|reason| Error::InvalidStoredRow {
             table: "verification_receipts",
@@ -550,6 +554,10 @@ pub(crate) fn check_definition(check: &CheckDefinition) -> Result<(), Refusal> {
             .map_err(|reason| invalid("check.working_directory", reason))?;
     }
     required("check.environment", &check.environment, NAME_MAX_CHARS)?;
+    if let Some(image) = &check.image {
+        // The configuration bounds a reference tighter; this only keeps a row in bounds.
+        required("check.image", image, PATH_MAX_CHARS)?;
+    }
     Ok(())
 }
 

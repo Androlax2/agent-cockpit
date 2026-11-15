@@ -327,7 +327,8 @@ pub struct Check {
     /// The files it covers, relative to the checkout: a change to one makes its result stale.
     pub artifacts: Vec<String>,
     /// The image a `docker` check runs in (#352); only a docker check names one, and it
-    /// must.
+    /// must, pinned by its digest (`name@sha256:...`, #1392), so a changed image is a
+    /// changed definition.
     pub image: Option<String>,
 }
 
@@ -1241,6 +1242,14 @@ fn checks(layers: &[Layer]) -> Result<Vec<Sourced<Check>>, ConfigError> {
                         check.name
                     )));
                 }
+                (Some(image), true) if !is_pinned_by_digest(image) => {
+                    return Err(invalid(format!(
+                        "{:?} names the image {image:?} without its digest; pin it as \
+                         `name@sha256:<64 hex digits>` (`docker buildx imagetools inspect \
+                         IMAGE` prints it), so a new image is a change to this file",
+                        check.name
+                    )));
+                }
                 _ => {}
             }
             if checks.iter().any(|known| known.value.name == check.name) {
@@ -1321,6 +1330,19 @@ fn is_image_reference(image: &str) -> bool {
         && image
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || "._-/:@".contains(character))
+}
+
+/// Whether `image` names its content: a name, then `@sha256:` and the 64 lowercase hex
+/// digits of its digest.
+fn is_pinned_by_digest(image: &str) -> bool {
+    let Some((name, digest)) = image.split_once("@sha256:") else {
+        return false;
+    };
+    !name.is_empty()
+        && digest.len() == 64
+        && digest
+            .chars()
+            .all(|character| matches!(character, '0'..='9' | 'a'..='f'))
 }
 
 /// Each artifact is a path inside the checkout: relative, without `..`.
