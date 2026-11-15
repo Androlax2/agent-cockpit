@@ -47,7 +47,8 @@ const CONFINED_CHECK: &str =
     "[[checks]]\nname = \"confined\"\ncommand = \"sh confined.sh\"\nenvironment = \"sandbox\"\n";
 
 const DOCKER_CHECK: &str = "[[checks]]\nname = \"contained\"\ncommand = \"touch ran\"\n\
-                            environment = \"docker\"\nimage = \"alpine:3.20\"\n";
+                            environment = \"docker\"\nimage = \"alpine:3.20@sha256:\
+                            0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\n";
 
 const ASKING_CHECK: &str =
     "[[checks]]\nname = \"asking\"\ncommand = \"sh asking.sh\"\nenvironment = \"sandbox\"\n";

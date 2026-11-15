@@ -29,7 +29,8 @@ const CHECKS: &str = "[[checks]]\nname = \"test\"\ncommand = \"echo testing; tes
                       [[checks]]\nname = \"host\"\ncommand = \"touch ran-on-host\"\n\
                       environment = \"native\"\n\n\
                       [[checks]]\nname = \"contained\"\ncommand = \"touch ran-somewhere\"\n\
-                      environment = \"docker\"\nimage = \"alpine:3.20\"\n";
+                      environment = \"docker\"\nimage = \"alpine:3.20@sha256:\
+                      0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\n";
 
 const REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
 

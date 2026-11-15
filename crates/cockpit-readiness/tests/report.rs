@@ -1008,7 +1008,7 @@ fn docker_is_needed_by_the_project_environment_or_by_one_check() {
         ("", false),
         ("[execution]\nenvironment = \"docker\"\n", true),
         (
-            "[[checks]]\nname = \"t\"\ncommand = \"x\"\nenvironment = \"docker\"\nimage = \"alpine\"\n",
+            "[[checks]]\nname = \"t\"\ncommand = \"x\"\nenvironment = \"docker\"\nimage = \"alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"\n",
             true,
         ),
         ("[[checks]]\nname = \"t\"\ncommand = \"x\"\n", false),

@@ -13,7 +13,8 @@ source (head and uncommitted changes), its definition, environment and the files
 - A check runs where the owner's sandbox setting says, and its receipt says where it ran.
   Sandboxed, it has no agent socket and no GitHub token; a check that is
   `unavailable` there names why, and running it again does not change that. A `docker`
-  check names its `image`, which runs in the project's own engine with the checkout at
+  check names its `image` by digest (`name@sha256:...`; a tag alone is refused), which
+  runs in the project's own engine with the checkout at
   its own path; its container reaches only the hosts the project's containers may. Without
   that engine, or with the sandbox off, it is `unavailable`, naming the owner's step.
 - A host a sandboxed check was refused (`403` from its proxy) goes to the owner as one

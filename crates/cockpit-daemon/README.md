@@ -247,7 +247,7 @@ not share code.
   `native` is recorded `unavailable`, never run on the host, and the gate's next action says
   to declare `sandbox` or turn the sandbox off. Under `"off"` every check but `docker` runs
   on the host with the approved commands' environment (Git settings included) and the risk
-  is logged. A `docker` check names its `image`, which runs in a container of the
+  is logged. A `docker` check names its `image`, pinned by digest, which runs in a container of the
   project's engine (#856, #1392): the host's `docker` client runs through `torlek-sandbox`
   as the check run, with the engine's socket bound as a session's (`containers.rs`,
   `check_engine`: verified against the owner's record, shown the checkout masked). The
