@@ -121,7 +121,7 @@ Where no systemd user manager answers, `torlek doctor` names it under `confined 
 A confined run reaches root through Torlek's root-run helper (#1387): sudo runs it as root, and it starts the command's root part in a system service of its own, with limits no request lowers.
 For each `sudo COMMAND` the command line writes out, the run's `sudo` asks the daemon, which checks that the run's own shell started it with those words and that no file the command line runs changed since you approved it. Then it runs `/usr/bin/sudo -A -k -- <helper> root-run`, and the queue asks for your password, the prompt naming the root command. You type it for every root part; nothing caches it.
 A root part writes only the folders named with `--write`, never the checkout, so no root-owned file lands there: a step that must write the checkout runs without `sudo`. It cannot see what the run cannot.
-A refused `sudo` prints `sudo: ` and the reason in the run's output, and the request names it under `hit a limit:`.
+A refused `sudo` prints `sudo: WHY` in the run's output, and the request names it under `hit a limit:`.
 A program the command line starts can still run, in the shell's folder, a `sudo` with the same words as one the line writes out, and a file the line sources (`. ./env.sh`) runs in the run's own shell: either runs only that root part, possibly at another moment, still with your password.
 Torlek's Arch and Debian packages install it as `/usr/lib/torlek/bin/torlek-sandbox`, their own `torlek-sandbox`. With the install script, install it once:
 
