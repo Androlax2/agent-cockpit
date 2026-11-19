@@ -700,7 +700,7 @@ async fn a_confined_card_names_each_root_command_and_what_root_writes() {
         runner.card_limits(&asked).last().unwrap(),
         &format!(
             "runs as root, asking your password each time: `make install`; as root it writes \
-             only {}, and no script or program it starts reaches root",
+             only {}, and a script or program it starts runs nothing else as root",
             site.display()
         )
     );
@@ -740,6 +740,22 @@ async fn a_confined_card_says_why_a_route_without_its_helper_runs_nothing_as_roo
     assert_eq!(
         runner.card_limits(&asked).last().unwrap(),
         "no sudo: the root-run helper is not installed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confined_card_says_a_line_ending_with_a_backslash_runs_nothing_as_root() {
+    let confined = Confined::new().await;
+    let runner = confined.root_runner();
+    let asked = confined
+        .asked_reaching("sudo make install \\", &confined.checkout, Reach::default())
+        .await;
+
+    let root = runner.card_limits(&asked).last().unwrap().clone();
+
+    assert!(
+        root.starts_with("no sudo: its command line ends with a backslash"),
+        "{root}"
     );
 }
 

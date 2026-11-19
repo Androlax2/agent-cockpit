@@ -83,7 +83,9 @@ pub(crate) struct RunRootRoute {
 
 /// What a run's relay needs to decide its asks.
 pub(crate) struct Decider {
-    pub(crate) leader: u32,
+    /// The run's leader, its shell; `None` when the run's session is not known, and then no
+    /// `sudo` of it can be checked.
+    pub(crate) leader: Option<u32>,
     pub(crate) launch: Vec<OsString>,
     pub(crate) shell: FileId,
     pub(crate) written: WrittenSudos,
@@ -292,10 +294,15 @@ impl Decider {
             .map(|word| String::from_utf8(word.clone()))
             .collect::<Result<Vec<String>, _>>()
             .map_err(|_| "its words are not UTF-8".to_owned())?;
-        let Some((_cwd, arguments)) = texts.split_first() else {
+        let Some((folder, arguments)) = texts.split_first() else {
             return Err("the root route named no folder".to_owned());
         };
-        started_by_the_run_shell(pid, self.leader, &self.launch, self.shell, read_link)?;
+        let leader = self.leader.ok_or_else(|| {
+            "the run's terminal session is not known: nothing was asked".to_owned()
+        })?;
+        let folder = program_id(Path::new(folder))
+            .map_err(|why| format!("its folder, as the root part would run in it: {why}"))?;
+        started_by_the_run_shell(pid, leader, &self.launch, self.shell, folder, read_link)?;
         let root = root_argv(arguments)?;
         if !self.written.commands.contains(&root) {
             return Err(format!(
@@ -315,11 +322,11 @@ impl Decider {
     }
 }
 
-/// The program `shell` runs, by its device and inode.
-pub(crate) fn program_id(shell: &Path) -> Result<FileId, String> {
-    std::fs::metadata(shell)
+/// The file at `path`, by its device and inode.
+pub(crate) fn program_id(path: &Path) -> Result<FileId, String> {
+    std::fs::metadata(path)
         .map(|metadata| (metadata.dev(), metadata.ino()))
-        .map_err(|error| format!("{} cannot be read ({error})", shell.display()))
+        .map_err(|error| format!("{} cannot be read ({error})", path.display()))
 }
 
 /// Words as one line, as `torlek-sandbox run-root-route` reads them: each word's bytes in

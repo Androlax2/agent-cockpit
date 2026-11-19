@@ -11,15 +11,17 @@
 //! - **Who started it.** Every process from the `sudo`'s parent up to the run's leader must be
 //!   the run's own shell, as launched: the shell's program, with the launch's arguments
 //!   ([`started_by_the_run_shell`]). Its subshells and pipeline steps are; a script, `make` or
-//!   a program that rewrote its arguments to look like the shell is not. The run's command
-//!   ends with `exit $?` ([`root_routed_command`]), so the shell never runs its last step in
-//!   its own place.
+//!   a program that rewrote its arguments to look like the shell is not. The `sudo` must be in
+//!   the folder it names, which is its parent shell's, so the root part's relative paths are
+//!   the line's. The run's command ends with `exit $?` ([`root_routed_command`]), so the shell
+//!   never runs its last step in its own place.
 //!
-//! What neither check stops: a file the line sources (`. ./env.sh`) runs in the shell itself,
-//! and code of the run that traces the shell (where the host's `ptrace_scope` lets a process
-//! trace a non-child) can make it run anything. Either can run a `sudo` the line writes out
-//! at another moment, or from another folder; the owner still types the password for it,
-//! with its command in the prompt.
+//! What neither check stops: a program the line starts can become the run's `sudo` (`exec`
+//! it) with the words of one the line writes out, in the folder the shell is in; a file the
+//! line sources (`. ./env.sh`) runs in the shell itself; and code of the run that traces the
+//! shell (where the host's `ptrace_scope` lets a process trace a non-child) can make it
+//! change folder first. Each runs only a `sudo` the line writes out, at another moment; the
+//! owner still types the password for it, with its command in the prompt.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -77,7 +79,9 @@ pub(crate) fn written_sudos(command: &str, home: Option<&Path>) -> WrittenSudos 
 }
 
 fn excerpt(characters: &[char], simple: &Simple) -> String {
-    let span = simple.span.start..simple.span.end.max(simple.span.start);
+    // The lexer's span runs past the end of a line that ends with a backslash.
+    let end = simple.span.end.min(characters.len());
+    let span = simple.span.start.min(end)..end;
     let text: String = characters[span].iter().collect();
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -123,18 +127,23 @@ pub(crate) struct Link {
     pub(crate) cmdline: Vec<OsString>,
     /// The program it runs; `None` when it cannot be read.
     pub(crate) program: Option<FileId>,
+    /// Its current folder; `None` when it cannot be read.
+    pub(crate) cwd: Option<FileId>,
 }
 
 /// Whether `forwarder`, the run's `sudo`, was started by the run's own shell: it is in the
 /// session `leader` leads, and its parent and each process above it up to `leader` runs
 /// `shell` with the arguments the run was launched with (`launch`), as a subshell or pipeline
-/// step of it does. A process can rewrite its arguments, never its program. `read` reads a
+/// step of it does. A process can rewrite its arguments, never its program. It is in `cwd`,
+/// the folder it named, and so is its parent: a program that changed folder before becoming
+/// the run's `sudo` would point the root part's relative paths elsewhere. `read` reads a
 /// process.
 pub(crate) fn started_by_the_run_shell(
     forwarder: u32,
     leader: u32,
     launch: &[OsString],
     shell: FileId,
+    cwd: FileId,
     read: impl Fn(u32) -> Result<Link, String>,
 ) -> Result<(), String> {
     let session = i32::try_from(leader).map_err(|_| format!("no session is {leader}"))?;
@@ -144,9 +153,20 @@ pub(crate) fn started_by_the_run_shell(
             "process {forwarder} is not in the run's terminal session: nothing was asked"
         ));
     }
+    if sudo.cwd != Some(cwd) {
+        return Err(format!(
+            "process {forwarder} is not in the folder it names: nothing was asked"
+        ));
+    }
     let mut pid = sudo.parent;
-    for _ in 0..ANCESTRY_MAX {
+    for at in 0..ANCESTRY_MAX {
         let link = read(pid)?;
+        if at == 0 && link.cwd != sudo.cwd {
+            return Err(format!(
+                "this sudo is in another folder than process {pid}, the shell that started it: \
+                 a program the command line runs moved it, and such a sudo never reaches root"
+            ));
+        }
         if link.session != session || link.cmdline != launch || link.program != Some(shell) {
             return Err(format!(
                 "this sudo was started by process {pid}, not by the command line you approved: \
@@ -193,6 +213,9 @@ pub(crate) fn read_link(pid: u32) -> Result<Link, String> {
         parent: process.parent,
         session: process.session,
         program,
+        cwd: std::fs::metadata(format!("/proc/{pid}/cwd"))
+            .ok()
+            .map(|metadata| (metadata.dev(), metadata.ino())),
         cmdline: cmdline
             .split(|byte| *byte == 0)
             .filter(|word| !word.is_empty())
@@ -295,6 +318,8 @@ mod tests {
     const LEADER: u32 = 100;
     const SHELL: FileId = (1, 10);
     const OTHER_PROGRAM: FileId = (1, 20);
+    const CHECKOUT: FileId = (2, 30);
+    const ELSEWHERE: FileId = (2, 40);
 
     fn launch() -> Vec<OsString> {
         ["/bin/sh", "-c", "sudo make install\nexit $?"]
@@ -319,6 +344,7 @@ mod tests {
                         session: *session,
                         cmdline,
                         program: Some(program),
+                        cwd: Some(CHECKOUT),
                     },
                 )
             })
@@ -330,7 +356,7 @@ mod tests {
     }
 
     fn check_table(table: &HashMap<u32, Link>, forwarder: u32) -> Result<(), String> {
-        started_by_the_run_shell(forwarder, LEADER, &launch(), SHELL, |pid| {
+        started_by_the_run_shell(forwarder, LEADER, &launch(), SHELL, CHECKOUT, |pid| {
             table
                 .get(&pid)
                 .cloned()
@@ -387,6 +413,28 @@ mod tests {
     }
 
     #[test]
+    fn a_sudo_a_program_moved_to_another_folder_is_refused() {
+        let mut table = table(&[
+            (LEADER, 1, 100, &[]),
+            (200, LEADER, 100, &["torlek-sandbox"]),
+        ]);
+        table.get_mut(&200).unwrap().cwd = Some(ELSEWHERE);
+
+        assert!(check_table(&table, 200).is_err(), "it names the checkout");
+        let refused = started_by_the_run_shell(200, LEADER, &launch(), SHELL, ELSEWHERE, |pid| {
+            table
+                .get(&pid)
+                .cloned()
+                .ok_or_else(|| format!("process {pid} is gone"))
+        })
+        .unwrap_err();
+        assert!(
+            refused.contains("another folder than process 100"),
+            "{refused}"
+        );
+    }
+
+    #[test]
     fn a_sudo_outside_the_runs_session_is_refused() {
         let processes: &[(u32, u32, i32, &[&str])] = &[
             (LEADER, 1, 100, &[]),
@@ -405,6 +453,14 @@ mod tests {
         ];
 
         assert!(check(processes, LEADER).is_err());
+    }
+
+    #[test]
+    fn a_line_ending_with_a_backslash_is_read() {
+        // No root route serves it (`root_routed_command`); its card must still be drawn.
+        let written = written_sudos("sudo make install \\", None);
+
+        assert_eq!(written.commands.len(), 1, "{written:?}");
     }
 
     #[test]

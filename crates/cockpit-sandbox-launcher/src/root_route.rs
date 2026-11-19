@@ -3,13 +3,14 @@
 //!
 //! - `torlek-sandbox run-root-route FOLDER SUDO ASKPASS RUN TERM [--write DIR]... [--hide
 //!   DIR]...`, started by the daemon before the run: listens on `FOLDER`'s socket, which only
-//!   that run's service is shown, prints `ready`, then serves one `sudo` at a time:
+//!   that run's service is shown, prints `ready`, then serves each `sudo` as it connects, so
+//!   two in one pipeline run together:
 //!   1. the run's `sudo` connects as the owner's user and sends
 //!      [`ROOT_RUN_DESCRIPTORS_BYTE`] with its standard input, output and error, then one line
 //!      of [hex words](encode_words): its folder and its arguments;
-//!   2. it prints `ask N PID WORD...` (the same words) and reads the daemon's decision on its
-//!      standard input: `go N HELPER WORD...` (the helper and the root command's words, hex)
-//!      or `refuse N WHY` (hex);
+//!   2. it prints `ask N PID WORD...` (the same words); the daemon's decision comes on its
+//!      standard input, in any order with the others: `go N HELPER WORD...` (the helper and
+//!      the root command's words, hex) or `refuse N WHY` (hex);
 //!   3. on `go` it runs `SUDO -A -k -p PROMPT -- HELPER root-run` with one end of a socket pair
 //!      as its standard input and the run's standard error as its own, sends the helper the
 //!      run's descriptors and the [`RootRunRequest`] (`writable` the `--write` folders, `hidden`
@@ -24,6 +25,7 @@
 //!
 //! The decision is the daemon's: this checks only that the run's `sudo` runs as this user.
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, IoSlice, Read, Write};
 use std::mem::MaybeUninit;
@@ -31,6 +33,8 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::mpsc::{Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cockpit_sandbox::{MAX_ROOT_RUN_REQUEST_BYTES, ROOT_RUN_DESCRIPTORS_BYTE, RootRunRequest};
@@ -75,7 +79,7 @@ pub fn decode_words(line: &str) -> Result<Vec<Vec<u8>>, String> {
     line.split(' ')
         .filter(|word| !word.is_empty())
         .map(|word| {
-            if word.len() % 2 != 0 {
+            if word.len() % 2 != 0 || !word.is_ascii() {
                 return Err(format!("{word:?} is no hex word"));
             }
             (0..word.len())
@@ -138,17 +142,58 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     })
     .map_err(|error| format!("cannot listen in {}: {error}", Path::new(folder).display()))?;
     say(READY)?;
+    let waiting = Waiting::default();
+    accept(listener, Arc::new(relay), Arc::clone(&waiting))?;
     let mut decisions = std::io::stdin().lock();
-    for (ask, connection) in (1_u64..).zip(listener.incoming()) {
-        let connection =
-            connection.map_err(|error| format!("cannot take a run's sudo: {error}"))?;
-        let ended = match relay.serve(&connection, ask, &mut decisions) {
-            Ok(ended) => ended,
-            Err(Stop(reason)) => return Err(reason),
+    loop {
+        let (ask, decided) = decision(&mut decisions).map_err(|Stop(reason)| reason)?;
+        let Some(asking) = waiting
+            .lock()
+            .expect("the waiting lock is never poisoned")
+            .remove(&ask)
+        else {
+            return Err(format!(
+                "the daemon answered ask {ask}, which waits for nothing"
+            ));
         };
-        say(&format!("ended {ask} {ended}"))?;
+        // Its thread waits for this alone, and only goes once it has it.
+        let _ = asking.send(decided);
     }
-    Ok(ExitCode::SUCCESS)
+}
+
+/// Each `sudo` of the run waiting for the daemon's decision, by its ask's number.
+type Waiting = Arc<Mutex<HashMap<u64, Sender<Decision>>>>;
+
+/// Takes each `sudo` of the run as it connects, on a thread of its own. A relay that can take
+/// no more stops: the run's next `sudo` would wait for nothing.
+fn accept(listener: UnixListener, relay: Arc<Relay>, waiting: Waiting) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name("root-route-accept".to_owned())
+        .spawn(move || {
+            for (ask, connection) in (1_u64..).zip(listener.incoming()) {
+                let connection = match connection {
+                    Ok(connection) => connection,
+                    Err(error) => {
+                        eprintln!("torlek-sandbox: cannot take a run's sudo: {error}");
+                        std::process::exit(125);
+                    }
+                };
+                let (relay, waiting) = (Arc::clone(&relay), Arc::clone(&waiting));
+                let served = std::thread::Builder::new()
+                    .name(format!("root-route-ask-{ask}"))
+                    .spawn(move || {
+                        let ended = relay.serve(&connection, ask, &waiting);
+                        // A daemon that cannot be told is gone, which ends the relay.
+                        let _ = say(&format!("ended {ask} {ended}"));
+                    });
+                if let Err(error) = served {
+                    eprintln!("torlek-sandbox: cannot serve a run's sudo: {error}");
+                    std::process::exit(125);
+                }
+            }
+        })
+        .map(drop)
+        .map_err(|error| format!("cannot take the run's sudo: {error}"))
 }
 
 /// The `--write` and `--hide` folders, each absolute.
@@ -196,26 +241,29 @@ struct Asked {
 
 impl Relay {
     /// One `sudo` of the run, to its end; what ended it, for the daemon's log.
-    fn serve(
-        &self,
-        connection: &UnixStream,
-        ask: u64,
-        decisions: &mut impl BufRead,
-    ) -> Result<String, Stop> {
+    fn serve(&self, connection: &UnixStream, ask: u64, waiting: &Waiting) -> String {
         let asked = match self.asked(connection) {
             Ok(asked) => asked,
-            Err(why) => return Ok(refuse(connection, &why)),
+            Err(why) => return refuse(connection, &why),
         };
+        let (decide, decided) = channel();
+        waiting
+            .lock()
+            .expect("the waiting lock is never poisoned")
+            .insert(ask, decide);
         let words = encode_words(asked.words.iter().map(Vec::as_slice));
-        say(&format!("ask {ask} {} {words}", asked.pid)).map_err(Stop)?;
-        match decision(decisions, ask)? {
-            Decision::Refuse(why) => Ok(refuse(connection, &why)),
-            Decision::Go { helper, argv } => Ok(
+        if let Err(why) = say(&format!("ask {ask} {} {words}", asked.pid)) {
+            return refuse(connection, &why);
+        }
+        match decided.recv() {
+            Err(_) => refuse(connection, "the daemon is gone"),
+            Ok(Decision::Refuse(why)) => refuse(connection, &why),
+            Ok(Decision::Go { helper, argv }) => {
                 match self.root_part(connection, &asked, ask, &helper, argv) {
                     Ok(answer) => answer,
                     Err(why) => refuse(connection, &why),
-                },
-            ),
+                }
+            }
         }
     }
 
@@ -313,8 +361,10 @@ impl Relay {
 
 /// Tells the run's `sudo` it was refused, and why; the same for the daemon's log.
 fn refuse(connection: &UnixStream, why: &str) -> String {
-    let _ = writeln!(&*connection, "refused: {why}");
-    format!("refused: {why}")
+    match writeln!(&*connection, "refused: {why}") {
+        Ok(()) => format!("refused: {why}"),
+        Err(error) => format!("refused: {why} (the run's sudo had gone: {error})"),
+    }
 }
 
 /// The daemon's decision on one ask.
@@ -323,26 +373,25 @@ enum Decision {
     Refuse(String),
 }
 
-fn decision(decisions: &mut impl BufRead, ask: u64) -> Result<Decision, Stop> {
+/// The daemon's next decision, and the number of the ask it answers.
+fn decision(decisions: &mut impl BufRead) -> Result<(u64, Decision), Stop> {
     let mut line = String::new();
     match decisions.read_line(&mut line) {
         Ok(0) => return Err(Stop("the daemon is gone".to_owned())),
         Ok(_) => {}
         Err(error) => return Err(Stop(format!("cannot read the daemon: {error}"))),
     }
-    let out_of_turn = || Stop(format!("the daemon answered {line:?} to ask {ask}"));
+    let unreadable = || Stop(format!("the daemon answered {line:?}"));
     let mut fields = line.trim_end_matches('\n').splitn(3, ' ');
     let (Some(verb), Some(number), rest) = (fields.next(), fields.next(), fields.next()) else {
-        return Err(out_of_turn());
+        return Err(unreadable());
     };
-    if number != ask.to_string() {
-        return Err(out_of_turn());
-    }
+    let ask: u64 = number.parse().map_err(|_| unreadable())?;
     let words = decode_words(rest.unwrap_or_default()).map_err(Stop)?;
-    match verb {
+    let decided = match verb {
         "refuse" => {
             let why = words.into_iter().next().unwrap_or_default();
-            Ok(Decision::Refuse(String::from_utf8_lossy(&why).into_owned()))
+            Decision::Refuse(String::from_utf8_lossy(&why).into_owned())
         }
         "go" if words.len() >= 2 => {
             let mut words = words.into_iter();
@@ -352,10 +401,11 @@ fn decision(decisions: &mut impl BufRead, ask: u64) -> Result<Decision, Stop> {
                 .map(|word| text(word, "root command"))
                 .collect::<Result<_, _>>()
                 .map_err(Stop)?;
-            Ok(Decision::Go { helper, argv })
+            Decision::Go { helper, argv }
         }
-        _ => Err(out_of_turn()),
-    }
+        _ => return Err(unreadable()),
+    };
+    Ok((ask, decided))
 }
 
 /// `program` as the helper runs it: a path from `cwd`, or found in [`ROOT_PATH`].
@@ -438,10 +488,12 @@ fn relay_answers(run: &UnixStream, helper: &UnixStream) -> Result<Option<String>
         .map_err(|error| format!("cannot watch the run's sudo: {error}"))?;
     let mut last = None;
     for line in BufReader::new(helper).lines() {
-        let Ok(line) = line else { break };
+        let line = line.map_err(|error| format!("cannot read the helper's answers: {error}"))?;
         if line.starts_with("refused: ") || line.starts_with("exited ") {
-            let _ = writeln!(&*run, "{line}");
-            last = Some(line);
+            last = Some(match writeln!(&*run, "{line}") {
+                Ok(()) => line,
+                Err(error) => format!("{line} (the run's sudo had gone: {error})"),
+            });
         }
     }
     Ok(last)
@@ -512,7 +564,7 @@ mod tests {
 
     #[test]
     fn a_word_that_is_no_hex_is_refused() {
-        for line in ["abc", "zz", "0g"] {
+        for line in ["abc", "zz", "0g", "aé0"] {
             assert!(decode_words(line).is_err(), "{line}");
         }
     }

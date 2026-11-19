@@ -313,6 +313,10 @@ struct RunServices<'run> {
 }
 
 /// A confined run's root route, as its run uses it.
+/// Why a command line that writes out a `sudo` gets no root route: the card says it too.
+const ENDS_WITH_A_BACKSLASH: &str =
+    "its command line ends with a backslash, which would join it to what the root route adds";
+
 struct RoutedRoot {
     relay: RunRootRoute,
     /// The run's command line, ending with `exit $?` (`root_route.rs`).
@@ -392,13 +396,18 @@ pub(crate) struct LiveRun {
     is_stopped_by_owner: AtomicBool,
     sudo_asks: Mutex<SudoAsks>,
     sudo_sightings: Mutex<SudoSightings>,
-    /// A confined run's root route (#1387): the parent of each sudo it starts.
-    root_relay: Option<u32>,
+    /// A confined run's root route (#1387): the parent of each sudo it starts. The relay is
+    /// never reaped while it is here, so its pid names no other process; it is taken before
+    /// the relay is ended.
+    root_relay: Mutex<Option<u32>>,
 }
 
 impl LiveRun {
     pub(crate) fn root_relay(&self) -> Option<u32> {
-        self.root_relay
+        *self
+            .root_relay
+            .lock()
+            .expect("the root relay lock is never poisoned")
     }
 
     /// Fingerprints `secret`, typed for run `id`, so its output redacts it (#1386), then wipes
@@ -593,7 +602,12 @@ impl Runner {
         let available = self
             .settings
             .root_route()
-            .and_then(|(route, _)| (route.locate)());
+            .and_then(|(route, _)| (route.locate)())
+            .and_then(|_| {
+                root_routed_command(&run.command)
+                    .map(|_| ())
+                    .ok_or_else(|| ENDS_WITH_A_BACKSLASH.to_owned())
+            });
         let root = match available {
             Err(why) => format!("no sudo: {why}"),
             Ok(_) => {
@@ -615,7 +629,7 @@ impl Runner {
                 };
                 format!(
                     "runs as root, asking your password each time: {}; as root it {root_writes}, \
-                     and no script or program it starts reaches root",
+                     and a script or program it starts runs nothing else as root",
                     commands.join(", ")
                 )
             }
@@ -706,7 +720,7 @@ impl Runner {
             is_stopped_by_owner: AtomicBool::new(false),
             sudo_asks: Mutex::default(),
             sudo_sightings: Mutex::default(),
-            root_relay: root.as_ref().and_then(|root| root.relay.pid()),
+            root_relay: Mutex::new(root.as_ref().and_then(|root| root.relay.pid())),
         });
         self.live
             .lock()
@@ -724,6 +738,10 @@ impl Runner {
             Some(egress) => egress.end().await,
             None => Ok(Vec::new()),
         };
+        live.root_relay
+            .lock()
+            .expect("the root relay lock is never poisoned")
+            .take();
         let root_refused = match root {
             Some(root) => root.relay.end().await,
             None => Vec::new(),
@@ -810,13 +828,8 @@ impl Runner {
         let Ok((route, askpass)) = self.settings.root_route() else {
             return Ok(None);
         };
-        let command = root_routed_command(&run.command).ok_or_else(|| {
-            NoResult::NotStarted(
-                "its command line ends with a backslash, which would join it to what the root \
-                 route adds"
-                    .to_owned(),
-            )
-        })?;
+        let command = root_routed_command(&run.command)
+            .ok_or_else(|| NoResult::NotStarted(ENDS_WITH_A_BACKSLASH.to_owned()))?;
         let shell = program_id(&self.settings.shell).map_err(NoResult::NotStarted)?;
         askpass.write_launchers().map_err(|error| {
             NoResult::NotStarted(format!(
@@ -957,7 +970,7 @@ impl Runner {
             let leader = live
                 .session()
                 .and_then(|session| u32::try_from(session).ok());
-            if let (Some(root), Some(leader)) = (root.as_deref_mut(), leader) {
+            if let Some(root) = root.as_deref_mut() {
                 let decider = Arc::new(Decider {
                     leader,
                     launch,

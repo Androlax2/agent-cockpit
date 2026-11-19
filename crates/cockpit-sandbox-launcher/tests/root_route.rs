@@ -141,9 +141,14 @@ fn text(bytes: &[u8]) -> String {
 
 /// The run's `sudo true x`, let go: what it exited with and printed.
 fn let_go(route: &mut Route) -> Output {
+    let_go_as(route, 1)
+}
+
+/// The run's `sudo true x` as its `number`th ask, let go.
+fn let_go_as(route: &mut Route, number: u64) -> Output {
     let sudo = route.sudo(&["-A", "-k", "true", "x"]);
     let ask = route.next();
-    assert_eq!(&ask[..2], ["ask", "1"], "{ask:?}");
+    assert_eq!(ask[..2], ["ask".to_owned(), number.to_string()], "{ask:?}");
     assert_eq!(ask[2], sudo.id().to_string());
     let words: Vec<String> = ask[3..].iter().map(|word| unhex(word)).collect();
     assert_eq!(
@@ -158,7 +163,7 @@ fn let_go(route: &mut Route) -> Output {
     );
     let helper = route.helper().display().to_string();
     route.decide(&format!(
-        "go 1 {} {} {}",
+        "go {number} {} {} {}",
         hex(&helper),
         hex("true"),
         hex("x")
@@ -226,6 +231,36 @@ fn sudo_asks_through_the_askpass_with_a_prompt_naming_the_root_part() {
         text(&output.stderr).contains("sudo says hello"),
         "sudo's messages reach the run's terminal"
     );
+}
+
+#[test]
+fn two_sudos_of_one_pipeline_are_served_together() {
+    let mut route = Route::start(false);
+    let first = route.sudo(&["true", "x"]);
+    assert_eq!(&route.next()[..2], ["ask", "1"]);
+    let second = route.sudo(&["true", "x"]);
+    assert_eq!(&route.next()[..2], ["ask", "2"]);
+    let helper = hex(&route.helper().display().to_string());
+
+    route.decide(&format!("go 2 {helper} {} {}", hex("true"), hex("x")));
+    assert_eq!(second.wait_with_output().unwrap().status.code(), Some(7));
+    route.decide(&format!("go 1 {helper} {} {}", hex("true"), hex("x")));
+
+    assert_eq!(first.wait_with_output().unwrap().status.code(), Some(7));
+}
+
+#[test]
+fn a_connection_that_sends_no_terminal_ends_that_ask_alone() {
+    let mut route = Route::start(false);
+    let mut stray =
+        std::os::unix::net::UnixStream::connect(route.folder().join("root-route.sock")).unwrap();
+    writeln!(stray, "aé0").unwrap();
+    drop(stray);
+    assert_eq!(&route.next()[..3], ["ended", "1", "refused:"]);
+
+    let output = let_go_as(&mut route, 2);
+
+    assert_eq!(output.status.code(), Some(7), "{}", text(&output.stderr));
 }
 
 #[test]
