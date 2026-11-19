@@ -849,6 +849,39 @@ async fn confined_runs_without_a_systemd_manager_block_doctor_naming_the_opt_out
     );
 }
 
+/// #1387: only confined runs need a route to root; where every one is refused, the
+/// `root route` line points at the `confined runs` line and blocks nothing of its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_root_route_defers_to_confined_runs_that_are_refused() {
+    let home = Home::new();
+    home.write_owner_config("[agents]\nconfined_runs = \"required\"\n");
+    let _daemon = home.start();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    let (line, _) = requirement(&report, "root route");
+    assert_eq!(status(line), "available", "{line}");
+    assert!(line.contains("`confined runs` line"), "{line}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unconfined_runs_use_no_root_route() {
+    let home = Home::new();
+    let _daemon = home.start();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    assert!(doctor.status.success(), "{report}");
+    let (line, _) = requirement(&report, "root route");
+    assert_eq!(status(line), "available", "{line}");
+    assert!(
+        line.contains("not used: approved runs are unconfined"),
+        "{line}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn unconfined_runs_are_reported_loudly_without_blocking() {
     let home = Home::new();

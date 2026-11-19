@@ -31,6 +31,7 @@ mod projects;
 mod quota_resume;
 mod readiness;
 mod resources;
+mod root_route;
 mod routes;
 mod scheduling;
 mod serve;

@@ -29,8 +29,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use cockpit_sandbox::{
-    MAX_ROOT_RUN_REQUEST_BYTES, ROOT_RUN_DESCRIPTORS_BYTE, ROOT_RUN_MIN_SYSTEMD, RootFloor,
-    RootRunRequest, root_run_unit,
+    MAX_ROOT_RUN_REQUEST_BYTES, ROOT_RUN_DESCRIPTORS_BYTE, RootFloor, RootRunRequest,
+    root_run_unit, systemd_takes_the_floor,
 };
 
 use crate::handoff;
@@ -211,19 +211,7 @@ fn systemd_holds_the_floor() -> Result<(), String> {
         .stderr(Stdio::null())
         .output()
         .map_err(|error| format!("cannot run {SYSTEMCTL}: {error}"))?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let version = text
-        .split_whitespace()
-        .nth(1)
-        .and_then(|version| version.parse::<u32>().ok())
-        .ok_or_else(|| format!("cannot tell systemd's version from {text:?}"))?;
-    if version < ROOT_RUN_MIN_SYSTEMD {
-        return Err(format!(
-            "systemd {version} is older than {ROOT_RUN_MIN_SYSTEMD}, which a root part's unit \
-             needs (PrivatePIDs=)"
-        ));
-    }
-    Ok(())
+    systemd_takes_the_floor(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// Torlek's folders under `home` a profile made: each `torlek*` in its configuration and state

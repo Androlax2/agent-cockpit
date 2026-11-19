@@ -484,6 +484,13 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         uninstall: bool,
     },
+    /// Owner only: the root step that installs the root-run helper on the install script's
+    /// path (#1387), or with `uninstall` removes it, for the owner's terminal to run with
+    /// sudo: `torlek setup root-run`. The daemon runs nothing as root.
+    RootRunHelperStep {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        uninstall: bool,
+    },
     /// Owner only: prepare a fresh home to sign `account` of `provider` in (#59); the answer
     /// is the harness's sign-in, which the owner's terminal runs with that home.
     AccountSignIn {
@@ -1273,6 +1280,13 @@ pub enum Reply {
     /// root with `helper` as its one argument, the `torlek-sandbox` the daemon runs, which
     /// the setup step copies.
     MasksHelperStep {
+        script: String,
+        helper: String,
+    },
+    /// The root step `root-run-helper-step` asked for (#1387): a POSIX `sh` script to run as
+    /// root with `helper` as its one argument, the `torlek-sandbox` the daemon runs, which
+    /// the setup step copies.
+    RootRunHelperStep {
         script: String,
         helper: String,
     },

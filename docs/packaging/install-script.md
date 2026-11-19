@@ -38,6 +38,10 @@ The one root step a sandboxed project's engine needs, Torlek's masks helper (#39
 owner typing the password ([User guide](../USER-GUIDE.md)). The script itself never does. It
 installs the files the [AUR](aur.md) and [Debian](deb.md) packages install, under
 `/etc/systemd/system` and `/usr/local/lib` instead of `/usr/lib`.
+The root-run helper confined runs are to reach root through (#1387) is
+`torlek setup root-run`, which also calls sudo once: it copies the owner's `torlek-sandbox` to
+`/usr/local/lib/torlek/root-run/torlek-sandbox`, owned by root, where the packages' helper is
+their own `/usr/lib/torlek/bin/torlek-sandbox`.
 
 `--check` does steps 1 to 4 and reports what installing would change, changing nothing. Files
 given with `--archive` and `--sums` are checked even when that release is already installed.

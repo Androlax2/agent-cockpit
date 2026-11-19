@@ -160,7 +160,10 @@ async fn report(
     };
     let daemon_lines: Vec<cockpit_readiness::Requirement> = clipboard
         .into_iter()
-        .chain([confined_runs_requirement(&context).await])
+        .chain([
+            confined_runs_requirement(&context).await,
+            crate::root_route::requirement(&context).await,
+        ])
         .collect();
     let mut host = host_facts(&context);
     // Each provider's status command takes its own time (opencode's most of a second), so
@@ -315,7 +318,7 @@ pub(crate) fn compose_files(dir: &Path) -> Vec<cockpit_readiness::ComposeFile> {
 }
 
 /// `report` with what only the daemon knows: the disk guard's reading and `lines`, the
-/// clipboard's and the confined runs'.
+/// clipboard's, the confined runs' and the root route's.
 fn with_daemon_lines(
     mut report: Report,
     context: &Context,
