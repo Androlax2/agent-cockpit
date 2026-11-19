@@ -423,7 +423,11 @@ pub enum Command {
     /// Owner only: the network requests still asking, oldest first (#674).
     NetworkList,
     /// Owner only: the network requests the owner decided, oldest decision first (#1252).
-    NetworkDecided,
+    /// `since` keeps those decided at or after that time, in seconds since 1970.
+    NetworkDecided {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<i64>,
+    },
     /// Owner only: let the request's destination through, for the rest of its session or,
     /// `always`, for its project through a revocable grant. `through` names the client.
     NetworkAllow {

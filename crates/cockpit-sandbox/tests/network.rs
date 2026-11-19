@@ -902,7 +902,7 @@ async fn the_decided_list_holds_every_decision_oldest_first_and_no_asking_reques
     store.allow(allowed, true, DECIDED_AT + 10).await.unwrap();
     let read = store.database.read().await.unwrap();
 
-    let decided = cockpit_sandbox::decided_network_requests(&read)
+    let decided = cockpit_sandbox::decided_network_requests(&read, None)
         .await
         .unwrap();
 
@@ -917,6 +917,52 @@ async fn the_decided_list_holds_every_decision_oldest_first_and_no_asking_reques
             (allowed, NetworkRequestState::AllowedAlways),
         ]
     );
+}
+
+/// Without a `since` nothing is filtered: a decision stamped by a clock set before 1970
+/// stays listed, where a default of 0 would hide it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_decided_list_without_a_since_keeps_a_decision_stamped_before_1970() {
+    let store = store().await;
+    let denied = store.file("s1", "app").await.unwrap();
+    let write = store.database.write().await.unwrap();
+    cockpit_sandbox::deny_network_request(&write, denied, Some(OwnerClient::Cli), -5)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    let read = store.database.read().await.unwrap();
+
+    let decided = cockpit_sandbox::decided_network_requests(&read, None)
+        .await
+        .unwrap();
+
+    let ids: Vec<i64> = decided.iter().map(|request| request.id).collect();
+    assert_eq!(ids, [denied]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_decided_list_since_a_time_keeps_the_decisions_at_or_after_it() {
+    let store = store().await;
+    let denied_before = store.file("s1", "app").await.unwrap();
+    let allowed_at = store.file("s2", "app").await.unwrap();
+    let allowed_after = store.file("s3", "app").await.unwrap();
+    store.deny(denied_before).await;
+    store
+        .allow(allowed_at, false, DECIDED_AT + 10)
+        .await
+        .unwrap();
+    store
+        .allow(allowed_after, false, DECIDED_AT + 20)
+        .await
+        .unwrap();
+    let read = store.database.read().await.unwrap();
+
+    let decided = cockpit_sandbox::decided_network_requests(&read, Some(DECIDED_AT + 10))
+        .await
+        .unwrap();
+
+    let ids: Vec<i64> = decided.iter().map(|request| request.id).collect();
+    assert_eq!(ids, [allowed_at, allowed_after]);
 }
 
 fn check_run(run: &str) -> Subject {

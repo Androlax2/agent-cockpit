@@ -205,7 +205,8 @@ torlek network grants [PROJECT]
 torlek network revoke GRANT        # closes the tunnels it carried
 ```
 
-`torlek network list --all` lists the requests you decided instead, oldest decision first: `network`, id, state (`allowed-once`, `allowed-always` or `denied`), session, project, `host:port` and the seconds from the request to your decision.
+`torlek network list --all [--since 2h|RFC3339]` lists the requests you decided instead, oldest decision first: `network`, id, state (`allowed-once`, `allowed-always` or `denied`), session, project, `host:port` and the seconds from the request to your decision.
+`--since` keeps the decisions made from that time on, as it does for `torlek approval list --all`.
 Like the approval list, it is read-only and only the owner's socket answers it.
 
 In the pane, `y` allows once, `a` allows always and `x` denies.

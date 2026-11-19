@@ -775,17 +775,20 @@ pub async fn asking_network_requests(
     Ok(requests)
 }
 
-/// Every request the owner decided, oldest decision first (#1252).
+/// Every request the owner decided, oldest decision first (#1252); `since` keeps those
+/// decided at or after it.
 pub async fn decided_network_requests(
     connection: &Connection,
+    since: Option<i64>,
 ) -> Result<Vec<NetworkRequest>, NetworkError> {
     let mut rows = connection
         .query(
             &format!(
                 "SELECT {REQUEST_COLUMNS} FROM sandbox_network_requests
-                 WHERE decided_at IS NOT NULL ORDER BY decided_at, id"
+                 WHERE decided_at IS NOT NULL AND decided_at >= ?1
+                 ORDER BY decided_at, id"
             ),
-            (),
+            [since.unwrap_or(i64::MIN)],
         )
         .await?;
     let mut requests = Vec::new();

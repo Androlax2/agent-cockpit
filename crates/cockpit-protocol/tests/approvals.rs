@@ -389,7 +389,16 @@ fn the_decided_lists_round_trip_through_their_wire_forms() {
             },
             json!({"kind": "approval-decided", "since": 1_767_323_045}),
         ),
-        (Command::NetworkDecided, json!({"kind": "network-decided"})),
+        (
+            Command::NetworkDecided { since: None },
+            json!({"kind": "network-decided"}),
+        ),
+        (
+            Command::NetworkDecided {
+                since: Some(1_767_323_045),
+            },
+            json!({"kind": "network-decided", "since": 1_767_323_045}),
+        ),
     ] {
         let wire = json!({"id": 1, "command": wire});
 

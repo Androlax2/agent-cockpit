@@ -25,8 +25,10 @@ const OWNER_VERBS: [&[&str]; 4] = [
 ];
 
 /// #674: a sandboxed agent never reads or decides the hosts it was refused.
-const NETWORK_VERBS: [&[&str]; 5] = [
+const NETWORK_VERBS: [&[&str]; 7] = [
     &["network", "list"],
+    &["network", "list", "--all"],
+    &["network", "list", "--all", "--since", "1d"],
     &["network", "allow", "1", "--always"],
     &["network", "deny", "1"],
     &["network", "grants"],
