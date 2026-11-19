@@ -919,6 +919,27 @@ async fn the_decided_list_holds_every_decision_oldest_first_and_no_asking_reques
     );
 }
 
+/// Without a `since` nothing is filtered: a decision stamped by a clock set before 1970
+/// stays listed, where a default of 0 would hide it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_decided_list_without_a_since_keeps_a_decision_stamped_before_1970() {
+    let store = store().await;
+    let denied = store.file("s1", "app").await.unwrap();
+    let write = store.database.write().await.unwrap();
+    cockpit_sandbox::deny_network_request(&write, denied, Some(OwnerClient::Cli), -5)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    let read = store.database.read().await.unwrap();
+
+    let decided = cockpit_sandbox::decided_network_requests(&read, None)
+        .await
+        .unwrap();
+
+    let ids: Vec<i64> = decided.iter().map(|request| request.id).collect();
+    assert_eq!(ids, [denied]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_decided_list_since_a_time_keeps_the_decisions_at_or_after_it() {
     let store = store().await;

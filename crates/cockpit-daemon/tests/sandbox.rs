@@ -3026,8 +3026,8 @@ async fn the_decided_list_keeps_a_denied_request_the_open_list_dropped() {
     assert_eq!(owner_network(&home, &["list"]).await, "");
 }
 
-/// #1252: `list --all --since` keeps the decisions made at or after that time and leaves
-/// out the older ones, on the owner's socket and from the owner's shell.
+/// #1252: the decided list `since` a time keeps the decisions made at or after it and leaves
+/// out the older ones, on the owner's socket.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_decided_list_since_a_time_leaves_out_the_decisions_before_it() {
     let home = Home::new();
@@ -3044,11 +3044,22 @@ async fn the_decided_list_since_a_time_leaves_out_the_decisions_before_it() {
 
     let from_the_decision = decided_since(&owner, Some(decided_at)).await;
     let after_the_decision = decided_since(&owner, Some(decided_at + 1)).await;
-    let in_the_last_hour = owner_network(&home, &["list", "--all", "--since", "1h"]).await;
 
     let ids: Vec<i64> = from_the_decision.iter().map(|request| request.id).collect();
     assert_eq!(ids, [1]);
     assert!(after_the_decision.is_empty(), "{after_the_decision:?}");
+}
+
+/// #1252: from the owner's shell, `list --all --since 1h` prints the decision just made.
+#[tokio::test(flavor = "multi_thread")]
+async fn network_list_all_since_an_hour_prints_a_decision_just_made() {
+    let home = Home::new();
+    let agent = sandboxed_agent(&home, |_| {}).await;
+    asked_and_listed(&home, &agent).await;
+    owner_network(&home, &["deny", "1"]).await;
+
+    let in_the_last_hour = owner_network(&home, &["list", "--all", "--since", "1h"]).await;
+
     assert!(
         in_the_last_hour.starts_with("network\t1\tdenied\t"),
         "{in_the_last_hour}"

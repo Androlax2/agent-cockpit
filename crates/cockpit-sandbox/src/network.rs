@@ -788,7 +788,7 @@ pub async fn decided_network_requests(
                  WHERE decided_at IS NOT NULL AND decided_at >= ?1
                  ORDER BY decided_at, id"
             ),
-            [since.unwrap_or(0)],
+            [since.unwrap_or(i64::MIN)],
         )
         .await?;
     let mut requests = Vec::new();
