@@ -15,11 +15,13 @@ use cockpit_sandbox::{
 /// The masks helper's copy, which shares `/usr/local/lib/torlek`.
 const MASKS_HELPER_COPY: &str = "/usr/local/lib/torlek/bin/torlek-sandbox";
 
-/// `script` runs as root of a user namespace whose `/usr/local/lib` starts as the folder the
-/// run before left, and whose `/usr/lib` holds a package's helper when asked.
+/// `script` runs as root of a user namespace whose `/usr/local` is its own, `/usr/local/lib`
+/// of mode `$LIB_MODE` starting as the folder the run before left, and whose `/usr/lib` holds a
+/// package's helper when asked.
 const STEP: &str = r#"set -eu
 out=$1 script=$2 helper=$3 is_packaged=$4
-mount -t tmpfs none /usr/local/lib
+mount -t tmpfs -o mode=755 none /usr/local
+mkdir -m "$LIB_MODE" /usr/local/lib
 [ ! -d "$out/root/usr/local/lib" ] || cp -a "$out/root/usr/local/lib/." /usr/local/lib/
 if [ "$is_packaged" = yes ]; then
     mkdir -p "$out/upper" "$out/work"
@@ -37,6 +39,8 @@ exit "$status"
 
 struct RootStep {
     dir: tempfile::TempDir,
+    /// `/usr/local/lib`'s mode.
+    lib_mode: &'static str,
 }
 
 struct Ran {
@@ -50,6 +54,7 @@ impl RootStep {
     fn new() -> RootStep {
         let step = RootStep {
             dir: tempfile::tempdir().unwrap(),
+            lib_mode: "755",
         };
         step.release("this release's helper");
         step
@@ -83,6 +88,7 @@ impl RootStep {
             .arg(self.helper())
             .arg(if is_packaged { "yes" } else { "no" })
             .env("PACKAGED", PACKAGED_ROOT_RUN_HELPER)
+            .env("LIB_MODE", self.lib_mode)
             .output()
             .expect("unshare (util-linux) on PATH");
         Ran {
@@ -166,6 +172,27 @@ fn the_setup_step_where_the_package_installs_the_helper_changes_nothing() {
         ran.stderr
     );
     assert_eq!(ran.file(SET_UP_ROOT_RUN_HELPER), None);
+}
+
+#[test]
+fn the_setup_step_below_a_folder_another_user_writes_installs_nothing() {
+    for mode in ["2775", "1777"] {
+        let step = RootStep {
+            lib_mode: mode,
+            ..RootStep::new()
+        };
+
+        let ran = step.run(&root_run_setup_script(), false);
+
+        assert!(!ran.is_success, "{mode}");
+        assert!(
+            ran.stderr
+                .contains("/usr/local/lib is writable by its group or other users"),
+            "{mode}: {}",
+            ran.stderr
+        );
+        assert_eq!(ran.file(SET_UP_ROOT_RUN_HELPER), None, "{mode}");
+    }
 }
 
 #[test]

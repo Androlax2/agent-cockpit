@@ -34,6 +34,9 @@ pub enum RootRunUnready {
     OutOfDate { path: PathBuf },
     /// A file is at a helper's path, but more than root could have written it.
     Untrusted { path: PathBuf, reason: String },
+    /// The `torlek-sandbox` the daemon runs, which the setup step's copy is compared with, is
+    /// gone: an update moved it while this daemon ran.
+    NoCurrentHelper { reason: String },
     /// What is installed cannot be read.
     Unknown(String),
 }
@@ -80,7 +83,8 @@ pub fn root_run_helper(
 
 /// Whether `file`, a helper under `root`, is root's alone: a regular file, neither setuid nor
 /// setgid, owned by `root_uid` and writable by no group or other user, and so is each folder
-/// above it up to `root`, as the kernel resolves them.
+/// above it up to `root`: each one its path names, which holds any link on the way, and each
+/// one the kernel resolves it to.
 fn held_by_root(
     root: &Path,
     file: &Path,
@@ -98,10 +102,14 @@ fn held_by_root(
         |path: &Path| std::fs::canonicalize(path).map_err(|error| cannot_read(path, &error));
     let top = resolve(root)?;
     let parent = file.parent().unwrap_or(root);
-    for folder in resolve(parent)?
+    let named = parent
         .ancestors()
-        .take_while(|folder| folder.starts_with(&top))
-    {
+        .take_while(|folder| folder.starts_with(root));
+    let resolved = resolve(parent)?;
+    let resolved = resolved
+        .ancestors()
+        .take_while(|folder| folder.starts_with(&top));
+    for folder in named.chain(resolved) {
         let metadata = std::fs::metadata(folder).map_err(|error| cannot_read(folder, &error))?;
         only_root_writes(folder, &metadata, root_uid)?;
     }
@@ -139,7 +147,9 @@ fn is_same_file(installed: &Path, current: &Path) -> Result<bool, RootRunUnready
         .map_err(|error| unknown(installed, error))?
         .len();
     let current_size = std::fs::metadata(current)
-        .map_err(|error| unknown(current, error))?
+        .map_err(|error| RootRunUnready::NoCurrentHelper {
+            reason: cannot_read(current, &error),
+        })?
         .len();
     if installed_size != current_size {
         return Ok(false);
@@ -154,16 +164,28 @@ fn cannot_read(path: &Path, error: &std::io::Error) -> String {
 }
 
 /// The root step `torlek setup root-run` runs once with sudo, the helper to copy as its first
-/// argument. Running it again replaces the copy with this release's.
+/// argument. Running it again replaces the copy with this release's. It refuses below a folder
+/// another user may write, where readiness would refuse the copy: the owners of those folders
+/// are left to readiness, which reads them as root's from outside a user namespace.
 pub fn root_run_setup_script() -> String {
     let folder = set_up_folder();
     let parent = set_up_parent();
+    let above: Vec<String> = Path::new(&parent)
+        .ancestors()
+        .skip(1)
+        .map(|folder| folder.display().to_string())
+        .collect();
+    let above = above.join(" ");
     format!(
         "{PREAMBLE}\
          helper=$1\n\
          [ ! -e {PACKAGED_ROOT_RUN_HELPER} ] ||\n    \
          fail \"Torlek's package installs the root-run helper already: nothing to set up\"\n\
          [ -f \"$helper\" ] || fail \"no helper at $helper\"\n\
+         for folder in {above}; do\n    \
+         [ -z \"$(find -L \"$folder\" -maxdepth 0 \\( -perm -020 -o -perm -002 \\) -print)\" ] ||\n        \
+         fail \"$folder is writable by its group or other users, who could replace what sudo runs: make it writable by root alone first\"\n\
+         done\n\
          install -d -o root -g root -m 0755 {parent} {folder}\n\
          install -o root -g root -m 0755 \"$helper\" {SET_UP_ROOT_RUN_HELPER}\n\
          echo \"torlek setup root-run: sudo in approved runs can reach {SET_UP_ROOT_RUN_HELPER}\"\n"
@@ -402,5 +424,44 @@ mod tests {
             panic!("{:?}", host.helper());
         };
         assert!(reason.contains("/opt"), "{reason}");
+    }
+
+    #[test]
+    fn the_folder_holding_a_link_on_the_way_is_checked_too() {
+        let host = Host::new();
+        host.install("/opt/torlek/bin/torlek-sandbox", "the package's helper");
+        std::fs::create_dir_all(host.at("/usr/lib")).unwrap();
+        set_mode(&host.at("/usr"), 0o755);
+        std::os::unix::fs::symlink(host.at("/opt/torlek"), host.at("/usr/lib/torlek")).unwrap();
+        set_mode(&host.at("/usr/lib"), 0o775);
+
+        let Err(RootRunUnready::Untrusted { reason, .. }) = host.helper() else {
+            panic!("{:?}", host.helper());
+        };
+        assert!(reason.contains("/usr/lib is writable"), "{reason}");
+    }
+
+    #[test]
+    fn a_link_through_root_owned_folders_alone_is_the_helper() {
+        let host = Host::new();
+        host.install("/opt/torlek/bin/torlek-sandbox", "the package's helper");
+        std::fs::create_dir_all(host.at("/usr/lib")).unwrap();
+        set_mode(&host.at("/usr"), 0o755);
+        set_mode(&host.at("/usr/lib"), 0o755);
+        std::os::unix::fs::symlink(host.at("/opt/torlek"), host.at("/usr/lib/torlek")).unwrap();
+
+        assert!(host.helper().unwrap().is_packaged);
+    }
+
+    #[test]
+    fn a_gone_daemon_helper_is_told_apart_from_an_unreadable_install() {
+        let host = Host::new();
+        host.install(SET_UP_ROOT_RUN_HELPER, "this release's helper");
+        std::fs::remove_file(&host.current_helper).unwrap();
+
+        assert!(matches!(
+            host.helper(),
+            Err(RootRunUnready::NoCurrentHelper { .. })
+        ));
     }
 }

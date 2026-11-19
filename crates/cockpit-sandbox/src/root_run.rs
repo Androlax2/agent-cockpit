@@ -130,13 +130,18 @@ pub const ROOT_NEVER_HOLDS: &[&str] = &[
 /// The oldest systemd whose units take the floor's properties: `PrivatePIDs=` came in 257.
 pub const ROOT_RUN_MIN_SYSTEMD: u32 = 257;
 
-/// Whether the systemd whose `systemctl --version` printed `printed` takes the floor's
-/// properties: [`ROOT_RUN_MIN_SYSTEMD`] or later.
-pub fn systemd_takes_the_floor(printed: &str) -> Result<(), String> {
-    let version = printed
+/// The version `systemctl --version` printed: `systemd 257 (257.5-1-arch)` is 257.
+pub fn systemd_version(printed: &str) -> Option<u32> {
+    printed
         .split_whitespace()
         .nth(1)
         .and_then(|version| version.parse::<u32>().ok())
+}
+
+/// Whether the systemd whose `systemctl --version` printed `printed` takes the floor's
+/// properties: [`ROOT_RUN_MIN_SYSTEMD`] or later.
+pub fn systemd_takes_the_floor(printed: &str) -> Result<(), String> {
+    let version = systemd_version(printed)
         .ok_or_else(|| format!("cannot tell systemd's version from {printed:?}"))?;
     if version < ROOT_RUN_MIN_SYSTEMD {
         return Err(format!(

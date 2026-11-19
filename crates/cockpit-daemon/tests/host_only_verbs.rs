@@ -82,7 +82,7 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
             },
         ),
         (
-            "masks-helper-step (routes.rs:471)",
+            "masks-helper-step (routes.rs:474)",
             Command::MasksHelperStep { uninstall: false },
         ),
         (

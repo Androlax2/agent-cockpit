@@ -28,7 +28,7 @@ fields, decides the refusal, so every command in a group takes the identical cod
 | 389 | `ApprovalQueue`, `ApprovalDecided`, `ApprovalShow`, `ApprovalApprove`, `ApprovalDecline`, `ApprovalEdit`, `ApprovalInput`, `GuideShow`, `GuideAnswer`, `GuideStuck`, `GuideClose` | `approval list [--all]\|show\|approve\|decline\|edit\|input`, `guide show\|answer\|stuck\|close` |
 | 406 | `NetworkList`, `NetworkDecided`, `NetworkAllow`, `NetworkDeny`, `NetworkGrants`, `NetworkGrantGithub`, `NetworkRevoke` | `network list [--all]\|allow\|deny\|grants\|grant\|revoke` |
 | 457 | `ContainersRecord` | `containers record` |
-| 471 | `MasksHelperStep` | `setup engine-masks [--uninstall]` |
+| 474 | `MasksHelperStep` | `setup engine-masks [--uninstall]` |
 | 482 | `RootRunHelperStep` | `setup root-run [--uninstall]` |
 | 415 | `AccountSignIn`, `AccountSignedIn`, `AccountSignInDiscard`, `AccountGrant`, `AccountGrants`, `AccountRevoke` | `account sign-in\|grant\|grants\|revoke` |
 | 441 | `SessionGrant`, `SessionRevoke`, `SessionGrants` | `session grant\|revoke\|grants` |

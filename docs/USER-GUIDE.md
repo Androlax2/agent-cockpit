@@ -125,7 +125,7 @@ Torlek's Arch and Debian packages install it as `/usr/lib/torlek/bin/torlek-sand
 torlek setup root-run   # asks for your password once, through sudo
 ```
 
-It copies the `torlek-sandbox` your daemon runs to `/usr/local/lib/torlek/root-run/torlek-sandbox`, owned by root and writable by root alone, apart from the masks helper's copy; running it again replaces it. It installs no unit and no sudoers rule: sudo asks for your password each time a root part runs. It refuses where the package installs the helper, whose copy wins when both are there, and inside a session. Run it again after `torlek update`. `torlek setup root-run --uninstall` removes the step's copy, and its folders when nothing else is in them.
+It copies the `torlek-sandbox` your daemon runs to `/usr/local/lib/torlek/root-run/torlek-sandbox`, owned by root and writable by root alone, apart from the masks helper's copy; running it again replaces it. It installs no unit and no sudoers rule: sudo asks for your password each time a root part runs. It refuses where the package installs the helper, whose copy wins when both are there, below a folder another user may write (a `/usr/local/lib` writable by the `staff` group, say), and inside a session. Run it again after `torlek update`. `torlek setup root-run --uninstall` removes the step's copy, and its folders when nothing else is in them.
 
 `torlek doctor`'s `root route` line says whether sudo could reach the helper: installed, Torlek's askpass for sudo on, and systemd 257 or later. A missing or out-of-date helper is optional and blocks nothing. A file at a helper's path that more than root could have changed, through its own mode or a folder above it, is never run, and `root route` then blocks until it is root's alone or removed.
 

@@ -71,7 +71,7 @@ pub use profile::{
 pub use root_run::{
     MAX_ROOT_RUN_FOLDERS, MAX_ROOT_RUN_REQUEST_BYTES, OWNER_SECRETS, ROOT_NEVER_HOLDS,
     ROOT_NEVER_WRITES, ROOT_RUN_DESCRIPTORS_BYTE, ROOT_RUN_MIN_SYSTEMD, ROOT_RUN_VERB, RootFloor,
-    RootRunRequest, root_run_unit, systemd_takes_the_floor,
+    RootRunRequest, root_run_unit, systemd_takes_the_floor, systemd_version,
 };
 pub use root_run_install::{
     PACKAGED_ROOT_RUN_HELPER, RootRunHelper, RootRunUnready, SET_UP_ROOT_RUN_HELPER,
