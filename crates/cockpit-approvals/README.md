@@ -108,6 +108,16 @@ request here, so nothing is re-read from the sandbox.
    under `EgressProxy::folders`, which confined runs see emptied, so a run reaches only its
    own hand-off socket. The run's leader becomes `torlek-sandbox hand-over`, which hands the
    proxy the run's `127.0.0.1:3128` listener, and the run's environment names the proxy.
+   A command line that writes out a `sudo COMMAND` starts the run's root route first
+   (`src/root_relay.rs`, `RootRoute`): `torlek-sandbox run-root-route` in a folder of its own
+   under `RootRoute::folders`, whose `bin/sudo` leads the run's `PATH`. The run's shell runs
+   the command then `exit $?`, so it never runs a step in its own place. At each ask the
+   runner lets go only a `sudo` the line writes out (`src/root_route.rs`: its words, less
+   `-A`, `-k` and `--`; each process from its parent up to the run's leader is the run's
+   shell program with the launch's arguments), with `Approved::bound` unchanged and the
+   helper `RootRoute::locate` finds; the root part writes only `Reach::writes`. The owner's
+   password goes through the askpass, which finds the run by the relay's pid
+   (`Runner::ask_sudo`). Each refusal is a limit hit.
    `Runner::card_limits` gives the card's limits, one line each. The result's `limit_hits`
    (`src/limit_hits.rs`, its column) name what the run's output shows it was refused (a
    hidden path read, a path written outside its folders, a host it could not reach, sudo)

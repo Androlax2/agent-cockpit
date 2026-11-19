@@ -1,9 +1,11 @@
 //! The root route of approved runs (#1387, option B): the root step `torlek setup root-run`
-//! runs to install the root-run helper on the install script's path, and the readiness
-//! report's `root route` line, which says whether sudo could reach the helper: installed and
-//! root's alone, Torlek's askpass on, and a systemd that takes the helper's floor.
+//! runs to install the root-run helper on the install script's path, the readiness report's
+//! `root route` line, which says whether sudo could reach the helper: installed and root's
+//! alone, Torlek's askpass on, and a systemd that takes the helper's floor, and how a
+//! confined run's root route finds the helper at each `sudo` ([`locate_helper`]).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use cockpit_protocol::Reply;
 use cockpit_readiness::{Requirement, Status};
@@ -29,6 +31,40 @@ pub(crate) fn helper_step(helper: &Path, uninstall: bool) -> Reply {
             cockpit_sandbox::root_run_setup_script()
         },
         helper: helper.display().to_string(),
+    }
+}
+
+/// Finds the root-run helper sudo is to run as it is at each `sudo` of a confined run, so a
+/// helper installed or removed while the daemon runs counts at once. `current_helper` is the
+/// `torlek-sandbox` this daemon runs.
+pub(crate) fn locate_helper(current_helper: PathBuf) -> cockpit_approvals::LocateHelper {
+    Arc::new(move || {
+        cockpit_sandbox::root_run_helper(Path::new("/"), &current_helper, 0)
+            .map(|helper| helper.path)
+            .map_err(|unready| why_unready(&unready))
+    })
+}
+
+/// Why a `sudo` of a confined run reaches no root part, in one line.
+fn why_unready(unready: &RootRunUnready) -> String {
+    match unready {
+        RootRunUnready::NotInstalled => "no root-run helper is installed: install Torlek's \
+                                         package or run `torlek setup root-run`"
+            .to_owned(),
+        RootRunUnready::OutOfDate { path } => format!(
+            "the root-run helper at {} is not this release's: run `torlek setup root-run` again",
+            path.display()
+        ),
+        RootRunUnready::Untrusted { path, reason } => format!(
+            "the root-run helper at {} is not root's alone: {reason}",
+            path.display()
+        ),
+        RootRunUnready::NoCurrentHelper { reason } => format!(
+            "this daemon's own torlek-sandbox cannot be read ({reason}): restart the daemon"
+        ),
+        RootRunUnready::Unknown(reason) => {
+            format!("the root-run helper cannot be read: {reason}")
+        }
     }
 }
 
@@ -209,8 +245,9 @@ fn assess(facts: &Facts) -> Requirement {
     Requirement::available(
         NAME,
         format!(
-            "the root-run helper {installed_by} installed at {} is root's alone; sudo asks \
-             your password each time; confined runs do not use it yet (#1387)",
+            "the root-run helper {installed_by} installed at {} is root's alone; a `sudo \
+             COMMAND` written in a confined run's command line runs through it, sudo asking \
+             your password each time",
             helper.path.display()
         ),
     )

@@ -61,8 +61,10 @@ pub fn run_settings(environment: Vec<(OsString, OsString)>) -> std::io::Result<R
 /// sockets and buses, through which a run could start what is not confined. Reachable
 /// read-only: the agent socket's folder only, so `torlek` in a run still asks the daemon as
 /// an agent; the owner's socket and the askpass socket stay out of reach. A run whose card names hosts reaches them
-/// through its own proxy, `sandbox_launcher run-egress`, whose folders are in Torlek's state:
-/// emptied, so no run sees another's.
+/// through its own proxy, `sandbox_launcher run-egress`, and a `sudo` its command line writes
+/// out reaches root through its own root route, `sandbox_launcher run-root-route`; their
+/// folders are in Torlek's state: emptied, so no run sees another's. A root part cannot see
+/// what the run cannot, beside the helper's floor (which empties `/run`).
 pub fn run_confinement(
     setting: cockpit_config::ConfinedRuns,
     environment: &cockpit_config::Environment,
@@ -76,7 +78,7 @@ pub fn run_confinement(
     let config_dir = cockpit_config::Layout::resolve(environment, &home)
         .config_dir
         .value;
-    let hidden = cockpit_sandbox::OWNER_SECRETS
+    let hidden: Vec<PathBuf> = cockpit_sandbox::OWNER_SECRETS
         .iter()
         .map(|path| home.join(path))
         .chain(
@@ -94,6 +96,11 @@ pub fn run_confinement(
         .as_ref()
         .map(PathBuf::from)
         .filter(|folder| folder.is_absolute());
+    let root_hidden = hidden
+        .iter()
+        .cloned()
+        .chain([options.state_dir.clone()])
+        .collect();
     Ok(cockpit_approvals::RunConfinement::Required {
         hidden,
         emptied: [options.state_dir.clone(), PathBuf::from("/run")]
@@ -105,11 +112,19 @@ pub fn run_confinement(
             launcher: sandbox_launcher.to_path_buf(),
             folders: options.state_dir.join(RUN_EGRESS_DIR),
         }),
+        root: Some(Box::new(cockpit_approvals::RootRoute {
+            launcher: sandbox_launcher.to_path_buf(),
+            folders: options.state_dir.join(RUN_ROOT_ROUTE_DIR),
+            hidden: root_hidden,
+            locate: crate::root_route::locate_helper(sandbox_launcher.to_path_buf()),
+        })),
     })
 }
 
-/// The folder of Torlek's state each approved run's proxy folder is made in (#1387).
+/// The folders of Torlek's state each approved run's proxy folder and root route folder are
+/// made in (#1387).
 const RUN_EGRESS_DIR: &str = "run-egress";
+const RUN_ROOT_ROUTE_DIR: &str = "run-root-route";
 
 /// A request that failed, as the wire tells it.
 pub(crate) struct Failed(pub(crate) ProtocolError);

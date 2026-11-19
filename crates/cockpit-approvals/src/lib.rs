@@ -11,6 +11,8 @@ mod pty;
 mod redact;
 mod restart;
 mod retention;
+mod root_relay;
+mod root_route;
 mod rows;
 mod rule_scan;
 mod rules;
@@ -42,6 +44,7 @@ pub use pty::{
 pub use redact::{redact_secrets, strip_terminal_controls};
 pub use restart::ended_after_restart;
 pub use retention::{RunOutputs, retirable_run_outputs, retire_run_outputs};
+pub use root_relay::{LocateHelper, RootRoute};
 pub use rows::{EXPIRES_AFTER_SECONDS, Project, REFRESH_AFTER_SECONDS};
 pub use rule_scan::{Finding, path_from, pinning_incomplete, scan, scan_unfinished, sudo_findings};
 pub use rules::Severity;

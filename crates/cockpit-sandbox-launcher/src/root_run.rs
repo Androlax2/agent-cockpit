@@ -84,7 +84,7 @@ fn sudo_uid() -> Result<u32, String> {
 }
 
 /// The effective user of this process, the second field of `Uid:` in `/proc/self/status`.
-fn effective_uid() -> Result<u32, String> {
+pub(crate) fn effective_uid() -> Result<u32, String> {
     let status = std::fs::read_to_string("/proc/self/status")
         .map_err(|error| format!("cannot read /proc/self/status: {error}"))?;
     status

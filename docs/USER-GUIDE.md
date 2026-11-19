@@ -106,7 +106,7 @@ On Linux an approved command runs in a systemd user service of its own (#1387), 
 - It cannot read the keys and tokens Torlek knows the places of: `~/.ssh`, `~/.gnupg`, Git, GitHub CLI, cloud, container and package-registry credentials (`~/.netrc`, `~/.aws`, `~/.docker`, `~/.kube`, `~/.npmrc` and others), agent providers' sign-ins, keyrings, browser profiles and Torlek's token folders. A secret a tool keeps anywhere else stays readable, so the command can print it.
 - It sees Torlek's state, your runtime folder and `/run` empty, so it reaches no socket or bus of yours or the system's, but the agent socket: `torlek` in the command asks as an agent, never as you.
 - It has no network. Each host the agent named with `--host HOST` (`host` or `host:port`) is reached through a proxy of the command's own, which lets out only those hosts. Clients find the proxy through `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY`, and it carries `CONNECT` alone, so a plain `http://` URL needs a client that tunnels (`curl -p`).
-- It gets no `sudo`: that needs a route to root that confined runs do not have yet.
+- Its `sudo` reaches root only through the root route (below), and only for a `sudo COMMAND` written in the command line you approved, which the request lists. A `sudo` that a script, a makefile or another program it runs starts is refused, and so is one that passes sudo an option other than `-A` and `-k` (`sudo -u web`, `sudo -E`), or whose words the shell expands (`sudo cp $FILE /etc`).
 
 The request lists these limits as `Limit:` lines in the pane and under `limits:` in `torlek approval show ID`. The folders and hosts are part of the digest you approve.
 When the command hits a limit, the stored request, `approval show` (`hit a limit:`) and the agent's answer name the path it could not read or write or the host it could not reach.
@@ -118,7 +118,11 @@ Where no systemd user manager answers, `torlek doctor` names it under `confined 
 
 #### The root route
 
-Confined runs are to reach root through Torlek's root-run helper (#1387): sudo runs it as root, and it starts the command's root part in a system service of its own, with limits no request lowers. Confined runs do not use it yet; this release installs it and reports whether sudo could reach it.
+A confined run reaches root through Torlek's root-run helper (#1387): sudo runs it as root, and it starts the command's root part in a system service of its own, with limits no request lowers.
+For each `sudo COMMAND` the command line writes out, the run's `sudo` asks the daemon, which checks that the run's own shell started it with those words and that no file the command line runs changed since you approved it. Then it runs `/usr/bin/sudo -A -k -- <helper> root-run`, and the queue asks for your password, the prompt naming the root command. You type it for every root part; nothing caches it.
+A root part writes only the folders named with `--write`, never the checkout, so no root-owned file lands there: a step that must write the checkout runs without `sudo`. It cannot see what the run cannot.
+A refused `sudo` prints `sudo: WHY` in the run's output, and the request names it under `hit a limit:`.
+A program the command line starts can still run, in the shell's folder, a `sudo` with the same words as one the line writes out, and a file the line sources (`. ./env.sh`) runs in the run's own shell: either runs only that root part, possibly at another moment, still with your password.
 Torlek's Arch and Debian packages install it as `/usr/lib/torlek/bin/torlek-sandbox`, their own `torlek-sandbox`. With the install script, install it once:
 
 ```sh

@@ -149,7 +149,9 @@ not share code.
   The root route (`root_route.rs`, #1387): `root-run-helper-step` answers the owner alone with
   the root step `torlek setup root-run` runs with sudo, and readiness names `root route`: the
   root-run helper `cockpit_sandbox::root_run_helper` finds, root's alone, Torlek's askpass on
-  and the system's systemd 257 or later. Nothing calls the helper yet.
+  and the system's systemd 257 or later. `run_confinement` gives confined runs their root
+  route, its folders under `<state>/run-root-route`, which finds the helper at each `sudo`
+  (`root_route::locate_helper`).
 - The asking agent's project is the registered checkout holding its working directory,
   read from `/proc` after its process tree was verified, until sessions record it (#31).
 
