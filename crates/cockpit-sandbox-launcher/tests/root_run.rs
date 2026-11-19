@@ -334,3 +334,74 @@ fn a_daemon_that_goes_stops_its_root_part() {
         "{unit}: {state}"
     );
 }
+
+fn hex(word: &str) -> String {
+    word.bytes().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// A confined run's `sudo` (#1387, part 4c), end to end: `root-route-sudo` hands its command
+/// to `run-root-route`, which this test answers as the daemon would, and the relay runs the
+/// helper through the host's sudo.
+#[test]
+#[ignore = "needs passwordless sudo and the system manager: CI's greenfield-sandbox job"]
+fn a_runs_sudo_reaches_root_through_the_root_route() {
+    use std::io::{BufRead, BufReader, Write};
+
+    let folder = fixture();
+    // In a session of its own, as the daemon's children are: sudo has no terminal.
+    let mut relay = Command::new("setsid")
+        .arg(LAUNCHER)
+        .arg("run-root-route")
+        .arg(folder.path())
+        .args(["/usr/bin/sudo", "/no/askpass/needed", "1", ""])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("setsid is on PATH");
+    let mut decisions = relay.stdin.take().unwrap();
+    let mut asks = BufReader::new(relay.stdout.take().unwrap());
+    let mut line = String::new();
+    asks.read_line(&mut line).unwrap();
+    assert_eq!(line, "ready\n");
+    let script = "id -u; exit 7";
+    let sudo = Command::new(LAUNCHER)
+        .arg("root-route-sudo")
+        .arg(folder.path())
+        .args(["sh", "-c", script])
+        .current_dir("/")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    line.clear();
+    asks.read_line(&mut line).unwrap();
+    assert!(line.starts_with("ask 1 "), "{line}");
+
+    writeln!(
+        decisions,
+        "go 1 {} {} {} {}",
+        hex(LAUNCHER),
+        hex("sh"),
+        hex("-c"),
+        hex(script)
+    )
+    .unwrap();
+    let output = sudo.wait_with_output().unwrap();
+
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "0",
+        "{printed}"
+    );
+    assert_eq!(output.status.code(), Some(7), "{printed}");
+    line.clear();
+    asks.read_line(&mut line).unwrap();
+    assert_eq!(line, "ended 1 exited 7\n");
+    let _ = relay.kill();
+    let _ = relay.wait();
+}

@@ -28,6 +28,9 @@
 //! - `torlek-sandbox root-run` (#1387): run as root through `sudo -A -k` by the daemon; starts
 //!   the root part of an approved run in a system unit with the floor of limits no request
 //!   lowers (`root_run.rs`).
+//! - `torlek-sandbox run-root-route FOLDER SUDO ASKPASS RUN TERM [--write DIR]... [--hide
+//!   DIR]...` and `torlek-sandbox root-route-sudo FOLDER ARGUMENT...` (#1387): an approved
+//!   confined run's way to root, the daemon's relay and the run's `sudo` (`root_route.rs`).
 
 #[cfg(target_os = "linux")]
 mod authority;
@@ -49,6 +52,8 @@ mod plan;
 mod probe;
 #[cfg(target_os = "linux")]
 mod proxy;
+#[cfg(target_os = "linux")]
+mod root_route;
 #[cfg(target_os = "linux")]
 mod root_run;
 #[cfg(target_os = "linux")]
@@ -120,6 +125,8 @@ fn main() -> ExitCode {
             run_egress::hand_over(rest).map(|never| match never {})
         }
         Some((verb, rest)) if verb == cockpit_sandbox::ROOT_RUN_VERB => root_run::serve(rest),
+        Some((verb, rest)) if verb == "run-root-route" => root_route::run(rest),
+        Some((verb, rest)) if verb == "root-route-sudo" => root_route::forward(rest),
         Some((verb, rest)) if verb == "engine-masks" => engine_masks::engines_dir(rest)
             .and_then(|folder| engine_masks::serve(&folder))
             .map(|()| ExitCode::SUCCESS),
@@ -128,7 +135,9 @@ fn main() -> ExitCode {
              engine-relay SOCKET OWNER_UID [EGRESS_PORT] | torlek-sandbox engine-proxy \
              RELAY_SOCKET ENGINE_UID PROJECT FOLDER EGRESS_PORT | torlek-sandbox engine-masks ENGINES_DIR \
              | torlek-sandbox run-egress FOLDER SESSION RUN HOST... | torlek-sandbox hand-over \
-             SOCKET PROGRAM ARGUMENT... | sudo torlek-sandbox root-run (stage2 is internal)"
+             SOCKET PROGRAM ARGUMENT... | sudo torlek-sandbox root-run | torlek-sandbox \
+             run-root-route FOLDER SUDO ASKPASS RUN TERM [--write DIR]... [--hide DIR]... | \
+             torlek-sandbox root-route-sudo FOLDER ARGUMENT... (stage2 is internal)"
                 .to_owned(),
         ),
     };

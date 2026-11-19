@@ -59,6 +59,16 @@ start and runs it in the agent's place under `agents.sandbox = "required"`.
   a daemon that closes the socket stops the unit, retried until `systemd-run` ends
   (`root_run.rs`). `tests/root_run.rs` drives
   it as root with `sudo -n`, ignored but for CI's `greenfield-sandbox` job.
+- `torlek-sandbox run-root-route FOLDER SUDO ASKPASS RUN TERM [--write DIR]... [--hide
+  DIR]...` and `torlek-sandbox root-route-sudo FOLDER ARGUMENT...` (#1387): a confined run's
+  root route. The daemon starts the relay on the host before the run; it listens in
+  `FOLDER`, prints `ready`, and for each connection of the owner's user takes the run's
+  standard input, output and error and its words (hex, one line), prints `ask N PID WORD...`
+  and reads the daemon's `go N HELPER WORD...` or `refuse N WHY`. On `go` it runs
+  `SUDO -A -k -p PROMPT -- HELPER root-run` with the run's standard error, sends the helper
+  the request with the `--write` and `--hide` folders, and passes on its answers; then it
+  prints `ended N WHAT`. `root-route-sudo` is the run's `sudo`: it prints `sudo: WHY` and
+  exits 1 when refused, else the root part's code (`root_route.rs`, `tests/root_route.rs`).
 - `torlek-sandbox probe BWRAP`: the daemon's start-up probe. Prints
   `{"bubblewrap":"<version>","landlock_abi":<n>}`; a failure is the reason every launch under
   `required` is refused.

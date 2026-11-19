@@ -348,6 +348,9 @@ pub struct Approved {
     /// A start request (#410): the daemon starts this session in `cwd` instead of running
     /// `command`, which only describes it.
     pub start: Option<StartSession>,
+    /// The files the command runs, as approved: a confined run's root part is refused once one
+    /// changed (#1387).
+    pub bound: Vec<RootFile>,
 }
 
 /// SHA-256 over a versioned, length-prefixed encoding of the directory and the command, as
@@ -1114,6 +1117,7 @@ pub(crate) fn approved_of(run: &RunRequest) -> Approved {
         project_root: run.project.as_ref().map(|project| project.root.clone()),
         reach: run.reach.clone(),
         start: run.start.clone(),
+        bound: run.bound_files(),
     }
 }
 
@@ -1307,6 +1311,8 @@ pub async fn interrupted_runs(connection: &Connection) -> Result<Vec<Interrupted
                 project_root: row.get::<Option<String>>(12)?.map(PathBuf::from),
                 reach: reach_from(&row, 13)?,
                 start: start_from(&row, 6)?,
+                // An interrupted run is reconciled, never started again: nothing checks them.
+                bound: Vec::new(),
             },
             state: if state == "running" {
                 RunState::Running

@@ -7,10 +7,11 @@ mod common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use cockpit_approvals::{
-    Approved, EgressProxy, NoResult, Project, Reach, RunConfinement, RunRequest, RunSettings,
-    Runner, approve_run,
+    Approved, EgressProxy, NoResult, Project, Reach, RootRoute, RunConfinement, RunRequest,
+    RunSettings, Runner, SudoAskpass, approve_run,
 };
 use cockpit_processes::{LaunchContainment, Supervisor, SystemdTools};
 use cockpit_turso::Database;
@@ -48,11 +49,47 @@ esac
 
 /// `torlek-sandbox` as the runner drives it: `run-egress` records its arguments, says it is
 /// ready, and once its input closes names one destination it refused; `hand-over` records its
-/// socket and runs the rest in its place. The real hand-off is proved in
-/// `cockpit-sandbox-launcher`.
+/// socket and runs the rest in its place. `run-root-route` and `root-route-sudo` speak the
+/// root route's lines through two FIFOs instead of a socket, and the run's `sudo` prints the
+/// root command it was let go instead of running it. The real hand-off and relay are proved
+/// in `cockpit-sandbox-launcher`.
 const FAKE_SANDBOX: &str = r#"#!/bin/sh
 state=@STATE@
+hex() { od -An -tx1 | tr -d ' \n'; }
+unhex() {
+  awk '{ for (i = 1; i <= length($0); i += 2)
+    printf "%c", index("0123456789abcdef", substr($0, i, 1)) * 16 - 17 \
+      + index("0123456789abcdef", substr($0, i + 1, 1)) }'
+}
 case $1 in
+  run-root-route)
+    folder=$2; shift; printf '%s\n' "$@" > "$state/root-route"
+    mkfifo "$folder/asks" "$folder/answers" || exit 125
+    echo ready
+    ask=0
+    while read -r line < "$folder/asks"; do
+      ask=$((ask + 1))
+      echo "ask $ask $line"
+      read -r decision || exit 0
+      printf '%s\n' "$decision" > "$folder/answers"
+      case $decision in
+        refuse*) echo "ended $ask refused: $(printf '%s' "${decision#refuse $ask }" | unhex)" ;;
+        *) echo "ended $ask exited 0" ;;
+      esac
+    done ;;
+  root-route-sudo)
+    folder=$2; shift 2
+    line="$$ $(printf '%s' "$PWD" | hex)"
+    for word in "$@"; do line="$line $(printf '%s' "$word" | hex)"; done
+    printf '%s\n' "$line" > "$folder/asks"
+    read -r decision < "$folder/answers"
+    set -- $decision
+    case $1 in
+      go) shift 3; printf 'root ran:'
+          for word in "$@"; do printf ' %s' "$(printf '%s' "$word" | unhex)"; done
+          echo; exit 0 ;;
+      *) echo "sudo: $(printf '%s' "$3" | unhex)" >&2; exit 1 ;;
+    esac ;;
   run-egress)
     # As the real one: it opens its socket in FOLDER, which must exist.
     [ -d "$2" ] || { echo "cannot create $2/proxy-handoff" >&2; exit 125; }
@@ -133,8 +170,48 @@ impl Confined {
             emptied: Vec::new(),
             reachable: Vec::new(),
             egress: None,
+            root: None,
         };
         settings
+    }
+
+    /// The settings of a daemon whose confined runs reach root through the fake root route,
+    /// its helper found by `locate`. `setsid` stands in for the session leader: the run's
+    /// shell leads its own session, which the root route checks.
+    fn settings_with_root_route(&self, locate: cockpit_approvals::LocateHelper) -> RunSettings {
+        let mut settings = self.settings();
+        settings.leader = PathBuf::from("/usr/bin/setsid");
+        settings.sudo = Some(SudoAskpass::with_stand_in(
+            self.fakes.path().join("sudo"),
+            std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(self.fakes.path()).unwrap()),
+            self.fakes.path().join("launchers"),
+            vec!["/bin/true".into()],
+        ));
+        if let RunConfinement::Required { root, .. } = &mut settings.confinement {
+            *root = Some(Box::new(RootRoute {
+                launcher: self.fakes.path().join("torlek-sandbox"),
+                folders: self.fixture.cwd().join("run-root-route"),
+                hidden: vec![self.secrets.clone()],
+                locate,
+            }));
+        }
+        settings
+    }
+
+    fn root_runner(&self) -> Runner {
+        let locate: cockpit_approvals::LocateHelper =
+            Arc::new(|| Ok(PathBuf::from("/usr/local/lib/torlek/torlek-sandbox")));
+        self.runner(
+            self.settings_with_root_route(locate),
+            LaunchContainment::SystemdScope,
+        )
+    }
+
+    fn root_route_folder(&self, approved: &Approved) -> PathBuf {
+        self.fixture
+            .cwd()
+            .join("run-root-route")
+            .join(format!("run-{}", approved.id.0))
     }
 
     fn runner(&self, settings: RunSettings, containment: LaunchContainment) -> Runner {
@@ -214,6 +291,46 @@ impl Confined {
             asked.id,
             asked.revision,
             &asked.digest(),
+            NOW + cockpit_approvals::APPROVAL_GRACE_SECONDS,
+        )
+        .await
+        .unwrap();
+        write.commit().await.unwrap();
+        approved
+    }
+
+    /// `command`, asked from the checkout, with the files it runs pinned as the daemon pins
+    /// them, and approved.
+    async fn approved_pinned(&self, command: &str) -> Approved {
+        let asked = self
+            .asked_reaching(command, &self.checkout, Reach::default())
+            .await;
+        let lookup = cockpit_approvals::Lookup {
+            cwd: &self.checkout,
+            search_path: Some("/usr/bin:/bin".as_ref()),
+            home: None,
+        };
+        let writes = cockpit_approvals::SessionWrites::Folders(vec![self.checkout.clone()]);
+        let pinned = cockpit_approvals::pinned_files(&asked.command, lookup, &writes);
+        let runs = cockpit_approvals::root_runs(&asked.command, lookup, &writes);
+        let write = self.fixture.database.write().await.unwrap();
+        let checked = cockpit_approvals::record_checks(
+            &write,
+            asked.id,
+            asked.revision,
+            &runs,
+            &[],
+            &pinned.files,
+            NOW,
+        )
+        .await
+        .unwrap();
+        let (approved, _) = approve_run(
+            &write,
+            None,
+            checked.id,
+            checked.revision,
+            &checked.digest(),
             NOW + cockpit_approvals::APPROVAL_GRACE_SECONDS,
         )
         .await
@@ -558,8 +675,242 @@ async fn a_confined_card_names_the_runs_limits() {
             ),
             format!("cannot see {}", confined.secrets.display()),
             "reaches only example.com, 127.0.0.2:8080".to_owned(),
-            "no sudo: it needs the root route, which confined runs do not have yet".to_owned(),
+            "no sudo: only a `sudo COMMAND` written in the command line runs as root".to_owned(),
         ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confined_card_names_each_root_command_and_what_root_writes() {
+    let confined = Confined::new().await;
+    let runner = confined.root_runner();
+    let site = confined.fixture.cwd().join("site");
+    let asked = confined
+        .asked_reaching(
+            "make && sudo make install",
+            &confined.checkout,
+            Reach {
+                writes: vec![site.clone()],
+                hosts: Vec::new(),
+            },
+        )
+        .await;
+
+    assert_eq!(
+        runner.card_limits(&asked).last().unwrap(),
+        &format!(
+            "runs as root, asking your password each time: `make install`; as root it writes \
+             only {}, and no script or program it starts reaches root",
+            site.display()
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confined_card_names_a_sudo_that_never_runs_as_root() {
+    let confined = Confined::new().await;
+    let runner = confined.root_runner();
+    let asked = confined
+        .asked_reaching("sudo -u web true", &confined.checkout, Reach::default())
+        .await;
+
+    let limits = runner.card_limits(&asked);
+
+    let refused = limits.last().unwrap();
+    assert!(
+        refused.starts_with("never runs as root: `sudo -A -k -u web true`: ")
+            && refused.contains("-u"),
+        "{limits:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confined_card_says_why_a_route_without_its_helper_runs_nothing_as_root() {
+    let confined = Confined::new().await;
+    let locate: cockpit_approvals::LocateHelper =
+        Arc::new(|| Err("the root-run helper is not installed".to_owned()));
+    let runner = confined.runner(
+        confined.settings_with_root_route(locate),
+        LaunchContainment::SystemdScope,
+    );
+    let asked = confined
+        .asked_reaching("sudo make install", &confined.checkout, Reach::default())
+        .await;
+
+    assert_eq!(
+        runner.card_limits(&asked).last().unwrap(),
+        "no sudo: the root-run helper is not installed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sudo_the_line_writes_runs_its_command_through_the_root_route() {
+    let confined = Confined::new().await;
+    let runner = confined.root_runner();
+    let site = confined.fixture.cwd().join("site");
+    std::fs::create_dir(&site).unwrap();
+    let approved = confined
+        .approved_reaching(
+            "sudo cp a.conf /srv/a.conf",
+            &confined.checkout,
+            Reach {
+                writes: vec![site.clone()],
+                hosts: Vec::new(),
+            },
+        )
+        .await;
+
+    let ran = runner
+        .run(&confined.fixture.database, &approved, &[])
+        .await
+        .unwrap();
+
+    assert_eq!(ran.result.exit_code, 0, "{ran:?}");
+    assert!(
+        ran.result
+            .output
+            .shown
+            .contains("root ran: cp a.conf /srv/a.conf"),
+        "{ran:?}"
+    );
+    assert!(ran.result.limit_hits.is_empty(), "{ran:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_root_route_gets_the_cards_folders_and_the_askpass() {
+    let confined = Confined::new().await;
+    let runner = confined.root_runner();
+    let site = confined.fixture.cwd().join("site");
+    std::fs::create_dir(&site).unwrap();
+    let approved = confined
+        .approved_reaching(
+            "sudo true",
+            &confined.checkout,
+            Reach {
+                writes: vec![site.clone()],
+                hosts: Vec::new(),
+            },
+        )
+        .await;
+
+    runner
+        .run(&confined.fixture.database, &approved, &[])
+        .await
+        .unwrap();
+
+    let folder = confined.root_route_folder(&approved);
+    assert_eq!(
+        confined.recorded("root-route"),
+        [
+            folder.display().to_string(),
+            confined.fakes.path().join("sudo").display().to_string(),
+            confined
+                .fakes
+                .path()
+                .join("launchers/askpass")
+                .display()
+                .to_string(),
+            approved.id.0.to_string(),
+            String::new(),
+            "--write".to_owned(),
+            site.display().to_string(),
+            "--hide".to_owned(),
+            confined.secrets.display().to_string(),
+        ]
+    );
+    let arguments = confined.arguments();
+    assert!(
+        has_property(
+            &arguments,
+            &format!("BindReadOnlyPaths=\"{}\"", folder.display())
+        ),
+        "{arguments:?}"
+    );
+    assert!(
+        !folder.exists(),
+        "the run's root route folder was left behind"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sudo_a_script_starts_is_refused_and_named() {
+    let confined = Confined::new().await;
+    let runner = confined.root_runner();
+    std::fs::write(confined.checkout.join("setup.sh"), "sudo true\n").unwrap();
+    let approved = confined
+        .approved("sudo true; sh ./setup.sh", &confined.checkout)
+        .await;
+
+    let ran = runner
+        .run(&confined.fixture.database, &approved, &[])
+        .await
+        .unwrap();
+
+    assert_eq!(ran.result.exit_code, 1, "{ran:?}");
+    let shown = &ran.result.output.shown;
+    assert!(shown.contains("root ran: true"), "{shown}");
+    assert!(
+        shown.contains("sudo: this sudo was started by process"),
+        "{shown}"
+    );
+    assert!(
+        ran.result
+            .limit_hits
+            .iter()
+            .any(|hit| hit
+                .starts_with("its sudo ran nothing as root: this sudo was started by process")),
+        "{ran:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sudo_with_words_the_line_does_not_write_is_refused() {
+    let confined = Confined::new().await;
+    let runner = confined.root_runner();
+    let approved = confined
+        .approved(
+            "program=false; sudo true && sudo $program",
+            &confined.checkout,
+        )
+        .await;
+
+    let ran = runner
+        .run(&confined.fixture.database, &approved, &[])
+        .await
+        .unwrap();
+
+    assert_eq!(ran.result.exit_code, 1, "{ran:?}");
+    assert!(
+        ran.result
+            .output
+            .shown
+            .contains("sudo: `sudo false` is not a sudo the approved command line writes out"),
+        "{ran:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_root_part_whose_script_changed_after_approval_is_refused() {
+    let confined = Confined::new().await;
+    let runner = confined.root_runner();
+    std::fs::write(confined.checkout.join("install.sh"), "echo installing\n").unwrap();
+    let approved = confined
+        .approved_pinned("echo 'echo more' >> install.sh; sudo sh ./install.sh")
+        .await;
+    assert_eq!(approved.bound.len(), 1, "{approved:?}");
+
+    let ran = runner
+        .run(&confined.fixture.database, &approved, &[])
+        .await
+        .unwrap();
+
+    assert_eq!(ran.result.exit_code, 1, "{ran:?}");
+    assert!(
+        ran.result
+            .output
+            .shown
+            .contains("sudo: ./install.sh changed after you approved"),
+        "{ran:?}"
     );
 }
 

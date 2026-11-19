@@ -9,8 +9,8 @@
 //! systemd scope or process group, led by `cockpit_processes::run_session_leader`, so it can
 //! be terminated whole and a restart can tell what became of it. A confined run (#1387) is
 //! a systemd user service instead, with no network, its project's checkout the one folder it
-//! writes and the owner's secrets hidden; it gets no sudo, which needs the root route that
-//! confined runs do not have yet.
+//! writes and the owner's secrets hidden. Its `sudo` reaches root only through the root route
+//! (`root_relay.rs`), for a `sudo COMMAND` its command line writes out.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -39,6 +39,8 @@ use tokio::sync::oneshot;
 use crate::egress::{self, EgressProxy, RunEgress};
 use crate::error::invalid;
 use crate::redact::{redact_secrets, redact_secrets_after_cut, strip_terminal_controls};
+use crate::root_relay::{Decider, LocateHelper, RootRoute, RunRootRoute, program_id};
+use crate::root_route::{FileId, WrittenSudos, root_routed_command, written_sudos};
 use crate::runs::{Approved, RunId, RunRequest, RunResult, start_run};
 use crate::sudo::{SudoAskpass, SudoAsks};
 use crate::sudo_unasked::{self, SudoSightings};
@@ -136,6 +138,9 @@ pub enum RunConfinement {
         /// The proxy a run whose card names hosts reaches them through; `None` refuses such
         /// a run.
         egress: Option<EgressProxy>,
+        /// How a `sudo` the run's command line writes out reaches root; `None` leaves every
+        /// `sudo` of a confined run failing.
+        root: Option<Box<RootRoute>>,
     },
     /// The owner's one named opt-out, `agents.confined_runs = "off"`: runs have the owner's
     /// rights.
@@ -192,6 +197,7 @@ impl RunSettings {
                 emptied: Vec::new(),
                 reachable: Vec::new(),
                 egress: None,
+                root: None,
             },
         }
     }
@@ -236,12 +242,14 @@ impl RunSettings {
         }
     }
 
-    /// A run's environment: a confined run's `TMPDIR` is its own `/tmp`, and one with a
-    /// proxy sends its clients through it.
+    /// A run's environment: a confined run's `TMPDIR` is its own `/tmp`, one with a proxy
+    /// sends its clients through it, and one with a root route finds its `sudo` in `root_bin`
+    /// first.
     fn launch_environment(
         &self,
         git_config: &[String],
         has_proxy: bool,
+        root_bin: Option<&Path>,
     ) -> Vec<(OsString, OsString)> {
         let mut environment = self.environment_with(git_config, self.sudo());
         if let RunConfinement::Required { .. } = self.confinement {
@@ -252,8 +260,67 @@ impl RunSettings {
             environment.retain(|(name, _)| !egress::is_proxy_variable(name));
             environment.extend(egress::proxy_variables());
         }
+        if let Some(root_bin) = root_bin {
+            let mut inherited: Option<OsString> = None;
+            environment.retain(|(name, value)| {
+                if name == "PATH" {
+                    inherited = Some(value.clone());
+                }
+                name != "PATH"
+            });
+            let mut path = root_bin.as_os_str().to_owned();
+            path.push(":");
+            path.push(inherited.unwrap_or_else(|| crate::sudo::UNSET_PATH_SEARCH.into()));
+            environment.push(("PATH".into(), path));
+        }
         environment
     }
+
+    /// The value of the run's variable `name`, if it has one.
+    fn variable(&self, name: &str) -> Option<&OsStr> {
+        self.environment
+            .iter()
+            .find(|(variable, _)| variable == name)
+            .map(|(_, value)| value.as_os_str())
+    }
+
+    /// The `sudo`s `command` writes out, as a confined run's root route reads them.
+    fn written_sudos(&self, command: &str) -> WrittenSudos {
+        written_sudos(command, self.variable("HOME").map(Path::new))
+    }
+
+    /// The root route and askpass a confined run's written `sudo` goes through, or why it
+    /// reaches no root part.
+    fn root_route(&self) -> Result<(&RootRoute, &SudoAskpass), String> {
+        let RunConfinement::Required { root, .. } = &self.confinement else {
+            return Err("an unconfined run has no root route".to_owned());
+        };
+        let route = root
+            .as_ref()
+            .ok_or_else(|| "this daemon has no root route".to_owned())?;
+        let askpass = self
+            .sudo
+            .as_ref()
+            .ok_or_else(|| "this daemon does not answer sudo's askpass".to_owned())?;
+        Ok((route, askpass))
+    }
+}
+
+/// What serves a confined run beside it: its proxy and its root route.
+struct RunServices<'run> {
+    egress: Option<&'run RunEgress>,
+    root: Option<&'run mut RoutedRoot>,
+}
+
+/// A confined run's root route, as its run uses it.
+struct RoutedRoot {
+    relay: RunRootRoute,
+    /// The run's command line, ending with `exit $?` (`root_route.rs`).
+    command: String,
+    written: WrittenSudos,
+    /// The run's shell program.
+    shell: FileId,
+    locate: LocateHelper,
 }
 
 /// Refuses a folder the owner approved that now resolves elsewhere: a link swapped in since
@@ -325,9 +392,15 @@ pub(crate) struct LiveRun {
     is_stopped_by_owner: AtomicBool,
     sudo_asks: Mutex<SudoAsks>,
     sudo_sightings: Mutex<SudoSightings>,
+    /// A confined run's root route (#1387): the parent of each sudo it starts.
+    root_relay: Option<u32>,
 }
 
 impl LiveRun {
+    pub(crate) fn root_relay(&self) -> Option<u32> {
+        self.root_relay
+    }
+
     /// Fingerprints `secret`, typed for run `id`, so its output redacts it (#1386), then wipes
     /// it. Refused when the run's key cannot be drawn: the secret must not be handed on
     /// unprotected.
@@ -497,13 +570,57 @@ impl Runner {
             Some(format!("writes only {}", listed(&writes))),
             (!unseen.is_empty()).then(|| format!("cannot see {}", unseen.join(", "))),
             Some(network),
-            Some(
-                "no sudo: it needs the root route, which confined runs do not have yet".to_owned(),
-            ),
         ]
         .into_iter()
         .flatten()
+        .chain(self.card_root(run))
         .collect()
+    }
+
+    /// What a confined run's `sudo` may do, as its card shows it (#1387).
+    fn card_root(&self, run: &RunRequest) -> Vec<String> {
+        let written = self.settings.written_sudos(&run.command);
+        let refused = written
+            .unmatched
+            .iter()
+            .map(|why| format!("never runs as root: {why}"));
+        if written.commands.is_empty() {
+            let none = (written.unmatched.is_empty()).then(|| {
+                "no sudo: only a `sudo COMMAND` written in the command line runs as root".to_owned()
+            });
+            return none.into_iter().chain(refused).collect();
+        }
+        let available = self
+            .settings
+            .root_route()
+            .and_then(|(route, _)| (route.locate)());
+        let root = match available {
+            Err(why) => format!("no sudo: {why}"),
+            Ok(_) => {
+                let commands: Vec<String> = written
+                    .commands
+                    .iter()
+                    .map(|command| format!("`{}`", command.join(" ")))
+                    .collect();
+                let writes: Vec<String> = run
+                    .reach
+                    .writes
+                    .iter()
+                    .map(|write| write.display().to_string())
+                    .collect();
+                let root_writes = if writes.is_empty() {
+                    "writes nothing".to_owned()
+                } else {
+                    format!("writes only {}", listed(&writes))
+                };
+                format!(
+                    "runs as root, asking your password each time: {}; as root it {root_writes}, \
+                     and no script or program it starts reaches root",
+                    commands.join(", ")
+                )
+            }
+        };
+        std::iter::once(root).chain(refused).collect()
     }
 
     /// The shell, when [`Runner::check_syntax`] does not give it commands, so they reach the
@@ -566,6 +683,7 @@ impl Runner {
             }
             RunConfinement::Required { .. } | RunConfinement::Off => None,
         };
+        let mut root = self.start_root_route(run).await?;
         let (master, terminal) = open_terminal(self.settings.rows, self.settings.columns)
             .map_err(|error| not_started("cannot open a terminal for the command", error))?;
         let reader = master
@@ -588,18 +706,27 @@ impl Runner {
             is_stopped_by_owner: AtomicBool::new(false),
             sudo_asks: Mutex::default(),
             sudo_sightings: Mutex::default(),
+            root_relay: root.as_ref().and_then(|root| root.relay.pid()),
         });
         self.live
             .lock()
             .expect("the live runs lock is never poisoned")
             .insert(run.id, Arc::clone(&live));
         let drained = drain(reader, Arc::clone(&live), self.settings.kept_bytes);
+        let services = RunServices {
+            egress: egress.as_ref(),
+            root: root.as_mut(),
+        };
         let exited = self
-            .launch(database, run, &live, terminal, git_config, egress.as_ref())
+            .launch(database, run, &live, terminal, git_config, services)
             .await;
         let refused = match egress {
             Some(egress) => egress.end().await,
             None => Ok(Vec::new()),
+        };
+        let root_refused = match root {
+            Some(root) => root.relay.end().await,
+            None => Vec::new(),
         };
         // Read as the exit is observed: a stop sent after it did not end the command.
         let is_stopped_by_owner = live.is_stopped_by_owner.load(Ordering::SeqCst);
@@ -645,6 +772,13 @@ impl Runner {
                 )],
             },
         );
+        let limit_hits = crate::limit_hits::merged(
+            limit_hits,
+            root_refused
+                .iter()
+                .map(|why| format!("its sudo ran nothing as root: {why}"))
+                .collect(),
+        );
         Ok(Ran {
             result: RunResult {
                 exit_code,
@@ -662,6 +796,45 @@ impl Runner {
             terminal_held_open,
             leftover: is_left_running.then_some(execution),
         })
+    }
+
+    /// The root route of a confined `run` whose command line writes out a `sudo`, started and
+    /// ready; `None` when it has none. A route whose helper is not installed still starts: each
+    /// `sudo` is told why it runs nothing, and an owner who installs it meanwhile is not
+    /// refused.
+    async fn start_root_route(&self, run: &Approved) -> Result<Option<RoutedRoot>, NoResult> {
+        let written = self.settings.written_sudos(&run.command);
+        if written.commands.is_empty() {
+            return Ok(None);
+        }
+        let Ok((route, askpass)) = self.settings.root_route() else {
+            return Ok(None);
+        };
+        let command = root_routed_command(&run.command).ok_or_else(|| {
+            NoResult::NotStarted(
+                "its command line ends with a backslash, which would join it to what the root \
+                 route adds"
+                    .to_owned(),
+            )
+        })?;
+        let shell = program_id(&self.settings.shell).map_err(NoResult::NotStarted)?;
+        askpass.write_launchers().map_err(|error| {
+            NoResult::NotStarted(format!(
+                "cannot write the run's sudo launchers in {}: {error}",
+                askpass.launchers.display()
+            ))
+        })?;
+        let relay = route
+            .start(run, askpass, self.settings.variable("TERM"))
+            .await
+            .map_err(NoResult::NotStarted)?;
+        Ok(Some(RoutedRoot {
+            relay,
+            command,
+            written,
+            shell,
+            locate: Arc::clone(&route.locate),
+        }))
     }
 
     /// Reserves the run's execution and marks the run running with it, in one transaction.
@@ -693,9 +866,14 @@ impl Runner {
         live: &LiveRun,
         terminal: OwnedFd,
         git_config: &[String],
-        egress: Option<&RunEgress>,
+        services: RunServices<'_>,
     ) -> Result<i32, NoResult> {
+        let RunServices { egress, mut root } = services;
         let execution = live.execution;
+        let command = root
+            .as_ref()
+            .map_or(run.command.as_str(), |root| root.command.as_str());
+        let root_bin = root.as_ref().map(|root| root.relay.bin());
         let (leader, leader_arguments) = match egress {
             Some(egress) => {
                 egress.handing_over(&self.settings.leader, &self.settings.leader_arguments)
@@ -707,11 +885,13 @@ impl Runner {
         };
         let spec = LaunchSpec {
             program: self.settings.shell.clone(),
-            arguments: vec!["-c".into(), run.command.clone().into()],
+            arguments: vec!["-c".into(), command.into()],
             working_dir: run.cwd.clone(),
-            environment: self
-                .settings
-                .launch_environment(git_config, egress.is_some()),
+            environment: self.settings.launch_environment(
+                git_config,
+                egress.is_some(),
+                root_bin.as_deref(),
+            ),
             terminal: Some(Terminal {
                 device: terminal,
                 leader,
@@ -738,6 +918,7 @@ impl Runner {
                         .iter()
                         .cloned()
                         .chain(egress.map(RunEgress::handoff_folder))
+                        .chain(root.as_ref().map(|root| root.relay.folder().to_path_buf()))
                         .collect(),
                 };
                 self.supervisor
@@ -752,6 +933,9 @@ impl Runner {
         };
         // The terminal must end with the run's processes for the reader to see the end of
         // the output: this copy goes as soon as the run has its own.
+        let launch: Vec<OsString> = std::iter::once(spec.program.clone().into_os_string())
+            .chain(spec.arguments.iter().cloned())
+            .collect();
         drop(spec);
         let launched = match launched {
             Ok(launched) => launched,
@@ -769,9 +953,28 @@ impl Runner {
                 _ => std::future::pending().await,
             }
         };
+        let serving = async {
+            let leader = live
+                .session()
+                .and_then(|session| u32::try_from(session).ok());
+            if let (Some(root), Some(leader)) = (root.as_deref_mut(), leader) {
+                let decider = Arc::new(Decider {
+                    leader,
+                    launch,
+                    shell: root.shell,
+                    written: root.written.clone(),
+                    bound: run.bound.clone(),
+                    cwd: run.cwd.clone(),
+                    locate: Arc::clone(&root.locate),
+                });
+                root.relay.serve(decider).await;
+            }
+            std::future::pending::<std::convert::Infallible>().await
+        };
         let exited = tokio::select! {
             exited = launched.exit => exited,
             never = watching => match never {},
+            never = serving => match never {},
         };
         match exited {
             Ok(Ok(status)) => Ok(status

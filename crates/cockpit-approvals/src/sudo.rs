@@ -40,7 +40,8 @@ const ASKING_FLAGS: &str = "-A -k";
 /// starting sudo after sudo, not the owner's typing speed.
 const OPEN_ASKS_PER_RUN: usize = 8;
 /// The search `dash` and Debian's `bash` make when `PATH` is unset.
-const UNSET_PATH_SEARCH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+pub(crate) const UNSET_PATH_SEARCH: &str =
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /// What the owner reads when sudo's prompt held nothing printable.
 const NO_PROMPT: &str = "(sudo sent no readable prompt)";
 /// How long an ask waits for a launching run's session to be known.
@@ -110,6 +111,11 @@ impl SudoAskpass {
         self.sudo_owner
     }
 
+    /// The askpass launcher, which `SUDO_ASKPASS` names.
+    pub(crate) fn askpass_launcher(&self) -> PathBuf {
+        self.launchers.join(ASKPASS_LAUNCHER)
+    }
+
     /// Writes the launchers again before each run, so one run that changed them changes no
     /// later run.
     pub(crate) fn write_launchers(&self) -> std::io::Result<()> {
@@ -146,14 +152,14 @@ impl SudoAskpass {
         environment.push(("PATH".into(), path));
         environment.push((
             "SUDO_ASKPASS".into(),
-            self.launchers.join(ASKPASS_LAUNCHER).into_os_string(),
+            self.askpass_launcher().into_os_string(),
         ));
     }
 }
 
 /// A `#!/bin/sh` script that execs `words`, each single-quoted, then its own arguments. It is
 /// written beside its place and renamed over it, so a run starting meanwhile never reads half.
-fn write_script(path: &Path, words: &[&OsStr]) -> std::io::Result<()> {
+pub(crate) fn write_script(path: &Path, words: &[&OsStr]) -> std::io::Result<()> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
     let mut script = b"#!/bin/sh\nexec".to_vec();
     for word in words {
@@ -259,7 +265,7 @@ pub(crate) struct Process {
     pub(crate) pid: u32,
     pub(crate) name: String,
     pub(crate) parent: u32,
-    session: i32,
+    pub(crate) session: i32,
     /// Clock ticks after boot: with the pid, tells this process from a later one.
     pub(crate) start: u64,
     /// Who started it: a setuid program's caller.
@@ -571,17 +577,14 @@ impl Runner {
     /// `prompt`. It waits until the owner answers ([`Runner::answer_sudo`]), the run ends, or
     /// the returned future is dropped (the helper went). Refused, with why, unless the helper
     /// is traced by none, its pipe is held by none but it and sudo, and its sudo runs in a
-    /// running approved command's session.
+    /// running approved command's session or was started by a confined run's root route.
     pub async fn ask_sudo(&self, helper: SudoHelper, prompt: &str) -> Result<SudoAnswered, String> {
         let SudoHelper(asking) = helper;
         still_asking(&asking)?;
-        let (request, live) = self
-            .live_in_session(asking.sudo.session)
-            .await
-            .ok_or_else(|| {
-                "the sudo that asked is not inside a running approved command: nothing was asked"
-                    .to_owned()
-            })?;
+        let (request, live) = self.live_asking(&asking.sudo).await.ok_or_else(|| {
+            "the sudo that asked is not inside a running approved command: nothing was asked"
+                .to_owned()
+        })?;
         let (answer, answered) = oneshot::channel();
         let ask = {
             let mut asks = live.sudo_asks();
@@ -679,6 +682,19 @@ impl Runner {
             ask: *ask,
             prompt: waiting.prompt.clone(),
         })
+    }
+
+    /// The live run `sudo` belongs to: the one whose root route started it (#1387), or the one
+    /// whose terminal session it is in.
+    async fn live_asking(&self, sudo: &Process) -> Option<(RunId, Arc<LiveRun>)> {
+        let routed = self
+            .live_runs()
+            .into_iter()
+            .find(|(_, live)| live.root_relay() == Some(sudo.parent));
+        match routed {
+            Some(found) => Some(found),
+            None => self.live_in_session(sudo.session).await,
+        }
     }
 
     /// The live run whose terminal session is `session`. A run's session is known once its
