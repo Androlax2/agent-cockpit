@@ -1,5 +1,8 @@
 [advisories]
 yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained with no maintained version; pulled by turso_core 0.8.3 and cockpit-cli. Removal tracked in #1421." },
+]
 
 [licenses]
 # Additions need review; this covers the active graph, not unused optional packages.
