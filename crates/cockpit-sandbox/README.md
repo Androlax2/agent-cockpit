@@ -64,6 +64,14 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   the owner reads the folders on the card. A package manager, which writes `/usr` and
   `/etc` as a whole and installs setuid programs, has no root part. The daemon's confined
   runs hide the same `OWNER_SECRETS`.
+- Where the root-run helper is installed (#1387, `root_run_install.rs`): `root_run_helper`
+  finds the package's `/usr/lib/torlek/bin/torlek-sandbox`, else the copy `torlek setup
+  root-run` makes at `/usr/local/lib/torlek/root-run/torlek-sandbox` when it has the daemon's
+  `torlek-sandbox`'s contents. Either must be a regular file, neither setuid nor setgid, that
+  neither it nor a folder above it, resolved, lets anyone but root change.
+  `root_run_setup_script` and `root_run_removal_script` are the root steps `torlek setup
+  root-run [--uninstall]` runs with sudo; `tests/root_run_install.rs` runs them as root of a
+  user namespace. The floor keeps `/usr/local/lib/torlek`, both setup steps' copies, read-only.
 - Toolchains and caches (#859): the caller resolves `ToolNeeds` from the toolchain table of
   `cockpit-provider-api`. The install roots `PATH` resolves the checkout's ecosystems in are
   bound read-only; every cache variable points into `caches/` of the session's temp folder;

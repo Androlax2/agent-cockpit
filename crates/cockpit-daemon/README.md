@@ -146,6 +146,10 @@ not share code.
   `<state>/run-egress`. `ask-run` resolves each card folder as it resolves the directory
   and checks each host as the proxy will read it (`cockpit_sandbox::card_entry`).
   Readiness names `confined runs`: off, available, or the reason every run is refused.
+  The root route (`root_route.rs`, #1387): `root-run-helper-step` answers the owner alone with
+  the root step `torlek setup root-run` runs with sudo, and readiness names `root route`: the
+  root-run helper `cockpit_sandbox::root_run_helper` finds, root's alone, Torlek's askpass on
+  and the system's systemd 257 or later. Nothing calls the helper yet.
 - The asking agent's project is the registered checkout holding its working directory,
   read from `/proc` after its process tree was verified, until sessions record it (#31).
 

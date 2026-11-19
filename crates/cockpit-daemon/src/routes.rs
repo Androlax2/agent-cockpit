@@ -479,6 +479,14 @@ impl Handler for Routes {
                     uninstall,
                 ))),
             },
+            (Command::RootRunHelperStep { uninstall }, peer) => match peer {
+                // A root step is the owner's to run, from their own terminal (#1387).
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => Route::Answer(Outcome::Ok(crate::root_route::helper_step(
+                    &self.readiness.containers.relay_program,
+                    uninstall,
+                ))),
+            },
             (
                 command @ (Command::AccountSignIn { .. }
                 | Command::AccountSignedIn { .. }

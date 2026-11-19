@@ -116,6 +116,19 @@ The proxy belongs to the daemon: a daemon that stops ends it, and the command re
 Where no systemd user manager answers, `torlek doctor` names it under `confined runs`, and approved commands are refused, never run unconfined.
 `confined_runs = "off"` under `[agents]` in the owner configuration runs them with your rights instead, with `sudo` through Torlek's helper (below).
 
+#### The root route
+
+Confined runs are to reach root through Torlek's root-run helper (#1387): sudo runs it as root, and it starts the command's root part in a system service of its own, with limits no request lowers. Confined runs do not use it yet; this release installs it and reports whether sudo could reach it.
+Torlek's Arch and Debian packages install it as `/usr/lib/torlek/bin/torlek-sandbox`, their own `torlek-sandbox`. With the install script, install it once:
+
+```sh
+torlek setup root-run   # asks for your password once, through sudo
+```
+
+It copies the `torlek-sandbox` your daemon runs to `/usr/local/lib/torlek/root-run/torlek-sandbox`, owned by root and writable by root alone, apart from the masks helper's copy; running it again replaces it. It installs no unit and no sudoers rule: sudo asks for your password each time a root part runs. It refuses where the package installs the helper, whose copy wins when both are there, and inside a session. Run it again after `torlek update`. `torlek setup root-run --uninstall` removes the step's copy, and its folders when nothing else is in them.
+
+`torlek doctor`'s `root route` line says whether sudo could reach the helper: installed, Torlek's askpass for sudo on, and systemd 257 or later. A missing or out-of-date helper is optional and blocks nothing. A file at a helper's path that more than root could have changed, through its own mode or a folder above it, is never run, and `root route` then blocks until it is root's alone or removed.
+
 A running command that waits at a prompt shows in the queue. Type into it with `torlek approval input ID`, which reads one line from standard input, or `i` in the TUI pane.
 The line is typed only while the command's terminal hides what is typed, as at a `sudo`, `ssh` or `gpg` password prompt (echo off, the line read whole); otherwise it is refused, because an echoed line lands in the output the agent reads and Torlek stores.
 To answer a visible prompt (`y`, `[Y/n]`, `read`) on purpose, use `torlek approval input ID --shown`, or Tab in the TUI to show the line before Enter; that answer appears in the output.

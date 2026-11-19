@@ -68,6 +68,10 @@ error-level one. `0.1.0alpha.4-1` has warnings only:
   manifest (`share/torlek/manifest.json`) through their own resolved path, so the bundle cannot
   be split across `/usr/bin` and `/usr/share`. The unchanged tree still passes the manifest
   check. The license is linked to `/usr/share/licenses/torlek-bin/LICENSE`.
+- **Root-run helper (#1387):** the bundle's own `/usr/lib/torlek/bin/torlek-sandbox`, owned by
+  root like every file of the package, is the helper sudo runs for a confined run's root part.
+  The package adds no unit, no sudoers rule and no maintainer step for it; `torlek doctor`'s
+  `root route` line checks it is root's alone, and where it is, `torlek setup root-run` refuses.
 - **Masks helper (#390):** `package()` also installs the bundle's `share/torlek/systemd` units,
   `torlek-engine-masks.socket` and `torlek-engine-masks@.service`, to `/usr/lib/systemd/system`;
   the helper they run is the bundle's own `/usr/lib/torlek/bin/torlek-sandbox`. Theo decided on

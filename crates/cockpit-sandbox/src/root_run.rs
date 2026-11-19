@@ -102,6 +102,9 @@ pub const ROOT_NEVER_WRITES: &[&str] = &[
     "/etc/environment",
     "/etc/torlek",
     "/usr/lib/torlek",
+    // The setup steps' root copies of `torlek-sandbox`: the masks helper's and the root-run
+    // helper's, which run as root later.
+    "/usr/local/lib/torlek",
 ];
 
 /// The folders a root part never writes as a whole: the system's programs, libraries and
@@ -126,6 +129,23 @@ pub const ROOT_NEVER_HOLDS: &[&str] = &[
 
 /// The oldest systemd whose units take the floor's properties: `PrivatePIDs=` came in 257.
 pub const ROOT_RUN_MIN_SYSTEMD: u32 = 257;
+
+/// Whether the systemd whose `systemctl --version` printed `printed` takes the floor's
+/// properties: [`ROOT_RUN_MIN_SYSTEMD`] or later.
+pub fn systemd_takes_the_floor(printed: &str) -> Result<(), String> {
+    let version = printed
+        .split_whitespace()
+        .nth(1)
+        .and_then(|version| version.parse::<u32>().ok())
+        .ok_or_else(|| format!("cannot tell systemd's version from {printed:?}"))?;
+    if version < ROOT_RUN_MIN_SYSTEMD {
+        return Err(format!(
+            "systemd {version} is older than {ROOT_RUN_MIN_SYSTEMD}, which a root part's unit \
+             needs (PrivatePIDs=)"
+        ));
+    }
+    Ok(())
+}
 
 /// The system's runtime folder, emptied: its sockets and buses (systemd's, D-Bus, a container
 /// engine's) would start what is not confined.
@@ -451,6 +471,8 @@ mod tests {
             "/etc/systemd/system",
             "/usr/lib/systemd/system",
             "/usr/lib/torlek/bin",
+            "/usr/local/lib/torlek/root-run",
+            "/usr/local/lib/torlek/bin/torlek-sandbox",
         ] {
             let refused = floor().unit_properties(&request(&[kept])).unwrap_err();
             assert!(refused.contains("is kept read-only"), "{kept}: {refused}");
@@ -559,6 +581,22 @@ mod tests {
     fn a_request_with_an_unknown_field_does_not_parse() {
         let text = r#"{"run":1,"ask":1,"argv":["/bin/true"],"cwd":"/","writable":[],"hidden":[],"term":null,"properties":["PrivateNetwork=no"]}"#;
         assert!(serde_json::from_str::<RootRunRequest>(text).is_err());
+    }
+
+    #[test]
+    fn systemd_257_or_later_takes_the_floor() {
+        assert_eq!(
+            systemd_takes_the_floor("systemd 257 (257.5-1-arch)\n+PAM"),
+            Ok(())
+        );
+        assert_eq!(systemd_takes_the_floor("systemd 258 (258)"), Ok(()));
+    }
+
+    #[test]
+    fn an_older_or_unreadable_systemd_does_not() {
+        let older = systemd_takes_the_floor("systemd 255 (255.4-1ubuntu8)").unwrap_err();
+        assert!(older.contains("older than 257"), "{older}");
+        assert!(systemd_takes_the_floor("").is_err());
     }
 
     #[test]

@@ -86,6 +86,10 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
             Command::MasksHelperStep { uninstall: false },
         ),
         (
+            "root-run-helper-step (routes.rs:482)",
+            Command::RootRunHelperStep { uninstall: false },
+        ),
+        (
             "account (routes.rs:415)",
             Command::AccountSignIn {
                 provider: "codex".to_owned(),
