@@ -92,6 +92,8 @@ pub struct Routes {
     feed_buffer_bytes: u32,
     /// The host Git that project commands run, with the safe settings applied.
     git: cockpit_projects::Git,
+    /// The forge adapters a read goes through, made at the first one (#60).
+    forge_adapters: Arc<crate::forges::Adapters>,
     sessions: Arc<cockpit_sessions::Sessions>,
     manager: Arc<Manager>,
     providers: Vec<cockpit_protocol::ProviderView>,
@@ -202,6 +204,7 @@ impl Routes {
             database: capabilities.database,
             feed_buffer_bytes: capabilities.feed_buffer_bytes,
             git: capabilities.git,
+            forge_adapters: Arc::default(),
             sessions: capabilities.sessions,
             manager: capabilities.manager,
             providers: capabilities.providers,
@@ -560,6 +563,20 @@ impl Handler for Routes {
                 // never opens to it.
                 Peer::Agent { .. } => Route::Answer(owner_only()),
                 Peer::Owner => sessions::route(command, Arc::clone(&self.sessions)),
+            },
+            // An agent reads its forge with its own `gh` through the proxy; the daemon's read
+            // spends the project's API token for the owner alone (#60, #857 as amended).
+            (command @ Command::TaskIssues { .. }, peer) => match peer {
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => crate::issues::route(
+                    command,
+                    crate::issues::Context {
+                        database: Arc::clone(&self.database),
+                        git: self.git.clone(),
+                        environment: self.environment.clone(),
+                        adapters: Arc::clone(&self.forge_adapters),
+                    },
+                ),
             },
             // What an agent may do to tasks: file, read and work its own items, and fix the
             // title and notes of what it filed (#714). Whether it may touch a given item is

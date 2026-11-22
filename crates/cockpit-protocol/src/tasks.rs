@@ -2,6 +2,20 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+/// An open issue of a project's forge, shown beside its todos (#60). Every text field is the
+/// forge's, written by whoever can write there: a client escapes it before printing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueView {
+    /// The forge's own id (`153`, `PROJ-12`).
+    pub id: String,
+    pub title: String,
+    pub labels: Vec<String>,
+    /// `None` when the account is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    pub url: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskView {
     pub id: i64,

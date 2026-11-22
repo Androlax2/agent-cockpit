@@ -92,7 +92,7 @@ pub use storage::{
     TargetSizeView,
 };
 pub use tasks::{
-    HexBytes, TaskBudgetSpentView, TaskBudgetView, TaskDraftTargetView, TaskDraftView,
+    HexBytes, IssueView, TaskBudgetSpentView, TaskBudgetView, TaskDraftTargetView, TaskDraftView,
     TaskImageView, TaskKindView, TaskNextView, TaskStatusView, TaskView, TaskWaitView,
 };
 pub use usage::{

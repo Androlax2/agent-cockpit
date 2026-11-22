@@ -149,6 +149,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]
        torlek todo blocked TITLE --why TEXT [--notes TEXT]
        torlek todo list [--project P] [--all] | show ID | delete ID
+       torlek todo issues PROJECT
        torlek todo start ID | done ID [--summary TEXT] | reopen ID
        torlek todo targets
        torlek todo handoff ID SESSION --revision R --state-revision R --launch N

@@ -23,6 +23,7 @@ mod error;
 mod feed;
 mod forges;
 mod instance;
+mod issues;
 mod lanes;
 mod logs;
 mod manager;
