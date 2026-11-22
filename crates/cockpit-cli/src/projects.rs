@@ -66,6 +66,11 @@ pub fn parse(verb: &str, arguments: &[OsString]) -> Result<(Command, Duration), 
         ("checkout", ["sweep", "--dry-run"]) => bulk(Command::CheckoutSweep { dry_run: true }),
         ("checkout", ["push", checkout]) => bulk(Command::CheckoutPush {
             checkout: checkout_id(checkout)?,
+            commit: None,
+        }),
+        ("checkout", ["push", checkout, "--commit", commit]) => bulk(Command::CheckoutPush {
+            checkout: checkout_id(checkout)?,
+            commit: Some((*commit).to_owned()),
         }),
         _ => Err(format!("unknown {verb} arguments")),
     }

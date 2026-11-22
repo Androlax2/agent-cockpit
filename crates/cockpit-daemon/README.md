@@ -183,6 +183,19 @@ not share code.
 - Decided in `docs/decisions/2026-11-01-410-coordinator-kit.md`; proven end to end by
   `tests/coordinator_kit.rs`.
 
+## Agent push (#155)
+
+- `agent-push` (`torlek push`), agent socket only, in the bulk lane (`agent_push.rs`):
+  identifies the sender, evaluates its `push-branch` grant over itself, then reads its
+  checkout from the session's record, never from the request or the sender's working
+  directory. A review checkout is refused; a main checkout has no launch branch, so only the
+  project's push-branch patterns cover its branches, and `--force` is refused there.
+- `cockpit_projects::push` runs under `Pusher::Agent`, with the hosts the owner bound the push
+  right on and the project's push token, which only the daemon reads. A push that went is
+  audited as `pushed` under the grant, naming the commit, branch and URL; a refusal is logged
+  with the session and returned with what unblocks it.
+- Proven end to end by `tests/agent_push.rs`, whose daemon pushes to a local bare repository.
+
 ## Change feed (#41)
 
 - `subscribe` is granted only on `daemon.sock`, to a peer that negotiated `change-feed`; the

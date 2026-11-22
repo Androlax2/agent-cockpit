@@ -7,7 +7,7 @@ use cockpit_turso::{Database, Migration, WriteTransaction};
 use crate::git::{arg, git_failure};
 use crate::push_range::{self, RemoteAccess};
 use crate::store::{self, now};
-use crate::{CheckoutId, CheckoutState, Error, Git, ProjectName, blocking};
+use crate::{BranchPattern, CheckoutId, CheckoutState, Error, Git, ProjectName, blocking};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pushed {
@@ -99,19 +99,35 @@ pub struct PushRules {
     /// every check on the checkout passed, so it never hides why its origin is refused.
     pub credential: Result<PushCredential, String>,
     pub force: Force,
-    pub workflows: WorkflowCheck,
+    pub pusher: Pusher,
 }
 
-/// Whether a push's range is scanned for CI workflow changes (#857): an agent's push needs the
-/// owner's approval for one, the owner's own does not.
+/// Who asks for the push, which decides what it may send (#155, #857).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkflowCheck {
-    /// The owner pushes: no scan.
-    Owner,
-    /// An agent pushes: the range is read against the remote, and one that changes a workflow
-    /// file is refused as [`Error::WorkflowChange`] unless the owner approved exactly the
-    /// commit sent.
-    Agent { approved_commit: Option<String> },
+pub enum Pusher {
+    /// The owner: any branch, no workflow scan. `commit`, when given, is the commit the branch
+    /// must be at, so the commit the owner read is the one sent.
+    Owner { commit: Option<String> },
+    /// A session's agent: only a branch `branches` covers and never the remote's default
+    /// branch, only to the repository the project's main checkout names, and a push that
+    /// changes what CI runs is refused as [`Error::WorkflowChange`], for the owner to push.
+    Agent { branches: AgentBranches },
+}
+
+/// The branches an agent's push may go to (#155, 2026-11-09 option B).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentBranches {
+    /// The checkout's launch branch: a parallel clone's; a main or review checkout has none.
+    pub launch: Option<String>,
+    /// The project's push-branch patterns.
+    pub patterns: Vec<BranchPattern>,
+}
+
+impl AgentBranches {
+    fn covers(&self, branch: &str) -> bool {
+        self.launch.as_deref() == Some(branch)
+            || self.patterns.iter().any(|pattern| pattern.matches(branch))
+    }
 }
 
 /// Pushes the commit the checkout's current branch points at to the branch of the same name on
@@ -142,20 +158,49 @@ pub async fn push(
         return Err(Error::BeingRemoved { checkout: id });
     }
     let checkout = stored.checkout.path.clone();
+    let project = stored.checkout.project.clone();
+    let is_agent = matches!(rules.pusher, Pusher::Agent { .. });
     let target = {
         let git = git.clone();
         let hosts = rules.hosts.clone();
         blocking(move || {
             stored.verify_on_disk_now()?;
-            push_target(
+            let target = push_target(
                 &git,
                 &stored.checkout.path,
                 &stored.checkout.project,
                 &hosts,
-            )
+            )?;
+            if is_agent {
+                require_project_repository(&git, &stored.checkout.project_root, &target)?;
+            }
+            Ok(target)
         })
         .await?
     };
+    match &rules.pusher {
+        Pusher::Owner {
+            commit: Some(expected),
+        } if *expected != target.commit => {
+            return Err(Error::Refused {
+                reason: format!(
+                    "{} is at {}, not at {expected}: the branch moved since it was read",
+                    target.branch, target.commit
+                ),
+            });
+        }
+        Pusher::Agent { branches } if !branches.covers(&target.branch) => {
+            return Err(Error::Refused {
+                reason: format!(
+                    "{} is neither this checkout's launch branch nor a branch {project}'s \
+                     push-branch patterns name; the owner adds one with `torlek project \
+                     push-branch add {project} PATTERN`",
+                    target.branch
+                ),
+            });
+        }
+        _ => {}
+    }
     let lease = match &rules.force {
         Force::Never => None,
         Force::Lease { own_branch } => {
@@ -166,21 +211,16 @@ pub async fn push(
     let credential = rules
         .credential
         .map_err(|reason| Error::Refused { reason })?;
-    let is_scanned = match &rules.workflows {
-        WorkflowCheck::Owner => false,
-        WorkflowCheck::Agent { approved_commit } => {
-            approved_commit.as_deref() != Some(target.commit.as_str())
-        }
-    };
-    if is_scanned {
+    if is_agent {
         let git = git.clone();
         let (scanned_checkout, scanned, scan_credential) =
             (checkout.clone(), target.clone(), credential.clone());
         let paths =
-            blocking(move || workflow_changes(&git, &scanned_checkout, &scanned, &scan_credential))
+            blocking(move || agent_checks(&git, &scanned_checkout, &scanned, &scan_credential))
                 .await?;
         if !paths.is_empty() {
             return Err(Error::WorkflowChange {
+                checkout: id,
                 branch: target.branch,
                 commit: target.commit,
                 paths,
@@ -423,6 +463,40 @@ fn push_target(
     })
 }
 
+/// Refuses a push whose URL names another repository than the project's main checkout's origin:
+/// an agent writes its own clone's origin, not the main checkout's, so its push cannot reach
+/// another repository the credential opens.
+fn require_project_repository(
+    git: &Git,
+    project_root: &std::path::Path,
+    target: &PushTarget,
+) -> Result<(), Error> {
+    let main_url = git.run(
+        project_root,
+        &[arg("remote"), arg("get-url"), arg("--push"), arg("origin")],
+    )?;
+    let main_url = main_url.trim();
+    let project_repository =
+        cockpit_forge_api::parse_origin(main_url).map_err(|unresolved| Error::Refused {
+            reason: format!("the project's origin is {main_url:?}: {unresolved}"),
+        })?;
+    let pushed_repository =
+        cockpit_forge_api::parse_origin(&target.remote_url).map_err(|unresolved| {
+            Error::Refused {
+                reason: format!("origin is {:?}: {unresolved}", target.remote_url),
+            }
+        })?;
+    if pushed_repository != project_repository {
+        return Err(Error::Refused {
+            reason: format!(
+                "origin is {pushed_repository}, not the project's repository \
+                 {project_repository}; an agent pushes only to its project's repository"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// The setting that has Git answer the push host alone with the credential, read from
 /// [`PUSH_TOKEN_VARIABLE`]. It comes after `SAFE_CONFIG`'s `credential.helper=`, which drops
 /// every helper configured before, so this one alone answers.
@@ -435,9 +509,10 @@ fn credential_helper(target: &PushTarget, credential: &PushCredential) -> String
     )
 }
 
-/// The CI paths whose content the push would newly bring to the remote, read against it with
-/// the push's credential.
-fn workflow_changes(
+/// What an agent's push is checked for against the remote, read with the push's credential:
+/// the remote's default branch, which it never pushes, and the CI paths whose content the push
+/// would newly bring there.
+fn agent_checks(
     git: &Git,
     checkout: &std::path::Path,
     target: &PushTarget,
@@ -452,6 +527,24 @@ fn workflow_changes(
         secret: (PUSH_TOKEN_VARIABLE, credential.token.expose()),
     };
     let tips = remote.tips(&target.branch)?;
+    match tips.default_branch.as_deref() {
+        None => {
+            return Err(Error::Refused {
+                reason: "the remote names no default branch, so an agent's push could become it; \
+                         the owner pushes the first branch"
+                    .to_owned(),
+            });
+        }
+        Some(default_branch) if default_branch == target.branch => {
+            return Err(Error::Refused {
+                reason: format!(
+                    "{default_branch} is the remote's default branch, which an agent never \
+                     pushes; push another branch and open a pull request"
+                ),
+            });
+        }
+        Some(_) => {}
+    }
     let changed = push_range::changed_ci_paths(&remote, &tips, &target.commit)?;
     Ok(changed.into_iter().map(str::to_owned).collect())
 }

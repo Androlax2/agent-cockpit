@@ -3133,8 +3133,8 @@ impl Sessions {
         program: PathBuf,
         arguments: Vec<OsString>,
     ) -> Result<cockpit_sandbox::Prepared, Error> {
-        // A sandboxed agent never holds the project's token, which can push (#857): a push
-        // is the owner's to run (`torlek push`, #155, will be the verb). The session proxy adds the project's API token instead, on
+        // A sandboxed agent never holds the project's token, which can push (#857): the
+        // daemon pushes for it (`torlek push`, #155). The session proxy adds the project's API token instead, on
         // the GitHub hosts the launch reaches: by its declared needs, or by the owner's
         // grants and allows at launch (#832, #674).
         let (token, api_credential) = match setting {

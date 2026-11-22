@@ -65,8 +65,13 @@ marker is refused as `Replaced` instead of being acted on.
   branch alone, with the commit this checkout last pushed there to the same URL as the expected
   tip (`checkout_pushes`, written only after a push succeeded); with no such record the force is
   refused, never leased against the remote's current tip (#857 decision 2).
-  `WorkflowCheck::Agent` holds a push that changes what CI runs as `Error::WorkflowChange`
-  unless the owner approved exactly that commit (`push_range.rs`). The check compares the
+  `Pusher::Owner { commit }` pushes any branch unscanned; with `commit`, only while the branch
+  is at it. `Pusher::Agent` pushes only a branch its `AgentBranches` cover (the launch branch,
+  or one a push-branch pattern names), never the remote's default branch (`ls-remote --symref`;
+  a remote naming none is refused), and only to the repository the project's main checkout's
+  origin names, which an agent in a parallel clone cannot rewrite. It refuses a push that
+  changes what CI runs as `Error::WorkflowChange`, naming the owner's
+  `torlek checkout push ID --commit COMMIT` (`push_range.rs`). The check compares the
   pushed commit's `.github/workflows` and `.gitlab-ci.yml` entries with those at the remote
   branch's tip and at the remote default branch's tip (read with `ls-remote`, fetched by id
   when missing). It reads no history, because the agent can rewrite the checkout's (replace
@@ -105,8 +110,10 @@ marker is refused as `Replaced` instead of being acted on.
   removed, and refused for an unregistered project.
 - `tests/push.rs`: a push only to a host the project may push to, SSH and credential origins
   refused, the resolved commit sent though the branch moves, the push token offered to the push
-  host alone, every lease rule, and the workflow check (approval bound to the commit, a
-  rebase onto the default branch, replace refs and grafts that would hide a change). It runs
+  host alone, every lease rule, the agent's branch rules (launch branch, patterns, never the
+  default branch, the project's repository alone), the owner's push pinned to a commit, and
+  the workflow check (a rebase onto the default branch, replace refs and grafts that would
+  hide a change). It runs
   real Git, pushing to a local bare repository through a wrapper that rewrites the forge URL
   for the remote calls alone.
 - `tests/source_state.rs`: a checkout's head and uncommitted-changes digest on real Git, the

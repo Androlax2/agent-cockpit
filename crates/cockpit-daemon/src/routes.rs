@@ -387,6 +387,20 @@ impl Handler for Routes {
                     self.environment.clone(),
                 ),
             },
+            (command @ Command::AgentPush { .. }, peer) => match peer {
+                Peer::Agent { connector } => crate::agent_push::route(
+                    command,
+                    connector,
+                    Arc::clone(&self.database),
+                    self.git.clone(),
+                    self.environment.clone(),
+                ),
+                Peer::Owner => Route::Answer(wrong_socket(
+                    "`torlek push` pushes a session's own checkout, so a session asks for it",
+                    "use `torlek checkout push CHECKOUT` on the host",
+                    UnblockedBy::Owner,
+                )),
+            },
             (
                 command @ (Command::AskRun { .. }
                 | Command::AskGuide { .. }

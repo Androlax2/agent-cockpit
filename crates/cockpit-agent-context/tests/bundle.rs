@@ -148,7 +148,7 @@ fn the_sandbox_topic_says_which_symptoms_are_deliberate_and_what_to_do() {
         "| `Read-only file system` (`EROFS`) writing `.git/config`, `.git/hooks`, `.torlek` or `.cockpit` | These paths are read-only on purpose: Git hooks and config run on the owner's host. | Do not retry. `torlek todo blocked TITLE --why TEXT`, naming the path. |",
         "| A `.env` file reads as empty or is missing | `.env` files are hidden on purpose. | Use the references the environment gives you. If the task needs the values, `torlek todo blocked TITLE --why TEXT`. |",
         "| `command not found` for a tool in `~/.local/bin`, or in another folder outside the toolchain table | That folder is outside the toolchain roots, so it is not mounted. | `torlek todo blocked TITLE --why TEXT`, naming the tool. |",
-        "| `git push` over HTTPS is refused by the session proxy | The session has no push route; the owner pushes. | Stop pushing. `torlek todo blocked TITLE --why TEXT`, naming the branch. |",
+        "| `git push` over HTTPS is refused by the session proxy | The session holds no push credential: the daemon pushes for it. | `torlek push` pushes the current branch; its refusal names what unblocks it. |",
     ] {
         assert!(body.contains(row), "missing {row:?} in\n{body}");
     }

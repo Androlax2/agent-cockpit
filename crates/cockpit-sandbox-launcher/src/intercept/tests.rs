@@ -221,7 +221,7 @@ fn a_git_fetch_upload_pack_gets_basic_credentials_and_its_body() {
 }
 
 #[test]
-fn a_push_discovery_is_refused_naming_the_owner_route() {
+fn a_push_discovery_is_refused_naming_the_daemons_push() {
     let relayed = relay_through(
         "github.com",
         &git_reads(),
@@ -233,8 +233,7 @@ fn a_push_discovery_is_refused_naming_the_owner_route() {
     let Ended::Refused { reason, .. } = relayed.ended else {
         panic!("{:?}", relayed.ended);
     };
-    assert!(reason.contains("`torlek ask run`"), "{reason}");
-    assert!(reason.contains("`torlek todo blocked`"), "{reason}");
+    assert!(reason.contains("`torlek push`"), "{reason}");
     assert_eq!(relayed.sent, "");
 }
 
@@ -255,11 +254,7 @@ fn a_push_upload_is_refused_however_its_path_is_spelled() {
         let Ended::Refused { reason, .. } = relayed.ended else {
             panic!("{target}: {:?}", relayed.ended);
         };
-        assert!(reason.contains("`torlek ask run`"), "{target}: {reason}");
-        assert!(
-            reason.contains("`torlek todo blocked`"),
-            "{target}: {reason}"
-        );
+        assert!(reason.contains("`torlek push`"), "{target}: {reason}");
         assert_eq!(relayed.sent, "", "{target}");
     }
 }

@@ -165,7 +165,7 @@ pub(crate) fn route(
             WorkClass::Control,
             job(async move { push_branches_reply(&database, project, None).await }),
         ),
-        Command::CheckoutPush { checkout } => (
+        Command::CheckoutPush { checkout, commit } => (
             WorkClass::Bulk,
             job(async move {
                 let id = CheckoutId(checkout);
@@ -184,7 +184,7 @@ pub(crate) fn route(
                     hosts: push_hosts,
                     credential,
                     force: cockpit_projects::Force::Never,
-                    workflows: cockpit_projects::WorkflowCheck::Owner,
+                    pusher: cockpit_projects::Pusher::Owner { commit },
                 };
                 let pushed = cockpit_projects::push(&database, &git, id, rules).await?;
                 Ok(Reply::Pushed {

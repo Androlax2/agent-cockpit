@@ -307,9 +307,22 @@ pub enum Command {
     CheckoutSweep {
         dry_run: bool,
     },
-    /// Push the checkout's branch to its GitHub origin.
+    /// Push the checkout's branch to its GitHub origin; with `commit`, only while the branch
+    /// is at that commit, as an agent's push held for a workflow change names it (#155).
     CheckoutPush {
         checkout: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
+    },
+    /// Agent socket only (#155): have the daemon push the sender's own checkout's branch, which
+    /// its `push-branch` grant covers: the checkout's launch branch or one its project's
+    /// push-branch patterns name, never the remote's default branch. `force` is a lease on the
+    /// launch branch against the commit the daemon last pushed there.
+    AgentPush {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force: bool,
     },
     /// Agent socket only: ask the owner to run `command` in `cwd` (absolute) on the host.
     /// `reason` says what it does and why. A confined run (#1387) writes only its project's

@@ -459,9 +459,8 @@ fn decide(credential: &Credential, target: &str) -> Action {
             let decoded = percent_decoded(target).to_ascii_lowercase();
             if decoded.contains("git-receive-pack") {
                 return Action::Refuse(
-                    "a Git push over HTTPS is refused inside the sandbox; pushing is the owner's: \
-                     ask with `torlek ask run` or `torlek todo blocked`, naming the branch \
-                     (`torlek push` replaces this once #155 ships)"
+                    "a Git push over HTTPS is refused inside the sandbox, which holds no push \
+                     credential: `torlek push` has the daemon push the current branch"
                         .to_owned(),
                 );
             }

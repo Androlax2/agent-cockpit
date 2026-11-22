@@ -46,6 +46,7 @@ const MISTAKES: &[(&[&str], &str)] = &[
     (&["check", "run"], "check"),
     (&["resources", "status", "x"], "resources"),
     (&["queue", "bogus"], "queue"),
+    (&["push", "--bogus"], "push"),
     (&["desktop-session", "x"], "desktop-session"),
     (&["docs", "a", "b"], "docs"),
     (&["brief", "--bogus"], "brief"),
