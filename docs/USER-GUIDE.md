@@ -481,9 +481,10 @@ A project without one gets no `GH_TOKEN`. `torlek project show PROJECT` says whi
 token. A file whose mode is not `0600` or `0400`, or one that holds anything but the token, stops the
 project's sessions from launching until you fix it.
 
-Under `agents.sandbox = "required"` no session gets that token: it can push. A sandboxed
-push is refused with a pointer to ask you (`torlek ask run`, `torlek todo blocked`) until
-`torlek push` ships (#155). Save a second token for the project with
+Under `agents.sandbox = "required"` no session gets that token: it can push, and only the
+daemon reads it. The agent's own `git push` is refused naming `torlek push`, which has the
+daemon push the agent's branch under the rules above (#155); neither the agent's environment,
+its files nor `git credential fill` inside the sandbox yields the token. Save a second token for the project with
 `torlek project token set PROJECT --api`, in `~/.config/torlek/github-api-tokens/<project>` by
 the same rules, with pull requests and issues read and write and contents read only. The session
 proxy adds it on `api.github.com`, and on

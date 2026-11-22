@@ -13,6 +13,8 @@ use cockpit_protocol::{Command, ErrorCode};
 use real_daemon::{COMMANDED_PROJECT, Daemon, GENEROUS, Home, cockpit_program, new_session};
 
 const ORIGIN: &str = "https://github.com/owner/commanded.git";
+const PUSH_TOKEN: &str = "push_token_fixture";
+const SANDBOX_REQUIRED: &str = "[agents]\nsandbox = \"required\"\n";
 
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
@@ -72,7 +74,23 @@ struct Pushing {
 
 impl Pushing {
     async fn new() -> Pushing {
+        Pushing::with_owner_config(None).await
+    }
+
+    /// [`Pushing::new`] with the agent in Torlek's native sandbox (#155 acceptance).
+    async fn sandboxed() -> Pushing {
+        assert!(
+            candidate::program("torlek-sandbox").is_file(),
+            "the launcher is built beside the daemon: run the workspace's tests"
+        );
+        Pushing::with_owner_config(Some(SANDBOX_REQUIRED)).await
+    }
+
+    async fn with_owner_config(owner_config: Option<&str>) -> Pushing {
         let home = Home::new();
+        if let Some(owner_config) = owner_config {
+            home.write_owner_config(owner_config);
+        }
         let remote = home.path().join("remote.git");
         git(
             &home.path(),
@@ -88,7 +106,7 @@ impl Pushing {
         let owner = home.connect().await;
         let (root, _) = home.project(&owner, COMMANDED_PROJECT).await;
         git(&root, &["remote", "add", "origin", ORIGIN]);
-        home.write_github_token(COMMANDED_PROJECT, "push_token_fixture\n", 0o600);
+        home.write_github_token(COMMANDED_PROJECT, &format!("{PUSH_TOKEN}\n"), 0o600);
         let pushing = Pushing {
             session: new_session(&owner, &root).await.id,
             home,
@@ -272,4 +290,61 @@ async fn an_agents_push_asked_on_the_owners_socket_is_refused() {
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
+}
+
+/// #155 acceptance: a sandboxed agent, which holds no push credential, still pushes its
+/// branch: the daemon pushes it with the token the agent never sees.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_pushes_its_branch_through_the_daemon() {
+    let pushing = Pushing::sandboxed().await;
+    pushing
+        .owner_succeeds(&[
+            "project",
+            "push-branch",
+            "add",
+            COMMANDED_PROJECT,
+            "agent/*",
+        ])
+        .await;
+
+    let printed = pushing
+        .agent_runs(&format!(
+            "echo \"token=${{GH_TOKEN-unset}}\"; {}",
+            commit_then_push("agent/sandboxed", "")
+        ))
+        .await;
+
+    assert!(printed.starts_with("token=unset\n"), "{printed}");
+    assert!(printed.ends_with("exit=0\n"), "{printed}");
+    assert!(pushing.remote_tip("agent/sandboxed").is_some(), "{printed}");
+}
+
+/// #155 acceptance (#857): with the push token kept, the push right bound and the owner's own
+/// Git credential store holding the token too, Git's credential lookup inside the sandbox
+/// finds no credential for the forge.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agents_git_credential_fill_gets_no_push_token() {
+    let pushing = Pushing::sandboxed().await;
+    let owner_home = pushing.home.path();
+    std::fs::write(
+        owner_home.join(".gitconfig"),
+        "[credential]\n\thelper = store\n",
+    )
+    .unwrap();
+    std::fs::write(
+        owner_home.join(".git-credentials"),
+        format!("https://owner:{PUSH_TOKEN}@github.com\n"),
+    )
+    .unwrap();
+
+    let printed = pushing
+        .agent_runs(
+            "printf 'protocol=https\\nhost=github.com\\n\\n' \
+             | GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false SSH_ASKPASS=/bin/false \
+             git credential fill 2>&1; echo \"fill=$?\"",
+        )
+        .await;
+
+    assert!(!printed.contains(PUSH_TOKEN), "{printed}");
+    assert!(!printed.contains("fill=0\n"), "{printed}");
 }

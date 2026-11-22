@@ -2045,6 +2045,7 @@ fn a_project_with_the_push_right_is_available_naming_where_it_pushes() {
 
     assert_eq!(push.status, Status::Available);
     assert!(push.detail.contains("github.com"), "{push:?}");
+    assert!(push.detail.contains("`torlek push`"), "{push:?}");
 }
 
 #[test]
