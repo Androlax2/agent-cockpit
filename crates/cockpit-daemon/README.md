@@ -16,8 +16,8 @@ not share code.
   once), `cockpit-authorization` (whose migrations it runs), `cockpit-agent-channel` (who an
   agent socket peer is, and its verbs), `cockpit-processes` (whose executions it reconciles),
   `cockpit-projects` (whose migrations it runs and whose verbs `Routes` serves to the
-  owner), `cockpit-forge-api` and `cockpit-github` (the hosts the forge adapters declare for
-  Git pushes, listed in `forges.rs`, #153), `cockpit-messaging` (whose migrations it runs, whose deliveries it reconciles and
+  owner), `cockpit-forge-api` and `cockpit-github` (the forge adapters in `forges.rs`: the
+  hosts they declare for Git pushes, #153, and the issues `issues.rs` reads, #60), `cockpit-messaging` (whose migrations it runs, whose deliveries it reconciles and
   whose change feed `Routes` streams to the owner), `cockpit-approvals` (run requests and guides, and the runner of approved
   commands), `cockpit-sessions` (whose verbs `Routes` serves to the owner, and whose restore
   and periodic pass it runs), `cockpit-tasks` (whose verbs `Routes` serves to the owner and
@@ -218,6 +218,11 @@ not share code.
   target, the blocker project, a new item's draft) must be registered.
 - Filings read the owner's `[tasks]` settings from the owner config at request time; a
   config that does not load refuses the filing instead of applying defaults.
+- `task-issues` (#60), the owner's alone, lists a project's open issues beside its todos:
+  `issues.rs` resolves its `origin` to a forge adapter and reads with the project's API token,
+  never its other token, in the bulk lane. No API token, no read: the refusal names
+  `torlek project token set PROJECT --api`. The adapter's `gh` keeps its configuration under
+  the state directory's `forges/github`, never the owner's.
 
 ## Workflows (#39)
 

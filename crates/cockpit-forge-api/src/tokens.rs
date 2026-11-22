@@ -50,7 +50,8 @@ pub enum TokenKind {
     /// Writes the repository's contents; read by the daemon only, for `torlek push`.
     Push,
     /// Writes change requests and issues, reads contents; added by the proxy on the forge's
-    /// API and Git-read hosts.
+    /// API and Git-read hosts, and read with by the daemon, which never writes with it (#60,
+    /// Theo 2026-11-22).
     Api,
 }
 

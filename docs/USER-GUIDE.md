@@ -348,7 +348,7 @@ Unknown keys fail with the file and line. See the [current configuration guide](
 | --- | --- |
 | Owner settings | `~/.config/torlek/config.toml` |
 | A project's GitHub token, its unsandboxed sessions' `GH_TOKEN` | `~/.config/torlek/github-tokens/<project>` |
-| A project's GitHub API token, which the session proxy adds for sandboxed sessions | `~/.config/torlek/github-api-tokens/<project>` |
+| A project's GitHub API token, which the session proxy adds for sandboxed sessions and the daemon reads issues with | `~/.config/torlek/github-api-tokens/<project>` |
 | A provider's credential, which the session proxy adds for sandboxed sessions | `~/.config/torlek/provider-credentials/<provider>/<VARIABLE>`; another account's in `<provider>/<account>/<VARIABLE>` |
 | A login account's sign-in, which only `torlek account sign-in` writes | `~/.local/state/torlek/account-logins/<provider>/<account>/login/` |
 | Database, session records and instruction bundle | `~/.local/state/torlek/` |
@@ -479,6 +479,13 @@ reaches at launch, including one you allowed for the project (`torlek network al
 --always`) or for the session; a host first allowed while the session runs gets it at the
 session's next launch.
 `torlek session sandbox SESSION` names any host it is not added on.
+
+The daemon also reads with that API token, never writes: `torlek todo issues PROJECT` lists the
+project's open issues beside its todos (`#ID`, title, labels, link; at most 50, newest first),
+read from the forge its `https` origin is on. A project without an API token has its issues
+refused, naming `torlek project token set PROJECT --api`. Issue titles are written by anyone
+who can open an issue, so control characters in them are shown escaped. This verb works from
+your own terminal only.
 
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` override their respective base directories.
 Named profiles replace the `torlek` directory component with `torlek-NAME` (for example `torlek-dev`).

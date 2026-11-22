@@ -561,6 +561,17 @@ impl Handler for Routes {
                 Peer::Agent { .. } => Route::Answer(owner_only()),
                 Peer::Owner => sessions::route(command, Arc::clone(&self.sessions)),
             },
+            // An agent reads its forge with its own `gh` through the proxy; the daemon's read
+            // spends the project's API token for the owner alone (#60, #857 as amended).
+            (command @ Command::TaskIssues { .. }, peer) => match peer {
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => crate::issues::route(
+                    command,
+                    Arc::clone(&self.database),
+                    self.git.clone(),
+                    self.environment.clone(),
+                ),
+            },
             // What an agent may do to tasks: file, read and work its own items, and fix the
             // title and notes of what it filed (#714). Whether it may touch a given item is
             // `cockpit-tasks`' rule, not the socket's.

@@ -1,8 +1,32 @@
-//! The forge adapters the daemon pushes through (#153): GitHub alone in the first release
-//! (#857 decision 4). Their declarations name the hosts a push may go to; the owner's push
-//! right on a project's grant of one lets that project's checkouts push there.
+//! The forge adapters the daemon pushes and reads through (#153, #60): GitHub alone in the
+//! first release (#857 decision 4). Their declarations name the hosts a push may go to; the
+//! owner's push right on a project's grant of one lets that project's checkouts push there.
 
-use cockpit_forge_api::{Declaration, ForgeHost, HostUse};
+use std::os::unix::fs::DirBuilderExt;
+use std::path::Path;
+
+use cockpit_forge_api::{Declaration, Forge, ForgeHost, HostUse};
+
+/// The folder of the daemon's state that holds each adapter's own program configuration,
+/// so no adapter reads the owner's (`~/.config/gh`).
+const ADAPTERS_DIR: &str = "forges";
+
+/// The adapters, ready to call. Blocking: each discovers its program's version, and one
+/// whose program is missing withholds its capabilities naming why.
+pub(crate) fn adapters(
+    environment: &cockpit_config::Environment,
+) -> Result<Vec<Box<dyn Forge>>, String> {
+    let home = environment.home_dir().map_err(|error| error.to_string())?;
+    let layout = cockpit_config::Layout::resolve(environment, &home);
+    let config_dir = layout.state_dir.value.join(ADAPTERS_DIR).join("github");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&config_dir)
+        .map_err(|error| format!("{}: {error}", config_dir.display()))?;
+    let gh = crate::clipboard::find_program(Path::new("gh")).unwrap_or_else(|| "gh".into());
+    Ok(vec![Box::new(cockpit_github::GitHub::new(gh, config_dir))])
+}
 
 fn declarations() -> [Declaration; 1] {
     [cockpit_github::declaration()]

@@ -17,7 +17,8 @@ pub const GITHUB_TOKENS_DIR: &str = "github-tokens";
 
 /// The folder of [`Layout::config_dir`] that holds one GitHub API token file per project
 /// (#857, #832): the credential the session proxy adds on GitHub's hosts, with no Contents
-/// write, read under the same rules as the token beside it but never given to an agent.
+/// write, read under the same rules as the token beside it but never given to an agent. The
+/// daemon reads issues with it too, for reads only (#60).
 pub const GITHUB_API_TOKENS_DIR: &str = "github-api-tokens";
 
 /// The variable a launch sets to its project's token, the one `gh` and its Git credential

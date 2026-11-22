@@ -25,8 +25,8 @@ use crate::sessions::{
 };
 use crate::storage::{CloneStorageView, SessionTempStorageView};
 use crate::tasks::{
-    HexBytes, TaskBudgetView, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView,
-    TaskView,
+    HexBytes, IssueView, TaskBudgetView, TaskDraftTargetView, TaskDraftView, TaskImageView,
+    TaskKindView, TaskView,
 };
 use crate::verification::{CheckClaimView, CheckReceiptView, GateView};
 use crate::workflows::{
@@ -686,6 +686,11 @@ pub enum Command {
         project: Option<String>,
         #[serde(default)]
         all: bool,
+    },
+    /// Owner only: `project`'s open issues on its forge, read with its API token (#60). Text
+    /// in the reply is written by whoever can write on the forge.
+    TaskIssues {
+        project: String,
     },
     TaskShow {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1396,6 +1401,10 @@ pub enum Reply {
     /// first within each.
     Tasks {
         tasks: Vec<TaskView>,
+    },
+    Issues {
+        project: String,
+        issues: Vec<IssueView>,
     },
     TaskDeleted {
         item: i64,

@@ -10,12 +10,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cockpit_protocol::{
-    Command, HexBytes, Reply, TaskBudgetView, TaskDraftTargetView, TaskDraftView, TaskKindView,
-    TaskNextView, TaskView,
+    Command, HexBytes, IssueView, Reply, TaskBudgetView, TaskDraftTargetView, TaskDraftView,
+    TaskKindView, TaskNextView, TaskView,
 };
 
 use crate::agent::{agent_socket, caller_socket, exchange, failed, is_in_a_session, launch_token};
 use crate::daemon::utf8_words;
+use crate::usage::printable;
 
 /// What a verb sends, and whether it is a session's request by its nature.
 pub(crate) struct Request {
@@ -84,6 +85,9 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
                 all,
             }
         }
+        ("issues", [project]) => Command::TaskIssues {
+            project: (*project).to_owned(),
+        },
         ("targets", []) => Command::SessionList { ended: false },
         ("show", [id]) => Command::TaskShow {
             launch_token: token,
@@ -277,6 +281,7 @@ fn render(reply: &Reply) -> Option<String> {
     Some(match reply {
         Reply::Task { task } => details(task),
         Reply::Tasks { tasks } => tasks.iter().map(line).collect(),
+        Reply::Issues { issues, .. } => issues.iter().map(issue_line).collect(),
         Reply::TaskDeleted { item } => format!("deleted\t{item}\n"),
         Reply::TaskImageAdded { item, image } => format!(
             "item {item}: [Image {}] {} {} bytes\n",
@@ -314,6 +319,23 @@ fn line(task: &TaskView) -> String {
         task.priority,
         task.kind.as_str(),
         task.title
+    )
+}
+
+/// `#id  title  labels  url`, tab-separated; `-` for no label. The forge's text is shown
+/// escaped, so a title cannot fake a line, a column or a terminal sequence.
+fn issue_line(issue: &IssueView) -> String {
+    let labels = if issue.labels.is_empty() {
+        "-".to_owned()
+    } else {
+        issue.labels.join(",")
+    };
+    format!(
+        "#{}\t{}\t{}\t{}\n",
+        printable(&issue.id),
+        printable(&issue.title),
+        printable(&labels),
+        printable(&issue.url)
     )
 }
 

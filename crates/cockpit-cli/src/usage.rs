@@ -297,7 +297,7 @@ fn span(seconds: i64) -> String {
 
 /// The provider's words are data: a control character (an escape sequence, a newline or a tab
 /// that would fake a line or a column) is shown escaped, the rest as it is.
-fn printable(value: &str) -> String {
+pub(crate) fn printable(value: &str) -> String {
     value
         .chars()
         .map(|character| {
