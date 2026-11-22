@@ -23,10 +23,17 @@ push check's origin test, move behind it as their callers adopt the contract.
 - **Answers are read, never guessed.** A field missing, of another type, or a state GitHub
   does not document is `Malformed`; an answer about another issue or pull request than the
   one asked is too. `gh pr list --head` lists forks' branches of the same name, so a
-  branch's pull request is the newest from the repository itself.
+  branch's pull request is the newest from the repository itself; a full page of forks' is
+  an error, not "none". `gh issue` commands take a pull request's number, so a read checks
+  the URL and a comment reads the number first. A rollup of 100 checks may be cut short and
+  is not read as complete.
+- **Writes are read back from the URL `gh` prints**, by number: the owner and name in it
+  are GitHub's canonical spelling, which a rename or a difference of case changes. A call
+  that timed out says that what it asked may have been done.
 - **Scope check.** GitHub shows whether a token is accepted and reaches the repository, and
-  its kind by its documented prefix. A classic token (`ghp_`) reaches every repository and
-  is refused; a fine-grained token's permissions and repository list are not shown, so it
+  its kind by its documented prefix. A classic token (`ghp_`, or 40 hex digits from before
+  prefixes) and an OAuth token (`gho_`, what `gh auth login` makes) reach every repository
+  and are refused; a fine-grained token's permissions and repository list are not shown, so it
   is reported unverified with what to check on its settings page.
 - **Provenance.** The conformance suite runs over answers written by hand to `gh`
   2.104.0's `--json` shape (`tests/fixtures/`), since no test reaches GitHub. They prove the

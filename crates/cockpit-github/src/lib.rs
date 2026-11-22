@@ -46,7 +46,7 @@ const SERVED: [Capability; 9] = [
 
 /// Pull requests a head-branch lookup reads to find the newest one from the repository
 /// itself: `gh pr list --head` also lists forks' branches of the same name.
-const HEAD_LOOKUP_LIMIT: &str = "30";
+const HEAD_LOOKUP_LIMIT: usize = 30;
 
 /// The GitHub adapter. It runs `gh` with a configuration folder of its own, so the owner's
 /// `gh` sign-in is never used: every call carries the token its [`Access`] names.
@@ -60,8 +60,10 @@ pub struct GitHub {
 
 impl GitHub {
     /// The adapter over the `gh` at `program`, which keeps its configuration in `config_dir`
-    /// (a folder of Torlek's state, never the owner's `~/.config/gh`). Runs `gh --version`
-    /// once: when it fails, every capability is withheld with the reason.
+    /// (a folder of Torlek's state that exists, never the owner's `~/.config/gh`). Runs
+    /// `gh --version` once, blocking up to 5 s, as a provider's probe runs once at start:
+    /// when it fails, every capability is withheld with the reason until a new adapter is
+    /// made.
     pub fn new(program: PathBuf, config_dir: PathBuf) -> GitHub {
         let gh = Gh {
             program,
@@ -175,10 +177,6 @@ fn label_arguments(labels: &[String]) -> Result<Vec<String>, ForgeError> {
         .collect()
 }
 
-fn issue_url_prefix(repository: &str) -> String {
-    format!("https://{GIT_HOST}/{repository}/issues/")
-}
-
 impl Forge for GitHub {
     fn name(&self) -> &ForgeName {
         &self.name
@@ -271,6 +269,9 @@ impl Forge for GitHub {
         ];
         let stdout = self.call(access, arguments, None, &format!("issue {number}"))?;
         let thread = answers::issue_thread(&answers::parse(&stdout)?)?;
+        if answers::github_url(&thread.issue.url, "issues").is_none() {
+            return Err(not_an_issue(&number));
+        }
         if thread.issue.id != *id {
             return Err(ForgeError::Malformed {
                 reason: format!("asked for issue {id}, `gh` answered {}", thread.issue.id),
@@ -295,7 +296,7 @@ impl Forge for GitHub {
         ];
         arguments.extend(label_arguments(&issue.labels)?);
         let stdout = self.call(access, arguments, Some(&issue.body), "the repository")?;
-        let (number, url) = answers::created_number(&stdout, &issue_url_prefix(&repository))?;
+        let (number, url) = answers::created_number(&stdout, "issues")?;
         Ok(Created {
             id: IssueId::new(number).map_err(malformed)?,
             url,
@@ -311,6 +312,7 @@ impl Forge for GitHub {
         self.require(Capability::IssueComment)?;
         let number = issue_number(id)?;
         let repository = repository_argument(access.repository)?;
+        self.require_issue(access, &number, &repository)?;
         let arguments = vec![
             "issue".to_owned(),
             "comment".to_owned(),
@@ -319,15 +321,13 @@ impl Forge for GitHub {
             "--body-file=-".to_owned(),
         ];
         let stdout = self.call(access, arguments, Some(body), &format!("issue {number}"))?;
-        let url = stdout
-            .lines()
-            .map(str::trim)
-            .rfind(|line| !line.is_empty())
-            .unwrap_or_default();
-        let expected = format!("{}{number}#issuecomment-", issue_url_prefix(&repository));
-        let is_comment_url = url
-            .strip_prefix(&expected)
-            .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()));
+        let url = answers::printed_url(&stdout)?;
+        let is_comment_url = answers::github_url(url, "issues").is_some_and(|(posted_on, rest)| {
+            posted_on == number
+                && rest.strip_prefix("#issuecomment-").is_some_and(|id| {
+                    !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        });
         if !is_comment_url {
             return Err(ForgeError::Malformed {
                 reason: format!("`gh` printed {url:?}, not a comment URL of issue {number}"),
@@ -371,7 +371,8 @@ impl Forge for GitHub {
         ];
         let stdout = self.call(access, arguments, None, "the repository")?;
         let listed = answers::parse(&stdout)?;
-        for value in answers::array(&listed, "the pull request list")? {
+        let listed = answers::array(&listed, "the pull request list")?;
+        for value in listed {
             let (request, is_from_fork) = answers::pull(value)?;
             if request.head != *branch {
                 return Err(ForgeError::Malformed {
@@ -384,6 +385,14 @@ impl Forge for GitHub {
             if !is_from_fork {
                 return Ok(Some(request));
             }
+        }
+        if listed.len() >= HEAD_LOOKUP_LIMIT {
+            return Err(ForgeError::Unavailable {
+                reason: format!(
+                    "the newest {HEAD_LOOKUP_LIMIT} pull requests from {branch} are all forks': \
+                     the repository's own may be older"
+                ),
+            });
         }
         Ok(None)
     }
@@ -424,8 +433,7 @@ impl Forge for GitHub {
             arguments.push("--draft".to_owned());
         }
         let stdout = self.call(access, arguments, Some(&request.body), "the repository")?;
-        let prefix = format!("https://{GIT_HOST}/{repository}/pull/");
-        let (number, url) = answers::created_number(&stdout, &prefix)?;
+        let (number, url) = answers::created_number(&stdout, "pull")?;
         Ok(Created {
             id: ChangeId::new(number).map_err(malformed)?,
             url,
@@ -459,6 +467,37 @@ impl Forge for GitHub {
 }
 
 impl GitHub {
+    /// Refuses a pull request's number before a write: `gh issue` commands take one too.
+    fn require_issue(
+        &self,
+        access: &Access<'_>,
+        number: &str,
+        repository: &str,
+    ) -> Result<(), ForgeError> {
+        let arguments = vec![
+            "issue".to_owned(),
+            "view".to_owned(),
+            number.to_owned(),
+            format!("--repo={repository}"),
+            "--json=url".to_owned(),
+        ];
+        let stdout = self.call(access, arguments, None, &format!("issue {number}"))?;
+        let viewed = answers::parse(&stdout)?;
+        let url = viewed
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ForgeError::Malformed {
+                reason: "the answer has no `url`".to_owned(),
+            })?;
+        match answers::github_url(url, "issues") {
+            Some((viewed_number, "")) if viewed_number == number => Ok(()),
+            Some(_) => Err(ForgeError::Malformed {
+                reason: format!("asked for issue {number}, `gh` answered {url:?}"),
+            }),
+            None => Err(not_an_issue(number)),
+        }
+    }
+
     fn view_pull(
         &self,
         access: &Access<'_>,
@@ -474,6 +513,13 @@ impl GitHub {
             format!("--json={fields}"),
         ];
         self.call(access, arguments, None, &format!("pull request {number}"))
+    }
+}
+
+/// What a pull request's number is to the issue calls: no issue.
+fn not_an_issue(number: &str) -> ForgeError {
+    ForgeError::NotFound {
+        what: format!("issue {number} (it is a pull request)"),
     }
 }
 

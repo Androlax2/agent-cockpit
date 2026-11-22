@@ -39,6 +39,10 @@ const ALLOWED: [&str; 25] = [
 fn commented() -> FakeGh {
     let mut gh = FakeGh::new();
     gh.answer_with(
+        &["issue", "view", "12", "--repo=owner/project", "--json=url"],
+        "issue-view-url.json",
+    )
+    .answer_with(
         &[
             "issue",
             "comment",
@@ -56,9 +60,16 @@ fn commented() -> FakeGh {
     gh
 }
 
+/// The comment's call, after the read that makes sure the number is an issue's.
+fn comment_call(gh: &FakeGh) -> common::Call {
+    let mut calls = gh.calls();
+    assert_eq!(calls.len(), 2, "{calls:#?}");
+    calls.pop().unwrap()
+}
+
 #[test]
 fn the_token_reaches_gh_as_gh_token() {
-    let call = commented().only_call();
+    let call = comment_call(&commented());
 
     assert_eq!(
         call.environment.get("GH_TOKEN").map(String::as_str),
@@ -68,7 +79,7 @@ fn the_token_reaches_gh_as_gh_token() {
 
 #[test]
 fn no_variable_of_the_daemons_environment_reaches_gh_beyond_the_allowed_ones() {
-    let call = commented().only_call();
+    let call = comment_call(&commented());
 
     let passed: Vec<&String> = call
         .environment
@@ -81,7 +92,7 @@ fn no_variable_of_the_daemons_environment_reaches_gh_beyond_the_allowed_ones() {
 #[test]
 fn gh_keeps_its_configuration_in_the_adapters_folder_never_the_owners() {
     let gh = commented();
-    let call = gh.only_call();
+    let call = comment_call(&gh);
     let config_dir = gh.config_dir().display().to_string();
 
     for name in ["GH_CONFIG_DIR", "HOME"] {
@@ -98,12 +109,12 @@ fn gh_keeps_its_configuration_in_the_adapters_folder_never_the_owners() {
 fn gh_runs_in_its_folder_so_no_checkouts_remote_is_inferred() {
     let gh = commented();
 
-    assert_eq!(gh.only_call().folder, gh.config_dir());
+    assert_eq!(comment_call(&gh).folder, gh.config_dir());
 }
 
 #[test]
 fn a_body_reaches_gh_on_standard_input_never_in_its_arguments() {
-    let call = commented().only_call();
+    let call = comment_call(&commented());
 
     assert_eq!(call.stdin, "The body.");
     assert!(
@@ -116,7 +127,7 @@ fn a_body_reaches_gh_on_standard_input_never_in_its_arguments() {
 
 #[test]
 fn the_token_is_never_an_argument() {
-    let call = commented().only_call();
+    let call = comment_call(&commented());
 
     assert!(
         !call

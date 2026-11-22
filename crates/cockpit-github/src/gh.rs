@@ -14,6 +14,9 @@ use cockpit_forge_api::{ForgeError, Token};
 pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(30);
 /// Most bytes of an answer kept; a list of 100 issues is far below it.
 const MAX_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
+/// How long `gh`'s output may take to drain once it exited, apart from the call's deadline:
+/// a call that ended just in time has its answer read.
+const OUTPUT_GRACE: Duration = Duration::from_secs(5);
 /// Most characters of `gh`'s standard error repeated in an error.
 const MAX_REASON_CHARS: usize = 300;
 
@@ -105,14 +108,19 @@ impl Gh {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(unavailable(format!(
-                    "did not answer within {} s",
+                    "did not answer within {} s; what it asked may have been done",
                     deadline.as_secs()
                 )));
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        let remaining = || ends_at.saturating_duration_since(Instant::now());
-        let gave_up = || unavailable("its output did not end in time".to_owned());
+        let drained_by = Instant::now() + OUTPUT_GRACE;
+        let remaining = || drained_by.saturating_duration_since(Instant::now());
+        let gave_up = || {
+            unavailable(
+                "it exited but its output did not end; what it asked may have been done".to_owned(),
+            )
+        };
         let stdout = stdout.recv_timeout(remaining()).map_err(|_| gave_up())?;
         let stderr = stderr.recv_timeout(remaining()).map_err(|_| gave_up())?;
         Ok(Answer {
@@ -209,16 +217,20 @@ pub(crate) fn failure(
             what: what.to_owned(),
         };
     }
+    // GitHub's GraphQL refusals (a head with no commits, a resource the token cannot reach)
+    // carry no HTTP status; not-found ones were read above. None succeeds when retried.
+    let lowered = said.to_lowercase();
     let is_refused = [
-        "HTTP 401",
-        "HTTP 403",
-        "HTTP 422",
-        "Bad credentials",
+        "http 401",
+        "http 403",
+        "http 422",
+        "bad credentials",
         "authentication",
         "already exists",
+        "graphql:",
     ]
     .iter()
-    .any(|sign| said.contains(sign));
+    .any(|sign| lowered.contains(sign));
     let reason = format!("`gh {}`: {said}", describe(arguments));
     if is_refused {
         ForgeError::Refused { reason }

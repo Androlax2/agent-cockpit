@@ -16,6 +16,8 @@ pub(crate) const ISSUE_THREAD_FIELDS: &str = "number,title,state,labels,author,u
 pub(crate) const PULL_FIELDS: &str = "number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeCommit,isCrossRepository";
 /// The head commit and its checks, read in one answer so the checks are those of that commit.
 pub(crate) const CHECK_FIELDS: &str = "headRefOid,statusCheckRollup";
+/// The checks `gh pr view` reads of a commit in one answer; a rollup this long may be cut.
+const MAX_ROLLUP: usize = 100;
 
 fn malformed(reason: impl Into<String>) -> ForgeError {
     ForgeError::Malformed {
@@ -65,20 +67,12 @@ fn number(object: &Object, name: &str) -> Result<String, ForgeError> {
         .ok_or_else(|| malformed(format!("`{name}` is not a number")))
 }
 
-/// An author's login; `None` for an account that is gone (`null`, or no login).
+/// An author's login; `None` for an account that is gone (`null`).
 fn author(object: &Object) -> Result<Option<String>, ForgeError> {
-    match object.get("author") {
-        None | Some(Value::Null) => Ok(None),
-        Some(author) => Ok(object_login(author)),
+    match field(object, "author")? {
+        Value::Null => Ok(None),
+        author => text(self::object(author, "`author`")?, "login").map(Some),
     }
-}
-
-fn object_login(author: &Value) -> Option<String> {
-    author
-        .get("login")
-        .and_then(Value::as_str)
-        .filter(|login| !login.is_empty())
-        .map(str::to_owned)
 }
 
 fn invalid(error: cockpit_forge_api::InvalidValue) -> ForgeError {
@@ -191,10 +185,19 @@ pub(crate) fn checks(value: &Value) -> Result<Checks, ForgeError> {
     let object = object(value, "a pull request")?;
     let checks = match field(object, "statusCheckRollup")? {
         Value::Null => Vec::new(),
-        rollup => array(rollup, "`statusCheckRollup`")?
-            .iter()
-            .map(check)
-            .collect::<Result<Vec<_>, _>>()?,
+        rollup => {
+            let rollup = array(rollup, "`statusCheckRollup`")?;
+            if rollup.len() >= MAX_ROLLUP {
+                return Err(ForgeError::Unavailable {
+                    reason: format!(
+                        "the pull request has {} checks or more, past what `gh pr view` lists \
+                         in one answer: the ones left out may have failed",
+                        MAX_ROLLUP
+                    ),
+                });
+            }
+            rollup.iter().map(check).collect::<Result<Vec<_>, _>>()?
+        }
     };
     Ok(Checks {
         commit: commit(&text(object, "headRefOid")?)?,
@@ -243,17 +246,39 @@ fn status_state(state: &str) -> Result<CheckState, ForgeError> {
     }
 }
 
-/// The number at the end of the URL `gh` prints for what it made
-/// (`https://github.com/owner/name/issues/12`), when the URL is under `prefix`.
-pub(crate) fn created_number(stdout: &str, prefix: &str) -> Result<(String, String), ForgeError> {
-    let url = stdout
+/// The last line `gh` printed: the URL of what it made or posted.
+pub(crate) fn printed_url(stdout: &str) -> Result<&str, ForgeError> {
+    stdout
         .lines()
         .map(str::trim)
         .rfind(|line| !line.is_empty())
-        .ok_or_else(|| malformed("`gh` printed no URL"))?;
-    let number = url
-        .strip_prefix(prefix)
-        .filter(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
-        .ok_or_else(|| malformed(format!("`gh` printed {url:?}, not a URL under {prefix}")))?;
-    Ok((number.to_owned(), url.to_owned()))
+        .ok_or_else(|| malformed("`gh` printed no URL"))
+}
+
+/// The number and what follows it in a GitHub URL of `kind` (`issues`, `pull`):
+/// `https://github.com/<owner>/<name>/<kind>/<number><rest>`. The owner and name are not
+/// compared with the project's: GitHub prints their canonical spelling, which a rename or a
+/// difference of case changes, and refusing a write already made invites a duplicate.
+pub(crate) fn github_url<'u>(url: &'u str, kind: &str) -> Option<(&'u str, &'u str)> {
+    let path = url.strip_prefix(&format!("https://{}/", crate::GIT_HOST))?;
+    let mut parts = path.splitn(4, '/');
+    let (owner, name) = (parts.next()?, parts.next()?);
+    if owner.is_empty() || name.is_empty() || parts.next()? != kind {
+        return None;
+    }
+    let tail = parts.next()?;
+    let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+    let (number, rest) = tail.split_at(digits);
+    (!number.is_empty() && !number.starts_with('0')).then_some((number, rest))
+}
+
+/// The number of what `gh` made, from the URL it printed.
+pub(crate) fn created_number(stdout: &str, kind: &str) -> Result<(String, String), ForgeError> {
+    let url = printed_url(stdout)?;
+    match github_url(url, kind) {
+        Some((number, "")) => Ok((number.to_owned(), url.to_owned())),
+        _ => Err(malformed(format!(
+            "`gh` printed {url:?}, not a GitHub URL of its {kind}"
+        ))),
+    }
 }

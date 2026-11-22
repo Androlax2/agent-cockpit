@@ -423,3 +423,200 @@ fn a_configuration_folder_that_does_not_exist_is_named() {
 
     assert!(reason.contains("configuration folder"), "{reason}");
 }
+
+#[test]
+fn a_created_issue_is_read_from_githubs_canonical_spelling_of_the_repository() {
+    let mut gh = FakeGh::new();
+    gh.answer(
+        &[
+            "issue",
+            "create",
+            REPOSITORY,
+            "--title=Renamed",
+            "--body-file=-",
+        ],
+        0,
+        "https://github.com/Owner/Project-Renamed/issues/42\n",
+        "",
+    );
+
+    let created = with_access(|access| {
+        gh.adapter().create_issue(
+            access,
+            &cockpit_forge_api::NewIssue {
+                title: "Renamed".to_owned(),
+                body: String::new(),
+                labels: Vec::new(),
+            },
+        )
+    });
+
+    assert_eq!(created.unwrap().id.as_str(), "42");
+}
+
+#[test]
+fn a_pull_requests_number_read_as_an_issue_is_not_found() {
+    let pull = read_fixture("issue-view.json").replace("/issues/12", "/pull/12");
+    let mut gh = FakeGh::new();
+    gh.answer(
+        &[
+            "issue",
+            "view",
+            "12",
+            REPOSITORY,
+            "--json=number,title,state,labels,author,url,body,comments",
+        ],
+        0,
+        &pull,
+        "",
+    );
+
+    let read = with_access(|access| {
+        gh.adapter()
+            .read_issue(access, &IssueId::new("12").unwrap())
+    });
+
+    assert!(matches!(read, Err(ForgeError::NotFound { .. })), "{read:?}");
+}
+
+#[test]
+fn a_comment_on_a_pull_requests_number_is_not_posted() {
+    let mut gh = FakeGh::new();
+    gh.answer(
+        &["issue", "view", "12", REPOSITORY, "--json=url"],
+        0,
+        r#"{"url":"https://github.com/owner/project/pull/12"}"#,
+        "",
+    );
+
+    let posted = with_access(|access| {
+        gh.adapter()
+            .comment_on_issue(access, &IssueId::new("12").unwrap(), "body")
+    });
+
+    assert!(
+        matches!(posted, Err(ForgeError::NotFound { .. })),
+        "{posted:?}"
+    );
+    assert_eq!(gh.calls().len(), 1);
+}
+
+#[test]
+fn a_check_rollup_as_long_as_one_answer_holds_is_not_read_as_complete() {
+    let entry =
+        r#"{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}"#;
+    let answer = format!(
+        r#"{{"headRefOid":"0123456789abcdef0123456789abcdef01234567","statusCheckRollup":[{}]}}"#,
+        vec![entry; 100].join(",")
+    );
+    let mut gh = FakeGh::new();
+    gh.answer(
+        &[
+            "pr",
+            "view",
+            "20",
+            REPOSITORY,
+            "--json=headRefOid,statusCheckRollup",
+        ],
+        0,
+        &answer,
+        "",
+    );
+
+    let checks = with_access(|access| {
+        gh.adapter()
+            .change_checks(access, &ChangeId::new("20").unwrap())
+    });
+
+    assert!(
+        matches!(checks, Err(ForgeError::Unavailable { .. })),
+        "{checks:?}"
+    );
+}
+
+#[test]
+fn a_full_page_of_forks_pull_requests_is_not_read_as_none() {
+    let branch = "patch-1";
+    let lookup = head_lookup(branch);
+    let fork: serde_json::Value = serde_json::from_str(&read_fixture("pr-list-head.json")).unwrap();
+    let mut fork = fork[0].clone();
+    fork["headRefName"] = branch.into();
+    let page = serde_json::Value::Array(vec![fork; 30]);
+    let mut gh = FakeGh::new();
+    gh.answer(&arguments(&lookup), 0, &page.to_string(), "");
+
+    let found = with_access(|access| {
+        gh.adapter()
+            .change_request_for(access, &BranchName::new(branch).unwrap())
+    });
+
+    assert!(
+        matches!(found, Err(ForgeError::Unavailable { .. })),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_graphql_refusal_is_a_refusal_not_a_passing_outage() {
+    let mut gh = FakeGh::new();
+    gh.answer(
+        &["pr", "view", "20", REPOSITORY, "--json=reviewDecision"],
+        1,
+        "",
+        "GraphQL: Resource not accessible by personal access token (repository.pullRequest)\n",
+    );
+
+    let review = with_access(|access| {
+        gh.adapter()
+            .change_review(access, &ChangeId::new("20").unwrap())
+    });
+
+    assert!(
+        matches!(review, Err(ForgeError::Refused { .. })),
+        "{review:?}"
+    );
+}
+
+#[test]
+fn tokens_that_reach_every_repository_are_refused() {
+    for token in ["gho_fakeoauth", "0123456789abcdef0123456789abcdef01234567"] {
+        assert_eq!(
+            scope_of(token, 0, ""),
+            ScopeCheck::Refused {
+                problems: vec![ScopeProblem::OtherRepositories]
+            },
+            "{token}"
+        );
+    }
+}
+
+#[test]
+fn an_author_that_is_not_an_account_is_malformed_not_a_deleted_one() {
+    let odd = read_fixture("issue-view.json").replace(
+        r#""author":{"id":"MDQ6VXNlcjE=","is_bot":false,"login":"octo","name":"Octo Cat"}"#,
+        r#""author":"octo""#,
+    );
+    let mut gh = FakeGh::new();
+    gh.answer(
+        &[
+            "issue",
+            "view",
+            "12",
+            REPOSITORY,
+            "--json=number,title,state,labels,author,url,body,comments",
+        ],
+        0,
+        &odd,
+        "",
+    );
+
+    let read = with_access(|access| {
+        gh.adapter()
+            .read_issue(access, &IssueId::new("12").unwrap())
+    });
+
+    assert!(
+        matches!(read, Err(ForgeError::Malformed { .. })),
+        "{read:?}"
+    );
+}

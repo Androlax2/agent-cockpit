@@ -114,6 +114,10 @@ fn answering_every_call() -> FakeGh {
         "issue-create.stdout",
     )
     .answer_with(
+        &["issue", "view", "12", REPOSITORY, "--json=url"],
+        "issue-view-url.json",
+    )
+    .answer_with(
         &["issue", "comment", "12", REPOSITORY, "--body-file=-"],
         "issue-comment.stdout",
     )

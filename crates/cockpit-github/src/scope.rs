@@ -13,8 +13,9 @@ pub(crate) enum Reach {
     NotAccepted,
 }
 
-/// A classic personal access token reaches every repository its owner can.
-const CLASSIC_PREFIX: &str = "ghp_";
+/// A classic personal access token, and the OAuth token `gh auth login` makes, reach every
+/// repository their owner can; so does a classic token from before prefixes (40 hex digits).
+const BROAD_PREFIXES: [&str; 2] = ["ghp_", "gho_"];
 const FINE_GRAINED_PREFIX: &str = "github_pat_";
 
 pub(crate) fn judge(token: &Token, kind: TokenKind, reach: Reach) -> ScopeCheck {
@@ -25,7 +26,13 @@ pub(crate) fn judge(token: &Token, kind: TokenKind, reach: Reach) -> ScopeCheck 
         Reach::NotAccepted => problems.push(ScopeProblem::NotAccepted),
     }
     let value = token.expose();
-    if value.starts_with(CLASSIC_PREFIX) {
+    let is_unprefixed_classic =
+        value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if is_unprefixed_classic
+        || BROAD_PREFIXES
+            .iter()
+            .any(|prefix| value.starts_with(prefix))
+    {
         problems.push(ScopeProblem::OtherRepositories);
     }
     if !problems.is_empty() {
