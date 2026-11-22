@@ -88,7 +88,7 @@ fn push(project: &str, facts: &Result<PushFacts, String>) -> Requirement {
         return Requirement::available(
             name,
             format!(
-                "`torlek checkout push` pushes the project's checkouts to {}",
+                "`torlek checkout push` may push to an https origin on {}",
                 listed(&facts.bound)
             ),
         );

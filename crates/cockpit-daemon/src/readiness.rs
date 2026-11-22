@@ -532,7 +532,6 @@ async fn checkout_of(
     }
 }
 
-/// Trust as `cockpit-projects` decides it, from the owner's `projects.trusted` read now.
 /// Where `project`'s checkouts may push: the hosts the forge adapters declare for Git pushes,
 /// those the project's grants reach, and those whose grant carries the push right (#153).
 async fn push_facts(
@@ -571,6 +570,7 @@ async fn push_facts(
     })
 }
 
+/// Trust as `cockpit-projects` decides it, from the owner's `projects.trusted` read now.
 fn checkout_facts(
     config: &cockpit_config::EffectiveConfig,
     checkout: cockpit_projects::Checkout,

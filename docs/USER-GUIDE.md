@@ -238,6 +238,7 @@ torlek network grant PROJECT github.com   # all of github.com:443 for the projec
 ```
 
 Fetches then work from the first launch. Pushes stay refused, and `torlek network revoke GRANT` takes the grant back.
+Only github.com and Docker Hub's pull hosts (below) are granted without a request.
 
 `torlek checkout push ID` pushes a checkout's branch from the daemon only to a host whose grant carries the push right, which nothing gives except you (#153):
 
@@ -246,7 +247,6 @@ torlek network grant PROJECT github.com --push   # on the project's github.com g
 ```
 
 The project must hold that grant first. Revoking the grant ends the push right with it. Only `https` origins are pushed to: an SSH origin is refused. `torlek doctor --project DIR` names the command on its `push` line while the project has no push right.
-Only github.com and Docker Hub's pull hosts (below) are granted without a request.
 
 ### A project's container engine
 

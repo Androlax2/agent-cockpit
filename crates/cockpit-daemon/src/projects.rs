@@ -148,6 +148,8 @@ pub(crate) fn route(
             WorkClass::Bulk,
             job(async move {
                 let id = CheckoutId(checkout);
+                // Read before the push, as its other checks are: a revoke landing after this
+                // read does not stop a push the owner already started.
                 let push_hosts = {
                     let read = database.read().await.map_err(Error::from)?;
                     let project = cockpit_projects::checkout_project(&read, id).await?;

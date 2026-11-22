@@ -56,9 +56,12 @@ impl From<NetworkError> for Failed {
                 ErrorCode::Conflict,
                 format!("nothing to do; `torlek network revoke {grant}` takes it back"),
             ),
-            NetworkRefusal::AlreadyPushes { .. } => (
+            NetworkRefusal::AlreadyPushes { grant } => (
                 ErrorCode::Conflict,
-                "nothing to do: the daemon pushes there already".to_owned(),
+                format!(
+                    "nothing to do; `torlek network revoke {grant}` takes it back, with the \
+                     host's grant"
+                ),
             ),
             NetworkRefusal::NotReached { project, target } => {
                 (ErrorCode::Refused, reach_first(project, target))
@@ -196,9 +199,12 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
                 host,
                 through,
             } => {
+                // As an origin URL names it: case and the default port do not count.
+                let written = host.to_ascii_lowercase();
+                let written = written.strip_suffix(":443").unwrap_or(&written);
                 let Some(host) = crate::forges::declared_push_hosts()
                     .into_iter()
-                    .find(|declared| declared.as_str() == host)
+                    .find(|declared| declared.as_str() == written)
                 else {
                     return Err(undeclared_push_host(&host));
                 };
@@ -885,8 +891,6 @@ fn request_view(request: &NetworkRequest) -> NetworkRequestView {
     }
 }
 
-/// Refuses a name no registered project holds: a grant keyed by a mistyped name would sit
-/// unseen until a project of that name is added.
 /// The owner's step that gives `project` the grant of `target` a push right goes on: the
 /// direct grant for github.com, a request's "allow always" for any other host.
 fn reach_first(project: &str, target: &NetworkTarget) -> String {
@@ -923,6 +927,8 @@ fn undeclared_push_host(host: &str) -> Failed {
     })
 }
 
+/// Refuses a name no registered project holds: a grant keyed by a mistyped name would sit
+/// unseen until a project of that name is added.
 async fn registered(connection: &Connection, project: &str) -> Result<(), Failed> {
     match cockpit_projects::project_named(connection, project).await {
         Ok(_) => Ok(()),

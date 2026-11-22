@@ -143,3 +143,35 @@ async fn doctor_names_the_command_that_binds_the_push_right() {
         Some("next: `torlek network grant cockpit github.com --push`")
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_is_bound_whatever_its_case_or_default_port() {
+    for written in ["GitHub.com", "github.com:443"] {
+        let (home, _daemon, _) = started().await;
+        succeeds(&home, &["network", "grant", "cockpit", "github.com"]).await;
+
+        let bound = succeeds(&home, &["network", "grant", "cockpit", written, "--push"]).await;
+
+        assert!(bound.contains("push: bound"), "{written}: {bound}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn binding_push_twice_names_the_grant_and_how_to_take_it_back() {
+    let (home, _daemon, _) = started().await;
+    succeeds(&home, &["network", "grant", "cockpit", "github.com"]).await;
+    succeeds(
+        &home,
+        &["network", "grant", "cockpit", "github.com", "--push"],
+    )
+    .await;
+
+    let again = fails(
+        &home,
+        &["network", "grant", "cockpit", "github.com", "--push"],
+    )
+    .await;
+
+    assert!(again.contains("network grant 1 already"), "{again}");
+    assert!(again.contains("`torlek network revoke 1`"), "{again}");
+}
