@@ -21,13 +21,15 @@ pub(crate) struct Reader<'reader> {
 
 impl Reader<'_> {
     /// Runs `read` on the forge `project`'s checkout at `root` names as `origin`, with the
-    /// project's API token; `what` names what is read in its refusals (`app's open issues`). Blocking: it reads the
+    /// project's API token; `what` names what is read in its refusals (`app's open issues`)
+    /// and `again` the command to run once the cause is fixed. Blocking: it reads the
     /// token file, asks Git for the origin and runs the forge's program.
     pub(crate) fn read<T>(
         &self,
         project: &str,
         root: &Path,
         what: &str,
+        again: &str,
         read: impl FnOnce(&dyn Forge, &Access<'_>) -> Result<T, ForgeError>,
     ) -> Result<T, Failed> {
         let token = api_token(self.environment, project, what)?;
@@ -57,7 +59,7 @@ impl Reader<'_> {
                     repository: &repository,
                     token: &token,
                 };
-                read(forge, &access).map_err(|error| forge_failed(project, what, &error))
+                read(forge, &access).map_err(|error| forge_failed(project, what, again, &error))
             })
             .map_err(|error| internal(&error))?
     }
@@ -91,7 +93,7 @@ fn api_token(
     Token::new(stored.expose()).map_err(|error| internal(&error))
 }
 
-fn forge_failed(project: &str, what: &str, error: &ForgeError) -> Failed {
+fn forge_failed(project: &str, what: &str, again: &str, error: &ForgeError) -> Failed {
     let (code, action) = match error {
         ForgeError::NotFound { .. } => (
             ErrorCode::NotFound,
@@ -106,7 +108,7 @@ fn forge_failed(project: &str, what: &str, error: &ForgeError) -> Failed {
         | ForgeError::Unavailable { .. }
         | ForgeError::Malformed { .. } => (
             ErrorCode::Refused,
-            "fix what the message names, then try again".to_owned(),
+            format!("fix what the message names, then {again}"),
         ),
     };
     refused(code, format!("{what} could not be read: {error}"), action)

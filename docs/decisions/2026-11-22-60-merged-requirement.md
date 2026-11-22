@@ -10,8 +10,13 @@ offered.
   from the forge, with the project's API token, the newest change request whose head is the
   checkout's branch. The requirement passes only when that change request merged with the
   checkout's head as its head commit: a merge of an earlier head does not hold this result.
-  Nothing is recorded: the forge answers at each completion, and an unmet `merged` refuses the
-  completion naming why (open, closed unmerged, another head, none, detached HEAD).
+  Nothing is cached as evidence: the forge answers at each completion, and an unmet `merged`
+  refuses the completion naming why (open, closed unmerged, another head, none, detached
+  HEAD). The forge is asked about the local branch's name, the one `torlek checkout push`
+  pushes to.
+- **Only the session doing the step completes it on the forge's answer.** The owner's checkout
+  is the project's main one, whose branch says nothing of the step's work, so the owner's
+  completion of such a step is refused unless it waives `merged` (`--waive merged`).
 - **It is never a declared check.** A `[[checks]]` entry named `merged` does not stand in for
   the forge's answer. Without this rule, a project could satisfy it by declaring a check.
 - **No preset names it yet**, so no running workflow changes. The owner adds it where it is

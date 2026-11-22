@@ -260,13 +260,15 @@ async fn complete(
             }
         }
     }
-    let merged_at = match &checkout {
-        Some(checkout)
-            if eligible
-                && run.blocked.is_none()
-                && required.contains(&MERGED)
-                && !waive.iter().any(|waived| waived == MERGED) =>
-        {
+    let needs_merged = eligible
+        && run.blocked.is_none()
+        && required.contains(&MERGED)
+        && !waive.iter().any(|waived| waived == MERGED);
+    let merged_at = match (&checkout, sender) {
+        // The owner's checkout is the project's main one, whose branch says nothing of the
+        // step's work: only the session doing the step completes it on the forge's answer.
+        (_, None) if needs_merged => return Err(owner_cannot_read_merged()),
+        (Some(checkout), Some(_)) if needs_merged => {
             let head = merged_head(context, &run.project, checkout).await?;
             satisfied.push(MERGED.to_owned());
             Some(head)
@@ -343,6 +345,15 @@ async fn merged_head(context: &Context, project: &str, checkout: &Path) -> Resul
     })
     .await
     .map_err(|error| internal(&error))?
+}
+
+fn owner_cannot_read_merged() -> Failed {
+    refused(
+        ErrorCode::Refused,
+        format!("the step requires `{MERGED}`, read from the checkout of the session doing it"),
+        "complete it from that session, or waive `merged` with --waive merged",
+        UnblockedBy::Owner,
+    )
 }
 
 fn completion_changed() -> Failed {

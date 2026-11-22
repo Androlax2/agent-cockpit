@@ -181,19 +181,22 @@ impl Git {
         command
     }
 
-    /// The branch checked out at `dir`, as its short name; `None` when HEAD is detached.
+    /// The branch checked out at `dir`, as its short name; `None` when HEAD is detached. Any
+    /// other failure (no repository, an unsafe folder) is an error, never a detached HEAD.
     pub fn current_branch(&self, dir: &Path) -> Result<Option<String>, Error> {
-        let output = self.output(
-            dir,
-            &[
-                OsStr::new("symbolic-ref"),
-                OsStr::new("--quiet"),
-                OsStr::new("--short"),
-                OsStr::new("HEAD"),
-            ],
-        )?;
-        if !output.status.success() {
+        let arguments = [
+            OsStr::new("symbolic-ref"),
+            OsStr::new("--quiet"),
+            OsStr::new("--short"),
+            OsStr::new("HEAD"),
+        ];
+        let output = self.output(dir, &arguments)?;
+        // `--quiet` exits 1, and only 1, when HEAD is not a branch.
+        if output.status.code() == Some(1) {
             return Ok(None);
+        }
+        if !output.status.success() {
+            return Err(git_failure(&arguments, &output));
         }
         Ok(Some(
             String::from_utf8_lossy(&output.stdout).trim().to_owned(),

@@ -85,6 +85,7 @@ fn list_open_issues(context: &Context, project: &str, root: &Path) -> Result<Vec
         project,
         root,
         &format!("{project}'s open issues"),
+        &format!("`torlek todo issues {project}` again"),
         |forge, access| forge.list_issues(access, &filter),
     )
 }

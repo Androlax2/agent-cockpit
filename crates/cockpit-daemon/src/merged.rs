@@ -1,8 +1,10 @@
 //! The `merged` requirement (#60, Theo 2026-11-22): a workflow step that names it completes
 //! only once the forge reports the change request of the checkout's branch merged, with the
-//! checkout's head as its head. It is read from the forge at completion with the project's
-//! API token, never recorded, and never a declared check: a check named `merged` does not
-//! stand in for it. No preset names it yet.
+//! checkout's head as its head. It is read from the forge at each completion with the
+//! project's API token, never cached as evidence (the handoff lists it as satisfied, as it
+//! does a check), and never a declared check: a check named `merged` does not stand in for
+//! it. The forge is asked about the local branch's name, the one `torlek checkout push`
+//! pushes to. No preset names it yet.
 
 use std::path::Path;
 
@@ -10,7 +12,7 @@ use cockpit_forge_api::{Access, BranchName, ChangeState, CommitId, Forge, ForgeE
 use cockpit_protocol::{ErrorCode, ProtocolError, Unblock, UnblockedBy};
 
 use crate::approvals::Failed;
-use crate::forge_reads::{Reader, internal, refused};
+use crate::forge_reads::Reader;
 
 /// The requirement's name, as a step lists it.
 pub(crate) const MERGED: &str = "merged";
@@ -32,30 +34,25 @@ pub(crate) fn merged_head(
     checkout: &Path,
 ) -> Result<String, Failed> {
     let unmet = |reason: String| {
-        Failed(ProtocolError {
-            code: ErrorCode::Refused,
-            message: format!("the step requires `{MERGED}`: {reason}"),
-            unblock: Some(Unblock {
-                action: format!(
-                    "merge the change request at the checkout's head, or ask the owner to waive \
-                     `{MERGED}`"
-                ),
-                by: UnblockedBy::Agent,
-            }),
-        })
+        agent_refused(
+            format!("the step requires `{MERGED}`: {reason}"),
+            format!(
+                "merge the change request at the checkout's head, or ask the owner to waive \
+                 `{MERGED}`"
+            ),
+        )
     };
     let Some(branch) = reader
         .git
         .current_branch(checkout)
-        .map_err(|error| internal(&error))?
+        .map_err(|error| checkout_unread(&error))?
     else {
         return Err(unmet(
             "HEAD is detached, so no branch names a change request".to_owned(),
         ));
     };
     let unreadable = |what: &str, value: &str| {
-        refused(
-            ErrorCode::Refused,
+        agent_refused(
             format!("the checkout's {what} {value:?} is not one the forge names"),
             "switch to the branch the change request was opened from".to_owned(),
         )
@@ -64,18 +61,38 @@ pub(crate) fn merged_head(
     let head = reader
         .git
         .source_state(checkout)
-        .map_err(|error| internal(&error))?
+        .map_err(|error| checkout_unread(&error))?
         .head;
     let head_id = CommitId::new(&head).map_err(|_| unreadable("head", &head))?;
     match reader.read(
         project,
         checkout,
         &format!("the state of {project}'s change request for {branch}"),
+        "`torlek workflow complete` again",
         |forge, access| verdict(forge, access, &branch_name, &head_id),
     )? {
         Verdict::Merged => Ok(head),
         Verdict::Unmet(reason) => Err(unmet(reason)),
     }
+}
+
+fn agent_refused(message: String, action: String) -> Failed {
+    Failed(ProtocolError {
+        code: ErrorCode::Refused,
+        message,
+        unblock: Some(Unblock {
+            action,
+            by: UnblockedBy::Agent,
+        }),
+    })
+}
+
+fn checkout_unread(error: &dyn std::fmt::Display) -> Failed {
+    tracing::error!(%error, "reading the checkout for the `merged` requirement failed");
+    Failed(ProtocolError::new(
+        ErrorCode::Internal,
+        "the daemon failed to read the checkout's branch and head",
+    ))
 }
 
 /// The verdict on `branch`'s newest change request, which must have merged with `head` as

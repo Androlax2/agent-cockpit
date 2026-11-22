@@ -238,11 +238,13 @@ not share code.
   provider reports, from the session record and the providers the daemon is wired with.
 - No request can claim a requirement passed: completions carry the owner's waivers only,
   until `cockpit-verification` reports what passed (#40).
-- The `merged` requirement (#60, `merged.rs`) is read from the forge at completion, never
-  from a declared check of that name and never recorded: the change request of the
+- The `merged` requirement (#60, `merged.rs`) is read from the forge at each completion,
+  never from a declared check of that name and never cached as evidence: the change request of the
   checkout's branch must have merged with the checkout's head as its head. It is read with
   the project's API token through `forge_reads.rs`, as the issues beside todos are; an
-  unmet one refuses completion naming why. No preset names it yet.
+  unmet one refuses completion naming why. The owner's completion of such a step is refused
+  unless it waives `merged`: the main checkout's branch says nothing of the step's work. No
+  preset names it yet.
 
 ## Verification (#313)
 
