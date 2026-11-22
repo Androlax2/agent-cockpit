@@ -181,6 +181,25 @@ impl Git {
         command
     }
 
+    /// The branch checked out at `dir`, as its short name; `None` when HEAD is detached.
+    pub fn current_branch(&self, dir: &Path) -> Result<Option<String>, Error> {
+        let output = self.output(
+            dir,
+            &[
+                OsStr::new("symbolic-ref"),
+                OsStr::new("--quiet"),
+                OsStr::new("--short"),
+                OsStr::new("HEAD"),
+            ],
+        )?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ))
+    }
+
     /// The URL of the checkout at `dir`'s `origin` remote; `None` when it has none.
     pub fn origin_url(&self, dir: &Path) -> Result<Option<String>, Error> {
         let output = self.output(

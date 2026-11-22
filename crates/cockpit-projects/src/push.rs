@@ -120,19 +120,9 @@ fn push_branch(
     push_hosts: &[ForgeHost],
 ) -> Result<Pushed, Error> {
     let refuse = |reason: String| Err(Error::Refused { reason });
-    let head = git.output(
-        checkout,
-        &[
-            arg("symbolic-ref"),
-            arg("--quiet"),
-            arg("--short"),
-            arg("HEAD"),
-        ],
-    )?;
-    if !head.status.success() {
+    let Some(branch) = git.current_branch(checkout)? else {
         return refuse("HEAD is detached; switch to a branch to push it".to_owned());
-    }
-    let branch = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+    };
     let urls = git.run(
         checkout,
         &[

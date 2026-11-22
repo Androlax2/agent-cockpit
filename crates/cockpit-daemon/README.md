@@ -219,7 +219,8 @@ not share code.
 - Filings read the owner's `[tasks]` settings from the owner config at request time; a
   config that does not load refuses the filing instead of applying defaults.
 - `task-issues` (#60), the owner's alone, lists a project's open issues beside its todos:
-  `issues.rs` resolves its `origin` to a forge adapter and reads with the project's API token,
+  `issues.rs` resolves its `origin` to a forge adapter (`forge_reads.rs`, shared with the
+  `merged` requirement) and reads with the project's API token,
   never its other token, in the bulk lane. No API token, no read: the refusal names
   `torlek project token set PROJECT --api`. The adapter's `gh` keeps its configuration under
   the state directory's `forges/github`, never the owner's.
@@ -237,6 +238,11 @@ not share code.
   provider reports, from the session record and the providers the daemon is wired with.
 - No request can claim a requirement passed: completions carry the owner's waivers only,
   until `cockpit-verification` reports what passed (#40).
+- The `merged` requirement (#60, `merged.rs`) is read from the forge at completion, never
+  from a declared check of that name and never recorded: the change request of the
+  checkout's branch must have merged with the checkout's head as its head. It is read with
+  the project's API token through `forge_reads.rs`, as the issues beside todos are; an
+  unmet one refuses completion naming why. No preset names it yet.
 
 ## Verification (#313)
 

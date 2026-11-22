@@ -49,6 +49,8 @@ tracing = "0.1"
 cockpit-client = { path = "../cockpit-client" }
 # The fake provider the session tests launch (#33).
 cockpit-provider-api = { path = "../cockpit-provider-api", features = ["fake"] }
+# The in-memory forge the `merged` requirement's tests read (#60).
+cockpit-forge-api = { path = "../cockpit-forge-api", features = ["fake"] }
 tempfile = "3.27.0"
 
 [lints]
