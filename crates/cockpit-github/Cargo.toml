@@ -1,0 +1,19 @@
+[package]
+name = "cockpit-github"
+description = "The GitHub adapter of the forge contract: issues, pull requests as evidence, repository token checks and the hosts and credential schemes GitHub takes, through the `gh` program."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cockpit-forge-api = { path = "../cockpit-forge-api" }
+# The pin the provider adapters carry; reads `gh`'s JSON answers.
+serde_json = "1.0.154"
+
+[dev-dependencies]
+cockpit-forge-api = { path = "../cockpit-forge-api", features = ["conformance"] }
+tempfile = "3.27.0"
