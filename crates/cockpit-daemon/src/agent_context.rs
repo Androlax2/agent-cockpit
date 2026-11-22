@@ -300,7 +300,7 @@ pub(crate) async fn brief(
 }
 
 /// Whether the provider's launch makes the harness list the `torlek` skill (#419): Claude Code
-/// reads the added directory's skills and OpenCode its `skills.paths`; Codex gets the MCP
+/// reads the skills of the plugin it loads (#1419) and OpenCode its `skills.paths`; Codex gets the MCP
 /// server and the hooks only. A provider not named here is counted as not listing it, so
 /// `--measure` never claims a catalog entry nobody loads.
 fn harness_lists_skill(provider: &str) -> bool {
