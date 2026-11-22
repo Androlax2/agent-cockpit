@@ -68,6 +68,8 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             CREATE UNIQUE INDEX projects_one_root ON projects (root) WHERE removed_at IS NULL;",
         },
         crate::end_sweeps::MIGRATION,
+        // #155: the commit each push sent, a lease's expected tip.
+        crate::push::MIGRATION,
     ],
 };
 

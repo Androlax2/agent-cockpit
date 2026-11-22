@@ -21,6 +21,9 @@ use crate::gh::{CALL_DEADLINE, Gh};
 pub const GIT_HOST: &str = "github.com";
 /// Where GitHub's REST and GraphQL APIs are.
 pub const API_HOST: &str = "api.github.com";
+/// The username Git sends beside a token in Basic credentials on [`GIT_HOST`]: GitHub reads
+/// the token alone.
+pub const GIT_USERNAME: &str = "x-access-token";
 
 /// The `gh` versions the conformance suite passes against with answers recorded from a live
 /// `gh`; another version reports its capabilities as discovered. Empty: the suite's answers

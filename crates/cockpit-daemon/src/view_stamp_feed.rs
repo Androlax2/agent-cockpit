@@ -144,6 +144,8 @@ mod tests {
         // Checkouts are on the feed as `checkout` entities (`session_feed`).
         "checkout_occupancy",
         "project_checkouts",
+        // The commit each daemon push sent, a lease's expected tip; no view shows it (#155).
+        "checkout_pushes",
         "cockpit_database",
         // Readiness reads the recorded engines when the owner asks; no view polls them (#390).
         "container_engines",

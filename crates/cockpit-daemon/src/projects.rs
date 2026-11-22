@@ -150,15 +150,21 @@ pub(crate) fn route(
                 let id = CheckoutId(checkout);
                 // Read before the push, as its other checks are: a revoke landing after this
                 // read does not stop a push the owner already started.
-                let push_hosts = {
+                let (project, push_hosts) = {
                     let read = database.read().await.map_err(Error::from)?;
                     let project = cockpit_projects::checkout_project(&read, id).await?;
                     let bound = cockpit_sandbox::push_hosts(&read, project.as_str())
                         .await
                         .map_err(push_hosts_unread)?;
-                    crate::forges::push_hosts(&bound)
+                    (project, crate::forges::push_hosts(&bound))
                 };
-                let pushed = cockpit_projects::push(&database, &git, id, push_hosts).await?;
+                let credential = push_credential(environment, project.as_str()).await;
+                let rules = cockpit_projects::PushRules {
+                    hosts: push_hosts,
+                    credential,
+                    force: cockpit_projects::Force::Never,
+                };
+                let pushed = cockpit_projects::push(&database, &git, id, rules).await?;
                 Ok(Reply::Pushed {
                     checkout,
                     branch: pushed.branch,
@@ -322,6 +328,35 @@ fn project_refusal(error: Error) -> Outcome {
 fn internal(action: &str, error: &dyn std::fmt::Display) -> Outcome {
     tracing::error!(%error, "removing a project could not {action}");
     refusal(ErrorCode::Internal, &format!("could not {action}: {error}"))
+}
+
+/// Project `project`'s push token (#857), which the daemon alone reads, as what its pushes
+/// authenticate with; or why there is none, naming the command that saves one when the owner
+/// keeps none. The push refuses with that reason once its other checks passed.
+pub(crate) async fn push_credential(
+    environment: cockpit_config::Environment,
+    project: &str,
+) -> Result<cockpit_projects::PushCredential, String> {
+    let Some(path) = cockpit_config::github_token_file(&environment, project) else {
+        return Err("the owner's environment names no home, so no push token is read".to_owned());
+    };
+    let read = tokio::task::spawn_blocking(move || cockpit_config::read_github_token(&path))
+        .await
+        .map_err(|error| format!("{project}'s push token could not be read: {error}"))?;
+    let token = match read {
+        Ok(Some(token)) => token,
+        Ok(None) => {
+            return Err(format!(
+                "{project} has no push token; the owner saves one with `torlek project token \
+                 set {project}`"
+            ));
+        }
+        Err(error) => return Err(format!("{project}'s push token: {error}")),
+    };
+    let token = cockpit_forge_api::Token::new(token.expose())
+        .map_err(|error| format!("{project}'s push token: {error}"))?;
+    cockpit_projects::PushCredential::new(crate::forges::PUSH_USERNAME, token)
+        .map_err(|error| error.to_string())
 }
 
 /// A failure reading the project's push rights, as the push's own error.

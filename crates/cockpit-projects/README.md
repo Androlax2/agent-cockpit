@@ -56,8 +56,15 @@ marker is refused as `Replaced` instead of being acted on.
   declares for Git pushes whose grant carries the owner's push right, none until the owner binds
   one ([decision](../../docs/decisions/2026-11-22-153-push-right-no-seeding.md)). An SSH origin
   is refused naming SSH, and a host without the right is refused naming the command that binds it.
-  The checkout must have no local or worktree redirect or `http.*` setting. The push goes only as
-  `refs/heads/B:refs/heads/B` without force, so Git refuses a rewrite as a non-fast-forward.
+  The checkout must have no local or worktree redirect or `http.*` setting. The branch is resolved
+  to one commit id first and the push is `<id>:refs/heads/B` (#155), so a branch moved meanwhile
+  changes nothing sent, and no tag or deletion can be expressed. Git authenticates with the
+  caller's push credential, handed to a credential helper for the push host alone through Git's
+  environment, never an argument, after `SAFE_CONFIG` dropped every other helper. Without force
+  Git refuses a rewrite as a non-fast-forward. `Force::Lease` allows one on the caller's own
+  branch alone, with the commit this checkout last pushed there to the same URL as the expected
+  tip (`checkout_pushes`, written only after a push succeeded); with no such record the force is
+  refused, never leased against the remote's current tip (#857 decision 2).
 
 ## Dependency edges
 
@@ -79,7 +86,9 @@ marker is refused as `Replaced` instead of being acted on.
   undoing commit kept; a main checkout is refused.
 - `tests/changed_files.rs`: uncommitted and unpushed changes on real Git.
 - `tests/push.rs`: a push only to a host the project may push to, SSH and credential origins
-  refused, on real Git with the push itself recorded by a wrapper, never sent.
+  refused, the resolved commit sent though the branch moves, the push token offered to the push
+  host alone, and every lease rule, on real Git pushing to a local bare repository through a
+  wrapper that rewrites the forge URL for the push alone.
 - `tests/source_state.rs`: a checkout's head and uncommitted-changes digest on real Git, the
   index left as it was.
 - `tests/storage.rs` and `src/storage_tests.rs`: registered identity, byte accounting,
