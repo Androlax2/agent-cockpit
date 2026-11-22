@@ -51,13 +51,19 @@ marker is refused as `Replaced` instead of being acted on.
   (#156). `Git::source_state` reads the head and a digest of the uncommitted changes a
   verification receipt names (#313), writing only to a private index and object directory.
 - **Push.** Only the current branch, only to an `origin` with one URL that pushes to one URL,
-  both on GitHub after every rewrite, with no local or worktree redirect or `http.*` setting, only as `refs/heads/B:refs/heads/B` without force, so a rewrite is
-  refused by Git as a non-fast-forward.
+  both `https` repository URLs (`cockpit_forge_api::parse_origin`) after every rewrite, on a host
+  the caller lists as one the project may push to. The daemon lists the hosts a forge adapter
+  declares for Git pushes whose grant carries the owner's push right, none until the owner binds
+  one ([decision](../../docs/decisions/2026-11-22-153-push-right-no-seeding.md)). An SSH origin
+  is refused naming SSH, and a host without the right is refused naming the command that binds it.
+  The checkout must have no local or worktree redirect or `http.*` setting. The push goes only as
+  `refs/heads/B:refs/heads/B` without force, so Git refuses a rewrite as a non-fast-forward.
 
 ## Dependency edges
 
-- Depends on: `cockpit-turso` (state and migrations) and `tokio` (`spawn_blocking` for Git
-  and filesystem work), plus the existing `rustix =1.1.6` pin for descriptor-relative storage
+- Depends on: `cockpit-turso` (state and migrations), `cockpit-forge-api` (the origin URL a
+  push may go to, with no forge named) and `tokio` (`spawn_blocking` for Git and filesystem
+  work), plus the existing `rustix =1.1.6` pin for descriptor-relative storage
   measurements without following symbolic links.
 - Must not depend on `cockpit-sessions`, `cockpit-tasks` or `cockpit-scheduling`:
   checkouts outlive tasks (report 03); `tests/crate_graph.rs` enforces it.
@@ -72,6 +78,8 @@ marker is refused as `Replaced` instead of being acted on.
   branch is removed even after the default branch changed its file, a later, empty or partly
   undoing commit kept; a main checkout is refused.
 - `tests/changed_files.rs`: uncommitted and unpushed changes on real Git.
+- `tests/push.rs`: a push only to a host the project may push to, SSH and credential origins
+  refused, on real Git with the push itself recorded by a wrapper, never sent.
 - `tests/source_state.rs`: a checkout's head and uncommitted-changes digest on real Git, the
   index left as it was.
 - `tests/storage.rs` and `src/storage_tests.rs`: registered identity, byte accounting,

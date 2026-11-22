@@ -496,8 +496,8 @@ pub(crate) fn arg(text: &(impl AsRef<OsStr> + ?Sized)) -> &OsStr {
     text.as_ref()
 }
 
-/// Whether `url` is a GitHub repository URL in one of the three forms the push accepts, and
-/// nothing else: no user other than `git`, no port, no query, no credentials.
+/// Whether `url` is a GitHub repository URL in one of the three forms the sweep asks origin
+/// about, and nothing else: no user other than `git`, no port, no query, no credentials.
 pub(crate) fn is_github_url(url: &str) -> bool {
     let repository = [
         "git@github.com:",

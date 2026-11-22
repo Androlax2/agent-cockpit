@@ -21,6 +21,8 @@ cockpit-codex = { path = "../cockpit-codex" }
 cockpit-config = { path = "../cockpit-config" }
 cockpit-containers = { path = "../cockpit-containers" }
 cockpit-diagnostics = { path = "../cockpit-diagnostics" }
+cockpit-forge-api = { path = "../cockpit-forge-api" }
+cockpit-github = { path = "../cockpit-github" }
 cockpit-messaging = { path = "../cockpit-messaging" }
 cockpit-opencode = { path = "../cockpit-opencode" }
 cockpit-processes = { path = "../cockpit-processes" }

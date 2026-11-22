@@ -216,6 +216,15 @@ pub(crate) const CHECK_SUBJECTS_MIGRATION_SQL: &str =
 /// files its containers' requests; the row's subject is the project. Like a check's, none is
 /// allowed once: the engine outlives sessions, and "once" would last until a reboot with no
 /// grant to revoke. They ask for hosts only: an engine's proxy serves no forward.
+/// The `sandbox` migration set's version 9 (#153, #857 decision 3): the push right on a
+/// project's host grant. A grant is the project's record for that host; reach is the grant
+/// itself, and push is set on it only by the owner's own act, never by a request's decision.
+/// No existing grant gets it (the owner's decision of 2026-11-22): pushes wait for the owner.
+pub(crate) const PUSH_RIGHT_MIGRATION_SQL: &str =
+    "ALTER TABLE sandbox_network_grants ADD COLUMN push_granted_at INTEGER;
+    ALTER TABLE sandbox_network_grants ADD COLUMN push_granted_through TEXT
+        CHECK (push_granted_through IN ('tui', 'cli'));";
+
 pub(crate) const CONTAINERS_SUBJECTS_MIGRATION_SQL: &str =
     "CREATE TABLE sandbox_network_requests_containers (
         id INTEGER PRIMARY KEY,
@@ -436,6 +445,8 @@ pub struct NetworkGrant {
     pub request: Option<i64>,
     pub granted: OwnerDecision,
     pub revoked: Option<OwnerDecision>,
+    /// When the owner let the daemon push to this host (#153); it ends with the grant.
+    pub push: Option<OwnerDecision>,
 }
 
 /// Why a decision was not taken.
@@ -451,6 +462,15 @@ pub enum NetworkRefusal {
     AlreadyRevoked,
     /// The project already holds an active grant of the destination.
     AlreadyGranted {
+        grant: i64,
+    },
+    /// The push right goes on the project's grant of the host, and it holds none.
+    NotReached {
+        project: String,
+        target: NetworkTarget,
+    },
+    /// The project's grant of the host already carries the push right.
+    AlreadyPushes {
         grant: i64,
     },
     TooSoon {
@@ -482,6 +502,17 @@ impl std::fmt::Display for NetworkRefusal {
             }
             NetworkRefusal::AlreadyGranted { grant } => {
                 write!(formatter, "network grant {grant} already allows it")
+            }
+            NetworkRefusal::NotReached { project, target } => write!(
+                formatter,
+                "{project} holds no grant of {} to carry the push right",
+                target.describe()
+            ),
+            NetworkRefusal::AlreadyPushes { grant } => {
+                write!(
+                    formatter,
+                    "network grant {grant} already lets the daemon push there"
+                )
             }
             NetworkRefusal::TooSoon { wait_seconds } => write!(
                 formatter,
@@ -556,7 +587,8 @@ impl From<NetworkRefusal> for NetworkError {
 const REQUEST_COLUMNS: &str = "id, subject_kind, subject, project, kind, host, port, service,
     record, state, asked_at, decided_at, decided_through, grant_id, reason, subject_check";
 const GRANT_COLUMNS: &str = "id, project, kind, host, port, service, record, request,
-    granted_at, granted_through, revoked_at, revoked_through";
+    granted_at, granted_through, revoked_at, revoked_through, push_granted_at,
+    push_granted_through";
 
 /// Files `asked` as a request of `subject` in `project`, unless one already stands for it
 /// (asking, allowed for the session, denied) or the project holds a grant for it: the
@@ -952,6 +984,71 @@ pub async fn grant_github(
     network_grant(write, id).await
 }
 
+/// The owner lets the daemon push `project`'s checkouts to `host` on `port` (#153, #857
+/// decision 3), on the project's active grant of that host. Refused when the project holds
+/// none, so push never stands on a host it may not reach and revoking the grant ends both, and
+/// when the grant already carries the right. The caller checks that `project` is registered
+/// and that a forge adapter declares the host for Git pushes.
+pub async fn grant_push(
+    write: &WriteTransaction<'_>,
+    project: &str,
+    host: &str,
+    port: u16,
+    through: Option<OwnerClient>,
+    now: i64,
+) -> Result<NetworkGrant, NetworkError> {
+    let target = NetworkTarget::Host {
+        host: host.to_owned(),
+        port,
+    };
+    let Some(grant) = active_grant(write, project, &target).await? else {
+        return Err(NetworkRefusal::NotReached {
+            project: project.to_owned(),
+            target,
+        }
+        .into());
+    };
+    if network_grant(write, grant).await?.push.is_some() {
+        return Err(NetworkRefusal::AlreadyPushes { grant }.into());
+    }
+    write
+        .execute(
+            "UPDATE sandbox_network_grants SET push_granted_at = ?2, push_granted_through = ?3
+             WHERE id = ?1",
+            (grant, now, through.map(OwnerClient::as_str)),
+        )
+        .await?;
+    network_grant(write, grant).await
+}
+
+/// The hosts `project`'s active grants let the daemon push to, as `host`, or `host:port`
+/// when the port is not 443, oldest grant first.
+pub async fn push_hosts(
+    connection: &Connection,
+    project: &str,
+) -> Result<Vec<String>, NetworkError> {
+    let mut rows = connection
+        .query(
+            "SELECT host, port FROM sandbox_network_grants
+             WHERE project = ?1 AND kind = 'host' AND revoked_at IS NULL
+                AND push_granted_at IS NOT NULL
+             ORDER BY id",
+            [project],
+        )
+        .await?;
+    let mut hosts = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let host: String = row.get(0)?;
+        let port: i64 = row.get(1)?;
+        hosts.push(if port == i64::from(crate::egress::TLS_PORT) {
+            host
+        } else {
+            format!("{host}:{port}")
+        });
+    }
+    Ok(hosts)
+}
+
 /// The owner grants `project` [`DOCKER_HUB_HOSTS`] on 443 always, without a request: the
 /// answer `containers record` asks for (#390), so the engine's pulls from Docker Hub pass
 /// without a request per host; a blob Docker Hub serves from another host is still refused
@@ -1269,6 +1366,7 @@ fn grant_from(row: &Row) -> Result<NetworkGrant, NetworkError> {
         granted: decision_from(row, 8, NetworkError::InvalidRow)?
             .ok_or_else(|| NetworkError::InvalidRow("a grant without its time".to_owned()))?,
         revoked: decision_from(row, 10, NetworkError::InvalidRow)?,
+        push: decision_from(row, 12, NetworkError::InvalidRow)?,
     })
 }
 

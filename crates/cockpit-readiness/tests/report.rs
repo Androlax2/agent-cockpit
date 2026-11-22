@@ -8,8 +8,8 @@ use cockpit_config::{AgentSandbox, EffectiveConfig, Environment};
 use cockpit_readiness::{
     CheckoutFacts, ComposeFile, ControlFacts, DockerEngine, EngineEgress, EngineRemedy,
     EngineState, HostFacts, MasksGap, Platform, PresetFacts, ProjectEngine, ProjectFacts,
-    ProjectNeeds, ProviderFacts, ProviderFound, ProviderUnusable, Report, Requirement, Status,
-    Trust, assess, needs_docker,
+    ProjectNeeds, ProviderFacts, ProviderFound, ProviderUnusable, PushFacts, Report, Requirement,
+    Status, Trust, assess, needs_docker,
 };
 use tempfile::TempDir;
 
@@ -128,6 +128,7 @@ impl Fixture {
             engine: None,
             launch: None,
             compose: Vec::new(),
+            push: None,
         }
     }
 
@@ -1981,4 +1982,83 @@ fn an_unusable_credential_after_a_signed_in_login_blocks() {
         spare.detail,
         "unusable (its mode is 644), so its sandboxed sessions do not launch"
     );
+}
+
+/// The `push` requirement of a project whose push facts are `push`.
+fn push_requirement(push: PushFacts) -> Requirement {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let project = ProjectFacts {
+        push: Some(Ok(push)),
+        ..fixture.facts()
+    };
+    let report = fixture.report(&ready_host(), &project);
+    assert!(report.is_ready(), "a push never blocks: {report:#?}");
+    requirement(&report, "push").clone()
+}
+
+fn github() -> Vec<String> {
+    vec!["github.com".to_owned()]
+}
+
+/// #153: no grant carries the push right after the upgrade (the owner's decision of
+/// 2026-11-22); readiness names the one command that binds it.
+#[test]
+fn a_project_reaching_its_forge_without_the_push_right_names_the_command_that_binds_it() {
+    let push = push_requirement(PushFacts {
+        declared: github(),
+        reached: github(),
+        bound: Vec::new(),
+    });
+
+    assert_eq!(push.status, Status::NeedsAuthorization);
+    assert_eq!(
+        push.next.as_deref(),
+        Some("`torlek network grant project github.com --push`")
+    );
+}
+
+#[test]
+fn a_project_not_reaching_its_forge_names_the_reach_grant_before_the_push_right() {
+    let push = push_requirement(PushFacts {
+        declared: github(),
+        reached: Vec::new(),
+        bound: Vec::new(),
+    });
+
+    assert_eq!(
+        push.next.as_deref(),
+        Some(
+            "`torlek network grant project github.com`, then \
+             `torlek network grant project github.com --push`"
+        )
+    );
+}
+
+#[test]
+fn a_project_with_the_push_right_is_available_naming_where_it_pushes() {
+    let push = push_requirement(PushFacts {
+        declared: github(),
+        reached: github(),
+        bound: github(),
+    });
+
+    assert_eq!(push.status, Status::Available);
+    assert!(push.detail.contains("github.com"), "{push:?}");
+}
+
+#[test]
+fn a_project_whose_push_rights_cannot_be_read_says_so() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let project = ProjectFacts {
+        push: Some(Err("database locked".to_owned())),
+        ..fixture.facts()
+    };
+
+    let report = fixture.report(&ready_host(), &project);
+
+    let push = requirement(&report, "push");
+    assert_eq!(push.status, Status::Unknown);
+    assert!(push.detail.contains("database locked"), "{push:?}");
 }

@@ -21,6 +21,7 @@ mod end_sweep;
 mod engine_proxies;
 mod error;
 mod feed;
+mod forges;
 mod instance;
 mod lanes;
 mod logs;

@@ -56,6 +56,13 @@ impl From<NetworkError> for Failed {
                 ErrorCode::Conflict,
                 format!("nothing to do; `torlek network revoke {grant}` takes it back"),
             ),
+            NetworkRefusal::AlreadyPushes { .. } => (
+                ErrorCode::Conflict,
+                "nothing to do: the daemon pushes there already".to_owned(),
+            ),
+            NetworkRefusal::NotReached { project, target } => {
+                (ErrorCode::Refused, reach_first(project, target))
+            }
             NetworkRefusal::TooSoon { wait_seconds } => (
                 ErrorCode::Refused,
                 format!("read the request, then allow it again in {wait_seconds} s"),
@@ -182,6 +189,35 @@ pub(crate) fn route(command: Command, database: Arc<Database>, decided: Arc<Noti
                 tracing::info!(grants = granted.len(), %project, "the owner granted Docker Hub");
                 Ok(Reply::NetworkGrants {
                     grants: granted.iter().map(grant_view).collect(),
+                })
+            }
+            Command::NetworkGrantPush {
+                project,
+                host,
+                through,
+            } => {
+                let Some(host) = crate::forges::declared_push_hosts()
+                    .into_iter()
+                    .find(|declared| declared.as_str() == host)
+                else {
+                    return Err(undeclared_push_host(&host));
+                };
+                let (name, port) = crate::forges::name_and_port(&host);
+                let write = database.write().await?;
+                registered(&write, &project).await?;
+                let granted = cockpit_sandbox::grant_push(
+                    &write,
+                    &project,
+                    name,
+                    port,
+                    through.map(owner_client),
+                    now(),
+                )
+                .await?;
+                write.commit().await?;
+                tracing::info!(grant = granted.id, %project, %host, "the owner bound push");
+                Ok(Reply::NetworkGrant {
+                    grant: Box::new(grant_view(&granted)),
                 })
             }
             Command::NetworkRevoke { grant, through } => {
@@ -851,6 +887,42 @@ fn request_view(request: &NetworkRequest) -> NetworkRequestView {
 
 /// Refuses a name no registered project holds: a grant keyed by a mistyped name would sit
 /// unseen until a project of that name is added.
+/// The owner's step that gives `project` the grant of `target` a push right goes on: the
+/// direct grant for github.com, a request's "allow always" for any other host.
+fn reach_first(project: &str, target: &NetworkTarget) -> String {
+    let is_github = matches!(
+        target,
+        NetworkTarget::Host { host, port: 443 } if host == cockpit_sandbox::GITHUB_HOST
+    );
+    if is_github {
+        format!(
+            "`torlek network grant {project} {}` first, then bind push again",
+            cockpit_sandbox::GITHUB_HOST
+        )
+    } else {
+        format!(
+            "allow the project's request for {} with `torlek network allow ID --always` first, \
+             then bind push again",
+            target.describe()
+        )
+    }
+}
+
+fn undeclared_push_host(host: &str) -> Failed {
+    let declared: Vec<String> = crate::forges::declared_push_hosts()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    Failed(ProtocolError {
+        code: ErrorCode::Refused,
+        message: format!("no forge adapter pushes to {host}"),
+        unblock: Some(Unblock {
+            action: format!("name a host one pushes to: {}", declared.join(", ")),
+            by: UnblockedBy::Owner,
+        }),
+    })
+}
+
 async fn registered(connection: &Connection, project: &str) -> Result<(), Failed> {
     match cockpit_projects::project_named(connection, project).await {
         Ok(_) => Ok(()),
@@ -875,6 +947,7 @@ fn grant_view(grant: &NetworkGrant) -> NetworkGrantView {
         request: grant.request,
         granted: decision_view(grant.granted),
         revoked: grant.revoked.map(decision_view),
+        push: grant.push.map(decision_view),
     }
 }
 

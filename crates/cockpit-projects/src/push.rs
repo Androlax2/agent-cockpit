@@ -1,10 +1,11 @@
 //! Pushing a checkout's branch under the host-Git safety rules.
 
+use cockpit_forge_api::ForgeHost;
 use cockpit_turso::Database;
 
-use crate::git::{arg, is_github_url};
+use crate::git::arg;
 use crate::store;
-use crate::{CheckoutId, CheckoutState, Error, Git, blocking};
+use crate::{CheckoutId, CheckoutState, Error, Git, ProjectName, blocking};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pushed {
@@ -21,12 +22,24 @@ const REDIRECTS: &str =
 /// Pushes the checkout's current branch to the branch of the same name on origin, setting
 /// it as upstream.
 ///
-/// Refuses a detached HEAD, an origin with any URL that is not a GitHub URL or with more than
-/// one URL (as configured and after rewrites), and a checkout whose own configuration redirects
+/// `push_hosts` are the hosts the checkout's project may push to (#153, #857 decision 3): those
+/// the owner bound the push right on that a forge adapter declares for Git pushes. The daemon
+/// finds them; none until the owner binds one, since no grant was given the right on upgrade.
+///
+/// Refuses a detached HEAD, an origin with more than one URL (as configured and after
+/// rewrites), any of those URLs that is not an `https` repository URL on one of `push_hosts`
+/// (an SSH URL among them, named as such), and a checkout whose own configuration redirects
 /// pushes (`remote.origin.pushurl`, `.proxy` or `.vcs`, `url.*.insteadOf`,
-/// `url.*.pushInsteadOf`, any `http.*` setting). History is never rewritten: the refspec has no `+`, no `--force`
-/// is ever passed and a branch is never deleted, so Git refuses a non-fast-forward push.
-pub async fn push(database: &Database, git: &Git, id: CheckoutId) -> Result<Pushed, Error> {
+/// `url.*.pushInsteadOf`, any `http.*` setting). A refusal for a host without the right names
+/// the owner's command that binds it. History is never rewritten: the refspec has no `+`, no
+/// `--force` is ever passed and a branch is never deleted, so Git refuses a non-fast-forward
+/// push.
+pub async fn push(
+    database: &Database,
+    git: &Git,
+    id: CheckoutId,
+    push_hosts: Vec<ForgeHost>,
+) -> Result<Pushed, Error> {
     let stored = {
         let read = database.read().await?;
         store::stored_checkout(&read, id).await?
@@ -37,7 +50,12 @@ pub async fn push(database: &Database, git: &Git, id: CheckoutId) -> Result<Push
     let git = git.clone();
     blocking(move || {
         stored.verify_on_disk_now()?;
-        push_branch(&git, &stored.checkout.path)
+        push_branch(
+            &git,
+            &stored.checkout.path,
+            &stored.checkout.project,
+            &push_hosts,
+        )
     })
     .await
 }
@@ -69,7 +87,32 @@ pub(crate) fn configured_redirects(
     Ok(None)
 }
 
-fn push_branch(git: &Git, checkout: &std::path::Path) -> Result<Pushed, Error> {
+/// Why `url` is no URL Torlek pushes `project` to; `None` when it is one.
+fn refused_push_url(url: &str, project: &ProjectName, push_hosts: &[ForgeHost]) -> Option<String> {
+    let repository = match cockpit_forge_api::parse_origin(url) {
+        Ok(repository) => repository,
+        Err(unresolved) => {
+            return Some(format!(
+                "origin is {url:?}: {unresolved}; Torlek pushes only to an https repository URL"
+            ));
+        }
+    };
+    if push_hosts.contains(&repository.host) {
+        return None;
+    }
+    let host = &repository.host;
+    Some(format!(
+        "origin is on {host}, where {project} has no push right; the owner binds it with \
+         `torlek network grant {project} {host} --push`"
+    ))
+}
+
+fn push_branch(
+    git: &Git,
+    checkout: &std::path::Path,
+    project: &ProjectName,
+    push_hosts: &[ForgeHost],
+) -> Result<Pushed, Error> {
     let refuse = |reason: String| Err(Error::Refused { reason });
     let head = git.output(
         checkout,
@@ -97,7 +140,7 @@ fn push_branch(git: &Git, checkout: &std::path::Path) -> Result<Pushed, Error> {
     let urls: Vec<&str> = urls.lines().collect();
     let [remote_url] = urls.as_slice() else {
         return refuse(format!(
-            "origin has {} URLs ({urls:?}); Torlek pushes only to one GitHub repository URL",
+            "origin has {} URLs ({urls:?}); Torlek pushes only to one repository URL",
             urls.len()
         ));
     };
@@ -117,17 +160,15 @@ fn push_branch(git: &Git, checkout: &std::path::Path) -> Result<Pushed, Error> {
     let push_urls: Vec<&str> = push_urls.lines().collect();
     let [push_url] = push_urls.as_slice() else {
         return refuse(format!(
-            "origin pushes to {} URLs ({push_urls:?}); Torlek pushes only to one GitHub \
-             repository URL",
+            "origin pushes to {} URLs ({push_urls:?}); Torlek pushes only to one repository \
+             URL",
             push_urls.len()
         ));
     };
     let push_url = (*push_url).to_owned();
     for url in [&remote_url, &push_url] {
-        if !is_github_url(url) {
-            return refuse(format!(
-                "origin is {url:?}; Torlek pushes only to a GitHub repository URL"
-            ));
+        if let Some(reason) = refused_push_url(url, project, push_hosts) {
+            return refuse(reason);
         }
     }
     if let Some(redirects) = configured_redirects(git, checkout)? {

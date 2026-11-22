@@ -93,4 +93,7 @@ pub struct NetworkGrantView {
     pub request: Option<i64>,
     pub granted: NetworkDecisionView,
     pub revoked: Option<NetworkDecisionView>,
+    /// When the owner let the daemon push to this host (#153); it ends with the grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<NetworkDecisionView>,
 }

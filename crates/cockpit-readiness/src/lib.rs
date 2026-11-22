@@ -372,6 +372,21 @@ pub struct ProjectFacts {
     /// The compose files in `dir`, read when agents run sandboxed: whether each runs in
     /// parallel sessions on the project's engine (#1371).
     pub compose: Vec<ComposeFile>,
+    /// Where the daemon may push the project's checkouts, when `dir` is a registered checkout,
+    /// or why its grants could not be read.
+    pub push: Option<Result<PushFacts, String>>,
+}
+
+/// The hosts a push of a project's checkout may go to (#153, #857 decision 3), each as `name`
+/// or `name:port`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushFacts {
+    /// The hosts a forge adapter declares for Git pushes.
+    pub declared: Vec<String>,
+    /// Of `declared`, those the project's active grants reach.
+    pub reached: Vec<String>,
+    /// Of `declared`, those whose grant carries the owner's push right.
+    pub bound: Vec<String>,
 }
 
 /// The report for this host and, with `project`, for that project: `config` is the

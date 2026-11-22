@@ -57,8 +57,8 @@ pub use network::{
     NetworkRefusal, NetworkRequest, NetworkRequestState, NetworkTarget, OwnerClient, OwnerDecision,
     ServiceAsk, allow_network_request, ask_service, asking_network_requests,
     decided_network_requests, deny_network_request, egress_decisions, file_network_request,
-    file_service_request, grant_docker_hub, grant_github, network_grants, network_request,
-    revoke_network_grant, standing_check_request,
+    file_service_request, grant_docker_hub, grant_github, grant_push, network_grants,
+    network_request, push_hosts, revoke_network_grant, standing_check_request,
 };
 #[cfg(feature = "persistence")]
 pub use observations::{ObservationError, record_observations};

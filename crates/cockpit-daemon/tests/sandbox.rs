@@ -3103,6 +3103,11 @@ async fn no_network_verb_on_the_agent_socket_allows_a_host() {
             project: COMMANDED_PROJECT.to_owned(),
             through: None,
         },
+        Command::NetworkGrantPush {
+            project: COMMANDED_PROJECT.to_owned(),
+            host: "github.com".to_owned(),
+            through: None,
+        },
         Command::NetworkRevoke {
             grant: 1,
             through: None,

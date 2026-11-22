@@ -174,6 +174,7 @@ impl Daemon {
                 through: Some(DecidedThroughView::Cli),
             },
             revoked: None,
+            push: None,
         });
         self
     }

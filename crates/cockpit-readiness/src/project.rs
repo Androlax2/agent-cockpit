@@ -8,7 +8,8 @@ use cockpit_config::{AgentSandbox, EffectiveConfig, ExecutionEnvironment};
 use crate::host::listed;
 use crate::{
     CheckoutFacts, DockerEngine, EngineEgress, EngineRemedy, EngineState, HostFacts, MasksGap,
-    Platform, PresetFacts, ProjectEngine, ProjectFacts, ProviderFound, Requirement, Status, Trust,
+    Platform, PresetFacts, ProjectEngine, ProjectFacts, ProviderFound, PushFacts, Requirement,
+    Status, Trust,
 };
 
 /// Whether the project or one of its checks runs in Docker, so the daemon probes the engine.
@@ -51,6 +52,9 @@ pub(crate) fn requirements(
         }
     }
     requirements.extend(crate::compose::requirements(&project.compose));
+    if let (Some(push_facts), Some(checkout)) = (&project.push, &project.checkout) {
+        requirements.push(push(&checkout.project, push_facts));
+    }
     match &project.launch {
         Some(Ok(all)) => requirements.extend(crate::launch::launch_summary(all, &project.dir)),
         Some(Err(reason)) => requirements.push(Requirement::needs(
@@ -62,6 +66,53 @@ pub(crate) fn requirements(
         None => {}
     }
     requirements
+}
+
+/// Whether `torlek checkout push` may push the project's checkouts: only to a host whose grant
+/// carries the owner's push right, none until the owner binds one (the owner's decision of
+/// 2026-11-22). Not blocking: sessions work without a push.
+fn push(project: &str, facts: &Result<PushFacts, String>) -> Requirement {
+    let name = "push";
+    let facts = match facts {
+        Ok(facts) => facts,
+        Err(reason) => {
+            return Requirement::needs(
+                name,
+                Status::Unknown,
+                format!("the project's push rights could not be read: {reason}"),
+                format!("`torlek network grants {project}` lists its grants"),
+            );
+        }
+    };
+    if !facts.bound.is_empty() {
+        return Requirement::available(
+            name,
+            format!(
+                "`torlek checkout push` pushes the project's checkouts to {}",
+                listed(&facts.bound)
+            ),
+        );
+    }
+    let Some(host) = facts.reached.first().or(facts.declared.first()) else {
+        return Requirement::needs(
+            name,
+            Status::Unknown,
+            "no forge adapter declares a host to push to",
+            "push from your own shell: this Torlek pushes nowhere",
+        );
+    };
+    let bind = format!("`torlek network grant {project} {host} --push`");
+    let next = if facts.reached.contains(host) {
+        bind
+    } else {
+        format!("`torlek network grant {project} {host}`, then {bind}")
+    };
+    Requirement::needs(
+        name,
+        Status::NeedsAuthorization,
+        "no host carries the push right: `torlek checkout push` is refused until you bind one",
+        next,
+    )
 }
 
 fn location(project: &ProjectFacts, platform: &Platform) -> Requirement {
