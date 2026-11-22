@@ -482,9 +482,11 @@ token. A file whose mode is not `0600` or `0400`, or one that holds anything but
 project's sessions from launching until you fix it.
 
 Under `agents.sandbox = "required"` no session gets that token: it can push, and only the
-daemon reads it. The agent's own `git push` is refused naming `torlek push`, which has the
-daemon push the agent's branch under the rules above (#155); neither the agent's environment,
-its files nor `git credential fill` inside the sandbox yields the token. Save a second token for the project with
+daemon reads it. The agent pushes with `torlek push`, which has the daemon push its branch
+under the rules above (#155). Its own `git push` has no credential: with the API token below
+saved, the session proxy refuses it naming `torlek push`; without one, Git fails for want of a
+username. Neither `GH_TOKEN`, `GITHUB_TOKEN`, the token file, your own `~/.git-credentials` nor
+`git credential fill` inside the sandbox yields the token. Save a second token for the project with
 `torlek project token set PROJECT --api`, in `~/.config/torlek/github-api-tokens/<project>` by
 the same rules, with pull requests and issues read and write and contents read only. The session
 proxy adds it on `api.github.com`, and on

@@ -10,7 +10,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{Command, ErrorCode};
-use real_daemon::{COMMANDED_PROJECT, Daemon, GENEROUS, Home, cockpit_program, new_session};
+use real_daemon::{
+    BUILD_PROFILE_DIR, COMMANDED_PROJECT, Daemon, GENEROUS, Home, cockpit_program, new_session,
+};
 
 const ORIGIN: &str = "https://github.com/owner/commanded.git";
 const PUSH_TOKEN: &str = "push_token_fixture";
@@ -309,19 +311,37 @@ async fn a_sandboxed_agent_pushes_its_branch_through_the_daemon() {
 
     let printed = pushing
         .agent_runs(&format!(
-            "echo \"token=${{GH_TOKEN-unset}}\"; {}",
+            "echo \"token=${{GH_TOKEN-unset}} ${{GITHUB_TOKEN-unset}}\"; {} && \
+             echo \"head=$(/usr/bin/git rev-parse HEAD)\"",
             commit_then_push("agent/sandboxed", "")
         ))
         .await;
 
-    assert!(printed.starts_with("token=unset\n"), "{printed}");
+    assert!(printed.starts_with("token=unset unset\n"), "{printed}");
     assert!(printed.ends_with("exit=0\n"), "{printed}");
-    assert!(pushing.remote_tip("agent/sandboxed").is_some(), "{printed}");
+    assert!(
+        printed.contains(&format!("pushed agent/sandboxed to {ORIGIN}")),
+        "{printed}"
+    );
+    let head = printed
+        .lines()
+        .find_map(|line| line.strip_prefix("head="))
+        .expect("the agent printed its commit");
+    assert_eq!(
+        pushing.remote_tip("agent/sandboxed").as_deref(),
+        Some(head),
+        "{printed}"
+    );
+    let grants = pushing
+        .owner_succeeds(&["session", "grants", &pushing.session])
+        .await;
+    assert!(grants.contains(head), "{grants}");
 }
 
 /// #155 acceptance (#857): with the push token kept, the push right bound and the owner's own
 /// Git credential store holding the token too, Git's credential lookup inside the sandbox
-/// finds no credential for the forge.
+/// finds no credential for the forge: it reaches Git's own prompt, which is disabled. The same
+/// line outside the sandbox prints the token from the owner's store.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sandboxed_agents_git_credential_fill_gets_no_push_token() {
     let pushing = Pushing::sandboxed().await;
@@ -346,5 +366,43 @@ async fn a_sandboxed_agents_git_credential_fill_gets_no_push_token() {
         .await;
 
     assert!(!printed.contains(PUSH_TOKEN), "{printed}");
-    assert!(!printed.contains("fill=0\n"), "{printed}");
+    assert!(
+        printed.contains("could not read Username for 'https://github.com'"),
+        "{printed}"
+    );
+    assert!(printed.contains("fill=128\n"), "{printed}");
+}
+
+/// #155 acceptance: the files holding the push token, the daemon's token file and the owner's
+/// own Git credential store, are out of the sandboxed agent's reach by their absolute paths,
+/// not only absent from the session's home.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_reads_no_file_holding_the_push_token() {
+    let pushing = Pushing::sandboxed().await;
+    let owner_home = pushing.home.path();
+    let owner_store = owner_home.join(".git-credentials");
+    std::fs::write(
+        &owner_store,
+        format!("https://owner:{PUSH_TOKEN}@github.com\n"),
+    )
+    .unwrap();
+    let token_file = owner_home
+        .join("config")
+        .join(BUILD_PROFILE_DIR)
+        .join(cockpit_config::GITHUB_TOKENS_DIR)
+        .join(COMMANDED_PROJECT);
+    assert!(token_file.is_file(), "{}", token_file.display());
+
+    let printed = pushing
+        .agent_runs(&format!(
+            "for file in '{}' '{}'; do cat \"$file\" >/dev/null 2>&1; echo \"read=$?\"; \
+             cat \"$file\" 2>/dev/null; done",
+            owner_store.display(),
+            token_file.display()
+        ))
+        .await;
+
+    assert!(!printed.contains(PUSH_TOKEN), "{printed}");
+    assert_eq!(printed.matches("read=").count(), 2, "{printed}");
+    assert!(!printed.contains("read=0\n"), "{printed}");
 }

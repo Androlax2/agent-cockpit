@@ -19,7 +19,10 @@ merge gate. Never push to `main` or to another branch, never force-push without 
 merge by hand, never delete branches or tags.
 Theo's local running copy is applied separately and is never a push target.
 
-A sandboxed session (`agents.sandbox = "required"`) holds no push token, so its `git push` is
-refused: it pushes that same branch with `torlek push`, and after a rebase with
-`torlek push --force`, a lease on the commit the daemon last pushed there (#155, #857). The
-rules above are unchanged; `torlek push` grants nothing they do not.
+A sandboxed session (`agents.sandbox = "required"`) has the same authorization, under the same
+conditions and limits, but holds no push token, so its own `git push` fails. It pushes that
+same branch with `torlek push`, and after a rebase with `torlek push --force`, a lease on the
+commit the daemon last pushed there (#155, #857). It opens the pull request and arms the merge
+with `gh`, on the project's API token the session proxy adds; a project without one has no
+`gh` there, and the session stops at the push and says so. `torlek push` grants nothing the
+rules above do not.

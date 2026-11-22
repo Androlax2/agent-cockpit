@@ -69,8 +69,8 @@ pub(crate) fn requirements(
 }
 
 /// Whether `torlek checkout push`, and an agent's `torlek push` (#155), may push the project's
-/// checkouts: only to a host whose grant carries the owner's push right, none until the owner binds one (the owner's decision of
-/// 2026-11-22). Not blocking: sessions work without a push.
+/// checkouts: only to a host whose grant carries the owner's push right, none until the owner
+/// binds one (the owner's decision of 2026-11-22). Not blocking: sessions work without a push.
 fn push(project: &str, facts: &Result<PushFacts, String>) -> Requirement {
     let name = "push";
     let facts = match facts {
