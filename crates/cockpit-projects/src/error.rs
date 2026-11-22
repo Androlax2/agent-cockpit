@@ -242,8 +242,9 @@ impl fmt::Display for Error {
                 formatter,
                 "pushing {commit} to {branch} changes what CI runs ({}): its content there is \
                  neither the remote branch's nor the default branch's. Only the owner pushes it: \
-                 `torlek checkout push {} --commit {commit}`; a branch that only predates the \
-                 default branch's change goes once rebased onto it",
+                 `torlek checkout push {} --branch {branch} --commit {commit}`, a fast-forward \
+                 (a rewrite of the branch the owner pushes by hand); a branch that only predates \
+                 the default branch's change goes once rebased onto it",
                 paths.join(", "),
                 checkout.0
             ),

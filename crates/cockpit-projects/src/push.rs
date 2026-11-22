@@ -105,13 +105,20 @@ pub struct PushRules {
 /// Who asks for the push, which decides what it may send (#155, #857).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pusher {
-    /// The owner: any branch, no workflow scan. `commit`, when given, is the commit the branch
-    /// must be at, so the commit the owner read is the one sent.
-    Owner { commit: Option<String> },
+    /// The owner: any branch, no workflow scan. `expected`, when given, is the branch and
+    /// commit the checkout must be at, so what the owner read is what is sent, and where.
+    Owner { expected: Option<Expected> },
     /// A session's agent: only a branch `branches` covers and never the remote's default
     /// branch, only to the repository the project's main checkout names, and a push that
     /// changes what CI runs is refused as [`Error::WorkflowChange`], for the owner to push.
     Agent { branches: AgentBranches },
+}
+
+/// The branch and full commit id an owner's push is pinned to, as a held agent push names them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Expected {
+    pub branch: String,
+    pub commit: String,
 }
 
 /// The branches an agent's push may go to (#155, 2026-11-09 option B).
@@ -180,14 +187,25 @@ pub async fn push(
     };
     match &rules.pusher {
         Pusher::Owner {
-            commit: Some(expected),
-        } if *expected != target.commit => {
-            return Err(Error::Refused {
-                reason: format!(
-                    "{} is at {}, not at {expected}: the branch moved since it was read",
-                    target.branch, target.commit
-                ),
-            });
+            expected: Some(expected),
+        } => {
+            if !push_range::is_object_id(&expected.commit) {
+                return Err(Error::Refused {
+                    reason: format!(
+                        "{:?} is not a full commit id; name the one the refusal printed",
+                        expected.commit
+                    ),
+                });
+            }
+            if expected.branch != target.branch || expected.commit != target.commit {
+                return Err(Error::Refused {
+                    reason: format!(
+                        "the checkout is at {} on {}, not at {} on {}: it moved since it was \
+                         read",
+                        target.commit, target.branch, expected.commit, expected.branch
+                    ),
+                });
+            }
         }
         Pusher::Agent { branches } if !branches.covers(&target.branch) => {
             return Err(Error::Refused {
@@ -463,19 +481,21 @@ fn push_target(
     })
 }
 
-/// Refuses a push whose URL names another repository than the project's main checkout's origin:
-/// an agent writes its own clone's origin, not the main checkout's, so its push cannot reach
-/// another repository the credential opens.
+/// Refuses a push whose URL names another repository than the project's main checkout's origin,
+/// the URL its clones were given: a sandboxed agent writes neither its checkout's `.git/config`
+/// nor the main checkout's, so its push cannot reach another repository the credential opens.
+/// In the main checkout itself the two are one; an agent outside the sandbox can rewrite both.
 fn require_project_repository(
     git: &Git,
     project_root: &std::path::Path,
     target: &PushTarget,
 ) -> Result<(), Error> {
-    let main_url = git.run(
-        project_root,
-        &[arg("remote"), arg("get-url"), arg("--push"), arg("origin")],
-    )?;
-    let main_url = main_url.trim();
+    let Some(main_url) = git.origin_url(project_root)? else {
+        return Err(Error::Refused {
+            reason: "the project's main checkout has no origin to push to".to_owned(),
+        });
+    };
+    let main_url = main_url.as_str();
     let project_repository =
         cockpit_forge_api::parse_origin(main_url).map_err(|unresolved| Error::Refused {
             reason: format!("the project's origin is {main_url:?}: {unresolved}"),

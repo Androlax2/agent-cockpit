@@ -135,7 +135,7 @@ fn parse_tips(listed: &str, pushed_ref: &str) -> RemoteTips {
     tips
 }
 
-fn is_object_id(value: &str) -> bool {
+pub(crate) fn is_object_id(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 

@@ -45,6 +45,13 @@ pub struct Request {
     pub command: Command,
 }
 
+/// The branch and full commit id an owner's checkout push is pinned to (#155).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushExpected {
+    pub branch: String,
+    pub commit: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Command {
@@ -307,12 +314,13 @@ pub enum Command {
     CheckoutSweep {
         dry_run: bool,
     },
-    /// Push the checkout's branch to its GitHub origin; with `commit`, only while the branch
-    /// is at that commit, as an agent's push held for a workflow change names it (#155).
+    /// Push the checkout's branch to its GitHub origin; with `expected`, only while the
+    /// checkout is on that branch at that commit, as an agent's push held for a workflow
+    /// change names them (#155).
     CheckoutPush {
         checkout: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        commit: Option<String>,
+        expected: Option<PushExpected>,
     },
     /// Agent socket only (#155): have the daemon push the sender's own checkout's branch, which
     /// its `push-branch` grant covers: the checkout's launch branch or one its project's

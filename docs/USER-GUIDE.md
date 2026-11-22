@@ -259,7 +259,7 @@ torlek project push-branch list PROJECT
 
 Tags, branch deletions and the remote's default branch stay out of an agent's reach, whatever the patterns, and so does any repository but the one the project's main checkout names.
 `torlek push --force` rewrites only the launch branch, under a lease on the commit the daemon last pushed there.
-An agent's push that changes `.github/workflows` or `.gitlab-ci.yml` from what the remote branch and default branch hold is refused, naming `torlek checkout push ID --commit COMMIT`: you push that commit yourself once you have read it, and the push is refused if the branch has moved past it.
+An agent's push that changes `.github/workflows` or `.gitlab-ci.yml` from what the remote branch and default branch hold is refused, naming `torlek checkout push ID --branch BRANCH --commit COMMIT`: you push that commit yourself once you have read it, as a fast-forward, and the push is refused if the checkout is on another branch or has moved past it. A rewrite of the branch you push by hand.
 Each agent push is audited; `torlek session grants SESSION` lists them as `pushed`.
 
 ### A project's container engine

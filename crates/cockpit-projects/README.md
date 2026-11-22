@@ -65,13 +65,14 @@ marker is refused as `Replaced` instead of being acted on.
   branch alone, with the commit this checkout last pushed there to the same URL as the expected
   tip (`checkout_pushes`, written only after a push succeeded); with no such record the force is
   refused, never leased against the remote's current tip (#857 decision 2).
-  `Pusher::Owner { commit }` pushes any branch unscanned; with `commit`, only while the branch
-  is at it. `Pusher::Agent` pushes only a branch its `AgentBranches` cover (the launch branch,
+  `Pusher::Owner { expected }` pushes any branch unscanned; with `expected`, only while the
+  checkout is on that branch at that full commit id. `Pusher::Agent` pushes only a branch its `AgentBranches` cover (the launch branch,
   or one a push-branch pattern names), never the remote's default branch (`ls-remote --symref`;
-  a remote naming none is refused), and only to the repository the project's main checkout's
-  origin names, which an agent in a parallel clone cannot rewrite. It refuses a push that
+  a remote naming none is refused), and only to the repository the main checkout's origin
+  (fetch) URL names. A sandboxed agent writes no `.git/config`, so it rewrites neither; in the
+  main checkout the two are one, and an agent outside the sandbox can rewrite both. It refuses a push that
   changes what CI runs as `Error::WorkflowChange`, naming the owner's
-  `torlek checkout push ID --commit COMMIT` (`push_range.rs`). The check compares the
+  `torlek checkout push ID --branch BRANCH --commit COMMIT` (`push_range.rs`). The check compares the
   pushed commit's `.github/workflows` and `.gitlab-ci.yml` entries with those at the remote
   branch's tip and at the remote default branch's tip (read with `ls-remote`, fetched by id
   when missing). It reads no history, because the agent can rewrite the checkout's (replace

@@ -165,7 +165,7 @@ pub(crate) fn route(
             WorkClass::Control,
             job(async move { push_branches_reply(&database, project, None).await }),
         ),
-        Command::CheckoutPush { checkout, commit } => (
+        Command::CheckoutPush { checkout, expected } => (
             WorkClass::Bulk,
             job(async move {
                 let id = CheckoutId(checkout);
@@ -184,7 +184,12 @@ pub(crate) fn route(
                     hosts: push_hosts,
                     credential,
                     force: cockpit_projects::Force::Never,
-                    pusher: cockpit_projects::Pusher::Owner { commit },
+                    pusher: cockpit_projects::Pusher::Owner {
+                        expected: expected.map(|expected| cockpit_projects::Expected {
+                            branch: expected.branch,
+                            commit: expected.commit,
+                        }),
+                    },
                 };
                 let pushed = cockpit_projects::push(&database, &git, id, rules).await?;
                 Ok(Reply::Pushed {

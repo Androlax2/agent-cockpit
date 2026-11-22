@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use cockpit_forge_api::{ForgeHost, Token};
 use cockpit_projects::{
-    AgentBranches, BranchPattern, Error, Force, Git, PushCredential, PushRules, Pushed, Pusher,
-    create_parallel_clone, push,
+    AgentBranches, BranchPattern, Error, Expected, Force, Git, PushCredential, PushRules, Pushed,
+    Pusher, create_parallel_clone, push,
 };
 use cockpit_turso::Database;
 use common::{Scratch, git, register};
@@ -82,20 +82,23 @@ impl Fixture {
             hosts,
             credential,
             force,
-            pusher: Pusher::Owner { commit: None },
+            pusher: Pusher::Owner { expected: None },
         };
         push(&self.database, &self.git, self.checkout, rules).await
     }
 
-    /// The owner's push of `commit` alone.
-    async fn push_commit(&self, commit: &str) -> Result<Pushed, Error> {
+    /// The owner's push of `commit` on `branch` alone.
+    async fn push_pinned(&self, branch: &str, commit: &str) -> Result<Pushed, Error> {
         let credential = PushCredential::new("x-access-token", Token::new(TOKEN).unwrap());
         let rules = PushRules {
             hosts: github(),
             credential: Ok(credential.unwrap()),
             force: Force::Never,
             pusher: Pusher::Owner {
-                commit: Some(commit.to_owned()),
+                expected: Some(Expected {
+                    branch: branch.to_owned(),
+                    commit: commit.to_owned(),
+                }),
             },
         };
         push(&self.database, &self.git, self.checkout, rules).await
@@ -614,7 +617,7 @@ async fn a_held_workflow_change_names_the_owners_push_of_that_commit() {
         .to_string();
 
     let owners_push = format!(
-        "`torlek checkout push {} --commit {commit}`",
+        "`torlek checkout push {} --branch feature --commit {commit}`",
         fixture.checkout.0
     );
     assert!(reason.contains(&owners_push), "{reason}");
@@ -625,7 +628,7 @@ async fn the_owners_push_of_the_commit_held_for_an_agent_sends_it() {
     let fixture = on_a_new_feature_branch().await;
     let commit = fixture.commit_file(".gitlab-ci.yml", "test: {}\n");
 
-    let pushed = fixture.push_commit(&commit).await.unwrap();
+    let pushed = fixture.push_pinned("feature", &commit).await.unwrap();
 
     assert_eq!(pushed.commit, commit);
     assert_eq!(fixture.remote_tip("feature"), Some(commit));
@@ -637,10 +640,68 @@ async fn the_owners_push_of_a_commit_the_branch_moved_past_is_refused() {
     let read = fixture.commit_file(WORKFLOW, "on: push\n");
     fixture.commit_file("README", "later\n");
 
-    let reason = refusal(fixture.push_commit(&read).await);
+    let reason = refusal(fixture.push_pinned("feature", &read).await);
 
-    assert!(reason.contains("the branch moved"), "{reason}");
+    assert!(reason.contains("it moved since it was read"), "{reason}");
     assert_eq!(fixture.remote_tip("feature"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owners_pinned_push_of_the_commit_on_another_branch_is_refused() {
+    let fixture = on_a_new_feature_branch().await;
+    let commit = fixture.commit_file(WORKFLOW, "on: push\n");
+    let before = fixture.remote_tip("main");
+    git(
+        &fixture.root,
+        &["checkout", "--quiet", "-B", "main", &commit],
+    );
+
+    let reason = refusal(fixture.push_pinned("feature", &commit).await);
+
+    assert!(reason.contains("on main, not at"), "{reason}");
+    assert_eq!(fixture.remote_tip("main"), before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owners_pinned_push_of_an_abbreviated_commit_is_refused_as_not_a_full_id() {
+    let fixture = on_a_new_feature_branch().await;
+    let commit = fixture.commit_file("README", "work\n");
+
+    let reason = refusal(fixture.push_pinned("feature", &commit[..7]).await);
+
+    assert!(reason.contains("not a full commit id"), "{reason}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_clone_pushes_though_the_main_checkout_pushes_elsewhere() {
+    let fixture = Fixture::new(ORIGIN).await;
+    fixture.push(github(), Force::Never).await.unwrap();
+    git(
+        &fixture.root,
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "git@github.com:owner/app.git",
+        ],
+    );
+    let clone = create_parallel_clone(&fixture.database, &fixture.git, "app", "feature")
+        .await
+        .unwrap();
+    std::fs::write(clone.path.join("README"), "clone work\n").unwrap();
+    git(&clone.path, &["commit", "--quiet", "-am", "work"]);
+    let branches = AgentBranches {
+        launch: Some("feature".to_owned()),
+        patterns: Vec::new(),
+    };
+
+    let pushed = fixture
+        .push_as_agent_of(clone.id, branches, Force::Never)
+        .await
+        .unwrap();
+
+    assert_eq!(fixture.remote_tip("feature"), Some(pushed.commit));
 }
 
 #[tokio::test(flavor = "multi_thread")]

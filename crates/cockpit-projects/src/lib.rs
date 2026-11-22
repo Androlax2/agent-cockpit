@@ -35,7 +35,7 @@ pub use model::{
     ProjectName, Trust,
 };
 pub use push::{
-    AgentBranches, Force, PushCredential, PushRules, Pushed, Pusher, last_pushed, push,
+    AgentBranches, Expected, Force, PushCredential, PushRules, Pushed, Pusher, last_pushed, push,
 };
 pub use push_branches::{BranchPattern, add_push_branch, push_branches, remove_push_branch};
 pub use register::register_project;

@@ -39,7 +39,7 @@ fn project_commands() -> Vec<Command> {
         Command::CheckoutSweep { dry_run: true },
         Command::CheckoutPush {
             checkout: 1,
-            commit: None,
+            expected: None,
         },
         Command::ProjectPushBranchAdd {
             project: "app".to_owned(),

@@ -99,7 +99,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek checkout claim CHECKOUT HOLDER
        torlek checkout release CHECKOUT HOLDER
        torlek checkout sweep [--dry-run]
-       torlek checkout push CHECKOUT [--commit COMMIT]
+       torlek checkout push CHECKOUT [--branch BRANCH --commit COMMIT]
        torlek status serve [--port N] [--host TAILNET_NAME]
        torlek storage
        torlek storage outputs [prune]

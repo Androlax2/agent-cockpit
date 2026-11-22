@@ -98,33 +98,45 @@ async fn push(
     let pushed = cockpit_projects::push(database, git, pushing.checkout.id, rules)
         .await
         .map_err(|error| push_failed(&session, error))?;
-    let write = database.write().await?;
-    cockpit_authorization::record_audit(
-        &write,
-        &Audit {
-            actor: session,
-            permission: Permission::PushBranch,
-            grant: pushing.grant,
-            revision: pushing.revision,
-            action: AuditedAction::Pushed,
-            target: None,
-            detail: Some(format!(
-                "{} to {} on {}{}",
-                pushed.commit,
-                pushed.branch,
-                pushed.remote_url,
-                if pushed.forced { ", forced" } else { "" }
-            )),
-            at: now(),
-        },
-    )
-    .await?;
-    write.commit().await?;
+    let audit = Audit {
+        actor: session,
+        permission: Permission::PushBranch,
+        grant: pushing.grant,
+        revision: pushing.revision,
+        action: AuditedAction::Pushed,
+        target: None,
+        detail: Some(format!(
+            "{} to {} on {}{}",
+            pushed.commit,
+            pushed.branch,
+            pushed.remote_url,
+            if pushed.forced { ", forced" } else { "" }
+        )),
+        at: now(),
+    };
+    // The push went, so its reply says so; a lost audit is the daemon's fault to report, not
+    // a failure the agent would retry into a second push.
+    if let Err(error) = record_pushed(database, &audit).await {
+        tracing::error!(
+            session = audit.actor.as_str(),
+            detail = audit.detail.as_deref(),
+            %error,
+            "an agent's push went but its audit entry could not be written"
+        );
+    }
     Ok(Reply::Pushed {
         checkout: pushing.checkout.id.0,
         branch: pushed.branch,
         remote_url: pushed.remote_url,
     })
+}
+
+async fn record_pushed(database: &Database, audit: &Audit) -> Result<(), String> {
+    let write = database.write().await.map_err(|error| error.to_string())?;
+    cockpit_authorization::record_audit(&write, audit)
+        .await
+        .map_err(|error| error.to_string())?;
+    write.commit().await.map_err(|error| error.to_string())
 }
 
 async fn read_pushing(

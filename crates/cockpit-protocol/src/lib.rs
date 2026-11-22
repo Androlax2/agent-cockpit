@@ -72,8 +72,8 @@ pub use projects::{
 pub use queue::{QueueExplanationView, QueuePlacementView, QueueSessionNoteView, QueueStepView};
 pub use readiness::{ReadinessStatusView, RequirementView};
 pub use request::{
-    Command, Outcome, Reply, Request, RequestId, RequestRejection, Response, ServerFrame,
-    decode_request, decode_request_with_kind,
+    Command, Outcome, PushExpected, Reply, Request, RequestId, RequestRejection, Response,
+    ServerFrame, decode_request, decode_request_with_kind,
 };
 pub use resources::{
     ControlSupportView, DemandView, EffectiveView, LimitView, ObservedView, ProfileView,
