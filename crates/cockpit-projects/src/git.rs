@@ -80,8 +80,9 @@ impl Git {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    /// [`Git::run`] with `input` as Git's standard input, for a call that reads it whole
-    /// before it writes a short answer (`hash-object --stdin`).
+    /// [`Git::run`] with `input` as Git's standard input, for a local call that reads it
+    /// whole before it writes a short answer (`hash-object --stdin`, which writes no object
+    /// and so takes no lock): no deadline, like the other local calls.
     pub(crate) fn run_with_input(
         &self,
         dir: &Path,

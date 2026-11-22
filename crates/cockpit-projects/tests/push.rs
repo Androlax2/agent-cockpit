@@ -159,7 +159,6 @@ impl Fixture {
         );
     }
 
-    /// A commit someone else pushed straight to the bare repository's `main`.
     /// A commit someone else pushed straight to the bare repository's `branch`, writing
     /// `content` to `path`, on top of the branch or, for a new one, of `main`.
     fn someone_else_commits(&self, branch: &str, path: &str, content: &str) -> String {
@@ -205,7 +204,8 @@ impl Fixture {
         git(&other, &["rev-parse", "HEAD"]).trim().to_owned()
     }
 
-    /// The remote calls Git made: `ls-remote`, `fetch` and `push`, each as one line.
+    /// The remote calls Git made: `ls-remote`, `fetch` and `push`, each as one line starting
+    /// with the folder Git ran in.
     fn remote_calls(&self) -> Vec<String> {
         self.recorded("remote-calls")
             .unwrap_or_default()
@@ -214,6 +214,7 @@ impl Fixture {
             .collect()
     }
 
+    /// A commit someone else pushed straight to the bare repository's `main`.
     fn someone_else_pushes(&self) -> String {
         let other = self.scratch.path().join("other");
         git(
@@ -265,7 +266,7 @@ fn forge_git(scratch: &Scratch, remote: &Path) -> Git {
              if [ -n \"$pushing\" ]; then\n  printf '%s\\n' \"$@\" > {pushed}\n  \
              {{ {fill_push}; echo ---; {fill_other}; }} > {offered}\n  \
              if [ -x {before} ]; then {before}; fi\nfi\n\
-             if [ -n \"$pushing$remote\" ]; then\n  printf '%s\\n' \"$*\" >> {remote_calls}\n  \
+             if [ -n \"$pushing$remote\" ]; then\n  printf '%s %s\\n' \"$PWD\" \"$*\" >> {remote_calls}\n  \
              export GIT_CONFIG_GLOBAL={rewrite} GIT_ALLOW_PROTOCOL=file\nfi\n\
              exec /usr/bin/git \"$@\"\n",
             home = quote(&scratch.path().join("git-home")),
@@ -320,7 +321,7 @@ async fn a_branch_is_pushed_as_the_commit_it_points_at_to_a_host_the_project_may
     let arguments = fixture.recorded("pushed").unwrap();
     assert!(
         arguments.ends_with(&format!(
-            "push\n--porcelain\n--end-of-options\norigin\n{head}:refs/heads/main\n"
+            "push\n--porcelain\n--end-of-options\n{ORIGIN}\n{head}:refs/heads/main\n"
         )),
         "{arguments}"
     );
@@ -592,6 +593,43 @@ async fn the_owners_approval_of_the_commit_lets_a_workflow_change_go() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_approved_commit_is_pushed_without_asking_the_remote_first() {
+    let fixture = on_a_new_feature_branch().await;
+    let commit = fixture.commit_file(WORKFLOW, "on: push\n");
+
+    fixture
+        .push_as_agent(Force::Never, Some(&commit))
+        .await
+        .unwrap();
+
+    let calls = fixture.remote_calls();
+    assert!(
+        !calls.iter().any(|call| call.contains(" ls-remote ")),
+        "{calls:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_remote_tips_are_read_outside_the_checkout_from_the_url_checked() {
+    let fixture = on_a_new_feature_branch().await;
+    fixture.commit_file("README", "work\n");
+
+    fixture.push_as_agent(Force::Never, None).await.unwrap();
+
+    let listed: Vec<String> = fixture
+        .remote_calls()
+        .into_iter()
+        .filter(|call| call.contains(" ls-remote "))
+        .collect();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert!(listed[0].starts_with("/ "), "{listed:?}");
+    assert!(
+        listed[0].contains(&format!("--end-of-options {ORIGIN} HEAD")),
+        "{listed:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_approval_of_another_commit_does_not_cover_the_one_pushed() {
     let fixture = on_a_new_feature_branch().await;
     let approved = fixture.commit_file(WORKFLOW, "on: push\n");
@@ -690,7 +728,7 @@ async fn a_default_branch_tip_the_checkout_lacks_is_fetched_by_id() {
         .collect();
     assert_eq!(fetches.len(), 1, "{fetches:?}");
     assert!(
-        fetches[0].ends_with(&format!("origin {main}")),
+        fetches[0].ends_with(&format!("{ORIGIN} {main}")),
         "{fetches:?}"
     );
 }
@@ -758,6 +796,7 @@ async fn the_owners_push_is_not_scanned_and_asks_the_remote_nothing_else() {
 
     assert_eq!(fixture.remote_tip("feature"), Some(commit));
     let calls = fixture.remote_calls();
+    assert_eq!(calls.len(), 2, "one push each: {calls:?}");
     assert!(
         calls.iter().all(|call| call.contains(" push ")),
         "{calls:?}"

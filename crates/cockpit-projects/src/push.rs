@@ -166,15 +166,20 @@ pub async fn push(
     let credential = rules
         .credential
         .map_err(|reason| Error::Refused { reason })?;
-    if let WorkflowCheck::Agent { approved_commit } = &rules.workflows {
+    let is_scanned = match &rules.workflows {
+        WorkflowCheck::Owner => false,
+        WorkflowCheck::Agent { approved_commit } => {
+            approved_commit.as_deref() != Some(target.commit.as_str())
+        }
+    };
+    if is_scanned {
         let git = git.clone();
         let (scanned_checkout, scanned, scan_credential) =
             (checkout.clone(), target.clone(), credential.clone());
         let paths =
             blocking(move || workflow_changes(&git, &scanned_checkout, &scanned, &scan_credential))
                 .await?;
-        let is_approved = approved_commit.as_deref() == Some(target.commit.as_str());
-        if !paths.is_empty() && !is_approved {
+        if !paths.is_empty() {
             return Err(Error::WorkflowChange {
                 branch: target.branch,
                 commit: target.commit,
@@ -442,6 +447,7 @@ fn workflow_changes(
     let remote = RemoteAccess {
         git,
         checkout,
+        url: &target.remote_url,
         extra_config: &[&helper],
         secret: (PUSH_TOKEN_VARIABLE, credential.token.expose()),
     };
@@ -479,7 +485,12 @@ fn send(
     if let Some(option) = &lease_option {
         arguments.push(arg(option));
     }
-    arguments.extend([arg("--end-of-options"), arg("origin"), arg(&refspec)]);
+    // The URL checked, not `origin`, which the checkout's configuration names again.
+    arguments.extend([
+        arg("--end-of-options"),
+        arg(&target.remote_url),
+        arg(&refspec),
+    ]);
     let output = git.output_within(
         checkout,
         &[&helper],

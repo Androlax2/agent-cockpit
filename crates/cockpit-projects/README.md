@@ -72,7 +72,10 @@ marker is refused as `Replaced` instead of being acted on.
   when missing). It reads no history, because the agent can rewrite the checkout's (replace
   refs, grafts, planted objects), and Git hashes every object it reads again, which must match
   its id. So a branch started before the default branch changed its workflows is held until
-  rebased onto it.
+  rebased onto it. The tips come from `ls-remote` on the URL checked, run outside the
+  checkout so its configuration cannot rewrite it; the push goes to that URL too. The check
+  covers the workflow files #857 names, not what they reach elsewhere in the repository
+  (scripts, local actions, a GitLab `include: local`): CI runs those like any other code.
 
 ## Dependency edges
 

@@ -28,18 +28,24 @@ pub(crate) struct RemoteTips {
     pub(crate) pushed: Option<String>,
 }
 
-/// How a scan reaches the remote: Git's settings for the call and the one secret it carries.
+/// How a scan reaches the remote: the one URL the push goes to, Git's settings for the call
+/// and the one secret it carries.
 pub(crate) struct RemoteAccess<'a> {
     pub(crate) git: &'a Git,
     pub(crate) checkout: &'a Path,
+    pub(crate) url: &'a str,
     pub(crate) extra_config: &'a [&'a str],
     pub(crate) secret: (&'a str, &'a str),
 }
 
+/// Where `ls-remote` runs: outside every repository, so no configuration the checkout's agent
+/// writes can rewrite the URL whose tips the scan compares with.
+const OUTSIDE_ANY_REPOSITORY: &str = "/";
+
 impl RemoteAccess<'_> {
-    fn run(&self, arguments: &[&std::ffi::OsStr]) -> Result<String, Error> {
+    fn run(&self, dir: &Path, arguments: &[&std::ffi::OsStr]) -> Result<String, Error> {
         let output = self.git.output_within(
-            self.checkout,
+            dir,
             self.extra_config,
             Some(self.secret),
             arguments,
@@ -54,18 +60,23 @@ impl RemoteAccess<'_> {
     /// The commits the remote's default branch and `branch` are at.
     pub(crate) fn tips(&self, branch: &str) -> Result<RemoteTips, Error> {
         let pushed_ref = format!("refs/heads/{branch}");
-        let listed = self.run(&[
-            arg("ls-remote"),
-            arg("--end-of-options"),
-            arg("origin"),
-            arg("HEAD"),
-            arg(&pushed_ref),
-        ])?;
+        let listed = self.run(
+            Path::new(OUTSIDE_ANY_REPOSITORY),
+            &[
+                arg("ls-remote"),
+                arg("--end-of-options"),
+                arg(self.url),
+                arg("HEAD"),
+                arg(&pushed_ref),
+            ],
+        )?;
         Ok(parse_tips(&listed, &pushed_ref))
     }
 
     /// Fetches the `commits` the checkout lacks, by id: their objects alone, no ref and no
-    /// `FETCH_HEAD` written.
+    /// `FETCH_HEAD` written, no maintenance and no submodule. The checkout's configuration
+    /// could send the fetch elsewhere, but no other repository can answer for these ids:
+    /// every object the scan reads is checked against its id.
     fn fetch_missing(&self, commits: &[&str]) -> Result<(), Error> {
         let mut missing = Vec::new();
         for commit in commits {
@@ -81,11 +92,13 @@ impl RemoteAccess<'_> {
             arg("--quiet"),
             arg("--no-tags"),
             arg("--no-write-fetch-head"),
+            arg("--no-auto-maintenance"),
+            arg("--no-recurse-submodules"),
             arg("--end-of-options"),
-            arg("origin"),
+            arg(self.url),
         ];
         arguments.extend(missing);
-        self.run(&arguments)?;
+        self.run(self.checkout, &arguments)?;
         Ok(())
     }
 }
