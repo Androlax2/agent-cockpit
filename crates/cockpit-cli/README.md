@@ -21,6 +21,7 @@ the capability crates whose verbs must work without the daemon, listed in
 | `torlek project remove PROJECT` (name or id): unregisters an idle project; deletes nothing on disk, keeps its ended sessions and finished items, prints its clones' paths | no | `cockpit-projects` |
 | `torlek checkout list [PROJECT]` | no | `cockpit-projects` |
 | `torlek checkout clone PROJECT BRANCH`, `torlek checkout review PROJECT PULL_REQUEST` | no | `cockpit-projects` |
+| `torlek session review PROJECT PULL_REQUEST [--agent NAME] [--model MODEL] [--effort LEVEL] [--compaction-threshold VALUE]` (#60): `checkout review`, then `session new` in that clone with a first message asking for a review (read the diff, run the tests, report by severity; no push, no comment on the pull request); two requests, so a session that does not start leaves the clone, which the sweep removes | no | `cockpit-projects`, `cockpit-sessions` |
 | `torlek checkout claim CHECKOUT HOLDER`, `torlek checkout release CHECKOUT HOLDER` | no | `cockpit-projects` |
 | `torlek checkout sweep [--dry-run]`, `torlek checkout push CHECKOUT` | no | `cockpit-projects` |
 | `torlek storage`: registered clone `target/` apparent bytes, each clone's prune verdict and the eligible total, then what the latest session ends removed or kept and why, and per area (build folders, session temp folders, check outputs, database, backups, logs) apparent bytes, what its prune would retire and a total; read-only, owner-only; exits 1 for incomplete, unavailable or truncated results | no | `cockpit-projects` |

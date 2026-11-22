@@ -9,13 +9,14 @@ use std::process::Output;
 mod scripted;
 
 use cockpit_protocol::{
-    AgentExitView, Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, ExitStatusView,
-    HeldMessageView, LaunchKindView, LaunchView, Outcome, ProtocolError, QuotaStopCauseView,
-    QuotaStopStatusView, QuotaStopView, ReadinessStatusView, Reply, RequirementView,
-    SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure, SessionStateView,
-    SessionView, StopTargetView, TaskBudgetView,
+    AgentExitView, CheckoutKindView, CheckoutView, Command, CoordinatorAuditView,
+    CoordinatorGrantView, ErrorCode, ExitStatusView, HeldMessageView, LaunchKindView, LaunchView,
+    Outcome, ProtocolError, QuotaStopCauseView, QuotaStopStatusView, QuotaStopView,
+    ReadinessStatusView, Reply, RequirementView, SandboxEnforcementView, SandboxEvidenceView,
+    SandboxRuleView, SessionFailure, SessionStateView, SessionView, StopTargetView, TaskBudgetView,
+    TrustView,
 };
-use scripted::{scripted_daemon, text};
+use scripted::{scripted_connections, scripted_daemon, text};
 
 struct Home {
     dir: tempfile::TempDir,
@@ -1420,4 +1421,177 @@ async fn session_send_and_cancel_preserve_the_message_and_acknowledge_delivery()
         assert_eq!(text(&output.stdout), format!("delivered to session {id}\n"));
         assert_eq!(daemon.await.unwrap(), expected);
     }
+}
+
+const REVIEW_CLONE: &str = "/home/u/projects/.parallel/app/pr-7";
+
+fn review_clone() -> Outcome {
+    Outcome::Ok(Reply::Checkout {
+        checkout: Box::new(CheckoutView {
+            id: 4,
+            project: "app".to_owned(),
+            kind: CheckoutKindView::Review { pull_request: 7 },
+            path: REVIEW_CLONE.to_owned(),
+            incarnation: 1,
+            removing: false,
+            occupant: None,
+            trust: TrustView::NeverForReview,
+        }),
+    })
+}
+
+fn started_in_review_clone() -> Outcome {
+    let mut session = view("s0123456789ab", SessionStateView::Running);
+    session.working_dir = REVIEW_CLONE.to_owned();
+    Outcome::Ok(Reply::Session {
+        session: Box::new(session),
+    })
+}
+
+#[tokio::test]
+async fn session_review_clones_the_pull_request_then_starts_a_session_there() {
+    let home = Home::new();
+    let daemon = scripted_connections(
+        &home.daemon_socket(),
+        vec![review_clone(), started_in_review_clone()],
+    );
+
+    let output = home
+        .cockpit(
+            home.dir.path(),
+            &[
+                "session", "review", "app", "7", "--agent", "codex", "--effort", "high",
+            ],
+        )
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        format!("s0123456789ab\trunning\tclaude\tstart\tc-1\t{REVIEW_CLONE}\t-\t-\t-\n")
+    );
+    let [clone, start] = <[Command; 2]>::try_from(daemon.await.unwrap()).unwrap();
+    assert_eq!(
+        clone,
+        Command::CheckoutReview {
+            project: "app".to_owned(),
+            pull_request: 7,
+        }
+    );
+    let Command::SessionNew {
+        dir,
+        agent,
+        prompt,
+        clone,
+        model,
+        effort,
+        compaction_threshold,
+    } = start
+    else {
+        panic!("not a session start: {start:?}");
+    };
+    assert_eq!(
+        (
+            dir.as_str(),
+            agent.as_deref(),
+            clone,
+            model,
+            effort.as_deref()
+        ),
+        (REVIEW_CLONE, Some("codex"), None, None, Some("high"))
+    );
+    assert_eq!(compaction_threshold, None);
+    let prompt = prompt.expect("a review prompt");
+    assert!(
+        prompt.starts_with("Review pull request #7 ") && prompt.contains("Do not push"),
+        "{prompt}"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_review_clone_starts_no_session() {
+    let home = Home::new();
+    let daemon = scripted_connections(
+        &home.daemon_socket(),
+        vec![Outcome::Error(ProtocolError::new(
+            ErrorCode::NotFound,
+            "no project is named \"app\"",
+        ))],
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "review", "app", "7"])
+        .await;
+
+    assert!(!output.status.success());
+    assert!(
+        text(&output.stderr).contains("no project is named"),
+        "{}",
+        text(&output.stderr)
+    );
+    assert_eq!(daemon.await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_review_session_that_does_not_start_names_the_clone_it_leaves() {
+    let home = Home::new();
+    let _daemon = scripted_connections(
+        &home.daemon_socket(),
+        vec![
+            review_clone(),
+            Outcome::Error(ProtocolError::new(
+                ErrorCode::Refused,
+                "no provider is named codex",
+            )),
+        ],
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "review", "app", "7"])
+        .await;
+
+    assert!(!output.status.success());
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains(&format!("the review clone stays at {REVIEW_CLONE}"))
+            && stderr.contains("torlek checkout sweep"),
+        "{stderr}"
+    );
+}
+
+#[tokio::test]
+async fn session_review_refuses_a_prompt_or_clone_of_its_own_before_any_request() {
+    for flag in ["--prompt", "--clone"] {
+        let home = Home::new();
+
+        let output = home
+            .cockpit(
+                home.dir.path(),
+                &["session", "review", "app", "7", flag, "x"],
+            )
+            .await;
+
+        assert!(!output.status.success(), "{flag}");
+        assert!(
+            text(&output.stderr).contains(&format!("takes no {flag}")),
+            "{}",
+            text(&output.stderr)
+        );
+    }
+}
+
+#[tokio::test]
+async fn session_review_refuses_a_pull_request_that_is_not_a_number() {
+    let home = Home::new();
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "review", "app", "seven"])
+        .await;
+
+    assert!(!output.status.success());
+    assert!(
+        text(&output.stderr).contains("seven is not a pull request number"),
+        "{}",
+        text(&output.stderr)
+    );
 }

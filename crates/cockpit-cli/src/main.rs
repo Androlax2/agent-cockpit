@@ -120,6 +120,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek setup engine-masks|root-run [--uninstall]
        torlek session send ID MESSAGE | cancel ID
        torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL] [--compaction-threshold VALUE]
+       torlek session review PROJECT PULL_REQUEST [--agent NAME] [--model MODEL] [--effort LEVEL] [--compaction-threshold VALUE]
        torlek session list [--ended]
        torlek session restart SESSION|--all
        torlek session sleep|wake|resume|end|show SESSION
@@ -287,6 +288,8 @@ fn main() -> ExitCode {
             Ok(command) => usage::run(command),
             Err(problem) => verb_usage_error(&verb_name, problem),
         },
+        [Some("session"), Some("review"), ..] => sessions::review(&arguments[2..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("session"), ..] => match sessions::parse(&arguments[1..]) {
             Ok(command) => {
                 let is_list = matches!(command, cockpit_protocol::Command::SessionList { .. });

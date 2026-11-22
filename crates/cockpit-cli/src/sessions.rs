@@ -146,6 +146,80 @@ fn session_new(dir: &str, options: &[&str]) -> Result<Command, String> {
     })
 }
 
+/// The first message of a `session review` session (the old cockpit's `review`): it reads and
+/// tests the proposed change, and leaves the forge alone.
+fn review_prompt(pull_request: u64) -> String {
+    format!(
+        "Review pull request #{pull_request} of this repository (its head is checked out here, \
+         detached): read the diff against its base branch, run the relevant tests, and report \
+         problems by severity with file and line. Do not push, and do not comment on the pull \
+         request."
+    )
+}
+
+/// `session review PROJECT PULL_REQUEST [--agent NAME] [--model MODEL] [--effort LEVEL]
+/// [--compaction-threshold VALUE]` (#60): a review clone of the pull request
+/// (`checkout review`), then a session there (`session new`) whose first message asks for a
+/// review. Two requests, so a session that does not start leaves the clone, which
+/// `checkout sweep` removes while it holds no work.
+pub fn review(arguments: &[OsString]) -> Result<ExitCode, String> {
+    let words = utf8_words(arguments)?;
+    let [project, number, options @ ..] = words.as_slice() else {
+        return Err("usage: session review PROJECT PULL_REQUEST [OPTIONS]".to_owned());
+    };
+    let pull_request: u64 = number
+        .parse()
+        .map_err(|_| format!("{number} is not a pull request number"))?;
+    for flag in ["--prompt", "--clone"] {
+        if options.contains(&flag) {
+            return Err(format!("session review takes no {flag}: it makes its own"));
+        }
+    }
+    // The options `session new` takes, checked by its own parser; the folder is the clone's.
+    let Command::SessionNew {
+        agent,
+        model,
+        effort,
+        compaction_threshold,
+        ..
+    } = session_new("/", options)?
+    else {
+        unreachable!("session_new builds SessionNew");
+    };
+    let checkout = match request(
+        Command::CheckoutReview {
+            project: (*project).to_owned(),
+            pull_request,
+        },
+        BULK_DEADLINE,
+    ) {
+        Ok(Reply::Checkout { checkout }) => checkout,
+        Ok(reply) => return Ok(unexpected(&reply)),
+        Err(code) => return Ok(code),
+    };
+    eprintln!(
+        "review clone {} of {project}#{pull_request}: {}",
+        checkout.id, checkout.path
+    );
+    let code = run(Command::SessionNew {
+        dir: checkout.path.clone(),
+        agent,
+        prompt: Some(review_prompt(pull_request)),
+        clone: None,
+        model,
+        effort,
+        compaction_threshold,
+    });
+    if code != ExitCode::SUCCESS {
+        eprintln!(
+            "the review clone stays at {}; `torlek checkout sweep` removes it while it holds no \
+             work",
+            checkout.path
+        );
+    }
+    Ok(code)
+}
+
 /// `grant SESSION PERMISSION [--all-projects] [--per-hour N] [--max-active N]
 /// [--without-confirmation]`: the daemon checks which permission takes which terms (#410,
 /// #739). Without `--all-projects` the grant covers the session's own project (#1131).
