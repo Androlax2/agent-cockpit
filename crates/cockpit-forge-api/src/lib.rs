@@ -279,9 +279,14 @@ impl fmt::Display for InvalidValue {
 
 impl std::error::Error for InvalidValue {}
 
-/// A short, printable identifier the forge gave: no spaces, no control characters.
+/// A short identifier the forge gave: ASCII letters, digits, `.`, `_` and `-`, not `.` or
+/// `..`, so an adapter can put it in a URL path without it reaching another resource.
 pub(crate) fn is_plain_id(id: &str, max_bytes: usize) -> bool {
     !id.is_empty()
         && id.len() <= max_bytes
-        && id.chars().all(|character| character.is_ascii_graphic())
+        && id != "."
+        && id != ".."
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }

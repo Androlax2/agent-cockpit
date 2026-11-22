@@ -9,7 +9,8 @@ const MAX_ISSUE_ID_BYTES: usize = 64;
 /// Most issues one list call returns.
 pub const MAX_LISTED: usize = 100;
 
-/// The forge's own id of an issue (`153`, `PROJ-12`). Opaque; compared byte for byte.
+/// The forge's own id of an issue (`153`, `PROJ-12`). Opaque; compared byte for byte. Its
+/// characters are safe in a URL path: no `/`, `?`, `#` or `%`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct IssueId(String);
 
@@ -20,7 +21,7 @@ impl IssueId {
             return Err(InvalidValue {
                 kind: "issue id",
                 value: id,
-                rule: "1 to 64 printable ASCII characters, no spaces",
+                rule: "1 to 64 ASCII letters, digits, `.`, `_` and `-`, not `.` or `..`",
             });
         }
         Ok(IssueId(id))

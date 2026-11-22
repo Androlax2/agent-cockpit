@@ -14,7 +14,7 @@ const MAX_HOST_BYTES: usize = 253;
 const MAX_LABEL_BYTES: usize = 63;
 
 /// A forge's host: a lower-case DNS name of at least two labels with an optional port
-/// (`forge.example.com`, `forge.example.com:8443`). No wildcard, no IP address in any form a
+/// (`forge.example.com`, `forge.example.com:8443`), the port without leading zeros. No wildcard, no IP address in any form a
 /// resolver reads, no `localhost`: a credential is bound to one named host.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ForgeHost(String);
@@ -29,8 +29,8 @@ impl ForgeHost {
                 kind: "forge host",
                 value: host,
                 rule: "a lower-case DNS name of at least two labels whose last starts with a \
-                       letter and is not `localhost`, with an optional port from 1 to 65535; \
-                       no wildcard and never an IP address",
+                       letter and is not `localhost`, with an optional port from 1 to 65535 \
+                       without leading zeros; no wildcard and never an IP address",
             })
         }
     }
@@ -53,7 +53,8 @@ fn is_host(host: &str) -> bool {
     };
     let is_port = port.is_none_or(|port| {
         port.bytes().all(|byte| byte.is_ascii_digit())
-            && port.parse::<u16>().is_ok_and(|port| port != 0)
+            && !port.starts_with('0')
+            && port.parse::<u16>().is_ok()
     });
     let labels: Vec<&str> = name.split('.').collect();
     // Every top-level domain starts with a letter; a resolver reads a last label starting

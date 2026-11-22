@@ -10,7 +10,7 @@ use crate::{Forge, ForgeError, ForgeName};
 /// Longest repository path.
 const MAX_PATH_BYTES: usize = 512;
 
-/// A repository's path on its host, without a leading `/` or a trailing `.git`: one or more
+/// A repository's path on its host, without a leading `/` or a trailing `.git` in any case: one or more
 /// names (`owner/name`, `group/subgroup/name`) of ASCII letters, digits, `.`, `_` and `-`,
 /// none `.` or `..`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -48,7 +48,7 @@ impl fmt::Display for RepositoryPath {
 
 fn is_repository_path(path: &str) -> bool {
     path.len() <= MAX_PATH_BYTES
-        && !path.ends_with(".git")
+        && !has_git_suffix(path)
         && path.split('/').all(|name| {
             !name.is_empty()
                 && name != "."
@@ -134,7 +134,7 @@ impl fmt::Display for Unresolved {
 impl std::error::Error for Unresolved {}
 
 /// The repository an origin URL names: `https://host[:port]/path[.git][/]`, the host
-/// lower-cased. Refuses every other form with its reason.
+/// lower-cased, `:443` dropped. Refuses every other form with its reason.
 pub fn parse_origin(url: &str) -> Result<Repository, Unresolved> {
     let Some((scheme, rest)) = url.split_once("://") else {
         return Err(if is_scp_like(url) {
@@ -168,17 +168,32 @@ pub fn parse_origin(url: &str) -> Result<Repository, Unresolved> {
                 .to_owned(),
         });
     }
-    let host = ForgeHost::new(authority.to_ascii_lowercase()).map_err(|invalid| {
-        Unresolved::Malformed {
-            reason: format!("names no forge host: {}", invalid.rule),
-        }
+    let authority = authority.to_ascii_lowercase();
+    // HTTPS's own port names the same host as none.
+    let authority = authority.strip_suffix(":443").unwrap_or(&authority);
+    let host = ForgeHost::new(authority).map_err(|invalid| Unresolved::Malformed {
+        reason: format!("names no forge host: {}", invalid.rule),
     })?;
     let path = path.strip_suffix('/').unwrap_or(path);
-    let path = path.strip_suffix(".git").unwrap_or(path);
+    let path = strip_git_suffix(path);
     let path = RepositoryPath::new(path).map_err(|invalid| Unresolved::Malformed {
         reason: format!("names no repository: {}", invalid.rule),
     })?;
     Ok(Repository { host, path })
+}
+
+/// `path` without a trailing `.git`, in any case, as Git hosts read it.
+fn strip_git_suffix(path: &str) -> &str {
+    if has_git_suffix(path) {
+        &path[..path.len() - ".git".len()]
+    } else {
+        path
+    }
+}
+
+fn has_git_suffix(path: &str) -> bool {
+    path.len() >= ".git".len()
+        && path.as_bytes()[path.len() - ".git".len()..].eq_ignore_ascii_case(b".git")
 }
 
 /// Git's `[user@]host:path` form, which it reads as SSH: a `:` before any `/`.

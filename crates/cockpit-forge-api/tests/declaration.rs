@@ -71,6 +71,7 @@ fn a_forge_host_is_one_named_public_host() {
         "Git.example.com",
         "git.example.com:0",
         "git.example.com:65536",
+        "git.example.com:0443",
         "-git.example.com",
         "git..example.com",
         "git.example.com/",

@@ -49,6 +49,16 @@ fn an_https_origin_names_its_host_and_path() {
             "git.example.com",
             "owner/.config",
         ),
+        (
+            "https://git.example.com:443/owner/name",
+            "git.example.com",
+            "owner/name",
+        ),
+        (
+            "https://git.example.com/owner/name.GIT",
+            "git.example.com",
+            "owner/name",
+        ),
     ];
 
     for (origin, host, path) in cases {
@@ -127,6 +137,7 @@ fn a_malformed_https_origin_is_refused() {
         "https://127.0.0.1/owner/name",
         "https://localhost/owner/name",
         "https://git.example.com/owner/name.git.git",
+        "https://git.example.com/owner/name.git.GIT",
     ];
 
     for origin in origins {

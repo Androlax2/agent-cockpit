@@ -12,7 +12,8 @@
 //!   repository, and [`crate::resolve`] finds it from the repository's HTTPS URL.
 //! - No error repeats the token.
 //!
-//! Reads run before writes, so recorded reads see the repository as recorded.
+//! Recorded reads run first, then recorded writes, then the calls to methods whose capability
+//! is not reported, so recorded reads see the repository as recorded.
 
 use std::fmt;
 
@@ -107,6 +108,7 @@ pub fn check(forge: &dyn Forge, recorded: &Recorded) -> Vec<Violation> {
         repository: &recorded.repository,
         token: &recorded.token,
     };
+    let mut unreported = Vec::new();
     for capability in Capability::ALL {
         let Some(has_answer) = recorded.has_answer(capability) else {
             continue;
@@ -118,7 +120,7 @@ pub fn check(forge: &dyn Forge, recorded: &Recorded) -> Vec<Violation> {
                         "`{capability}` is not reported, but an answer was recorded for it"
                     ));
                 }
-                suite.check_unsupported(forge, &access, capability);
+                unreported.push(capability);
             }
             Some(Provenance::Tested { .. }) if !has_answer => suite.fail(format!(
                 "`{capability}` is reported tested, but no answer was recorded for it"
@@ -128,6 +130,9 @@ pub fn check(forge: &dyn Forge, recorded: &Recorded) -> Vec<Violation> {
     }
     suite.check_reads(forge, &access, recorded);
     suite.check_writes(forge, &access, recorded);
+    for capability in unreported {
+        suite.check_unsupported(forge, &access, capability);
+    }
     suite.violations
 }
 
@@ -146,8 +151,11 @@ impl Suite {
             .filter(|_| self.capabilities.supports(capability))
     }
 
+    /// Records a violation with the token masked, so a leak the suite finds never reaches
+    /// the test's output.
     fn fail(&mut self, violation: String) {
-        self.violations.push(Violation(violation));
+        self.violations
+            .push(Violation(violation.replace(&self.token, "<token>")));
     }
 
     /// The answer, when the call succeeded; a failure, with a leaked token, is recorded.
@@ -198,6 +206,7 @@ impl Suite {
             return;
         }
         if let Err(error) = forge.check_repository(repository) {
+            self.check_error("check_repository", &error);
             self.fail(format!(
                 "the adapter refuses the recorded repository: {error}"
             ));

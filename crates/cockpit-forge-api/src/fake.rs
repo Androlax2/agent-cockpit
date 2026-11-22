@@ -110,14 +110,7 @@ impl FakeForge {
 
     /// Stops reporting `capability`: its method then answers unsupported.
     pub fn without(mut self, capability: Capability) -> FakeForge {
-        let kept = self
-            .capabilities
-            .reported()
-            .filter(|(reported, _)| *reported != capability)
-            .fold(Capabilities::none(), |kept, (reported, provenance)| {
-                kept.with(reported, provenance.clone())
-            });
-        self.capabilities = kept;
+        self.capabilities = self.capabilities.without(capability);
         self
     }
 

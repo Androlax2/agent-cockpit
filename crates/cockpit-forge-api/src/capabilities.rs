@@ -120,6 +120,13 @@ impl Capabilities {
         self
     }
 
+    /// Neither reports nor withholds `capability`: it is unavailable, with no reason.
+    pub fn without(mut self, capability: Capability) -> Capabilities {
+        self.reported.remove(&capability);
+        self.withheld.remove(&capability);
+        self
+    }
+
     /// Why `capability` is not reported, when the adapter said.
     pub fn withheld(&self, capability: Capability) -> Option<&str> {
         self.withheld.get(&capability).map(String::as_str)

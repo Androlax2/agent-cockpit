@@ -342,6 +342,11 @@ fn an_error_repeating_the_token_is_reported() {
         found.contains(&"read_issue of a missing issue's error repeats the token".to_owned()),
         "{found:?}"
     );
+    let token = forge.fake.token().expose();
+    assert!(
+        !found.iter().any(|violation| violation.contains(token)),
+        "{found:?}"
+    );
 }
 
 #[test]

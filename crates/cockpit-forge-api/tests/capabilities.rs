@@ -70,6 +70,22 @@ fn a_withheld_capability_is_refused_with_its_reason() {
 }
 
 #[test]
+fn a_capability_taken_away_is_plainly_unsupported() {
+    let capabilities = Capabilities::none()
+        .with(Capability::IssueList, tested())
+        .withholding(Capability::ChangeReview, "too old".to_owned())
+        .without(Capability::IssueList)
+        .without(Capability::ChangeReview);
+
+    for capability in [Capability::IssueList, Capability::ChangeReview] {
+        assert_eq!(
+            capabilities.require(capability),
+            Err(ForgeError::Unsupported { capability })
+        );
+    }
+}
+
+#[test]
 fn a_failed_call_is_not_an_unsupported_answer() {
     let failures = [
         ForgeError::NotFound {

@@ -13,12 +13,25 @@ fn a_forge_name_is_lower_case_letters_digits_and_dashes() {
 }
 
 #[test]
-fn issue_and_change_request_ids_are_short_printable_words() {
+fn issue_and_change_request_ids_are_words_safe_in_a_url_path() {
     for id in ["1", "PROJ-12", &"9".repeat(64)] {
         assert!(IssueId::new(id).is_ok(), "{id}");
         assert!(ChangeId::new(id).is_ok(), "{id}");
     }
-    for id in ["", "1 2", "1\n", "é", &"9".repeat(65)] {
+    for id in [
+        "",
+        "1 2",
+        "1\n",
+        "é",
+        ".",
+        "..",
+        "../x",
+        "a/b",
+        "1?x",
+        "1#x",
+        "%2e",
+        &"9".repeat(65),
+    ] {
         assert!(IssueId::new(id).is_err(), "{id:?}");
         assert!(ChangeId::new(id).is_err(), "{id:?}");
     }
@@ -51,6 +64,8 @@ fn a_branch_name_is_one_git_accepts() {
         ".hidden",
         "a/.hidden",
         "a\u{7f}",
+        "topic.lock/fix",
+        "HEAD",
     ];
     for name in refused {
         assert!(BranchName::new(name).is_err(), "{name:?}");

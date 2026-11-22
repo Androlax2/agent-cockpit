@@ -22,7 +22,7 @@ impl ChangeId {
             return Err(InvalidValue {
                 kind: "change request id",
                 value: id,
-                rule: "1 to 64 printable ASCII characters, no spaces",
+                rule: "1 to 64 ASCII letters, digits, `.`, `_` and `-`, not `.` or `..`",
             });
         }
         Ok(ChangeId(id))
@@ -41,7 +41,8 @@ impl fmt::Display for ChangeId {
 
 /// A branch name, without `refs/heads/`: printable ASCII with no space and none of the
 /// characters Git refuses in a reference (`~^:?*[\`), not starting with `-` or `/`, with no
-/// `..`, `//` or `@{`, not ending with `/`, `.` or `.lock`.
+/// `..`, `//` or `@{`, not ending with `/` or `.`, no part starting with `.` or ending with
+/// `.lock`, and not `HEAD`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BranchName(String);
 
@@ -75,18 +76,20 @@ fn is_branch(name: &str) -> bool {
     let has_allowed_characters = name
         .chars()
         .all(|character| character.is_ascii_graphic() && !"~^:?*[\\".contains(character));
-    let has_component_starting_with_dot = name.split('/').any(|part| part.starts_with('.'));
+    let has_refused_component = name
+        .split('/')
+        .any(|part| part.starts_with('.') || part.ends_with(".lock"));
     !name.is_empty()
         && name.len() <= MAX_BRANCH_BYTES
         && has_allowed_characters
-        && !has_component_starting_with_dot
+        && !has_refused_component
         && !name.starts_with(['-', '/'])
         && !name.ends_with(['/', '.'])
-        && !name.ends_with(".lock")
         && !name.contains("..")
         && !name.contains("//")
         && !name.contains("@{")
         && name != "@"
+        && name != "HEAD"
 }
 
 /// A commit's full object id: 40 (SHA-1) or 64 (SHA-256) lower-case hexadecimal digits.
