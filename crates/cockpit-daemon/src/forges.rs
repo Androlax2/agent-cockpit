@@ -60,6 +60,10 @@ fn declarations() -> [Declaration; 1] {
     [cockpit_github::declaration()]
 }
 
+/// The username a daemon push sends beside the project's push token: GitHub's, the one adapter
+/// that declares a Git push host.
+pub(crate) const PUSH_USERNAME: &str = cockpit_github::GIT_USERNAME;
+
 /// Every host some adapter declares for Git pushes, in order.
 pub(crate) fn declared_push_hosts() -> Vec<ForgeHost> {
     let mut hosts: Vec<ForgeHost> = declarations()

@@ -247,6 +247,7 @@ torlek network grant PROJECT github.com --push   # on the project's github.com g
 ```
 
 The project must hold that grant first. Revoking the grant ends the push right with it. Only `https` origins are pushed to: an SSH origin is refused. `torlek doctor --project DIR` names the command on its `push` line while the project has no push right.
+The daemon pushes with the project's token (`torlek project token set PROJECT`, below), never your own Git credentials, and refuses a project without one. It sends the commit the branch points at when the push starts and never forces it.
 
 ### A project's container engine
 

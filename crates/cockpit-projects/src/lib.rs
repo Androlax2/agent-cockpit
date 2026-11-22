@@ -32,7 +32,7 @@ pub use model::{
     Checkout, CheckoutId, CheckoutKind, CheckoutState, Holder, Occupancy, Project, ProjectId,
     ProjectName, Trust,
 };
-pub use push::{Pushed, push};
+pub use push::{Force, PushCredential, PushRules, Pushed, last_pushed, push};
 pub use register::register_project;
 pub use remove::remove_project;
 pub use source::SourceState;

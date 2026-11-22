@@ -80,6 +80,28 @@ impl Git {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    /// [`Git::run_with`] with `secret` set in Git's environment alone, for the push that hands
+    /// its credential helper the push token (#155): never in an argument, which every process
+    /// on the host may read.
+    pub(crate) fn run_with_secret(
+        &self,
+        dir: &Path,
+        extra_config: &[&str],
+        secret: (&str, &str),
+        arguments: &[&OsStr],
+    ) -> Result<String, Error> {
+        let drivers_off = self.drivers_off(dir)?;
+        let output = self
+            .command_resetting(dir, extra_config, &drivers_off, arguments)
+            .env(secret.0, secret.1)
+            .output()
+            .map_err(Error::io("run git in", dir))?;
+        if !output.status.success() {
+            return Err(git_failure(arguments, &output));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
     /// Runs `arguments` in `dir` and returns its output whatever the exit status.
     pub(crate) fn output(&self, dir: &Path, arguments: &[&OsStr]) -> Result<Output, Error> {
         self.output_with(dir, &[], arguments)

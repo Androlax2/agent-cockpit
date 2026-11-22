@@ -2,6 +2,8 @@
 //! daemon and a fake `git` that logs every host Git call.
 mod common;
 
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
 use common::{GITHUB_URL, TestHome, commit_all, real_git};
 
 /// The checkout line `cockpit checkout list` prints for `id`, split on tabs.
@@ -580,10 +582,25 @@ fn the_sweep_keeps_a_clone_that_holds_work_or_a_holder_naming_the_reason() {
     }
 }
 
-/// The owner's push right on `app`'s github.com grant (#153): no grant carries it until bound.
+/// The owner's push right on `app`'s github.com grant (#153): no grant carries it until bound;
+/// and `app`'s push token, which the daemon pushes with (#155).
 fn bind_push(home: &TestHome) {
     home.cockpit_ok(&["network", "grant", "app", "github.com"]);
     home.cockpit_ok(&["network", "grant", "app", "github.com", "--push"]);
+    save_push_token(home);
+}
+
+/// `app`'s push token, as `torlek project token set app` saves it.
+fn save_push_token(home: &TestHome) {
+    let folder = home.home().join("config/torlek-dev/github-tokens");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&folder)
+        .unwrap();
+    let file = folder.join("app");
+    std::fs::write(&file, "github_pat_fixture\n").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
 }
 
 #[test]
@@ -618,6 +635,7 @@ fn a_push_without_the_owners_push_right_is_refused_naming_the_command_that_binds
     let root = home.project("app");
     let main = id_of(&home.cockpit_ok(&["project", "add", root.to_str().unwrap()]));
     home.cockpit_ok(&["network", "grant", "app", "github.com"]);
+    save_push_token(&home);
 
     let refused = home.cockpit_err(&["checkout", "push", &main]);
 
@@ -629,9 +647,28 @@ fn a_push_without_the_owners_push_right_is_refused_naming_the_command_that_binds
 }
 
 #[test]
+fn a_push_without_a_push_token_is_refused_naming_the_command_that_saves_one() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    let main = id_of(&home.cockpit_ok(&["project", "add", root.to_str().unwrap()]));
+    home.cockpit_ok(&["network", "grant", "app", "github.com"]);
+    home.cockpit_ok(&["network", "grant", "app", "github.com", "--push"]);
+
+    let refused = home.cockpit_err(&["checkout", "push", &main]);
+
+    assert!(
+        refused.contains("`torlek project token set app`"),
+        "{refused}"
+    );
+    assert!(!home.git_log().iter().any(|call| call.contains(" push ")));
+}
+
+#[test]
 fn a_push_to_an_origin_outside_github_is_refused() {
     let home = TestHome::new();
     let _daemon = home.start();
+    save_push_token(&home);
     let root = home.project("app");
     real_git(
         &root,
@@ -774,6 +811,7 @@ fn a_content_filter_a_clone_configures_does_not_run_on_host_git() {
 fn a_push_to_an_origin_with_a_second_url_is_refused() {
     let home = TestHome::new();
     let _daemon = home.start();
+    save_push_token(&home);
     let root = home.project("app");
     real_git(
         &root,
