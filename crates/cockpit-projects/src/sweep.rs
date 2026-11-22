@@ -403,7 +403,7 @@ fn remote_branch_heads(git: &Git, checkout: &Checkout) -> Result<Option<Vec<Stri
         return Ok(None);
     }
     let arguments = [arg("ls-remote"), arg("--heads"), arg("origin")];
-    let listed = git.output_within(clone, extra_config, &arguments, REMOTE_ANSWER_LIMIT)?;
+    let listed = git.output_within(clone, extra_config, None, &arguments, REMOTE_ANSWER_LIMIT)?;
     if !listed.status.success() {
         return Err(git_failure(&arguments, &listed));
     }

@@ -59,9 +59,19 @@ impl Fixture {
     }
 
     async fn push(&self, hosts: Vec<ForgeHost>, force: Force) -> Result<Pushed, Error> {
+        let credential = PushCredential::new("x-access-token", Token::new(TOKEN).unwrap());
+        self.push_with(hosts, Ok(credential.unwrap()), force).await
+    }
+
+    async fn push_with(
+        &self,
+        hosts: Vec<ForgeHost>,
+        credential: Result<PushCredential, String>,
+        force: Force,
+    ) -> Result<Pushed, Error> {
         let rules = PushRules {
             hosts,
-            credential: PushCredential::new("x-access-token", Token::new(TOKEN).unwrap()).unwrap(),
+            credential,
             force,
         };
         push(&self.database, &self.git, self.checkout, rules).await
@@ -217,7 +227,7 @@ async fn a_branch_is_pushed_as_the_commit_it_points_at_to_a_host_the_project_may
     let arguments = fixture.recorded("pushed").unwrap();
     assert!(
         arguments.ends_with(&format!(
-            "push\n--quiet\n--end-of-options\norigin\n{head}:refs/heads/main\n"
+            "push\n--porcelain\n--end-of-options\norigin\n{head}:refs/heads/main\n"
         )),
         "{arguments}"
     );
@@ -403,6 +413,35 @@ async fn an_origin_naming_a_credential_is_refused() {
         !reason.contains("SECRET"),
         "the credential is not repeated: {reason}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_without_a_credential_is_refused_for_it_only_once_its_origin_passed() {
+    let no_token = || Err("no push token here".to_owned());
+    let ssh = Fixture::new("git@github.com:owner/app.git").await;
+    let https = Fixture::new(ORIGIN).await;
+
+    let ssh_reason = refusal(ssh.push_with(github(), no_token(), Force::Never).await);
+    let https_reason = refusal(https.push_with(github(), no_token(), Force::Never).await);
+
+    assert!(ssh_reason.contains("SSH"), "{ssh_reason}");
+    assert_eq!(https_reason, "no push token here");
+    assert_eq!(https.recorded("pushed"), None, "nothing is pushed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lease_allowed_on_a_fast_forward_reports_no_force() {
+    let fixture = Fixture::new(ORIGIN).await;
+    fixture.push(github(), Force::Never).await.unwrap();
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "--allow-empty", "-m", "next"],
+    );
+
+    let pushed = fixture.push(github(), lease_on("main")).await.unwrap();
+
+    assert!(!pushed.forced);
+    assert_eq!(fixture.remote_tip("main"), Some(fixture.head()));
 }
 
 #[test]

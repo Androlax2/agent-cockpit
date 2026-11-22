@@ -19,6 +19,18 @@ fn a_checkout_on_a_branch_names_it() {
 }
 
 #[test]
+fn a_branch_sharing_its_name_with_a_tag_is_named_as_the_branch() {
+    let scratch = Scratch::new();
+    let root = scratch.repository("app");
+    git(&root, &["tag", "main"]);
+
+    assert_eq!(
+        Git::from_path().current_branch(&root).unwrap().as_deref(),
+        Some("main")
+    );
+}
+
+#[test]
 fn a_detached_head_has_no_branch() {
     let scratch = Scratch::new();
     let root = scratch.repository("app");

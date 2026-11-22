@@ -635,7 +635,6 @@ fn a_push_without_the_owners_push_right_is_refused_naming_the_command_that_binds
     let root = home.project("app");
     let main = id_of(&home.cockpit_ok(&["project", "add", root.to_str().unwrap()]));
     home.cockpit_ok(&["network", "grant", "app", "github.com"]);
-    save_push_token(&home);
 
     let refused = home.cockpit_err(&["checkout", "push", &main]);
 
@@ -668,7 +667,6 @@ fn a_push_without_a_push_token_is_refused_naming_the_command_that_saves_one() {
 fn a_push_to_an_origin_outside_github_is_refused() {
     let home = TestHome::new();
     let _daemon = home.start();
-    save_push_token(&home);
     let root = home.project("app");
     real_git(
         &root,
@@ -811,7 +809,6 @@ fn a_content_filter_a_clone_configures_does_not_run_on_host_git() {
 fn a_push_to_an_origin_with_a_second_url_is_refused() {
     let home = TestHome::new();
     let _daemon = home.start();
-    save_push_token(&home);
     let root = home.project("app");
     real_git(
         &root,

@@ -4,7 +4,7 @@ use cockpit_forge_api::{ForgeHost, Token};
 use cockpit_turso::sql::{Connection, params};
 use cockpit_turso::{Database, Migration, WriteTransaction};
 
-use crate::git::arg;
+use crate::git::{arg, git_failure};
 use crate::store::{self, now};
 use crate::{CheckoutId, CheckoutState, Error, Git, ProjectName, blocking};
 
@@ -15,7 +15,7 @@ pub struct Pushed {
     pub commit: String,
     /// The URL Git pushed to, after rewrites.
     pub remote_url: String,
-    /// Whether the push was a lease-protected force.
+    /// Whether Git forced the update, under a lease: `false` for a fast-forward, lease or not.
     pub forced: bool,
 }
 
@@ -38,6 +38,10 @@ pub(crate) const MIGRATION: Migration = Migration {
 /// how it gets there: every HTTP setting, since GitHub needs none from the checkout.
 const REDIRECTS: &str =
     r"^(remote\.origin\.(pushurl|proxy|vcs)|url\..*\.(push)?insteadof|http\..*)$";
+
+/// How long a push may take before Git is killed and the push fails: a stalled connection to
+/// the forge must not hold the request for ever.
+const PUSH_LIMIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// The variable a push's credential helper reads the push token from.
 const PUSH_TOKEN_VARIABLE: &str = "TORLEK_PUSH_TOKEN";
@@ -90,7 +94,9 @@ pub struct PushRules {
     /// bound the push right on that a forge adapter declares for Git pushes. The daemon finds
     /// them; none until the owner binds one, since no grant was given the right on upgrade.
     pub hosts: Vec<ForgeHost>,
-    pub credential: PushCredential,
+    /// What the push authenticates with, or why the project has none: that refusal comes once
+    /// every check on the checkout passed, so it never hides why its origin is refused.
+    pub credential: Result<PushCredential, String>,
     pub force: Force,
 }
 
@@ -143,10 +149,13 @@ pub async fn push(
             Some(lease(&read, id, &target, own_branch).await?)
         }
     };
+    let credential = rules
+        .credential
+        .map_err(|reason| Error::Refused { reason })?;
     let git = git.clone();
-    let credential = rules.credential;
     let sent = target.clone();
-    blocking(move || send(&git, &checkout, &sent, &credential, lease.as_deref())).await?;
+    let forced =
+        blocking(move || send(&git, &checkout, &sent, &credential, lease.as_deref())).await?;
     let write = database.write().await?;
     record_push(&write, id, &target).await?;
     write.commit().await?;
@@ -154,7 +163,7 @@ pub async fn push(
         branch: target.branch,
         commit: target.commit,
         remote_url: target.remote_url,
-        forced: matches!(rules.force, Force::Lease { .. }),
+        forced,
     })
 }
 
@@ -379,17 +388,28 @@ fn push_target(
     })
 }
 
-/// Pushes the target's commit, forced only under `lease`, with the credential offered to the
-/// push host alone, then sets the branch's upstream, which a push of a commit id does not.
+/// Sets the branch's upstream, which a push of a commit id does not, before anything is sent,
+/// so the push stays the last step that can fail; then pushes the target's commit, forced only
+/// under `lease`, with the credential offered to the push host alone. Returns whether Git
+/// forced the update.
 fn send(
     git: &Git,
     checkout: &std::path::Path,
     target: &PushTarget,
     credential: &PushCredential,
     lease: Option<&str>,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let branch = &target.branch;
     let remote_ref = format!("refs/heads/{branch}");
+    for (key, value) in [
+        (format!("branch.{branch}.remote"), "origin"),
+        (format!("branch.{branch}.merge"), remote_ref.as_str()),
+    ] {
+        git.run(
+            checkout,
+            &[arg("config"), arg("--local"), arg(&key), arg(value)],
+        )?;
+    }
     // After `SAFE_CONFIG`'s `credential.helper=`, which drops every helper configured before,
     // so this one alone answers, and only for the push host.
     let helper = format!(
@@ -400,25 +420,35 @@ fn send(
     );
     let refspec = format!("{}:{remote_ref}", target.commit);
     let lease_option = lease.map(|expected| format!("--force-with-lease={remote_ref}:{expected}"));
-    let mut arguments = vec![arg("push"), arg("--quiet")];
+    let mut arguments = vec![arg("push"), arg("--porcelain")];
     if let Some(option) = &lease_option {
         arguments.push(arg(option));
     }
     arguments.extend([arg("--end-of-options"), arg("origin"), arg(&refspec)]);
-    git.run_with_secret(
+    let output = git.output_within(
         checkout,
         &[&helper],
-        (PUSH_TOKEN_VARIABLE, credential.token.expose()),
+        Some((PUSH_TOKEN_VARIABLE, credential.token.expose())),
         &arguments,
+        PUSH_LIMIT,
     )?;
-    for (key, value) in [
-        (format!("branch.{branch}.remote"), "origin"),
-        (format!("branch.{branch}.merge"), remote_ref.as_str()),
-    ] {
-        git.run(
-            checkout,
-            &[arg("config"), arg("--local"), arg(&key), arg(value)],
-        )?;
+    let reported = String::from_utf8_lossy(&output.stdout).into_owned();
+    if !output.status.success() {
+        // `--porcelain` reports each ref's rejection (`non-fast-forward`, `stale info`) on
+        // standard output, which the failure carries beside Git's own error.
+        return Err(match git_failure(&arguments, &output) {
+            Error::Git {
+                arguments,
+                status,
+                stderr,
+            } => Error::Git {
+                arguments,
+                status,
+                stderr: format!("{reported}{stderr}"),
+            },
+            other => other,
+        });
     }
-    Ok(())
+    // `--porcelain` flags each ref's line: `+` is a forced update.
+    Ok(reported.lines().any(|line| line.starts_with("+\t")))
 }

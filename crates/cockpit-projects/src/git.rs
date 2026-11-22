@@ -80,28 +80,6 @@ impl Git {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    /// [`Git::run_with`] with `secret` set in Git's environment alone, for the push that hands
-    /// its credential helper the push token (#155): never in an argument, which every process
-    /// on the host may read.
-    pub(crate) fn run_with_secret(
-        &self,
-        dir: &Path,
-        extra_config: &[&str],
-        secret: (&str, &str),
-        arguments: &[&OsStr],
-    ) -> Result<String, Error> {
-        let drivers_off = self.drivers_off(dir)?;
-        let output = self
-            .command_resetting(dir, extra_config, &drivers_off, arguments)
-            .env(secret.0, secret.1)
-            .output()
-            .map_err(Error::io("run git in", dir))?;
-        if !output.status.success() {
-            return Err(git_failure(arguments, &output));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    }
-
     /// Runs `arguments` in `dir` and returns its output whatever the exit status.
     pub(crate) fn output(&self, dir: &Path, arguments: &[&OsStr]) -> Result<Output, Error> {
         self.output_with(dir, &[], arguments)
@@ -120,15 +98,20 @@ impl Git {
     /// [`Git::output_with`] for a call that reaches the network, which can stall: Git is killed,
     /// and the call fails, once `limit` passed, and so does a helper Git started (ssh) that
     /// keeps its output open past the limit.
+    /// `secret`, when given, is set in Git's environment alone.
     pub(crate) fn output_within(
         &self,
         dir: &Path,
         extra_config: &[&str],
+        secret: Option<(&str, &str)>,
         arguments: &[&OsStr],
         limit: Duration,
     ) -> Result<Output, Error> {
         let drivers_off = self.drivers_off(dir)?;
         let mut command = self.command_resetting(dir, extra_config, &drivers_off, arguments);
+        if let Some((variable, value)) = secret {
+            command.env(variable, value);
+        }
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = command.spawn().map_err(Error::io("run git in", dir))?;
         // Read while Git runs: a pipe it fills would otherwise stall it until the deadline.
@@ -209,7 +192,6 @@ impl Git {
         let arguments = [
             OsStr::new("symbolic-ref"),
             OsStr::new("--quiet"),
-            OsStr::new("--short"),
             OsStr::new("HEAD"),
         ];
         let output = self.output(dir, &arguments)?;
@@ -220,9 +202,10 @@ impl Git {
         if !output.status.success() {
             return Err(git_failure(&arguments, &output));
         }
-        Ok(Some(
-            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-        ))
+        // The full name, stripped here: `--short` answers `heads/main` once a tag is also
+        // called `main`.
+        let full = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        Ok(full.strip_prefix("refs/heads/").map(str::to_owned))
     }
 
     /// The URL of the checkout at `dir`'s `origin` remote; `None` when it has none.
@@ -583,7 +566,13 @@ mod tests {
     fn assert_no_answer_in_time(git: &Git, dir: &std::path::Path) {
         let started = Instant::now();
 
-        let answer = git.output_within(dir, &[], &[arg("ls-remote")], Duration::from_millis(200));
+        let answer = git.output_within(
+            dir,
+            &[],
+            None,
+            &[arg("ls-remote")],
+            Duration::from_millis(200),
+        );
 
         assert!(
             matches!(&answer, Err(Error::Git { status: None, stderr, .. }) if stderr.contains("no answer within")),
