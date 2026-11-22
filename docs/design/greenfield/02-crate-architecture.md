@@ -44,6 +44,7 @@ behavior, SQL queries and tests. No `core`, `domain`, `common`, `host`, `store` 
 | Crate | Owns |
 | --- | --- |
 | `cockpit-provider-api` | Common provider contract: capabilities with provenance, submit, events, cancel, outcome |
+| `cockpit-forge-api` | Common forge contract: capabilities with provenance, declared hosts and credentials, issues, change requests as evidence (added by #153) |
 | `cockpit-claude`, `cockpit-codex`, `cockpit-opencode` | One adapter each; harness-specific mechanics stay inside |
 | `cockpit-tmux` | Private tmux server, pane lifecycle, control-mode observation |
 | `cockpit-turso` | Connections, transactions, migrations, backup; no feature queries |

@@ -581,6 +581,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-forge-api"
+version = "0.1.0"
+dependencies = [
+ "cockpit-forge-api",
+]
+
+[[package]]
 name = "cockpit-messaging"
 version = "0.1.0"
 dependencies = [

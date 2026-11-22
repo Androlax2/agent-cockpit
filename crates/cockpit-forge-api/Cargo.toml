@@ -1,0 +1,20 @@
+[package]
+name = "cockpit-forge-api"
+description = "The contract every code forge adapter implements: identity, capabilities with provenance, the hosts and credential schemes it declares, issues as a task source and change requests as verification evidence."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# The in-memory forge other crates' tests use; never part of a release build.
+fake = []
+# The conformance suite every adapter runs against its recorded fixtures.
+conformance = []
+
+[dev-dependencies]
+# Its own tests always build the fake and the suite, so no feature selection skips them.
+cockpit-forge-api = { path = ".", features = ["fake", "conformance"] }
