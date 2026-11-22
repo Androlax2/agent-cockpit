@@ -1820,7 +1820,7 @@ fn holder(session: &str) -> Result<Holder, Failed> {
 }
 
 /// The sender's session, read-only when its launch is bound already.
-async fn identified(
+pub(crate) async fn identified(
     database: &Database,
     sender: &Sender,
     launch_token: Option<String>,

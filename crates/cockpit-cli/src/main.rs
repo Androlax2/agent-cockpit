@@ -46,6 +46,7 @@ mod old_sandbox;
 mod onboarding;
 mod profile;
 mod projects;
+mod push;
 mod queue;
 mod resources;
 mod sessions;
@@ -79,6 +80,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek agent escalate SESSION
        torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL]
        torlek agent end SESSION
+       torlek push [--force]
        torlek agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] [--component NAME] [--steps TEXT] [--requested-by-owner]
        torlek bug-report new DESCRIPTION [--title TEXT] [--steps TEXT] [--since 2h|RFC3339]
        torlek bug-report list [--all] | show ID | discard ID
@@ -97,7 +99,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek checkout claim CHECKOUT HOLDER
        torlek checkout release CHECKOUT HOLDER
        torlek checkout sweep [--dry-run]
-       torlek checkout push CHECKOUT
+       torlek checkout push CHECKOUT [--branch BRANCH --commit COMMIT]
        torlek status serve [--port N] [--host TAILNET_NAME]
        torlek storage
        torlek storage outputs [prune]
@@ -243,6 +245,8 @@ fn main() -> ExitCode {
             Ok(verb) => bug_report::run(verb),
             Err(problem) => verb_usage_error(&verb_name, problem),
         },
+        [Some("push"), ..] => push::run(&arguments[1..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("ask"), Some("run")] => ask::run(&arguments[2..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("ask"), Some("guide")] => ask::guide(&arguments[2..])

@@ -37,7 +37,10 @@ fn project_commands() -> Vec<Command> {
             holder: "agent".to_owned(),
         },
         Command::CheckoutSweep { dry_run: true },
-        Command::CheckoutPush { checkout: 1 },
+        Command::CheckoutPush {
+            checkout: 1,
+            expected: None,
+        },
         Command::ProjectPushBranchAdd {
             project: "app".to_owned(),
             pattern: "agent/*".to_owned(),

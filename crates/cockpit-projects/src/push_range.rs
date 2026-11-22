@@ -22,6 +22,8 @@ pub(crate) const GITLAB_CI: &str = ".gitlab-ci.yml";
 /// The commits the remote's branches are at, as `ls-remote` answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RemoteTips {
+    /// The branch the remote's `HEAD` names; `None` when it names none.
+    pub(crate) default_branch: Option<String>,
     /// The commit the remote's `HEAD` (its default branch) is at; `None` for an empty one.
     pub(crate) default: Option<String>,
     /// The commit the pushed branch is at on the remote; `None` when it is new.
@@ -64,6 +66,7 @@ impl RemoteAccess<'_> {
             Path::new(OUTSIDE_ANY_REPOSITORY),
             &[
                 arg("ls-remote"),
+                arg("--symref"),
                 arg("--end-of-options"),
                 arg(self.url),
                 arg("HEAD"),
@@ -106,6 +109,7 @@ impl RemoteAccess<'_> {
 /// Reads `ls-remote`'s answer for `HEAD` and `pushed_ref`.
 fn parse_tips(listed: &str, pushed_ref: &str) -> RemoteTips {
     let mut tips = RemoteTips {
+        default_branch: None,
         default: None,
         pushed: None,
     };
@@ -113,6 +117,12 @@ fn parse_tips(listed: &str, pushed_ref: &str) -> RemoteTips {
         let Some((commit, name)) = line.split_once('\t') else {
             continue;
         };
+        if let Some(target) = commit.strip_prefix("ref: refs/heads/") {
+            if name == "HEAD" {
+                tips.default_branch = Some(target.to_owned());
+            }
+            continue;
+        }
         if !is_object_id(commit) {
             continue;
         }
@@ -125,7 +135,7 @@ fn parse_tips(listed: &str, pushed_ref: &str) -> RemoteTips {
     tips
 }
 
-fn is_object_id(value: &str) -> bool {
+pub(crate) fn is_object_id(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
@@ -302,11 +312,13 @@ mod tests {
 
     #[test]
     fn the_remotes_default_tip_and_the_pushed_tip_are_read_from_ls_remote() {
-        let listed = format!("{DEFAULT}\tHEAD\n{TIP}\trefs/heads/feature/x\n");
+        let listed =
+            format!("ref: refs/heads/main\tHEAD\n{DEFAULT}\tHEAD\n{TIP}\trefs/heads/feature/x\n");
 
         assert_eq!(
             parse_tips(&listed, "refs/heads/feature/x"),
             RemoteTips {
+                default_branch: Some("main".to_owned()),
                 default: Some(DEFAULT.to_owned()),
                 pushed: Some(TIP.to_owned()),
             }
@@ -318,6 +330,7 @@ mod tests {
         assert_eq!(
             parse_tips("", "refs/heads/main"),
             RemoteTips {
+                default_branch: None,
                 default: None,
                 pushed: None,
             }

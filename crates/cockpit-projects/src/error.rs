@@ -75,6 +75,7 @@ pub enum Error {
     /// (`.github/workflows`, `.gitlab-ci.yml`; #857): only the owner's approval of that commit
     /// lets it go.
     WorkflowChange {
+        checkout: CheckoutId,
         branch: String,
         commit: String,
         paths: Vec<String>,
@@ -233,16 +234,19 @@ impl fmt::Display for Error {
             ),
             Error::Refused { reason } | Error::StalePrune { reason } => formatter.write_str(reason),
             Error::WorkflowChange {
+                checkout,
                 branch,
                 commit,
                 paths,
             } => write!(
                 formatter,
                 "pushing {commit} to {branch} changes what CI runs ({}): its content there is \
-                 neither the remote branch's nor the default branch's. It goes once the owner \
-                 approves that commit; a branch that only predates the default branch's change \
-                 goes once rebased onto it",
-                paths.join(", ")
+                 neither the remote branch's nor the default branch's. Only the owner pushes it: \
+                 `torlek checkout push {} --branch {branch} --commit {commit}`, a fast-forward \
+                 (a rewrite of the branch the owner pushes by hand); a branch that only predates \
+                 the default branch's change goes once rebased onto it",
+                paths.join(", "),
+                checkout.0
             ),
             Error::Git {
                 arguments,

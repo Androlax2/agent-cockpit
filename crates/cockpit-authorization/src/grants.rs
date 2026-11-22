@@ -191,6 +191,33 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 ON authorization_grants (holder, permission, scope_kind, coalesce(scope_id, ''))
                 WHERE revoked_at IS NULL;",
         },
+        // #155: a session's push of its own checkout is audited under its `push-branch`
+        // grant. The same rebuild as version 6; rows are copied unchanged.
+        Migration {
+            version: 8,
+            sql: "CREATE TABLE authorization_audit_with_pushes (
+                id INTEGER PRIMARY KEY,
+                actor TEXT NOT NULL CHECK (actor <> ''),
+                permission TEXT NOT NULL,
+                grant_id INTEGER NOT NULL,
+                revision INTEGER NOT NULL,
+                action TEXT NOT NULL CHECK (action IN ('message', 'start', 'started',
+                    'approved', 'declined', 'ended', 'edited', 'pushed')),
+                target TEXT CHECK (target <> ''),
+                detail TEXT,
+                at INTEGER NOT NULL
+            );
+            INSERT INTO authorization_audit_with_pushes (id, actor, permission, grant_id,
+                    revision, action, target, detail, at)
+                SELECT id, actor, permission, grant_id, revision, action, target, detail, at
+                FROM authorization_audit;
+            DROP TABLE authorization_audit;
+            ALTER TABLE authorization_audit_with_pushes RENAME TO authorization_audit;
+            CREATE INDEX authorization_audit_by_actor
+                ON authorization_audit (actor, action, at);
+            CREATE INDEX authorization_audit_by_target
+                ON authorization_audit (target, action, id);",
+        },
     ],
 };
 

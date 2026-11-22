@@ -78,10 +78,10 @@ pub enum Permission {
     /// End a session the holder started, once the task list says its work is done (#713).
     /// Any other session, and every other lifecycle change, stay the owner's.
     EndSessions,
-    /// Have the daemon push the holder's own checkout (#155), granted over itself at launch.
-    /// Planned in #155 part 4, which adds the push that checks it: the checkout's launch
-    /// branch (a parallel clone's; a main or review checkout has none) and the branches its
-    /// project's push-branch patterns name, never the remote's default branch.
+    /// Have the daemon push the holder's own checkout (`torlek push`, #155), granted over
+    /// itself at launch: the checkout's launch branch (a parallel clone's; a main or review
+    /// checkout has none) and the branches its project's push-branch patterns name, never the
+    /// remote's default branch.
     PushBranch,
     /// Owner-only actions such as `handoff-install` and `system-install` (report 17). Never
     /// granted to a session.
@@ -308,10 +308,13 @@ pub enum AuditedAction {
     /// Changed the title or notes of a task item it filed, under `change-state` (#714); no
     /// target, the detail names the item with each field's old and new value.
     Edited,
+    /// Had the daemon push its own checkout, under `push-branch` (#155); no target, the
+    /// detail names the commit, the branch and the URL it went to.
+    Pushed,
 }
 
 impl AuditedAction {
-    pub const ALL: [AuditedAction; 7] = [
+    pub const ALL: [AuditedAction; 8] = [
         AuditedAction::Message,
         AuditedAction::Start,
         AuditedAction::Started,
@@ -319,6 +322,7 @@ impl AuditedAction {
         AuditedAction::Declined,
         AuditedAction::Ended,
         AuditedAction::Edited,
+        AuditedAction::Pushed,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -330,6 +334,7 @@ impl AuditedAction {
             AuditedAction::Declined => "declined",
             AuditedAction::Ended => "ended",
             AuditedAction::Edited => "edited",
+            AuditedAction::Pushed => "pushed",
         }
     }
 

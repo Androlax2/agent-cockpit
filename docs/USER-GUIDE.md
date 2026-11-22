@@ -249,15 +249,18 @@ torlek network grant PROJECT github.com --push   # on the project's github.com g
 The project must hold that grant first. Revoking the grant ends the push right with it. Only `https` origins are pushed to: an SSH origin is refused. `torlek doctor --project DIR` names the command on its `push` line while the project has no push right.
 The daemon pushes with the project's token (`torlek project token set PROJECT`, below), never your own Git credentials, and refuses a project without one. It sends the commit the branch points at when the push starts and never forces it.
 
-Planned (#155): a session's agent will have the daemon push its own launch branch, under the `push-branch` grant every launch already gives the session over itself.
-The patterns below, which you can already add, are to let a project's agents push more branches; `*` matches within one `/` segment and a `**` segment matches any number of them:
+A session's agent pushes with `torlek push` (#155): the daemon pushes the agent's current branch, under the same push right and token, and under the `push-branch` grant every launch gives the session over itself.
+It pushes a parallel clone's launch branch, and the branches your patterns name for the project; `*` matches within one `/` segment and a `**` segment matches any number of them:
 
 ```sh
 torlek project push-branch add PROJECT 'agent/**'     # also: remove PROJECT PATTERN
 torlek project push-branch list PROJECT
 ```
 
-Tags, branch deletions and the remote's default branch are to stay out of an agent's reach, whatever the patterns.
+Tags, branch deletions and the remote's default branch stay out of an agent's reach, whatever the patterns, and so does any repository but the one the project's main checkout names.
+`torlek push --force` rewrites only the launch branch, under a lease on the commit the daemon last pushed there.
+An agent's push that changes `.github/workflows` or `.gitlab-ci.yml` from what the remote branch and default branch hold is refused, naming `torlek checkout push ID --branch BRANCH --commit COMMIT`: you push that commit yourself once you have read it, as a fast-forward, and the push is refused if the checkout is on another branch or has moved past it. A rewrite of the branch you push by hand.
+Each agent push is audited; `torlek session grants SESSION` lists them as `pushed`.
 
 ### A project's container engine
 

@@ -34,7 +34,9 @@ pub use model::{
     Checkout, CheckoutId, CheckoutKind, CheckoutState, Holder, Occupancy, Project, ProjectId,
     ProjectName, Trust,
 };
-pub use push::{Force, PushCredential, PushRules, Pushed, WorkflowCheck, last_pushed, push};
+pub use push::{
+    AgentBranches, Expected, Force, PushCredential, PushRules, Pushed, Pusher, last_pushed, push,
+};
 pub use push_branches::{BranchPattern, add_push_branch, push_branches, remove_push_branch};
 pub use register::register_project;
 pub use remove::remove_project;

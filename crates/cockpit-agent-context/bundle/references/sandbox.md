@@ -24,6 +24,12 @@ Torlek may run you inside a sandbox the owner configured. Its limits are deliber
   refused, naming the owner's step, until the owner set up and recorded that engine.
 - **Host commands.** Anything that must run outside the sandbox (installs, system services,
   the owner's own programs) goes through `torlek ask run`.
+- **Pushing.** You hold no push credential: `torlek push` has the daemon push your current
+  branch to the project's repository. It pushes your checkout's launch branch, or a branch the
+  owner's push-branch patterns name; never the remote's default branch, a tag or a deletion.
+  `torlek push --force` rewrites only your launch branch, and only while the remote is still
+  at the commit the daemon last pushed there. A push that changes `.github/workflows` or
+  `.gitlab-ci.yml` is refused with the owner's command that pushes that commit: tell the owner.
 - **Docker.** Use only the engine your environment provides (`DOCKER_HOST` when set), never
   the owner's main one. In a sandboxed session that is the project's own engine, which
   `torlek doctor` describes. Without one, say so and ask; do not start a daemon yourself.
@@ -48,6 +54,6 @@ manual as written by the running Torlek. Leave both unchanged.
 | `Read-only file system` (`EROFS`) writing `.git/config`, `.git/hooks`, `.torlek` or `.cockpit` | These paths are read-only on purpose: Git hooks and config run on the owner's host. | Do not retry. `torlek todo blocked TITLE --why TEXT`, naming the path. |
 | A `.env` file reads as empty or is missing | `.env` files are hidden on purpose. | Use the references the environment gives you. If the task needs the values, `torlek todo blocked TITLE --why TEXT`. |
 | `command not found` for a tool in `~/.local/bin`, or in another folder outside the toolchain table | That folder is outside the toolchain roots, so it is not mounted. | `torlek todo blocked TITLE --why TEXT`, naming the tool. |
-| `git push` over HTTPS is refused by the session proxy | The session has no push route; the owner pushes. | Stop pushing. `torlek todo blocked TITLE --why TEXT`, naming the branch. |
+| `git push` over HTTPS is refused by the session proxy | The session holds no push credential: the daemon pushes for it. | `torlek push` pushes the current branch; its refusal names what unblocks it. |
 
 A `403` from the session proxy is a blocked host, not a missing tool: see the network rule above.
