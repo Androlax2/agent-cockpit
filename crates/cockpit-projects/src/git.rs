@@ -2,7 +2,7 @@
 //! environment inherited, no prompts.
 
 use std::ffi::OsStr;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -77,6 +77,35 @@ impl Git {
         if !output.status.success() {
             return Err(git_failure(arguments, &output));
         }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// [`Git::run`] with `input` as Git's standard input, for a call that reads it whole
+    /// before it writes a short answer (`hash-object --stdin`).
+    pub(crate) fn run_with_input(
+        &self,
+        dir: &Path,
+        arguments: &[&OsStr],
+        input: &[u8],
+    ) -> Result<String, Error> {
+        let drivers_off = self.drivers_off(dir)?;
+        let mut command = self.command_resetting(dir, &[], &drivers_off, arguments);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(Error::io("run git in", dir))?;
+        let written = child
+            .stdin
+            .take()
+            .map_or(Ok(()), |mut stdin| stdin.write_all(input));
+        let output = child
+            .wait_with_output()
+            .map_err(Error::io("wait for git in", dir))?;
+        if !output.status.success() {
+            return Err(git_failure(arguments, &output));
+        }
+        written.map_err(Error::io("write to git in", dir))?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
