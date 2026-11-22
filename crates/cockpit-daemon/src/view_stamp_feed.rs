@@ -146,6 +146,8 @@ mod tests {
         "project_checkouts",
         // The commit each daemon push sent, a lease's expected tip; no view shows it (#155).
         "checkout_pushes",
+        // The owner lists a project's push-branch patterns on demand; no view polls them (#155).
+        "project_push_branches",
         "cockpit_database",
         // Readiness reads the recorded engines when the owner asks; no view polls them (#390).
         "container_engines",

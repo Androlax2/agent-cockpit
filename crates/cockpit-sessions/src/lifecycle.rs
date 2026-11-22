@@ -48,9 +48,13 @@ const TERMINAL_VARIABLES: [&str; 2] = ["TERM", "COLORTERM"];
 
 /// What every launch and every restore of a still-running session grants the session over
 /// itself, and every move to `ended` or `failed` revokes: reporting its own state (#143),
-/// and asking the owner to run a command or follow a guide (#270), which the owner still
-/// approves one by one.
-const SELF_PERMISSIONS: [Permission; 2] = [Permission::ChangeState, Permission::RunCommands];
+/// asking the owner to run a command or follow a guide (#270), which the owner still
+/// approves one by one, and pushing its launch branch through the daemon (#155).
+const SELF_PERMISSIONS: [Permission; 3] = [
+    Permission::ChangeState,
+    Permission::RunCommands,
+    Permission::PushBranch,
+];
 
 /// The states the owner's restart starts from: running, and the transitional states an
 /// error or a crash can leave, in which the agent's status is unknown.

@@ -38,6 +38,17 @@ fn project_commands() -> Vec<Command> {
         },
         Command::CheckoutSweep { dry_run: true },
         Command::CheckoutPush { checkout: 1 },
+        Command::ProjectPushBranchAdd {
+            project: "app".to_owned(),
+            pattern: "agent/*".to_owned(),
+        },
+        Command::ProjectPushBranchRemove {
+            project: "app".to_owned(),
+            pattern: "agent/*".to_owned(),
+        },
+        Command::ProjectPushBranchList {
+            project: "app".to_owned(),
+        },
     ]
 }
 

@@ -144,6 +144,27 @@ pub(crate) fn route(
                 })
             }),
         ),
+        Command::ProjectPushBranchAdd { project, pattern } => (
+            WorkClass::Control,
+            job(async move {
+                let pattern = cockpit_projects::BranchPattern::new(&pattern)?;
+                let added =
+                    cockpit_projects::add_push_branch(&database, &project, &pattern).await?;
+                push_branches_reply(&database, project, Some(added)).await
+            }),
+        ),
+        Command::ProjectPushBranchRemove { project, pattern } => (
+            WorkClass::Control,
+            job(async move {
+                let removed =
+                    cockpit_projects::remove_push_branch(&database, &project, &pattern).await?;
+                push_branches_reply(&database, project, Some(removed)).await
+            }),
+        ),
+        Command::ProjectPushBranchList { project } => (
+            WorkClass::Control,
+            job(async move { push_branches_reply(&database, project, None).await }),
+        ),
         Command::CheckoutPush { checkout } => (
             WorkClass::Bulk,
             job(async move {
@@ -386,11 +407,29 @@ fn job(work: impl Future<Output = Result<Reply, Error>> + Send + 'static) -> cra
     })
 }
 
+async fn push_branches_reply(
+    database: &Database,
+    project: String,
+    changed: Option<bool>,
+) -> Result<Reply, Error> {
+    let read = database.read().await?;
+    let patterns = cockpit_projects::push_branches(&read, &project).await?;
+    Ok(Reply::PushBranches {
+        project,
+        patterns: patterns
+            .iter()
+            .map(|pattern| pattern.as_str().to_owned())
+            .collect(),
+        changed,
+    })
+}
+
 pub(crate) fn error_code(error: &Error) -> ErrorCode {
     match error {
         Error::InvalidName { .. }
         | Error::InvalidHolder { .. }
         | Error::InvalidBranch { .. }
+        | Error::InvalidPushBranch { .. }
         | Error::InvalidPullRequest { .. }
         | Error::InvalidPath { .. } => ErrorCode::InvalidArgument,
         Error::UnknownProject { .. } | Error::UnknownCheckout { .. } => ErrorCode::NotFound,

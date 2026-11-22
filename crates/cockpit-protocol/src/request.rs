@@ -265,6 +265,22 @@ pub enum Command {
     ProjectRemove {
         project: String,
     },
+    /// Owner only: let the project's agents push the branches `pattern` names, beyond each
+    /// one's launch branch (#155). `*` matches within one `/` segment, a `**` segment any
+    /// number of them.
+    ProjectPushBranchAdd {
+        project: String,
+        pattern: String,
+    },
+    /// Owner only: take back a pattern [`Command::ProjectPushBranchAdd`] added.
+    ProjectPushBranchRemove {
+        project: String,
+        pattern: String,
+    },
+    /// Owner only: the project's push-branch patterns.
+    ProjectPushBranchList {
+        project: String,
+    },
     /// Checkouts not yet removed, of one project or all.
     CheckoutList {
         project: Option<String>,
@@ -1275,6 +1291,15 @@ pub enum Reply {
         checkout: i64,
         branch: String,
         remote_url: String,
+    },
+    /// A project's push-branch patterns, in name order, after the change asked if any.
+    /// `changed` is `Some(false)` for an add of a pattern already there or a remove of one
+    /// that was not, and `None` for a list.
+    PushBranches {
+        project: String,
+        patterns: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        changed: Option<bool>,
     },
     RunRequest {
         request: Box<RunRequestView>,

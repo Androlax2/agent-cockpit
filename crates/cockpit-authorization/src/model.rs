@@ -78,13 +78,18 @@ pub enum Permission {
     /// End a session the holder started, once the task list says its work is done (#713).
     /// Any other session, and every other lifecycle change, stay the owner's.
     EndSessions,
+    /// Have the daemon push the holder's own checkout (#155), granted over itself at launch.
+    /// Planned in #155 part 4, which adds the push that checks it: the checkout's launch
+    /// branch (a parallel clone's; a main or review checkout has none) and the branches its
+    /// project's push-branch patterns name, never the remote's default branch.
+    PushBranch,
     /// Owner-only actions such as `handoff-install` and `system-install` (report 17). Never
     /// granted to a session.
     HostActions,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 10] = [
+    pub const ALL: [Permission; 11] = [
         Permission::ReadState,
         Permission::ChangeState,
         Permission::RunCommands,
@@ -94,6 +99,7 @@ impl Permission {
         Permission::MessageSessions,
         Permission::StartSessions,
         Permission::EndSessions,
+        Permission::PushBranch,
         Permission::HostActions,
     ];
 
@@ -117,6 +123,7 @@ impl Permission {
             Permission::MessageSessions => "message-sessions",
             Permission::StartSessions => "start-sessions",
             Permission::EndSessions => "end-sessions",
+            Permission::PushBranch => "push-branch",
             Permission::HostActions => "host-actions",
         }
     }
@@ -126,9 +133,10 @@ impl Permission {
     }
 
     /// Whether uses of a grant of this permission go to the audit: the coordinator grants
-    /// (#410) and `change-state`, under which a session edits the task items it filed (#714).
+    /// (#410), `change-state`, under which a session edits the task items it filed (#714), and
+    /// `push-branch`, under which the daemon pushes for it (#155).
     pub fn is_audited(self) -> bool {
-        self.is_coordinator() || self == Permission::ChangeState
+        self.is_coordinator() || matches!(self, Permission::ChangeState | Permission::PushBranch)
     }
 
     pub fn is_coordinator(self) -> bool {

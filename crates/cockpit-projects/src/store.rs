@@ -70,6 +70,8 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
         crate::end_sweeps::MIGRATION,
         // #155: the commit each push sent, a lease's expected tip.
         crate::push::MIGRATION,
+        // #155: the branches beyond its launch branch a project's agents may push.
+        crate::push_branches::MIGRATION,
     ],
 };
 
