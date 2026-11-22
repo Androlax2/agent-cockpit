@@ -1293,9 +1293,13 @@ pub enum Reply {
         remote_url: String,
     },
     /// A project's push-branch patterns, in name order, after the change asked if any.
+    /// `changed` is `Some(false)` for an add of a pattern already there or a remove of one
+    /// that was not, and `None` for a list.
     PushBranches {
         project: String,
         patterns: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        changed: Option<bool>,
     },
     RunRequest {
         request: Box<RunRequestView>,

@@ -18,6 +18,9 @@ pub(crate) const MIGRATION: Migration = Migration {
     );",
 };
 
+/// The longest pattern [`BranchPattern::new`] takes.
+const MAX_PATTERN_LENGTH: usize = 255;
+
 /// A branch name pattern: `/`-separated segments where `*` matches any run of characters
 /// within one segment and a `**` segment matches any number of segments, none included.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -25,8 +28,9 @@ pub struct BranchPattern(String);
 
 impl BranchPattern {
     /// Refuses a pattern no branch name could match or that reaches outside branches: an
-    /// empty segment, `..`, a segment starting with `.` or `-`, a `.lock` ending, or a
-    /// character Git or a shell treats specially.
+    /// empty segment, `..`, a segment starting with `.` or `-` or ending with `.` or
+    /// `.lock`, `HEAD`, more than 255 characters, or a character Git or a shell treats
+    /// specially.
     pub fn new(pattern: &str) -> Result<BranchPattern, Error> {
         let refuse = |reason: &str| {
             Err(Error::InvalidPushBranch {
@@ -34,6 +38,9 @@ impl BranchPattern {
                 reason: reason.to_owned(),
             })
         };
+        if pattern.len() > MAX_PATTERN_LENGTH {
+            return refuse("keep it to 255 characters");
+        }
         if pattern.starts_with("refs/") {
             return refuse("name the branch alone, without `refs/`");
         }
@@ -50,12 +57,15 @@ impl BranchPattern {
             if segment.starts_with('.') || segment.starts_with('-') {
                 return refuse("a segment starts with `.` or `-`");
             }
-            if segment.ends_with(".lock") || segment.contains("..") {
-                return refuse("a segment holds `..` or ends with `.lock`");
+            if segment.ends_with(".lock") || segment.ends_with('.') || segment.contains("..") {
+                return refuse("a segment holds `..` or ends with `.` or `.lock`");
             }
             if segment.contains("**") && segment != "**" {
                 return refuse("`**` stands alone between `/`");
             }
+        }
+        if pattern == "HEAD" {
+            return refuse("`HEAD` names no branch");
         }
         Ok(BranchPattern(pattern.to_owned()))
     }
@@ -79,27 +89,56 @@ impl std::fmt::Display for BranchPattern {
 }
 
 fn segments_match(pattern: &[&str], branch: &[&str]) -> bool {
-    match pattern.split_first() {
-        None => branch.is_empty(),
-        Some((&"**", rest)) => {
-            (0..=branch.len()).any(|taken| segments_match(rest, &branch[taken..]))
-        }
-        Some((segment, rest)) => match branch.split_first() {
-            Some((name, branch_rest)) => {
-                segment_matches(segment.as_bytes(), name.as_bytes())
-                    && segments_match(rest, branch_rest)
-            }
-            None => false,
-        },
-    }
+    wildcard_match(
+        pattern,
+        branch,
+        |segment| *segment == "**",
+        |segment, name| segment_matches(segment.as_bytes(), name.as_bytes()),
+    )
 }
 
 fn segment_matches(pattern: &[u8], name: &[u8]) -> bool {
-    match pattern.split_first() {
-        None => name.is_empty(),
-        Some((b'*', rest)) => (0..=name.len()).any(|taken| segment_matches(rest, &name[taken..])),
-        Some((byte, rest)) => name.first() == Some(byte) && segment_matches(rest, &name[1..]),
+    wildcard_match(
+        pattern,
+        name,
+        |byte| *byte == b'*',
+        |byte, other| byte == other,
+    )
+}
+
+/// Whether `text` matches `pattern`, where an element `is_star` says is a wildcard matches
+/// any run of elements and every other one matches one element as `matches_one` says.
+/// Backtracking returns only to the last wildcard, so the time stays within the product of
+/// the two lengths, whatever the pattern.
+fn wildcard_match<P, T>(
+    pattern: &[P],
+    text: &[T],
+    is_star: impl Fn(&P) -> bool,
+    matches_one: impl Fn(&P, &T) -> bool,
+) -> bool {
+    let (mut in_pattern, mut in_text) = (0, 0);
+    let mut last_star: Option<(usize, usize)> = None;
+    while in_text < text.len() {
+        match pattern.get(in_pattern) {
+            Some(element) if is_star(element) => {
+                last_star = Some((in_pattern, in_text));
+                in_pattern += 1;
+            }
+            Some(element) if matches_one(element, &text[in_text]) => {
+                in_pattern += 1;
+                in_text += 1;
+            }
+            _ => {
+                let Some((star, taken_from)) = last_star else {
+                    return false;
+                };
+                last_star = Some((star, taken_from + 1));
+                in_pattern = star + 1;
+                in_text = taken_from + 1;
+            }
+        }
     }
+    pattern[in_pattern..].iter().all(is_star)
 }
 
 /// Adds `pattern` to project `project`'s push branches; `false` when it was there already.
@@ -122,17 +161,18 @@ pub async fn add_push_branch(
 }
 
 /// Removes `pattern` from project `project`'s push branches; `false` when it was not there.
+/// It takes the stored text unchecked, so a pattern a later rule refuses can still be removed.
 pub async fn remove_push_branch(
     database: &Database,
     project: &str,
-    pattern: &BranchPattern,
+    pattern: &str,
 ) -> Result<bool, Error> {
     let write = database.write().await?;
     let project = project_named(&write, project).await?;
     let removed = write
         .execute(
             "DELETE FROM project_push_branches WHERE project_id = ?1 AND pattern = ?2",
-            params![project.id.0, pattern.as_str()],
+            params![project.id.0, pattern],
         )
         .await?;
     write.commit().await?;
@@ -168,6 +208,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_pattern_of_many_wildcards_against_a_long_branch_answers_at_once() {
+        let segments = BranchPattern::new(&format!("{}x", "**/".repeat(40))).unwrap();
+        let letters = BranchPattern::new(&format!("{}b", "*a".repeat(40))).unwrap();
+        let long_branch = vec!["y"; 200].join("/");
+
+        let started = std::time::Instant::now();
+        assert!(!segments.matches(&long_branch));
+        assert!(!letters.matches(&"a".repeat(250)));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
     fn a_pattern_names_the_branches_its_segments_match() {
         for (pattern, branch, is_match) in [
             ("main", "main", true),
@@ -183,6 +235,10 @@ mod tests {
             ("greenfield/155-*", "greenfield/156-push", false),
             ("*-draft", "x-draft", true),
             ("*", "two/segments", false),
+            ("a/**/b/**/c", "a/x/b/y/z/c", true),
+            ("a/**/b/**/c", "a/x/c", false),
+            ("*a*b", "xaybzab", true),
+            ("*a*b", "xaybza", false),
         ] {
             let matched = BranchPattern::new(pattern).unwrap().matches(branch);
             assert_eq!(matched, is_match, "{pattern} against {branch}");
@@ -205,6 +261,9 @@ mod tests {
             "agent/[ab]",
             "agent x",
             "agent?",
+            "release.",
+            "HEAD",
+            &"a".repeat(256),
         ] {
             assert!(
                 matches!(

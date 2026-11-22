@@ -56,10 +56,30 @@ async fn a_removed_pattern_is_no_longer_listed() {
         .await
         .unwrap();
 
-    let removed = remove_push_branch(&database, &project, &pattern("agent/*")).await;
-    let absent = remove_push_branch(&database, &project, &pattern("agent/*")).await;
+    let removed = remove_push_branch(&database, &project, "agent/*").await;
+    let absent = remove_push_branch(&database, &project, "agent/*").await;
 
     assert_eq!((removed.unwrap(), absent.unwrap()), (true, false));
+    assert!(listed(&database, &project).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_pattern_a_later_rule_refuses_can_still_be_removed() {
+    let (_scratch, database, project) = registered().await;
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO project_push_branches (project_id, pattern, added_at)
+             SELECT id, 'old?rule', 0 FROM projects WHERE name = ?1",
+            [project.as_str()],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let removed = remove_push_branch(&database, &project, "old?rule").await;
+
+    assert!(removed.unwrap());
     assert!(listed(&database, &project).await.is_empty());
 }
 

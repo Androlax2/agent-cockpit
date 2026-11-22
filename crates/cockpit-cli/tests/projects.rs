@@ -1443,6 +1443,19 @@ fn added_push_branch_patterns_are_listed_and_a_removed_one_is_not() {
 }
 
 #[test]
+fn removing_a_push_branch_pattern_that_is_not_there_says_nothing_changed() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+    home.cockpit_ok(&["project", "push-branch", "add", "app", "agent/*"]);
+
+    let removed = home.cockpit_ok(&["project", "push-branch", "remove", "app", "agents/*"]);
+
+    assert_eq!(removed, "nothing changed\nagent/*\n");
+}
+
+#[test]
 fn a_push_branch_pattern_reaching_beyond_branches_is_refused() {
     let home = TestHome::new();
     let _daemon = home.start();

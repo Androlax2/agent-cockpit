@@ -249,15 +249,15 @@ torlek network grant PROJECT github.com --push   # on the project's github.com g
 The project must hold that grant first. Revoking the grant ends the push right with it. Only `https` origins are pushed to: an SSH origin is refused. `torlek doctor --project DIR` names the command on its `push` line while the project has no push right.
 The daemon pushes with the project's token (`torlek project token set PROJECT`, below), never your own Git credentials, and refuses a project without one. It sends the commit the branch points at when the push starts and never forces it.
 
-A session's agent may have the daemon push only its own launch branch: every launch grants `push-branch` over the session itself (#155).
-To let a project's agents push more branches, add patterns; `*` matches within one `/` segment and a `**` segment matches any number of them:
+Planned (#155): a session's agent will have the daemon push its own launch branch, under the `push-branch` grant every launch already gives the session over itself.
+The patterns below, which you can already add, are to let a project's agents push more branches; `*` matches within one `/` segment and a `**` segment matches any number of them:
 
 ```sh
 torlek project push-branch add PROJECT 'agent/**'     # also: remove PROJECT PATTERN
 torlek project push-branch list PROJECT
 ```
 
-Tags and branch deletions are never pushed for an agent.
+Tags, branch deletions and the remote's default branch are to stay out of an agent's reach, whatever the patterns.
 
 ### A project's container engine
 

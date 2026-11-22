@@ -78,9 +78,10 @@ pub enum Permission {
     /// End a session the holder started, once the task list says its work is done (#713).
     /// Any other session, and every other lifecycle change, stay the owner's.
     EndSessions,
-    /// Push the holder's own checkout through the daemon (`torlek push`, #155): its launch
-    /// branch, and the branches its project's push-branch patterns name. Granted over itself
-    /// at launch; the remote's default branch, tags and deletions stay out of reach.
+    /// Have the daemon push the holder's own checkout (#155), granted over itself at launch.
+    /// Planned in #155 part 4, which adds the push that checks it: the checkout's launch
+    /// branch (a parallel clone's; a main or review checkout has none) and the branches its
+    /// project's push-branch patterns name, never the remote's default branch.
     PushBranch,
     /// Owner-only actions such as `handoff-install` and `system-install` (report 17). Never
     /// granted to a session.

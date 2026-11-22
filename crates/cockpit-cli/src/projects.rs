@@ -203,14 +203,29 @@ fn render(reply: &Reply) -> Option<String> {
         Reply::Pushed {
             branch, remote_url, ..
         } => format!("pushed {branch} to {remote_url}\n"),
-        Reply::PushBranches { project, patterns } if patterns.is_empty() => format!(
-            "{project}'s agents push their launch branch alone; add more with `torlek project \
-             push-branch add {project} PATTERN`\n"
-        ),
-        Reply::PushBranches { patterns, .. } => patterns
-            .iter()
-            .map(|pattern| format!("{pattern}\n"))
-            .collect(),
+        Reply::PushBranches {
+            project,
+            patterns,
+            changed,
+        } => {
+            let unchanged = if *changed == Some(false) {
+                "nothing changed\n"
+            } else {
+                ""
+            };
+            let listed: String = if patterns.is_empty() {
+                format!(
+                    "{project}'s agents push their launch branch alone; add more with `torlek \
+                     project push-branch add {project} PATTERN`\n"
+                )
+            } else {
+                patterns
+                    .iter()
+                    .map(|pattern| format!("{pattern}\n"))
+                    .collect()
+            };
+            format!("{unchanged}{listed}")
+        }
         _ => return None,
     };
     Some(text)

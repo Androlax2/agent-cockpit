@@ -23,10 +23,11 @@ grants, `change-state` is audited: a session's edit of a task item it filed (`ed
 is recorded under it with the item and each changed field's old and new value, long notes as
 their head and length.
 
-`push-branch` (#155) lets a session have the daemon push its own checkout. Each launch grants
-it over the session itself, as it does `change-state` and `run-commands`. The branches it
-covers are the checkout's launch branch and those its project's push-branch patterns name;
-the daemon checks them at each push, and its uses are audited.
+`push-branch` (#155) is the right to have the daemon push the session's own checkout. Each
+launch grants it over the session itself, as it does `change-state` and `run-commands`.
+Planned in #155 part 4, which adds that push: it is to cover the checkout's launch branch and
+the branches its project's push-branch patterns name, never the remote's default branch, with
+each use audited. Nothing checks the grant yet.
 
 Prose, payload fields, skills, team messages and plugin manifests request; they are not
 inputs to `evaluate` and cannot widen a grant (reports 11, 14, 17). Ids match exactly, and
