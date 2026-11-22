@@ -33,7 +33,7 @@ fn arguments(owned: &[String]) -> Vec<&str> {
 }
 
 #[test]
-fn a_pull_request_from_a_forks_branch_of_the_same_name_is_not_the_branchs() {
+fn a_forks_pull_request_from_a_branch_of_the_same_name_is_passed_over() {
     let branch = "greenfield/60-github-adapter";
     let lookup = head_lookup(branch);
     let mut gh = FakeGh::new();
