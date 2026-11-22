@@ -102,8 +102,8 @@ fn refused_push_url(url: &str, project: &ProjectName, push_hosts: &[ForgeHost]) 
     }
     let host = &repository.host;
     Some(format!(
-        "origin is on {host}, where {project} has no push right; the owner binds it with \
-         `torlek network grant {project} {host} --push`"
+        "origin is {url:?}, on {host}, where {project} has no push right; the owner binds it \
+         with `torlek network grant {project} {host} --push`"
     ))
 }
 
