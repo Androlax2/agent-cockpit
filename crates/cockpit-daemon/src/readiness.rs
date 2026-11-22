@@ -9,7 +9,7 @@ use std::sync::Arc;
 use cockpit_protocol::{ErrorCode, Outcome, ReadinessStatusView, Reply, RequirementView};
 use cockpit_readiness::{
     CheckoutFacts, ControlFacts, HostFacts, PresetFacts, ProjectFacts, ProjectNeeds, ProviderFacts,
-    ProviderFound, Report, SignInFacts, Status, Trust,
+    ProviderFound, PushFacts, Report, SignInFacts, Status, Trust,
 };
 use cockpit_resource_admission::{Availability, Backend, ControlSupport};
 
@@ -268,6 +268,10 @@ async fn report(
         Some(_) => Some(launches(&context, &dir).await),
         None => None,
     };
+    let push = match &checkout {
+        Some(checkout) => Some(push_facts(&context.database, &checkout.project).await),
+        None => None,
+    };
     // Only sandboxed sessions launch with a compose project name and port block (#1371).
     let compose = if is_sandboxed {
         let reading = dir.clone();
@@ -290,6 +294,7 @@ async fn report(
         engine,
         launch,
         compose,
+        push,
     };
     Ok(with_daemon_lines(
         cockpit_readiness::assess(&host, &config, Some(&project)),
@@ -525,6 +530,44 @@ async fn checkout_of(
         Some(checkout) => Ok((checkout.path.clone(), Some(checkout))),
         None => Ok((dir.to_path_buf(), None)),
     }
+}
+
+/// Where `project`'s checkouts may push: the hosts the forge adapters declare for Git pushes,
+/// those the project's grants reach, and those whose grant carries the push right (#153).
+async fn push_facts(
+    database: &cockpit_turso::Database,
+    project: &str,
+) -> Result<PushFacts, String> {
+    let read = database.read().await.map_err(|error| error.to_string())?;
+    let grants = cockpit_sandbox::network_grants(&read, Some(project))
+        .await
+        .map_err(|error| error.to_string())?;
+    let bound = cockpit_sandbox::push_hosts(&read, project)
+        .await
+        .map_err(|error| error.to_string())?;
+    drop(read);
+    let declared = crate::forges::declared_push_hosts();
+    let reached = declared
+        .iter()
+        .filter(|host| {
+            let (name, port) = crate::forges::name_and_port(host);
+            grants.iter().any(|grant| {
+                matches!(
+                    &grant.target,
+                    cockpit_sandbox::NetworkTarget::Host { host, port: granted } if host == name && *granted == port
+                )
+            })
+        })
+        .map(ToString::to_string)
+        .collect();
+    Ok(PushFacts {
+        reached,
+        bound: crate::forges::push_hosts(&bound)
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        declared: declared.iter().map(ToString::to_string).collect(),
+    })
 }
 
 /// Trust as `cockpit-projects` decides it, from the owner's `projects.trusted` read now.

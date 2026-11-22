@@ -116,8 +116,9 @@ fn discover_version(gh: &Gh) -> Result<String, String> {
 }
 
 /// #857: the API token reads Git on `github.com` and calls the API on `api.github.com`; the
-/// push token pushes on `github.com` alone, from the daemon.
-fn declaration() -> Declaration {
+/// push token pushes on `github.com` alone, from the daemon. What [`GitHub`] declares, without
+/// running `gh`: the daemon's push policy reads it.
+pub fn declaration() -> Declaration {
     let git = ForgeHost::new(GIT_HOST).expect("a valid host");
     let api = ForgeHost::new(API_HOST).expect("a valid host");
     Declaration::new(vec![

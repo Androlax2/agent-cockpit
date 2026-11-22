@@ -546,6 +546,8 @@ dependencies = [
  "cockpit-config",
  "cockpit-containers",
  "cockpit-diagnostics",
+ "cockpit-forge-api",
+ "cockpit-github",
  "cockpit-messaging",
  "cockpit-opencode",
  "cockpit-processes",
@@ -644,6 +646,7 @@ dependencies = [
 name = "cockpit-projects"
 version = "0.1.0"
 dependencies = [
+ "cockpit-forge-api",
  "cockpit-turso",
  "rustix 1.1.6",
  "tempfile",

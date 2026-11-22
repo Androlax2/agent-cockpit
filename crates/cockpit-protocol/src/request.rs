@@ -463,6 +463,16 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         through: Option<DecidedThroughView>,
     },
+    /// Owner only: let the daemon push `project`'s checkouts to `host` (`name` or
+    /// `name:port`, 443 by default), a host a forge adapter declares for Git pushes, on the
+    /// project's grant of it (#153, #857 decision 3). Refused when the project holds no such
+    /// grant: push never stands without reach, and revoking the grant ends it.
+    NetworkGrantPush {
+        project: String,
+        host: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<DecidedThroughView>,
+    },
     /// Owner only: revoke a network grant; its open tunnels close.
     NetworkRevoke {
         grant: i64,

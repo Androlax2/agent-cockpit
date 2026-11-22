@@ -115,6 +115,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek account sign-in PROVIDER ACCOUNT | grant PROJECT PROVIDER ACCOUNT | grants [PROJECT] | revoke GRANT
        torlek network list [--all [--since 2h|RFC3339]] | allow ID [--always] | deny ID | grants [PROJECT] | revoke GRANT
        torlek network grant PROJECT github.com | docker-hub
+       torlek network grant PROJECT HOST --push
        torlek containers record PROJECT
        torlek setup engine-masks|root-run [--uninstall]
        torlek session send ID MESSAGE | cancel ID

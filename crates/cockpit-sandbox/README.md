@@ -138,6 +138,11 @@ launch, `torlek doctor` and `torlek init` say so.
    `egress_decisions` is what the session's launcher is given: `Staged::write` writes it
    as `egress-decisions.json`, with the requests still asking, which allow nothing; the
    daemon rewrites it after each decision and each request it files.
+   Since migration 9 (#153, #857 decision 3) a host grant can carry the owner's push right:
+   `grant_push` sets it only on a grant the project already holds, never from a request's
+   decision, and `push_hosts` lists the hosts it covers. Revoking the grant ends it, and the
+   migration gives it to no grant made before
+   ([decision](../../docs/decisions/2026-11-22-153-push-right-no-seeding.md)).
 
 Edges: `cockpit-config` (the owner's `DesktopSession` and `AgentSandbox` values) and `cockpit-turso` (the evidence and network request tables, behind the default `persistence`
 feature). `cockpit-sessions` calls it for every launch.

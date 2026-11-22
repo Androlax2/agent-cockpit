@@ -35,6 +35,11 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Command, String> {
             project: Some((*project).to_owned()),
         },
         ["grant", project, host] => grant_without_request(project, host)?,
+        ["grant", project, host, "--push"] => Command::NetworkGrantPush {
+            project: (*project).to_owned(),
+            host: (*host).to_owned(),
+            through: Some(DecidedThroughView::Cli),
+        },
         ["revoke", grant] => Command::NetworkRevoke {
             grant: id_of(grant)?,
             through: Some(DecidedThroughView::Cli),
@@ -348,6 +353,9 @@ fn grant_detail(grant: &NetworkGrantView) -> String {
         grant_origin(grant),
         decided("allowed always", grant.granted)
     );
+    if let Some(push) = grant.push {
+        text.push_str(&format!("push: {}\n", decided("bound", push)));
+    }
     if let Some(revoked) = grant.revoked {
         text.push_str(&format!("revoked: {}\n", decided("revoked", revoked)));
     }

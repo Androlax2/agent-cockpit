@@ -1382,6 +1382,7 @@ async fn each_service_answer_keeps_its_exit_code() {
                 through: Some(DecidedThroughView::Tui),
             },
             revoked: None,
+            push: None,
         }),
     });
     for (outcome, expected) in [

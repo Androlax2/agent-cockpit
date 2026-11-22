@@ -74,6 +74,26 @@ impl Store {
         Ok(granted)
     }
 
+    async fn grant_push(&self, project: &str) -> Result<NetworkGrant, NetworkError> {
+        let write = self.database.write().await.unwrap();
+        let granted = cockpit_sandbox::grant_push(
+            &write,
+            project,
+            GITHUB_HOST,
+            443,
+            Some(OwnerClient::Cli),
+            DECIDED_AT,
+        )
+        .await?;
+        write.commit().await.unwrap();
+        Ok(granted)
+    }
+
+    async fn push_hosts(&self, project: &str) -> Vec<String> {
+        let read = self.database.read().await.unwrap();
+        cockpit_sandbox::push_hosts(&read, project).await.unwrap()
+    }
+
     async fn grant_docker_hub(&self, project: &str) -> Result<Vec<NetworkGrant>, NetworkError> {
         let write = self.database.write().await.unwrap();
         let granted =
@@ -502,6 +522,135 @@ async fn a_revoked_github_grant_can_be_granted_again() {
         .await
         .unwrap();
     assert_eq!(active, vec![again]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_push_right_lands_on_the_hosts_grant_the_project_holds() {
+    let store = store().await;
+    let reach = store.grant_github("app").await.unwrap();
+
+    let granted = store.grant_push("app").await.unwrap();
+
+    assert_eq!(granted.id, reach.id);
+    assert_eq!(
+        granted.push,
+        Some(OwnerDecision {
+            at: DECIDED_AT,
+            through: Some(OwnerClient::Cli),
+        })
+    );
+    assert_eq!(store.push_hosts("app").await, [GITHUB_HOST]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_push_right_on_a_host_the_project_does_not_reach_is_refused() {
+    let store = store().await;
+
+    let refused = store.grant_push("app").await;
+
+    assert!(
+        matches!(
+            &refused,
+            Err(NetworkError::Refused(NetworkRefusal::NotReached { project, target }))
+                if project == "app" && target.describe() == "github.com:443"
+        ),
+        "{refused:?}"
+    );
+    let read = store.database.read().await.unwrap();
+    let grants = cockpit_sandbox::network_grants(&read, Some("app"))
+        .await
+        .unwrap();
+    assert!(grants.is_empty(), "no reach is granted with it: {grants:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_grant_reaching_a_host_carries_no_push_right() {
+    let store = store().await;
+
+    let reach = store.grant_github("app").await.unwrap();
+
+    assert_eq!(reach.push, None);
+    assert!(store.push_hosts("app").await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_push_right_is_the_projects_alone() {
+    let store = store().await;
+    store.grant_github("app").await.unwrap();
+    store.grant_github("other").await.unwrap();
+
+    store.grant_push("app").await.unwrap();
+
+    assert!(store.push_hosts("other").await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_push_right_is_refused_naming_the_grant() {
+    let store = store().await;
+    store.grant_github("app").await.unwrap();
+    let first = store.grant_push("app").await.unwrap();
+
+    let again = store.grant_push("app").await;
+
+    assert!(
+        matches!(
+            again,
+            Err(NetworkError::Refused(NetworkRefusal::AlreadyPushes { grant })) if grant == first.id
+        ),
+        "{again:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoking_the_hosts_grant_ends_its_push_right() {
+    let store = store().await;
+    store.grant_github("app").await.unwrap();
+    let granted = store.grant_push("app").await.unwrap();
+    let write = store.database.write().await.unwrap();
+    cockpit_sandbox::revoke_network_grant(&write, granted.id, None, DECIDED_AT)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert!(store.push_hosts("app").await.is_empty());
+}
+
+/// #153 (the owner's decision of 2026-11-22): the migration that adds the push right grants it
+/// to no grant made before; pushes wait for the owner's own act.
+#[tokio::test(flavor = "multi_thread")]
+async fn grants_made_before_the_push_right_carry_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let before_push = cockpit_turso::MigrationSet {
+        owner: MIGRATIONS.owner,
+        migrations: &MIGRATIONS.migrations[..8],
+    };
+    let earlier = Database::open(&path, &[before_push]).await.unwrap();
+    let write = earlier.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO sandbox_network_grants
+                (id, project, kind, host, port, granted_at, granted_through)
+             VALUES (1, 'app', 'host', 'github.com', 443, ?1, 'cli')",
+            [DECIDED_AT],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(earlier);
+
+    let database = Database::open(&path, &[MIGRATIONS]).await.unwrap();
+
+    let read = database.read().await.unwrap();
+    let grants = cockpit_sandbox::network_grants(&read, None).await.unwrap();
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0].push, None);
+    assert!(
+        cockpit_sandbox::push_hosts(&read, "app")
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// A database at the first `versions` of the sandbox migrations, holding a host request of

@@ -580,12 +580,19 @@ fn the_sweep_keeps_a_clone_that_holds_work_or_a_holder_naming_the_reason() {
     }
 }
 
+/// The owner's push right on `app`'s github.com grant (#153): no grant carries it until bound.
+fn bind_push(home: &TestHome) {
+    home.cockpit_ok(&["network", "grant", "app", "github.com"]);
+    home.cockpit_ok(&["network", "grant", "app", "github.com", "--push"]);
+}
+
 #[test]
 fn a_push_sends_the_branch_to_its_github_origin_and_sets_the_upstream() {
     let home = TestHome::new();
     let _daemon = home.start();
     let root = home.project("app");
     home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+    bind_push(&home);
     let clone = id_of(&home.cockpit_ok(&["checkout", "clone", "app", "feature/x"]));
     let path = home.home().join("projects/.parallel/app/feature-x");
     std::fs::write(path.join("work"), "done\n").unwrap();
@@ -602,6 +609,23 @@ fn a_push_sends_the_branch_to_its_github_origin_and_sets_the_upstream() {
         real_git(&path, &["rev-parse", "--abbrev-ref", "@{upstream}"]).trim(),
         "origin/feature/x"
     );
+}
+
+#[test]
+fn a_push_without_the_owners_push_right_is_refused_naming_the_command_that_binds_it() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    let main = id_of(&home.cockpit_ok(&["project", "add", root.to_str().unwrap()]));
+    home.cockpit_ok(&["network", "grant", "app", "github.com"]);
+
+    let refused = home.cockpit_err(&["checkout", "push", &main]);
+
+    assert!(
+        refused.contains("`torlek network grant app github.com --push`"),
+        "{refused}"
+    );
+    assert!(!home.git_log().iter().any(|call| call.contains(" push ")));
 }
 
 #[test]
@@ -636,6 +660,7 @@ fn a_push_redirected_by_the_checkouts_own_configuration_is_refused() {
         ],
     );
     let main = id_of(&home.cockpit_ok(&["project", "add", root.to_str().unwrap()]));
+    bind_push(&home);
 
     let refused = home.cockpit_err(&["checkout", "push", &main]);
 
@@ -649,6 +674,7 @@ fn a_push_that_would_rewrite_the_remote_branch_is_refused() {
     let _daemon = home.start();
     let root = home.project("app");
     home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+    bind_push(&home);
     let clone = id_of(&home.cockpit_ok(&["checkout", "clone", "app", "feature/x"]));
     let path = home.home().join("projects/.parallel/app/feature-x");
     std::fs::write(path.join("work"), "first\n").unwrap();
@@ -950,6 +976,7 @@ fn a_push_rewritten_off_github_by_the_owners_configuration_is_refused() {
     let _daemon = home.start();
     let root = home.project("app");
     let main = id_of(&home.cockpit_ok(&["project", "add", root.to_str().unwrap()]));
+    bind_push(&home);
 
     let refused = home.cockpit_err(&["checkout", "push", &main]);
 
@@ -967,6 +994,7 @@ fn a_push_through_a_proxy_the_checkout_configures_is_refused() {
         &["config", "http.proxy", "http://attacker.example:8080"],
     );
     let main = id_of(&home.cockpit_ok(&["project", "add", root.to_str().unwrap()]));
+    bind_push(&home);
 
     let refused = home.cockpit_err(&["checkout", "push", &main]);
 
@@ -1070,6 +1098,7 @@ fn a_push_url_rewritten_off_github_by_the_owners_configuration_is_refused() {
     let _daemon = home.start();
     let root = home.project("app");
     let main = id_of(&home.cockpit_ok(&["project", "add", root.to_str().unwrap()]));
+    bind_push(&home);
 
     let refused = home.cockpit_err(&["checkout", "push", &main]);
 

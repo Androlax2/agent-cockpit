@@ -79,6 +79,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 8,
             sql: crate::network::CONTAINERS_SUBJECTS_MIGRATION_SQL,
         },
+        // #153: the push right on a project's host grant (#857, decision 3).
+        Migration {
+            version: 9,
+            sql: crate::network::PUSH_RIGHT_MIGRATION_SQL,
+        },
     ],
 };
 

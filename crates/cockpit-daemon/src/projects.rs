@@ -147,7 +147,18 @@ pub(crate) fn route(
         Command::CheckoutPush { checkout } => (
             WorkClass::Bulk,
             job(async move {
-                let pushed = cockpit_projects::push(&database, &git, CheckoutId(checkout)).await?;
+                let id = CheckoutId(checkout);
+                // Read before the push, as its other checks are: a revoke landing after this
+                // read does not stop a push the owner already started.
+                let push_hosts = {
+                    let read = database.read().await.map_err(Error::from)?;
+                    let project = cockpit_projects::checkout_project(&read, id).await?;
+                    let bound = cockpit_sandbox::push_hosts(&read, project.as_str())
+                        .await
+                        .map_err(push_hosts_unread)?;
+                    crate::forges::push_hosts(&bound)
+                };
+                let pushed = cockpit_projects::push(&database, &git, id, push_hosts).await?;
                 Ok(Reply::Pushed {
                     checkout,
                     branch: pushed.branch,
@@ -311,6 +322,16 @@ fn project_refusal(error: Error) -> Outcome {
 fn internal(action: &str, error: &dyn std::fmt::Display) -> Outcome {
     tracing::error!(%error, "removing a project could not {action}");
     refusal(ErrorCode::Internal, &format!("could not {action}: {error}"))
+}
+
+/// A failure reading the project's push rights, as the push's own error.
+fn push_hosts_unread(error: cockpit_sandbox::NetworkError) -> Error {
+    match error {
+        cockpit_sandbox::NetworkError::Sql(source) => Error::Sql(source),
+        other => Error::InvalidStoredRow {
+            reason: format!("a network grant's push right: {other}"),
+        },
+    }
 }
 
 /// The lane job for a project operation: its result becomes the request's outcome.
