@@ -43,7 +43,13 @@ impl Fixture {
         let remote = scratch.path().join("remote.git");
         git(
             &scratch.path(),
-            &["init", "--quiet", "--bare", remote.to_str().unwrap()],
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                "--initial-branch=main",
+                remote.to_str().unwrap(),
+            ],
         );
         let database = scratch.open().await;
         let (_, checkout) = register(&database, &root).await;
@@ -446,14 +452,17 @@ async fn a_lease_allowed_on_a_fast_forward_reports_no_force() {
 
 #[test]
 fn a_username_that_is_not_one_plain_word_is_refused() {
-    for username in ["", "two words", "quote'd", "semi;colon"] {
+    for (case, username) in ["", "two words", "quote'd", "semi;colon"]
+        .into_iter()
+        .enumerate()
+    {
         let token = Token::new(TOKEN).unwrap();
         assert!(
             matches!(
                 PushCredential::new(username, token),
                 Err(Error::Refused { .. })
             ),
-            "{username:?}"
+            "case {case}"
         );
     }
 }
