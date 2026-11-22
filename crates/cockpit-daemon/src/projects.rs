@@ -163,6 +163,7 @@ pub(crate) fn route(
                     hosts: push_hosts,
                     credential,
                     force: cockpit_projects::Force::Never,
+                    workflows: cockpit_projects::WorkflowCheck::Owner,
                 };
                 let pushed = cockpit_projects::push(&database, &git, id, rules).await?;
                 Ok(Reply::Pushed {
@@ -400,7 +401,7 @@ pub(crate) fn error_code(error: &Error) -> ErrorCode {
         | Error::NotOccupant { .. }
         | Error::BeingRemoved { .. } => ErrorCode::Conflict,
         Error::Replaced { .. } | Error::StalePrune { .. } => ErrorCode::StaleRevision,
-        Error::Refused { .. } => ErrorCode::Refused,
+        Error::Refused { .. } | Error::WorkflowChange { .. } => ErrorCode::Refused,
         _ => ErrorCode::Internal,
     }
 }

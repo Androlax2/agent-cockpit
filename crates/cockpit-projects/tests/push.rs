@@ -9,7 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use cockpit_forge_api::{ForgeHost, Token};
-use cockpit_projects::{Error, Force, Git, PushCredential, PushRules, Pushed, push};
+use cockpit_projects::{Error, Force, Git, PushCredential, PushRules, Pushed, WorkflowCheck, push};
 use cockpit_turso::Database;
 use common::{Scratch, git, register};
 
@@ -79,8 +79,38 @@ impl Fixture {
             hosts,
             credential,
             force,
+            workflows: WorkflowCheck::Owner,
         };
         push(&self.database, &self.git, self.checkout, rules).await
+    }
+
+    /// A push as an agent's: its range scanned for workflow changes, which the owner approved
+    /// for `approved_commit` alone.
+    async fn push_as_agent(
+        &self,
+        force: Force,
+        approved_commit: Option<&str>,
+    ) -> Result<Pushed, Error> {
+        let credential = PushCredential::new("x-access-token", Token::new(TOKEN).unwrap());
+        let rules = PushRules {
+            hosts: github(),
+            credential: Ok(credential.unwrap()),
+            force,
+            workflows: WorkflowCheck::Agent {
+                approved_commit: approved_commit.map(str::to_owned),
+            },
+        };
+        push(&self.database, &self.git, self.checkout, rules).await
+    }
+
+    /// Commits `content` to `path` in the checkout.
+    fn commit_file(&self, path: &str, content: &str) -> String {
+        let file = self.root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, content).unwrap();
+        git(&self.root, &["add", path]);
+        git(&self.root, &["commit", "--quiet", "-m", path]);
+        self.head()
     }
 
     fn recorded(&self, name: &str) -> Option<String> {
@@ -129,6 +159,61 @@ impl Fixture {
         );
     }
 
+    /// A commit someone else pushed straight to the bare repository's `branch`, writing
+    /// `content` to `path`, on top of the branch or, for a new one, of `main`.
+    fn someone_else_commits(&self, branch: &str, path: &str, content: &str) -> String {
+        let other = self
+            .scratch
+            .path()
+            .join(format!("other-{}", branch.replace('/', "-")));
+        if !other.exists() {
+            git(
+                &self.scratch.path(),
+                &[
+                    "clone",
+                    "--quiet",
+                    self.remote.to_str().unwrap(),
+                    other.to_str().unwrap(),
+                ],
+            );
+        }
+        git(&other, &["fetch", "--quiet", "origin"]);
+        let start = if self.remote_tip(branch).is_some() {
+            format!("origin/{branch}")
+        } else {
+            "origin/main".to_owned()
+        };
+        git(
+            &other,
+            &["switch", "--quiet", "--force-create", branch, &start],
+        );
+        let file = other.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, content).unwrap();
+        git(&other, &["add", path]);
+        git(&other, &["commit", "--quiet", "-m", path]);
+        git(
+            &other,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!("HEAD:refs/heads/{branch}"),
+            ],
+        );
+        git(&other, &["rev-parse", "HEAD"]).trim().to_owned()
+    }
+
+    /// The remote calls Git made: `ls-remote`, `fetch` and `push`, each as one line starting
+    /// with the folder Git ran in.
+    fn remote_calls(&self) -> Vec<String> {
+        self.recorded("remote-calls")
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
     /// A commit someone else pushed straight to the bare repository's `main`.
     fn someone_else_pushes(&self) -> String {
         let other = self.scratch.path().join("other");
@@ -174,18 +259,21 @@ fn forge_git(scratch: &Scratch, remote: &Path) -> Git {
         &wrapper,
         format!(
             "#!/bin/sh\nexport HOME={home} GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1\n\
-             pushing=; helper=\n\
+             pushing=; remote=; helper=\n\
              for argument; do\n  case \"$argument\" in\n    push) pushing=1 ;;\n    \
+             ls-remote|fetch) remote=1 ;;\n    \
              credential.https://*) helper=\"$argument\" ;;\n  esac\ndone\n\
              if [ -n \"$pushing\" ]; then\n  printf '%s\\n' \"$@\" > {pushed}\n  \
              {{ {fill_push}; echo ---; {fill_other}; }} > {offered}\n  \
-             if [ -x {before} ]; then {before}; fi\n  \
+             if [ -x {before} ]; then {before}; fi\nfi\n\
+             if [ -n \"$pushing$remote\" ]; then\n  printf '%s %s\\n' \"$PWD\" \"$*\" >> {remote_calls}\n  \
              export GIT_CONFIG_GLOBAL={rewrite} GIT_ALLOW_PROTOCOL=file\nfi\n\
              exec /usr/bin/git \"$@\"\n",
             home = quote(&scratch.path().join("git-home")),
             pushed = quote(&scratch.path().join("pushed")),
             offered = quote(&scratch.path().join("offered")),
             before = quote(&scratch.path().join("before-push")),
+            remote_calls = quote(&scratch.path().join("remote-calls")),
             rewrite = quote(&rewrite),
             fill_push = fill("github.com"),
             fill_other = fill("forge.example.com"),
@@ -233,7 +321,7 @@ async fn a_branch_is_pushed_as_the_commit_it_points_at_to_a_host_the_project_may
     let arguments = fixture.recorded("pushed").unwrap();
     assert!(
         arguments.ends_with(&format!(
-            "push\n--porcelain\n--end-of-options\norigin\n{head}:refs/heads/main\n"
+            "push\n--porcelain\n--end-of-options\n{ORIGIN}\n{head}:refs/heads/main\n"
         )),
         "{arguments}"
     );
@@ -448,6 +536,271 @@ async fn a_lease_allowed_on_a_fast_forward_reports_no_force() {
 
     assert!(!pushed.forced);
     assert_eq!(fixture.remote_tip("main"), Some(fixture.head()));
+}
+
+const WORKFLOW: &str = ".github/workflows/ci.yml";
+const WORKFLOWS: &str = ".github/workflows";
+
+fn workflow_change(result: Result<Pushed, Error>) -> (String, String, Vec<String>) {
+    match result {
+        Err(Error::WorkflowChange {
+            branch,
+            commit,
+            paths,
+        }) => (branch, commit, paths),
+        other => panic!("expected a workflow change, got {other:?}"),
+    }
+}
+
+/// A fixture whose `main` is on the remote, and a checkout switched to a new `feature`.
+async fn on_a_new_feature_branch() -> Fixture {
+    let fixture = Fixture::new(ORIGIN).await;
+    fixture.push(github(), Force::Never).await.unwrap();
+    git(&fixture.root, &["switch", "--quiet", "--create", "feature"]);
+    fixture
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_new_branch_adding_a_workflow_file_waits_for_the_owner() {
+    let fixture = on_a_new_feature_branch().await;
+    let commit = fixture.commit_file(WORKFLOW, "on: push\n");
+    fixture.forget_recorded_push();
+
+    let (branch, refused_commit, paths) =
+        workflow_change(fixture.push_as_agent(Force::Never, None).await);
+
+    assert_eq!(
+        (branch.as_str(), refused_commit.as_str()),
+        ("feature", commit.as_str())
+    );
+    assert_eq!(paths, [WORKFLOWS]);
+    assert_eq!(fixture.recorded("pushed"), None, "nothing is pushed");
+    assert_eq!(fixture.remote_tip("feature"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owners_approval_of_the_commit_lets_a_workflow_change_go() {
+    let fixture = on_a_new_feature_branch().await;
+    let commit = fixture.commit_file(".gitlab-ci.yml", "test: {}\n");
+
+    let pushed = fixture
+        .push_as_agent(Force::Never, Some(&commit))
+        .await
+        .unwrap();
+
+    assert_eq!(pushed.commit, commit);
+    assert_eq!(fixture.remote_tip("feature"), Some(commit));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approved_commit_is_pushed_without_asking_the_remote_first() {
+    let fixture = on_a_new_feature_branch().await;
+    let commit = fixture.commit_file(WORKFLOW, "on: push\n");
+
+    fixture
+        .push_as_agent(Force::Never, Some(&commit))
+        .await
+        .unwrap();
+
+    let calls = fixture.remote_calls();
+    assert!(
+        !calls.iter().any(|call| call.contains(" ls-remote ")),
+        "{calls:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_remote_tips_are_read_outside_the_checkout_from_the_url_checked() {
+    let fixture = on_a_new_feature_branch().await;
+    fixture.commit_file("README", "work\n");
+
+    fixture.push_as_agent(Force::Never, None).await.unwrap();
+
+    let listed: Vec<String> = fixture
+        .remote_calls()
+        .into_iter()
+        .filter(|call| call.contains(" ls-remote "))
+        .collect();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert!(listed[0].starts_with("/ "), "{listed:?}");
+    assert!(
+        listed[0].contains(&format!("--end-of-options {ORIGIN} HEAD")),
+        "{listed:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approval_of_another_commit_does_not_cover_the_one_pushed() {
+    let fixture = on_a_new_feature_branch().await;
+    let approved = fixture.commit_file(WORKFLOW, "on: push\n");
+    fixture.commit_file("README", "later\n");
+
+    let (_, commit, _) =
+        workflow_change(fixture.push_as_agent(Force::Never, Some(&approved)).await);
+
+    assert_ne!(commit, approved);
+    assert_eq!(fixture.remote_tip("feature"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workflow_already_on_the_default_branch_is_not_held_on_a_new_branch() {
+    let fixture = Fixture::new(ORIGIN).await;
+    fixture.commit_file(WORKFLOW, "on: push\n");
+    fixture.push(github(), Force::Never).await.unwrap();
+    git(&fixture.root, &["switch", "--quiet", "--create", "feature"]);
+    let commit = fixture.commit_file("README", "work\n");
+
+    fixture.push_as_agent(Force::Never, None).await.unwrap();
+
+    assert_eq!(fixture.remote_tip("feature"), Some(commit));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workflow_already_on_the_remote_branch_is_not_held_again() {
+    let fixture = on_a_new_feature_branch().await;
+    fixture.someone_else_commits("feature", WORKFLOW, "on: push\n");
+    git(
+        &fixture.root,
+        &[
+            "fetch",
+            "--quiet",
+            fixture.remote.to_str().unwrap(),
+            "feature",
+        ],
+    );
+    git(&fixture.root, &["reset", "--quiet", "--hard", "FETCH_HEAD"]);
+    let commit = fixture.commit_file("README", "on top\n");
+
+    fixture.push_as_agent(Force::Never, None).await.unwrap();
+
+    assert_eq!(fixture.remote_tip("feature"), Some(commit));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rebase_bringing_in_the_workflow_of_the_default_branch_is_not_held() {
+    let fixture = on_a_new_feature_branch().await;
+    fixture.commit_file("README", "feature work\n");
+    fixture.push_as_agent(Force::Never, None).await.unwrap();
+    let main = fixture.someone_else_commits("main", WORKFLOW, "on: push\n");
+    git(
+        &fixture.root,
+        &["fetch", "--quiet", fixture.remote.to_str().unwrap(), "main"],
+    );
+    git(&fixture.root, &["rebase", "--quiet", &main]);
+    let rebased = fixture.head();
+
+    let pushed = fixture
+        .push_as_agent(lease_on("feature"), None)
+        .await
+        .unwrap();
+
+    assert!(pushed.forced);
+    assert_eq!(fixture.remote_tip("feature"), Some(rebased));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_branch_predating_a_workflow_change_on_the_default_branch_is_held_until_rebased() {
+    let fixture = on_a_new_feature_branch().await;
+    let main = fixture.someone_else_commits("main", WORKFLOW, "on: push\n");
+    fixture.commit_file("README", "work\n");
+
+    let (_, _, paths) = workflow_change(fixture.push_as_agent(Force::Never, None).await);
+    git(&fixture.root, &["rebase", "--quiet", &main]);
+    let rebased = fixture.head();
+    fixture.push_as_agent(Force::Never, None).await.unwrap();
+
+    assert_eq!(paths, [WORKFLOWS]);
+    assert_eq!(fixture.remote_tip("feature"), Some(rebased));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_default_branch_tip_the_checkout_lacks_is_fetched_by_id() {
+    let fixture = on_a_new_feature_branch().await;
+    let main = fixture.someone_else_commits("main", "README", "theirs\n");
+    fixture.commit_file("NOTES", "work\n");
+
+    fixture.push_as_agent(Force::Never, None).await.unwrap();
+
+    let fetches: Vec<String> = fixture
+        .remote_calls()
+        .into_iter()
+        .filter(|call| call.contains(" fetch "))
+        .collect();
+    assert_eq!(fetches.len(), 1, "{fetches:?}");
+    assert!(
+        fetches[0].ends_with(&format!("{ORIGIN} {main}")),
+        "{fetches:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn on_an_empty_remote_any_workflow_is_held() {
+    let fixture = Fixture::new(ORIGIN).await;
+    fixture.commit_file(WORKFLOW, "on: push\n");
+    fixture.commit_file("README", "later\n");
+
+    let (branch, _, paths) = workflow_change(fixture.push_as_agent(Force::Never, None).await);
+
+    assert_eq!(branch, "main");
+    assert_eq!(paths, [WORKFLOWS]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_workflow_is_held_like_adding_one() {
+    let fixture = Fixture::new(ORIGIN).await;
+    fixture.commit_file(WORKFLOW, "on: push\n");
+    fixture.push(github(), Force::Never).await.unwrap();
+    git(&fixture.root, &["rm", "--quiet", WORKFLOW]);
+    git(&fixture.root, &["commit", "--quiet", "-m", "drop ci"]);
+
+    let (_, _, paths) = workflow_change(fixture.push_as_agent(Force::Never, None).await);
+
+    assert_eq!(paths, [WORKFLOWS]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replace_ref_hiding_a_workflow_change_refuses_the_push() {
+    let fixture = on_a_new_feature_branch().await;
+    let main = git(&fixture.root, &["rev-parse", "main"]).trim().to_owned();
+    let commit = fixture.commit_file(WORKFLOW, "on: push\n");
+    git(&fixture.root, &["replace", &commit, &main]);
+
+    let reason = refusal(fixture.push_as_agent(Force::Never, None).await);
+
+    assert!(reason.contains("other content"), "{reason}");
+    assert_eq!(fixture.remote_tip("feature"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_graft_in_the_checkout_does_not_hide_a_workflow_change() {
+    let fixture = on_a_new_feature_branch().await;
+    let commit = fixture.commit_file(WORKFLOW, "on: push\n");
+    let main = git(&fixture.root, &["rev-parse", "main"]).trim().to_owned();
+    std::fs::write(
+        fixture.root.join(".git/info/grafts"),
+        format!("{main} {commit}\n"),
+    )
+    .unwrap();
+
+    let (_, refused, paths) = workflow_change(fixture.push_as_agent(Force::Never, None).await);
+
+    assert_eq!((refused, paths), (commit, vec![WORKFLOWS.to_owned()]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owners_push_is_not_scanned_and_asks_the_remote_nothing_else() {
+    let fixture = on_a_new_feature_branch().await;
+    let commit = fixture.commit_file(WORKFLOW, "on: push\n");
+
+    fixture.push(github(), Force::Never).await.unwrap();
+
+    assert_eq!(fixture.remote_tip("feature"), Some(commit));
+    let calls = fixture.remote_calls();
+    assert_eq!(calls.len(), 2, "one push each: {calls:?}");
+    assert!(
+        calls.iter().all(|call| call.contains(" push ")),
+        "{calls:?}"
+    );
 }
 
 #[test]

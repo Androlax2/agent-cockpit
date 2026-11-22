@@ -66,6 +66,14 @@ pub enum Error {
     Refused {
         reason: String,
     },
+    /// An agent's push of `commit` to `branch` brings new content to the CI `paths`
+    /// (`.github/workflows`, `.gitlab-ci.yml`; #857): only the owner's approval of that commit
+    /// lets it go.
+    WorkflowChange {
+        branch: String,
+        commit: String,
+        paths: Vec<String>,
+    },
     /// An owner decision no longer names the current observed target.
     StalePrune {
         reason: String,
@@ -213,6 +221,18 @@ impl fmt::Display for Error {
                 path.display()
             ),
             Error::Refused { reason } | Error::StalePrune { reason } => formatter.write_str(reason),
+            Error::WorkflowChange {
+                branch,
+                commit,
+                paths,
+            } => write!(
+                formatter,
+                "pushing {commit} to {branch} changes what CI runs ({}): its content there is \
+                 neither the remote branch's nor the default branch's. It goes once the owner \
+                 approves that commit; a branch that only predates the default branch's change \
+                 goes once rebased onto it",
+                paths.join(", ")
+            ),
             Error::Git {
                 arguments,
                 status,

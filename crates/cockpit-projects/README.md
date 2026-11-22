@@ -65,6 +65,17 @@ marker is refused as `Replaced` instead of being acted on.
   branch alone, with the commit this checkout last pushed there to the same URL as the expected
   tip (`checkout_pushes`, written only after a push succeeded); with no such record the force is
   refused, never leased against the remote's current tip (#857 decision 2).
+  `WorkflowCheck::Agent` holds a push that changes what CI runs as `Error::WorkflowChange`
+  unless the owner approved exactly that commit (`push_range.rs`). The check compares the
+  pushed commit's `.github/workflows` and `.gitlab-ci.yml` entries with those at the remote
+  branch's tip and at the remote default branch's tip (read with `ls-remote`, fetched by id
+  when missing). It reads no history, because the agent can rewrite the checkout's (replace
+  refs, grafts, planted objects), and Git hashes every object it reads again, which must match
+  its id. So a branch started before the default branch changed its workflows is held until
+  rebased onto it. The tips come from `ls-remote` on the URL checked, run outside the
+  checkout so its configuration cannot rewrite it; the push goes to that URL too. The check
+  covers the workflow files #857 names, not what they reach elsewhere in the repository
+  (scripts, local actions, a GitLab `include: local`): CI runs those like any other code.
 
 ## Dependency edges
 
@@ -87,8 +98,10 @@ marker is refused as `Replaced` instead of being acted on.
 - `tests/changed_files.rs`: uncommitted and unpushed changes on real Git.
 - `tests/push.rs`: a push only to a host the project may push to, SSH and credential origins
   refused, the resolved commit sent though the branch moves, the push token offered to the push
-  host alone, and every lease rule, on real Git pushing to a local bare repository through a
-  wrapper that rewrites the forge URL for the push alone.
+  host alone, every lease rule, and the workflow check (approval bound to the commit, a
+  rebase onto the default branch, replace refs and grafts that would hide a change). It runs
+  real Git, pushing to a local bare repository through a wrapper that rewrites the forge URL
+  for the remote calls alone.
 - `tests/source_state.rs`: a checkout's head and uncommitted-changes digest on real Git, the
   index left as it was.
 - `tests/storage.rs` and `src/storage_tests.rs`: registered identity, byte accounting,

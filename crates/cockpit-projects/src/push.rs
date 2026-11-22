@@ -5,6 +5,7 @@ use cockpit_turso::sql::{Connection, params};
 use cockpit_turso::{Database, Migration, WriteTransaction};
 
 use crate::git::{arg, git_failure};
+use crate::push_range::{self, RemoteAccess};
 use crate::store::{self, now};
 use crate::{CheckoutId, CheckoutState, Error, Git, ProjectName, blocking};
 
@@ -98,6 +99,19 @@ pub struct PushRules {
     /// every check on the checkout passed, so it never hides why its origin is refused.
     pub credential: Result<PushCredential, String>,
     pub force: Force,
+    pub workflows: WorkflowCheck,
+}
+
+/// Whether a push's range is scanned for CI workflow changes (#857): an agent's push needs the
+/// owner's approval for one, the owner's own does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowCheck {
+    /// The owner pushes: no scan.
+    Owner,
+    /// An agent pushes: the range is read against the remote, and one that changes a workflow
+    /// file is refused as [`Error::WorkflowChange`] unless the owner approved exactly the
+    /// commit sent.
+    Agent { approved_commit: Option<String> },
 }
 
 /// Pushes the commit the checkout's current branch points at to the branch of the same name on
@@ -152,6 +166,27 @@ pub async fn push(
     let credential = rules
         .credential
         .map_err(|reason| Error::Refused { reason })?;
+    let is_scanned = match &rules.workflows {
+        WorkflowCheck::Owner => false,
+        WorkflowCheck::Agent { approved_commit } => {
+            approved_commit.as_deref() != Some(target.commit.as_str())
+        }
+    };
+    if is_scanned {
+        let git = git.clone();
+        let (scanned_checkout, scanned, scan_credential) =
+            (checkout.clone(), target.clone(), credential.clone());
+        let paths =
+            blocking(move || workflow_changes(&git, &scanned_checkout, &scanned, &scan_credential))
+                .await?;
+        if !paths.is_empty() {
+            return Err(Error::WorkflowChange {
+                branch: target.branch,
+                commit: target.commit,
+                paths,
+            });
+        }
+    }
     let git = git.clone();
     let sent = target.clone();
     let forced =
@@ -388,6 +423,39 @@ fn push_target(
     })
 }
 
+/// The setting that has Git answer the push host alone with the credential, read from
+/// [`PUSH_TOKEN_VARIABLE`]. It comes after `SAFE_CONFIG`'s `credential.helper=`, which drops
+/// every helper configured before, so this one alone answers.
+fn credential_helper(target: &PushTarget, credential: &PushCredential) -> String {
+    format!(
+        "credential.https://{host}.helper=!f() {{ test \"$1\" = get || exit 0; printf \
+         'username=%s\\npassword=%s\\n' '{username}' \"${PUSH_TOKEN_VARIABLE}\"; }}; f",
+        host = target.host,
+        username = credential.username,
+    )
+}
+
+/// The CI paths whose content the push would newly bring to the remote, read against it with
+/// the push's credential.
+fn workflow_changes(
+    git: &Git,
+    checkout: &std::path::Path,
+    target: &PushTarget,
+    credential: &PushCredential,
+) -> Result<Vec<String>, Error> {
+    let helper = credential_helper(target, credential);
+    let remote = RemoteAccess {
+        git,
+        checkout,
+        url: &target.remote_url,
+        extra_config: &[&helper],
+        secret: (PUSH_TOKEN_VARIABLE, credential.token.expose()),
+    };
+    let tips = remote.tips(&target.branch)?;
+    let changed = push_range::changed_ci_paths(&remote, &tips, &target.commit)?;
+    Ok(changed.into_iter().map(str::to_owned).collect())
+}
+
 /// Sets the branch's upstream, which a push of a commit id does not, before anything is sent,
 /// so the push stays the last step that can fail; then pushes the target's commit, forced only
 /// under `lease`, with the credential offered to the push host alone. Returns whether Git
@@ -410,21 +478,19 @@ fn send(
             &[arg("config"), arg("--local"), arg(&key), arg(value)],
         )?;
     }
-    // After `SAFE_CONFIG`'s `credential.helper=`, which drops every helper configured before,
-    // so this one alone answers, and only for the push host.
-    let helper = format!(
-        "credential.https://{host}.helper=!f() {{ test \"$1\" = get || exit 0; printf \
-         'username=%s\\npassword=%s\\n' '{username}' \"${PUSH_TOKEN_VARIABLE}\"; }}; f",
-        host = target.host,
-        username = credential.username,
-    );
+    let helper = credential_helper(target, credential);
     let refspec = format!("{}:{remote_ref}", target.commit);
     let lease_option = lease.map(|expected| format!("--force-with-lease={remote_ref}:{expected}"));
     let mut arguments = vec![arg("push"), arg("--porcelain")];
     if let Some(option) = &lease_option {
         arguments.push(arg(option));
     }
-    arguments.extend([arg("--end-of-options"), arg("origin"), arg(&refspec)]);
+    // The URL checked, not `origin`, which the checkout's configuration names again.
+    arguments.extend([
+        arg("--end-of-options"),
+        arg(&target.remote_url),
+        arg(&refspec),
+    ]);
     let output = git.output_within(
         checkout,
         &[&helper],

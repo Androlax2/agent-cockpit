@@ -12,6 +12,7 @@ mod error;
 mod git;
 mod model;
 mod push;
+mod push_range;
 mod register;
 mod remove;
 mod source;
@@ -32,7 +33,7 @@ pub use model::{
     Checkout, CheckoutId, CheckoutKind, CheckoutState, Holder, Occupancy, Project, ProjectId,
     ProjectName, Trust,
 };
-pub use push::{Force, PushCredential, PushRules, Pushed, last_pushed, push};
+pub use push::{Force, PushCredential, PushRules, Pushed, WorkflowCheck, last_pushed, push};
 pub use register::register_project;
 pub use remove::remove_project;
 pub use source::SourceState;
