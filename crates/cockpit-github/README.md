@@ -1,0 +1,36 @@
+# cockpit-github
+
+The GitHub adapter of the forge contract: issues, pull requests as evidence, repository token checks and the hosts and credential schemes GitHub takes, through the `gh` program.
+
+It implements `cockpit-forge-api`'s `Forge` and nothing else, and depends on the contract
+alone (`cockpit-workspace-rules`, "forge adapters -> forge-api only"). New GitHub types and
+strings belong here (#60); the ones other crates carry from before the contract, such as the
+push check's origin test, move behind it as their callers adopt the contract.
+
+## Rules
+
+- **The caller's token, never the owner's sign-in.** `gh` runs with an environment of its
+  own: the token in `GH_TOKEN`, `GH_CONFIG_DIR` and `HOME` in the folder Torlek gives the
+  adapter, and only `PATH`, the proxy variables and the certificate paths passed through
+  from the daemon. It runs in that folder, so no checkout's remote is inferred. The token is
+  never an argument and every error masks it.
+- **Bodies on standard input.** Issue, comment and pull request bodies go to `gh` on
+  standard input (`--body-file=-`), out of the argument list other processes read; every
+  value is passed as `--flag=value`, so a title starting with `-` stays a title.
+- **Declared hosts (#857).** The API token is added on `github.com` for Git reads (Basic)
+  and on `api.github.com` (Bearer); the push token goes to `github.com` for Git pushes
+  alone, from the daemon. Nothing outside this crate needs a GitHub host name.
+- **Answers are read, never guessed.** A field missing, of another type, or a state GitHub
+  does not document is `Malformed`; an answer about another issue or pull request than the
+  one asked is too. `gh pr list --head` lists forks' branches of the same name, so a
+  branch's pull request is the newest from the repository itself.
+- **Scope check.** GitHub shows whether a token is accepted and reaches the repository, and
+  its kind by its documented prefix. A classic token (`ghp_`) reaches every repository and
+  is refused; a fine-grained token's permissions and repository list are not shown, so it
+  is reported unverified with what to check on its settings page.
+- **Provenance.** The conformance suite runs over answers written by hand to `gh`
+  2.104.0's `--json` shape (`tests/fixtures/`), since no test reaches GitHub. They prove the
+  adapter reads that shape, not that `gh` prints it, so every capability reports
+  `discovered` until answers recorded from a live `gh` replace them.
+- **Branch protection** (`protection-read`, `protection-bootstrap`) is not reported until
+  its contract methods exist (#695).

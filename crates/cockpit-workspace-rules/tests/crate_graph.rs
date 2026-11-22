@@ -265,6 +265,13 @@ const ALLOW_LISTS: &[AllowList] = &[
         from: PROVIDER_ADAPTERS,
         allowed: &["cockpit-provider-api"],
     },
+    // #60: a forge adapter sees Torlek through the forge contract alone, as a provider
+    // adapter does through its own; the daemon picks its token and passes it in.
+    AllowList {
+        rule: "forge adapters -> forge-api only",
+        from: &["cockpit-github"],
+        allowed: &["cockpit-forge-api"],
+    },
     // #49: what an agent is told is assembled from facts the daemon gathers from their owners
     // and passes in; the bundle and the brief never read state or grant anything themselves.
     AllowList {
@@ -704,6 +711,11 @@ fn each_rule_catches_its_forbidden_edge() {
             "capabilities -> provider adapters",
             "cockpit-tasks",
             "cockpit-opencode",
+        ),
+        (
+            "forge adapters -> forge-api only",
+            "cockpit-github",
+            "cockpit-projects",
         ),
         (
             "messaging -> the database only",
