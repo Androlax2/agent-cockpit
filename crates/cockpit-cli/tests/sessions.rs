@@ -11,7 +11,7 @@ mod scripted;
 use cockpit_protocol::{
     AgentExitView, CheckoutKindView, CheckoutView, Command, CoordinatorAuditView,
     CoordinatorGrantView, ErrorCode, ExitStatusView, HeldMessageView, LaunchKindView, LaunchView,
-    Outcome, ProtocolError, QuotaStopCauseView, QuotaStopStatusView, QuotaStopView,
+    Outcome, ProtocolError, ProviderView, QuotaStopCauseView, QuotaStopStatusView, QuotaStopView,
     ReadinessStatusView, Reply, RequirementView, SandboxEnforcementView, SandboxEvidenceView,
     SandboxRuleView, SessionFailure, SessionStateView, SessionView, StopTargetView, TaskBudgetView,
     TrustView,
@@ -1425,13 +1425,13 @@ async fn session_send_and_cancel_preserve_the_message_and_acknowledge_delivery()
 
 const REVIEW_CLONE: &str = "/home/u/projects/.parallel/app/pr-7";
 
-fn review_clone() -> Outcome {
+fn review_clone_at(path: &str) -> Outcome {
     Outcome::Ok(Reply::Checkout {
         checkout: Box::new(CheckoutView {
             id: 4,
             project: "app".to_owned(),
             kind: CheckoutKindView::Review { pull_request: 7 },
-            path: REVIEW_CLONE.to_owned(),
+            path: path.to_owned(),
             incarnation: 1,
             removing: false,
             occupant: None,
@@ -1448,12 +1448,29 @@ fn started_in_review_clone() -> Outcome {
     })
 }
 
+fn providers(names: &[&str]) -> Outcome {
+    Outcome::Ok(Reply::Providers {
+        providers: names
+            .iter()
+            .map(|name| ProviderView {
+                name: (*name).to_owned(),
+                resume: true,
+                events: true,
+            })
+            .collect(),
+    })
+}
+
 #[tokio::test]
 async fn session_review_clones_the_pull_request_then_starts_a_session_there() {
     let home = Home::new();
     let daemon = scripted_connections(
         &home.daemon_socket(),
-        vec![review_clone(), started_in_review_clone()],
+        vec![
+            providers(&["claude", "codex"]),
+            review_clone_at(REVIEW_CLONE),
+            started_in_review_clone(),
+        ],
     );
 
     let output = home
@@ -1470,7 +1487,8 @@ async fn session_review_clones_the_pull_request_then_starts_a_session_there() {
         text(&output.stdout),
         format!("s0123456789ab\trunning\tclaude\tstart\tc-1\t{REVIEW_CLONE}\t-\t-\t-\n")
     );
-    let [clone, start] = <[Command; 2]>::try_from(daemon.await.unwrap()).unwrap();
+    let [listed, clone, start] = <[Command; 3]>::try_from(daemon.await.unwrap()).unwrap();
+    assert_eq!(listed, Command::ProviderList);
     assert_eq!(
         clone,
         Command::CheckoutReview {
@@ -1509,6 +1527,27 @@ async fn session_review_clones_the_pull_request_then_starts_a_session_there() {
 }
 
 #[tokio::test]
+async fn a_review_with_an_agent_no_provider_has_makes_no_clone() {
+    let home = Home::new();
+    let daemon = scripted_connections(&home.daemon_socket(), vec![providers(&["claude"])]);
+
+    let output = home
+        .cockpit(
+            home.dir.path(),
+            &["session", "review", "app", "7", "--agent", "codx"],
+        )
+        .await;
+
+    assert!(!output.status.success());
+    assert!(
+        text(&output.stderr).contains("no provider is named \"codx\"; available: claude"),
+        "{}",
+        text(&output.stderr)
+    );
+    assert_eq!(daemon.await.unwrap(), vec![Command::ProviderList]);
+}
+
+#[tokio::test]
 async fn a_refused_review_clone_starts_no_session() {
     let home = Home::new();
     let daemon = scripted_connections(
@@ -1535,13 +1574,16 @@ async fn a_refused_review_clone_starts_no_session() {
 #[tokio::test]
 async fn a_review_session_that_does_not_start_names_the_clone_it_leaves() {
     let home = Home::new();
-    let _daemon = scripted_connections(
+    let clone = home.dir.path().join("pr-7");
+    std::fs::create_dir(&clone).unwrap();
+    let clone = clone.display().to_string();
+    let daemon = scripted_connections(
         &home.daemon_socket(),
         vec![
-            review_clone(),
+            review_clone_at(&clone),
             Outcome::Error(ProtocolError::new(
                 ErrorCode::Refused,
-                "no provider is named codex",
+                "the sandbox refuses the launch",
             )),
         ],
     );
@@ -1551,11 +1593,39 @@ async fn a_review_session_that_does_not_start_names_the_clone_it_leaves() {
         .await;
 
     assert!(!output.status.success());
+    let [_, start] = <[Command; 2]>::try_from(daemon.await.unwrap()).unwrap();
+    assert!(
+        matches!(&start, Command::SessionNew { dir, .. } if *dir == clone),
+        "{start:?}"
+    );
     let stderr = text(&output.stderr);
     assert!(
-        stderr.contains(&format!("the review clone stays at {REVIEW_CLONE}"))
+        stderr.contains(&format!("the review clone stays at {clone}"))
             && stderr.contains("torlek checkout sweep"),
         "{stderr}"
+    );
+}
+
+#[tokio::test]
+async fn a_review_session_whose_clone_is_gone_names_no_clone() {
+    let home = Home::new();
+    let _daemon = scripted_connections(
+        &home.daemon_socket(),
+        vec![
+            review_clone_at(REVIEW_CLONE),
+            Outcome::Error(ProtocolError::new(ErrorCode::NotFound, "no such folder")),
+        ],
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "review", "app", "7"])
+        .await;
+
+    assert!(!output.status.success());
+    assert!(
+        !text(&output.stderr).contains("stays at"),
+        "{}",
+        text(&output.stderr)
     );
 }
 

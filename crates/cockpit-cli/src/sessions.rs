@@ -165,19 +165,16 @@ fn review_prompt(pull_request: u64) -> String {
 pub fn review(arguments: &[OsString]) -> Result<ExitCode, String> {
     let words = utf8_words(arguments)?;
     let [project, number, options @ ..] = words.as_slice() else {
-        return Err("usage: session review PROJECT PULL_REQUEST [OPTIONS]".to_owned());
+        return Err("session review needs PROJECT and PULL_REQUEST".to_owned());
     };
     let pull_request: u64 = number
         .parse()
         .map_err(|_| format!("{number} is not a pull request number"))?;
-    for flag in ["--prompt", "--clone"] {
-        if options.contains(&flag) {
-            return Err(format!("session review takes no {flag}: it makes its own"));
-        }
-    }
     // The options `session new` takes, checked by its own parser; the folder is the clone's.
     let Command::SessionNew {
         agent,
+        prompt,
+        clone,
         model,
         effort,
         compaction_threshold,
@@ -186,6 +183,31 @@ pub fn review(arguments: &[OsString]) -> Result<ExitCode, String> {
     else {
         unreachable!("session_new builds SessionNew");
     };
+    for (flag, given) in [("--prompt", prompt.is_some()), ("--clone", clone.is_some())] {
+        if given {
+            return Err(format!("session review takes no {flag}: it makes its own"));
+        }
+    }
+    // A mistyped agent is refused before the clone, which a retry would only duplicate.
+    if let Some(agent) = &agent {
+        match request(Command::ProviderList, CONTROL_DEADLINE) {
+            Ok(Reply::Providers { providers }) => {
+                if !providers.iter().any(|provider| provider.name == *agent) {
+                    let names: Vec<&str> = providers
+                        .iter()
+                        .map(|provider| provider.name.as_str())
+                        .collect();
+                    eprintln!(
+                        "torlek: no provider is named {agent:?}; available: {}",
+                        names.join(", ")
+                    );
+                    return Ok(ExitCode::FAILURE);
+                }
+            }
+            Ok(reply) => return Ok(unexpected(&reply)),
+            Err(code) => return Ok(code),
+        }
+    }
     let checkout = match request(
         Command::CheckoutReview {
             project: (*project).to_owned(),
@@ -210,7 +232,8 @@ pub fn review(arguments: &[OsString]) -> Result<ExitCode, String> {
         effort,
         compaction_threshold,
     });
-    if code != ExitCode::SUCCESS {
+    // A sweep between the two requests may have removed it; then there is nothing to name.
+    if code != ExitCode::SUCCESS && std::path::Path::new(&checkout.path).exists() {
         eprintln!(
             "the review clone stays at {}; `torlek checkout sweep` removes it while it holds no \
              work",

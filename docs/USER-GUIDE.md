@@ -487,12 +487,13 @@ refused, naming `torlek project token set PROJECT --api`. Issue titles are writt
 who can open an issue, so control characters in them are shown escaped. This verb works from
 your own terminal only.
 
-`torlek session review PROJECT PULL_REQUEST --agent NAME` starts a session that reviews a pull
+`torlek session review PROJECT PULL_REQUEST [--agent NAME]` starts a session that reviews a pull
 request: it makes a review clone of the pull request's head (`torlek checkout review`), never
 trusted, and starts the session there with a first message asking it to read the diff against
 the base branch, run the relevant tests and report problems by severity, without pushing or
 commenting on the pull request. It takes `--model`, `--effort` and `--compaction-threshold`
-as `torlek session new` does. If the session does not start, the clone stays and `torlek
+as `torlek session new` does, and an agent it does not know is refused before any clone. If
+the session does not start, the clone stays and `torlek
 checkout sweep` removes it.
 
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` override their respective base directories.
