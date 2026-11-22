@@ -16,7 +16,7 @@ const PUSH_TOKEN: &str = "github_pat_11FAKEPUSH0fakefakefake";
 
 /// Two open issues as `gh issue list --json=number,title,state,labels,author,url` prints them;
 /// the second's title carries a terminal sequence and a line break.
-const LISTED: &str = r#"[{"author":{"login":"octo"},"labels":[{"name":"greenfield"},{"name":"alpha"}],"number":12,"state":"OPEN","title":"Read issues beside todos","url":"https://github.com/owner/cockpit/issues/12"},{"author":{"login":"ghost"},"labels":[],"number":7,"state":"OPEN","title":"\u001b[31mred\nfake\tline","url":"https://github.com/owner/cockpit/issues/7"}]"#;
+const LISTED: &str = r#"[{"author":{"login":"octo"},"labels":[{"name":"greenfield"},{"name":"alpha"}],"number":12,"state":"OPEN","title":"Read issues beside todos","url":"https://github.com/owner/cockpit/issues/12"},{"author":{"login":"ghost"},"labels":[],"number":7,"state":"OPEN","title":"\u001b[31mred\nfake\tline\u202emoc.evil","url":"https://github.com/owner/cockpit/issues/7"}]"#;
 
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
@@ -110,17 +110,19 @@ async fn issues_are_read_with_the_projects_api_token_and_never_its_other_token()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_title_from_the_forge_cannot_fake_a_line_or_a_terminal_sequence() {
+async fn a_title_from_the_forge_cannot_fake_a_line_a_terminal_sequence_or_its_reading_order() {
     let (home, _daemon, _) = started("https://github.com/owner/cockpit.git").await;
     home.write_github_api_token("cockpit", API_TOKEN, 0o600);
 
     let output = home.cockpit(&["todo", "issues", "cockpit"], &[]).await;
 
     let listed = text(&output.stdout);
-    assert!(!listed.contains('\u{1b}'), "{listed:?}");
+    assert!(!listed.contains(['\u{1b}', '\u{202e}']), "{listed:?}");
     assert_eq!(
         listed.lines().nth(1),
-        Some("#7\t\\u{1b}[31mred\\nfake\\tline\t-\thttps://github.com/owner/cockpit/issues/7")
+        Some(
+            "#7\t\\u{1b}[31mred\\nfake\\tline\\u{202e}moc.evil\t-\thttps://github.com/owner/cockpit/issues/7"
+        )
     );
 }
 
@@ -165,5 +167,50 @@ async fn an_unknown_project_is_not_found() {
     assert!(
         refused.contains("no project is named \"elsewhere\""),
         "{refused}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_origin_naming_a_credential_is_refused_without_repeating_it() {
+    let (home, _daemon, log) =
+        started("https://x-access-token:SECRET@github.com/owner/cockpit.git").await;
+    home.write_github_api_token("cockpit", API_TOKEN, 0o600);
+
+    let output = home.cockpit(&["todo", "issues", "cockpit"], &[]).await;
+
+    assert!(!output.status.success());
+    let refused = text(&output.stderr);
+    assert!(refused.contains("names a user or a password"), "{refused}");
+    assert!(!refused.contains("SECRET"), "{refused}");
+    assert!(!gh_calls(&log).contains("issue list"), "{}", gh_calls(&log));
+}
+
+/// `gh --version` is the adapter's probe: it runs at the first read, not at each.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_forge_program_is_probed_once_across_reads() {
+    let (home, _daemon, log) = started("https://github.com/owner/cockpit.git").await;
+    home.write_github_api_token("cockpit", API_TOKEN, 0o600);
+
+    for _ in 0..2 {
+        let output = home.cockpit(&["todo", "issues", "cockpit"], &[]).await;
+        assert!(output.status.success(), "{}", text(&output.stderr));
+    }
+
+    let calls = gh_calls(&log);
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.starts_with("--version"))
+            .count(),
+        1,
+        "{calls}"
+    );
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.starts_with("issue list"))
+            .count(),
+        2,
+        "{calls}"
     );
 }

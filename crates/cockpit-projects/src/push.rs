@@ -91,6 +91,12 @@ pub(crate) fn configured_redirects(
 fn refused_push_url(url: &str, project: &ProjectName, push_hosts: &[ForgeHost]) -> Option<String> {
     let repository = match cockpit_forge_api::parse_origin(url) {
         Ok(repository) => repository,
+        // An origin naming a credential is refused for holding it, so it is not repeated.
+        Err(unresolved @ cockpit_forge_api::Unresolved::UserInfo) => {
+            return Some(format!(
+                "origin: {unresolved}; Torlek pushes only to an https repository URL"
+            ));
+        }
         Err(unresolved) => {
             return Some(format!(
                 "origin is {url:?}: {unresolved}; Torlek pushes only to an https repository URL"

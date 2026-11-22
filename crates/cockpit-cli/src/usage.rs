@@ -295,14 +295,28 @@ fn span(seconds: i64) -> String {
     }
 }
 
-/// The provider's words are data: a control character (an escape sequence, a newline or a tab
-/// that would fake a line or a column) is shown escaped, the rest as it is.
+/// Someone else's words are data (a provider's, a forge's): a control character (an escape
+/// sequence, a newline or a tab that would fake a line or a column), a line or paragraph
+/// separator, or a bidirectional control that would reorder what follows, is shown escaped;
+/// the rest as it is.
 pub(crate) fn printable(value: &str) -> String {
     value
         .chars()
         .map(|character| {
+            let reorders_or_breaks = matches!(
+                character,
+                '\u{061C}'
+                    | '\u{200E}'
+                    | '\u{200F}'
+                    | '\u{202A}'..='\u{202E}'
+                    | '\u{2066}'..='\u{2069}'
+                    | '\u{2028}'
+                    | '\u{2029}'
+            );
             if character.is_control() {
                 character.escape_debug().to_string()
+            } else if reorders_or_breaks {
+                character.escape_unicode().to_string()
             } else {
                 character.to_string()
             }

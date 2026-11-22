@@ -92,6 +92,8 @@ pub struct Routes {
     feed_buffer_bytes: u32,
     /// The host Git that project commands run, with the safe settings applied.
     git: cockpit_projects::Git,
+    /// The forge adapters a read goes through, made at the first one (#60).
+    forge_adapters: Arc<crate::forges::Adapters>,
     sessions: Arc<cockpit_sessions::Sessions>,
     manager: Arc<Manager>,
     providers: Vec<cockpit_protocol::ProviderView>,
@@ -202,6 +204,7 @@ impl Routes {
             database: capabilities.database,
             feed_buffer_bytes: capabilities.feed_buffer_bytes,
             git: capabilities.git,
+            forge_adapters: Arc::default(),
             sessions: capabilities.sessions,
             manager: capabilities.manager,
             providers: capabilities.providers,
@@ -567,9 +570,12 @@ impl Handler for Routes {
                 Peer::Agent { .. } => Route::Answer(owner_only()),
                 Peer::Owner => crate::issues::route(
                     command,
-                    Arc::clone(&self.database),
-                    self.git.clone(),
-                    self.environment.clone(),
+                    crate::issues::Context {
+                        database: Arc::clone(&self.database),
+                        git: self.git.clone(),
+                        environment: self.environment.clone(),
+                        adapters: Arc::clone(&self.forge_adapters),
+                    },
                 ),
             },
             // What an agent may do to tasks: file, read and work its own items, and fix the

@@ -4,6 +4,7 @@
 
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use cockpit_forge_api::{Declaration, Forge, ForgeHost, HostUse};
 
@@ -11,11 +12,38 @@ use cockpit_forge_api::{Declaration, Forge, ForgeHost, HostUse};
 /// so no adapter reads the owner's (`~/.config/gh`).
 const ADAPTERS_DIR: &str = "forges";
 
+/// The adapters the daemon reads through, made at the first read and kept while each found
+/// its program: one that did not is made again at the next read, so installing `gh` while the
+/// daemon runs needs no restart.
+#[derive(Default)]
+pub(crate) struct Adapters(OnceLock<Vec<Box<dyn Forge>>>);
+
+impl Adapters {
+    /// Runs `read` over the adapters. Blocking on the first call, and on each while an
+    /// adapter's program is missing: making one discovers its program's version.
+    pub(crate) fn read<T>(
+        &self,
+        environment: &cockpit_config::Environment,
+        read: impl FnOnce(&[&dyn Forge]) -> T,
+    ) -> Result<T, String> {
+        let borrowed = |adapters: &[Box<dyn Forge>]| {
+            let serving: Vec<&dyn Forge> = adapters.iter().map(|adapter| &**adapter).collect();
+            read(&serving)
+        };
+        if let Some(kept) = self.0.get() {
+            return Ok(borrowed(kept));
+        }
+        let made = adapters(environment)?;
+        if made.iter().any(|adapter| adapter.version().is_none()) {
+            return Ok(borrowed(&made));
+        }
+        Ok(borrowed(self.0.get_or_init(|| made)))
+    }
+}
+
 /// The adapters, ready to call. Blocking: each discovers its program's version, and one
 /// whose program is missing withholds its capabilities naming why.
-pub(crate) fn adapters(
-    environment: &cockpit_config::Environment,
-) -> Result<Vec<Box<dyn Forge>>, String> {
+fn adapters(environment: &cockpit_config::Environment) -> Result<Vec<Box<dyn Forge>>, String> {
     let home = environment.home_dir().map_err(|error| error.to_string())?;
     let layout = cockpit_config::Layout::resolve(environment, &home);
     let config_dir = layout.state_dir.value.join(ADAPTERS_DIR).join("github");

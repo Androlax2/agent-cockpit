@@ -104,8 +104,16 @@ async fn an_ssh_origin_is_refused_naming_ssh_even_on_a_host_the_project_may_push
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_origin_naming_a_credential_is_refused() {
-    let (result, _) = push_with_origin("https://token@github.com/owner/app.git", github()).await;
+    let (result, _) = push_with_origin(
+        "https://x-access-token:SECRET@github.com/owner/app.git",
+        github(),
+    )
+    .await;
 
     let reason = refusal(result);
     assert!(reason.contains("names a user or a password"), "{reason}");
+    assert!(
+        !reason.contains("SECRET"),
+        "the credential is not repeated: {reason}"
+    );
 }
