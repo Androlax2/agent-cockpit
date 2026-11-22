@@ -643,7 +643,7 @@ async fn an_approval_of_another_commit_does_not_cover_the_one_pushed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_workflow_file_already_on_the_default_branch_is_not_in_a_new_branchs_range() {
+async fn a_workflow_already_on_the_default_branch_is_not_held_on_a_new_branch() {
     let fixture = Fixture::new(ORIGIN).await;
     fixture.commit_file(WORKFLOW, "on: push\n");
     fixture.push(github(), Force::Never).await.unwrap();
@@ -677,7 +677,7 @@ async fn a_workflow_already_on_the_remote_branch_is_not_held_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_rebase_bringing_in_the_default_branchs_workflow_is_not_held() {
+async fn a_rebase_bringing_in_the_workflow_of_the_default_branch_is_not_held() {
     let fixture = on_a_new_feature_branch().await;
     fixture.commit_file("README", "feature work\n");
     fixture.push_as_agent(Force::Never, None).await.unwrap();
@@ -699,7 +699,7 @@ async fn a_rebase_bringing_in_the_default_branchs_workflow_is_not_held() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_branch_predating_the_default_branchs_workflow_change_is_held_until_rebased() {
+async fn a_branch_predating_a_workflow_change_on_the_default_branch_is_held_until_rebased() {
     let fixture = on_a_new_feature_branch().await;
     let main = fixture.someone_else_commits("main", WORKFLOW, "on: push\n");
     fixture.commit_file("README", "work\n");
