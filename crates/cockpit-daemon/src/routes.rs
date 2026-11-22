@@ -129,6 +129,7 @@ impl Routes {
 
     pub fn new(capabilities: Capabilities, environment: cockpit_config::Environment) -> Routes {
         let provider_capabilities = Arc::new(capabilities.provider_capabilities);
+        let forge_adapters = Arc::<crate::forges::Adapters>::default();
         let containers = capabilities.containers;
         let check_containers = containers.clone();
         let readiness = readiness::Context {
@@ -163,6 +164,7 @@ impl Routes {
                 environment: environment.clone(),
                 sessions: Arc::clone(&capabilities.sessions),
                 provider_capabilities: Arc::clone(&provider_capabilities),
+                forge_adapters: Arc::clone(&forge_adapters),
             },
             scheduling: scheduling::Context {
                 database: Arc::clone(&capabilities.database),
@@ -204,7 +206,7 @@ impl Routes {
             database: capabilities.database,
             feed_buffer_bytes: capabilities.feed_buffer_bytes,
             git: capabilities.git,
-            forge_adapters: Arc::default(),
+            forge_adapters,
             sessions: capabilities.sessions,
             manager: capabilities.manager,
             providers: capabilities.providers,

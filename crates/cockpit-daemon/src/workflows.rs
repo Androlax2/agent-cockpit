@@ -8,6 +8,7 @@
 //! names for the current checkout; the owner may still waive requirements.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use cockpit_protocol::{
@@ -26,6 +27,8 @@ use cockpit_workflows::{
 };
 
 use crate::approvals::{Answer, Failed, Sender, job, now};
+use crate::forge_reads::Reader;
+use crate::merged::MERGED;
 use crate::routes::{Peer, Route, WorkClass};
 use crate::tasks::{kind_view, refused, status_view as task_status_view, unblocked_by};
 
@@ -39,6 +42,8 @@ pub(crate) struct Context {
     pub(crate) environment: cockpit_config::Environment,
     pub(crate) sessions: Arc<cockpit_sessions::Sessions>,
     pub(crate) provider_capabilities: Arc<BTreeMap<String, Capabilities>>,
+    /// The forge adapters the `merged` requirement is read through (#60).
+    pub(crate) forge_adapters: Arc<crate::forges::Adapters>,
 }
 
 /// The route for a workflow command; `routes.rs` sends only those here, after the socket
@@ -217,7 +222,7 @@ async fn complete(
             .await?
             .iter()
             .map(crate::verification::definition)
-            .filter(|check| required.contains(&check.name.as_str()) && !waive.contains(&check.name))
+            .filter(|check| is_required_check(required, waive, &check.name))
             .collect();
         if !checks.is_empty() {
             let source = crate::verification::source(&context.git, checkout).await?;
@@ -235,9 +240,7 @@ async fn complete(
                     .await?
                     .iter()
                     .map(crate::verification::definition)
-                    .filter(|check| {
-                        required.contains(&check.name.as_str()) && !waive.contains(&check.name)
-                    })
+                    .filter(|check| is_required_check(required, waive, &check.name))
                     .collect();
             if source == crate::verification::source(&context.git, checkout).await?
                 && checks == current_checks
@@ -257,7 +260,30 @@ async fn complete(
             }
         }
     }
+    let needs_merged = eligible
+        && run.blocked.is_none()
+        && required.contains(&MERGED)
+        && !waive.iter().any(|waived| waived == MERGED);
+    let merged_at = match (&checkout, sender) {
+        // The owner's checkout is the project's main one, whose branch says nothing of the
+        // step's work: only the session doing the step completes it on the forge's answer.
+        (_, None) if needs_merged => return Err(owner_cannot_read_merged()),
+        (Some(checkout), Some(_)) if needs_merged => {
+            let head = merged_head(context, &run.project, checkout).await?;
+            satisfied.push(MERGED.to_owned());
+            Some(head)
+        }
+        _ => None,
+    };
     let write = context.database.write().await?;
+    if let (Some(head), Some(checkout)) = (&merged_at, &checkout)
+        && crate::verification::source(&context.git, checkout)
+            .await?
+            .head
+            != *head
+    {
+        return Err(completion_changed());
+    }
     if let Some(sender) = sender {
         let session = sender.identify(&write, launch_token(&command)).await?;
         let project = sender.project(&write).await?;
@@ -294,6 +320,40 @@ async fn project_checkout(
         Err(cockpit_projects::Error::UnknownProject { .. }) => Ok(None),
         Err(error) => Err(internal(&error)),
     }
+}
+
+/// A declared check the step requires and the caller did not waive. `merged` is read from the
+/// forge, never from a check of that name.
+fn is_required_check(required: &[&str], waive: &[String], name: &str) -> bool {
+    name != MERGED && required.contains(&name) && !waive.iter().any(|waived| waived == name)
+}
+
+/// [`crate::merged::merged_head`], off the async workers.
+async fn merged_head(context: &Context, project: &str, checkout: &Path) -> Result<String, Failed> {
+    let git = context.git.clone();
+    let environment = context.environment.clone();
+    let adapters = Arc::clone(&context.forge_adapters);
+    let project = project.to_owned();
+    let checkout = checkout.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let reader = Reader {
+            git: &git,
+            environment: &environment,
+            adapters: &adapters,
+        };
+        crate::merged::merged_head(&reader, &project, &checkout)
+    })
+    .await
+    .map_err(|error| internal(&error))?
+}
+
+fn owner_cannot_read_merged() -> Failed {
+    refused(
+        ErrorCode::Refused,
+        format!("the step requires `{MERGED}`, read from the checkout of the session doing it"),
+        "complete it from that session, or waive `merged` with --waive merged",
+        UnblockedBy::Owner,
+    )
 }
 
 fn completion_changed() -> Failed {
@@ -765,5 +825,25 @@ impl From<cockpit_workflows::Error> for Failed {
             cockpit_workflows::Error::Refused(refusal) => refusal.into(),
             error => internal(&error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_check_named_merged_never_stands_in_for_the_forges_answer() {
+        assert!(!is_required_check(&[MERGED, "checks"], &[], MERGED));
+        assert!(is_required_check(&[MERGED, "checks"], &[], "checks"));
+    }
+
+    #[test]
+    fn a_waived_check_is_not_required() {
+        assert!(!is_required_check(
+            &["checks"],
+            &["checks".to_owned()],
+            "checks"
+        ));
     }
 }
