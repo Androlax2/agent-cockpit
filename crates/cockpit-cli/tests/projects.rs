@@ -1410,3 +1410,49 @@ fn network_grant_takes_no_host_but_github_and_docker_hub() {
     );
     assert_eq!(home.cockpit_ok(&["network", "grants"]), "");
 }
+
+#[test]
+fn a_project_lists_no_push_branch_until_the_owner_adds_one() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+
+    let listed = home.cockpit_ok(&["project", "push-branch", "list", "app"]);
+
+    assert!(
+        listed.contains("push their launch branch alone")
+            && listed.contains("`torlek project push-branch add app PATTERN`"),
+        "{listed}"
+    );
+}
+
+#[test]
+fn added_push_branch_patterns_are_listed_and_a_removed_one_is_not() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+
+    home.cockpit_ok(&["project", "push-branch", "add", "app", "release/*"]);
+    let added = home.cockpit_ok(&["project", "push-branch", "add", "app", "agent/**"]);
+    let removed = home.cockpit_ok(&["project", "push-branch", "remove", "app", "release/*"]);
+
+    assert_eq!(added, "agent/**\nrelease/*\n");
+    assert_eq!(removed, "agent/**\n");
+}
+
+#[test]
+fn a_push_branch_pattern_reaching_beyond_branches_is_refused() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let root = home.project("app");
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+
+    let refused = home.cockpit_err(&["project", "push-branch", "add", "app", "refs/tags/*"]);
+
+    assert!(
+        refused.contains("is not a push-branch pattern"),
+        "{refused}"
+    );
+}

@@ -76,6 +76,11 @@ marker is refused as `Replaced` instead of being acted on.
   checkout so its configuration cannot rewrite it; the push goes to that URL too. The check
   covers the workflow files #857 names, not what they reach elsewhere in the repository
   (scripts, local actions, a GitLab `include: local`): CI runs those like any other code.
+- **Push branches.** `project_push_branches` holds the branch patterns the owner adds per
+  project (`add_push_branch`, `remove_push_branch`, `push_branches`), none by default
+  (#155, 2026-11-09 option B). `BranchPattern` refuses a pattern that names no branch or
+  reaches beyond branches (`refs/`, `..`, an empty segment); `*` matches within one segment,
+  a `**` segment any number of them.
 
 ## Dependency edges
 
@@ -96,6 +101,8 @@ marker is refused as `Replaced` instead of being acted on.
   branch is removed even after the default branch changed its file, a later, empty or partly
   undoing commit kept; a main checkout is refused.
 - `tests/changed_files.rs`: uncommitted and unpushed changes on real Git.
+- `tests/push_branches.rs`: push-branch patterns added once each, listed in name order,
+  removed, and refused for an unregistered project.
 - `tests/push.rs`: a push only to a host the project may push to, SSH and credential origins
   refused, the resolved commit sent though the branch moves, the push token offered to the push
   host alone, every lease rule, and the workflow check (approval bound to the commit, a

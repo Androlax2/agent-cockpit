@@ -12,6 +12,7 @@ mod error;
 mod git;
 mod model;
 mod push;
+mod push_branches;
 mod push_range;
 mod register;
 mod remove;
@@ -34,6 +35,7 @@ pub use model::{
     ProjectName, Trust,
 };
 pub use push::{Force, PushCredential, PushRules, Pushed, WorkflowCheck, last_pushed, push};
+pub use push_branches::{BranchPattern, add_push_branch, push_branches, remove_push_branch};
 pub use register::register_project;
 pub use remove::remove_project;
 pub use source::SourceState;

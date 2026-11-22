@@ -16,6 +16,11 @@ pub enum Error {
     InvalidBranch {
         branch: String,
     },
+    /// A push-branch pattern the owner gave that names no branch or reaches beyond branches.
+    InvalidPushBranch {
+        pattern: String,
+        reason: String,
+    },
     /// Beyond what the store holds: SQLite integers are signed.
     InvalidPullRequest {
         pull_request: u64,
@@ -154,6 +159,12 @@ impl fmt::Display for Error {
             ),
             Error::InvalidBranch { branch } => {
                 write!(formatter, "{branch:?} is not a valid branch name")
+            }
+            Error::InvalidPushBranch { pattern, reason } => {
+                write!(
+                    formatter,
+                    "{pattern:?} is not a push-branch pattern: {reason}"
+                )
             }
             Error::InvalidPullRequest { pull_request } => {
                 write!(formatter, "pull request {pull_request} is out of range")

@@ -88,6 +88,8 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek project list
        torlek project show PROJECT
        torlek project token set|show|clear PROJECT [--api]
+       torlek project push-branch add|remove PROJECT PATTERN
+       torlek project push-branch list PROJECT
        torlek project remove PROJECT
        torlek checkout list [PROJECT]
        torlek checkout clone PROJECT BRANCH

@@ -366,6 +366,9 @@ impl Handler for Routes {
                 command @ (Command::ProjectAdd { .. }
                 | Command::ProjectList
                 | Command::ProjectRemove { .. }
+                | Command::ProjectPushBranchAdd { .. }
+                | Command::ProjectPushBranchRemove { .. }
+                | Command::ProjectPushBranchList { .. }
                 | Command::CheckoutList { .. }
                 | Command::CheckoutClone { .. }
                 | Command::CheckoutReview { .. }

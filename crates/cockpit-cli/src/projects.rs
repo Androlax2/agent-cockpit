@@ -25,6 +25,21 @@ pub fn parse(verb: &str, arguments: &[OsString]) -> Result<(Command, Duration), 
         ("project", ["remove", project]) => control(Command::ProjectRemove {
             project: (*project).to_owned(),
         }),
+        ("project", ["push-branch", "add", project, pattern]) => {
+            control(Command::ProjectPushBranchAdd {
+                project: (*project).to_owned(),
+                pattern: (*pattern).to_owned(),
+            })
+        }
+        ("project", ["push-branch", "remove", project, pattern]) => {
+            control(Command::ProjectPushBranchRemove {
+                project: (*project).to_owned(),
+                pattern: (*pattern).to_owned(),
+            })
+        }
+        ("project", ["push-branch", "list", project]) => control(Command::ProjectPushBranchList {
+            project: (*project).to_owned(),
+        }),
         ("checkout", ["list"]) => control(Command::CheckoutList { project: None }),
         ("checkout", ["list", project]) => control(Command::CheckoutList {
             project: Some((*project).to_owned()),
@@ -188,6 +203,14 @@ fn render(reply: &Reply) -> Option<String> {
         Reply::Pushed {
             branch, remote_url, ..
         } => format!("pushed {branch} to {remote_url}\n"),
+        Reply::PushBranches { project, patterns } if patterns.is_empty() => format!(
+            "{project}'s agents push their launch branch alone; add more with `torlek project \
+             push-branch add {project} PATTERN`\n"
+        ),
+        Reply::PushBranches { patterns, .. } => patterns
+            .iter()
+            .map(|pattern| format!("{pattern}\n"))
+            .collect(),
         _ => return None,
     };
     Some(text)
