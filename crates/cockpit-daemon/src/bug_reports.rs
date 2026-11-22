@@ -614,7 +614,7 @@ async fn bundle_sections(
 fn version_manifest(state_dir: &Path, environment: &str, cli_version: Option<&str>) -> String {
     let cli = cli_version
         .unwrap_or("not reported: filed by the TUI, an agent or the daemon, not the CLI");
-    let skills = cockpit_claude::instruction_skills_dir(&crate::agent_context::claude_skills_root(
+    let skills = cockpit_claude::instruction_skills_dir(&crate::agent_context::claude_plugin_root(
         state_dir,
     ));
     let helpers = [

@@ -367,7 +367,7 @@ def evidence(config, request, number):
         )
     )
     skill = SKILL_DESCRIPTION in context and (
-        (provider == "claude" and "- torlek: " in context and "Skill" in tools)
+        (provider == "claude" and "- torlek:torlek: " in context and "Skill" in tools)
         or (provider == "opencode" and "<name>torlek</name>" in context and "skill" in tools)
     )
     return {

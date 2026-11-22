@@ -1,8 +1,8 @@
 //! Issue #786 through the daemon: the optional skill pack, written at every start into the
 //! folders each adapter's launch points its harness at, holds only the skills the owner's
 //! `[skill_pack]` turns on, an owner's or trusted project's skill of the same name winning.
-//! Each adapter is wired with the folder `serve.rs` gives it (Claude Code `claude-skills`
-//! through `--add-dir`, OpenCode `agent-context` in `skills.paths`, Codex none), and the
+//! Each adapter is wired with the folder `serve.rs` gives it (Claude Code `claude-plugin`
+//! through `--plugin-dir`, OpenCode `agent-context` in `skills.paths`, Codex none), and the
 //! test reads the folder back from the launch itself. Issue #787: from that launch, each
 //! harness's listing is built the way its source builds it, and a skill only the user invokes
 //! has no description in it.
@@ -108,7 +108,7 @@ impl Home {
 
     fn claude(&self) -> cockpit_claude::ClaudeCode {
         cockpit_claude::ClaudeCode::new("/usr/bin/claude".into(), None, None)
-            .with_instruction_skills(self.state_dir().join("claude-skills"))
+            .with_instruction_skills(self.state_dir().join("claude-plugin"))
     }
 
     fn opencode(&self) -> cockpit_opencode::OpenCode {
@@ -155,16 +155,19 @@ fn launch(provider: &dyn Provider) -> LaunchCommand {
         .unwrap()
 }
 
-/// The skills Claude Code lists from the folder the launch adds with `--add-dir`.
+/// The skills Claude Code lists from the plugin the launch loads with `--plugin-dir`.
 fn claude_skills(launch: &LaunchCommand) -> BTreeSet<String> {
     let words: Vec<String> = launch
         .arguments
         .iter()
         .map(|word| word.to_string_lossy().into_owned())
         .collect();
-    let added = words.iter().position(|word| word == "--add-dir").unwrap();
+    let loaded = words
+        .iter()
+        .position(|word| word == "--plugin-dir")
+        .unwrap();
     skills_under(&cockpit_claude::instruction_skills_dir(Path::new(
-        &words[added + 1],
+        &words[loaded + 1],
     )))
 }
 
@@ -226,7 +229,7 @@ fn skill_frontmatters(folder: &Path) -> Vec<(String, String)> {
     found
 }
 
-/// What Claude Code puts in the model's context for the skills of the folder the launch adds:
+/// What Claude Code puts in the model's context for the skills of the plugin the launch loads:
 /// each frontmatter, but not that of a skill with `disable-model-invocation: true`
 /// (code.claude.com/docs/en/skills, "Description not in context").
 fn claude_listing(launch: &LaunchCommand) -> String {
@@ -235,8 +238,11 @@ fn claude_listing(launch: &LaunchCommand) -> String {
         .iter()
         .map(|word| word.to_string_lossy().into_owned())
         .collect();
-    let added = words.iter().position(|word| word == "--add-dir").unwrap();
-    let folder = cockpit_claude::instruction_skills_dir(Path::new(&words[added + 1]));
+    let loaded = words
+        .iter()
+        .position(|word| word == "--plugin-dir")
+        .unwrap();
+    let folder = cockpit_claude::instruction_skills_dir(Path::new(&words[loaded + 1]));
     skill_frontmatters(&folder)
         .into_iter()
         .filter(|(_, frontmatter)| {
@@ -282,7 +288,7 @@ fn codex_listing(launch: &LaunchCommand) -> String {
     assert!(
         !state_dir_arguments
             .map(|word| word.to_string_lossy())
-            .any(|word| word.contains("claude-skills") || word.contains("agent-context")),
+            .any(|word| word.contains("claude-plugin") || word.contains("agent-context")),
         "a Codex launch names a skill folder"
     );
     String::new()

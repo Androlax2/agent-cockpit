@@ -1,5 +1,7 @@
 # Each adapter puts the launch brief in front of its agent at every context start and registers `cockpit mcp`
 
+Status: partly superseded by 2026-11-22-1419-claude-skills-plugin.md: all but the Claude Code `--add-dir` bullet of the 2026-11-01 revisit still holds
+
 Issue #419. Decided by the implementing session, within report 08.
 
 - **The brief is read live through `cockpit brief`, never baked into the launch.** Claude

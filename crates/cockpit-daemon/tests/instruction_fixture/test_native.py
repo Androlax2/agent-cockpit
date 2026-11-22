@@ -333,7 +333,7 @@ class Evidence(unittest.TestCase):
         )
         context += "\nmcp__torlek__torlek_brief\nmcp__torlek__torlek_docs"
         context += (
-            "\nThe following skills are available for use with the Skill tool:\n- torlek: "
+            "\nThe following skills are available for use with the Skill tool:\n- torlek:torlek: "
             + SKILL_DESCRIPTION
         )
         request = {

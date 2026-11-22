@@ -318,9 +318,15 @@ impl Instance {
             dir = %bundle_dir.display(),
             "wrote the agent instruction bundle"
         );
-        let claude_skills = cockpit_claude::instruction_skills_dir(
-            &agent_context::claude_skills_root(&options.state_dir),
-        );
+        let claude_plugin = agent_context::claude_plugin_root(&options.state_dir);
+        cockpit_claude::write_instruction_plugin_manifest(&claude_plugin).map_err(|source| {
+            StartError::InstructionBundle(cockpit_agent_context::WriteError::Io {
+                action: "write the Claude Code plugin manifest in",
+                path: claude_plugin.clone(),
+                source,
+            })
+        })?;
+        let claude_skills = cockpit_claude::instruction_skills_dir(&claude_plugin);
         cockpit_agent_context::write_bundle(&claude_skills)
             .map_err(StartError::InstructionBundle)?;
         let skill_pack = Arc::new(agent_context::deliver_skill_pack(

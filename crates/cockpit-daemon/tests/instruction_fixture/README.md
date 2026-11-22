@@ -92,7 +92,7 @@ parts work from inside Torlek's sandbox is shown with the stand-in Claude Code i
 without Claude Code's own hook timeout or environment: `sandbox.rs`
 `a_sandboxed_claude_gets_the_sessions_brief_as_its_context_starts`,
 `a_sandboxed_claudes_mcp_server_answers_the_sessions_brief` and
-`a_sandboxed_claude_reads_the_skill_its_launch_adds` run the launch's own hook, MCP
+`a_sandboxed_claude_reads_the_skill_of_the_plugin_its_launch_loads` run the launch's own hook, MCP
 server and skill path in the sandbox.
 
 **Unmeasured:** no signed-in model has listed the skill or identified its

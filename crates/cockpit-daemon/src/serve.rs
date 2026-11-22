@@ -136,14 +136,14 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     let plugin_dir = instance.options().state_dir.join(OPENCODE_PLUGIN_DIR);
     // Both written at the daemon's start, before any launch (#419).
     let bundle_dir = crate::agent_context::bundle_dir(&instance.options().state_dir);
-    let claude_skills_root =
-        crate::agent_context::claude_skills_root(&instance.options().state_dir);
+    let claude_plugin_root =
+        crate::agent_context::claude_plugin_root(&instance.options().state_dir);
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
     let mut unavailable_providers = Vec::new();
     match claude_code(&serve.programs_dir) {
         Ok(claude) => {
             providers.push(Arc::new(
-                claude.with_instruction_skills(claude_skills_root.clone()),
+                claude.with_instruction_skills(claude_plugin_root.clone()),
             ));
         }
         Err(reason) => unavailable_providers.push(("claude".to_owned(), reason)),
@@ -173,9 +173,9 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             Some(serve.programs_dir.clone()),
             opencode_plugin_dir,
             // `$TORLEK_INSTRUCTIONS`, which the launch brief points agents at and OpenCode
-            // lists as skills, and its copy Claude Code lists as skills (#419).
+            // lists as skills, and its copy in the plugin Claude Code loads (#419).
             Some(bundle_dir),
-            Some(claude_skills_root),
+            Some(claude_plugin_root),
         ]
         .into_iter()
         .flatten()
