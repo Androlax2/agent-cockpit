@@ -89,7 +89,10 @@ pub const NEW_EFFORT_LEVEL: &str = "ludicrous";
 /// [`ASK_GUIDE_PROJECT`], [`COMMANDED_PROJECT`], [`QUESTION_PROJECT`], [`ONBOARD_PROJECT`]);
 /// anything else sleeps. `--version` answers
 /// the version the adapter's conformance tests ran on, and `--help` lists `--effort` levels
-/// with one ([`NEW_EFFORT_LEVEL`]) no Torlek release has known (#743).
+/// with one ([`NEW_EFFORT_LEVEL`]) no Torlek release has known (#743). Like Claude Code from
+/// 2.1.326, a launch that adds a folder with `--add-dir` stops on a trust prompt, logged to
+/// [`Home::skill_log`] and never answered; a launch that loads plugins with `--plugin-dir`
+/// logs each skill it lists there, as `/<plugin>:<skill>` (#1419).
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
 if [ "$1" = --help ]; then
@@ -103,6 +106,20 @@ printf '%s %s %s %s\n' "$TORLEK_SESSION" "${TMPDIR-unset}" "${CLAUDE_CODE_TMPDIR
   >> '@TEMP_LOG@'
 printf '%s %s %s\n' "$TORLEK_SESSION" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" \
   >> '@GITHUB_LOG@'
+previous=
+for word in "$@"; do
+  case "$previous" in
+    --add-dir) printf '%s trust prompt for %s\n' "$TORLEK_SESSION" "$word" >> '@SKILL_LOG@'
+      exec sleep 3600 ;;
+    --plugin-dir) plugin=$(sed -n 's/^{"name":"\(.*\)"}$/\1/p' "$word/.claude-plugin/plugin.json")
+      for skill in "$word"/skills/*/SKILL.md; do
+        [ -r "$skill" ] || continue
+        folder=${skill%/SKILL.md}
+        printf '%s lists /%s:%s\n' "$TORLEK_SESSION" "$plugin" "${folder##*/}" >> '@SKILL_LOG@'
+      done ;;
+  esac
+  previous=$word
+done
 case "${PWD##*/}" in
   @FLOOD@) exec yes 'cockpit latency fixture: one build log line after another, without pause' ;;
   @STALL@) trap '' TERM; while :; do sleep 1; done ;;
@@ -191,6 +208,7 @@ impl Home {
                 .replace("@LOG@", &utf8(&home.launch_log()))
                 .replace("@TEMP_LOG@", &utf8(&home.temp_log()))
                 .replace("@GITHUB_LOG@", &utf8(&home.github_log()))
+                .replace("@SKILL_LOG@", &utf8(&home.skill_log()))
                 .replace("@NEW_EFFORT@", NEW_EFFORT_LEVEL)
                 .replace("@FLOOD@", FLOOD_PROJECT)
                 .replace("@STALL@", STALL_PROJECT)
@@ -230,6 +248,33 @@ impl Home {
     /// Each launched agent's session, `TMPDIR` and `CLAUDE_CODE_TMPDIR`, one line each.
     pub fn temp_log(&self) -> PathBuf {
         self.path().join("temp.log")
+    }
+
+    /// Each launched agent's session and either a skill its plugins list or the trust prompt
+    /// it stopped on, one line each (#1419).
+    pub fn skill_log(&self) -> PathBuf {
+        self.path().join("skills.log")
+    }
+
+    /// What `session`'s agent logged in [`Home::skill_log`], once it logged anything.
+    pub async fn skill_lines_of(&self, session: &str) -> Vec<String> {
+        let deadline = Instant::now() + GENEROUS;
+        loop {
+            let lines: Vec<String> = std::fs::read_to_string(self.skill_log())
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| line.strip_prefix(&format!("{session} ")))
+                .map(str::to_owned)
+                .collect();
+            if !lines.is_empty() {
+                return lines;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "session {session} logged no skill and no trust prompt"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     /// Each launched agent's session, `GH_TOKEN` and `GITHUB_TOKEN`, one line each (#754).

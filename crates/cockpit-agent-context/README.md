@@ -104,7 +104,7 @@ never writes outside that folder, so no owner file is edited. `skill-pack/manife
 commit, tree, the licence file's hash and each skill's state and file hashes. The daemon does
 this at every start; `torlek skills` lists the result beside the installed skills.
 
-Reaches: Claude Code (the `claude-skills` folder it adds) and OpenCode with its bridge (the
+Reaches: Claude Code (the `claude-plugin` plugin it loads, listed as `/torlek:<skill>`) and OpenCode with its bridge (the
 bundle folder in `skills.paths`). Codex gets no skill folder (#419), so no pack skill.
 Collisions are judged at the daemon's start, against the trusted projects' main checkouts:
 a project skill added later, or only on a parallel clone's branch, shadows nothing until it

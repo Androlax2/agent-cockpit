@@ -62,7 +62,7 @@ pub const LAUNCH_FLAGS: [&str; 9] = [
     "--mcp-config",
     "--effort",
     "--model",
-    "--add-dir",
+    "--plugin-dir",
     "--autocompact",
 ];
 
@@ -163,8 +163,8 @@ pub struct ClaudeCode {
     version: Option<String>,
     /// Without it, launches subscribe no hooks and `events` is not reported.
     bridge: Option<Bridge>,
-    /// The directory each launch adds with `--add-dir`, whose [`instruction_skills_dir`]
-    /// holds Cockpit's instruction bundle as a skill (#419).
+    /// The plugin each launch loads with `--plugin-dir`, whose [`instruction_skills_dir`]
+    /// holds Cockpit's instruction bundle as a skill (#419, #1419).
     instruction_skills: Option<PathBuf>,
     /// What the runtime probe found in this version, when it ran (#732).
     probe: Option<Probe>,
@@ -189,10 +189,26 @@ struct HelpRead {
     levels: Vec<String>,
 }
 
-/// Where Claude Code looks for skills in a directory added with `--add-dir`: the bundle is
-/// written there so the `torlek` skill sits at `<root>/.claude/skills/torlek/SKILL.md`.
+/// The name of the plugin a launch loads with `--plugin-dir`: Claude Code lists its skills
+/// as `/torlek:<skill>` (code.claude.com/docs/en/plugins/create).
+pub const INSTRUCTION_PLUGIN_NAME: &str = "torlek";
+
+/// Where Claude Code looks for the skills of a plugin loaded with `--plugin-dir`: the bundle
+/// is written there so the `torlek` skill sits at `<root>/skills/torlek/SKILL.md`.
 pub fn instruction_skills_dir(root: &Path) -> PathBuf {
-    root.join(".claude").join("skills")
+    root.join("skills")
+}
+
+/// Writes the manifest that names the plugin at `root` [`INSTRUCTION_PLUGIN_NAME`], in
+/// `<root>/.claude-plugin/plugin.json`; returns the file's path. Without it Claude Code would
+/// name the plugin after its folder.
+pub fn write_instruction_plugin_manifest(root: &Path) -> std::io::Result<PathBuf> {
+    let folder = root.join(".claude-plugin");
+    std::fs::create_dir_all(&folder)?;
+    let manifest = folder.join("plugin.json");
+    let text = serde_json::json!({ "name": INSTRUCTION_PLUGIN_NAME }).to_string();
+    std::fs::write(&manifest, format!("{text}\n"))?;
+    Ok(manifest)
 }
 
 impl ClaudeCode {
@@ -216,8 +232,10 @@ impl ClaudeCode {
         self
     }
 
-    /// Every launch adds `root` with `--add-dir`, so Claude Code lists the skills written
-    /// under [`instruction_skills_dir`]`(root)`. The caller writes them before any launch.
+    /// Every launch loads `root` with `--plugin-dir`, so Claude Code lists the skills written
+    /// under [`instruction_skills_dir`]`(root)`. The caller writes them and
+    /// [`write_instruction_plugin_manifest`] before any launch. A plugin, not `--add-dir`:
+    /// from 2.1.326 an added folder stops every launch on a trust prompt (#1419).
     pub fn with_instruction_skills(mut self, root: PathBuf) -> ClaudeCode {
         self.instruction_skills = Some(root);
         self
@@ -491,9 +509,8 @@ impl Provider for ClaudeCode {
             check_compaction_threshold(threshold)?;
             arguments.extend(["--autocompact".into(), threshold.into()]);
         }
-        // Variadic too: a flag or the `--` before the first message follows it.
         if let Some(root) = &self.instruction_skills {
-            arguments.extend(["--add-dir".into(), root.into()]);
+            arguments.extend(["--plugin-dir".into(), root.into()]);
         }
         let approvals = request
             .inherited_trust

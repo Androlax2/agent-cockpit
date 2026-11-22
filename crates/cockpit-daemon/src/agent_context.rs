@@ -28,18 +28,18 @@ pub(crate) fn bundle_dir(state_dir: &Path) -> PathBuf {
     state_dir.join("agent-context")
 }
 
-/// The folder Claude Code launches add with `--add-dir`, under `state_dir`: the bundle is
-/// written again in its `.claude/skills`, where Claude Code looks for skills (#419). A copy,
-/// not a link: Claude Code's documentation does not say it follows one.
-pub(crate) fn claude_skills_root(state_dir: &Path) -> PathBuf {
-    state_dir.join("claude-skills")
+/// The plugin Claude Code launches load with `--plugin-dir`, under `state_dir`: the bundle is
+/// written again in its `skills`, where Claude Code looks for a plugin's skills (#419, #1419).
+/// A copy, not a link: Claude Code's documentation does not say it follows one.
+pub(crate) fn claude_plugin_root(state_dir: &Path) -> PathBuf {
+    state_dir.join("claude-plugin")
 }
 
 /// The optional skill pack as one start delivered it (#786). A harness sees only the
 /// installed skills in the folders it reads, so each folder has its own listing.
 #[derive(Debug)]
 pub struct DeliveredSkillPack {
-    /// In Claude Code's `claude-skills` folder.
+    /// In Claude Code's `claude-plugin` folder.
     pub claude: PackListing<'static>,
     /// In the bundle folder OpenCode's `skills.paths` names.
     pub opencode: PackListing<'static>,

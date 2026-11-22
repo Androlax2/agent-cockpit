@@ -185,11 +185,12 @@ fn the_first_message_is_never_read_as_an_mcp_config() {
     assert!(words[config + 2].starts_with("--"), "{words:?}");
 }
 
-/// #419: Claude Code loads the `.claude/skills` of a directory given with `--add-dir`, so the
-/// bundle's `cockpit` skill is listed by name and description without the agent asking.
+/// #419, #1419: Claude Code loads the `skills` of a plugin given with `--plugin-dir`, so the
+/// bundle's `torlek` skill is listed by name and description without the agent asking, and
+/// without the trust prompt `--add-dir` shows from 2.1.326.
 #[test]
-fn a_launch_adds_the_instruction_skills_root_so_claude_lists_the_cockpit_skill() {
-    let claude = common::claude().with_instruction_skills("/state/claude-skills".into());
+fn a_launch_loads_the_instruction_plugin_so_claude_lists_the_torlek_skill() {
+    let claude = common::claude().with_instruction_skills("/state/claude-plugin".into());
     let words = words(
         &claude
             .launch(&request(&Conversation::New))
@@ -198,33 +199,60 @@ fn a_launch_adds_the_instruction_skills_root_so_claude_lists_the_cockpit_skill()
     );
 
     assert_eq!(
-        value_after(&words, "--add-dir"),
-        Some("/state/claude-skills")
+        value_after(&words, "--plugin-dir"),
+        Some("/state/claude-plugin")
     );
     assert_eq!(
-        cockpit_claude::instruction_skills_dir(Path::new("/state/claude-skills")),
-        Path::new("/state/claude-skills/.claude/skills")
+        cockpit_claude::instruction_skills_dir(Path::new("/state/claude-plugin")),
+        Path::new("/state/claude-plugin/skills")
     );
 }
 
-/// `--add-dir` takes every word up to the next flag, like `--mcp-config`.
 #[test]
-fn the_first_message_is_never_read_as_an_added_directory() {
+fn no_launch_adds_a_directory_for_claude_to_ask_trust_for() {
+    let claude = common::claude().with_instruction_skills("/state/claude-plugin".into());
+    let words = words(
+        &claude
+            .launch(&request(&Conversation::New))
+            .unwrap()
+            .arguments,
+    );
+
+    assert!(!words.contains(&"--add-dir".to_owned()), "{words:?}");
+}
+
+#[test]
+fn the_plugin_manifest_names_the_plugin_torlek() {
+    let root = tempfile::tempdir().unwrap();
+
+    let manifest = cockpit_claude::write_instruction_plugin_manifest(root.path()).unwrap();
+
+    assert_eq!(manifest, root.path().join(".claude-plugin/plugin.json"));
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    assert_eq!(written, serde_json::json!({ "name": "torlek" }));
+}
+
+#[test]
+fn the_first_message_follows_the_plugin_folder() {
     let conversation = Conversation::New;
     let request = LaunchRequest {
         first_message: Some("hello"),
         ..request(&conversation)
     };
     let claude = cockpit_claude::ClaudeCode::new("/usr/bin/claude".into(), None, None)
-        .with_instruction_skills("/state/claude-skills".into());
+        .with_instruction_skills("/state/claude-plugin".into());
     let words = words(&claude.launch(&request).unwrap().arguments);
-    let added = words.iter().position(|word| word == "--add-dir").unwrap();
+    let loaded = words
+        .iter()
+        .position(|word| word == "--plugin-dir")
+        .unwrap();
 
-    assert_eq!(words[added + 2..], ["--", "hello"], "{words:?}");
+    assert_eq!(words[loaded + 2..], ["--", "hello"], "{words:?}");
 }
 
 #[test]
-fn without_instruction_skills_a_launch_adds_no_directory() {
+fn without_instruction_skills_a_launch_loads_no_plugin() {
     let words = words(
         &common::claude()
             .launch(&request(&Conversation::New))
@@ -232,7 +260,7 @@ fn without_instruction_skills_a_launch_adds_no_directory() {
             .arguments,
     );
 
-    assert!(!words.contains(&"--add-dir".to_owned()), "{words:?}");
+    assert!(!words.contains(&"--plugin-dir".to_owned()), "{words:?}");
 }
 
 #[test]

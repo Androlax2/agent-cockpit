@@ -709,27 +709,20 @@ async fn a_sandboxed_agents_home_is_the_sessions_own_folder() {
     assert_eq!(std::fs::read_to_string(session_home).unwrap(), "kept\n");
 }
 
-/// #419: Claude Code lists the bundle's `torlek` skill because the launch adds the folder
-/// whose `.claude/skills` holds it, written at the daemon's start.
+/// #1419: Claude Code from 2.1.326 stops a launch that adds an untrusted folder on a trust
+/// prompt, as the fake `claude` does. The daemon's start writes Torlek's plugin and the launch
+/// loads it, so the agent lists the bundle's skill as `/torlek:torlek` and never prompts.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_claude_launch_adds_the_instruction_skills() {
+async fn a_claude_launch_lists_the_torlek_skill_without_a_trust_prompt() {
     let home = Home::new();
     let _daemon = home.start();
     let client = home.connect().await;
     let (root, _) = home.project(&client, "app").await;
     let session = new_session(&client, &root).await;
-    home.wait_for_launches(&session.id, 1).await;
-    let skills_root = home.state_dir().join("claude-skills");
 
-    let arguments = home.arguments_of(&session.id);
+    let lines = home.skill_lines_of(&session.id).await;
 
-    assert!(
-        arguments[0].contains(&format!("--add-dir {}", skills_root.display())),
-        "{arguments:?}"
-    );
-    let skill =
-        std::fs::read_to_string(skills_root.join(".claude/skills/torlek/SKILL.md")).unwrap();
-    assert!(skill.starts_with("---\nname: torlek\n"), "{skill}");
+    assert_eq!(lines, ["lists /torlek:torlek"]);
 }
 
 /// #419: a sandboxed Claude Code runs the launch's `SessionStart` hook in the sandbox, and
@@ -763,18 +756,19 @@ async fn a_sandboxed_claudes_mcp_server_answers_the_sessions_brief() {
     );
 }
 
-/// #419: the skill a sandboxed Claude Code is pointed at with `--add-dir` is readable there.
+/// #419: the skill of the plugin a sandboxed Claude Code loads with `--plugin-dir` is
+/// readable there.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_sandboxed_claude_reads_the_skill_its_launch_adds() {
+async fn a_sandboxed_claude_reads_the_skill_of_the_plugin_its_launch_loads() {
     let home = Home::new();
     let agent = sandboxed_agent(&home, |_| {}).await;
     let arguments = home.launch_arguments(&agent.root).await;
-    let added = launch_option(&arguments, "--add-dir");
+    let plugin = launch_option(&arguments, "--plugin-dir");
 
     let printed = run_in_agent(
         &home,
         &agent.root,
-        &format!("head -n 2 '{added}/.claude/skills/torlek/SKILL.md'"),
+        &format!("head -n 2 '{plugin}/skills/torlek/SKILL.md'"),
     )
     .await;
 
