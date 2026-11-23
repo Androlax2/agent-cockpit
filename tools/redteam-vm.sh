@@ -2,9 +2,11 @@
 # Disposable QEMU/KVM guest for the Torlek red-team (#685, docs/redteam-vm.md).
 #
 # The guest is an Arch Linux cloud image with a throwaway user, Torlek's published release
-# (or, with "create --bundle", a release-format bundle built on this host) installed, and a "clean" snapshot to reset to. The guest gets no shared folder, no host
-# device and no credential: its only inputs are the verified image, a generated SSH key and
-# the cloud-init seed this script writes. Everything lives under $TORLEK_REDTEAM_DIR.
+# installed (or, with "create --bundle", a release-format bundle built on this host), and a
+# "clean" snapshot to reset to. The guest gets no shared folder, no host device and no
+# credential: its only inputs are the verified image, a generated SSH key and
+# the cloud-init seed this script writes (plus the bundle, sent over ssh). Everything lives
+# under $TORLEK_REDTEAM_DIR.
 #
 # Commands: fetch | create [--bundle PATH] | start | ssh [COMMAND...] | check | stop | reset
 #           | status | destroy [--all]
@@ -224,28 +226,34 @@ validate_bundle() {
 }
 
 # The only way the bundle reaches the guest: over the guest's ssh, as stdin of a write by the
-# redteam user, with the checksum taken here for the guest to check against what it received.
+# redteam user. The checksum is taken here, just before the send, and the guest checks what it
+# received against it. Prints the guest installer's command prefix, which names both.
 upload_bundle() {
-    local bundle_path=$1 bundle_sha256=$2 bundle_name
+    local bundle_path=$1 bundle_name bundle_sha256
     bundle_name=$(basename "$bundle_path")
-    echo "redteam-vm: sending bundle $bundle_name (sha256 $bundle_sha256)"
+    bundle_sha256=$(sha256sum "$bundle_path" | cut -d' ' -f1)
+    echo "redteam-vm: sending bundle $bundle_name (sha256 $bundle_sha256)" >&2
     guest_ssh "$RED_TEAM_USER" "umask 077 && mkdir -p ~/$BUNDLE_UPLOAD_DIR && cat > ~/$BUNDLE_UPLOAD_DIR/$bundle_name" \
         <"$bundle_path" || die "could not send the bundle into the guest"
+    printf 'env TORLEK_REDTEAM_BUNDLE=%q TORLEK_REDTEAM_BUNDLE_SHA256=%q' \
+        "$BUNDLE_UPLOAD_DIR/$bundle_name" "$bundle_sha256"
 }
 
 command_create() {
     local bundle_path=""
     while [[ $# -gt 0 ]]; do
         case $1 in
-        --bundle) bundle_path=${2:?--bundle needs a path}; shift 2 ;;
+        --bundle)
+            [[ $# -ge 2 && $2 != --* ]] || die "--bundle needs a path"
+            bundle_path=$2
+            shift 2
+            ;;
         *) die "unknown create option: $1" ;;
         esac
     done
-    local bundle_sha256=""
     if [[ -n $bundle_path ]]; then
         require_commands sha256sum
         validate_bundle "$bundle_path"
-        bundle_sha256=$(sha256sum "$bundle_path" | cut -d' ' -f1)
     fi
     require_not_root
     require_kvm
@@ -274,8 +282,7 @@ command_create() {
         "sudo env CLAUDE_CODE_VERSION=$(printf %q "$CLAUDE_CODE_VERSION") CLAUDE_CODE_URL=$(printf %q "$CLAUDE_CODE_URL") CLAUDE_CODE_SHA256=$(printf %q "$CLAUDE_CODE_SHA256")"
     local install_prefix=""
     if [[ -n $bundle_path ]]; then
-        upload_bundle "$bundle_path" "$bundle_sha256"
-        install_prefix="env TORLEK_REDTEAM_BUNDLE=$BUNDLE_UPLOAD_DIR/$(basename "$bundle_path") TORLEK_REDTEAM_BUNDLE_SHA256=$bundle_sha256"
+        install_prefix=$(upload_bundle "$bundle_path")
     fi
     run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-install-torlek.sh" "$install_prefix"
     run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-setup-sandbox.sh"

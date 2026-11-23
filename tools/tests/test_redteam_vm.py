@@ -320,6 +320,13 @@ class RedTeamVmTests(unittest.TestCase):
                 self.assertFalse((self.state_dir / "id_ed25519").exists())
                 self.assertFalse((self.state_dir / "disk.qcow2").exists())
 
+    def test_create_refuses_a_bundle_option_without_a_path(self):
+        for arguments in (["--bundle"], ["--bundle", "--other"]):
+            with self.subTest(arguments=arguments):
+                result = self.run_script("create", *arguments)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("redteam-vm: --bundle needs a path", result.stderr)
+
     def test_create_refuses_an_unknown_option(self):
         result = self.run_script("create", "--shared-folder", "/home")
         self.assertEqual(result.returncode, 1)
@@ -601,16 +608,43 @@ class GuestInstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("does not show the manifest's revision", result.stderr)
 
-    def test_it_refuses_a_bundle_with_entries_outside_its_own_folder(self):
-        archive = self.root / BUNDLE_NAME
+    def test_it_refuses_a_bundle_with_unsafe_entries(self):
+        folder = BUNDLE_NAME.removesuffix(".tar.gz")
         stray_file = self.root / "stray"
         stray_file.write_text("x")
-        with tarfile.open(archive, "w:gz") as bundle:
-            bundle.add(stray_file, arcname="elsewhere/stray")
-        result = self.install(archive)
+        link = tarfile.TarInfo(f"{folder}/link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = str(self.home)
+        cases = {
+            "outside its folder": ("elsewhere/stray", None),
+            "parent component": (f"{folder}/../../.bashrc", None),
+            "symlink": (None, link),
+        }
+        for case, (arcname, member) in cases.items():
+            with self.subTest(case=case):
+                archive = self.root / f"{case.replace(' ', '-')}-{BUNDLE_NAME}"
+                with tarfile.open(archive, "w:gz") as bundle:
+                    if member is None:
+                        bundle.add(stray_file, arcname=arcname)
+                    else:
+                        bundle.addfile(member)
+                archive = archive.rename(self.root / BUNDLE_NAME)
+                result = self.install(archive)
+                archive.unlink()
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("other than plain files and folders", result.stderr)
+                self.assertFalse((self.home / ".local").exists())
+
+    def test_it_says_so_when_the_bundle_is_not_a_readable_archive(self):
+        corrupt = self.root / BUNDLE_NAME
+        corrupt.write_bytes(b"not gzip at all")
+        result = self.install(corrupt)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("entries outside", result.stderr)
-        self.assertFalse((self.home / ".local").exists())
+        self.assertIn("not a readable .tar.gz", result.stderr)
+
+    def test_it_does_not_link_a_bundle_it_refused(self):
+        self.install(self.package("revision unknown: not a release build"))
+        self.assertFalse((self.home / ".local/bin/torlek").exists())
 
 
 if __name__ == "__main__":

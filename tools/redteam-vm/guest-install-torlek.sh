@@ -22,13 +22,21 @@ if [[ -n $bundle_file ]]; then
         echo "bundle checksum mismatch: the host sent $expected_sha256, the guest received $actual_sha256; nothing installed" >&2
         exit 1
     fi
-    # Every entry must sit under the bundle's own folder, so extracting cannot write elsewhere.
-    tar -tzf "$archive_path" </dev/null | awk -v folder="$archive" '
-        $0 != folder "/" && index($0, folder "/") != 1 { stray = 1 }
-        END { exit stray }' || {
-        echo "bundle holds entries outside $archive/; nothing installed" >&2
+    # Only plain files and folders, all under the bundle's own folder with no ".." part, so
+    # extracting cannot write elsewhere through a path or a link.
+    entry_names=$(tar -tzf "$archive_path" </dev/null) || {
+        echo "bundle is not a readable .tar.gz; nothing installed" >&2
         exit 1
     }
+    entry_types=$(tar -tvzf "$archive_path" </dev/null | cut -c1)
+    if [[ -z $entry_names ]] || grep -qv '^[-d]$' <<<"$entry_types" ||
+        ! awk -v folder="$archive" '
+            $0 != folder "/" && index($0, folder "/") != 1 { stray = 1 }
+            $0 ~ /(^|\/)\.\.(\/|$)/ { stray = 1 }
+            END { exit stray }' <<<"$entry_names"; then
+        echo "bundle holds entries other than plain files and folders under $archive/; nothing installed" >&2
+        exit 1
+    fi
 else
     version=$(curl -fsSL "https://api.github.com/repos/$repository/releases?per_page=1" </dev/null |
         sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
@@ -46,14 +54,14 @@ fi
 
 mkdir -p ~/.local/lib/torlek ~/.local/bin
 tar -xzf "$archive_path" -C ~/.local/lib/torlek
-ln -sfn ~/.local/lib/torlek/"$archive"/bin/torlek ~/.local/bin/torlek
-
-export PATH=$HOME/.local/bin:$PATH
-version_line=$(torlek version </dev/null | head -n 1)
-echo "$version_line"
+installed_torlek=~/.local/lib/torlek/"$archive"/bin/torlek
 
 # A bundle built without TORLEK_SOURCE_REVISION says "revision unknown", which would leave the
-# red-team's results naming no revision; the manifest's revision must be the binary's.
+# red-team's results naming no revision; the manifest's revision must be the binary's. Checked
+# before the link, so a refused bundle is never on the PATH.
+version_output=$("$installed_torlek" version </dev/null)
+version_line=${version_output%%$'\n'*}
+echo "$version_line"
 if [[ -n $bundle_file ]]; then
     manifest_revision=$(sed -n 's/.*"source_revision": *"\([0-9a-f]\{40\}\)".*/\1/p' \
         ~/.local/lib/torlek/"$archive"/share/torlek/manifest.json)
@@ -62,6 +70,8 @@ if [[ -n $bundle_file ]]; then
         exit 1
     fi
 fi
+ln -sfn "$installed_torlek" ~/.local/bin/torlek
+export PATH=$HOME/.local/bin:$PATH
 
 # The user manager may still be starting right after enable-linger.
 for _ in $(seq 30); do

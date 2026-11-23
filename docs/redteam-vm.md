@@ -93,22 +93,22 @@ unknown: not a release build`, and the guest refuses the bundle.
 
 How it gets in, with the same care as the image and `claude`:
 
-- The host takes the bundle's SHA-256 and prints it. The file name must be
-  `torlek-v<version>-linux-x86_64.tar.gz`.
+- The host takes the bundle's SHA-256 just before sending it and prints it. The file name
+  must be `torlek-v<version>-linux-x86_64.tar.gz`.
 - The bundle goes in over the guest's ssh only, the script's own throwaway-key connection,
   as a write by `redteam` to `~/bundle-upload/`. No shared folder, no host device, nothing
   else from the host.
 - The guest recomputes the checksum and refuses a mismatch before it unpacks anything. It
-  also refuses an archive with any entry outside its own folder, and a bundle whose `torlek
-  version` does not show the manifest's source revision.
+  also refuses an archive with anything but plain files and folders under its own folder, and
+  a bundle whose `torlek version` does not show the manifest's source revision; that last
+  check runs before `torlek` is linked onto the `PATH`.
 - The archive is removed from the guest after the install. The guest then runs
   `torlek version`, which prints `torlek VERSION (revision REVISION)`; `create` shows that
   line.
 
-The checksum is taken on this host, so it proves the guest got the bytes the host read, not
-that the build is the one you meant. Build on this host, from the `main` you checked.
-After that the install is the release's: unpack into `~/.local/lib/torlek`, link
-`~/.local/bin/torlek`, `torlek daemon install`.
+The checksum proves the bytes arrived intact, not that the build is the one you meant:
+build on this host, from the `main` you checked. After that the install is the release's:
+unpack into `~/.local/lib/torlek`, link `~/.local/bin/torlek`, `torlek daemon install`.
 
 ## Network
 
@@ -164,4 +164,5 @@ The goal is in #685: make an agent do what it must not, inside the real sandbox 
 ## Reset and cleanup
 
 `reset` restores the disk only. A new Torlek release, or a newer bundle, means `destroy` then
-`create`, which installs the latest release or the bundle you name. `destroy --all` removes the image and the folder.
+`create`, which installs the latest release or the bundle you name. `destroy --all` removes the
+image and the folder.
