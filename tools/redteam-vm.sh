@@ -2,12 +2,14 @@
 # Disposable QEMU/KVM guest for the Torlek red-team (#685, docs/redteam-vm.md).
 #
 # The guest is an Arch Linux cloud image with a throwaway user, Torlek's published release
-# installed, and a "clean" snapshot to reset to. The guest gets no shared folder, no host
-# device and no credential: its only inputs are the verified image, a generated SSH key and
-# the cloud-init seed this script writes. Everything lives under $TORLEK_REDTEAM_DIR.
+# installed (or, with "create --bundle", a release-format bundle built on this host), and a
+# "clean" snapshot to reset to. The guest gets no shared folder, no host device and no
+# credential: its only inputs are the verified image, a generated SSH key and
+# the cloud-init seed this script writes (plus the bundle, sent over ssh). Everything lives
+# under $TORLEK_REDTEAM_DIR.
 #
-# Commands: fetch | create | start | ssh [COMMAND...] | check | stop | reset | status
-#           | destroy [--all]
+# Commands: fetch | create [--bundle PATH] | start | ssh [COMMAND...] | check | stop | reset
+#           | status | destroy [--all]
 set -Eeuo pipefail
 
 STATE_DIR=${TORLEK_REDTEAM_DIR:-$HOME/.local/share/torlek-redteam}
@@ -37,6 +39,7 @@ KVM_DEVICE=${TORLEK_REDTEAM_KVM_DEVICE:-/dev/kvm}
 ADMIN_USER=arch
 RED_TEAM_USER=redteam
 CLEAN_SNAPSHOT=clean
+BUNDLE_UPLOAD_DIR=bundle-upload
 
 BASE_IMAGE=$STATE_DIR/$IMAGE_FILE_NAME
 DISK=$STATE_DIR/disk.qcow2
@@ -212,7 +215,46 @@ command_fetch() {
     fetch_image
 }
 
+# A bundle is what tools/release.py packages for the linux-x86_64 guest. The name is checked
+# because it becomes part of a guest command line and names the folder inside the archive.
+validate_bundle() {
+    local bundle_path=$1 bundle_name
+    [[ -f $bundle_path && -r $bundle_path ]] || die "no such bundle file: $bundle_path"
+    bundle_name=$(basename "$bundle_path")
+    [[ $bundle_name =~ ^torlek-v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?-linux-x86_64\.tar\.gz$ ]] ||
+        die "the bundle must be a release archive named torlek-v<version>-linux-x86_64.tar.gz (docs/redteam-vm.md), not $bundle_name"
+}
+
+# The only way the bundle reaches the guest: over the guest's ssh, as stdin of a write by the
+# redteam user. The checksum is taken here, just before the send, and the guest checks what it
+# received against it. Prints the guest installer's command prefix, which names both.
+upload_bundle() {
+    local bundle_path=$1 bundle_name bundle_sha256
+    bundle_name=$(basename "$bundle_path")
+    bundle_sha256=$(sha256sum "$bundle_path" | cut -d' ' -f1)
+    echo "redteam-vm: sending bundle $bundle_name (sha256 $bundle_sha256)" >&2
+    guest_ssh "$RED_TEAM_USER" "umask 077 && mkdir -p ~/$BUNDLE_UPLOAD_DIR && cat > ~/$BUNDLE_UPLOAD_DIR/$bundle_name" \
+        <"$bundle_path" || die "could not send the bundle into the guest"
+    printf 'env TORLEK_REDTEAM_BUNDLE=%q TORLEK_REDTEAM_BUNDLE_SHA256=%q' \
+        "$BUNDLE_UPLOAD_DIR/$bundle_name" "$bundle_sha256"
+}
+
 command_create() {
+    local bundle_path=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+        --bundle)
+            [[ $# -ge 2 && $2 != --* ]] || die "--bundle needs a path"
+            bundle_path=$2
+            shift 2
+            ;;
+        *) die "unknown create option: $1" ;;
+        esac
+    done
+    if [[ -n $bundle_path ]]; then
+        require_commands sha256sum
+        validate_bundle "$bundle_path"
+    fi
     require_not_root
     require_kvm
     require_commands qemu-system-x86_64 qemu-img ssh ssh-keygen bsdtar
@@ -238,7 +280,11 @@ command_create() {
     run_guest_script "$ADMIN_USER" "$SCRIPT_DIR/redteam-vm/guest-provision.sh" sudo
     run_guest_script "$ADMIN_USER" "$SCRIPT_DIR/redteam-vm/guest-install-claude.sh" \
         "sudo env CLAUDE_CODE_VERSION=$(printf %q "$CLAUDE_CODE_VERSION") CLAUDE_CODE_URL=$(printf %q "$CLAUDE_CODE_URL") CLAUDE_CODE_SHA256=$(printf %q "$CLAUDE_CODE_SHA256")"
-    run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-install-torlek.sh"
+    local install_prefix=""
+    if [[ -n $bundle_path ]]; then
+        install_prefix=$(upload_bundle "$bundle_path")
+    fi
+    run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-install-torlek.sh" "$install_prefix"
     run_guest_script "$RED_TEAM_USER" "$SCRIPT_DIR/redteam-vm/guest-setup-sandbox.sh"
     stop_guest
     qemu-img snapshot -c "$CLEAN_SNAPSHOT" "$DISK"
@@ -372,7 +418,7 @@ command_drop_credential() {
 
 main() {
     local command_name=${1:-}
-    [[ -n $command_name ]] || die "usage: $0 fetch | create | start | ssh [COMMAND...] | check | put-credential KEYFILE | drop-credential | stop | reset | status | destroy [--all]"
+    [[ -n $command_name ]] || die "usage: $0 fetch | create [--bundle PATH] | start | ssh [COMMAND...] | check | put-credential KEYFILE | drop-credential | stop | reset | status | destroy [--all]"
     shift
     case $command_name in
     fetch | create | start | ssh | check | stop | reset | status | destroy) "command_$command_name" "$@" ;;
