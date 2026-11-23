@@ -1,15 +1,16 @@
 //! An in-memory forge for other crates' tests (feature `fake`): one repository, one token,
-//! issues and change requests seeded by the test, every contract method but none reaching a
-//! network. It passes the conformance suite like any adapter.
+//! issues, change requests and branch rules seeded by the test, every contract method but
+//! none reaching a network. It passes the conformance suite like any adapter.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::{
-    Access, BranchName, Capabilities, Capability, ChangeId, ChangeRequest, ChangeState, Checks,
-    CommitId, Created, CredentialScheme, CredentialUse, Declaration, Forge, ForgeError, ForgeHost,
-    ForgeName, HostUse, Issue, IssueFilter, IssueId, IssueState, IssueThread, NewChangeRequest,
-    NewIssue, Posted, Provenance, Repository, RepositoryPath, ReviewDecision, ScopeCheck, Token,
+    Access, BranchName, BranchRules, Capabilities, Capability, ChangeId, ChangeRequest,
+    ChangeState, Checks, CommitId, Created, CredentialScheme, CredentialUse, Declaration,
+    DefaultBranch, Forge, ForgeError, ForgeHost, ForgeName, HostUse, Issue, IssueFilter, IssueId,
+    IssueState, IssueThread, NewChangeRequest, NewIssue, Posted, ProtectOutcome, Protected,
+    ProtectionPolicy, Provenance, Repository, RepositoryPath, ReviewDecision, ScopeCheck, Token,
     TokenKind,
 };
 
@@ -20,9 +21,11 @@ pub const API_HOST: &str = "api.forge.example.com";
 pub const REPOSITORY_PATH: &str = "owner/project";
 /// The one token it accepts.
 pub const TOKEN: &str = "fake-forge-token";
+/// The repository's default branch.
+pub const DEFAULT_BRANCH: &str = "main";
 
 /// The capabilities with a contract method; the fake reports each, tested.
-const METHOD_CAPABILITIES: [Capability; 9] = [
+const METHOD_CAPABILITIES: [Capability; 11] = [
     Capability::IssueList,
     Capability::IssueRead,
     Capability::IssueCreate,
@@ -32,6 +35,8 @@ const METHOD_CAPABILITIES: [Capability; 9] = [
     Capability::ChangeReview,
     Capability::ChangeOpen,
     Capability::TokenScope,
+    Capability::ProtectionRead,
+    Capability::ProtectionBootstrap,
 ];
 
 pub struct FakeForge {
@@ -51,7 +56,29 @@ struct State {
     reviews: BTreeMap<ChangeId, ReviewDecision>,
     branches: BTreeMap<BranchName, CommitId>,
     scopes: BTreeMap<TokenKind, ScopeCheck>,
+    /// The default branch's rules from elsewhere than Torlek's own rule.
+    seeded_rules: BranchRules,
+    /// Torlek's own rule on the default branch, once protect made it.
+    own_rule: Option<ProtectionPolicy>,
     calls: Vec<&'static str>,
+}
+
+impl State {
+    /// What the default branch enforces: every rule that applies to it, as on a forge.
+    fn rules(&self) -> BranchRules {
+        let mut rules = self.seeded_rules.clone();
+        if let Some(own) = &self.own_rule {
+            rules.change_request_required = true;
+            rules.force_push_blocked = true;
+            rules.deletion_blocked = true;
+            for check in own.required_checks() {
+                if !rules.required_checks.contains(check) {
+                    rules.required_checks.push(check.clone());
+                }
+            }
+        }
+        rules
+    }
 }
 
 impl Default for FakeForge {
@@ -167,6 +194,17 @@ impl FakeForge {
     pub fn with_scope(self, kind: TokenKind, check: ScopeCheck) -> FakeForge {
         self.state().scopes.insert(kind, check);
         self
+    }
+
+    /// Rules the default branch has from elsewhere than Torlek's own rule.
+    pub fn with_rules(self, rules: BranchRules) -> FakeForge {
+        self.state().seeded_rules = rules;
+        self
+    }
+
+    /// Torlek's own rule on the default branch, once protect made it.
+    pub fn own_rule(&self) -> Option<ProtectionPolicy> {
+        self.state().own_rule.clone()
     }
 
     /// The contract methods called so far, in order.
@@ -411,6 +449,60 @@ impl Forge for FakeForge {
             .unwrap_or_else(|| ScopeCheck::Unverified {
                 reason: "the fake forge was told nothing about this token".to_owned(),
             }))
+    }
+
+    fn default_branch_protection(&self, access: &Access<'_>) -> Result<DefaultBranch, ForgeError> {
+        let state = self.enter(
+            "default_branch_protection",
+            Capability::ProtectionRead,
+            access,
+        )?;
+        Ok(default_branch(&state))
+    }
+
+    fn protect_default_branch(
+        &self,
+        access: &Access<'_>,
+        policy: &ProtectionPolicy,
+    ) -> Result<Protected, ForgeError> {
+        let mut state = self.enter(
+            "protect_default_branch",
+            Capability::ProtectionBootstrap,
+            access,
+        )?;
+        let branch = default_branch(&state).branch;
+        if state
+            .own_rule
+            .as_ref()
+            .is_some_and(|own| same_checks(own, policy))
+        {
+            return Ok(Protected {
+                branch,
+                outcome: ProtectOutcome::Unchanged,
+            });
+        }
+        let outcome = match state.own_rule.replace(policy.clone()) {
+            Some(_) => ProtectOutcome::Updated,
+            None => ProtectOutcome::Created,
+        };
+        Ok(Protected { branch, outcome })
+    }
+}
+
+/// The same checks in any order, as a forge compares them.
+fn same_checks(own: &ProtectionPolicy, policy: &ProtectionPolicy) -> bool {
+    let mut owned = own.required_checks().to_vec();
+    owned.sort();
+    let mut named = policy.required_checks().to_vec();
+    named.sort();
+    owned == named
+}
+
+fn default_branch(state: &State) -> DefaultBranch {
+    DefaultBranch {
+        branch: BranchName::new(DEFAULT_BRANCH).expect("the fake's default branch is valid"),
+        rules: state.rules(),
+        has_unread_protection: false,
     }
 }
 

@@ -8,6 +8,7 @@ mod declaration;
 #[cfg(feature = "fake")]
 pub mod fake;
 mod issues;
+mod protection;
 mod remote;
 mod tokens;
 
@@ -22,6 +23,9 @@ pub use declaration::{CredentialScheme, CredentialUse, Declaration, ForgeHost, H
 pub use issues::{
     Comment, Created, Issue, IssueFilter, IssueId, IssueState, IssueThread, ListLimit, MAX_LISTED,
     NewIssue, Posted,
+};
+pub use protection::{
+    BranchRules, DefaultBranch, Gap, ProtectOutcome, Protected, ProtectionPolicy,
 };
 pub use remote::{Repository, RepositoryPath, Unresolved, parse_origin, resolve};
 pub use tokens::{Permission, ScopeCheck, ScopeProblem, Token, TokenKind};
@@ -194,6 +198,29 @@ pub trait Forge: Send + Sync + 'static {
     fn check_token(&self, access: &Access<'_>, kind: TokenKind) -> Result<ScopeCheck, ForgeError> {
         let _ = (access, kind);
         Err(ForgeError::unsupported(Capability::TokenScope))
+    }
+
+    /// The repository's default branch and what the forge enforces on it
+    /// ([`Capability::ProtectionRead`]). Reading needs no more than the API token's rights.
+    fn default_branch_protection(&self, access: &Access<'_>) -> Result<DefaultBranch, ForgeError> {
+        let _ = access;
+        Err(ForgeError::unsupported(Capability::ProtectionRead))
+    }
+
+    /// Makes Torlek's own rule on the default branch say exactly `policy`, idempotently
+    /// ([`Capability::ProtectionBootstrap`]): [`ProtectOutcome::Unchanged`], with nothing
+    /// written, when it does already; [`ProtectOutcome::Updated`] when it exists and says
+    /// anything else, a check more included; [`ProtectOutcome::Created`] otherwise, even on a
+    /// branch other rules protect, since only Torlek's rule is known to let no one bypass it. Changing the
+    /// repository's settings takes a right neither project token has (#857), so `access.token`
+    /// is one the owner gives for this call alone; the forge refuses a token without it.
+    fn protect_default_branch(
+        &self,
+        access: &Access<'_>,
+        policy: &ProtectionPolicy,
+    ) -> Result<Protected, ForgeError> {
+        let _ = (access, policy);
+        Err(ForgeError::unsupported(Capability::ProtectionBootstrap))
     }
 }
 

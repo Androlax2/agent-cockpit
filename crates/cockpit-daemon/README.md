@@ -237,6 +237,12 @@ not share code.
   never its other token, in the bulk lane. No API token, no read: the refusal names
   `torlek project token set PROJECT --api`. The adapter's `gh` keeps its configuration under
   the state directory's `forges/github`, never the owner's.
+- `project-protect` (#695, `protection.rs`), the owner's alone, has the project's forge
+  adapter protect its default branch with the token the owner gives in the request, through
+  `forge_reads.rs` like the reads; that token is used for the one call and stored nowhere.
+  `doctor --project DIR` reads the branch's rules with the API token for its `protection`
+  line, waiting 20 s at most; the line never blocks.
+  Proven by `tests/protection.rs`, with a fake `gh`.
 
 ## Workflows (#39)
 

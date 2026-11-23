@@ -4,10 +4,11 @@ mod common;
 
 use cockpit_forge_api::conformance::{Recorded, check};
 use cockpit_forge_api::{
-    Availability, BranchName, Capability, ChangeId, ChangeRequest, ChangeState, Check, CheckState,
-    Checks, Comment, CommitId, Created, CredentialScheme, CredentialUse, Forge, ForgeHost, HostUse,
-    Issue, IssueFilter, IssueId, IssueState, IssueThread, ListLimit, NewChangeRequest, NewIssue,
-    Posted, ReviewDecision, ScopeCheck, TokenKind,
+    Availability, BranchName, BranchRules, Capability, ChangeId, ChangeRequest, ChangeState, Check,
+    CheckState, Checks, Comment, CommitId, Created, CredentialScheme, CredentialUse, DefaultBranch,
+    Forge, ForgeHost, HostUse, Issue, IssueFilter, IssueId, IssueState, IssueThread, ListLimit,
+    NewChangeRequest, NewIssue, Posted, ProtectOutcome, Protected, ProtectionPolicy,
+    ReviewDecision, ScopeCheck, TokenKind,
 };
 use common::{FakeGh, repository, token};
 
@@ -133,6 +134,26 @@ fn answering_every_call() -> FakeGh {
             "--draft",
         ],
         "pr-create.stdout",
+    )
+    .answer_protection_read(
+        "api-rules-branch-none.json",
+        "api-branch-protected-false.stdout",
+    )
+    .answer_with(
+        &[
+            "api",
+            "repos/owner/project/rulesets?includes_parents=false&per_page=100",
+        ],
+        "api-rulesets-none.json",
+    )
+    .answer_with(
+        &[
+            "api",
+            "--method=POST",
+            "repos/owner/project/rulesets",
+            "--input=-",
+        ],
+        "api-ruleset-written.json",
     );
     gh
 }
@@ -262,6 +283,18 @@ fn recorded() -> Recorded {
             url: "https://github.com/owner/project/pull/22".to_owned(),
         },
     ));
+    recorded.default_branch_protection = Some(DefaultBranch {
+        branch: BranchName::new("main").unwrap(),
+        rules: BranchRules::default(),
+        has_unread_protection: false,
+    });
+    recorded.protect_default_branch = Some((
+        ProtectionPolicy::new(vec!["ci".to_owned()]).unwrap(),
+        Protected {
+            branch: BranchName::new("main").unwrap(),
+            outcome: ProtectOutcome::Created,
+        },
+    ));
     recorded
 }
 
@@ -318,13 +351,13 @@ fn its_capabilities_stay_unverified_until_answers_are_recorded_from_a_live_gh() 
 }
 
 #[test]
-fn branch_protection_is_not_reported_until_its_contract_methods_exist() {
+fn branch_protection_is_reported_unverified_like_every_capability() {
     let capabilities = FakeGh::new().adapter().capabilities();
 
     for capability in [Capability::ProtectionRead, Capability::ProtectionBootstrap] {
         assert_eq!(
             capabilities.availability(capability),
-            Availability::Unavailable,
+            Availability::Unverified,
             "{capability}"
         );
     }

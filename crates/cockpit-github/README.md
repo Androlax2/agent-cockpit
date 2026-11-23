@@ -39,5 +39,13 @@ push check's origin test, move behind it as their callers adopt the contract.
   2.104.0's `--json` shape (`tests/fixtures/`), since no test reaches GitHub. They prove the
   adapter reads that shape, not that `gh` prints it, so every capability reports
   `discovered` until answers recorded from a live `gh` replace them.
-- **Branch protection** (`protection-read`, `protection-bootstrap`) is not reported until
-  its contract methods exist (#695).
+- **Default branch protection** (#695). The read takes the repository's default branch, the
+  active rules every ruleset applies to it (`rules/branches/BRANCH`) and whether GitHub marks
+  the branch protected; all three need read access alone. Classic branch protection also
+  marks it, and its rules take administration to read, so a marked branch no ruleset rule
+  applies to is reported with protection the read cannot see. One with ruleset rules too is
+  reported by those rules alone. Protect writes one repository ruleset of Torlek's,
+  `torlek-default-branch`, on `~DEFAULT_BRANCH`: deletion and non-fast-forward blocked, a pull
+  request with no approval required, the owner's checks required, no bypass actors. It finds
+  its own ruleset by name, reads it (`rulesets/ID`), writes nothing when it says exactly that
+  (fields GitHub adds are not compared), and replaces it when it says anything else. The body goes on standard input (`--input=-`).

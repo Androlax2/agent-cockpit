@@ -28,11 +28,10 @@ pub enum Capability {
     ChangeOpen,
     /// Check a repository token's scope ([`crate::Forge::check_token`]).
     TokenScope,
-    /// Read a branch's protection. No contract method yet: it arrives with its first caller,
-    /// `torlek project protect` and `doctor` (#695).
+    /// Read the default branch's protection ([`crate::Forge::default_branch_protection`]).
     ProtectionRead,
-    /// Set up the default branch's protection (change request and checks required, no
-    /// force). No contract method yet (#695).
+    /// Set up the default branch's protection: change request and checks required, no force
+    /// push, no deletion, no bypass ([`crate::Forge::protect_default_branch`]).
     ProtectionBootstrap,
 }
 

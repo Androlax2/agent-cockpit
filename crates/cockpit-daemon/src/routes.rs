@@ -148,6 +148,8 @@ impl Routes {
             containers,
             run_settings: Arc::clone(&capabilities.run_settings),
             processes: capabilities.processes.clone(),
+            git: capabilities.git.clone(),
+            forge_adapters: Arc::clone(&forge_adapters),
         };
         Routes {
             is_restoring: capabilities.is_restoring,
@@ -594,6 +596,20 @@ impl Handler for Routes {
                 Peer::Owner => crate::issues::route(
                     command,
                     crate::issues::Context {
+                        database: Arc::clone(&self.database),
+                        git: self.git.clone(),
+                        environment: self.environment.clone(),
+                        adapters: Arc::clone(&self.forge_adapters),
+                    },
+                ),
+            },
+            // Changing a repository's settings is the owner's, with a token they type for it
+            // (#695).
+            (command @ Command::ProjectProtect { .. }, peer) => match peer {
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => crate::protection::route(
+                    command,
+                    crate::protection::Context {
                         database: Arc::clone(&self.database),
                         git: self.git.clone(),
                         environment: self.environment.clone(),

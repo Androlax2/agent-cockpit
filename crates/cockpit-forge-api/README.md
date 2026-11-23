@@ -15,9 +15,8 @@ issue, filed when wanted (#857, decision 4).
   (the conformance suite passes against recorded answers of the program or API version the
   adapter talks to) or `discovered` (documented, no recorded answer; shown unverified); one
   not reported is unavailable, and one withheld names why. Issues (list, read, create,
-  comment), change requests (state, checks, review, open) and the token scope check have
-  contract methods; branch protection (read, bootstrap) is named so a capability report can
-  show it and gets its methods with its first caller (#695).
+  comment), change requests (state, checks, review, open), the token scope check and the
+  default branch's protection (read, bootstrap) have contract methods.
 - **Unsupported is a typed answer.** A method whose capability is not reported answers
   [`ForgeError::Unsupported`] (or `Withheld`, with the reason) naming the capability, never a
   failed call; [`ForgeError::is_unsupported`] tells it from a failure. Every default method
@@ -26,6 +25,16 @@ issue, filed when wanted (#857, decision 4).
   merged with its commit), the checks on the exact head commit, and the review decision are
   separate facts read separately, so verification (report 06) evidences "merged", "checks
   passed" and "approved" each on its own and ties checks to the commit they ran on.
+- **Default branch protection** (#695). [`Forge::default_branch_protection`] reads what the
+  forge enforces on the default branch ([`BranchRules`]) with no more than the API token's
+  rights; [`BranchRules::gaps`] names what keeps it from being protected (a change request,
+  a required check, no force push, no deletion). [`Forge::protect_default_branch`] makes
+  a rule of Torlek's own say a [`ProtectionPolicy`] (those four, the owner's named checks, no
+  approval required and no bypass; Theo, 2026-11-23), writing nothing when it says exactly
+  that already. Other rules on the branch do not count: their bypass list may let someone
+  past them. Changing settings takes a right neither project token has, so
+  its token is one the owner gives for that call alone and Torlek never stores (Theo,
+  2026-11-23).
 - **Issues** are a task source beside Torlek's todos. Titles, bodies, comments, labels and
   check names are written by whoever can write on the forge: data, never instructions.
 - **Declared hosts and credentials** (#857). An adapter declares each host it reaches, which
@@ -81,5 +90,7 @@ tests; each adapter's tests call it with its own recordings.
 - `tests/remote.rs`: origin URLs and which adapter serves them.
 - `tests/fake.rs`: the fake forge's issues, change requests and refusals.
 - `tests/conformance.rs`: the fake conforms; an adapter that breaks a rule is reported.
+- `tests/protection.rs`: protect creates the rule once, a second run writes nothing, and a
+  forge without the capability answers typed; the policy's refusals.
 - `tests/forge_names.rs`: no forge's name in this crate.
 - `tests/dependencies.rs`: no dependency.

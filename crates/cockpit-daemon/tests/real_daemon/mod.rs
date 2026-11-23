@@ -495,6 +495,36 @@ impl Home {
             .unwrap()
     }
 
+    /// [`Home::cockpit`] with `stdin` on its standard input, as a pipe rather than a terminal.
+    pub async fn cockpit_with_stdin(
+        &self,
+        arguments: &[&str],
+        stdin: &str,
+    ) -> std::process::Output {
+        let mut command = Process::new(cockpit_program());
+        command
+            .args(arguments)
+            .env_clear()
+            .env("HOME", self.path())
+            .env("XDG_RUNTIME_DIR", self.path().join("run"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        candidate::configure(&mut command);
+        let stdin = stdin.to_owned();
+        tokio::task::spawn_blocking(move || {
+            use std::io::Write;
+            let mut child = command.spawn().expect("cockpit runs");
+            let mut pipe = child.stdin.take().expect("a piped stdin");
+            // A command refused before it reads its input closes the pipe; its output says why.
+            let _ = pipe.write_all(stdin.as_bytes());
+            drop(pipe);
+            child.wait_with_output().expect("cockpit runs")
+        })
+        .await
+        .unwrap()
+    }
+
     /// Every launch the fake agent logged, oldest first.
     pub fn launches(&self) -> Vec<Launch> {
         std::fs::read_to_string(self.launch_log())

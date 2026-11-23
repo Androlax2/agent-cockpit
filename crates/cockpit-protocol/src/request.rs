@@ -288,6 +288,16 @@ pub enum Command {
     ProjectPushBranchList {
         project: String,
     },
+    /// Owner only (#695): make the project's default branch protected on its forge: a change
+    /// request for every change with no approval required, each of `required_checks` passing,
+    /// no force push, no deletion, no bypass. `token` may change the repository's settings,
+    /// which neither project token may (#857); the daemon makes this one call with it and
+    /// never stores it (Theo, 2026-11-23).
+    ProjectProtect {
+        project: String,
+        required_checks: Vec<String>,
+        token: SecretText,
+    },
     /// Checkouts not yet removed, of one project or all.
     CheckoutList {
         project: Option<String>,
@@ -1180,6 +1190,18 @@ pub enum Outcome {
     Error(ProtocolError),
 }
 
+/// What [`Command::ProjectProtect`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProtectOutcomeView {
+    /// Torlek's rule was made.
+    Created,
+    /// Torlek's rule fell short of the checks named and was replaced.
+    Updated,
+    /// The branch was protected already; nothing was written.
+    Unchanged,
+}
+
 /// What a command produced. A client only receives replies to commands it sent, so this set
 /// is closed for each protocol version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1321,6 +1343,12 @@ pub enum Reply {
         patterns: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         changed: Option<bool>,
+    },
+    /// What [`Command::ProjectProtect`] did to `project`'s default branch, `branch`.
+    ProjectProtected {
+        project: String,
+        branch: String,
+        outcome: ProtectOutcomeView,
     },
     RunRequest {
         request: Box<RunRequestView>,
