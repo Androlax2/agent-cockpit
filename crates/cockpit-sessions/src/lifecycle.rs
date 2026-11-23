@@ -2347,6 +2347,10 @@ impl Sessions {
         environment.extend(command.environment);
         let mut environment = with_temp_dir(environment, &temp_dir);
         environment.push(("TORLEK_SESSION".into(), id.as_str().into()));
+        environment.push((
+            cockpit_projects::COMMIT_TRAILER_VARIABLE.into(),
+            cockpit_projects::agent_trailer(session.provider.as_str(), id.as_str()).into(),
+        ));
         // Every launch goes through the sandbox (#61); one it refuses, such as any under
         // `agents.sandbox = "required"` while no backend exists (#828), fails the launch
         // before anything is reserved. The agent gets its whole checkout,
@@ -3399,6 +3403,10 @@ impl Sessions {
         }
         let mut environment = with_temp_dir(environment, &self.dry_run_temp_dir());
         environment.push(("TORLEK_SESSION".into(), DRY_RUN_SESSION.into()));
+        environment.push((
+            cockpit_projects::COMMIT_TRAILER_VARIABLE.into(),
+            cockpit_projects::agent_trailer(&provider_name, DRY_RUN_SESSION).into(),
+        ));
         let reads_tools = setting == cockpit_config::AgentSandbox::Required && backend.is_ok();
         let tools = if reads_tools {
             Some(

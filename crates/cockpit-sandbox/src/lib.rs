@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod agent_git;
 mod credentials;
 mod egress;
 mod evidence;

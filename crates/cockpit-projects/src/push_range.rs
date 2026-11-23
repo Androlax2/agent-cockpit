@@ -28,6 +28,25 @@ pub(crate) struct RemoteTips {
     pub(crate) default: Option<String>,
     /// The commit the pushed branch is at on the remote; `None` when it is new.
     pub(crate) pushed: Option<String>,
+    /// The commit every branch is at on the remote, the pushed and the default one included,
+    /// each once.
+    pub(crate) branches: Vec<String>,
+}
+
+impl RemoteTips {
+    /// The commits the remote holds the pushed range against: the pushed branch's tip first,
+    /// then the default branch's.
+    pub(crate) fn on_remote(&self) -> Vec<&str> {
+        [self.pushed.as_deref(), self.default.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    /// Every commit a branch of the remote is at, as `git push` holds what it sends against.
+    pub(crate) fn every_branch(&self) -> Vec<&str> {
+        self.branches.iter().map(String::as_str).collect()
+    }
 }
 
 /// How a scan reaches the remote: the one URL the push goes to, Git's settings for the call
@@ -59,7 +78,7 @@ impl RemoteAccess<'_> {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    /// The commits the remote's default branch and `branch` are at.
+    /// The commits the remote's default branch, `branch` and every other branch are at.
     pub(crate) fn tips(&self, branch: &str) -> Result<RemoteTips, Error> {
         let pushed_ref = format!("refs/heads/{branch}");
         let listed = self.run(
@@ -70,7 +89,7 @@ impl RemoteAccess<'_> {
                 arg("--end-of-options"),
                 arg(self.url),
                 arg("HEAD"),
-                arg(&pushed_ref),
+                arg("refs/heads/*"),
             ],
         )?;
         Ok(parse_tips(&listed, &pushed_ref))
@@ -80,7 +99,7 @@ impl RemoteAccess<'_> {
     /// `FETCH_HEAD` written, no maintenance and no submodule. The checkout's configuration
     /// could send the fetch elsewhere, but no other repository can answer for these ids:
     /// every object the scan reads is checked against its id.
-    fn fetch_missing(&self, commits: &[&str]) -> Result<(), Error> {
+    pub(crate) fn fetch_missing(&self, commits: &[&str]) -> Result<(), Error> {
         let mut missing = Vec::new();
         for commit in commits {
             if !is_present(self.git, self.checkout, commit)? {
@@ -112,6 +131,7 @@ fn parse_tips(listed: &str, pushed_ref: &str) -> RemoteTips {
         default_branch: None,
         default: None,
         pushed: None,
+        branches: Vec::new(),
     };
     for line in listed.lines() {
         let Some((commit, name)) = line.split_once('\t') else {
@@ -128,8 +148,13 @@ fn parse_tips(listed: &str, pushed_ref: &str) -> RemoteTips {
         }
         if name == "HEAD" {
             tips.default = Some(commit.to_owned());
-        } else if name == pushed_ref {
+            continue;
+        }
+        if name == pushed_ref {
             tips.pushed = Some(commit.to_owned());
+        }
+        if name.starts_with("refs/heads/") && !tips.branches.iter().any(|tip| tip == commit) {
+            tips.branches.push(commit.to_owned());
         }
     }
     tips
@@ -163,10 +188,7 @@ pub(crate) fn changed_ci_paths(
     tips: &RemoteTips,
     commit: &str,
 ) -> Result<Vec<&'static str>, Error> {
-    let on_remote: Vec<&str> = [tips.pushed.as_deref(), tips.default.as_deref()]
-        .into_iter()
-        .flatten()
-        .collect();
+    let on_remote = tips.on_remote();
     remote.fetch_missing(&on_remote)?;
     let read = |commit: &str| ci_entries(remote.git, remote.checkout, commit);
     let pushed = read(commit)?;
@@ -309,11 +331,14 @@ mod tests {
 
     const DEFAULT: &str = "1111111111111111111111111111111111111111";
     const TIP: &str = "2222222222222222222222222222222222222222";
+    const OTHER: &str = "3333333333333333333333333333333333333333";
 
     #[test]
     fn the_remotes_default_tip_and_the_pushed_tip_are_read_from_ls_remote() {
-        let listed =
-            format!("ref: refs/heads/main\tHEAD\n{DEFAULT}\tHEAD\n{TIP}\trefs/heads/feature/x\n");
+        let listed = format!(
+            "ref: refs/heads/main\tHEAD\n{DEFAULT}\tHEAD\n{TIP}\trefs/heads/feature/x\n\
+             {DEFAULT}\trefs/heads/main\n{OTHER}\trefs/heads/stacked\n"
+        );
 
         assert_eq!(
             parse_tips(&listed, "refs/heads/feature/x"),
@@ -321,6 +346,7 @@ mod tests {
                 default_branch: Some("main".to_owned()),
                 default: Some(DEFAULT.to_owned()),
                 pushed: Some(TIP.to_owned()),
+                branches: vec![TIP.to_owned(), DEFAULT.to_owned(), OTHER.to_owned()],
             }
         );
     }
@@ -333,6 +359,7 @@ mod tests {
                 default_branch: None,
                 default: None,
                 pushed: None,
+                branches: Vec::new(),
             }
         );
     }

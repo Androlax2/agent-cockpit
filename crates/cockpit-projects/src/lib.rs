@@ -5,6 +5,7 @@
 extern crate self as cockpit_projects;
 
 mod agent_folder_file;
+mod attribution;
 mod checkout_file;
 mod clones;
 mod end_sweeps;
@@ -25,6 +26,7 @@ mod target_prune;
 use std::path::{Path, PathBuf};
 
 pub use agent_folder_file::replace_agent_folder_file;
+pub use attribution::{COMMIT_TRAILER_VARIABLE, agent_trailer};
 pub use checkout_file::read_checkout_file;
 pub use clones::{create_parallel_clone, create_review_clone};
 pub use end_sweeps::{EndSweep, end_sweep_recorded, end_sweeps, record_end_sweep};

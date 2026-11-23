@@ -80,6 +80,13 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   end removes with the rest of its mount sources (`Sandbox::session_mount_sources`, #482). Git reads no system configuration and no
   `GIT_CONFIG*` variable of the launch. Nothing of the owner's caches or tool configuration
   is mounted.
+- Unsigned Git (#694): every launch, sandboxed or under `"off"`, and every check run gets
+  `commit.gpgSign`, `tag.gpgSign`, `tag.forceSignAnnotated` and `push.gpgSign` set to
+  `false` as Git's command-scope configuration (`GIT_CONFIG_COUNT`), which wins over every
+  configuration file, the checkout's own included; an unsandboxed launch keeps its own
+  `GIT_CONFIG_COUNT` pairs before them, and gets the reset appended to an inherited
+  `GIT_CONFIG_PARAMETERS` (`git -c`) too. An agent's explicit `git commit -S` still signs:
+  `torlek push` refuses the commit (`cockpit-projects`).
 - Declarations (#861): the evidence names where the program's needs came from, its adapter,
   the owner's entry for it, or none (the floor). `cockpit-sessions` refuses, when the daemon
   loads its providers, a declaration that reads or writes a baseline-denied path or another

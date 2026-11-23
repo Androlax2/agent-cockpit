@@ -4,6 +4,7 @@ use cockpit_forge_api::{ForgeHost, Token};
 use cockpit_turso::sql::{Connection, params};
 use cockpit_turso::{Database, Migration, WriteTransaction};
 
+use crate::attribution;
 use crate::git::{arg, git_failure};
 use crate::push_range::{self, RemoteAccess};
 use crate::store::{self, now};
@@ -530,8 +531,8 @@ fn credential_helper(target: &PushTarget, credential: &PushCredential) -> String
 }
 
 /// What an agent's push is checked for against the remote, read with the push's credential:
-/// the remote's default branch, which it never pushes, and the CI paths whose content the push
-/// would newly bring there.
+/// the remote's default branch, which it never pushes, the attribution of every commit it
+/// sends (#694), and the CI paths whose content the push would newly bring there.
 fn agent_checks(
     git: &Git,
     checkout: &std::path::Path,
@@ -565,6 +566,9 @@ fn agent_checks(
         }
         Some(_) => {}
     }
+    let on_remote = tips.on_remote();
+    remote.fetch_missing(&on_remote)?;
+    attribution::require_attributed(git, checkout, &tips.every_branch(), &target.commit)?;
     let changed = push_range::changed_ci_paths(&remote, &tips, &target.commit)?;
     Ok(changed.into_iter().map(str::to_owned).collect())
 }

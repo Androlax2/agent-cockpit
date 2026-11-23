@@ -18,6 +18,8 @@ use common::{Scratch, git, register};
 
 const ORIGIN: &str = "https://github.com/owner/app.git";
 const TOKEN: &str = "push-token-fixture";
+/// The trailer the fixture's commits carry, as an agent's do (#694).
+const AGENT_TRAILER: &str = "Agent: claude via Torlek s1";
 
 fn quote(path: &Path) -> String {
     format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"))
@@ -129,14 +131,28 @@ impl Fixture {
         push(&self.database, &self.git, checkout, rules).await
     }
 
-    /// Commits `content` to `path` in the checkout.
+    /// Commits `content` to `path` in the checkout, with an agent's trailer.
     fn commit_file(&self, path: &str, content: &str) -> String {
+        self.write_and_add(path, content);
+        git(
+            &self.root,
+            &["commit", "--quiet", "-m", path, "--trailer", AGENT_TRAILER],
+        );
+        self.head()
+    }
+
+    /// Commits `content` to `path` in the checkout with no trailer, as the owner would.
+    fn commit_file_unattributed(&self, path: &str, content: &str) -> String {
+        self.write_and_add(path, content);
+        git(&self.root, &["commit", "--quiet", "-m", path]);
+        self.head()
+    }
+
+    fn write_and_add(&self, path: &str, content: &str) {
         let file = self.root.join(path);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, content).unwrap();
         git(&self.root, &["add", path]);
-        git(&self.root, &["commit", "--quiet", "-m", path]);
-        self.head()
     }
 
     fn recorded(&self, name: &str) -> Option<String> {
@@ -690,7 +706,17 @@ async fn an_agents_clone_pushes_though_the_main_checkout_pushes_elsewhere() {
         .await
         .unwrap();
     std::fs::write(clone.path.join("README"), "clone work\n").unwrap();
-    git(&clone.path, &["commit", "--quiet", "-am", "work"]);
+    git(
+        &clone.path,
+        &[
+            "commit",
+            "--quiet",
+            "-am",
+            "work",
+            "--trailer",
+            AGENT_TRAILER,
+        ],
+    );
     let branches = AgentBranches {
         launch: Some("feature".to_owned()),
         patterns: Vec::new(),
@@ -800,7 +826,17 @@ async fn an_agents_clone_pushes_its_launch_branch_to_the_projects_repository() {
         .await
         .unwrap();
     std::fs::write(clone.path.join("README"), "clone work\n").unwrap();
-    git(&clone.path, &["commit", "--quiet", "-am", "work"]);
+    git(
+        &clone.path,
+        &[
+            "commit",
+            "--quiet",
+            "-am",
+            "work",
+            "--trailer",
+            AGENT_TRAILER,
+        ],
+    );
     let branches = AgentBranches {
         launch: Some("feature".to_owned()),
         patterns: Vec::new(),
@@ -944,7 +980,17 @@ async fn removing_a_workflow_is_held_like_adding_one() {
     fixture.push(github(), Force::Never).await.unwrap();
     git(&fixture.root, &["switch", "--quiet", "--create", "feature"]);
     git(&fixture.root, &["rm", "--quiet", WORKFLOW]);
-    git(&fixture.root, &["commit", "--quiet", "-m", "drop ci"]);
+    git(
+        &fixture.root,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "drop ci",
+            "--trailer",
+            AGENT_TRAILER,
+        ],
+    );
 
     let (_, _, paths) = workflow_change(fixture.push_as_agent(Force::Never).await);
 
@@ -994,6 +1040,142 @@ async fn the_owners_push_is_not_scanned_and_asks_the_remote_nothing_else() {
         calls.iter().all(|call| call.contains(" push ")),
         "{calls:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_commit_without_the_trailer_is_refused_naming_it_and_nothing_is_pushed() {
+    let fixture = on_a_new_feature_branch().await;
+    fixture.commit_file("README", "attributed\n");
+    let unattributed = fixture.commit_file_unattributed("NOTES", "not attributed\n");
+    fixture.forget_recorded_push();
+
+    let reason = refusal(fixture.push_as_agent(Force::Never).await);
+
+    assert!(
+        reason.contains(&format!("commit {unattributed} carries no `Agent:")),
+        "{reason}"
+    );
+    assert!(reason.contains("$TORLEK_COMMIT_TRAILER"), "{reason}");
+    assert_eq!(fixture.recorded("pushed"), None, "nothing is pushed");
+    assert_eq!(fixture.remote_tip("feature"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_trailer_naming_no_session_does_not_attribute_a_commit() {
+    let fixture = on_a_new_feature_branch().await;
+    fixture.write_and_add("README", "work\n");
+    git(
+        &fixture.root,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "work",
+            "--trailer",
+            "Agent: claude",
+        ],
+    );
+
+    let reason = refusal(fixture.push_as_agent(Force::Never).await);
+
+    assert!(reason.contains(&fixture.head()), "{reason}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_signed_commit_is_refused_naming_it() {
+    let fixture = on_a_new_feature_branch().await;
+    let parent = fixture.head();
+    let tree = git(&fixture.root, &["rev-parse", "HEAD^{tree}"])
+        .trim()
+        .to_owned();
+    let raw = format!(
+        "tree {tree}\nparent {parent}\nauthor A <a@example.com> 1 +0000\n\
+         committer A <a@example.com> 1 +0000\ngpgsig -----BEGIN SSH SIGNATURE-----\n \
+         U1NIU0lH\n -----END SSH SIGNATURE-----\n\nsigned\n\n{AGENT_TRAILER}\n"
+    );
+    let raw_file = fixture.scratch.path().join("signed-commit");
+    std::fs::write(&raw_file, raw).unwrap();
+    let signed = git(
+        &fixture.root,
+        &[
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            raw_file.to_str().unwrap(),
+        ],
+    )
+    .trim()
+    .to_owned();
+    git(
+        &fixture.root,
+        &["update-ref", "refs/heads/feature", &signed],
+    );
+
+    let reason = refusal(fixture.push_as_agent(Force::Never).await);
+
+    assert!(
+        reason.contains(&format!("commit {signed} is signed")),
+        "{reason}"
+    );
+    assert!(
+        !reason.contains("no `Agent:"),
+        "the commit is attributed: {reason}"
+    );
+    assert_eq!(fixture.remote_tip("feature"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_refusal_rewrites_from_before_the_oldest_refused_commit() {
+    let fixture = on_a_new_feature_branch().await;
+    let oldest = fixture.commit_file_unattributed("README", "first\n");
+    fixture.commit_file("NOTES", "attributed\n");
+    fixture.commit_file_unattributed("TODO", "last\n");
+
+    let reason = refusal(fixture.push_as_agent(Force::Never).await);
+
+    assert!(
+        reason.contains(&format!("--trailer \"$TORLEK_COMMIT_TRAILER\"' {oldest}^`")),
+        "{reason}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn commits_another_remote_branch_holds_need_no_trailer() {
+    let fixture = on_a_new_feature_branch().await;
+    let stacked_on = fixture.someone_else_commits("base", "README", "the owner's\n");
+    git(
+        &fixture.root,
+        &["fetch", "--quiet", fixture.remote.to_str().unwrap(), "base"],
+    );
+    git(&fixture.root, &["reset", "--quiet", "--hard", &stacked_on]);
+    let commit = fixture.commit_file("NOTES", "the agent's\n");
+
+    fixture.push_as_agent(Force::Never).await.unwrap();
+
+    assert_eq!(fixture.remote_tip("feature"), Some(commit));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn commits_the_remote_branch_already_holds_need_no_trailer() {
+    let fixture = on_a_new_feature_branch().await;
+    fixture.commit_file_unattributed("README", "the owner's\n");
+    fixture.push(github(), Force::Never).await.unwrap();
+    let commit = fixture.commit_file("NOTES", "the agent's\n");
+
+    fixture.push_as_agent(Force::Never).await.unwrap();
+
+    assert_eq!(fixture.remote_tip("feature"), Some(commit));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owners_push_of_an_unattributed_commit_is_sent() {
+    let fixture = on_a_new_feature_branch().await;
+    let commit = fixture.commit_file_unattributed("README", "the owner's\n");
+
+    fixture.push(github(), Force::Never).await.unwrap();
+
+    assert_eq!(fixture.remote_tip("feature"), Some(commit));
 }
 
 #[test]
