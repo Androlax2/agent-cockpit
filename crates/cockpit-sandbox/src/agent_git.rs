@@ -102,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn the_launchs_own_settings_are_kept_before_the_reset() {
+    fn the_own_settings_of_a_launch_are_kept_before_the_reset() {
         let environment = with_unsigned_git(vec![
             ("GIT_CONFIG_COUNT".into(), "1".into()),
             ("GIT_CONFIG_KEY_0".into(), "core.editor".into()),
