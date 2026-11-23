@@ -57,10 +57,20 @@ pub struct SecretFinding {
     pub rule: String,
 }
 
+/// The refs the scanned repository holds the remote's tips under, and the log options that
+/// leave out what they reach: refs rather than arguments, since a remote's thousands of
+/// branches would pass the length one argument may have.
+const REMOTE_TIPS: &str = "refs/remote-tips";
+const EXCLUDE_REMOTE_TIPS: &str = "--not --glob=refs/remote-tips/*";
+
 /// What gitleaks finds in the lines the commits `commit` reaches and none of `remote_tips`
-/// does add: the range [`crate::attribution`] checks, as the push sends it. A merge's own
-/// lines are its changes to Git's automatic merge (`--diff-merges=remerge`), so a merge of a
-/// branch the remote holds brings none of that branch's lines.
+/// does add: the range [`crate::attribution`] checks, as the push sends it.
+///
+/// A merge of two parents counts its changes to Git's automatic merge
+/// (`--diff-merges=remerge`), so merging a branch the remote holds brings none of that
+/// branch's lines. Git has no such diff for a merge of more parents, so its whole change
+/// against its first parent is scanned: that may name a line a merged branch brought, which
+/// holds the push for the owner rather than let a line through unread.
 pub(crate) fn scan(
     git: &Git,
     scanner: &SecretScanner,
@@ -68,61 +78,127 @@ pub(crate) fn scan(
     remote_tips: &[&str],
     commit: &str,
 ) -> Result<Vec<SecretFinding>, Error> {
+    let path = std::env::var_os("PATH")
+        .ok_or_else(|| scan_failed("the daemon has no PATH to find gitleaks and Git on"))?;
     let scratch = Scratch::create("cockpit-secret-scan")?;
     let repository = borrowing_repository(git, checkout, &scratch.path)?;
+    hold_remote_tips(git, &repository, remote_tips)?;
     let configuration = scratch.path.join("gitleaks.toml");
     write(&configuration, CONFIGURATION)?;
-    let report = scratch.path.join("report.csv");
-    let log_options = std::iter::once(format!(
-        "--no-textconv --diff-merges=remerge --ignore-missing {commit}"
-    ))
-    .chain(remote_tips.iter().map(|tip| format!("^{tip}")))
-    .collect::<Vec<_>>()
-    .join(" ");
-    let mut command = Command::new(&scanner.program);
-    command
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("HOME", &scratch.path)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .current_dir(&scratch.path)
-        .args(["git", "--no-banner", "--log-level", "error", "--redact"])
-        .args(["--ignore-gitleaks-allow", "--exit-code"])
-        .arg(FINDINGS_STATUS.to_string())
-        .arg("--config")
-        .arg(&configuration)
-        .arg("--gitleaks-ignore-path")
-        .arg(&scratch.path)
-        .args(["--report-format", "csv", "--report-path"])
-        .arg(&report)
-        .arg("--log-opts")
-        .arg(&log_options)
-        .arg(&repository)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let status = run_within(command, &scanner.program, SCAN_LIMIT)?;
-    match status.code {
-        Some(0) => Ok(Vec::new()),
-        Some(FINDINGS_STATUS) => {
-            let read = std::fs::read_to_string(&report).map_err(Error::io("read", &report))?;
-            let findings = findings_in(&read)?;
-            if findings.is_empty() {
-                return Err(scan_failed(
-                    "it reported findings and its report lists none",
-                ));
+    let scan = Scan {
+        scanner,
+        scratch: &scratch.path,
+        repository: &repository,
+        configuration: &configuration,
+        path: &path,
+    };
+    let mut findings = scan.run(
+        "two-parents",
+        &format!(
+            "--no-textconv --diff-merges=remerge --max-parents=2 {commit} {EXCLUDE_REMOTE_TIPS}"
+        ),
+    )?;
+    findings.extend(scan.run(
+        "octopus",
+        &format!(
+            "--no-textconv --diff-merges=first-parent --min-parents=3 {commit} \
+             {EXCLUDE_REMOTE_TIPS}"
+        ),
+    )?);
+    Ok(findings)
+}
+
+/// One gitleaks run's settings, all of them Torlek's.
+struct Scan<'a> {
+    scanner: &'a SecretScanner,
+    scratch: &'a Path,
+    repository: &'a Path,
+    configuration: &'a Path,
+    path: &'a std::ffi::OsStr,
+}
+
+impl Scan<'_> {
+    /// gitleaks over the commits `git log` lists with `log_options`, reporting to
+    /// `report-<name>.csv`.
+    fn run(&self, name: &str, log_options: &str) -> Result<Vec<SecretFinding>, Error> {
+        let report = self.scratch.join(format!("report-{name}.csv"));
+        let mut command = Command::new(&self.scanner.program);
+        command
+            .env_clear()
+            .env("PATH", self.path)
+            .env("HOME", self.scratch)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_NO_REPLACE_OBJECTS", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .current_dir(self.scratch)
+            .args(["git", "--no-banner", "--log-level", "error", "--redact"])
+            .args(["--ignore-gitleaks-allow", "--exit-code"])
+            .arg(FINDINGS_STATUS.to_string())
+            .arg("--config")
+            .arg(self.configuration)
+            .arg("--gitleaks-ignore-path")
+            .arg(self.scratch)
+            .args(["--report-format", "csv", "--report-path"])
+            .arg(&report)
+            .arg("--log-opts")
+            .arg(log_options)
+            .arg(self.repository)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let status = run_within(command, &self.scanner.program, SCAN_LIMIT)?;
+        match status.code {
+            Some(0) => Ok(Vec::new()),
+            Some(FINDINGS_STATUS) => {
+                let read = std::fs::read_to_string(&report).map_err(Error::io("read", &report))?;
+                let findings = findings_in(&read)?;
+                if findings.is_empty() {
+                    return Err(scan_failed(
+                        "it reported findings and its report lists none",
+                    ));
+                }
+                Ok(findings)
             }
-            Ok(findings)
+            code => Err(scan_failed(&format!(
+                "gitleaks exited with {}: {}",
+                code.map_or("a signal".to_owned(), |code| code.to_string()),
+                status.stderr.trim()
+            ))),
         }
-        code => Err(scan_failed(&format!(
-            "gitleaks exited with {}: {}",
-            code.map_or("a signal".to_owned(), |code| code.to_string()),
-            status.stderr.trim()
-        ))),
     }
+}
+
+/// Points a ref under [`REMOTE_TIPS`] in `repository` at each of `remote_tips` the checkout
+/// holds as a commit; the rest it lacks, so they reach nothing the push sends.
+fn hold_remote_tips(git: &Git, repository: &Path, remote_tips: &[&str]) -> Result<(), Error> {
+    if remote_tips.is_empty() {
+        return Ok(());
+    }
+    let asked = remote_tips.join("\n") + "\n";
+    let listed = git.run_with_input(
+        repository,
+        &[
+            arg("cat-file"),
+            arg("--batch-check=%(objectname) %(objecttype)"),
+        ],
+        asked.as_bytes(),
+    )?;
+    let updates: String = listed
+        .lines()
+        .filter_map(|line| line.strip_suffix(" commit"))
+        .enumerate()
+        .map(|(index, tip)| format!("create {REMOTE_TIPS}/{index} {tip}\n"))
+        .collect();
+    if updates.is_empty() {
+        return Ok(());
+    }
+    git.run_with_input(
+        repository,
+        &[arg("update-ref"), arg("--stdin")],
+        updates.as_bytes(),
+    )?;
+    Ok(())
 }
 
 /// A bare repository in `scratch` that reads the checkout's objects, its shallow boundary and
@@ -201,7 +277,7 @@ fn run_within(mut command: Command, program: &Path, limit: Duration) -> Result<F
                 reason: format!(
                     "the pre-push secret scan needs {GITLEAKS} on the daemon's PATH ({} is not \
                      there), and an agent's push is never sent unscanned; the owner installs \
-                     gitleaks, which `torlek doctor` reports",
+                     gitleaks",
                     program.display()
                 ),
             });
@@ -216,7 +292,8 @@ fn run_within(mut command: Command, program: &Path, limit: Duration) -> Result<F
             break status;
         }
         if Instant::now() >= deadline {
-            // Kill fails only when it exited meanwhile, which `wait` then reaps.
+            // Kill fails only when it exited meanwhile, which `wait` then reaps. The `git log` it
+            // started then ends at its next write, on the pipe gitleaks no longer reads.
             let _ = child.kill();
             child.wait().map_err(Error::io("wait for", program))?;
             return Err(scan_failed(&format!(
@@ -232,7 +309,7 @@ fn run_within(mut command: Command, program: &Path, limit: Duration) -> Result<F
     let stderr = match stderr.recv_timeout(left) {
         Ok(Ok(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
         Ok(Err(error)) => return Err(Error::io("read the output of", program)(error)),
-        Err(_) => String::new(),
+        Err(_) => "its standard error stayed open past the limit, so it is unread".to_owned(),
     };
     Ok(Finished {
         code: status.code(),

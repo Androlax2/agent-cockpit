@@ -96,8 +96,10 @@ marker is refused as `Replaced` instead of being acted on.
   #694): `gitleaks git` over a private bare repository that borrows the checkout's objects,
   shallow boundary and grafts, so no configuration, attributes, `.gitleaks.toml` or
   `.gitleaksignore` of the checkout applies; its rules are gitleaks' defaults from a file
-  Torlek writes, and `gitleaks:allow` is ignored. A merge counts only its changes to Git's
-  automatic merge (`--diff-merges=remerge`). A finding is `Error::SecretFound`, held for the
+  Torlek writes, and `gitleaks:allow` is ignored. A merge of two parents counts only its
+  changes to Git's automatic merge (`--diff-merges=remerge`); one of more parents, for which
+  Git has no such diff, its whole change against its first parent. The remote's tips are refs
+  in that repository, so no number of branches overflows an argument. A finding is `Error::SecretFound`, held for the
   owner like a CI change and naming rule, file, line and commit but never the secret; a
   missing or failing gitleaks refuses the push. The daemon finds `gitleaks` on its `PATH`
   (`SecretScanner::from_path`).

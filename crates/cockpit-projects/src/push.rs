@@ -551,9 +551,6 @@ fn credential_helper(target: &PushTarget, credential: &PushCredential) -> String
     )
 }
 
-/// What an agent's push is checked for against the remote, read with the push's credential:
-/// the remote's default branch, which it never pushes, the attribution of every commit it
-/// sends (#694), and the CI paths whose content the push would newly bring there.
 /// What holds an agent's push for the owner: lines gitleaks reads as secrets, CI files it
 /// changes.
 struct Held {
@@ -561,6 +558,10 @@ struct Held {
     ci_paths: Vec<String>,
 }
 
+/// What an agent's push is checked for against the remote, read with the push's credential:
+/// the remote's default branch, which it never pushes, the attribution of every commit it
+/// sends (#694), the lines gitleaks reads as secrets in them (#694), and the CI paths whose
+/// content the push would newly bring there.
 fn agent_checks(
     git: &Git,
     scanner: &SecretScanner,

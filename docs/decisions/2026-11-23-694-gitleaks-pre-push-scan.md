@@ -9,7 +9,7 @@ offered.
 
 - **gitleaks is a required host program.** The daemon runs `gitleaks` from its `PATH`. When it
   is missing, fails or runs past five minutes, an agent's push is refused: never sent
-  unscanned. Readiness reports a missing gitleaks (#694, part 3).
+  unscanned. Proposed, not yet built: readiness reports a missing gitleaks (#694, part 3).
 - **A finding holds the push for the owner** (`Error::SecretFound`), as a CI change does. The
   refusal names the rule, file, line and commit, never the secret, and the owner's `torlek
   checkout push ID --branch B --commit C` sends it. The owner's own pushes are not scanned.

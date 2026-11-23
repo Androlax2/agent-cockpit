@@ -1396,6 +1396,37 @@ async fn a_secret_a_merge_adds_resolving_it_holds_the_push() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_secret_an_octopus_merge_adds_holds_the_push() {
+    let fixture = on_a_new_feature_branch().await;
+    fixture.commit_file("NOTES", "the agent's\n");
+    fixture.push_as_agent(Force::Never).await.unwrap();
+    let base = fixture.head();
+    for side in ["one", "two"] {
+        git(
+            &fixture.root,
+            &["switch", "--quiet", "--create", side, &base],
+        );
+        fixture.commit_file(side, "a side\n");
+    }
+    git(&fixture.root, &["switch", "--quiet", "feature"]);
+    git(
+        &fixture.root,
+        &["merge", "--quiet", "--no-commit", "one", "two"],
+    );
+    std::fs::write(fixture.root.join("LEAK"), format!("{FAKE_SECRET}\n")).unwrap();
+    git(&fixture.root, &["add", "LEAK"]);
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "--no-edit", "--trailer", AGENT_TRAILER],
+    );
+
+    let (_, findings) = secret_found(fixture.push_as_agent(Force::Never).await);
+
+    assert_eq!(findings[0].file, "LEAK");
+    assert_eq!(findings[0].commit, fixture.head());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_scan_reads_no_configuration_or_ignore_file_the_checkout_holds() {
     let fixture = on_a_new_feature_branch().await;
     fixture.commit_file("NOTES", "clean\n");
