@@ -588,24 +588,29 @@ async fn push_facts(
         })
         .map(ToString::to_string)
         .collect();
+    let bound: Vec<String> = crate::forges::push_hosts(&bound)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    // Only a project whose agents may push needs gitleaks, so only its report runs it.
+    let gitleaks = if bound.is_empty() {
+        None
+    } else {
+        Some(version_of(secret_scanner.clone()).await)
+    };
     Ok(PushFacts {
         reached,
-        bound: crate::forges::push_hosts(&bound)
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
+        bound,
         declared: declared.iter().map(ToString::to_string).collect(),
-        gitleaks: version_of(secret_scanner.clone()).await?,
+        gitleaks,
     })
 }
 
 /// `gitleaks version`, run off the async workers since it starts a program.
-async fn version_of(
-    secret_scanner: cockpit_projects::SecretScanner,
-) -> Result<Result<String, String>, String> {
+async fn version_of(secret_scanner: cockpit_projects::SecretScanner) -> Result<String, String> {
     tokio::task::spawn_blocking(move || secret_scanner.version())
         .await
-        .map_err(|error| error.to_string())
+        .unwrap_or_else(|error| Err(format!("`gitleaks version` did not finish: {error}")))
 }
 
 /// Trust as `cockpit-projects` decides it, from the owner's `projects.trusted` read now.

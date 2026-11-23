@@ -62,15 +62,38 @@ impl SecretScanner {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let finished =
-            run_within(command, &self.program, VERSION_LIMIT).map_err(|error| error.to_string())?;
-        match finished.code {
-            Some(0) => Ok(finished.stdout.trim().to_owned()),
-            code => Err(format!(
-                "`{} version` exited with {}: {}",
-                self.program.display(),
-                code.map_or("a signal".to_owned(), |code| code.to_string()),
-                finished.stderr.trim()
+        let asked = format!("`{} version`", self.program.display());
+        match run_within(command, &self.program, VERSION_LIMIT)
+            .map_err(|error| error.to_string())?
+        {
+            Ran::NotFound => Err(format!(
+                "{} is not on the daemon's PATH",
+                self.program.display()
+            )),
+            Ran::TimedOut => Err(format!(
+                "{asked} gave no answer within {} s",
+                VERSION_LIMIT.as_secs()
+            )),
+            Ran::Exited {
+                code: Some(0),
+                stdout: Some(stdout),
+                ..
+            } if !stdout.trim().is_empty() => Ok(stdout.trim().to_owned()),
+            Ran::Exited {
+                code: Some(0),
+                stdout: Some(_),
+                ..
+            } => Err(format!("{asked} printed no version")),
+            Ran::Exited {
+                code: Some(0),
+                stdout: None,
+                ..
+            } => Err(format!(
+                "{asked} exited, and its output stayed open past the limit, so no version was read"
+            )),
+            Ran::Exited { code, stderr, .. } => Err(format!(
+                "{asked} exited with {}",
+                ending(code, stderr.as_deref())
             )),
         }
     }
@@ -174,10 +197,28 @@ impl Scan<'_> {
             .arg(log_options)
             .arg(self.repository)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        let status = run_within(command, &self.scanner.program, SCAN_LIMIT)?;
-        match status.code {
+        let (code, stderr) = match run_within(command, &self.scanner.program, SCAN_LIMIT)? {
+            Ran::NotFound => {
+                return Err(Error::Refused {
+                    reason: format!(
+                        "the pre-push secret scan needs {GITLEAKS} on the daemon's PATH ({} is \
+                         not there), and an agent's push is never sent unscanned; the owner \
+                         installs gitleaks",
+                        self.scanner.program.display()
+                    ),
+                });
+            }
+            Ran::TimedOut => {
+                return Err(scan_failed(&format!(
+                    "gitleaks gave no answer within {} s",
+                    SCAN_LIMIT.as_secs()
+                )));
+            }
+            Ran::Exited { code, stderr, .. } => (code, stderr),
+        };
+        match code {
             Some(0) => Ok(Vec::new()),
             Some(FINDINGS_STATUS) => {
                 let read = std::fs::read_to_string(&report).map_err(Error::io("read", &report))?;
@@ -190,9 +231,8 @@ impl Scan<'_> {
                 Ok(findings)
             }
             code => Err(scan_failed(&format!(
-                "gitleaks exited with {}: {}",
-                code.map_or("a signal".to_owned(), |code| code.to_string()),
-                status.stderr.trim()
+                "gitleaks exited with {}",
+                ending(code, stderr.as_deref())
             ))),
         }
     }
@@ -292,26 +332,36 @@ fn scan_failed(why: &str) -> Error {
     }
 }
 
-struct Finished {
-    code: Option<i32>,
-    stdout: String,
-    stderr: String,
+/// How a program run within a limit ended.
+enum Ran {
+    NotFound,
+    /// Killed once the limit passed.
+    TimedOut,
+    /// Its exit code, `None` for a signal, and what it printed: each `None` when it could not
+    /// be read whole within the limit.
+    Exited {
+        code: Option<i32>,
+        stdout: Option<String>,
+        stderr: Option<String>,
+    },
 }
 
-/// Runs `command`, killed once `limit` passed. A missing program refuses the push, naming it.
-fn run_within(mut command: Command, program: &Path, limit: Duration) -> Result<Finished, Error> {
+/// `code` and `stderr` as a failure message ends: `2: why` or `2 and printed nothing`.
+fn ending(code: Option<i32>, stderr: Option<&str>) -> String {
+    let code = code.map_or("a signal".to_owned(), |code| code.to_string());
+    match stderr.map(str::trim) {
+        Some("") => format!("{code} and printed nothing"),
+        Some(stderr) => format!("{code}: {stderr}"),
+        None => format!("{code}; its standard error stayed open past the limit, so it is unread"),
+    }
+}
+
+/// Runs `command`, killed once `limit` passed. Its standard error is read before its standard
+/// output, so a failure's reason is kept within the limit.
+fn run_within(mut command: Command, program: &Path, limit: Duration) -> Result<Ran, Error> {
     let mut child = match command.spawn() {
         Ok(child) => child,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(Error::Refused {
-                reason: format!(
-                    "the pre-push secret scan needs {GITLEAKS} on the daemon's PATH ({} is not \
-                     there), and an agent's push is never sent unscanned; the owner installs \
-                     gitleaks",
-                    program.display()
-                ),
-            });
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Ran::NotFound),
         Err(error) => return Err(Error::io("run", program)(error)),
     };
     let stdout = read_all(child.stdout.take());
@@ -326,27 +376,22 @@ fn run_within(mut command: Command, program: &Path, limit: Duration) -> Result<F
             // started then ends at its next write, on the pipe gitleaks no longer reads.
             let _ = child.kill();
             child.wait().map_err(Error::io("wait for", program))?;
-            return Err(scan_failed(&format!(
-                "gitleaks gave no answer within {} s",
-                limit.as_secs()
-            )));
+            return Ok(Ran::TimedOut);
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    let collect = |reader: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>, name: &str| {
+    let collect = |reader: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>| {
         let left = deadline.saturating_duration_since(Instant::now());
         match reader.recv_timeout(left) {
-            Ok(Ok(bytes)) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
-            Ok(Err(error)) => Err(Error::io("read the output of", program)(error)),
-            Err(_) => Ok(format!(
-                "its {name} stayed open past the limit, so it is unread"
-            )),
+            Ok(Ok(bytes)) => Some(String::from_utf8_lossy(&bytes).into_owned()),
+            Ok(Err(_)) | Err(_) => None,
         }
     };
-    Ok(Finished {
+    let stderr = collect(stderr);
+    Ok(Ran::Exited {
         code: status.code(),
-        stdout: collect(stdout, "standard output")?,
-        stderr: collect(stderr, "standard error")?,
+        stdout: collect(stdout),
+        stderr,
     })
 }
 

@@ -1502,7 +1502,7 @@ fn the_scanners_version_is_what_gitleaks_version_prints() {
 }
 
 #[test]
-fn a_missing_scanner_has_no_version_and_says_gitleaks_is_needed() {
+fn a_missing_scanner_has_no_version_and_says_it_is_not_on_the_path() {
     let scratch = Scratch::new();
 
     let version = SecretScanner::with_program(scratch.path().join("no-such-gitleaks")).version();
@@ -1510,7 +1510,24 @@ fn a_missing_scanner_has_no_version_and_says_gitleaks_is_needed() {
     assert!(
         version
             .as_ref()
-            .is_err_and(|reason| reason.contains("needs gitleaks")),
+            .is_err_and(|reason| reason.contains("is not on the daemon's PATH")),
+        "{version:?}"
+    );
+}
+
+#[test]
+fn a_scanner_printing_no_version_has_none() {
+    let scratch = Scratch::new();
+    let program = scratch.path().join("gitleaks");
+    std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let version = SecretScanner::with_program(program).version();
+
+    assert!(
+        version
+            .as_ref()
+            .is_err_and(|reason| reason.contains("printed no version")),
         "{version:?}"
     );
 }
