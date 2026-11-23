@@ -454,11 +454,11 @@ impl Sandbox {
             if let Some(engine) = &request.engine {
                 return Err(unsandboxed_engine(engine));
             }
-            return Ok(self.unsandboxed(
+            return self.unsandboxed(
                 request.program.clone(),
                 request.arguments.clone(),
                 &request.environment,
-            ));
+            );
         }
         let native = self.native()?;
         let host = self.host()?;
@@ -552,7 +552,7 @@ impl Sandbox {
             if let Some(engine) = &request.engine {
                 return Err(unsandboxed_engine(engine));
             }
-            return Ok(self.unsandboxed(program, arguments, &request.environment));
+            return self.unsandboxed(program, arguments, &request.environment);
         }
         let native = self.native()?;
         let host = self.host()?;
@@ -587,17 +587,17 @@ impl Sandbox {
     }
 
     /// `program` with `arguments` as it is, under `agents.sandbox = "off"`, which the
-    /// evidence says (the caller logs it at every launch).
+    /// evidence says (the caller logs it at every launch), its Git signing nothing.
     fn unsandboxed(
         &self,
         program: PathBuf,
         arguments: Vec<OsString>,
         environment: &[(OsString, OsString)],
-    ) -> Prepared {
-        Prepared {
+    ) -> Result<Prepared, Refusal> {
+        Ok(Prepared {
             program,
             arguments,
-            environment: environment.to_vec(),
+            environment: crate::agent_git::with_unsigned_git(environment.to_vec())?,
             evidence: Evidence {
                 enforcement: Enforcement::Unsandboxed {
                     reason: "no sandbox: agents.sandbox = \"off\"".to_owned(),
@@ -608,7 +608,7 @@ impl Sandbox {
             },
             reach: ProviderReach::Direct,
             staged: None,
-        }
+        })
     }
 
     /// The native backend the daemon probed; refused under `required` naming why there is

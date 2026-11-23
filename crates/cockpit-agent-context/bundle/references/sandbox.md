@@ -30,6 +30,9 @@ Torlek may run you inside a sandbox the owner configured. Its limits are deliber
   `torlek push --force` rewrites only your launch branch, and only while the remote is still
   at the commit the daemon last pushed there. A push that changes `.github/workflows` or
   `.gitlab-ci.yml` is refused with the owner's command that pushes that commit: tell the owner.
+  Every commit it sends that the remote lacks carries the trailer `$TORLEK_COMMIT_TRAILER`
+  holds (`git commit --trailer "$TORLEK_COMMIT_TRAILER"`) and no signature; the refusal names
+  each commit that does not and the rebase that fixes them.
 - **Docker.** Use only the engine your environment provides (`DOCKER_HOST` when set), never
   the owner's main one. In a sandboxed session that is the project's own engine, which
   `torlek doctor` describes. Without one, say so and ask; do not start a daemon yourself.

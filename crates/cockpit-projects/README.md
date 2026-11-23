@@ -82,6 +82,13 @@ marker is refused as `Replaced` instead of being acted on.
   checkout so its configuration cannot rewrite it; the push goes to that URL too. The check
   covers the workflow files #857 names, not what they reach elsewhere in the repository
   (scripts, local actions, a GitLab `include: local`): CI runs those like any other code.
+  Before that check, every commit the push sends that the remote lacks (`rev-list` from the
+  commit, without either tip, replace refs off as `pack-objects` has them) must carry an
+  `Agent: <provider> via Torlek <session>` trailer, as Git parses trailers, and no signature
+  header; otherwise the push is refused naming each commit (`attribution.rs`, #694). Grafts
+  and a shallow boundary apply here as they do to the pack: a commit they hide is not sent
+  either, and the remote refuses the push for lacking it. `agent_trailer` writes the trailer
+  a session's launch hands its agent in `COMMIT_TRAILER_VARIABLE` (`TORLEK_COMMIT_TRAILER`).
 - **Push branches.** `project_push_branches` holds the branch patterns the owner adds per
   project (`add_push_branch`, `remove_push_branch`, `push_branches`), none by default
   (#155, 2026-11-09 option B). `BranchPattern` refuses a pattern that names no branch or

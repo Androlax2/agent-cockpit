@@ -215,7 +215,8 @@ fn a_required_sandbox_drops_declared_credential_variables_and_hides_credential_f
 }
 
 /// #859: Git inside reads Torlek's configuration only: no system file, and no configuration
-/// the launch's environment would add, can name a credential helper again.
+/// the launch's environment would add, can name a credential helper again. #694: the one
+/// command-scope configuration is the signing reset.
 #[test]
 fn a_required_sandbox_gives_git_only_torleks_configuration() {
     let mut request = launch_request("s1", "/home/owner/app");
@@ -245,6 +246,15 @@ fn a_required_sandbox_gives_git_only_torleks_configuration() {
                 OsString::from(format!("{MOUNT_SOURCES}/s1/config/gitconfig"))
             ),
             (OsString::from("GIT_CONFIG_NOSYSTEM"), OsString::from("1")),
+            ("GIT_CONFIG_KEY_0".into(), "commit.gpgSign".into()),
+            ("GIT_CONFIG_VALUE_0".into(), "false".into()),
+            ("GIT_CONFIG_KEY_1".into(), "tag.gpgSign".into()),
+            ("GIT_CONFIG_VALUE_1".into(), "false".into()),
+            ("GIT_CONFIG_KEY_2".into(), "tag.forceSignAnnotated".into()),
+            ("GIT_CONFIG_VALUE_2".into(), "false".into()),
+            ("GIT_CONFIG_KEY_3".into(), "push.gpgSign".into()),
+            ("GIT_CONFIG_VALUE_3".into(), "false".into()),
+            ("GIT_CONFIG_COUNT".into(), "4".into()),
         ]
     );
 }
@@ -342,7 +352,14 @@ fn the_off_setting_runs_the_agent_unchanged_and_the_evidence_says_no_sandbox() {
         .unwrap();
 
     assert_eq!((prepared.program, prepared.arguments), (program, arguments));
-    assert_eq!(prepared.environment, request.environment);
+    // Unchanged but for the signing reset (#694), which `unsigned_git.rs` covers.
+    let kept: Vec<_> = prepared
+        .environment
+        .iter()
+        .filter(|(name, _)| !name.to_string_lossy().starts_with("GIT_CONFIG_"))
+        .cloned()
+        .collect();
+    assert_eq!(kept, request.environment);
     assert_eq!(
         prepared.evidence,
         Evidence {

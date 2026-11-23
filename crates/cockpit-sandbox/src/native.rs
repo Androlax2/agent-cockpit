@@ -655,6 +655,7 @@ pub(crate) fn prepare(
         .chain(proxy_variables())
         .collect();
     environment.extend(tool_environment.variables);
+    let mut environment = crate::agent_git::with_unsigned_git(environment)?;
     if let Some(interception) = &spec.interception {
         environment.extend(interception_variables(launch, interception));
     }

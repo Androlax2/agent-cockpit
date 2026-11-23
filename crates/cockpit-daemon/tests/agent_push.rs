@@ -72,6 +72,8 @@ struct Pushing {
     root: PathBuf,
     remote: PathBuf,
     session: String,
+    /// The session's provider, as its trailer names it.
+    agent: String,
 }
 
 impl Pushing {
@@ -109,8 +111,10 @@ impl Pushing {
         let (root, _) = home.project(&owner, COMMANDED_PROJECT).await;
         git(&root, &["remote", "add", "origin", ORIGIN]);
         home.write_github_token(COMMANDED_PROJECT, &format!("{PUSH_TOKEN}\n"), 0o600);
+        let session = new_session(&owner, &root).await;
         let pushing = Pushing {
-            session: new_session(&owner, &root).await.id,
+            session: session.id,
+            agent: session.agent,
             home,
             _daemon: daemon,
             owner,
@@ -172,11 +176,14 @@ fn torlek(arguments: &str) -> String {
     format!("'{}' {arguments}", cockpit_program().display())
 }
 
+/// The agent's commit, with the trailer its launch hands it (#694).
+const AGENT_COMMIT: &str = "/usr/bin/git -c user.name=agent -c user.email=agent@example.com \
+     commit --quiet --allow-empty -m work --trailer \"$TORLEK_COMMIT_TRAILER\"";
+
 /// The agent's commit on a new branch `branch`, then its `torlek push ARGUMENTS`.
 fn commit_then_push(branch: &str, arguments: &str) -> String {
     format!(
-        "/usr/bin/git switch --quiet --create {branch} && /usr/bin/git -c user.name=agent \
-         -c user.email=agent@example.com commit --quiet --allow-empty -m work && {}",
+        "/usr/bin/git switch --quiet --create {branch} && {AGENT_COMMIT} && {}",
         torlek(&format!("push {arguments}"))
     )
 }
@@ -212,6 +219,72 @@ async fn an_agent_pushes_a_branch_its_projects_pattern_names_and_the_push_is_aud
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_agents_commit_names_its_session_in_the_trailer_its_launch_hands_it() {
+    let pushing = Pushing::new().await;
+    pushing
+        .owner_succeeds(&[
+            "project",
+            "push-branch",
+            "add",
+            COMMANDED_PROJECT,
+            "agent/*",
+        ])
+        .await;
+
+    let printed = pushing
+        .agent_runs(&commit_then_push("agent/attributed", ""))
+        .await;
+
+    assert!(printed.ends_with("exit=0\n"), "{printed}");
+    let message = std::process::Command::new("/usr/bin/git")
+        .arg("--git-dir")
+        .arg(&pushing.remote)
+        .args(["log", "-1", "--format=%B", "agent/attributed"])
+        .output()
+        .unwrap();
+    let trailer = format!("Agent: {} via Torlek {}\n", pushing.agent, pushing.session);
+    assert!(
+        text(&message.stdout).contains(&trailer),
+        "{}",
+        text(&message.stdout)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_commit_without_the_trailer_is_refused_naming_it_and_nothing_is_pushed() {
+    let pushing = Pushing::new().await;
+    pushing
+        .owner_succeeds(&[
+            "project",
+            "push-branch",
+            "add",
+            COMMANDED_PROJECT,
+            "agent/*",
+        ])
+        .await;
+
+    let printed = pushing
+        .agent_runs(&format!(
+            "/usr/bin/git switch --quiet --create agent/bare && /usr/bin/git -c user.name=agent \
+             -c user.email=agent@example.com commit --quiet --allow-empty -m work && \
+             echo \"head=$(/usr/bin/git rev-parse HEAD)\" && {}",
+            torlek("push")
+        ))
+        .await;
+
+    assert!(printed.ends_with("exit=1\n"), "{printed}");
+    let head = printed
+        .lines()
+        .find_map(|line| line.strip_prefix("head="))
+        .expect("the agent printed its commit");
+    assert!(
+        printed.contains(&format!("commit {head} carries no `Agent:")),
+        "{printed}"
+    );
+    assert_eq!(pushing.remote_tip("agent/bare"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_agents_push_of_a_branch_no_pattern_names_is_refused_naming_the_owners_command() {
     let pushing = Pushing::new().await;
 
@@ -236,11 +309,7 @@ async fn an_agents_push_of_the_remotes_default_branch_is_refused_whatever_the_pa
     let before = pushing.remote_tip("main");
 
     let printed = pushing
-        .agent_runs(&format!(
-            "/usr/bin/git -c user.name=agent -c user.email=agent@example.com commit --quiet \
-             --allow-empty -m work && {}",
-            torlek("push")
-        ))
+        .agent_runs(&format!("{AGENT_COMMIT} && {}", torlek("push")))
         .await;
 
     assert!(printed.ends_with("exit=1\n"), "{printed}");

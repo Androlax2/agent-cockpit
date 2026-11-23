@@ -30,6 +30,17 @@ pub(crate) struct RemoteTips {
     pub(crate) pushed: Option<String>,
 }
 
+impl RemoteTips {
+    /// The commits the remote holds the pushed range against: the pushed branch's tip first,
+    /// then the default branch's.
+    pub(crate) fn on_remote(&self) -> Vec<&str> {
+        [self.pushed.as_deref(), self.default.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+}
+
 /// How a scan reaches the remote: the one URL the push goes to, Git's settings for the call
 /// and the one secret it carries.
 pub(crate) struct RemoteAccess<'a> {
@@ -80,7 +91,7 @@ impl RemoteAccess<'_> {
     /// `FETCH_HEAD` written, no maintenance and no submodule. The checkout's configuration
     /// could send the fetch elsewhere, but no other repository can answer for these ids:
     /// every object the scan reads is checked against its id.
-    fn fetch_missing(&self, commits: &[&str]) -> Result<(), Error> {
+    pub(crate) fn fetch_missing(&self, commits: &[&str]) -> Result<(), Error> {
         let mut missing = Vec::new();
         for commit in commits {
             if !is_present(self.git, self.checkout, commit)? {
@@ -163,10 +174,7 @@ pub(crate) fn changed_ci_paths(
     tips: &RemoteTips,
     commit: &str,
 ) -> Result<Vec<&'static str>, Error> {
-    let on_remote: Vec<&str> = [tips.pushed.as_deref(), tips.default.as_deref()]
-        .into_iter()
-        .flatten()
-        .collect();
+    let on_remote = tips.on_remote();
     remote.fetch_missing(&on_remote)?;
     let read = |commit: &str| ci_entries(remote.git, remote.checkout, commit);
     let pushed = read(commit)?;
