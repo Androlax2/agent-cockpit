@@ -21,6 +21,9 @@ pub const GITLEAKS: &str = "gitleaks";
 /// How long a scan may run before the push is refused for it.
 const SCAN_LIMIT: Duration = Duration::from_secs(300);
 
+/// How long `gitleaks version` may take.
+const VERSION_LIMIT: Duration = Duration::from_secs(10);
+
 /// The exit status gitleaks is told to use for findings, apart from its errors' `1`.
 const FINDINGS_STATUS: i32 = 3;
 
@@ -44,6 +47,32 @@ impl SecretScanner {
     /// An explicit program, a fake one in fixtures.
     pub fn with_program(program: PathBuf) -> SecretScanner {
         SecretScanner { program }
+    }
+
+    /// What `gitleaks version` prints, or why it does not run: readiness reports it for a
+    /// project whose agents push (#694).
+    pub fn version(&self) -> Result<String, String> {
+        let path = std::env::var_os("PATH")
+            .ok_or_else(|| "the daemon has no PATH to find gitleaks on".to_owned())?;
+        let mut command = Command::new(&self.program);
+        command
+            .env_clear()
+            .env("PATH", path)
+            .arg("version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let finished =
+            run_within(command, &self.program, VERSION_LIMIT).map_err(|error| error.to_string())?;
+        match finished.code {
+            Some(0) => Ok(finished.stdout.trim().to_owned()),
+            code => Err(format!(
+                "`{} version` exited with {}: {}",
+                self.program.display(),
+                code.map_or("a signal".to_owned(), |code| code.to_string()),
+                finished.stderr.trim()
+            )),
+        }
     }
 }
 
@@ -265,6 +294,7 @@ fn scan_failed(why: &str) -> Error {
 
 struct Finished {
     code: Option<i32>,
+    stdout: String,
     stderr: String,
 }
 
@@ -303,17 +333,20 @@ fn run_within(mut command: Command, program: &Path, limit: Duration) -> Result<F
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    // Its output is drained so it never stalls on a full pipe; only standard error is kept.
-    drop(stdout);
-    let left = deadline.saturating_duration_since(Instant::now());
-    let stderr = match stderr.recv_timeout(left) {
-        Ok(Ok(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
-        Ok(Err(error)) => return Err(Error::io("read the output of", program)(error)),
-        Err(_) => "its standard error stayed open past the limit, so it is unread".to_owned(),
+    let collect = |reader: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>, name: &str| {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match reader.recv_timeout(left) {
+            Ok(Ok(bytes)) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+            Ok(Err(error)) => Err(Error::io("read the output of", program)(error)),
+            Err(_) => Ok(format!(
+                "its {name} stayed open past the limit, so it is unread"
+            )),
+        }
     };
     Ok(Finished {
         code: status.code(),
-        stderr,
+        stdout: collect(stdout, "standard output")?,
+        stderr: collect(stderr, "standard error")?,
     })
 }
 

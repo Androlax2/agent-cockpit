@@ -387,6 +387,9 @@ pub struct PushFacts {
     pub reached: Vec<String>,
     /// Of `declared`, those whose grant carries the owner's push right.
     pub bound: Vec<String>,
+    /// The gitleaks version every agent push is scanned with (#694), or why it does not run:
+    /// without it an agent's push is refused.
+    pub gitleaks: Result<String, String>,
 }
 
 /// The report for this host and, with `project`, for that project: `config` is the

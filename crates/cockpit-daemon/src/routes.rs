@@ -150,6 +150,7 @@ impl Routes {
             processes: capabilities.processes.clone(),
             git: capabilities.git.clone(),
             forge_adapters: Arc::clone(&forge_adapters),
+            secret_scanner: capabilities.secret_scanner.clone(),
         };
         Routes {
             is_restoring: capabilities.is_restoring,

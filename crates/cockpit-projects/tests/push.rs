@@ -1487,3 +1487,30 @@ async fn a_scan_that_fails_refuses_the_push_and_nothing_is_pushed() {
     assert!(reason.contains("cannot read the repository"), "{reason}");
     assert_eq!(fixture.recorded("pushed"), None, "nothing is pushed");
 }
+
+#[test]
+fn the_scanners_version_is_what_gitleaks_version_prints() {
+    let scratch = Scratch::new();
+    let program = scratch.path().join("gitleaks");
+    std::fs::write(&program, "#!/bin/sh\n[ \"$1\" = version ] && echo 8.30.1\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(
+        SecretScanner::with_program(program).version(),
+        Ok("8.30.1".to_owned())
+    );
+}
+
+#[test]
+fn a_missing_scanner_has_no_version_and_says_gitleaks_is_needed() {
+    let scratch = Scratch::new();
+
+    let version = SecretScanner::with_program(scratch.path().join("no-such-gitleaks")).version();
+
+    assert!(
+        version
+            .as_ref()
+            .is_err_and(|reason| reason.contains("needs gitleaks")),
+        "{version:?}"
+    );
+}

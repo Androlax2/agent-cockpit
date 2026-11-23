@@ -17,6 +17,26 @@ fn text(bytes: &[u8]) -> String {
 async fn started() -> (Home, real_daemon::Daemon, PathBuf) {
     let home = Home::new();
     let daemon = home.start();
+    with_project(home, daemon).await
+}
+
+/// [`started`] with a `gitleaks` running `script` first on the daemon's `PATH`.
+async fn started_with_gitleaks(script: &str) -> (Home, real_daemon::Daemon, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new();
+    let folder = home.path().join("gitleaks-bin");
+    std::fs::create_dir_all(&folder).unwrap();
+    let program = folder.join("gitleaks");
+    std::fs::write(&program, script).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let daemon = home.start_with_path_first(&[folder]);
+    with_project(home, daemon).await
+}
+
+async fn with_project(
+    home: Home,
+    daemon: real_daemon::Daemon,
+) -> (Home, real_daemon::Daemon, PathBuf) {
     let client = home.connect().await;
     let (root, _) = home.project(&client, "cockpit").await;
     let added = std::process::Command::new("git")
@@ -141,6 +161,62 @@ async fn doctor_names_the_command_that_binds_the_push_right() {
     assert_eq!(
         lines.next().map(str::trim),
         Some("next: `torlek network grant cockpit github.com --push`")
+    );
+}
+
+/// The doctor row of the project's `push` requirement and the line after it.
+async fn push_row(home: &Home, root: &std::path::Path) -> (String, Option<String>) {
+    let output = home
+        .cockpit(&["doctor", "--project", root.to_str().unwrap()], &[])
+        .await;
+    let report = text(&output.stdout);
+    let mut lines = report.lines();
+    let row = lines
+        .by_ref()
+        .find(|line| line.contains("  push: "))
+        .unwrap_or_else(|| panic!("no push requirement in:\n{report}"))
+        .to_owned();
+    (row, lines.next().map(|line| line.trim().to_owned()))
+}
+
+/// #694: agents' pushes are scanned by gitleaks, which the `push` row names.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_names_the_gitleaks_that_scans_a_pushing_projects_agents() {
+    let (home, _daemon, root) =
+        started_with_gitleaks("#!/bin/sh\n[ \"$1\" = version ] && echo 8.30.1\n").await;
+    succeeds(&home, &["network", "grant", "cockpit", "github.com"]).await;
+    succeeds(
+        &home,
+        &["network", "grant", "cockpit", "github.com", "--push"],
+    )
+    .await;
+
+    let (row, _) = push_row(&home, &root).await;
+
+    assert!(row.contains("available"), "{row}");
+    assert!(row.contains("gitleaks 8.30.1"), "{row}");
+}
+
+/// #694, the owner's decision of 2026-11-23 (option B): a project whose agents push misses
+/// gitleaks when it does not run.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_says_a_pushing_project_misses_a_gitleaks_that_does_not_run() {
+    let (home, _daemon, root) =
+        started_with_gitleaks("#!/bin/sh\necho 'broken install' >&2\nexit 2\n").await;
+    succeeds(&home, &["network", "grant", "cockpit", "github.com"]).await;
+    succeeds(
+        &home,
+        &["network", "grant", "cockpit", "github.com", "--push"],
+    )
+    .await;
+
+    let (row, next) = push_row(&home, &root).await;
+
+    assert!(row.contains("missing-prerequisite"), "{row}");
+    assert!(row.contains("broken install"), "{row}");
+    assert_eq!(
+        next.as_deref(),
+        Some("next: install gitleaks on the daemon's PATH")
     );
 }
 
