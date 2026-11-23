@@ -3,6 +3,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from hashlib import sha256
@@ -39,6 +40,9 @@ exit 0
 FAKE_SSH = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"$FAKE_LOG_DIR/ssh-calls"
 printf '%s\\n' "${SSH_AUTH_SOCK-unset}" >>"$FAKE_LOG_DIR/ssh-agent-socket"
+if [[ "$*" == *"cat > ~/bundle-upload/"* ]]; then
+    cat >"$FAKE_LOG_DIR/uploaded-bundle"
+fi
 if [[ "$*" == *poweroff* && -f "$TORLEK_REDTEAM_DIR/qemu.pid" ]]; then
     kill "$(<"$TORLEK_REDTEAM_DIR/qemu.pid")"
 fi
@@ -46,9 +50,73 @@ exit 0
 """
 
 
+FAKE_SYSTEMCTL = """#!/usr/bin/env bash
+exit 0
+"""
+
+BUNDLE_VERSION = "0.1.0-dev.7"
+BUNDLE_REVISION = "0123456789abcdef0123456789abcdef01234567"
+BUNDLE_NAME = f"torlek-v{BUNDLE_VERSION}-linux-x86_64.tar.gz"
+
+# What the bundle's torlek prints, as the real one does: `torlek VERSION (revision REVISION)`.
+FAKE_TORLEK = """#!/usr/bin/env bash
+case $1 in
+version) echo "torlek __VERSION__ (__REVISION__)" ;;
+daemon) echo "$*" >>"$FAKE_LOG_DIR/torlek-calls" ;;
+esac
+"""
+
+
 def write_executable(path, content):
     path.write_text(content)
     path.chmod(0o755)
+
+
+def package_bundle(directory, torlek_revision_text):
+    """A bundle made by the real tools/release.py package, around fake binaries."""
+    binaries = directory / "binaries"
+    binaries.mkdir()
+    torlek_source = FAKE_TORLEK.replace("__VERSION__", BUNDLE_VERSION).replace(
+        "__REVISION__", torlek_revision_text
+    )
+    for binary_name in (
+        "torlek",
+        "torlek-daemon",
+        "torlek-tui",
+        "torlek-notify",
+        "torlek-claude-hook",
+        "torlek-codex-hook",
+        "torlek-codex-session",
+        "torlek-opencode-bridge",
+        "torlek-sandbox",
+    ):
+        write_executable(
+            binaries / binary_name, torlek_source if binary_name == "torlek" else "#!/bin/sh\n"
+        )
+    output = directory / "dist"
+    output.mkdir()
+    subprocess.run(
+        [
+            "python3",
+            str(REPO / "tools/release.py"),
+            "package",
+            "--version",
+            BUNDLE_VERSION,
+            "--channel",
+            "dev",
+            "--platform",
+            "linux-x86_64",
+            "--revision",
+            BUNDLE_REVISION,
+            "--binaries",
+            str(binaries),
+            "--out",
+            str(output),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return output / BUNDLE_NAME
 
 
 @unittest.skipUnless(shutil.which("bsdtar"), "bsdtar builds the cloud-init seed")
@@ -190,6 +258,72 @@ class RedTeamVmTests(unittest.TestCase):
         tested_versions = (REPO / "crates/cockpit-claude/tested-versions.txt").read_text().split()
         pinned_version = re.search(r"CLAUDE_CODE_VERSION=\$\{[^:]*:-([^}]+)\}", SCRIPT.read_text()).group(1)
         self.assertIn(pinned_version, tested_versions)
+
+    def make_host_bundle(self):
+        bundle = self.root / BUNDLE_NAME
+        bundle.write_bytes(b"release-format bundle bytes")
+        return bundle
+
+    def test_create_with_a_bundle_names_its_checksum_to_the_guest_installer(self):
+        bundle = self.make_host_bundle()
+        self.assertEqual(self.run_script("fetch").returncode, 0)
+        result = self.run_script("create", "--bundle", str(bundle))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        install_call = next(
+            call
+            for call in (self.log_dir / "ssh-calls").read_text().splitlines()
+            if "BUNDLE_SHA256" in call
+        )
+        self.assertIn(
+            f"TORLEK_REDTEAM_BUNDLE_SHA256={sha256(bundle.read_bytes()).hexdigest()}", install_call
+        )
+        self.assertIn(f"TORLEK_REDTEAM_BUNDLE=bundle-upload/{BUNDLE_NAME} ", install_call)
+        self.assertIn("redteam@127.0.0.1", install_call)
+
+    def test_create_with_a_bundle_sends_its_bytes_over_ssh_as_the_throwaway_user(self):
+        bundle = self.make_host_bundle()
+        self.run_script("fetch")
+        self.assertEqual(self.run_script("create", "--bundle", str(bundle)).returncode, 0)
+        self.assertEqual((self.log_dir / "uploaded-bundle").read_bytes(), bundle.read_bytes())
+        upload_call = next(
+            call
+            for call in (self.log_dir / "ssh-calls").read_text().splitlines()
+            if f"cat > ~/bundle-upload/{BUNDLE_NAME}" in call
+        )
+        self.assertIn("redteam@127.0.0.1", upload_call)
+
+    def test_create_without_a_bundle_leaves_the_installer_on_the_published_release(self):
+        self.create_guest()
+        ssh_calls = (self.log_dir / "ssh-calls").read_text()
+        self.assertNotIn("env TORLEK_REDTEAM_BUNDLE", ssh_calls)
+        self.assertFalse((self.log_dir / "uploaded-bundle").exists())
+
+    def test_create_refuses_a_bundle_it_cannot_use_before_touching_anything(self):
+        wrong_name = self.root / "torlek.tar.gz"
+        wrong_name.write_bytes(b"x")
+        wrong_platform = self.root / "torlek-v0.1.0-dev.7-linux-aarch64.tar.gz"
+        wrong_platform.write_bytes(b"x")
+        injected_name = self.root / "torlek-v0.1.0-dev.7;id-linux-x86_64.tar.gz"
+        injected_name.write_bytes(b"x")
+        cases = [
+            ("no such bundle file", self.root / "missing.tar.gz"),
+            ("must be a release archive", wrong_name),
+            ("must be a release archive", wrong_platform),
+            ("must be a release archive", injected_name),
+        ]
+        self.run_script("fetch")
+        for expected_message, bundle in cases:
+            with self.subTest(bundle=bundle.name):
+                result = self.run_script("create", "--bundle", str(bundle))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(expected_message, result.stderr)
+                self.assertFalse((self.state_dir / "id_ed25519").exists())
+                self.assertFalse((self.state_dir / "disk.qcow2").exists())
+
+    def test_create_refuses_an_unknown_option(self):
+        result = self.run_script("create", "--shared-folder", "/home")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unknown create option", result.stderr)
 
     def test_the_seed_holds_only_the_throwaway_public_key(self):
         self.create_guest()
@@ -384,6 +518,99 @@ class RedTeamVmTests(unittest.TestCase):
         result = self.run_script("share-home")
         self.assertEqual(result.returncode, 1)
         self.assertIn("unknown command", result.stderr)
+
+
+@unittest.skipUnless(shutil.which("python3"), "python3 runs tools/release.py package")
+class GuestInstallTests(unittest.TestCase):
+    """tools/redteam-vm/guest-install-torlek.sh, run directly with a fake home and no network."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="redteam-guest-test-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.home = self.root / "home"
+        (self.home / "bundle-upload").mkdir(parents=True)
+        self.log_dir = self.root / "logs"
+        self.log_dir.mkdir()
+        fakes = self.root / "fakes"
+        fakes.mkdir()
+        write_executable(fakes / "systemctl", FAKE_SYSTEMCTL)
+        write_executable(
+            fakes / "curl", '#!/usr/bin/env bash\necho curl >>"$FAKE_LOG_DIR/curl-calls"\nexit 1\n'
+        )
+        self.environment = {
+            **os.environ,
+            "PATH": f"{fakes}:{os.environ['PATH']}",
+            "HOME": str(self.home),
+            "TMPDIR": str(self.root),
+            "FAKE_LOG_DIR": str(self.log_dir),
+        }
+
+    def install(self, bundle, expected_sha256=None):
+        uploaded = self.home / "bundle-upload" / bundle.name
+        shutil.copyfile(bundle, uploaded)
+        environment = {
+            **self.environment,
+            "TORLEK_REDTEAM_BUNDLE": f"bundle-upload/{bundle.name}",
+            "TORLEK_REDTEAM_BUNDLE_SHA256": expected_sha256
+            or sha256(bundle.read_bytes()).hexdigest(),
+        }
+        return subprocess.run(
+            ["bash", str(REPO / "tools/redteam-vm/guest-install-torlek.sh")],
+            capture_output=True,
+            text=True,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+        )
+
+    def package(self, revision_text=f"revision {BUNDLE_REVISION}"):
+        directory = self.root / "build"
+        directory.mkdir(exist_ok=True)
+        return package_bundle(directory, revision_text)
+
+    def test_it_installs_a_release_format_bundle_without_downloading_anything(self):
+        result = self.install(self.package())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"torlek {BUNDLE_VERSION} (revision {BUNDLE_REVISION})", result.stdout)
+        installed = self.home / ".local/bin/torlek"
+        self.assertTrue(installed.is_symlink())
+        self.assertIn(
+            f"torlek-v{BUNDLE_VERSION}-linux-x86_64/bin/torlek", str(installed.readlink())
+        )
+        self.assertEqual((self.log_dir / "torlek-calls").read_text().strip(), "daemon install")
+        self.assertFalse((self.log_dir / "curl-calls").exists())
+
+    def test_it_removes_the_uploaded_archive_after_installing(self):
+        self.install(self.package())
+        self.assertEqual(list((self.home / "bundle-upload").iterdir()), [])
+
+    def test_it_refuses_a_bundle_whose_checksum_differs_from_the_hosts(self):
+        result = self.install(self.package(), expected_sha256="0" * 64)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("bundle checksum mismatch", result.stderr)
+        self.assertFalse((self.home / ".local").exists())
+        self.assertFalse((self.log_dir / "torlek-calls").exists())
+
+    def test_it_refuses_a_bundle_whose_torlek_names_no_revision(self):
+        result = self.install(self.package("revision unknown: not a release build"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("does not show the manifest's revision", result.stderr)
+        self.assertFalse((self.log_dir / "torlek-calls").exists())
+
+    def test_it_refuses_a_bundle_whose_torlek_names_another_revision(self):
+        result = self.install(self.package(f"revision {'f' * 40}"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("does not show the manifest's revision", result.stderr)
+
+    def test_it_refuses_a_bundle_with_entries_outside_its_own_folder(self):
+        archive = self.root / BUNDLE_NAME
+        stray_file = self.root / "stray"
+        stray_file.write_text("x")
+        with tarfile.open(archive, "w:gz") as bundle:
+            bundle.add(stray_file, arcname="elsewhere/stray")
+        result = self.install(archive)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("entries outside", result.stderr)
+        self.assertFalse((self.home / ".local").exists())
 
 
 if __name__ == "__main__":

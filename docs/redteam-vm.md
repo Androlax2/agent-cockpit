@@ -9,8 +9,10 @@ are separate work under the same issue.
 
 - **A QEMU/KVM guest.** The official Arch Linux cloud image (pinned by name and SHA-256 in
   the script, same distribution as the owner's host), 2 CPUs, 4 GiB, 30 GiB sparse disk.
-- **Torlek's published release.** Installed in the guest by the README's archive steps, as
-  the throwaway user `redteam`, with `torlek daemon install` done.
+- **Torlek's published release, or a bundle you built.** By default the latest published
+  release, installed in the guest by the README's archive steps, as the throwaway user
+  `redteam`, with `torlek daemon install` done. With `create --bundle PATH` it is an
+  unreleased build instead (see [Test an unreleased Torlek](#test-an-unreleased-torlek)).
 - **The sandbox, set up as VM tooling** (issue #1158). Provisioning enforces
   `agents.sandbox = "required"` and `agents.desktop_session = "withheld"` in the guest config
   (`~/.config/torlek/config.toml`; the guest has no desktop, and the native sandbox refuses a
@@ -39,7 +41,7 @@ script installs nothing on the host: it needs `qemu-system-x86_64`, `qemu-img`, 
 | Command | Does |
 | --- | --- |
 | `tools/redteam-vm.sh fetch` | Downloads the image (about 550 MiB) and refuses it unless the checksum matches |
-| `tools/redteam-vm.sh create` | Generates the throwaway key, boots once with network, provisions, installs Torlek, powers off, takes snapshot `clean` (about 5 to 10 minutes) |
+| `tools/redteam-vm.sh create [--bundle PATH]` | Generates the throwaway key, boots once with network, provisions, installs Torlek (the latest release, or the bundle), powers off, takes snapshot `clean` (about 5 to 10 minutes) |
 | `tools/redteam-vm.sh start` | Boots the guest and waits for ssh |
 | `tools/redteam-vm.sh check` | Reports what the guest sees of the host (homes, mounts, sudo, network reach), whether the daemon lists the `claude` agent, and whether a credential is present (two separate lines); fails on a shared mount, a foreign home folder, passwordless sudo or no `claude` agent. With a credential in the guest it also starts a sandboxed `claude` session without a prompt and fails if it waits on a screen or does not reach its first report within 90 s (#1178); without one that step prints `NOT RUN`: it tested nothing, and the credential line says why |
 | `tools/redteam-vm.sh ssh [COMMAND...]` | Opens a shell (or runs a command) as `redteam` |
@@ -53,6 +55,60 @@ script installs nothing on the host: it needs `qemu-system-x86_64`, `qemu-img`, 
 `ssh` uses no host `~/.ssh/config`, agent or default key: only the generated key and the
 guest's own `known_hosts`. The guest listens on `127.0.0.1:2222` of the host only
 (`TORLEK_REDTEAM_SSH_PORT`). Console output goes to `console.log`.
+
+## Test an unreleased Torlek
+
+`create --bundle PATH` installs a bundle built from `main` on this host instead of the
+latest published release, so the red-team attacks the code that is about to ship. Nothing is
+published. The bundle is the release's own format, made by `tools/release.py package`
+(layout and manifest in [the release decision](decisions/2026-10-31-96-release-tooling.md));
+no other format is accepted.
+
+Build it from a clean, full (not shallow) checkout of `main`, a separate clone or worktree,
+because `stamp` edits `Cargo.toml` (uncommitted) and the lockfile. These are the release workflow's own
+steps (`.github/workflows/release.yml`, job `build`) for `linux-x86_64`, the guest's
+platform, on the `dev` channel that no release can use:
+
+```sh
+git switch --detach origin/main
+version=$(python3 tools/release.py dry-run-version | sed -n 's/^version=//p')   # 0.1.0-dev.N
+revision=$(git rev-parse HEAD)
+python3 tools/release.py stamp "$version"
+cargo update --workspace
+TORLEK_SOURCE_REVISION=$revision cargo build --release --locked \
+  -p cockpit-cli -p cockpit-daemon -p cockpit-tui -p cockpit-notify \
+  -p cockpit-claude -p cockpit-codex -p cockpit-opencode -p cockpit-sandbox-launcher
+mkdir binaries dist
+for binary in torlek torlek-daemon torlek-tui torlek-notify torlek-claude-hook \
+  torlek-codex-hook torlek-codex-session torlek-opencode-bridge torlek-sandbox; do
+  cp "target/release/$binary" binaries/
+done
+python3 tools/release.py package --version "$version" --channel dev \
+  --platform linux-x86_64 --revision "$revision" --binaries binaries --out dist
+tools/redteam-vm.sh create --bundle "dist/torlek-v$version-linux-x86_64.tar.gz"
+```
+
+Set `TORLEK_SOURCE_REVISION` for the build: without it `torlek version` says `revision
+unknown: not a release build`, and the guest refuses the bundle.
+
+How it gets in, with the same care as the image and `claude`:
+
+- The host takes the bundle's SHA-256 and prints it. The file name must be
+  `torlek-v<version>-linux-x86_64.tar.gz`.
+- The bundle goes in over the guest's ssh only, the script's own throwaway-key connection,
+  as a write by `redteam` to `~/bundle-upload/`. No shared folder, no host device, nothing
+  else from the host.
+- The guest recomputes the checksum and refuses a mismatch before it unpacks anything. It
+  also refuses an archive with any entry outside its own folder, and a bundle whose `torlek
+  version` does not show the manifest's source revision.
+- The archive is removed from the guest after the install. The guest then runs
+  `torlek version`, which prints `torlek VERSION (revision REVISION)`; `create` shows that
+  line.
+
+The checksum is taken on this host, so it proves the guest got the bytes the host read, not
+that the build is the one you meant. Build on this host, from the `main` you checked.
+After that the install is the release's: unpack into `~/.local/lib/torlek`, link
+`~/.local/bin/torlek`, `torlek daemon install`.
 
 ## Network
 
@@ -99,12 +155,13 @@ The goal is in #685: make an agent do what it must not, inside the real sandbox 
 - **Not allowed.** Using a break-out to reach the host. If one is found, stop, do not use it,
   and report it to the owner at once.
 - **Record each attempt** as: the command, the result, and one of `blocked`, `refused with a
-  clear reason` or `succeeded`, with the Torlek version (`torlek version`) and the snapshot
-  it ran from. Reset between independent attempts so one cannot hide behind another.
+  clear reason` or `succeeded`, with the Torlek version and revision (`torlek version`, which
+  shows the source revision for a release or a bundle built as above) and the snapshot it ran
+  from. Reset between independent attempts so one cannot hide behind another.
 - **Report.** Ranked by severity; each successful or unclear attempt becomes its own `bug` +
   `area:security` issue (see #685's acceptance).
 
 ## Reset and cleanup
 
-`reset` restores the disk only. A new Torlek release means `destroy` then `create`, which
-installs the latest release. `destroy --all` removes the image and the folder.
+`reset` restores the disk only. A new Torlek release, or a newer bundle, means `destroy` then
+`create`, which installs the latest release or the bundle you name. `destroy --all` removes the image and the folder.
