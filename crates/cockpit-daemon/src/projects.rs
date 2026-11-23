@@ -445,7 +445,9 @@ pub(crate) fn error_code(error: &Error) -> ErrorCode {
         | Error::NotOccupant { .. }
         | Error::BeingRemoved { .. } => ErrorCode::Conflict,
         Error::Replaced { .. } | Error::StalePrune { .. } => ErrorCode::StaleRevision,
-        Error::Refused { .. } | Error::WorkflowChange { .. } => ErrorCode::Refused,
+        Error::Refused { .. } | Error::WorkflowChange { .. } | Error::SecretFound { .. } => {
+            ErrorCode::Refused
+        }
         _ => ErrorCode::Internal,
     }
 }

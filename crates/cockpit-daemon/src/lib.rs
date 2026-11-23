@@ -110,6 +110,9 @@ pub struct Wiring {
     pub tmux: cockpit_tmux::ServerSpec,
     /// The host Git that project commands and clones run, with the safe settings applied.
     pub git: cockpit_projects::Git,
+    /// The gitleaks every agent push is scanned with (#694): `gitleaks`, found on `PATH`
+    /// when it runs.
+    pub secret_scanner: cockpit_projects::SecretScanner,
     /// The agent providers sessions may launch.
     pub providers: Vec<Arc<dyn cockpit_provider_api::Provider>>,
     /// The providers the start looked for and could not wire, each with why: the readiness
@@ -207,6 +210,7 @@ pub struct Capabilities {
     pub(crate) storage: storage::Context,
     pub database: Arc<cockpit_turso::Database>,
     pub git: cockpit_projects::Git,
+    pub secret_scanner: cockpit_projects::SecretScanner,
     pub sessions: Arc<cockpit_sessions::Sessions>,
     pub runner: cockpit_approvals::Runner,
     /// What this host enforces, probed at start.
@@ -587,6 +591,7 @@ impl Instance {
                 storage: storage.clone(),
                 database: Arc::clone(&database),
                 git: wiring.git,
+                secret_scanner: wiring.secret_scanner,
                 sessions: Arc::clone(&sessions),
                 runner,
                 admission: Arc::clone(&admission),

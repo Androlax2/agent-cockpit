@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use cockpit_forge_api::{ForgeHost, Token};
 use cockpit_projects::{
     AgentBranches, BranchPattern, Error, Expected, Force, Git, PushCredential, PushRules, Pushed,
-    Pusher, create_parallel_clone, push,
+    Pusher, SecretFinding, SecretScanner, create_parallel_clone, push,
 };
 use cockpit_turso::Database;
 use common::{Scratch, git, register};
@@ -38,6 +38,7 @@ struct Fixture {
     database: Database,
     checkout: cockpit_projects::CheckoutId,
     git: Git,
+    scanner: SecretScanner,
 }
 
 impl Fixture {
@@ -59,6 +60,7 @@ impl Fixture {
         let database = scratch.open().await;
         let (_, checkout) = register(&database, &root).await;
         let git = forge_git(&scratch, &remote);
+        let scanner = fake_gitleaks(&scratch);
         Fixture {
             scratch,
             root,
@@ -66,6 +68,7 @@ impl Fixture {
             database,
             checkout: checkout.id,
             git,
+            scanner,
         }
     }
 
@@ -126,7 +129,10 @@ impl Fixture {
             hosts: github(),
             credential: Ok(credential.unwrap()),
             force,
-            pusher: Pusher::Agent { branches },
+            pusher: Pusher::Agent {
+                branches,
+                scanner: self.scanner.clone(),
+            },
         };
         push(&self.database, &self.git, checkout, rules).await
     }
@@ -278,6 +284,50 @@ impl Fixture {
         );
         git(&other, &["rev-parse", "HEAD"]).trim().to_owned()
     }
+}
+
+/// The marker the fake gitleaks reads as a secret.
+const FAKE_SECRET: &str = "FAKE-SECRET-0123";
+
+/// A gitleaks that reads the commits as gitleaks does, `git -C <repository> log -p -U0
+/// <log options>` on the host's Git, and reports each added line holding [`FAKE_SECRET`] in
+/// gitleaks' CSV form with the exit status it is told. It writes its arguments, one per line,
+/// to `gitleaks-arguments`; an executable `gitleaks-instead` in the scratch directory runs in
+/// its place.
+fn fake_gitleaks(scratch: &Scratch) -> SecretScanner {
+    let program = scratch.path().join("gitleaks");
+    let here = quote(&scratch.path());
+    std::fs::write(
+        &program,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$@" > {here}/gitleaks-arguments
+if [ -x {here}/gitleaks-instead ]; then exec {here}/gitleaks-instead "$@"; fi
+options=; report=; status=1
+while [ $# -gt 1 ]; do
+  case "$1" in
+    --log-opts) options=$2; shift ;;
+    --report-path) report=$2; shift ;;
+    --exit-code) status=$2; shift ;;
+  esac
+  shift
+done
+log=$(git -C "$1" log -p -U0 $options) || exit 1
+found=$(printf '%s\n' "$log" | awk '
+  /^commit / {{ commit = $2 }}
+  /^\+\+\+ b\// {{ file = substr($0, 7) }}
+  /^@@ / {{ split($3, added, ","); line = substr(added[1], 2) - 1 }}
+  /^\+/ && !/^\+\+\+ / {{ line++; if (index($0, "{FAKE_SECRET}")) print "fake-rule," commit "," file ",,REDACTED,REDACTED," line "," line ",1,1,a,m,d,e,f," }}
+')
+[ -z "$found" ] && exit 0
+printf 'RuleID,Commit,File,SymlinkFile,Secret,Match,StartLine,EndLine,StartColumn,EndColumn,Author,Message,Date,Email,Fingerprint,Tags\n%s\n' "$found" > "$report"
+exit "$status"
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    SecretScanner::with_program(program)
 }
 
 fn forge_git(scratch: &Scratch, remote: &Path) -> Git {
@@ -1193,4 +1243,216 @@ fn a_username_that_is_not_one_plain_word_is_refused() {
             "case {case}"
         );
     }
+}
+
+fn secret_found(result: Result<Pushed, Error>) -> (String, Vec<SecretFinding>) {
+    match result {
+        Err(Error::SecretFound {
+            commit, findings, ..
+        }) => (commit, findings),
+        other => panic!("expected a secret hold, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_push_adding_a_secret_waits_for_the_owner_naming_where_it_is() {
+    let fixture = on_a_new_feature_branch().await;
+    let commit = fixture.commit_file("src/config.rs", &format!("a\nkey = {FAKE_SECRET}\n"));
+    fixture.forget_recorded_push();
+
+    let (held_commit, findings) = secret_found(fixture.push_as_agent(Force::Never).await);
+
+    assert_eq!(held_commit, commit);
+    assert_eq!(
+        findings,
+        [SecretFinding {
+            commit: commit.clone(),
+            file: "src/config.rs".to_owned(),
+            line: "2".to_owned(),
+            rule: "fake-rule".to_owned(),
+        }]
+    );
+    assert_eq!(fixture.recorded("pushed"), None, "nothing is pushed");
+    assert_eq!(fixture.remote_tip("feature"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_secret_hold_names_the_owners_push_of_that_commit_and_never_the_secret() {
+    let fixture = on_a_new_feature_branch().await;
+    let commit = fixture.commit_file("src/config.rs", &format!("key = {FAKE_SECRET}\n"));
+
+    let reason = fixture
+        .push_as_agent(Force::Never)
+        .await
+        .unwrap_err()
+        .to_string();
+
+    let owners_push = format!(
+        "`torlek checkout push {} --branch feature --commit {commit}`",
+        fixture.checkout.0
+    );
+    assert!(reason.contains(&owners_push), "{reason}");
+    assert!(
+        reason.contains("`fake-rule` at src/config.rs line 1"),
+        "{reason}"
+    );
+    assert!(!reason.contains(FAKE_SECRET), "{reason}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owners_push_of_a_held_secret_is_sent_unscanned() {
+    let fixture = on_a_new_feature_branch().await;
+    let commit = fixture.commit_file("src/config.rs", &format!("key = {FAKE_SECRET}\n"));
+
+    fixture.push_pinned("feature", &commit).await.unwrap();
+
+    assert_eq!(fixture.remote_tip("feature"), Some(commit));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_secret_the_remote_already_holds_does_not_hold_the_push() {
+    let fixture = on_a_new_feature_branch().await;
+    let on_remote = fixture.someone_else_commits("main", "README", &format!("{FAKE_SECRET}\n"));
+    git(
+        &fixture.root,
+        &["fetch", "--quiet", fixture.remote.to_str().unwrap(), "main"],
+    );
+    git(&fixture.root, &["reset", "--quiet", "--hard", &on_remote]);
+    let commit = fixture.commit_file("NOTES", "clean\n");
+
+    fixture.push_as_agent(Force::Never).await.unwrap();
+
+    assert_eq!(fixture.remote_tip("feature"), Some(commit));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_secret_does_not_hold_the_push() {
+    let fixture = on_a_new_feature_branch().await;
+    fixture.commit_file("src/config.rs", &format!("key = {FAKE_SECRET}\n"));
+    fixture
+        .push_pinned("feature", &fixture.head())
+        .await
+        .unwrap();
+    let commit = fixture.commit_file("src/config.rs", "key = from-the-environment\n");
+
+    fixture.push_as_agent(Force::Never).await.unwrap();
+
+    assert_eq!(fixture.remote_tip("feature"), Some(commit));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merging_a_branch_the_remote_holds_brings_none_of_its_lines_to_the_scan() {
+    let fixture = on_a_new_feature_branch().await;
+    fixture.commit_file("NOTES", "the agent's\n");
+    fixture.push_as_agent(Force::Never).await.unwrap();
+    fixture.someone_else_commits("main", "README", &format!("{FAKE_SECRET}\n"));
+    git(
+        &fixture.root,
+        &["fetch", "--quiet", fixture.remote.to_str().unwrap(), "main"],
+    );
+    git(
+        &fixture.root,
+        &[
+            "merge",
+            "--quiet",
+            "-m",
+            "merge main",
+            "-m",
+            AGENT_TRAILER,
+            "FETCH_HEAD",
+        ],
+    );
+
+    fixture.push_as_agent(Force::Never).await.unwrap();
+
+    assert_eq!(fixture.remote_tip("feature"), Some(fixture.head()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_secret_a_merge_adds_resolving_it_holds_the_push() {
+    let fixture = on_a_new_feature_branch().await;
+    fixture.commit_file("NOTES", "the agent's\n");
+    fixture.push_as_agent(Force::Never).await.unwrap();
+    fixture.someone_else_commits("main", "README", "the owner's\n");
+    git(
+        &fixture.root,
+        &["fetch", "--quiet", fixture.remote.to_str().unwrap(), "main"],
+    );
+    git(
+        &fixture.root,
+        &["merge", "--quiet", "--no-commit", "FETCH_HEAD"],
+    );
+    std::fs::write(fixture.root.join("README"), format!("{FAKE_SECRET}\n")).unwrap();
+    git(&fixture.root, &["add", "README"]);
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "--no-edit", "--trailer", AGENT_TRAILER],
+    );
+
+    let (_, findings) = secret_found(fixture.push_as_agent(Force::Never).await);
+
+    assert_eq!(findings[0].file, "README");
+    assert_eq!(findings[0].commit, fixture.head());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_scan_reads_no_configuration_or_ignore_file_the_checkout_holds() {
+    let fixture = on_a_new_feature_branch().await;
+    fixture.commit_file("NOTES", "clean\n");
+
+    fixture.push_as_agent(Force::Never).await.unwrap();
+
+    let arguments = fixture.recorded("gitleaks-arguments").unwrap();
+    let arguments: Vec<&str> = arguments.lines().collect();
+    let after = |flag: &str| {
+        let at = arguments.iter().position(|argument| *argument == flag);
+        arguments[at.unwrap_or_else(|| panic!("no {flag} in {arguments:?}")) + 1]
+    };
+    let root = fixture.root.to_str().unwrap();
+    assert!(!after("--config").starts_with(root), "{arguments:?}");
+    assert!(
+        !after("--gitleaks-ignore-path").starts_with(root),
+        "{arguments:?}"
+    );
+    assert!(
+        !arguments.last().unwrap().starts_with(root),
+        "{arguments:?}"
+    );
+    assert!(
+        arguments.contains(&"--ignore-gitleaks-allow"),
+        "{arguments:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_gitleaks_an_agents_push_is_refused_and_nothing_is_pushed() {
+    let mut fixture = on_a_new_feature_branch().await;
+    fixture.scanner = SecretScanner::with_program(fixture.scratch.path().join("no-such-gitleaks"));
+    fixture.commit_file("NOTES", "clean\n");
+    fixture.forget_recorded_push();
+
+    let reason = refusal(fixture.push_as_agent(Force::Never).await);
+
+    assert!(reason.contains("needs gitleaks"), "{reason}");
+    assert_eq!(fixture.recorded("pushed"), None, "nothing is pushed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scan_that_fails_refuses_the_push_and_nothing_is_pushed() {
+    let fixture = on_a_new_feature_branch().await;
+    let instead = fixture.scratch.path().join("gitleaks-instead");
+    std::fs::write(
+        &instead,
+        "#!/bin/sh\necho 'cannot read the repository' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&instead, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fixture.commit_file("NOTES", "clean\n");
+    fixture.forget_recorded_push();
+
+    let reason = refusal(fixture.push_as_agent(Force::Never).await);
+
+    assert!(reason.contains("never sent unscanned"), "{reason}");
+    assert!(reason.contains("cannot read the repository"), "{reason}");
+    assert_eq!(fixture.recorded("pushed"), None, "nothing is pushed");
 }

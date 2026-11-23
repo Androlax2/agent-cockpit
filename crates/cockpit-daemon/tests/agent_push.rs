@@ -59,8 +59,25 @@ fn forge_git(home: &Home, remote: &Path) -> PathBuf {
     )
     .unwrap();
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let gitleaks = folder.join("gitleaks");
+    std::fs::write(&gitleaks, FAKE_GITLEAKS).unwrap();
+    std::fs::set_permissions(&gitleaks, std::fs::Permissions::from_mode(0o755)).unwrap();
     folder
 }
+
+/// The marker [`FAKE_GITLEAKS`] reads as a secret.
+const FAKE_SECRET: &str = "FAKE-SECRET-0123";
+
+/// A gitleaks on the daemon's `PATH` that reads the commits as gitleaks does, `git -C
+/// <repository> log -p -U0 <log options>`, and reports one `fake-rule` finding, in its CSV
+/// form and with the exit status it is told, when an added line holds [`FAKE_SECRET`].
+const FAKE_GITLEAKS: &str = "#!/bin/sh\noptions=; report=; status=1\n\
+     while [ $# -gt 1 ]; do\n  case \"$1\" in\n    --log-opts) options=$2; shift ;;\n    \
+     --report-path) report=$2; shift ;;\n    --exit-code) status=$2; shift ;;\n  esac\n  \
+     shift\ndone\nlog=$(git -C \"$1\" log -p -U0 $options) || exit 1\n\
+     printf '%s\\n' \"$log\" | grep -q '^+.*FAKE-SECRET-0123' || exit 0\n\
+     printf 'RuleID,Commit,File,SymlinkFile,Secret,Match,StartLine\\nfake-rule,c,f,,R,R,1\\n' \
+     > \"$report\"\nexit \"$status\"\n";
 
 /// The commanded project, its origin on GitHub, its `main` pushed by the owner to the bare
 /// repository standing for it, the push right bound and a push token saved; and a session in
@@ -282,6 +299,39 @@ async fn an_agents_commit_without_the_trailer_is_refused_naming_it_and_nothing_i
         "{printed}"
     );
     assert_eq!(pushing.remote_tip("agent/bare"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_push_adding_a_secret_is_held_for_the_owner_and_nothing_is_pushed() {
+    let pushing = Pushing::new().await;
+    pushing
+        .owner_succeeds(&[
+            "project",
+            "push-branch",
+            "add",
+            COMMANDED_PROJECT,
+            "agent/*",
+        ])
+        .await;
+
+    let printed = pushing
+        .agent_runs(&format!(
+            "/usr/bin/git switch --quiet --create agent/leak && echo 'key = {}' > config && \
+             /usr/bin/git add config && {} && {}",
+            FAKE_SECRET,
+            AGENT_COMMIT.replace("--allow-empty ", ""),
+            torlek("push")
+        ))
+        .await;
+
+    assert!(printed.ends_with("exit=1\n"), "{printed}");
+    assert!(
+        printed.contains("adds what gitleaks reads as a secret: `fake-rule`"),
+        "{printed}"
+    );
+    assert!(printed.contains("`torlek checkout push "), "{printed}");
+    assert!(!printed.contains(FAKE_SECRET), "{printed}");
+    assert_eq!(pushing.remote_tip("agent/leak"), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]

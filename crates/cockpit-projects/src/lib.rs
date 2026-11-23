@@ -17,6 +17,7 @@ mod push_branches;
 mod push_range;
 mod register;
 mod remove;
+mod secret_scan;
 mod source;
 mod storage;
 mod store;
@@ -42,6 +43,7 @@ pub use push::{
 pub use push_branches::{BranchPattern, add_push_branch, push_branches, remove_push_branch};
 pub use register::register_project;
 pub use remove::remove_project;
+pub use secret_scan::{GITLEAKS, SecretFinding, SecretScanner};
 pub use source::SourceState;
 pub use storage::{
     CloneStorage, FolderReport, FolderStorage, StorageReport, TargetSize, clone_storage,

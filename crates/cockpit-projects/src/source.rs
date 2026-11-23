@@ -28,7 +28,7 @@ impl Git {
     /// worktree. Refused for a repository with no commit.
     pub fn source_state(&self, dir: &Path) -> Result<SourceState, Error> {
         let drivers_off = self.drivers_off(dir)?;
-        let scratch = Scratch::create()?;
+        let scratch = Scratch::create("cockpit-source")?;
         let run = |environment: &[(&str, &OsStr)], arguments: &[&OsStr]| {
             let mut command = self.command(dir, &[]);
             for setting in &drivers_off {
@@ -77,15 +77,16 @@ impl Git {
 
 /// A private directory under the system's temporary one, removed when dropped. Created
 /// `0700` and never reused, so nothing another user placed there is written through.
-struct Scratch {
-    path: PathBuf,
+pub(crate) struct Scratch {
+    pub(crate) path: PathBuf,
 }
 
 impl Scratch {
-    fn create() -> Result<Scratch, Error> {
+    /// A new one named `<prefix>-<pid>-<n>`.
+    pub(crate) fn create(prefix: &str) -> Result<Scratch, Error> {
         static CREATED: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "cockpit-source-{}-{}",
+            "{prefix}-{}-{}",
             std::process::id(),
             CREATED.fetch_add(1, Ordering::Relaxed)
         ));

@@ -212,6 +212,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
                 history_limit: config.memory.tmux_history_lines.value,
             },
             git: cockpit_projects::Git::from_path(),
+            secret_scanner: cockpit_projects::SecretScanner::from_path(),
             providers,
             unavailable_providers,
             sessions,

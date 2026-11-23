@@ -3,6 +3,9 @@ use std::path::PathBuf;
 
 use crate::{CheckoutId, Holder, ProjectName};
 
+/// The findings a secret hold names one by one; the rest are counted.
+const NAMED_FINDINGS: usize = 5;
+
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
@@ -79,6 +82,14 @@ pub enum Error {
         branch: String,
         commit: String,
         paths: Vec<String>,
+    },
+    /// An agent's push of `commit` to `branch` adds lines gitleaks reads as secrets (#694):
+    /// only the owner's push of that commit lets it go.
+    SecretFound {
+        checkout: CheckoutId,
+        branch: String,
+        commit: String,
+        findings: Vec<crate::SecretFinding>,
     },
     /// An owner decision no longer names the current observed target.
     StalePrune {
@@ -248,6 +259,38 @@ impl fmt::Display for Error {
                 paths.join(", "),
                 checkout.0
             ),
+            Error::SecretFound {
+                checkout,
+                branch,
+                commit,
+                findings,
+            } => {
+                let named = findings
+                    .iter()
+                    .take(NAMED_FINDINGS)
+                    .map(|finding| {
+                        format!(
+                            "`{}` at {} line {} of commit {}",
+                            finding.rule, finding.file, finding.line, finding.commit
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let more = findings.len().saturating_sub(NAMED_FINDINGS);
+                let more = if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                };
+                write!(
+                    formatter,
+                    "pushing {commit} to {branch} adds what gitleaks reads as a secret: \
+                     {named}{more}. A real secret is rewritten out of every commit that adds \
+                     it, then pushed again; only the owner pushes it as it is: `torlek checkout \
+                     push {} --branch {branch} --commit {commit}`",
+                    checkout.0
+                )
+            }
             Error::Git {
                 arguments,
                 status,
