@@ -11,11 +11,11 @@ mod scope;
 use std::path::PathBuf;
 
 use cockpit_forge_api::{
-    Access, BranchName, Capabilities, Capability, ChangeId, ChangeRequest, Checks, Created,
-    CredentialScheme, CredentialUse, Declaration, DefaultBranch, Forge, ForgeError, ForgeHost,
-    ForgeName, HostUse, Issue, IssueFilter, IssueId, IssueState, IssueThread, NewChangeRequest,
-    NewIssue, Posted, ProtectOutcome, Protected, ProtectionPolicy, Provenance, Repository,
-    ReviewDecision, ScopeCheck, TokenKind,
+    Access, BranchName, BranchRules, Capabilities, Capability, ChangeId, ChangeRequest, Checks,
+    Created, CredentialScheme, CredentialUse, Declaration, DefaultBranch, Forge, ForgeError,
+    ForgeHost, ForgeName, HostUse, Issue, IssueFilter, IssueId, IssueState, IssueThread,
+    NewChangeRequest, NewIssue, Posted, ProtectOutcome, Protected, ProtectionPolicy, Provenance,
+    Repository, ReviewDecision, ScopeCheck, TokenKind,
 };
 
 use crate::gh::{CALL_DEADLINE, Gh};
@@ -595,9 +595,9 @@ impl GitHub {
 
     /// The default branch, the rules its rulesets apply, and whether GitHub marks it protected,
     /// which rulesets do and classic branch protection does too. Classic protection's rules
-    /// take administration to read, so only a marked branch no ruleset rule applies to is
-    /// reported with protection the read cannot see: one that has both is reported by its
-    /// ruleset rules alone, and may show gaps classic protection closes.
+    /// take administration to read, so only a marked branch none of the four protecting rules
+    /// applies to is reported with protection the read cannot see: one that has both is
+    /// reported by its ruleset rules alone, and may show gaps classic protection closes.
     fn read_protection(
         &self,
         access: &Access<'_>,
@@ -620,7 +620,6 @@ impl GitHub {
         )?;
         let listed = answers::parse(&listed)?;
         let rules = protection::rules(&listed)?;
-        let has_ruleset_rules = listed.as_array().is_some_and(|rules| !rules.is_empty());
         let marked = self.call(
             access,
             vec![
@@ -631,10 +630,12 @@ impl GitHub {
             None,
             &what,
         )?;
+        let has_unread_protection =
+            protection::is_protected(&marked)? && rules == BranchRules::default();
         Ok(DefaultBranch {
             branch,
             rules,
-            has_unread_protection: protection::is_protected(&marked)? && !has_ruleset_rules,
+            has_unread_protection,
         })
     }
 

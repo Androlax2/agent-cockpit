@@ -111,16 +111,18 @@ fn the_rules_of_every_ruleset_on_the_branch_are_read_together() {
 }
 
 #[test]
-fn a_branch_marked_protected_with_no_ruleset_rule_has_protection_the_read_cannot_see() {
-    let mut gh = FakeGh::new();
-    gh.answer_protection_read(
+fn a_branch_marked_protected_with_no_protecting_rule_has_protection_the_read_cannot_see() {
+    for rules in [
         "api-rules-branch-none.json",
-        "api-branch-protected-true.stdout",
-    );
+        "api-rules-branch-signatures.json",
+    ] {
+        let mut gh = FakeGh::new();
+        gh.answer_protection_read(rules, "api-branch-protected-true.stdout");
 
-    let read = with_access(|access| gh.adapter().default_branch_protection(access)).unwrap();
+        let read = with_access(|access| gh.adapter().default_branch_protection(access)).unwrap();
 
-    assert!(read.has_unread_protection);
+        assert!(read.has_unread_protection, "{rules}");
+    }
 }
 
 #[test]
@@ -251,6 +253,19 @@ fn protect_replaces_its_own_ruleset_when_it_says_anything_else() {
         assert_eq!(protected.outcome, ProtectOutcome::Updated, "{why}");
         assert_eq!(written_calls(&gh), [REPLACE], "{why}");
     }
+}
+
+#[test]
+fn protect_replaces_its_own_ruleset_when_a_rule_is_out_of_shape() {
+    let gh = with_own_ruleset("api-ruleset-own-out-of-shape.json");
+
+    let protected = with_access(|access| {
+        gh.adapter()
+            .protect_default_branch(access, &policy(&["ci"]))
+    })
+    .unwrap();
+
+    assert_eq!(protected.outcome, ProtectOutcome::Updated);
 }
 
 #[test]

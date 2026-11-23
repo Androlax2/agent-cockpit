@@ -96,6 +96,20 @@ fn protect_with_a_new_check_updates_its_own_rule() {
 }
 
 #[test]
+fn protect_with_the_same_checks_in_another_order_changes_nothing() {
+    let forge = FakeForge::new();
+    forge
+        .protect_default_branch(&forge.access(), &policy(&["ci", "lint"]))
+        .unwrap();
+
+    let again = forge
+        .protect_default_branch(&forge.access(), &policy(&["lint", "ci"]))
+        .unwrap();
+
+    assert_eq!(again.outcome, ProtectOutcome::Unchanged);
+}
+
+#[test]
 fn protect_with_a_check_dropped_updates_its_own_rule() {
     let forge = FakeForge::new();
     forge

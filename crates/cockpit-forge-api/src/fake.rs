@@ -471,7 +471,11 @@ impl Forge for FakeForge {
             access,
         )?;
         let branch = default_branch(&state).branch;
-        if state.own_rule.as_ref() == Some(policy) {
+        if state
+            .own_rule
+            .as_ref()
+            .is_some_and(|own| same_checks(own, policy))
+        {
             return Ok(Protected {
                 branch,
                 outcome: ProtectOutcome::Unchanged,
@@ -483,6 +487,15 @@ impl Forge for FakeForge {
         };
         Ok(Protected { branch, outcome })
     }
+}
+
+/// The same checks in any order, as a forge compares them.
+fn same_checks(own: &ProtectionPolicy, policy: &ProtectionPolicy) -> bool {
+    let mut owned = own.required_checks().to_vec();
+    owned.sort();
+    let mut named = policy.required_checks().to_vec();
+    named.sort();
+    owned == named
 }
 
 fn default_branch(state: &State) -> DefaultBranch {

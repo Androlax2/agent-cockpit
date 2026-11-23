@@ -162,6 +162,7 @@ fn ruleset(policy: &ProtectionPolicy) -> Value {
                 "type": "required_status_checks",
                 "parameters": {
                     "strict_required_status_checks_policy": false,
+                    "do_not_enforce_on_create": false,
                     "required_status_checks": checks
                 }
             }
@@ -197,7 +198,7 @@ pub(crate) fn says_policy(answer: &Value, policy: &ProtectionPolicy) -> Result<b
     for wanted_rule in wanted_rules {
         let mut has_match = false;
         for rule in rules {
-            if rule_says(rule, wanted_rule, policy)? {
+            if rule_says(rule, wanted_rule, policy) {
                 has_match = true;
                 break;
             }
@@ -209,27 +210,26 @@ pub(crate) fn says_policy(answer: &Value, policy: &ProtectionPolicy) -> Result<b
     Ok(true)
 }
 
-fn rule_says(rule: &Value, wanted: &Value, policy: &ProtectionPolicy) -> Result<bool, ForgeError> {
+/// A rule edited out of shape says nothing of the policy: protect replaces it.
+fn rule_says(rule: &Value, wanted: &Value, policy: &ProtectionPolicy) -> bool {
     if rule.get("type") != wanted.get("type") {
-        return Ok(false);
+        return false;
     }
     let Some(wanted_parameters) = wanted.get("parameters").and_then(Value::as_object) else {
-        return Ok(true);
+        return true;
     };
-    for (name, wanted_value) in wanted_parameters {
-        if name == "required_status_checks" {
-            let mut required = required_checks(rule)?;
-            required.sort();
-            let mut named = policy.required_checks().to_vec();
-            named.sort();
-            if required != named {
-                return Ok(false);
-            }
-        } else if rule.pointer(&format!("/parameters/{name}")) != Some(wanted_value) {
-            return Ok(false);
+    wanted_parameters.iter().all(|(name, wanted_value)| {
+        if name != "required_status_checks" {
+            return rule.pointer(&format!("/parameters/{name}")) == Some(wanted_value);
         }
-    }
-    Ok(true)
+        let Ok(mut required) = required_checks(rule) else {
+            return false;
+        };
+        required.sort();
+        let mut named = policy.required_checks().to_vec();
+        named.sort();
+        required == named
+    })
 }
 
 /// Refuses an answer to a ruleset write that is not Torlek's ruleset, or, for a replacement,

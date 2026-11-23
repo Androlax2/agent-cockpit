@@ -265,7 +265,7 @@ Each agent push is audited; `torlek session grants SESSION` lists them as `pushe
 
 ### Protecting the default branch
 
-`torlek doctor --project DIR` reads the default branch's rules with the project's API token and shows them on its `protection` line (#695). The branch counts as protected when every change goes through a pull request with a check passing, and force pushes and deletion are refused. Otherwise the line names each gap and the command that closes it:
+`torlek doctor --project DIR` reads the default branch's rules with the project's API token and shows them on its `protection` line (#695). The branch counts as protected when every change goes through a pull request with a check passing, and force pushes and deletion are refused. It cannot see who may bypass those rules, since that takes administration to read; `protect` always makes Torlek's own rule, which no one may bypass. Otherwise the line names each gap and the command that closes it:
 
 ```sh
 torlek project protect PROJECT --check NAME   # --check once for each check CI must pass
