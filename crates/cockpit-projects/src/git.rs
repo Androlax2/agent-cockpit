@@ -523,7 +523,9 @@ impl Git {
 
 /// Everything `pipe` yields until it closes, read on its own thread. The thread is never
 /// joined: a helper may hold the pipe open long after Git exits.
-fn read_all(pipe: Option<impl Read + Send + 'static>) -> Receiver<std::io::Result<Vec<u8>>> {
+pub(crate) fn read_all(
+    pipe: Option<impl Read + Send + 'static>,
+) -> Receiver<std::io::Result<Vec<u8>>> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let mut bytes = Vec::new();

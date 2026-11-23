@@ -393,6 +393,10 @@ pub fn wiring_in(
             history_limit: 10_000,
         },
         git: cockpit_projects::Git::from_path(),
+        // No in-process test pushes as an agent: `agent_push` runs the daemon binary.
+        secret_scanner: cockpit_projects::SecretScanner::with_program(PathBuf::from(
+            "/nonexistent/gitleaks",
+        )),
         providers,
         unavailable_providers: Vec::new(),
         sessions: unsandboxed_settings(),

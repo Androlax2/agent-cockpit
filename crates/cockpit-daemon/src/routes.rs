@@ -92,6 +92,8 @@ pub struct Routes {
     feed_buffer_bytes: u32,
     /// The host Git that project commands run, with the safe settings applied.
     git: cockpit_projects::Git,
+    /// The gitleaks an agent's push is scanned with (#694).
+    secret_scanner: cockpit_projects::SecretScanner,
     /// The forge adapters a read goes through, made at the first one (#60).
     forge_adapters: Arc<crate::forges::Adapters>,
     sessions: Arc<cockpit_sessions::Sessions>,
@@ -206,6 +208,7 @@ impl Routes {
             database: capabilities.database,
             feed_buffer_bytes: capabilities.feed_buffer_bytes,
             git: capabilities.git,
+            secret_scanner: capabilities.secret_scanner,
             forge_adapters,
             sessions: capabilities.sessions,
             manager: capabilities.manager,
@@ -393,6 +396,7 @@ impl Handler for Routes {
                     connector,
                     Arc::clone(&self.database),
                     self.git.clone(),
+                    self.secret_scanner.clone(),
                     self.environment.clone(),
                 ),
                 Peer::Owner => Route::Answer(wrong_socket(

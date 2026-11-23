@@ -9,7 +9,9 @@ use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 use cockpit_authorization::{
     Actor, Audit, AuditedAction, Basis, GrantId, Outcome as Decided, Permission, Revision, Scope,
 };
-use cockpit_projects::{AgentBranches, Checkout, CheckoutKind, Force, Git, PushRules, Pusher};
+use cockpit_projects::{
+    AgentBranches, Checkout, CheckoutKind, Force, Git, PushRules, Pusher, SecretScanner,
+};
 use cockpit_protocol::{Command, ErrorCode, ProtocolError, Reply, Unblock, UnblockedBy};
 use cockpit_turso::Database;
 
@@ -22,6 +24,7 @@ pub(crate) fn route(
     connector: Result<ProcessIdentity, ProcessError>,
     database: Arc<Database>,
     git: Git,
+    scanner: SecretScanner,
     environment: cockpit_config::Environment,
 ) -> Route {
     let Command::AgentPush {
@@ -48,7 +51,7 @@ pub(crate) fn route(
         job: job(async move {
             let sender = Sender::read(connector).await;
             let session = crate::coordination::identified(&database, &sender, launch_token).await?;
-            push(&database, &git, environment, session, force).await
+            push(&database, &git, scanner, environment, session, force).await
         }),
     }
 }
@@ -67,6 +70,7 @@ struct Pushing {
 async fn push(
     database: &Database,
     git: &Git,
+    scanner: SecretScanner,
     environment: cockpit_config::Environment,
     session: cockpit_authorization::SessionId,
     force: bool,
@@ -93,6 +97,7 @@ async fn push(
         force,
         pusher: Pusher::Agent {
             branches: pushing.branches,
+            scanner,
         },
     };
     let pushed = cockpit_projects::push(database, git, pushing.checkout.id, rules)
@@ -230,6 +235,13 @@ fn push_failed(
     let unblock = match &error {
         cockpit_projects::Error::WorkflowChange { .. } => Some(Unblock {
             action: "ask the owner to push that commit, with the command the message names"
+                .to_owned(),
+            by: UnblockedBy::Owner,
+        }),
+        cockpit_projects::Error::SecretFound { .. } => Some(Unblock {
+            action: "rewrite a real secret out of the commits that add it and push again, or \
+                     ask the owner to read those lines and push that commit, with the command \
+                     the message names"
                 .to_owned(),
             by: UnblockedBy::Owner,
         }),

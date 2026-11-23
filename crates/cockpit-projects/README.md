@@ -92,7 +92,17 @@ marker is refused as `Replaced` instead of being acted on.
   unsigned. Grafts and a shallow boundary apply here as they do to the pack: a commit they
   hide is not sent either, and the remote refuses the push for lacking it. `agent_trailer`
   writes the trailer a session's launch hands its agent in `COMMIT_TRAILER_VARIABLE`
-  (`TORLEK_COMMIT_TRAILER`).
+  (`TORLEK_COMMIT_TRAILER`). Then gitleaks scans the lines that range adds (`secret_scan.rs`,
+  #694): `gitleaks git` over a private bare repository that borrows the checkout's objects,
+  shallow boundary and grafts, so no configuration, attributes, `.gitleaks.toml` or
+  `.gitleaksignore` of the checkout applies; its rules are gitleaks' defaults from a file
+  Torlek writes, and `gitleaks:allow` is ignored. A merge of two parents counts only its
+  changes to Git's automatic merge (`--diff-merges=remerge`); one of more parents, for which
+  Git has no such diff, its whole change against its first parent. The remote's tips are refs
+  in that repository, so no number of branches overflows an argument. A finding is `Error::SecretFound`, held for the
+  owner like a CI change and naming rule, file, line and commit but never the secret; a
+  missing or failing gitleaks refuses the push. The daemon finds `gitleaks` on its `PATH`
+  (`SecretScanner::from_path`).
 - **Push branches.** `project_push_branches` holds the branch patterns the owner adds per
   project (`add_push_branch`, `remove_push_branch`, `push_branches`), none by default
   (#155, 2026-11-09 option B). `BranchPattern` refuses a pattern that names no branch or

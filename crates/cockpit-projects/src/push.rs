@@ -7,6 +7,7 @@ use cockpit_turso::{Database, Migration, WriteTransaction};
 use crate::attribution;
 use crate::git::{arg, git_failure};
 use crate::push_range::{self, RemoteAccess};
+use crate::secret_scan::{self, SecretFinding, SecretScanner};
 use crate::store::{self, now};
 use crate::{BranchPattern, CheckoutId, CheckoutState, Error, Git, ProjectName, blocking};
 
@@ -111,8 +112,12 @@ pub enum Pusher {
     Owner { expected: Option<Expected> },
     /// A session's agent: only a branch `branches` covers and never the remote's default
     /// branch, only to the repository the project's main checkout names, and a push that
-    /// changes what CI runs is refused as [`Error::WorkflowChange`], for the owner to push.
-    Agent { branches: AgentBranches },
+    /// changes what CI runs is refused as [`Error::WorkflowChange`], one `scanner` reads a
+    /// secret in as [`Error::SecretFound`], each for the owner to push.
+    Agent {
+        branches: AgentBranches,
+        scanner: SecretScanner,
+    },
 }
 
 /// The branch and full commit id an owner's push is pinned to, as a held agent push names them.
@@ -208,7 +213,7 @@ pub async fn push(
                 });
             }
         }
-        Pusher::Agent { branches } if !branches.covers(&target.branch) => {
+        Pusher::Agent { branches, .. } if !branches.covers(&target.branch) => {
             return Err(Error::Refused {
                 reason: format!(
                     "{} is neither this checkout's launch branch nor a branch {project}'s \
@@ -230,19 +235,35 @@ pub async fn push(
     let credential = rules
         .credential
         .map_err(|reason| Error::Refused { reason })?;
-    if is_agent {
+    if let Pusher::Agent { scanner, .. } = &rules.pusher {
         let git = git.clone();
+        let scanner = scanner.clone();
         let (scanned_checkout, scanned, scan_credential) =
             (checkout.clone(), target.clone(), credential.clone());
-        let paths =
-            blocking(move || agent_checks(&git, &scanned_checkout, &scanned, &scan_credential))
-                .await?;
-        if !paths.is_empty() {
+        let held = blocking(move || {
+            agent_checks(
+                &git,
+                &scanner,
+                &scanned_checkout,
+                &scanned,
+                &scan_credential,
+            )
+        })
+        .await?;
+        if !held.secrets.is_empty() {
+            return Err(Error::SecretFound {
+                checkout: id,
+                branch: target.branch,
+                commit: target.commit,
+                findings: held.secrets,
+            });
+        }
+        if !held.ci_paths.is_empty() {
             return Err(Error::WorkflowChange {
                 checkout: id,
                 branch: target.branch,
                 commit: target.commit,
-                paths,
+                paths: held.ci_paths,
             });
         }
     }
@@ -530,15 +551,24 @@ fn credential_helper(target: &PushTarget, credential: &PushCredential) -> String
     )
 }
 
+/// What holds an agent's push for the owner: lines gitleaks reads as secrets, CI files it
+/// changes.
+struct Held {
+    secrets: Vec<SecretFinding>,
+    ci_paths: Vec<String>,
+}
+
 /// What an agent's push is checked for against the remote, read with the push's credential:
 /// the remote's default branch, which it never pushes, the attribution of every commit it
-/// sends (#694), and the CI paths whose content the push would newly bring there.
+/// sends (#694), the lines gitleaks reads as secrets in them (#694), and the CI paths whose
+/// content the push would newly bring there.
 fn agent_checks(
     git: &Git,
+    scanner: &SecretScanner,
     checkout: &std::path::Path,
     target: &PushTarget,
     credential: &PushCredential,
-) -> Result<Vec<String>, Error> {
+) -> Result<Held, Error> {
     let helper = credential_helper(target, credential);
     let remote = RemoteAccess {
         git,
@@ -569,8 +599,12 @@ fn agent_checks(
     let on_remote = tips.on_remote();
     remote.fetch_missing(&on_remote)?;
     attribution::require_attributed(git, checkout, &tips.every_branch(), &target.commit)?;
+    let secrets = secret_scan::scan(git, scanner, checkout, &tips.every_branch(), &target.commit)?;
     let changed = push_range::changed_ci_paths(&remote, &tips, &target.commit)?;
-    Ok(changed.into_iter().map(str::to_owned).collect())
+    Ok(Held {
+        secrets,
+        ci_paths: changed.into_iter().map(str::to_owned).collect(),
+    })
 }
 
 /// Sets the branch's upstream, which a push of a commit id does not, before anything is sent,
