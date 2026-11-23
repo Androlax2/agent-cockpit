@@ -160,6 +160,8 @@ pub(crate) async fn requirement(context: Context, project: String, root: &Path) 
             |forge, access| forge.default_branch_protection(access),
         )
     });
+    // A read past the deadline is not cancelled: its `gh` calls end at their own deadline,
+    // after `doctor` has answered without them.
     let read = match tokio::time::timeout(READ_DEADLINE, reading).await {
         Ok(Ok(read)) => read,
         Ok(Err(error)) => Err(internal(&error)),

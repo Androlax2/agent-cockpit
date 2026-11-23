@@ -28,10 +28,11 @@ issue, filed when wanted (#857, decision 4).
 - **Default branch protection** (#695). [`Forge::default_branch_protection`] reads what the
   forge enforces on the default branch ([`BranchRules`]) with no more than the API token's
   rights; [`BranchRules::gaps`] names what keeps it from being protected (a change request,
-  a required check, no force push, no deletion). [`Forge::protect_default_branch`] makes the
-  branch meet a [`ProtectionPolicy`] (those four, the owner's named checks, no approval
-  required and no bypass; Theo, 2026-11-23) with a rule of Torlek's own, writing nothing when
-  the branch meets it already. Changing settings takes a right neither project token has, so
+  a required check, no force push, no deletion). [`Forge::protect_default_branch`] makes
+  a rule of Torlek's own say a [`ProtectionPolicy`] (those four, the owner's named checks, no
+  approval required and no bypass; Theo, 2026-11-23), writing nothing when it says exactly
+  that already. Other rules on the branch do not count: their bypass list may let someone
+  past them. Changing settings takes a right neither project token has, so
   its token is one the owner gives for that call alone and Torlek never stores (Theo,
   2026-11-23).
 - **Issues** are a task source beside Torlek's todos. Titles, bodies, comments, labels and

@@ -72,8 +72,6 @@ pub enum Gap {
     ChangeRequestNotRequired,
     /// No check is required at all.
     NoRequiredCheck,
-    /// The policy names this check, and the branch does not require it.
-    CheckNotRequired(String),
     ForcePushAllowed,
     DeletionAllowed,
 }
@@ -83,7 +81,6 @@ impl fmt::Display for Gap {
         match self {
             Gap::ChangeRequestNotRequired => formatter.write_str("no change request required"),
             Gap::NoRequiredCheck => formatter.write_str("no check required"),
-            Gap::CheckNotRequired(check) => write!(formatter, "check {check:?} not required"),
             Gap::ForcePushAllowed => formatter.write_str("force pushes allowed"),
             Gap::DeletionAllowed => formatter.write_str("deletion allowed"),
         }
@@ -94,39 +91,17 @@ impl BranchRules {
     /// What keeps the branch from being protected at all: a change request, at least one
     /// check, no force push and no deletion. What `doctor` reports.
     pub fn gaps(&self) -> Vec<Gap> {
-        let check_gaps = if self.required_checks.is_empty() {
-            vec![Gap::NoRequiredCheck]
-        } else {
-            Vec::new()
-        };
-        self.gaps_around(check_gaps)
-    }
-
-    /// What keeps the branch from meeting `policy`: [`BranchRules::gaps`], with each of the
-    /// policy's checks the branch does not require in place of "no check required".
-    pub fn gaps_for(&self, policy: &ProtectionPolicy) -> Vec<Gap> {
-        let check_gaps = policy
-            .required_checks()
-            .iter()
-            .filter(|check| !self.required_checks.contains(check))
-            .map(|check| Gap::CheckNotRequired(check.clone()))
-            .collect();
-        self.gaps_around(check_gaps)
-    }
-
-    /// `check_gaps` between the change request's gap and the force push's, in the order the
-    /// owner reads them.
-    fn gaps_around(&self, check_gaps: Vec<Gap>) -> Vec<Gap> {
-        let change_request =
-            (!self.change_request_required).then_some(Gap::ChangeRequestNotRequired);
-        let force_push = (!self.force_push_blocked).then_some(Gap::ForcePushAllowed);
-        let deletion = (!self.deletion_blocked).then_some(Gap::DeletionAllowed);
-        change_request
-            .into_iter()
-            .chain(check_gaps)
-            .chain(force_push)
-            .chain(deletion)
-            .collect()
+        [
+            (!self.change_request_required).then_some(Gap::ChangeRequestNotRequired),
+            self.required_checks
+                .is_empty()
+                .then_some(Gap::NoRequiredCheck),
+            (!self.force_push_blocked).then_some(Gap::ForcePushAllowed),
+            (!self.deletion_blocked).then_some(Gap::DeletionAllowed),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 }
 
@@ -146,9 +121,9 @@ pub struct DefaultBranch {
 pub enum ProtectOutcome {
     /// Torlek's rule was made.
     Created,
-    /// Torlek's rule existed and no longer met the policy; it was replaced.
+    /// Torlek's rule existed and said something else; it was replaced.
     Updated,
-    /// The branch already met the policy; nothing was written.
+    /// Torlek's rule already said the policy; nothing was written.
     Unchanged,
 }
 

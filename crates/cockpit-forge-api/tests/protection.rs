@@ -1,6 +1,7 @@
 //! #695: a default branch's protection through the fake forge. Protect makes Torlek's rule
-//! once, a second run writes nothing, a branch already protected elsewhere is left alone, and
-//! a forge without the capability answers with the typed refusal.
+//! once, a second run writes nothing, a change of checks either way replaces it, a branch
+//! other rules protect still gets it, and a forge without the capability answers with the
+//! typed refusal.
 
 mod common;
 
@@ -95,15 +96,30 @@ fn protect_with_a_new_check_updates_its_own_rule() {
 }
 
 #[test]
-fn a_branch_already_protected_elsewhere_is_left_unchanged() {
-    let forge = FakeForge::new().with_rules(protected_elsewhere(&["ci", "lint"]));
+fn protect_with_a_check_dropped_updates_its_own_rule() {
+    let forge = FakeForge::new();
+    forge
+        .protect_default_branch(&forge.access(), &policy(&["ci", "lint"]))
+        .unwrap();
+
+    let again = forge
+        .protect_default_branch(&forge.access(), &policy(&["ci"]))
+        .unwrap();
+
+    assert_eq!(again.outcome, ProtectOutcome::Updated);
+    assert_eq!(forge.own_rule(), Some(policy(&["ci"])));
+}
+
+#[test]
+fn a_branch_other_rules_protect_still_gets_torleks_rule() {
+    let forge = FakeForge::new().with_rules(protected_elsewhere(&["ci"]));
 
     let protected = forge
         .protect_default_branch(&forge.access(), &policy(&["ci"]))
         .unwrap();
 
-    assert_eq!(protected.outcome, ProtectOutcome::Unchanged);
-    assert_eq!(forge.own_rule(), None);
+    assert_eq!(protected.outcome, ProtectOutcome::Created);
+    assert_eq!(forge.own_rule(), Some(policy(&["ci"])));
 }
 
 #[test]
@@ -137,7 +153,7 @@ fn a_forge_without_the_read_answers_typed() {
 }
 
 #[test]
-fn gaps_for_a_policy_name_each_check_the_branch_does_not_require() {
+fn gaps_name_only_what_the_branch_lacks() {
     let rules = BranchRules {
         required_checks: vec!["ci".to_owned()],
         force_push_blocked: true,
@@ -145,12 +161,8 @@ fn gaps_for_a_policy_name_each_check_the_branch_does_not_require() {
     };
 
     assert_eq!(
-        rules.gaps_for(&policy(&["ci", "lint"])),
-        [
-            Gap::ChangeRequestNotRequired,
-            Gap::CheckNotRequired("lint".to_owned()),
-            Gap::DeletionAllowed,
-        ]
+        rules.gaps(),
+        [Gap::ChangeRequestNotRequired, Gap::DeletionAllowed]
     );
 }
 

@@ -130,6 +130,10 @@ fn ruleset_id(ruleset: &Value) -> Result<u64, ForgeError> {
 /// The ruleset `policy` stands for: active on whichever branch is the default, with no one
 /// allowed to bypass it.
 pub(crate) fn ruleset_body(policy: &ProtectionPolicy) -> String {
+    ruleset(policy).to_string()
+}
+
+fn ruleset(policy: &ProtectionPolicy) -> Value {
     let checks: Vec<Value> = policy
         .required_checks()
         .iter()
@@ -163,7 +167,69 @@ pub(crate) fn ruleset_body(policy: &ProtectionPolicy) -> String {
             }
         ]
     })
-    .to_string()
+}
+
+/// Whether Torlek's ruleset, as `GET repos/OWNER/NAME/rulesets/ID` answers it, says what
+/// `policy` stands for: the same name, target, enforcement, bypass list and branches, and the
+/// same rules, each with the parameters Torlek writes. Parameters GitHub adds are not
+/// compared, and required checks are compared by name, in any order.
+pub(crate) fn says_policy(answer: &Value, policy: &ProtectionPolicy) -> Result<bool, ForgeError> {
+    let wanted = ruleset(policy);
+    for field in [
+        "name",
+        "target",
+        "enforcement",
+        "bypass_actors",
+        "conditions",
+    ] {
+        if answer.get(field) != wanted.get(field) {
+            return Ok(false);
+        }
+    }
+    let rules = answer
+        .get("rules")
+        .ok_or_else(|| malformed("Torlek's ruleset has no `rules`"))?;
+    let rules = answers::array(rules, "Torlek's ruleset's rules")?;
+    let wanted_rules = wanted["rules"].as_array().map_or(&[][..], Vec::as_slice);
+    if rules.len() != wanted_rules.len() {
+        return Ok(false);
+    }
+    for wanted_rule in wanted_rules {
+        let mut has_match = false;
+        for rule in rules {
+            if rule_says(rule, wanted_rule, policy)? {
+                has_match = true;
+                break;
+            }
+        }
+        if !has_match {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn rule_says(rule: &Value, wanted: &Value, policy: &ProtectionPolicy) -> Result<bool, ForgeError> {
+    if rule.get("type") != wanted.get("type") {
+        return Ok(false);
+    }
+    let Some(wanted_parameters) = wanted.get("parameters").and_then(Value::as_object) else {
+        return Ok(true);
+    };
+    for (name, wanted_value) in wanted_parameters {
+        if name == "required_status_checks" {
+            let mut required = required_checks(rule)?;
+            required.sort();
+            let mut named = policy.required_checks().to_vec();
+            named.sort();
+            if required != named {
+                return Ok(false);
+            }
+        } else if rule.pointer(&format!("/parameters/{name}")) != Some(wanted_value) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Refuses an answer to a ruleset write that is not Torlek's ruleset, or, for a replacement,

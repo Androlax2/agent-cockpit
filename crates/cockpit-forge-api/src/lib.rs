@@ -207,10 +207,11 @@ pub trait Forge: Send + Sync + 'static {
         Err(ForgeError::unsupported(Capability::ProtectionRead))
     }
 
-    /// Makes the default branch meet `policy` with a rule of Torlek's own, idempotently
+    /// Makes Torlek's own rule on the default branch say exactly `policy`, idempotently
     /// ([`Capability::ProtectionBootstrap`]): [`ProtectOutcome::Unchanged`], with nothing
-    /// written, when the branch meets it already; [`ProtectOutcome::Updated`] when Torlek's
-    /// rule exists and falls short; [`ProtectOutcome::Created`] otherwise. Changing the
+    /// written, when it does already; [`ProtectOutcome::Updated`] when it exists and says
+    /// anything else, a check more included; [`ProtectOutcome::Created`] otherwise, even on a
+    /// branch other rules protect, since only Torlek's rule is known to let no one bypass it. Changing the
     /// repository's settings takes a right neither project token has (#857), so `access.token`
     /// is one the owner gives for this call alone; the forge refuses a token without it.
     fn protect_default_branch(

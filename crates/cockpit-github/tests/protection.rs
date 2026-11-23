@@ -1,6 +1,6 @@
 //! #695: the default branch's protection over a fake `gh`. The read takes three `gh api`
-//! calls with the caller's token; protect writes Torlek's ruleset once, replaces its own when
-//! it falls short, and writes nothing on a branch that already meets the policy.
+//! calls with the caller's token; protect writes Torlek's ruleset once, writes nothing while
+//! its own ruleset says the policy, and replaces it when it says anything else.
 
 mod common;
 
@@ -20,6 +20,7 @@ const CREATE: &[&str] = &[
     "repos/owner/project/rulesets",
     "--input=-",
 ];
+const OWN: &[&str] = &["api", "repos/owner/project/rulesets/42"];
 const REPLACE: &[&str] = &[
     "api",
     "--method=PUT",
@@ -37,6 +38,19 @@ fn unprotected() -> FakeGh {
         "api-rules-branch-none.json",
         "api-branch-protected-false.stdout",
     );
+    gh
+}
+
+/// A fake `gh` whose repository holds Torlek's ruleset as `fixture` says it.
+fn with_own_ruleset(fixture: &str) -> FakeGh {
+    let mut gh = FakeGh::new();
+    gh.answer_with(
+        &["api", "repos/owner/project", "--jq=.default_branch"],
+        "api-default-branch.stdout",
+    )
+    .answer_with(RULESETS, "api-rulesets-own.json")
+    .answer_with(OWN, fixture)
+    .answer_with(REPLACE, "api-ruleset-written.json");
     gh
 }
 
@@ -90,7 +104,40 @@ fn the_rules_of_every_ruleset_on_the_branch_are_read_together() {
             deletion_blocked: true,
         }
     );
+    assert!(
+        !read.has_unread_protection,
+        "ruleset rules explain the mark"
+    );
+}
+
+#[test]
+fn a_branch_marked_protected_with_no_ruleset_rule_has_protection_the_read_cannot_see() {
+    let mut gh = FakeGh::new();
+    gh.answer_protection_read(
+        "api-rules-branch-none.json",
+        "api-branch-protected-true.stdout",
+    );
+
+    let read = with_access(|access| gh.adapter().default_branch_protection(access)).unwrap();
+
     assert!(read.has_unread_protection);
+}
+
+#[test]
+fn a_branch_rulesets_protect_in_part_is_read_with_its_gaps() {
+    let mut gh = FakeGh::new();
+    gh.answer_protection_read(
+        "api-rules-branch-partial.json",
+        "api-branch-protected-true.stdout",
+    );
+
+    let read = with_access(|access| gh.adapter().default_branch_protection(access)).unwrap();
+
+    assert!(!read.has_unread_protection);
+    assert_eq!(
+        read.rules.gaps(),
+        [Gap::ChangeRequestNotRequired, Gap::DeletionAllowed]
+    );
 }
 
 #[test]
@@ -168,32 +215,53 @@ fn protect_creates_torleks_ruleset_on_the_default_branch_with_no_bypass() {
 }
 
 #[test]
-fn protect_on_a_branch_that_meets_the_policy_writes_nothing() {
+fn protect_writes_nothing_while_its_own_ruleset_says_the_policy() {
+    for (fixture, checks) in [
+        ("api-ruleset-own.json", &["ci"][..]),
+        ("api-ruleset-own-two-checks.json", &["ci", "lint"][..]),
+    ] {
+        let gh = with_own_ruleset(fixture);
+
+        let protected =
+            with_access(|access| gh.adapter().protect_default_branch(access, &policy(checks)))
+                .unwrap();
+
+        assert_eq!(protected.outcome, ProtectOutcome::Unchanged, "{fixture}");
+        assert_eq!(written_calls(&gh), Vec::<Vec<String>>::new(), "{fixture}");
+    }
+}
+
+#[test]
+fn protect_replaces_its_own_ruleset_when_it_says_anything_else() {
+    for (fixture, why) in [
+        ("api-ruleset-own-bypass.json", "an admin may bypass it"),
+        (
+            "api-ruleset-own-two-checks.json",
+            "it requires a check no longer named",
+        ),
+    ] {
+        let gh = with_own_ruleset(fixture);
+
+        let protected = with_access(|access| {
+            gh.adapter()
+                .protect_default_branch(access, &policy(&["ci"]))
+        })
+        .unwrap();
+
+        assert_eq!(protected.outcome, ProtectOutcome::Updated, "{why}");
+        assert_eq!(written_calls(&gh), [REPLACE], "{why}");
+    }
+}
+
+#[test]
+fn protect_writes_torleks_ruleset_on_a_branch_other_rulesets_protect() {
     let mut gh = FakeGh::new();
     gh.answer_protection_read(
         "api-rules-branch-protected.json",
         "api-branch-protected-true.stdout",
-    );
-
-    let protected = with_access(|access| {
-        gh.adapter()
-            .protect_default_branch(access, &policy(&["ci"]))
-    })
-    .unwrap();
-
-    assert_eq!(protected.outcome, ProtectOutcome::Unchanged);
-    assert_eq!(gh.calls().len(), 3, "the read alone: {:#?}", gh.calls());
-}
-
-#[test]
-fn protect_replaces_its_own_ruleset_when_the_branch_falls_short() {
-    let mut gh = FakeGh::new();
-    gh.answer_protection_read(
-        "api-rules-branch-partial.json",
-        "api-branch-protected-true.stdout",
     )
-    .answer_with(RULESETS, "api-rulesets-own.json")
-    .answer_with(REPLACE, "api-ruleset-written.json");
+    .answer_with(RULESETS, "api-rulesets-none.json")
+    .answer_with(CREATE, "api-ruleset-written.json");
 
     let protected = with_access(|access| {
         gh.adapter()
@@ -201,8 +269,7 @@ fn protect_replaces_its_own_ruleset_when_the_branch_falls_short() {
     })
     .unwrap();
 
-    assert_eq!(protected.outcome, ProtectOutcome::Updated);
-    assert_eq!(written_calls(&gh), [REPLACE]);
+    assert_eq!(protected.outcome, ProtectOutcome::Created);
 }
 
 #[test]

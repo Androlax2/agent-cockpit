@@ -471,7 +471,7 @@ impl Forge for FakeForge {
             access,
         )?;
         let branch = default_branch(&state).branch;
-        if state.rules().gaps_for(policy).is_empty() {
+        if state.own_rule.as_ref() == Some(policy) {
             return Ok(Protected {
                 branch,
                 outcome: ProtectOutcome::Unchanged,

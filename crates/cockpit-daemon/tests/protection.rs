@@ -72,6 +72,7 @@ case "$*" in
     if protected; then echo true; else echo false; fi ;;
   "api repos/owner/cockpit/rulesets?includes_parents=false&per_page=100")
     if protected; then cat "$state/rulesets.json"; else printf '[]\n'; fi ;;
+  "api repos/owner/cockpit/rulesets/42") cat "$state/written-body.json" ;;
   "api --method=POST repos/owner/cockpit/rulesets --input=-")
     if [ "${{GH_TOKEN-}}" != "$(cat "$state/admin-token")" ]; then
       echo 'gh: Resource not accessible by personal access token (HTTP 403)' >&2; exit 1
@@ -236,6 +237,24 @@ async fn a_forge_adapter_that_cannot_protect_answers_typed() {
         "{refused}"
     );
     assert!(ruleset_writes(&home).is_empty(), "{}", gh_calls(&home));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_project_is_refused_before_any_token_is_read() {
+    let (home, _daemon, _) = started(true).await;
+
+    let output = home
+        .cockpit_with_stdin(
+            &["project", "protect", "typo", "--check", "ci"],
+            ADMIN_TOKEN,
+        )
+        .await;
+
+    assert!(!output.status.success());
+    let refused = text(&output.stderr);
+    assert!(refused.contains("no project is named typo"), "{refused}");
+    assert!(!refused.contains("not shown"), "{refused}");
+    assert_eq!(gh_calls(&home), "");
 }
 
 #[tokio::test(flavor = "multi_thread")]

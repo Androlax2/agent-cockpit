@@ -487,13 +487,7 @@ impl Forge for GitHub {
     ) -> Result<Protected, ForgeError> {
         self.require(Capability::ProtectionBootstrap)?;
         let repository = repository_argument(access.repository)?;
-        let current = self.read_protection(access, &repository)?;
-        if current.rules.gaps_for(policy).is_empty() {
-            return Ok(Protected {
-                branch: current.branch,
-                outcome: ProtectOutcome::Unchanged,
-            });
-        }
+        let branch = self.read_default_branch(access, &repository)?;
         let listed = self.call(
             access,
             vec![
@@ -507,6 +501,23 @@ impl Forge for GitHub {
             "the repository's rulesets",
         )?;
         let own = protection::own_ruleset(&answers::parse(&listed)?)?;
+        if let Some(id) = own {
+            let current = self.call(
+                access,
+                vec![
+                    "api".to_owned(),
+                    format!("repos/{repository}/rulesets/{id}"),
+                ],
+                None,
+                "Torlek's ruleset",
+            )?;
+            if protection::says_policy(&answers::parse(&current)?, policy)? {
+                return Ok(Protected {
+                    branch,
+                    outcome: ProtectOutcome::Unchanged,
+                });
+            }
+        }
         let (method, path, outcome) = match own {
             Some(id) => (
                 "PUT",
@@ -528,10 +539,7 @@ impl Forge for GitHub {
         let body = protection::ruleset_body(policy);
         let written = self.call(access, arguments, Some(&body), "the repository's rulesets")?;
         protection::check_written(&answers::parse(&written)?, own)?;
-        Ok(Protected {
-            branch: current.branch,
-            outcome,
-        })
+        Ok(Protected { branch, outcome })
     }
 }
 
@@ -567,13 +575,11 @@ impl GitHub {
         }
     }
 
-    /// The default branch, the rules its rulesets apply, and whether GitHub marks it protected,
-    /// which classic branch protection does too: its rules take administration to read.
-    fn read_protection(
+    fn read_default_branch(
         &self,
         access: &Access<'_>,
         repository: &str,
-    ) -> Result<DefaultBranch, ForgeError> {
+    ) -> Result<BranchName, ForgeError> {
         let named = self.call(
             access,
             vec![
@@ -584,7 +590,20 @@ impl GitHub {
             None,
             "the repository",
         )?;
-        let branch = protection::default_branch(&named)?;
+        protection::default_branch(&named)
+    }
+
+    /// The default branch, the rules its rulesets apply, and whether GitHub marks it protected,
+    /// which rulesets do and classic branch protection does too. Classic protection's rules
+    /// take administration to read, so only a marked branch no ruleset rule applies to is
+    /// reported with protection the read cannot see: one that has both is reported by its
+    /// ruleset rules alone, and may show gaps classic protection closes.
+    fn read_protection(
+        &self,
+        access: &Access<'_>,
+        repository: &str,
+    ) -> Result<DefaultBranch, ForgeError> {
+        let branch = self.read_default_branch(access, repository)?;
         let segment = protection::path_segment(&branch);
         let what = format!("branch {branch}");
         let listed = self.call(
@@ -599,7 +618,9 @@ impl GitHub {
             None,
             &what,
         )?;
-        let rules = protection::rules(&answers::parse(&listed)?)?;
+        let listed = answers::parse(&listed)?;
+        let rules = protection::rules(&listed)?;
+        let has_ruleset_rules = listed.as_array().is_some_and(|rules| !rules.is_empty());
         let marked = self.call(
             access,
             vec![
@@ -613,7 +634,7 @@ impl GitHub {
         Ok(DefaultBranch {
             branch,
             rules,
-            has_unread_protection: protection::is_protected(&marked)?,
+            has_unread_protection: protection::is_protected(&marked)? && !has_ruleset_rules,
         })
     }
 

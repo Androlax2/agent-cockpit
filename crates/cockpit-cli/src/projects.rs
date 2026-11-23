@@ -81,8 +81,8 @@ pub fn parse(verb: &str, arguments: &[OsString]) -> Result<(Command, Duration), 
     }
 }
 
-/// The longest protect may take: a read of the branch, the rulesets and one write, each a
-/// forge call of 30 s at most.
+/// The longest protect may take: up to five `gh` calls of 30 s at most (the adapter's probe,
+/// the default branch, the rulesets, Torlek's ruleset and the write), and a margin.
 const PROTECT_DEADLINE: Duration = Duration::from_secs(5 * 30 + 30);
 
 /// `project protect PROJECT --check NAME [--check NAME]...` (#695): asks for a token that may
@@ -113,6 +113,19 @@ pub fn protect(arguments: &[OsString]) -> Result<ExitCode, String> {
             "name each check CI must pass on the default branch: \
              `torlek project protect {project} --check NAME`"
         ));
+    }
+    // A token that may change settings is not asked for on a name that leads nowhere.
+    let reply = match request(Command::ProjectList, CONTROL_DEADLINE) {
+        Ok(reply) => reply,
+        Err(code) => return Ok(code),
+    };
+    let Reply::Projects { projects } = &reply else {
+        return Ok(unexpected(&reply));
+    };
+    if !projects.iter().any(|known| known.name == *project) {
+        return Ok(fail(&format!(
+            "no project is named {project}: `torlek project list` names them"
+        )));
     }
     let token = crate::credentials::read_secret(&format!(
         "a token that may change {project}'s repository settings, used once and never stored"
