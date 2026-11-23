@@ -571,6 +571,7 @@ impl Instance {
             // Its reports read no project, so no forge: its adapters are never made.
             git: wiring.git.clone(),
             forge_adapters: Arc::default(),
+            secret_scanner: wiring.secret_scanner.clone(),
         };
         // The launchers' decisions name each project's engine (#390).
         let network_containers = detected_readiness.containers.clone();

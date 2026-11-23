@@ -70,7 +70,9 @@ pub(crate) fn requirements(
 
 /// Whether `torlek checkout push`, and an agent's `torlek push` (#155), may push the project's
 /// checkouts: only to a host whose grant carries the owner's push right, none until the owner
-/// binds one (the owner's decision of 2026-11-22). Not blocking: sessions work without a push.
+/// binds one (the owner's decision of 2026-11-22). Not blocking, as sessions work without a push,
+/// except once agents may push and gitleaks does not run: their pushes are then refused (#694,
+/// the owner's decision of 2026-11-23, option B).
 fn push(project: &str, facts: &Result<PushFacts, String>) -> Requirement {
     let name = "push";
     let facts = match facts {
@@ -85,14 +87,27 @@ fn push(project: &str, facts: &Result<PushFacts, String>) -> Requirement {
         }
     };
     if !facts.bound.is_empty() {
-        return Requirement::available(
-            name,
-            format!(
-                "`torlek checkout push` and an agent's `torlek push` may push to an https origin \
-                 on {}",
-                listed(&facts.bound)
+        let not_asked = Err("it was not asked".to_owned());
+        return match facts.gitleaks.as_ref().unwrap_or(&not_asked) {
+            Ok(version) => Requirement::available(
+                name,
+                format!(
+                    "`torlek checkout push` and an agent's `torlek push` may push to an https \
+                     origin on {}; gitleaks {version} scans each agent push",
+                    listed(&facts.bound)
+                ),
             ),
-        );
+            Err(reason) => Requirement::needs(
+                name,
+                Status::MissingPrerequisite,
+                format!(
+                    "`torlek checkout push` may push to an https origin on {}, and an agent's \
+                     `torlek push` is refused: its secret scan needs gitleaks ({reason})",
+                    listed(&facts.bound)
+                ),
+                "install gitleaks on the daemon's PATH",
+            ),
+        };
     }
     let Some(host) = facts.reached.first().or(facts.declared.first()) else {
         return Requirement::needs(

@@ -1993,7 +1993,11 @@ fn push_requirement(push: PushFacts) -> Requirement {
         ..fixture.facts()
     };
     let report = fixture.report(&ready_host(), &project);
-    assert!(report.is_ready(), "a push never blocks: {report:#?}");
+    assert_eq!(
+        report.is_ready(),
+        !requirement(&report, "push").status.blocks(),
+        "only the push line decides: {report:#?}"
+    );
     requirement(&report, "push").clone()
 }
 
@@ -2009,6 +2013,7 @@ fn a_project_reaching_its_forge_without_the_push_right_names_the_command_that_bi
         declared: github(),
         reached: github(),
         bound: Vec::new(),
+        gitleaks: Some(Ok("8.30.1".to_owned())),
     });
 
     assert_eq!(push.status, Status::NeedsAuthorization);
@@ -2024,6 +2029,7 @@ fn a_project_not_reaching_its_forge_names_the_reach_grant_before_the_push_right(
         declared: github(),
         reached: Vec::new(),
         bound: Vec::new(),
+        gitleaks: Some(Ok("8.30.1".to_owned())),
     });
 
     assert_eq!(
@@ -2041,11 +2047,55 @@ fn a_project_with_the_push_right_is_available_naming_where_it_pushes() {
         declared: github(),
         reached: github(),
         bound: github(),
+        gitleaks: Some(Ok("8.30.1".to_owned())),
     });
 
     assert_eq!(push.status, Status::Available);
     assert!(push.detail.contains("github.com"), "{push:?}");
     assert!(push.detail.contains("`torlek push`"), "{push:?}");
+}
+
+#[test]
+fn a_project_whose_agents_push_names_the_gitleaks_that_scans_them() {
+    let push = push_requirement(PushFacts {
+        declared: github(),
+        reached: github(),
+        bound: github(),
+        gitleaks: Some(Ok("8.30.1".to_owned())),
+    });
+
+    assert!(push.detail.contains("gitleaks 8.30.1"), "{push:?}");
+}
+
+/// #694, the owner's decision of 2026-11-23 (option B): a missing gitleaks blocks only a
+/// project whose agents push.
+#[test]
+fn a_project_whose_agents_push_without_gitleaks_misses_a_prerequisite() {
+    let push = push_requirement(PushFacts {
+        declared: github(),
+        reached: github(),
+        bound: github(),
+        gitleaks: Some(Err("gitleaks is not on the daemon's PATH".to_owned())),
+    });
+
+    assert_eq!(push.status, Status::MissingPrerequisite);
+    assert!(push.detail.contains("`torlek push` is refused"), "{push:?}");
+    assert_eq!(
+        push.next.as_deref(),
+        Some("install gitleaks on the daemon's PATH")
+    );
+}
+
+#[test]
+fn a_project_whose_agents_cannot_push_does_not_need_gitleaks() {
+    let push = push_requirement(PushFacts {
+        declared: github(),
+        reached: github(),
+        bound: Vec::new(),
+        gitleaks: None,
+    });
+
+    assert_eq!(push.status, Status::NeedsAuthorization);
 }
 
 #[test]

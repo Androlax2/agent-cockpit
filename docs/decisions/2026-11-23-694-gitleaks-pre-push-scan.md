@@ -9,7 +9,12 @@ offered.
 
 - **gitleaks is a required host program.** The daemon runs `gitleaks` from its `PATH`. When it
   is missing, fails or runs past five minutes, an agent's push is refused: never sent
-  unscanned. Proposed, not yet built: readiness reports a missing gitleaks (#694, part 3).
+  unscanned.
+- **Readiness reports it only where agents push** (Theo, 2026-11-23, option B of part 3). A
+  project's `push` line is missing-prerequisite when a host carries its push right and
+  `gitleaks version` does not run. There is no host-wide line: `torlek doctor` and onboarding
+  stay green on a machine whose projects' agents do not push. Rejected: a host line blocking
+  like tmux (option A).
 - **A finding holds the push for the owner** (`Error::SecretFound`), as a CI change does. The
   refusal names the rule, file, line and commit, never the secret, and the owner's `torlek
   checkout push ID --branch B --commit C` sends it. The owner's own pushes are not scanned.
@@ -27,3 +32,8 @@ Evidence: `cockpit-projects` `push`:
 - `the_scan_reads_no_configuration_or_ignore_file_the_checkout_holds`
 - `without_gitleaks_an_agents_push_is_refused_and_nothing_is_pushed`
 - `a_scan_that_fails_refuses_the_push_and_nothing_is_pushed`
+
+`cockpit-readiness` `report`:
+
+- `a_project_whose_agents_push_without_gitleaks_misses_a_prerequisite`
+- `a_project_whose_agents_cannot_push_does_not_need_gitleaks`

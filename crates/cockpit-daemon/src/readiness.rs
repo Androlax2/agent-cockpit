@@ -44,6 +44,8 @@ pub(crate) struct Context {
     /// What a read of a project's forge goes through: its origin and the adapters (#695).
     pub(crate) git: cockpit_projects::Git,
     pub(crate) forge_adapters: Arc<crate::forges::Adapters>,
+    /// The gitleaks agent pushes are scanned with (#694): the `push` line reports it.
+    pub(crate) secret_scanner: cockpit_projects::SecretScanner,
 }
 
 impl Context {
@@ -272,7 +274,14 @@ async fn report(
         None => None,
     };
     let push = match &checkout {
-        Some(checkout) => Some(push_facts(&context.database, &checkout.project).await),
+        Some(checkout) => Some(
+            push_facts(
+                &context.database,
+                &context.secret_scanner,
+                &checkout.project,
+            )
+            .await,
+        ),
         None => None,
     };
     // An unregistered directory has no forge Torlek reads; the `project` line says so.
@@ -554,6 +563,7 @@ async fn checkout_of(
 /// those the project's grants reach, and those whose grant carries the push right (#153).
 async fn push_facts(
     database: &cockpit_turso::Database,
+    secret_scanner: &cockpit_projects::SecretScanner,
     project: &str,
 ) -> Result<PushFacts, String> {
     let read = database.read().await.map_err(|error| error.to_string())?;
@@ -578,14 +588,29 @@ async fn push_facts(
         })
         .map(ToString::to_string)
         .collect();
+    let bound: Vec<String> = crate::forges::push_hosts(&bound)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    // Only a project whose agents may push needs gitleaks, so only its report runs it.
+    let gitleaks = if bound.is_empty() {
+        None
+    } else {
+        Some(version_of(secret_scanner.clone()).await)
+    };
     Ok(PushFacts {
         reached,
-        bound: crate::forges::push_hosts(&bound)
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
+        bound,
         declared: declared.iter().map(ToString::to_string).collect(),
+        gitleaks,
     })
+}
+
+/// `gitleaks version`, run off the async workers since it starts a program.
+async fn version_of(secret_scanner: cockpit_projects::SecretScanner) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || secret_scanner.version())
+        .await
+        .unwrap_or_else(|error| Err(format!("`gitleaks version` did not finish: {error}")))
 }
 
 /// Trust as `cockpit-projects` decides it, from the owner's `projects.trusted` read now.
