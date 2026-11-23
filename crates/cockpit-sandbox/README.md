@@ -84,7 +84,8 @@ Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
   `commit.gpgSign`, `tag.gpgSign`, `tag.forceSignAnnotated` and `push.gpgSign` set to
   `false` as Git's command-scope configuration (`GIT_CONFIG_COUNT`), which wins over every
   configuration file, the checkout's own included; an unsandboxed launch keeps its own
-  `GIT_CONFIG_COUNT` pairs before them. An agent's explicit `git commit -S` still signs:
+  `GIT_CONFIG_COUNT` pairs before them, and gets the reset appended to an inherited
+  `GIT_CONFIG_PARAMETERS` (`git -c`) too. An agent's explicit `git commit -S` still signs:
   `torlek push` refuses the commit (`cockpit-projects`).
 - Declarations (#861): the evidence names where the program's needs came from, its adapter,
   the owner's entry for it, or none (the floor). `cockpit-sessions` refuses, when the daemon

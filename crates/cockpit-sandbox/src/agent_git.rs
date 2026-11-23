@@ -17,9 +17,13 @@ pub(crate) const UNSIGNED_GIT: &[(&str, &str)] = &[
 
 const COUNT_VARIABLE: &str = "GIT_CONFIG_COUNT";
 
+/// Where `git -c` passes its settings to the Git programs it runs; read after the
+/// `GIT_CONFIG_COUNT` pairs, so the reset is appended there too when the launch holds it.
+const PARAMETERS_VARIABLE: &str = "GIT_CONFIG_PARAMETERS";
+
 /// `environment` with [`UNSIGNED_GIT`] appended after the `GIT_CONFIG_COUNT` pairs it holds,
-/// which stay as they are. Refuses a count Git would refuse too, rather than drop the pairs it
-/// names.
+/// which stay as they are, and after its `GIT_CONFIG_PARAMETERS`, when it holds that. Refuses a
+/// count Git would refuse too, rather than drop the pairs it names.
 pub(crate) fn with_unsigned_git(
     mut environment: Vec<(OsString, OsString)>,
 ) -> Result<Vec<(OsString, OsString)>, Refusal> {
@@ -52,6 +56,18 @@ pub(crate) fn with_unsigned_git(
         COUNT_VARIABLE.into(),
         (held + UNSIGNED_GIT.len()).to_string().into(),
     ));
+    let parameters = environment
+        .iter()
+        .rev()
+        .find(|(name, _)| name == PARAMETERS_VARIABLE)
+        .map(|(_, value)| value.clone());
+    if let Some(mut parameters) = parameters {
+        environment.retain(|(name, _)| name != PARAMETERS_VARIABLE);
+        for (key, value) in UNSIGNED_GIT {
+            parameters.push(format!(" '{key}'='{value}'"));
+        }
+        environment.push((PARAMETERS_VARIABLE.into(), parameters));
+    }
     Ok(environment)
 }
 
@@ -111,6 +127,23 @@ mod tests {
             .filter(|(name, _)| name == "GIT_CONFIG_COUNT")
             .count();
         assert_eq!(counts, 1);
+    }
+
+    #[test]
+    fn the_reset_comes_after_the_settings_git_c_passed() {
+        let environment = with_unsigned_git(vec![(
+            "GIT_CONFIG_PARAMETERS".into(),
+            "'commit.gpgsign'='true'".into(),
+        )])
+        .unwrap();
+
+        assert_eq!(
+            variable(&environment, "GIT_CONFIG_PARAMETERS").as_deref(),
+            Some(
+                "'commit.gpgsign'='true' 'commit.gpgSign'='false' 'tag.gpgSign'='false' \
+                 'tag.forceSignAnnotated'='false' 'push.gpgSign'='false'"
+            )
+        );
     }
 
     #[test]

@@ -568,7 +568,7 @@ fn agent_checks(
     }
     let on_remote = tips.on_remote();
     remote.fetch_missing(&on_remote)?;
-    attribution::require_attributed(git, checkout, &on_remote, &target.commit)?;
+    attribution::require_attributed(git, checkout, &tips.every_branch(), &target.commit)?;
     let changed = push_range::changed_ci_paths(&remote, &tips, &target.commit)?;
     Ok(changed.into_iter().map(str::to_owned).collect())
 }

@@ -1119,10 +1119,41 @@ async fn an_agents_signed_commit_is_refused_naming_it() {
         "{reason}"
     );
     assert!(
-        !reason.contains("trailer"),
+        !reason.contains("no `Agent:"),
         "the commit is attributed: {reason}"
     );
     assert_eq!(fixture.remote_tip("feature"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_refusal_rewrites_from_before_the_oldest_refused_commit() {
+    let fixture = on_a_new_feature_branch().await;
+    let oldest = fixture.commit_file_unattributed("README", "first\n");
+    fixture.commit_file("NOTES", "attributed\n");
+    fixture.commit_file_unattributed("TODO", "last\n");
+
+    let reason = refusal(fixture.push_as_agent(Force::Never).await);
+
+    assert!(
+        reason.contains(&format!("--trailer \"$TORLEK_COMMIT_TRAILER\"' {oldest}^`")),
+        "{reason}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn commits_another_remote_branch_holds_need_no_trailer() {
+    let fixture = on_a_new_feature_branch().await;
+    let stacked_on = fixture.someone_else_commits("base", "README", "the owner's\n");
+    git(
+        &fixture.root,
+        &["fetch", "--quiet", fixture.remote.to_str().unwrap(), "base"],
+    );
+    git(&fixture.root, &["reset", "--quiet", "--hard", &stacked_on]);
+    let commit = fixture.commit_file("NOTES", "the agent's\n");
+
+    fixture.push_as_agent(Force::Never).await.unwrap();
+
+    assert_eq!(fixture.remote_tip("feature"), Some(commit));
 }
 
 #[tokio::test(flavor = "multi_thread")]

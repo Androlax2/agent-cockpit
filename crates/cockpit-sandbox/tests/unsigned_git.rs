@@ -152,6 +152,26 @@ fn a_sandboxed_agents_commit_is_unsigned_though_its_checkout_signs() {
 }
 
 #[test]
+fn an_unsandboxed_agents_commit_is_unsigned_though_git_c_asks_to_sign() {
+    let repository = SigningRepository::new();
+    let mut request = launch_request("s1", repository.root.to_str().unwrap());
+    request.environment.push((
+        "GIT_CONFIG_PARAMETERS".into(),
+        "'commit.gpgsign'='true'".into(),
+    ));
+    let prepared = Sandbox::new(Platform::Linux, no_host_paths(), missing_backend())
+        .prepare(
+            AgentSandbox::Off,
+            &request,
+            PathBuf::from("/usr/bin/claude"),
+            Vec::new(),
+        )
+        .unwrap();
+
+    assert!(!is_signed(&repository.commit(&prepared.environment)));
+}
+
+#[test]
 fn an_unsandboxed_launch_keeps_the_owners_command_scope_git_settings() {
     let mut request = launch_request("s1", "/home/owner/app");
     request.environment.extend([
