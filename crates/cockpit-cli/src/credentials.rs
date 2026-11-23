@@ -131,7 +131,7 @@ fn print_view(credential: &CredentialView, hint: &str) -> ExitCode {
 
 /// The secret, from a prompt that does not echo it on a terminal, else from standard input:
 /// never an argument, which would sit in the shell's history and every process listing.
-fn read_secret(what: &str) -> Result<SecretText, String> {
+pub(crate) fn read_secret(what: &str) -> Result<SecretText, String> {
     let stdin = std::io::stdin();
     let text = if stdin.is_terminal() {
         crate::terminal::read_hidden_line(&stdin, &format!("{what} (not shown): "))

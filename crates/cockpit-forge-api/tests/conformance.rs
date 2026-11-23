@@ -5,9 +5,10 @@ mod common;
 use cockpit_forge_api::conformance::{Recorded, check};
 use cockpit_forge_api::fake::FakeForge;
 use cockpit_forge_api::{
-    Access, Capabilities, Capability, ChangeId, ChangeState, Created, Declaration, Forge,
-    ForgeError, ForgeName, Issue, IssueFilter, IssueId, IssueState, ListLimit, NewChangeRequest,
-    NewIssue, Posted, Provenance, ReviewDecision, ScopeCheck, TokenKind,
+    Access, BranchRules, Capabilities, Capability, ChangeId, ChangeState, Created, Declaration,
+    DefaultBranch, Forge, ForgeError, ForgeName, Issue, IssueFilter, IssueId, IssueState,
+    ListLimit, NewChangeRequest, NewIssue, Posted, ProtectOutcome, Protected, ProtectionPolicy,
+    Provenance, ReviewDecision, ScopeCheck, TokenKind,
 };
 use common::{branch, change, commit, passed_checks, thread};
 
@@ -88,6 +89,18 @@ fn recorded(forge: &FakeForge) -> Recorded {
         },
     ));
     recorded.check_token = Some((TokenKind::Api, ScopeCheck::Verified));
+    recorded.default_branch_protection = Some(DefaultBranch {
+        branch: branch("main"),
+        rules: BranchRules::default(),
+        has_unread_protection: false,
+    });
+    recorded.protect_default_branch = Some((
+        ProtectionPolicy::new(vec!["ci".to_owned()]).unwrap(),
+        Protected {
+            branch: branch("main"),
+            outcome: ProtectOutcome::Created,
+        },
+    ));
     recorded
 }
 
@@ -297,6 +310,18 @@ impl Forge for Broken {
 
     fn check_token(&self, access: &Access<'_>, kind: TokenKind) -> Result<ScopeCheck, ForgeError> {
         self.fake.check_token(access, kind)
+    }
+
+    fn default_branch_protection(&self, access: &Access<'_>) -> Result<DefaultBranch, ForgeError> {
+        self.fake.default_branch_protection(access)
+    }
+
+    fn protect_default_branch(
+        &self,
+        access: &Access<'_>,
+        policy: &ProtectionPolicy,
+    ) -> Result<Protected, ForgeError> {
+        self.fake.protect_default_branch(access, policy)
     }
 }
 

@@ -41,6 +41,9 @@ pub(crate) struct Context {
     /// Whether approved runs are confined, and the supervisor that starts them (#1387).
     pub(crate) run_settings: Arc<cockpit_approvals::RunSettings>,
     pub(crate) processes: cockpit_processes::Supervisor,
+    /// What a read of a project's forge goes through: its origin and the adapters (#695).
+    pub(crate) git: cockpit_projects::Git,
+    pub(crate) forge_adapters: Arc<crate::forges::Adapters>,
 }
 
 impl Context {
@@ -272,6 +275,23 @@ async fn report(
         Some(checkout) => Some(push_facts(&context.database, &checkout.project).await),
         None => None,
     };
+    // An unregistered directory has no forge Torlek reads; the `project` line says so.
+    let protection = match &checkout {
+        Some(checkout) => Some(
+            crate::protection::requirement(
+                crate::protection::Context {
+                    database: Arc::clone(&context.database),
+                    git: context.git.clone(),
+                    environment: context.environment.clone(),
+                    adapters: Arc::clone(&context.forge_adapters),
+                },
+                checkout.project.clone(),
+                &checkout.project_root,
+            )
+            .await,
+        ),
+        None => None,
+    };
     // Only sandboxed sessions launch with a compose project name and port block (#1371).
     let compose = if is_sandboxed {
         let reading = dir.clone();
@@ -296,11 +316,9 @@ async fn report(
         compose,
         push,
     };
-    Ok(with_daemon_lines(
-        cockpit_readiness::assess(&host, &config, Some(&project)),
-        &context,
-        daemon_lines,
-    ))
+    let mut report = cockpit_readiness::assess(&host, &config, Some(&project));
+    report.requirements.extend(protection);
+    Ok(with_daemon_lines(report, &context, daemon_lines))
 }
 
 /// The largest compose file readiness reads.

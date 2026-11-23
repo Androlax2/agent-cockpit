@@ -5,8 +5,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    CheckoutKindView, CheckoutView, Command, GithubTokenView, KeptReason, ProjectView, Reply,
-    TrustView,
+    CheckoutKindView, CheckoutView, Command, GithubTokenView, KeptReason, ProjectView,
+    ProtectOutcomeView, Reply, TrustView,
 };
 
 use crate::daemon::{
@@ -79,6 +79,67 @@ pub fn parse(verb: &str, arguments: &[OsString]) -> Result<(Command, Duration), 
         }
         _ => Err(format!("unknown {verb} arguments")),
     }
+}
+
+/// The longest protect may take: a read of the branch, the rulesets and one write, each a
+/// forge call of 30 s at most.
+const PROTECT_DEADLINE: Duration = Duration::from_secs(5 * 30 + 30);
+
+/// `project protect PROJECT --check NAME [--check NAME]...` (#695): asks for a token that may
+/// change the repository's settings on a prompt that does not echo it, or reads it from
+/// standard input, and has the daemon protect the default branch with it once. The token is
+/// never stored (Theo, 2026-11-23).
+pub fn protect(arguments: &[OsString]) -> Result<ExitCode, String> {
+    let words = utf8_words(arguments)?;
+    let Some((project, flags)) = words.split_first() else {
+        return Err("name one project".to_owned());
+    };
+    if project.starts_with("--") {
+        return Err("name the project first".to_owned());
+    }
+    let mut required_checks = Vec::new();
+    for pair in flags.chunks(2) {
+        match pair {
+            ["--check", check] if !check.starts_with("--") => {
+                required_checks.push((*check).to_owned());
+            }
+            ["--check", ..] => return Err("--check needs a check's name".to_owned()),
+            [flag, ..] => return Err(format!("{flag}: only --check NAME follows the project")),
+            [] => unreachable!("chunks are never empty"),
+        }
+    }
+    if required_checks.is_empty() {
+        return Err(format!(
+            "name each check CI must pass on the default branch: \
+             `torlek project protect {project} --check NAME`"
+        ));
+    }
+    let token = crate::credentials::read_secret(&format!(
+        "a token that may change {project}'s repository settings, used once and never stored"
+    ))?;
+    let command = Command::ProjectProtect {
+        project: (*project).to_owned(),
+        required_checks,
+        token,
+    };
+    Ok(match request(command, PROTECT_DEADLINE) {
+        Ok(Reply::ProjectProtected {
+            project,
+            branch,
+            outcome,
+        }) => {
+            let done = match outcome {
+                ProtectOutcomeView::Created => "protected: Torlek's rule was created",
+                ProtectOutcomeView::Updated => "protected: Torlek's rule was updated",
+                ProtectOutcomeView::Unchanged => "already protected: nothing was changed",
+            };
+            outln!("{project} {branch}: {done}");
+            outln!("revoke the token now: Torlek did not keep it");
+            ExitCode::SUCCESS
+        }
+        Ok(other) => unexpected(&other),
+        Err(code) => code,
+    })
 }
 
 /// `project show PROJECT`: the project's root and whether it has a GitHub token its

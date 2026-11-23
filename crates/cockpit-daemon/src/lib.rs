@@ -33,6 +33,7 @@ mod merged;
 mod network;
 mod output_retention;
 mod projects;
+mod protection;
 mod quota_resume;
 mod readiness;
 mod resources;
@@ -563,6 +564,9 @@ impl Instance {
             ),
             run_settings: Arc::clone(&run_settings),
             processes: processes.clone(),
+            // Its reports read no project, so no forge: its adapters are never made.
+            git: wiring.git.clone(),
+            forge_adapters: Arc::default(),
         };
         // The launchers' decisions name each project's engine (#390).
         let network_containers = detected_readiness.containers.clone();

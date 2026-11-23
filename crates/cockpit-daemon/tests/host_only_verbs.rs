@@ -184,6 +184,14 @@ fn owner_only_groups() -> Vec<(&'static str, Command)> {
         ),
         ("logs level (routes.rs:662)", Command::LogsLevelStatus),
         ("config-reload (routes.rs:676)", Command::ConfigReload),
+        (
+            "project-protect (routes.rs, #695)",
+            Command::ProjectProtect {
+                project: "redteam".to_owned(),
+                required_checks: vec!["ci".to_owned()],
+                token: cockpit_protocol::SecretText::new("redteam-token".to_owned()),
+            },
+        ),
     ]
 }
 

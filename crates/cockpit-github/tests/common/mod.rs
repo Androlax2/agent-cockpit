@@ -102,6 +102,35 @@ impl FakeGh {
         self.answer(arguments, 0, &read_fixture(fixture), "")
     }
 
+    /// Answers the three calls of a protection read of `owner/project`, whose default branch
+    /// is `main`: its rules with `rules_fixture`, and its `protected` mark with
+    /// `protected_fixture`.
+    pub fn answer_protection_read(
+        &mut self,
+        rules_fixture: &str,
+        protected_fixture: &str,
+    ) -> &mut FakeGh {
+        self.answer_with(
+            &["api", "repos/owner/project", "--jq=.default_branch"],
+            "api-default-branch.stdout",
+        )
+        .answer_with(
+            &[
+                "api",
+                "repos/owner/project/rules/branches/main?per_page=100",
+            ],
+            rules_fixture,
+        )
+        .answer_with(
+            &[
+                "api",
+                "repos/owner/project/branches/main",
+                "--jq=.protected",
+            ],
+            protected_fixture,
+        )
+    }
+
     /// Fails with a fixture's text on standard error, as `gh` does.
     pub fn fail_with(&mut self, arguments: &[&str], fixture: &str) -> &mut FakeGh {
         self.answer(arguments, 1, "", &read_fixture(fixture))

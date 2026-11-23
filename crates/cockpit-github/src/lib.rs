@@ -1,18 +1,21 @@
 //! The GitHub adapter of the forge contract: issues as a task source, pull requests as
-//! verification evidence, and a scope check of the project's two tokens, through the `gh`
-//! program. The hosts and credential schemes it declares are #857's.
+//! verification evidence, a scope check of the project's two tokens and the default branch's
+//! protection, through the `gh` program. The hosts and credential schemes it declares are
+//! #857's.
 
 mod answers;
 mod gh;
+mod protection;
 mod scope;
 
 use std::path::PathBuf;
 
 use cockpit_forge_api::{
     Access, BranchName, Capabilities, Capability, ChangeId, ChangeRequest, Checks, Created,
-    CredentialScheme, CredentialUse, Declaration, Forge, ForgeError, ForgeHost, ForgeName, HostUse,
-    Issue, IssueFilter, IssueId, IssueState, IssueThread, NewChangeRequest, NewIssue, Posted,
-    Provenance, Repository, ReviewDecision, ScopeCheck, TokenKind,
+    CredentialScheme, CredentialUse, Declaration, DefaultBranch, Forge, ForgeError, ForgeHost,
+    ForgeName, HostUse, Issue, IssueFilter, IssueId, IssueState, IssueThread, NewChangeRequest,
+    NewIssue, Posted, ProtectOutcome, Protected, ProtectionPolicy, Provenance, Repository,
+    ReviewDecision, ScopeCheck, TokenKind,
 };
 
 use crate::gh::{CALL_DEADLINE, Gh};
@@ -34,8 +37,8 @@ const TESTED_GH_VERSIONS: &[&str] = &[];
 /// Longest `gh --version` may take.
 const VERSION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The capabilities this adapter serves; branch protection waits for #695.
-const SERVED: [Capability; 9] = [
+/// The capabilities this adapter serves.
+const SERVED: [Capability; 11] = [
     Capability::IssueList,
     Capability::IssueRead,
     Capability::IssueCreate,
@@ -45,6 +48,8 @@ const SERVED: [Capability; 9] = [
     Capability::ChangeReview,
     Capability::ChangeOpen,
     Capability::TokenScope,
+    Capability::ProtectionRead,
+    Capability::ProtectionBootstrap,
 ];
 
 /// Pull requests a head-branch lookup reads to find the newest one from the repository
@@ -468,6 +473,66 @@ impl Forge for GitHub {
         };
         Ok(scope::judge(access.token, kind, reach))
     }
+
+    fn default_branch_protection(&self, access: &Access<'_>) -> Result<DefaultBranch, ForgeError> {
+        self.require(Capability::ProtectionRead)?;
+        let repository = repository_argument(access.repository)?;
+        self.read_protection(access, &repository)
+    }
+
+    fn protect_default_branch(
+        &self,
+        access: &Access<'_>,
+        policy: &ProtectionPolicy,
+    ) -> Result<Protected, ForgeError> {
+        self.require(Capability::ProtectionBootstrap)?;
+        let repository = repository_argument(access.repository)?;
+        let current = self.read_protection(access, &repository)?;
+        if current.rules.gaps_for(policy).is_empty() {
+            return Ok(Protected {
+                branch: current.branch,
+                outcome: ProtectOutcome::Unchanged,
+            });
+        }
+        let listed = self.call(
+            access,
+            vec![
+                "api".to_owned(),
+                format!(
+                    "repos/{repository}/rulesets?includes_parents=false&per_page={}",
+                    protection::PAGE
+                ),
+            ],
+            None,
+            "the repository's rulesets",
+        )?;
+        let own = protection::own_ruleset(&answers::parse(&listed)?)?;
+        let (method, path, outcome) = match own {
+            Some(id) => (
+                "PUT",
+                format!("repos/{repository}/rulesets/{id}"),
+                ProtectOutcome::Updated,
+            ),
+            None => (
+                "POST",
+                format!("repos/{repository}/rulesets"),
+                ProtectOutcome::Created,
+            ),
+        };
+        let arguments = vec![
+            "api".to_owned(),
+            format!("--method={method}"),
+            path,
+            "--input=-".to_owned(),
+        ];
+        let body = protection::ruleset_body(policy);
+        let written = self.call(access, arguments, Some(&body), "the repository's rulesets")?;
+        protection::check_written(&answers::parse(&written)?, own)?;
+        Ok(Protected {
+            branch: current.branch,
+            outcome,
+        })
+    }
 }
 
 impl GitHub {
@@ -500,6 +565,56 @@ impl GitHub {
             }),
             None => Err(not_an_issue(number)),
         }
+    }
+
+    /// The default branch, the rules its rulesets apply, and whether GitHub marks it protected,
+    /// which classic branch protection does too: its rules take administration to read.
+    fn read_protection(
+        &self,
+        access: &Access<'_>,
+        repository: &str,
+    ) -> Result<DefaultBranch, ForgeError> {
+        let named = self.call(
+            access,
+            vec![
+                "api".to_owned(),
+                format!("repos/{repository}"),
+                "--jq=.default_branch".to_owned(),
+            ],
+            None,
+            "the repository",
+        )?;
+        let branch = protection::default_branch(&named)?;
+        let segment = protection::path_segment(&branch);
+        let what = format!("branch {branch}");
+        let listed = self.call(
+            access,
+            vec![
+                "api".to_owned(),
+                format!(
+                    "repos/{repository}/rules/branches/{segment}?per_page={}",
+                    protection::PAGE
+                ),
+            ],
+            None,
+            &what,
+        )?;
+        let rules = protection::rules(&answers::parse(&listed)?)?;
+        let marked = self.call(
+            access,
+            vec![
+                "api".to_owned(),
+                format!("repos/{repository}/branches/{segment}"),
+                "--jq=.protected".to_owned(),
+            ],
+            None,
+            &what,
+        )?;
+        Ok(DefaultBranch {
+            branch,
+            rules,
+            has_unread_protection: protection::is_protected(&marked)?,
+        })
     }
 
     fn view_pull(

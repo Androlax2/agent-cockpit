@@ -18,9 +18,10 @@
 use std::fmt;
 
 use crate::{
-    Access, BranchName, Capabilities, Capability, ChangeId, ChangeRequest, Checks, Created, Forge,
-    ForgeError, Issue, IssueFilter, IssueId, IssueThread, ListLimit, NewChangeRequest, NewIssue,
-    Posted, Provenance, Repository, ReviewDecision, ScopeCheck, Token, TokenKind, resolve,
+    Access, BranchName, Capabilities, Capability, ChangeId, ChangeRequest, Checks, Created,
+    DefaultBranch, Forge, ForgeError, Issue, IssueFilter, IssueId, IssueThread, ListLimit,
+    NewChangeRequest, NewIssue, Posted, Protected, ProtectionPolicy, Provenance, Repository,
+    ReviewDecision, ScopeCheck, Token, TokenKind, resolve,
 };
 
 /// What the recorded answers hold, in the contract's words. Leave out what was not recorded.
@@ -48,6 +49,10 @@ pub struct Recorded {
     pub open_change_request: Option<(NewChangeRequest, Created<ChangeId>)>,
     /// [`Capability::TokenScope`].
     pub check_token: Option<(TokenKind, ScopeCheck)>,
+    /// [`Capability::ProtectionRead`].
+    pub default_branch_protection: Option<DefaultBranch>,
+    /// [`Capability::ProtectionBootstrap`]: a policy and what protecting with it did.
+    pub protect_default_branch: Option<(ProtectionPolicy, Protected)>,
 }
 
 impl Recorded {
@@ -65,11 +70,13 @@ impl Recorded {
             change_review: None,
             open_change_request: None,
             check_token: None,
+            default_branch_protection: None,
+            protect_default_branch: None,
         }
     }
 
-    fn has_answer(&self, capability: Capability) -> Option<bool> {
-        Some(match capability {
+    fn has_answer(&self, capability: Capability) -> bool {
+        match capability {
             Capability::IssueList => self.list_issues.is_some(),
             Capability::IssueRead => self.read_issue.is_some(),
             Capability::IssueCreate => self.create_issue.is_some(),
@@ -79,9 +86,9 @@ impl Recorded {
             Capability::ChangeReview => self.change_review.is_some(),
             Capability::ChangeOpen => self.open_change_request.is_some(),
             Capability::TokenScope => self.check_token.is_some(),
-            // No contract method yet (#695): nothing to record or call.
-            Capability::ProtectionRead | Capability::ProtectionBootstrap => return None,
-        })
+            Capability::ProtectionRead => self.default_branch_protection.is_some(),
+            Capability::ProtectionBootstrap => self.protect_default_branch.is_some(),
+        }
     }
 }
 
@@ -110,9 +117,7 @@ pub fn check(forge: &dyn Forge, recorded: &Recorded) -> Vec<Violation> {
     };
     let mut unreported = Vec::new();
     for capability in Capability::ALL {
-        let Some(has_answer) = recorded.has_answer(capability) else {
-            continue;
-        };
+        let has_answer = recorded.has_answer(capability);
         match capabilities.provenance(capability) {
             None => {
                 if has_answer {
@@ -310,6 +315,16 @@ impl Suite {
             let answer = self.answer("check_token", forge.check_token(access, *kind));
             self.expect("check_token", answer, scope);
         }
+        if let Some(protection) = self.recorded(
+            Capability::ProtectionRead,
+            &recorded.default_branch_protection,
+        ) {
+            let answer = self.answer(
+                "default_branch_protection",
+                forge.default_branch_protection(access),
+            );
+            self.expect("default_branch_protection", answer, protection);
+        }
     }
 
     fn check_writes(&mut self, forge: &dyn Forge, access: &Access<'_>, recorded: &Recorded) {
@@ -333,6 +348,16 @@ impl Suite {
                 forge.open_change_request(access, request),
             );
             self.expect("open_change_request", answer, created);
+        }
+        if let Some((policy, protected)) = self.recorded(
+            Capability::ProtectionBootstrap,
+            &recorded.protect_default_branch,
+        ) {
+            let answer = self.answer(
+                "protect_default_branch",
+                forge.protect_default_branch(access, policy),
+            );
+            self.expect("protect_default_branch", answer, protected);
         }
     }
 }
@@ -408,6 +433,17 @@ fn call_with_placeholders(
             "check_token",
             forge.check_token(access, TokenKind::Api).map(drop),
         )],
-        Capability::ProtectionRead | Capability::ProtectionBootstrap => Vec::new(),
+        Capability::ProtectionRead => vec![(
+            "default_branch_protection",
+            forge.default_branch_protection(access).map(drop),
+        )],
+        Capability::ProtectionBootstrap => {
+            let policy = ProtectionPolicy::new(vec!["conformance".to_owned()])
+                .expect("a placeholder policy");
+            vec![(
+                "protect_default_branch",
+                forge.protect_default_branch(access, &policy).map(drop),
+            )]
+        }
     }
 }

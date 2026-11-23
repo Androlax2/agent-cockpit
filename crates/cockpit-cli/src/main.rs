@@ -92,6 +92,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek project token set|show|clear PROJECT [--api]
        torlek project push-branch add|remove PROJECT PATTERN
        torlek project push-branch list PROJECT
+       torlek project protect PROJECT --check NAME [--check NAME]...
        torlek project remove PROJECT
        torlek checkout list [PROJECT]
        torlek checkout clone PROJECT BRANCH
@@ -277,6 +278,8 @@ fn main() -> ExitCode {
             Err(problem) => verb_usage_error(&verb_name, problem),
         },
         [Some("project"), Some("token")] => credentials::project_token(&arguments[2..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
+        [Some("project"), Some("protect"), ..] => projects::protect(&arguments[2..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("project"), Some("show"), ..] => projects::show(&arguments[2..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),

@@ -33,6 +33,22 @@ impl Reader<'_> {
         read: impl FnOnce(&dyn Forge, &Access<'_>) -> Result<T, ForgeError>,
     ) -> Result<T, Failed> {
         let token = api_token(self.environment, project, what)?;
+        self.reach(project, root, what, &token, read)?
+            .map_err(|error| forge_failed(project, what, again, &error))
+    }
+
+    /// Runs `call` with `token` on the forge `project`'s checkout at `root` names as
+    /// `origin`, and hands back the forge's own answer for the caller to word; a project that
+    /// names no forge is refused here, `what` naming what the call was for. Blocking: it asks
+    /// Git for the origin and runs the forge's program.
+    pub(crate) fn reach<T>(
+        &self,
+        project: &str,
+        root: &Path,
+        what: &str,
+        token: &Token,
+        call: impl FnOnce(&dyn Forge, &Access<'_>) -> Result<T, ForgeError>,
+    ) -> Result<Result<T, ForgeError>, Failed> {
         let origin = self
             .git
             .origin_url(root)
@@ -57,9 +73,9 @@ impl Reader<'_> {
                 })?;
                 let access = Access {
                     repository: &repository,
-                    token: &token,
+                    token,
                 };
-                read(forge, &access).map_err(|error| forge_failed(project, what, again, &error))
+                Ok(call(forge, &access))
             })
             .map_err(|error| internal(&error))?
     }

@@ -263,6 +263,17 @@ An agent's push that changes `.github/workflows` or `.gitlab-ci.yml` from what t
 Every commit an agent's push sends that the remote lacks must carry an `Agent: <provider> via Torlek <session>` trailer, which each launch hands the agent in `TORLEK_COMMIT_TRAILER` (its form is checked, not which session it names), and no signature: agents' Git runs with signing off, whatever your or the repository's configuration says. A push with a commit that does not is refused naming the commit; your own pushes are not checked.
 Each agent push is audited; `torlek session grants SESSION` lists them as `pushed`.
 
+### Protecting the default branch
+
+`torlek doctor --project DIR` reads the default branch's rules with the project's API token and shows them on its `protection` line (#695). The branch counts as protected when every change goes through a pull request with a check passing, and force pushes and deletion are refused. Otherwise the line names each gap and the command that closes it:
+
+```sh
+torlek project protect PROJECT --check NAME   # --check once for each check CI must pass
+```
+
+Neither project token may change a repository's settings, so `protect` asks for a token that may (a fine-grained token with administration write on this repository alone) on a prompt that does not echo it, or reads it from standard input. The daemon uses it for this one call and stores it nowhere; revoke it afterwards.
+`protect` sets up one GitHub ruleset named `torlek-default-branch` on the default branch: a pull request with no approval required, the named checks, no force push, no deletion, and no one allowed to bypass it. When the branch already meets that, nothing is written; a second run says `already protected`. A forge Torlek cannot protect through is refused, naming its own settings as the place to do it.
+
 ### A project's container engine
 
 Sandboxed sessions never reach your own Docker engine. Under `agents.sandbox = "required"`, a project that runs in Docker gets its own: rootless Docker under a system user named after the project's id (`torlek-e3`), shared by its clones (#390).
