@@ -68,9 +68,9 @@ pub(crate) fn requirements(
     requirements
 }
 
-/// Whether `torlek checkout push` may push the project's checkouts: only to a host whose grant
-/// carries the owner's push right, none until the owner binds one (the owner's decision of
-/// 2026-11-22). Not blocking: sessions work without a push.
+/// Whether `torlek checkout push`, and an agent's `torlek push` (#155), may push the project's
+/// checkouts: only to a host whose grant carries the owner's push right, none until the owner
+/// binds one (the owner's decision of 2026-11-22). Not blocking: sessions work without a push.
 fn push(project: &str, facts: &Result<PushFacts, String>) -> Requirement {
     let name = "push";
     let facts = match facts {
@@ -88,7 +88,8 @@ fn push(project: &str, facts: &Result<PushFacts, String>) -> Requirement {
         return Requirement::available(
             name,
             format!(
-                "`torlek checkout push` may push to an https origin on {}",
+                "`torlek checkout push` and an agent's `torlek push` may push to an https origin \
+                 on {}",
                 listed(&facts.bound)
             ),
         );
@@ -110,7 +111,8 @@ fn push(project: &str, facts: &Result<PushFacts, String>) -> Requirement {
     Requirement::needs(
         name,
         Status::NeedsAuthorization,
-        "no host carries the push right: `torlek checkout push` is refused until you bind one",
+        "no host carries the push right: `torlek checkout push` and `torlek push` are refused \
+         until you bind one",
         next,
     )
 }
