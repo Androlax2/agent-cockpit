@@ -34,6 +34,7 @@ on:
       - crates/cockpit-claude/tested-versions.txt
       - crates/cockpit-codex/tested-versions.txt
       - crates/cockpit-opencode/tested-versions.txt
+      - crates/cockpit-qwen/tested-versions.txt
       - packaging/aur/ci-install.sh
       - packaging/aur/render.py
       - packaging/aur/torlek-bin/PKGBUILD.in
@@ -203,13 +204,13 @@ jobs:
         run: |
           target_flags=()
           for target in ${TARGETS//,/ }; do target_flags+=(--target "$target"); done
-          cargo build --release --locked "${target_flags[@]}" -p cockpit-cli -p cockpit-daemon -p cockpit-tui -p cockpit-notify -p cockpit-claude -p cockpit-codex -p cockpit-opencode -p cockpit-sandbox-launcher
+          cargo build --release --locked "${target_flags[@]}" -p cockpit-cli -p cockpit-daemon -p cockpit-tui -p cockpit-notify -p cockpit-claude -p cockpit-codex -p cockpit-opencode -p cockpit-qwen -p cockpit-sandbox-launcher
       - name: Gather the binaries
         env:
           TARGETS: ${{ matrix.targets }}
         run: |
           mkdir binaries
-          for binary in torlek torlek-daemon torlek-tui torlek-notify torlek-claude-hook torlek-codex-hook torlek-codex-session torlek-opencode-bridge torlek-sandbox; do
+          for binary in torlek torlek-daemon torlek-tui torlek-notify torlek-claude-hook torlek-codex-hook torlek-codex-session torlek-opencode-bridge torlek-qwen-hook torlek-sandbox; do
             if [ "$RUNNER_OS" = macOS ]; then
               lipo -create -output "binaries/$binary" \
                 "target/aarch64-apple-darwin/release/$binary" \

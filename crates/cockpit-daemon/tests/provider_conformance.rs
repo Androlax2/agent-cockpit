@@ -10,6 +10,7 @@ use cockpit_provider_api::{
     Action, Availability, Capability, ConversationId, Delivered, DeliveryTarget, Provenance,
     Provider, ProviderError, SessionSockets,
 };
+use cockpit_qwen::QwenCode;
 
 fn claude() -> ClaudeCode {
     ClaudeCode::new(
@@ -29,6 +30,18 @@ fn codex() -> Codex {
         Some(cockpit_codex::Bridge {
             session_program: "/unused/cockpit-codex-session".into(),
             hook_program: "/unused/cockpit-codex-hook".into(),
+            cockpit_program: "/unused/cockpit".into(),
+        }),
+    )
+}
+
+fn qwen() -> QwenCode {
+    QwenCode::new(
+        "/unused/qwen".into(),
+        None,
+        Some(cockpit_qwen::Bridge {
+            defaults_file: "/unused/system-defaults.json".into(),
+            hook_program: "/unused/torlek-qwen-hook".into(),
             cockpit_program: "/unused/cockpit".into(),
         }),
     )
@@ -64,7 +77,7 @@ fn an_unknown_version_never_reports_tested_capabilities() {
             cockpit_program: "/unused/cockpit".into(),
         }),
     );
-    let providers: [&dyn Provider; 3] = [&claude(), &codex(), &opencode];
+    let providers: [&dyn Provider; 4] = [&claude(), &codex(), &opencode, &qwen()];
 
     for provider in providers {
         let capabilities = provider.capabilities();
@@ -92,7 +105,7 @@ fn an_unknown_version_never_reports_tested_capabilities() {
 
 #[test]
 fn providers_without_commands_refuse_discovery() {
-    let providers: [&dyn Provider; 2] = [&claude(), &codex()];
+    let providers: [&dyn Provider; 3] = [&claude(), &codex(), &qwen()];
 
     for provider in providers {
         assert_eq!(
@@ -106,7 +119,7 @@ fn providers_without_commands_refuse_discovery() {
 
 #[test]
 fn providers_without_commands_refuse_invocation() {
-    let providers: [&dyn Provider; 2] = [&claude(), &codex()];
+    let providers: [&dyn Provider; 3] = [&claude(), &codex(), &qwen()];
     let conversation = ConversationId::new("conversation-1").unwrap();
 
     for provider in providers {
@@ -146,10 +159,11 @@ fn the_shipped_adapters_sandbox_declarations_are_accepted_together() {
             cockpit_program: "/unused/cockpit".into(),
         }),
     );
-    let providers: [std::sync::Arc<dyn Provider>; 3] = [
+    let providers: [std::sync::Arc<dyn Provider>; 4] = [
         std::sync::Arc::new(claude()),
         std::sync::Arc::new(codex()),
         std::sync::Arc::new(opencode),
+        std::sync::Arc::new(qwen()),
     ];
 
     assert_eq!(cockpit_sessions::refused_declarations(&providers), []);

@@ -43,6 +43,7 @@ pub(super) struct AccountsTable {
     claude: Option<Spanned<Vec<String>>>,
     codex: Option<Spanned<Vec<String>>>,
     opencode: Option<Spanned<Vec<String>>>,
+    qwen: Option<Spanned<Vec<String>>>,
 }
 
 pub(super) fn settings(layers: &[Layer]) -> Result<AccountSettings, ConfigError> {
@@ -56,6 +57,7 @@ pub(super) fn settings(layers: &[Layer]) -> Result<AccountSettings, ConfigError>
             ("claude", &table.claude),
             ("codex", &table.codex),
             ("opencode", &table.opencode),
+            ("qwen", &table.qwen),
         ] {
             let Some(list) = list else {
                 continue;

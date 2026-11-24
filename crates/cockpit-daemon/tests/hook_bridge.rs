@@ -1,6 +1,7 @@
 //! Issue #203 through the real daemon binary and the real `cockpit`: the daemon runs each
 //! adapter's bridge installed beside it at its start (the Claude hook, the Codex hook and
-//! session launcher (#411), the OpenCode bridge with the plugin it writes (#415)), and
+//! session launcher (#411), the OpenCode bridge with the plugin it writes (#415), the Qwen Code
+//! hook with the defaults file it writes (#1446)), and
 //! `cockpit provider list` says whether each provider reports its agents' activity, which
 //! the release's clean-install check (`tools/release.py verify-install`) reads.
 
@@ -10,11 +11,12 @@ mod real_daemon;
 use real_daemon::{Home, cockpit_program};
 
 /// The bridge programs the release ships beside the daemon.
-const BRIDGE_PROGRAMS: [&str; 4] = [
+const BRIDGE_PROGRAMS: [&str; 5] = [
     "torlek-claude-hook",
     "torlek-codex-hook",
     "torlek-codex-session",
     "torlek-opencode-bridge",
+    "torlek-qwen-hook",
 ];
 
 #[tokio::test(flavor = "multi_thread")]
@@ -38,7 +40,7 @@ async fn provider_list_shows_each_provider_reports_events_through_the_bridges_be
     );
     assert_eq!(
         String::from_utf8_lossy(&listed.stdout),
-        "claude\tresume\tevents\ncodex\tresume\tevents\nopencode\tresume\tevents\n"
+        "claude\tresume\tevents\ncodex\tresume\tevents\nopencode\tresume\tevents\nqwen\tresume\tevents\n"
     );
 }
 
@@ -54,5 +56,21 @@ async fn the_opencode_plugin_the_daemon_writes_is_this_releases() {
     assert_eq!(
         std::fs::read_to_string(&plugin).unwrap(),
         cockpit_opencode::PLUGIN_SOURCE
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_qwen_defaults_the_daemon_writes_run_the_hook_beside_it() {
+    let home = Home::new();
+    let _daemon = home.start();
+
+    let defaults = home.state_dir().join("qwen-defaults/system-defaults.json");
+
+    assert_eq!(
+        std::fs::read_to_string(&defaults).unwrap(),
+        cockpit_qwen::defaults_settings(
+            &cockpit_program().with_file_name("torlek-qwen-hook"),
+            &cockpit_program(),
+        )
     );
 }

@@ -90,7 +90,7 @@ async fn probe(provider: &str, variable: &str, version: &str) {
     )
     .unwrap();
     // All discovered programs are fixtures. No fallback to an owner's provider on PATH.
-    for name in ["claude", "codex", "opencode"] {
+    for name in ["claude", "codex", "opencode", "qwen"] {
         let wrapper = home.path().join("bin").join(name);
         let body = if name == provider {
             format!(

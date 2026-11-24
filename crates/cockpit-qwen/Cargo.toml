@@ -1,0 +1,21 @@
+[package]
+name = "cockpit-qwen"
+description = "The Qwen Code provider adapter: its launch words, capabilities, terminal actions and the in-sandbox hook bridge."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "torlek-qwen-hook"
+path = "src/bin/cockpit-qwen-hook.rs"
+
+[dependencies]
+cockpit-provider-api = { path = "../cockpit-provider-api" }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

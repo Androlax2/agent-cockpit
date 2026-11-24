@@ -86,7 +86,7 @@ impl TestHome {
         std::fs::write(&fake, FAKE_GIT).unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         // Provider discovery must not run the host's launchers, which may invoke Git too.
-        for provider in ["claude", "codex", "opencode"] {
+        for provider in ["claude", "codex", "opencode", "qwen"] {
             let program = home.home().join("bin").join(provider);
             std::fs::write(&program, "#!/bin/sh\nexit 127\n").unwrap();
             std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();

@@ -161,7 +161,9 @@ fn a_clean_home_declares_the_provider_owned_start_files() {
             "settings",
             "plugins",
             "opencode config",
-            "codex hooks"
+            "codex hooks",
+            "QWEN.md",
+            "qwen settings"
         ]
     );
 }
@@ -433,7 +435,7 @@ fn invalid_configuration_fails_loud_with_its_location() {
         ),
         (
             &start_file("label = \"x\"\npath = \"/x\"\nproviders = [\"claud\"]"),
-            "config.toml:2: `start_files` entry names unknown provider \"claud\"; known: claude, codex, opencode",
+            "config.toml:2: `start_files` entry names unknown provider \"claud\"; known: claude, codex, opencode, qwen",
         ),
         (
             &start_file("label = \"x\"\npath = \"x\"\nproviders = [\"claude\"]"),

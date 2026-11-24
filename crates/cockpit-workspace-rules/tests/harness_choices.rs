@@ -6,7 +6,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const ADAPTERS: [&str; 3] = ["cockpit-claude", "cockpit-codex", "cockpit-opencode"];
+const ADAPTERS: [&str; 4] = [
+    "cockpit-claude",
+    "cockpit-codex",
+    "cockpit-opencode",
+    "cockpit-qwen",
+];
 
 /// Quoted words a closed list of effort levels or models is made of.
 const CHOICE_WORDS: [&str; 14] = [

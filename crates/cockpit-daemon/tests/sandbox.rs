@@ -537,6 +537,7 @@ fn providers_credential_files() -> Vec<&'static str> {
         .iter()
         .chain(&cockpit_codex::needs::CREDENTIAL_FILES)
         .chain(&cockpit_opencode::needs::CREDENTIAL_FILES)
+        .chain(&cockpit_qwen::needs::CREDENTIAL_FILES)
         .map(|path| path.strip_prefix("~/").expect("a path in the home"))
         .collect()
 }
@@ -582,6 +583,11 @@ async fn a_sandboxed_agent_gets_no_providers_credential_variable() {
             cockpit_opencode::needs::CREDENTIAL_BINDINGS
                 .iter()
                 .map(|(variable, _, _)| *variable),
+        )
+        .chain(
+            cockpit_qwen::needs::credential_bindings()
+                .into_iter()
+                .map(|(variable, _, _)| variable),
         )
         .map(|variable| (variable, "owner-key"))
         .collect();
