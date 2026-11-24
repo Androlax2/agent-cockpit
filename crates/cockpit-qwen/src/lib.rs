@@ -22,8 +22,7 @@ use cockpit_provider_api::{
 };
 
 /// The Qwen Code versions the adapter's conformance tests pass against (`tested-versions.txt`,
-/// #732). Empty until the owner runs the live conformance test (#1446), so every capability
-/// is `discovered` or `probed`.
+/// #732): 0.28.4, on which the owner's live conformance test passed (#1446).
 pub const TESTED_VERSIONS: &str = include_str!("../tested-versions.txt");
 
 /// The Qwen Code version the fixtures and the launch words were read from: tag `v0.28.4`,

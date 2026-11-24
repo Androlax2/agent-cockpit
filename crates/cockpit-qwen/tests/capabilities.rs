@@ -1,5 +1,5 @@
-//! What the adapter reports, and how it knows: nothing is tested until the live conformance
-//! test passes on a version (#1446).
+//! What the adapter reports, and how it knows: `tested` on the version the live conformance test
+//! passed on (#1446), `probed` or `discovered` on any other.
 
 mod common;
 
@@ -9,6 +9,17 @@ use cockpit_provider_api::{
     Availability, Capability, Missing, Probe, Provenance, Provider, SignInStatus,
 };
 use cockpit_qwen::{CONFORMANCE_VERSION, QwenCode};
+
+/// A version not on the tested list, so the probe decides what is reported.
+const UNTESTED_VERSION: &str = "0.28.5";
+
+fn qwen_on_untested_version() -> QwenCode {
+    QwenCode::new(
+        PathBuf::from("/usr/bin/qwen"),
+        Some(UNTESTED_VERSION.to_owned()),
+        Some(common::bridge()),
+    )
+}
 
 const REPORTED: [Capability; 7] = [
     Capability::Resume,
@@ -21,13 +32,15 @@ const REPORTED: [Capability; 7] = [
 ];
 
 #[test]
-fn on_the_mapped_version_each_capability_is_discovered() {
+fn on_the_tested_version_each_capability_is_tested() {
     let capabilities = common::qwen().capabilities();
 
     for capability in REPORTED {
         assert_eq!(
             capabilities.provenance(capability),
-            Some(&Provenance::Discovered),
+            Some(&Provenance::Tested {
+                version: CONFORMANCE_VERSION.to_owned()
+            }),
             "{capability:?}"
         );
     }
@@ -35,15 +48,15 @@ fn on_the_mapped_version_each_capability_is_discovered() {
 
 #[test]
 fn a_clean_probe_makes_each_capability_probed() {
-    let capabilities = common::qwen()
-        .with_probe(Probe::new(CONFORMANCE_VERSION, Vec::new()))
+    let capabilities = qwen_on_untested_version()
+        .with_probe(Probe::new(UNTESTED_VERSION, Vec::new()))
         .capabilities();
 
     for capability in REPORTED {
         assert_eq!(
             capabilities.provenance(capability),
             Some(&Provenance::Probed {
-                version: CONFORMANCE_VERSION.to_owned()
+                version: UNTESTED_VERSION.to_owned()
             }),
             "{capability:?}"
         );
@@ -56,8 +69,8 @@ fn a_probe_missing_a_launch_flag_withholds_every_capability() {
         requirement: "flag --session-id in `qwen --help`".to_owned(),
         blocks: Capability::ALL.to_vec(),
     };
-    let capabilities = common::qwen()
-        .with_probe(Probe::new(CONFORMANCE_VERSION, vec![missing]))
+    let capabilities = qwen_on_untested_version()
+        .with_probe(Probe::new(UNTESTED_VERSION, vec![missing]))
         .capabilities();
 
     for capability in REPORTED {
@@ -121,12 +134,11 @@ fn the_adapter_names_itself_qwen_with_its_running_version() {
 }
 
 #[test]
-fn the_tested_versions_file_lists_no_version_yet() {
-    assert_eq!(
-        Provenance::for_version(Some(CONFORMANCE_VERSION), cockpit_qwen::TESTED_VERSIONS),
-        Provenance::Discovered
-    );
-    assert!(cockpit_provider_api::parse_tested_versions(cockpit_qwen::TESTED_VERSIONS).is_err());
+fn the_tested_versions_file_lists_the_conformance_version() {
+    let versions =
+        cockpit_provider_api::parse_tested_versions(cockpit_qwen::TESTED_VERSIONS).unwrap();
+
+    assert!(versions.contains(&CONFORMANCE_VERSION), "{versions:?}");
 }
 
 /// #1446 Q3: Qwen Code has no command that reports its sign-in.

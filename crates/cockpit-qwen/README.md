@@ -9,9 +9,8 @@ from Qwen Code's own source and documentation at **0.28.4** (tag `v0.28.4`, comm
 
 ## Supported version
 
-Qwen Code **0.28.4**. `tested-versions.txt` lists no version yet (owner's decision on #1446):
-every capability is `discovered` until the live conformance test passes on 0.28.4 and the
-version is added. On another version the daemon runs the probe (each launch flag in
+Qwen Code **0.28.4**. `tested-versions.txt` lists it (#1446): the live conformance test passed on 0.28.4, so
+its capabilities are `tested`. On another version the daemon runs the probe (each launch flag in
 `qwen --help`); a clean probe makes the capabilities `probed`.
 
 ## Rules

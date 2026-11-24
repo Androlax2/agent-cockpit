@@ -358,7 +358,7 @@ The following table describes the adapters in this checkout, not a promise that 
 | `claude` (Claude Code) | Resume, events/outcomes, submit/cancel, effort, compact, remote control, screen fallback | [2.1.316 adapter and fixture evidence](../crates/cockpit-claude/README.md) |
 | `codex` (Codex) | Resume, events/outcomes, submit/cancel through a private app-server, model, effort | [0.161.0 capability pin](../crates/cockpit-codex/README.md); local sign-in has a separate 0.166.0 conformance pin |
 | `opencode` (OpenCode) | Resume, events/outcomes, submit/cancel, native commands | [1.19.5 adapter and fixture evidence](../crates/cockpit-opencode/README.md); sign-in remains discovered/unverified |
-| `qwen` (Qwen Code) | Resume, events/outcomes, submit/cancel, model, compact | [0.28.4 adapter, fixtures and what does not work yet](../crates/cockpit-qwen/README.md); no version tested yet, so every capability is discovered or probed; sign-in is always unknown |
+| `qwen` (Qwen Code) | Resume, events/outcomes, submit/cancel, model, compact | [0.28.4 adapter, fixtures and what does not work yet](../crates/cockpit-qwen/README.md); 0.28.4 is tested, any other version is probed or discovered; sign-in is always unknown |
 
 Adapters label a capability `tested` only at their exact capability pin; other or unknown versions are `discovered` (unverified).
 Fixture tests and help/flag checks do not establish a live signed-in end-to-end conversation.
