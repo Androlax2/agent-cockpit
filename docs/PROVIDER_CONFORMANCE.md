@@ -53,10 +53,10 @@ Tested versions (each adapter's `tested-versions.txt`, #732): **Claude Code 2.1.
 **Codex 0.166.0**, **OpenCode 1.19.5**. These are the versions the adapters report
 `Tested` on, not a claim that every row was measured natively on each of them.
 
-Qwen Code (#1446) lists no version yet: its adapter is built from 0.28.4's source and fake
-programs, and its capabilities stay `discovered` (or `probed`) until the owner runs its ignored
-live test on 0.28.4 ([command](../crates/cockpit-qwen/README.md#tests)). The nightly check does
-not install it yet, and the table below does not cover it.
+Qwen Code (#1446) lists **0.28.4**: its adapter is built from that version's source and fake
+programs, and the owner's ignored live test passed on it
+([command](../crates/cockpit-qwen/README.md#tests)); on any other version its capabilities are
+`probed` or `discovered`. The nightly check does not install it yet, and the table below does not cover it.
 
 | Area | Claude Code | Codex | OpenCode |
 | --- | --- | --- | --- |

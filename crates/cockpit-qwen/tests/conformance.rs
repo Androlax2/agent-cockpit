@@ -1,6 +1,6 @@
 //! Conformance against an installed Qwen Code. Ignored by default: CI has no Qwen Code, and no
-//! test may run the owner's. The owner runs it on the version to list in
-//! `tested-versions.txt` (#1446); none needs an account:
+//! test may run the owner's. The owner runs it on a version before it is
+//! added to `tested-versions.txt` (#1446); none needs an account:
 //!
 //! ```text
 //! COCKPIT_QWEN_PROGRAM="$(command -v qwen)" \
