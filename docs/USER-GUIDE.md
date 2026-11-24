@@ -176,7 +176,7 @@ A command line Torlek cannot resolve (`sudo $CMD`, `sudo "$(which foo)"`, `curl 
 Neither blocks the request: the flag warns, you decide.
 The limits: words resolve through the daemon's `PATH`, not sudo's `secure_path`; a program the session puts earlier on that `PATH` later is not watched; files a script runs or sources in turn are not followed; and a file changed between the last hash and the moment it runs is not caught.
 
-Every command, with or without `sudo`, pins the files it runs as code that the asking session can edit (#1387): a program named by its path (`./build.sh`), a script handed to a shell or interpreter (`sh ./build.sh`, `bash -c './x.sh'`, `python3 x.py`, `. ./env.sh`), and the makefile or justfile `make` or `just` reads, through `cd`.
+Every command, with or without `sudo`, pins the files it runs as code that the asking session can edit (#1387): a program named by its path (`./build.sh`), a script handed to a shell or interpreter (`sh ./build.sh`, `bash -c './x.sh'`, `python3 x.py`, `. ./env.sh`), and the build file `make` or `just` reads (the makefile, or each `-f` file it names; the justfile), through `cd`. These files are pinned even when the shell, interpreter, `make` or `just` that reads them is missing from the daemon's `PATH` (#1448).
 A program found by searching `PATH` (`cargo`, `node`) is not pinned, unless sudo runs it.
 Each is hashed when the request is filed; press `m` to read each pinned file's SHA-256 and first 200 lines as they are now.
 Your approval names each pinned file as your view read it, and a pinned file that changed since the agent asked, or between your approval and the run, refuses the run with the same "changed since it was asked" or "changed after you approved"; the agent must ask again.
