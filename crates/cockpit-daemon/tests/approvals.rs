@@ -1069,6 +1069,73 @@ async fn a_pinned_script_that_changed_since_the_ask_refuses_the_run() {
     );
 }
 
+/// A request to run `sh ./x.sh`, pinned, with its request digest and the approval digest that
+/// binds `x.sh` as asked (#1450).
+struct PinnedAsk {
+    asking: Asking,
+    asked: RunRequestView,
+    script_hash: String,
+    request_digest: String,
+    approval_digest: String,
+}
+
+async fn pinned_ask() -> PinnedAsk {
+    let asking = started(true).await;
+    let script = asking.cwd.path().join("x.sh");
+    std::fs::write(&script, "echo build\n").unwrap();
+    let asked = asking.asked("sh ./x.sh").await;
+    let request_digest =
+        cockpit_approvals::action_digest(std::path::Path::new(&asking.cwd_text()), "sh ./x.sh");
+    let script_hash = cockpit_approvals::file_sha256(&script).unwrap().unwrap();
+    let approval_digest = cockpit_approvals::digest_as_read(
+        &request_digest,
+        &[cockpit_approvals::Contents::Hash(script_hash.clone())],
+    );
+    PinnedAsk {
+        asking,
+        asked,
+        script_hash,
+        request_digest,
+        approval_digest,
+    }
+}
+
+/// #1450: the digest the owner approves binds the request digest to each pinned file's hash as
+/// read now, and the request digest travels beside it.
+#[tokio::test]
+async fn an_asking_pinned_request_shows_its_approval_digest_beside_its_request_digest() {
+    let pinned = pinned_ask().await;
+
+    let shown = shown_to_owner(&pinned.asking, pinned.asked.id).await;
+
+    assert_eq!(
+        pinned.asked.digest, pinned.request_digest,
+        "the agent's answer"
+    );
+    assert_eq!(shown.digest, pinned.approval_digest);
+    assert_eq!(shown.request_digest, Some(pinned.request_digest));
+}
+
+/// #1450: once the approved run finished, the view shows the request digest alone, and the
+/// pinned file keeps the hash the approval bound.
+#[tokio::test]
+async fn a_pinned_request_that_ran_shows_its_request_digest() {
+    let pinned = pinned_ask().await;
+    let before = shown_to_owner(&pinned.asking, pinned.asked.id).await;
+    run(pinned.asking.approve(&before).await);
+    let ended = pinned.asking.ended(pinned.asked.id).await;
+    assert_eq!(ended.state, RunStateView::Finished, "{ended:?}");
+
+    let after = shown_to_owner(&pinned.asking, pinned.asked.id).await;
+
+    assert_eq!(after.digest, pinned.request_digest);
+    assert_eq!(after.request_digest, None);
+    assert_eq!(
+        after.pinned.unwrap()[0].sha256.as_deref(),
+        Some(pinned.script_hash.as_str())
+    );
+}
+
 #[tokio::test]
 async fn an_approval_must_name_the_files_sudo_runs_as_the_owner_read_them() {
     let asking = started(true).await;

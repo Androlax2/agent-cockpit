@@ -180,6 +180,7 @@ Every command, with or without `sudo`, pins the files it runs as code that the a
 A program found by searching `PATH` (`cargo`, `node`) is not pinned, unless sudo runs it.
 Each is hashed when the request is filed; press `m` to read each pinned file's SHA-256 and first 200 lines as they are now.
 Your approval names each pinned file as your view read it, and a pinned file that changed since the agent asked, or between your approval and the run, refuses the run with the same "changed since it was asked" or "changed after you approved"; the agent must ask again.
+So while such a request asks, `approval show` prints two digests: the `approval digest` that `approve` names, which binds the pinned files as read now, and the `request digest` of its directory, command, folders and hosts alone. Once decided it prints only the `request digest`; the pinned files keep their recorded SHA-256 (#1450).
 Pinning reads what the sudo check reads, with the same limits; a command line it cannot resolve is the scan's "can't tell what runs", and so is a file it should pin but cannot read as a regular file, or pinning that does not end in 10 seconds.
 
 To stop being asked for a command you approve often, approve it always: `a` in the TUI pane, or `torlek approval approve ID --revision REVISION --digest DIGEST --always` (#1387).

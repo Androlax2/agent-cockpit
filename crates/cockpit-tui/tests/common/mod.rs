@@ -97,6 +97,7 @@ pub fn run(id: i64, session: &str, command: &str) -> RunRequestView {
         unchecked_shell: None,
         changed_build_files: None,
         digest: format!("digest-{id}-1"),
+        request_digest: None,
         asked_at: 1,
         expires_at: 1000,
         waiting_for_input: false,

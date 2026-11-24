@@ -133,6 +133,7 @@ fn request(state: RunStateView) -> RunRequestView {
         unchecked_shell: None,
         changed_build_files: Some(Vec::new()),
         digest: "d".repeat(64),
+        request_digest: None,
         asked_at: 1,
         expires_at: 901,
         waiting_for_input: false,
@@ -622,6 +623,72 @@ async fn shown_to_owner(request: RunRequestView) -> String {
     let output = home.cockpit_as_owner(&["approval", "show", "7"], "").await;
     assert!(output.status.success(), "{}", text(&output.stderr));
     text(&output.stdout)
+}
+
+/// #1450: while a request that runs pinned files asks, the digest approve names binds them as
+/// read now; the request's own digest beside it is the one shown once decided.
+#[tokio::test]
+async fn an_asking_request_names_its_approval_digest_apart_from_its_request_digest() {
+    let shown = shown_to_owner(RunRequestView {
+        digest: "a".repeat(64),
+        request_digest: Some("r".repeat(64)),
+        ..request(RunStateView::Asking)
+    })
+    .await;
+
+    assert!(
+        shown.contains(&format!(
+            "approval digest: {} (approve names it: the request digest bound to the files it \
+             runs, as read now)\nrequest digest: {} (directory, command, folders and hosts; \
+             shown once decided)\n",
+            "a".repeat(64),
+            "r".repeat(64)
+        )),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(&format!("--digest {}", "a".repeat(64))),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn a_decided_request_that_ran_pinned_files_names_its_digest_the_request_digest() {
+    let shown = shown_to_owner(RunRequestView {
+        digest: "r".repeat(64),
+        pinned: Some(vec![RootFileView {
+            path: "/p/x.sh".to_owned(),
+            shown_path: shown("./x.sh"),
+            sha256: Some("e".repeat(64)),
+            now: None,
+        }]),
+        ..request(RunStateView::Finished)
+    })
+    .await;
+
+    assert!(
+        shown.contains(&format!(
+            "request digest: {} (directory, command, folders and hosts, without the files it \
+             runs)\n",
+            "r".repeat(64)
+        )),
+        "{shown}"
+    );
+    assert!(!shown.contains("approval digest:"), "{shown}");
+}
+
+#[tokio::test]
+async fn a_decided_request_without_pinned_files_shows_its_one_digest() {
+    let shown = shown_to_owner(RunRequestView {
+        digest: "r".repeat(64),
+        ..request(RunStateView::Declined)
+    })
+    .await;
+
+    assert!(
+        shown.contains(&format!("\ndigest: {}\n", "r".repeat(64))),
+        "{shown}"
+    );
 }
 
 /// #657: an owner auditing a request reads who decided it, when and through which client.
