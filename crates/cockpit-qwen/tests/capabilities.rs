@@ -14,6 +14,11 @@ use cockpit_qwen::{CONFORMANCE_VERSION, QwenCode};
 const UNTESTED_VERSION: &str = "0.28.5";
 
 fn qwen_on_untested_version() -> QwenCode {
+    assert_eq!(
+        Provenance::for_version(Some(UNTESTED_VERSION), cockpit_qwen::TESTED_VERSIONS),
+        Provenance::Discovered,
+        "{UNTESTED_VERSION} was listed as tested; pick another untested version"
+    );
     QwenCode::new(
         PathBuf::from("/usr/bin/qwen"),
         Some(UNTESTED_VERSION.to_owned()),
