@@ -119,7 +119,9 @@ fn a_program_path_that_is_not_utf8_is_refused() {
     use std::os::unix::ffi::OsStrExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let named = dir.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    let named = dir
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"programs-\xff"));
     std::fs::create_dir(&named).unwrap();
     let mut bridge = installed_bridge(&named);
     bridge.defaults_file = dir.path().join("system-defaults.json");
