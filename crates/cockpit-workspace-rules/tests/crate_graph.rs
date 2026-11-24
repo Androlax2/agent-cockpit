@@ -56,12 +56,18 @@ struct AllowList {
 const DAEMON: &str = "cockpit-daemon";
 /// Clients that are not frontends; the frontends' allow-lists are stricter.
 const CLIENTS: &[&str] = &["cockpit-client", "cockpit-notify"];
-const PROVIDER_ADAPTERS: &[&str] = &["cockpit-claude", "cockpit-codex", "cockpit-opencode"];
+const PROVIDER_ADAPTERS: &[&str] = &[
+    "cockpit-claude",
+    "cockpit-codex",
+    "cockpit-opencode",
+    "cockpit-qwen",
+];
 const PROVIDERS: &[&str] = &[
     "cockpit-provider-api",
     "cockpit-claude",
     "cockpit-codex",
     "cockpit-opencode",
+    "cockpit-qwen",
 ];
 const USER_INTERFACES: &[&str] = &["cockpit-cli", "cockpit-tui", "cockpit-web"];
 /// Crates named by report 02's current table; `every_rule_names_a_crate_from_report_02`
@@ -708,6 +714,16 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-sessions",
         ),
         (
+            "provider adapters -> provider-api only",
+            "cockpit-qwen",
+            "cockpit-sessions",
+        ),
+        (
+            "sessions -> provider adapters",
+            "cockpit-sessions",
+            "cockpit-qwen",
+        ),
+        (
             "capabilities -> provider adapters",
             "cockpit-tasks",
             "cockpit-opencode",
@@ -866,6 +882,8 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-codex", "cockpit-provider-api"),
         ("cockpit-daemon", "cockpit-opencode"),
         ("cockpit-opencode", "cockpit-provider-api"),
+        ("cockpit-daemon", "cockpit-qwen"),
+        ("cockpit-qwen", "cockpit-provider-api"),
         ("cockpit-messaging", "cockpit-turso"),
         ("cockpit-bug-reports", "cockpit-turso"),
         ("cockpit-usage", "cockpit-provider-api"),

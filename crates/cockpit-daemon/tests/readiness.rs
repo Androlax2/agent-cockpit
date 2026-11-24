@@ -189,6 +189,26 @@ async fn a_host_with_its_programs_reports_them_available_and_exits_0() {
     assert!(next.is_some(), "{report}");
 }
 
+/// #1446: doctor lists Qwen Code, whose sign-in it cannot read, with the owner's next step.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_lists_qwen_code_with_its_sign_in_unknown() {
+    let home = Home::new();
+    let _daemon = home.start();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    let (line, _) = requirement(&report, "provider qwen");
+    assert_eq!(status(line), "available", "{report}");
+    let (sign_in, next) = requirement(&report, "provider qwen sign-in");
+    assert_eq!(status(sign_in), "unknown", "{report}");
+    assert_eq!(
+        next,
+        Some("start qwen and run /auth, or set the provider key"),
+        "{report}"
+    );
+}
+
 /// #1419: a launch loads Torlek's skills as a plugin, so a Claude Code version without
 /// `--plugin-dir` would refuse every launch; its probe names the flag in the provider's line.
 #[tokio::test(flavor = "multi_thread")]

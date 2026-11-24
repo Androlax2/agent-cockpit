@@ -615,7 +615,7 @@ async fn a_start_naming_no_wired_agent_is_refused_before_it_is_filed_or_counted(
         assert!(refused.ends_with("exit=1\n"), "{refused}");
         assert!(refused.contains(refusal), "{refused}");
         assert!(
-            refused.contains("available: claude, codex, opencode"),
+            refused.contains("available: claude, codex, opencode, qwen"),
             "{refused}"
         );
         let audit = audit_of(&owner, &coordinator.id).await;

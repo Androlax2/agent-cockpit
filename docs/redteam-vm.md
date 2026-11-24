@@ -77,10 +77,10 @@ python3 tools/release.py stamp "$version"
 cargo update --workspace
 TORLEK_SOURCE_REVISION=$revision cargo build --release --locked \
   -p cockpit-cli -p cockpit-daemon -p cockpit-tui -p cockpit-notify \
-  -p cockpit-claude -p cockpit-codex -p cockpit-opencode -p cockpit-sandbox-launcher
+  -p cockpit-claude -p cockpit-codex -p cockpit-opencode -p cockpit-qwen -p cockpit-sandbox-launcher
 mkdir binaries dist
 for binary in torlek torlek-daemon torlek-tui torlek-notify torlek-claude-hook \
-  torlek-codex-hook torlek-codex-session torlek-opencode-bridge torlek-sandbox; do
+  torlek-codex-hook torlek-codex-session torlek-opencode-bridge torlek-qwen-hook torlek-sandbox; do
   cp "target/release/$binary" binaries/
 done
 python3 tools/release.py package --version "$version" --channel dev \

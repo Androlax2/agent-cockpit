@@ -18,6 +18,9 @@ use crate::{
 /// The folder under the state directory the OpenCode plugin is written to at every start;
 /// agents read it, so it holds nothing else.
 const OPENCODE_PLUGIN_DIR: &str = "opencode-plugin";
+/// The folder under the state directory Qwen Code's system-defaults file is written to at
+/// every start (#1446); agents read it, so it holds nothing else.
+const QWEN_DEFAULTS_DIR: &str = "qwen-defaults";
 
 /// How often the product's sessions pass (exits, idle sleep, expiry) runs.
 pub const SESSION_TICK: Duration = Duration::from_secs(30);
@@ -43,7 +46,7 @@ pub struct Serve {
     pub foreground: bool,
     /// The installation's directory: `cockpit` and the adapters' bridge programs
     /// (`cockpit-claude-hook`, `cockpit-codex-hook`, `cockpit-codex-session`,
-    /// `cockpit-opencode-bridge`) beside the daemon.
+    /// `cockpit-opencode-bridge`, `torlek-qwen-hook`) beside the daemon.
     pub programs_dir: PathBuf,
     /// [`SESSION_TICK`] in the product.
     pub session_tick: Duration,
@@ -134,6 +137,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     let start_files = config.declared_start_files();
     // Discovery runs programs and may block for seconds, so it comes before the runtime.
     let plugin_dir = instance.options().state_dir.join(OPENCODE_PLUGIN_DIR);
+    let qwen_defaults_dir = instance.options().state_dir.join(QWEN_DEFAULTS_DIR);
     // Both written at the daemon's start, before any launch (#419).
     let bundle_dir = crate::agent_context::bundle_dir(&instance.options().state_dir);
     let claude_plugin_root =
@@ -162,9 +166,14 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         }
         Err(reason) => unavailable_providers.push(("opencode".to_owned(), reason)),
     }
+    match qwen(&serve.programs_dir, &qwen_defaults_dir) {
+        Ok(qwen) => providers.push(Arc::new(qwen)),
+        Err(reason) => unavailable_providers.push(("qwen".to_owned(), reason)),
+    }
     // The plugin folder exists only once OpenCode was found and its plugin written: a missing
     // path handed to the sandbox would fail every launch, OpenCode or not.
     let opencode_plugin_dir = plugin_dir.is_dir().then_some(plugin_dir);
+    let qwen_defaults_dir = qwen_defaults_dir.is_dir().then_some(qwen_defaults_dir);
     let sandbox = sandbox(
         &instance,
         &environment,
@@ -172,6 +181,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         &[
             Some(serve.programs_dir.clone()),
             opencode_plugin_dir,
+            qwen_defaults_dir,
             // `$TORLEK_INSTRUCTIONS`, which the launch brief points agents at and OpenCode
             // lists as skills, and its copy in the plugin Claude Code loads (#419).
             Some(bundle_dir),
@@ -514,6 +524,81 @@ fn write_opencode_plugin(dir: &Path) -> Result<PathBuf, String> {
         .and_then(|()| std::fs::rename(&partial, &plugin))
         .map_err(|error| format!("cannot write its plugin to {}: {error}", plugin.display()))?;
     Ok(plugin)
+}
+
+/// The Qwen Code adapter for the `qwen` on the daemon's `PATH`, with its system-defaults file
+/// written to `defaults_dir` and the hook bridge and `cockpit` programs installed in
+/// `programs_dir` (#1446). Why not, logged, when there is none or it does not answer its
+/// version: the readiness report names it (#50).
+fn qwen(
+    programs_dir: &Path,
+    defaults_dir: &Path,
+) -> Result<cockpit_qwen::QwenCode, ProviderUnusable> {
+    let unavailable = |reason: String| {
+        tracing::warn!("provider qwen unavailable: {reason}");
+        ProviderUnusable::Refused { reason }
+    };
+    let Some(program) =
+        std::env::var_os("PATH").and_then(|path| cockpit_qwen::QwenCode::find_on_path(&path))
+    else {
+        tracing::warn!("provider qwen unavailable: no `qwen` on PATH");
+        return Err(ProviderUnusable::NotOnPath);
+    };
+    let hook_program = programs_dir.join("torlek-qwen-hook");
+    let cockpit_program = programs_dir.join("torlek");
+    // Without its bridge the adapter subscribes no hooks and reports neither events nor
+    // outcomes.
+    let bridge = write_qwen_defaults(defaults_dir, &hook_program, &cockpit_program).and_then(
+        |defaults_file| {
+            let bridge = cockpit_qwen::Bridge {
+                defaults_file,
+                hook_program,
+                cockpit_program,
+            };
+            bridge.check().map(|()| bridge)
+        },
+    );
+    let bridge = match bridge {
+        Ok(bridge) => Some(bridge),
+        Err(reason) => {
+            tracing::warn!("provider qwen: {reason}, so its activity is not reported");
+            None
+        }
+    };
+    let qwen = cockpit_qwen::QwenCode::discover(&program, bridge)
+        .map_err(|error| unavailable(error.to_string()))?;
+    let qwen = match probe_untested(&qwen, &qwen.provenance(), &program, cockpit_qwen::probe) {
+        Some(found) => qwen.with_probe(found),
+        None => qwen,
+    };
+    log_ready(&qwen, &qwen.provenance());
+    Ok(qwen)
+}
+
+/// Writes this release's Qwen Code system-defaults file into `dir`, replacing it in one rename
+/// so a `qwen` starting meanwhile never reads half of it; its path, or why it could not be.
+fn write_qwen_defaults(
+    dir: &Path,
+    hook_program: &Path,
+    cockpit_program: &Path,
+) -> Result<PathBuf, String> {
+    let defaults = dir.join("system-defaults.json");
+    let partial = dir.join("system-defaults.json.partial");
+    std::fs::create_dir_all(dir)
+        .and_then(|()| {
+            std::fs::write(
+                &partial,
+                cockpit_qwen::defaults_settings(hook_program, cockpit_program),
+            )
+        })
+        .and_then(|()| std::fs::rename(&partial, &defaults))
+        .map_err(|error| {
+            format!(
+                "cannot write its defaults file to {}: {error}",
+                defaults.display()
+            )
+        })?;
+    Ok(defaults)
 }
 
 /// The runtime probe of `provider`'s version when it is not on the adapter's tested list

@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 /// Provider names a start file may list. The adapter crates (report 02) become the source of
 /// this list once they exist; until then a typo fails here instead of never matching.
-pub const KNOWN_PROVIDERS: [&str; 3] = ["claude", "codex", "opencode"];
+pub const KNOWN_PROVIDERS: [&str; 4] = ["claude", "codex", "opencode", "qwen"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartFile {
@@ -28,7 +28,7 @@ impl StartFile {
 
 /// Provider-owned files every user of that provider has. Sandbox launchers, learned profiles
 /// and personal hooks are installation-specific: owners declare them in their config.
-pub(crate) const DEFAULT_START_FILES: [(&str, &str, &[&str]); 5] = [
+pub(crate) const DEFAULT_START_FILES: [(&str, &str, &[&str]); 6] = [
     ("CLAUDE.md", ".claude/CLAUDE.md", &["claude", "opencode"]),
     ("settings", ".claude/settings.json", &["claude"]),
     (
@@ -42,6 +42,7 @@ pub(crate) const DEFAULT_START_FILES: [(&str, &str, &[&str]); 5] = [
         &["opencode"],
     ),
     ("codex hooks", ".codex/hooks.json", &["codex"]),
+    ("QWEN.md", ".qwen/QWEN.md", &["qwen"]),
 ];
 
 /// A file's identity and content markers. `changed_at` (ctime) moves on every write, rename

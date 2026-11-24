@@ -554,6 +554,7 @@ dependencies = [
  "cockpit-projects",
  "cockpit-protocol",
  "cockpit-provider-api",
+ "cockpit-qwen",
  "cockpit-readiness",
  "cockpit-resource-admission",
  "cockpit-sandbox",
@@ -666,6 +667,15 @@ name = "cockpit-provider-api"
 version = "0.1.0"
 dependencies = [
  "cockpit-provider-api",
+ "tempfile",
+]
+
+[[package]]
+name = "cockpit-qwen"
+version = "0.1.0"
+dependencies = [
+ "cockpit-provider-api",
+ "serde_json",
  "tempfile",
 ]
 

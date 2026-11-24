@@ -71,6 +71,7 @@ HELPERS = (
     "torlek-codex-hook",
     "torlek-codex-session",
     "torlek-opencode-bridge",
+    "torlek-qwen-hook",
     "torlek-sandbox",
 )
 # Programs `torlek VERB` runs from its own directory: `torlek tui`, `torlek notify` (#62).
@@ -93,7 +94,8 @@ VERIFY_HOME_PARENT = "/tmp"
 # The providers verify-install puts first on the daemon's PATH: each answers only
 # `--version`, in the words its adapter reads. The version is on the adapter's
 # tested-versions.txt: the daemon probes any other one (#732), and a stand-in fails that
-# probe, so its provider would report neither resume nor events (#1100).
+# probe, so its provider would report neither resume nor events (#1100). Qwen Code has none
+# until its tested-versions.txt lists one (#1446), so its bridge is not checked here yet.
 STAND_IN_VERSIONS = {
     "claude": "2.1.316 (Claude Code)",
     "codex": "codex-cli 0.166.0",

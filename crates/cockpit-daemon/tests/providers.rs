@@ -1,6 +1,6 @@
 //! #33: the daemon binary wires the provider adapters it finds at start. Claude Code, Codex
-//! (#411) and OpenCode (#415) are looked up on the daemon's `PATH`; each one's version
-//! decides whether its capabilities count as tested.
+//! (#411), OpenCode (#415) and Qwen Code (#1446) are looked up on the daemon's `PATH`; each
+//! one's version decides whether its capabilities count as tested.
 
 mod candidate;
 mod common;
@@ -212,6 +212,41 @@ fn without_opencode_the_daemon_starts_and_says_so() {
 
     assert!(
         log.contains("provider opencode unavailable: no `opencode` on PATH"),
+        "{log}"
+    );
+}
+
+/// #1446: no Qwen Code version is tested yet, so the daemon probes the one it finds.
+#[test]
+fn qwen_on_the_path_documenting_its_launch_flags_is_wired_as_probed() {
+    let bin = tempfile::tempdir().unwrap();
+    fake_program(
+        bin.path(),
+        "qwen",
+        "if [ \"$1\" = --help ]; then echo '--session-id --resume --model --prompt-interactive'; \
+         else echo '0.28.4'; fi",
+    );
+    let home = home_with_path(bin.path());
+    let _daemon = home.start();
+
+    let log = home.log_once_it_contains("provider qwen ready");
+
+    assert!(
+        log.contains("provider qwen ready version=0.28.4 provenance=probed"),
+        "{log}"
+    );
+}
+
+#[test]
+fn without_qwen_the_daemon_starts_and_says_so() {
+    let empty = tempfile::tempdir().unwrap();
+    let home = home_with_path(empty.path());
+    let _daemon = home.start();
+
+    let log = home.log_once_it_contains("provider qwen");
+
+    assert!(
+        log.contains("provider qwen unavailable: no `qwen` on PATH"),
         "{log}"
     );
 }

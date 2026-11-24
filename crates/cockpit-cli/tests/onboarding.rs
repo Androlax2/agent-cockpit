@@ -773,7 +773,7 @@ async fn without_a_usable_provider_the_action_is_the_blocking_requirements() {
     daemon.requirements.push(requirement(
         "providers",
         ReadinessStatusView::MissingPrerequisite,
-        "install a supported agent (claude, codex, opencode) on the daemon's PATH",
+        "install a supported agent (claude, codex, opencode, qwen) on the daemon's PATH",
     ));
 
     let output = home.against(&daemon, &["init"]).await;

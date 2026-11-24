@@ -32,6 +32,7 @@ const PROGRAM_SUFFIXES: &[&str] = &[
     "codex-hook",
     "codex-session",
     "opencode-bridge",
+    "qwen-hook",
 ];
 
 /// Ends the name of the unit that imports the desktop session at login (#1236); a profile

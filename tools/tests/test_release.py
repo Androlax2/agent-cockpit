@@ -770,6 +770,7 @@ class PackageTests(PackagingTestCase):
                 "torlek-codex-hook": "0.1.0-alpha.7",
                 "torlek-codex-session": "0.1.0-alpha.7",
                 "torlek-opencode-bridge": "0.1.0-alpha.7",
+                "torlek-qwen-hook": "0.1.0-alpha.7",
                 "torlek-sandbox": "0.1.0-alpha.7",
             },
         )
@@ -1272,6 +1273,7 @@ class ReleaseTriggerTests(unittest.TestCase):
                 "crates/cockpit-claude/tested-versions.txt",
                 "crates/cockpit-codex/tested-versions.txt",
                 "crates/cockpit-opencode/tested-versions.txt",
+                "crates/cockpit-qwen/tested-versions.txt",
                 "packaging/aur/ci-install.sh",
                 "packaging/aur/render.py",
                 "packaging/aur/torlek-bin/PKGBUILD.in",

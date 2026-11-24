@@ -19,6 +19,16 @@ use std::time::{Duration, Instant};
 use cockpit_client::Connection;
 use cockpit_protocol::{CheckReceiptView, Command, Reply, SessionStateView, SessionView};
 
+/// The stand-in `qwen`: Qwen Code's conformance version, and each flag its adapter passes in
+/// `--help`, so the probe of a version on no tested list passes (#1446).
+const QWEN_STAND_IN: &str = "#!/bin/sh
+if [ \"$1\" = --help ]; then
+  printf '%s\\n' '  --session-id' '  --resume' '  --model' '  --prompt-interactive'
+  exit 0
+fi
+echo '0.28.4'
+";
+
 /// The profile directory of a daemon this test build runs without `--profile`: a build
 /// outside a release bundle runs profile `dev` (#196).
 pub const BUILD_PROFILE_DIR: &str = "torlek-dev";
@@ -233,9 +243,11 @@ impl Home {
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
         for (name, script) in [
             // Answering only `--version`, as the adapters' conformance versions, so a real
-            // `codex` or `opencode` on the host never answers (#411, #415).
+            // `codex`, `opencode` or `qwen` on the host never answers (#411, #415, #1446).
             ("codex", "#!/bin/sh\necho 'codex-cli 0.166.0'\n"),
             ("opencode", "#!/bin/sh\necho '1.19.5'\n"),
+            // Its version is on no tested list yet, so the daemon probes `--help` too.
+            ("qwen", QWEN_STAND_IN),
         ] {
             let program = home.path().join("bin").join(name);
             std::fs::write(&program, script).unwrap();
