@@ -663,7 +663,8 @@ impl Walk<'_, '_> {
             Some(path) if !program.text.contains('/') => self.found.searched_program(path),
             Some(path) => self.found.file(path),
             // Which program runs cannot be told, but the files it would read as code still
-            // are: a `make` missing from `PATH` must not hide its makefile (#1448).
+            // are: a `make` or shell missing from `PATH` must not hide its makefile or
+            // script (#1448).
             None => self.found.cannot_tell = true,
         }
         if is_shell(name) {

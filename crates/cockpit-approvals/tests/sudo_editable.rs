@@ -502,6 +502,34 @@ fn a_makefile_the_session_could_still_create_is_pinned_as_absent() {
     );
 }
 
+/// #1448: the red-team's guest had no `make`, and its Makefile went unpinned.
+#[test]
+fn a_program_missing_from_the_path_still_pins_the_files_it_would_run() {
+    let host = Host::new();
+    for program in ["make", "bash", "python3"] {
+        std::fs::remove_file(host.system.join(program)).unwrap();
+    }
+    for (command, pinned) in [
+        ("make -f build.mk all", vec!["build.mk"]),
+        ("bash ./x.sh", vec!["x.sh"]),
+        ("python3 x.py", vec!["x.py"]),
+    ] {
+        assert_eq!(host.pinned(command), pinned, "{command:?}");
+    }
+}
+
+#[test]
+fn a_sudo_program_missing_from_the_path_cannot_be_told_but_its_files_are_named() {
+    let host = Host::new();
+    std::fs::remove_file(host.system.join("make")).unwrap();
+
+    let runs = host.check("sudo make -f build.mk install");
+
+    assert!(runs.cannot_tell, "{runs:?}");
+    assert_eq!(runs.editable.len(), 1, "{runs:?}");
+    assert_eq!(runs.editable[0].path, host.session.join("build.mk"));
+}
+
 #[test]
 fn a_pinned_script_edited_after_the_ask_is_named_changed() {
     let host = Host::new();
