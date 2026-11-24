@@ -22,7 +22,7 @@ the three crates, for five reasons:
 2. **Every Torlek user would need a Docker account and a proprietary binary.** `sbx` refuses
    to run without a sign-in, which Docker's maintainers call "purely a business reason" with
    "no plans to change this". It publishes no source, sends telemetry unless turned off, and
-   is at version 0.54 with breaking changes in each of its last three documented releases.
+   is at version 0.54 with breaking changes in each of its last three releases (0.51.0, 0.53.0, 0.54.0).
 3. **The owner's sandbox decisions do not fit its model.** Its policy is per machine or per
    sandbox, never per project (#546 D4). A directly mounted checkout lets the agent write
    `.git/hooks` and `.git/config`. Its agents may push with an injected token (#857 says the
@@ -47,7 +47,7 @@ maintains today.
 - [ ] Q1: replace Torlek's sandbox with Docker Sandboxes? Recommended: A, no.
 - [ ] Q2: build a Docker Sandboxes backend beside ours on Linux now? Recommended: A, no.
 - [ ] Q3: when macOS is scheduled, prototype Docker Sandboxes as that platform's sandbox?
-  Recommended: A, yes, as a time-boxed prototype.
+  Recommended: A, yes, as a two-week prototype.
 
 ## Method and labels
 
@@ -84,14 +84,15 @@ All rows are *Docker's docs* unless marked.
 | Network egress | "All outbound TCP traffic from the sandbox routes through a proxy on your host": a forward proxy for HTTP and HTTPS, a transparent path for other TCP. UDP is off by default, ICMP always. Three machine-wide presets: Open (allow all), Balanced (deny by default with a broad baseline that includes `*.googleapis.com`, package managers, code hosts and cloud services), Locked Down (deny all) |
 | Allow-lists | Rules name hosts, wildcards, addresses or CIDR ranges, with ports, and optionally HTTP methods and paths. A rule is global or scoped to one sandbox. A deny wins over an allow |
 | Egress decided at run time | Under Balanced or Locked Down an unmatched request files an approval. "The request that triggered the approval doesn't wait for your answer. It's denied." The owner answers in the terminal dashboard or with `sbx policy approval respond`. An approval covers one destination and port for the sandbox that asked |
+| Egress weakness *reported* | Issue 261, open: a built-in agent's own allowed hosts stay reachable under a deny-all default; a maintainer calls it "either a bug, or at the very least, currently undefined behavior" |
 | Egress weakness Docker states | A denied host that shares an address with an allowed host is reachable in three cases: on connections the proxy does not decrypt, on later cleartext requests of one connection, and on a connection that names no host |
 | Credentials | Kept on the host in the OS keychain (a file on headless Linux). The forward proxy "overwrites the auth header"; the sandbox holds a sentinel. Built in for Anthropic, OpenAI, GitHub, Google and seven more; custom ones are experimental. Not protected: `-e` variables, a kit with `passthrough: true`, Kiro's login |
 | TLS | On the `forward` path the proxy terminates TLS with its own certificate, which the sandbox trusts; other paths are not decrypted. *Reported* (tracker issue 176): only hosts with an injected credential are decrypted, by a CA named "Docker Sandboxes Proxy CA". Containers the sandbox starts do not inherit that trust |
 | Host-side reach | Supported agents connect to an MCP gateway on the host, and "local stdio MCP servers run on the host, not inside the sandbox VM" |
-| SSH | "SSH agent forwarding is enabled by default. Private keys stay on the host, but any process inside the sandbox can ask the forwarded agent to authenticate or sign data." Turned off by a machine-wide setting |
+| SSH | "SSH agent forwarding is enabled by default. Private keys stay on the host, but any process inside the sandbox can ask the forwarded agent to authenticate or sign data." *Reported* (issue 121, open): it authenticated to a code host with no secret configured. Turned off by a machine-wide setting |
 | Docker in the sandbox | Each sandbox runs its own Docker Engine. "The agent has no path to your host Docker daemon." Images are shared neither with the host nor between sandboxes. The Docker disk is 10 GB per sandbox by default |
 | Agents | claude, codex, copilot, cursor, devin, docker-agent, droid, kiro, opencode and a plain shell. Gemini was retired in 0.53.0; there is no Qwen. Each starts with its permission prompts off (`claude --dangerously-skip-permissions`, `codex --dangerously-bypass-approvals-and-sandbox`): "The sandbox itself is the safety boundary." Another agent is packaged as a kit, an experimental feature |
-| Platforms | macOS 14 or later on Apple silicon; Windows 11 on x86-64; Ubuntu 24.04 or later on x86-64 or Arm with KVM. "Docker does not test or support Docker Sandboxes on Ubuntu derivatives." A Rocky Linux 8 package and a generic Linux archive are published without a support statement. *Reported*: the archive runs on Arch, Fedora and Debian 13. Inside another VM it needs nested virtualization (Docker's blog) |
+| Platforms | macOS 14 or later on Apple silicon; Windows 11 on x86-64; Ubuntu 24.04 or later on x86-64 or Arm with KVM. "Docker does not test or support Docker Sandboxes on Ubuntu derivatives." A Rocky Linux 8 package and a generic Linux archive are published without a support statement. *Reported* (issue 106): the archive runs on Arch and Debian 13. Docker's FAQ and release notes mention WSL2 setups without stating support. Inside another VM it needs nested virtualization (Docker's blog) |
 | Docker Desktop | Not needed: "You don't need Docker Desktop or Docker Engine to use `sbx`." It is the `sbx` command and a `sandboxd` daemon |
 | Licence and price | Proprietary: "Copyright © 2026 Docker Inc. All rights reserved." No source. Local use is free, "including for commercial and professional work". Organization policy, sign-in enforcement and audit logs belong to the paid AI Governance plan. Cloud sandboxes are billed by the hour |
 | Sign-in | Required. "Signing in gives each sandbox a verified identity." CI signs in with a personal access token. On the tracker Docker's maintainers say there are "no technical reasons for the login" and "no plans to change this" (issues 5 and 321) |
@@ -139,11 +140,11 @@ Torlek's column is the code at `09335ceb`: the crate READMEs of
 | #546 D3: bubblewrap required, Landlock and seccomp by Torlek | Replaced by the hypervisor |
 | #546 D4: "allow always" covers the project | No. Per sandbox or global; Torlek would keep the grant and replay it |
 | #546 D5: `landlock` and `seccompiler` pinned exactly, `unsafe_code = "deny"` | Replaced by a binary with no source to pin or review |
-| #856 Q1 to Q5: a project engine, bounded, egress through Torlek's proxy, no credential or CA in a container | Q1 to Q3 are met more strongly by a private engine per sandbox. Q4 changes owner: container traffic follows Docker's policy, not the project's grants. Q5 holds: no credential and no CA reaches a container |
+| #856 Q1 to Q5: a project engine, bounded, egress through Torlek's proxy, no credential or CA in a container | Q1 and Q2 are met more strongly by a private engine per sandbox; Q3 is the next row. Q4 changes owner: container traffic follows Docker's policy, not the project's grants. Q5 holds: no credential and no CA reaches a container |
 | #856 Q3: one engine per project, shared by its clones | No. One per sandbox, with its own image store |
 | #858 Q1: provider credentials bound at the proxy; a self-refreshing login only by a per-project grant | The first half holds. The grant has no equivalent: Docker's OAuth logins are global or per sandbox |
 | #858 Q2: an account changes only at a relaunch | Holds if Torlek sets the sandbox's secret before each launch |
-| #861 Q1, Q2: an unadapted program gets the floor and no host | Holds under Locked Down with a kit that adds no rule |
+| #861 Q1, Q2: an unadapted program gets the floor and no host | Holds under Locked Down with a kit that adds no rule, if the kit's own hosts can be removed (issue 261 reports that a built-in agent's cannot) |
 | #861 Q3: an adopted process is shown `UNSANDBOXED, adopted` | Unaffected |
 | #1158: red-team checks run inside the real sandbox as an agent session | The harness would need the same for a second backend |
 
@@ -156,7 +157,7 @@ what its documentation says would happen (*not tested*).
 | Alpha 8 check | Torlek's result | Docker Sandboxes, from its docs |
 | --- | --- | --- |
 | 1.1 to 1.3: read another home, `~/.ssh`, write another project | Not mounted | Not mounted either. But the owner's SSH agent is forwarded by default, so a process can authenticate and sign as the owner until a machine-wide setting turns it off |
-| 1.4: a host that is not allowed | Blocked by the proxy | Blocked under Balanced and Locked Down. Balanced starts from broad wildcards, and Docker states three cases where a denied host is still reached |
+| 1.4: a host that is not allowed | Blocked by the proxy | Blocked under Balanced and Locked Down. Balanced starts from broad wildcards, a built-in agent's hosts are *reported* to stay allowed under deny-all (issue 261), and Docker states three cases where a denied host is still reached |
 | 1.5: `/tmp`, shared paths, other processes, sockets | All blocked; `.git/config` and hooks read-only | A VM has its own `/tmp` and processes and no host socket. `.git/hooks` is **writable** in a direct mount; Docker's advice is to review before trusting, or clone mode. The sandbox can ask the host to open a URL in the owner's browser by default |
 | 1.6: seccomp and the launcher | Five of six blocked; `personality` allowed (#1449) | Not comparable. The agent is root in its VM by design; the hypervisor is the control. A kernel bug that breaks Torlek's sandbox does not break this one |
 | 2.1 to 2.4: self-grant, self-approve, forged approval | All refused | Not the sandbox's work in either design. Torlek's refusals rest on the agent socket, which a VM cannot reach as it is |
@@ -237,13 +238,13 @@ installed, signed in and at a version Torlek has tested.
 | Launch: the launch spec turned into `sbx create` and `sbx run`, the session's home and instruction bundle mounted, the harness started with Torlek's own flags and hooks instead of Docker's permission-skipping defaults | 1 week for the first harness, 2 to 3 days for each of the other three; Qwen needs a kit |
 | The agent socket across a VM: a TCP listener reached through `host.docker.internal`, with a per-session secret in place of "the session is the socket it arrived on". This changes a [protocol rule](../../../.agents/rules/protocol.md) and needs its own decision and red-team. Docker has a relay for Unix sockets inside the workspace, but it is known only from CVE-2026-79994 and is not a documented interface | 1 to 2 weeks |
 | Provider sockets the other way (Codex's app server, OpenCode's server) through `sbx port publish` | 3 to 5 days |
-| Egress: Torlek's allow-list and project grants written as sandbox-scoped rules at each launch; Docker's approvals polled into Torlek's network requests and answered from Torlek; a revoked grant removed | 1 week |
+| Egress: Torlek's allow-list and project grants written as sandbox-scoped rules at each launch; Docker's approvals polled into Torlek's network requests and answered from Torlek; a revoked grant removed. A built-in agent's own allowed hosts may stay reachable whatever Torlek writes (issue 261), so the harnesses may need kits of Torlek's own | 1 week |
 | Credentials set per sandbox before launch; a rule that keeps the push route (deny `git-receive-pack`), proven by a test | 3 days |
 | Evidence, `torlek session sandbox`, readiness and `torlek doctor` | 3 days |
 | Checks (#352, #862) and Docker work through `sbx exec` and the sandbox's own engine | 3 to 5 days |
 | Tests against a fake `sbx`, and a live job that needs KVM and a Docker account token in CI | 1 week |
 | A red-team run on the new backend with new probes (SSH agent, browser opening, clipboard, hooks) | 3 days and the owner's time |
-| **Total** | **7 to 10 weeks**, then tracking a 0.x command line that shipped three releases in the two weeks before 2026-11-16 |
+| **Total** | **9 to 11 weeks** (43 to 55 working days), then tracking a 0.x command line that shipped three releases in the two weeks before 2026-11-16 |
 
 It removes nothing: both backends are maintained, tested and red-teamed. On Linux it would
 serve only Ubuntu 24.04 or later, where ours already works.
@@ -265,13 +266,13 @@ Everything in B for all four harnesses, without the fallback, then the removal.
 - **Reversed:** the owner's direction of 2026-11-05 on #546, to own the sandbox and traffic
   control inside Torlek, taken after the same costs were paid for two external engines:
   pins, a separate release train and behaviour Torlek could not change.
-- **Cost:** B's 7 to 10 weeks, plus 2 to 3 weeks of removal and migration, plus a full
+- **Cost:** B's 9 to 11 weeks, plus 2 to 3 weeks of removal and migration, plus a full
   red-team run before #833 can turn any sandbox on by default.
 
 ## Recommendation
 
 **A.** The native sandbox met the alpha 8 bar on the platforms Torlek ships, and its
-remaining work is small and filed. B costs about two months to serve, on Linux, hosts the
+remaining work is small and filed. B costs nine to eleven weeks to serve, on Linux, hosts the
 native sandbox already serves, and C trades the owner's decisions and most of the supported
 hosts for a stronger kernel boundary that the threat model does not ask for.
 
@@ -296,7 +297,8 @@ backend. Until then nothing is built.
 
 **Q3. When the macOS roadmap (#568) is scheduled, how is its sandbox chosen?**
 
-- **A (recommended).** Prototype Docker Sandboxes first, time-boxed to one week, as an
+- **A (recommended).** Prototype Docker Sandboxes first, time-boxed to two weeks (one harness launched, and
+  the agent socket carried across the VM, without tests or polish), as an
   optional backend for macOS and native Windows only, and decide from what it shows. This
   accepts that the backend would need a Docker account.
 - **B.** Rule Docker Sandboxes out now: Torlek's sandbox is Torlek's own on every platform,
@@ -322,7 +324,7 @@ backend. Until then nothing is built.
   and no claim of Docker's was tested, including the ones this report relies on most: that
   nothing outside the workspace is visible and that all TCP leaves through the proxy.
 - Not checked: whether `sbx` works on Arch or inside WSL2 in practice (Docker does not
-  support them; users report both); whether a read-only mount of `.git/hooks` inside a
+  support them; a user reports Arch, and Docker's pages mention WSL2 setups); whether a read-only mount of `.git/hooks` inside a
   writable workspace is accepted; whether an HTTP path rule can block a push; whether the
   Unix socket relay can carry Torlek's agent socket; the fixed version of four CVEs whose
   records name none; the cloud sandboxes, which this report leaves out.

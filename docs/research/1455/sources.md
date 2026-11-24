@@ -29,7 +29,7 @@ GitHub's API. Two kinds of statement were not checked that way and are marked in
 | [Agents](https://docs.docker.com/ai/sandboxes/agents/), with the [Claude Code](https://docs.docker.com/ai/sandboxes/agents/claude-code/), [Codex](https://docs.docker.com/ai/sandboxes/agents/codex/) and [OpenCode](https://docs.docker.com/ai/sandboxes/agents/opencode/) pages | The agent list; the flags each agent starts with |
 | [Git workflows](https://docs.docker.com/ai/sandboxes/workflows/git/) | Direct and clone mode; a host worktree mounted directly has no Git access |
 | [Automation](https://docs.docker.com/ai/sandboxes/workflows/automation/) | Headless use, `sbx policy init`, sign-in with a personal access token |
-| [FAQ](https://docs.docker.com/ai/sandboxes/faq/) | "Signing in gives each sandbox a verified identity"; free "including for commercial and professional work"; telemetry |
+| [FAQ](https://docs.docker.com/ai/sandboxes/faq/) | "Signing in gives each sandbox a verified identity"; free "including for commercial and professional work"; telemetry; "The sandbox itself is the safety boundary" |
 | [Troubleshooting](https://docs.docker.com/ai/sandboxes/troubleshooting/) | The `forward`, `forward-bypass` and `transparent` egress paths and which of them terminates TLS |
 | [Release notes](https://docs.docker.com/ai/sandboxes/release-notes/) | Version 0.54.0 (2026-11-16); the breaking changes of 0.48.0, 0.51.0, 0.53.0 and 0.54.0; Gemini retired in 0.53.0 |
 | [Local governance](https://docs.docker.com/ai/governance/local/) and its [approvals](https://docs.docker.com/ai/governance/local/approvals/) page | "All outbound TCP traffic from the sandbox routes through a proxy on your host." "The request that triggered the approval doesn't wait for your answer. It's denied." An approval covers one destination and port for one sandbox |
@@ -99,14 +99,17 @@ organization; every other entry is a user's report.
 Kudelski Security, 2026-11-23, on `sbx` 0.50.0. It scores Docker Sandboxes 4.5 out of 5 and
 states its limits: "We did not try to escape the sandbox of each of these tools"; "It's
 closed source and the GitHub repository only contains binary releases"; "A Docker account is
-required to use Docker Sandboxes"; "Filesystem logs are not supported yet".
+required to use Docker Sandboxes"; "Filesystem logs are not supported yet"; "the tool is closed
+source so it makes it more difficult to audit".
 
 ## Torlek
 
 - Code at commit `09335ceb`: the READMEs and sources of `crates/cockpit-sandbox`,
-  `crates/cockpit-sandbox-launcher` and `crates/cockpit-containers`. Line counts are
-  `wc -l` over each crate's `src/` and `tests/`; test counts are `#[test]` and
-  `#[tokio::test]` functions.
+  `crates/cockpit-sandbox-launcher` and `crates/cockpit-containers`. Source lines are
+  `wc -l` over the Rust files of each crate's `src/`, without the launcher's test modules
+  kept under `src/` (1,339 lines), which count as tests. Test lines are those modules plus
+  the Rust files under each `tests/`. Test counts are `#[test]` and `#[tokio::test]`
+  functions.
 - Owner decisions: the reports for
   [#546](../2026-11-05-546-own-sandbox-and-traffic-control.md),
   [#856](../2026-11-05-856-docker-in-sandboxed-sessions.md),
