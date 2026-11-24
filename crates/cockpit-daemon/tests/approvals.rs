@@ -1031,6 +1031,41 @@ async fn the_owner_reads_the_script_a_run_names_pinned_by_its_hash() {
     );
 }
 
+/// #1448: the red-team's guest had no `make`, and its approval named the changed Makefile
+/// without showing it. The daemon's `PATH` here holds no `make` either.
+#[tokio::test]
+async fn the_owner_reads_the_makefile_of_a_make_missing_from_the_path() {
+    let mut home = TestHome::new();
+    let empty_path = home.home().join("empty-path");
+    std::fs::create_dir(&empty_path).unwrap();
+    home.path = Some(empty_path.into_os_string());
+    let asking = started_in(home, true).await;
+    let hidden = "sh -c 'echo owned > \"$HOME/OWNED\"'";
+    std::fs::write(
+        asking.cwd.path().join("Makefile"),
+        format!("build:\n\t{hidden}\n"),
+    )
+    .unwrap();
+    let asked = asking.asked("make build").await;
+
+    let shown = shown_to_owner(&asking, asked.id).await;
+
+    let pinned = shown
+        .pinned
+        .expect("the owner's view carries the pinned files");
+    let makefile = pinned
+        .iter()
+        .find(|file| file.shown_path.text == "./Makefile")
+        .unwrap_or_else(|| panic!("the Makefile is pinned: {pinned:?}"));
+    assert!(makefile.sha256.is_some(), "{makefile:?}");
+    let head = makefile
+        .now
+        .as_ref()
+        .and_then(|now| now.head.as_ref())
+        .expect("read while asking");
+    assert!(head.text.contains(hidden), "{head:?}");
+}
+
 #[tokio::test]
 async fn editing_a_pinned_script_after_the_card_is_shown_refuses_the_approval() {
     let asking = started(true).await;
