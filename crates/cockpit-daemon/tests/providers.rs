@@ -216,25 +216,47 @@ fn without_opencode_the_daemon_starts_and_says_so() {
     );
 }
 
-/// #1446: no Qwen Code version is tested yet, so the daemon probes the one it finds.
+/// #1446: a Qwen Code version off the tested list is probed.
 #[test]
 fn qwen_on_the_path_documenting_its_launch_flags_is_wired_as_probed() {
-    let bin = tempfile::tempdir().unwrap();
-    fake_program(
-        bin.path(),
-        "qwen",
-        "if [ \"$1\" = --help ]; then echo '--session-id --resume --model --prompt-interactive'; \
-         else echo '0.28.4'; fi",
-    );
-    let home = home_with_path(bin.path());
+    let home_bin = fake_qwen("0.28.5");
+    let home = home_with_path(home_bin.path());
     let _daemon = home.start();
 
     let log = home.log_once_it_contains("provider qwen ready");
 
     assert!(
-        log.contains("provider qwen ready version=0.28.4 provenance=probed"),
+        log.contains("provider qwen ready version=0.28.5 provenance=probed"),
         "{log}"
     );
+}
+
+/// #1446: 0.28.4 is on the tested list, so the daemon reports it tested.
+#[test]
+fn qwen_on_its_tested_version_is_wired_as_tested() {
+    let home_bin = fake_qwen("0.28.4");
+    let home = home_with_path(home_bin.path());
+    let _daemon = home.start();
+
+    let log = home.log_once_it_contains("provider qwen ready");
+
+    assert!(
+        log.contains("provider qwen ready version=0.28.4 provenance=tested"),
+        "{log}"
+    );
+}
+
+fn fake_qwen(version: &str) -> tempfile::TempDir {
+    let bin = tempfile::tempdir().unwrap();
+    fake_program(
+        bin.path(),
+        "qwen",
+        &format!(
+            "if [ \"$1\" = --help ]; then echo '--session-id --resume --model --prompt-interactive'; \
+             else echo '{version}'; fi"
+        ),
+    );
+    bin
 }
 
 #[test]
