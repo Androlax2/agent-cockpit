@@ -476,6 +476,28 @@ fn hash_text(sha256: Option<&str>) -> &str {
     sha256.unwrap_or("none: the file is not there")
 }
 
+/// The digest, named for what it covers (#1450): while the request asks and runs files the
+/// session can edit, the approval digest binds them as read now and differs from the request's
+/// own digest, which is the one a decided request shows.
+fn digest_lines(run: &RunRequestView) -> String {
+    if let Some(request_digest) = &run.request_digest {
+        return format!(
+            "approval digest: {} (approve names it: the request digest bound to the files it \
+             runs, as read now)\nrequest digest: {request_digest} (directory, command, writes \
+             and hosts; shown once decided)\n",
+            run.digest
+        );
+    }
+    if run.state == RunStateView::Asking {
+        return format!("digest: {}\n", run.digest);
+    }
+    format!(
+        "request digest: {} (directory, command, writes and hosts; an approval digest also \
+         binds the files it runs)\n",
+        run.digest
+    )
+}
+
 fn run_detail(run: &RunRequestView) -> String {
     let mut text = format!(
         "request {} revision {} {} (session {})\n",
@@ -507,7 +529,7 @@ fn run_detail(run: &RunRequestView) -> String {
             text.push_str(&warnings(limit));
         }
     }
-    let _ = writeln!(text, "digest: {}", run.digest);
+    text.push_str(&digest_lines(run));
     if let Some(sudo) = &run.sudo_ask {
         let _ = writeln!(
             text,

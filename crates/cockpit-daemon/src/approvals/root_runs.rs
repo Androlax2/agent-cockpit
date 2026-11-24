@@ -252,6 +252,7 @@ pub(super) async fn owner_view(run: &RunRequest) -> Option<OwnerView> {
             root_runs,
             pinned,
             digest: run.digest(),
+            request_digest: None,
         });
     }
     let paths: Vec<PathBuf> = run
@@ -260,6 +261,7 @@ pub(super) async fn owner_view(run: &RunRequest) -> Option<OwnerView> {
         .map(|file| file.path)
         .collect();
     let count = paths.len();
+    let request_digest = (count > 0).then(|| run.digest());
     let reads = bounded(move || {
         paths
             .into_iter()
@@ -282,6 +284,7 @@ pub(super) async fn owner_view(run: &RunRequest) -> Option<OwnerView> {
                 &run.digest(),
                 &vec![Contents::Unreadable; count],
             ),
+            request_digest,
         });
     };
     let contents: Vec<Contents> = reads.iter().map(|(_, read)| contents_of(read)).collect();
@@ -295,6 +298,7 @@ pub(super) async fn owner_view(run: &RunRequest) -> Option<OwnerView> {
         root_runs,
         pinned,
         digest: cockpit_approvals::digest_as_read(&run.digest(), &contents),
+        request_digest,
     })
 }
 
@@ -302,7 +306,10 @@ pub(super) async fn owner_view(run: &RunRequest) -> Option<OwnerView> {
 pub(super) struct OwnerView {
     pub(super) root_runs: Option<RootRunsView>,
     pub(super) pinned: Option<Vec<RootFileView>>,
+    /// What an approval names: bound to the files read now while the request asks.
     pub(super) digest: String,
+    /// The revision's own digest when `digest` is bound to files (#1450).
+    pub(super) request_digest: Option<String>,
 }
 
 fn contents_of(read: &Option<FileNow>) -> Contents {

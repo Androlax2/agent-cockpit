@@ -622,6 +622,7 @@ pub(crate) fn route_decision(
                         view.root_runs = checks.root_runs;
                         view.pinned = checks.pinned;
                         view.digest = checks.digest;
+                        view.request_digest = checks.request_digest;
                     }
                     view.findings = root_runs::findings_view(run);
                     views.push(view);
@@ -1192,6 +1193,7 @@ async fn owner_run_reply(run: &RunRequest, runner: &Runner) -> Reply {
         view.root_runs = checks.root_runs;
         view.pinned = checks.pinned;
         view.digest = checks.digest;
+        view.request_digest = checks.request_digest;
     }
     view.findings = root_runs::findings_view(run);
     Reply::RunRequest {
@@ -1330,6 +1332,7 @@ fn run_view(
             .map(|limit| shown(limit))
             .collect(),
         digest: run.digest(),
+        request_digest: None,
         asked_at: run.asked_at,
         expires_at: run.expires_at,
         waiting_for_input: is_waiting_for_input,

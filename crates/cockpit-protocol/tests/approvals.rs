@@ -174,6 +174,7 @@ fn finished_run() -> RunRequestView {
         unchecked_shell: None,
         changed_build_files: Some(Vec::new()),
         digest: "d".repeat(64),
+        request_digest: None,
         asked_at: 1,
         expires_at: 901,
         waiting_for_input: false,

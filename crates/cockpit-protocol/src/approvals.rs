@@ -109,10 +109,14 @@ pub struct RunRequestView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub limits: Vec<ShownText>,
     /// SHA-256 of this revision's directory and command, and of the `writes` and `hosts`
-    /// when it names any; an approval names it. In the owner's views of a request that runs
-    /// files its session can edit (`pinned`, `root_runs`), bound to those files as the view
-    /// read them: an approval names what it was shown.
+    /// when it names any; an approval names it. In the owner's views of an asking request
+    /// that runs files its session can edit (`pinned`, `root_runs`), bound to those files as
+    /// the view read them: an approval names what it was shown.
     pub digest: String,
+    /// The revision's own digest, without the files, when `digest` is bound to them
+    /// (#1450). `None` when `digest` is that digest: in every other view, and once decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_digest: Option<String>,
     /// Seconds since 1970.
     pub asked_at: i64,
     pub expires_at: i64,

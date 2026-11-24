@@ -1069,6 +1069,40 @@ async fn a_pinned_script_that_changed_since_the_ask_refuses_the_run() {
     );
 }
 
+/// #1450: while the request asks, the digest the owner approves binds the request's own
+/// digest (directory and command) to each pinned file's hash as read now; once decided, the
+/// view shows the request's own digest, and the pinned files keep their recorded hash.
+#[tokio::test]
+async fn the_approved_digest_binds_the_pinned_file_and_the_decided_view_shows_the_request_digest() {
+    let asking = started(true).await;
+    let script = asking.cwd.path().join("x.sh");
+    std::fs::write(&script, "echo build\n").unwrap();
+    let asked = asking.asked("sh ./x.sh").await;
+    let request_digest =
+        cockpit_approvals::action_digest(std::path::Path::new(&asking.cwd_text()), "sh ./x.sh");
+    let script_hash = cockpit_approvals::file_sha256(&script).unwrap().unwrap();
+    let approval_digest = cockpit_approvals::digest_as_read(
+        &request_digest,
+        &[cockpit_approvals::Contents::Hash(script_hash.clone())],
+    );
+
+    let before = shown_to_owner(&asking, asked.id).await;
+    run(asking.approve(&before).await);
+    let ended = asking.ended(asked.id).await;
+    let after = shown_to_owner(&asking, asked.id).await;
+
+    assert_eq!(asked.digest, request_digest, "the agent's answer");
+    assert_eq!(before.digest, approval_digest, "approval show while asking");
+    assert_eq!(before.request_digest, Some(request_digest.clone()));
+    assert_eq!(ended.state, RunStateView::Finished, "{ended:?}");
+    assert_eq!(after.digest, request_digest, "approval show once it ran");
+    assert_eq!(after.request_digest, None);
+    assert_eq!(
+        after.pinned.unwrap()[0].sha256.as_deref(),
+        Some(script_hash.as_str())
+    );
+}
+
 #[tokio::test]
 async fn an_approval_must_name_the_files_sudo_runs_as_the_owner_read_them() {
     let asking = started(true).await;
