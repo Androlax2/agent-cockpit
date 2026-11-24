@@ -26,6 +26,10 @@ pub const HOOK_EVENTS: [&str; 10] = [
     "SessionEnd",
 ];
 
+/// The `StopFailure` error Qwen Code sends for any 429 or "rate limit" message: a spent plan
+/// and a transient limit alike, so only repeated failures make a quota stop (#158).
+pub const RATE_LIMIT: &str = "rate_limit";
+
 /// The notification type that waits for the owner's answer: a tool's permission dialog.
 /// `elicitation_dialog` is defined in 0.28.4 but never sent.
 const PERMISSION_PROMPT: &str = "permission_prompt";
@@ -94,9 +98,8 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
         "Stop" => EventKind::TurnEnded {
             outcome: TurnOutcome::Completed,
         },
-        // Not `QuotaStopped`, even for `rate_limit`: Qwen Code derives that from any 429 or
-        // "rate limit" message, a spent plan and a transient limit alike (#1446), and there
-        // are no plan windows to tell them apart.
+        // Not `QuotaStopped`, even for [`RATE_LIMIT`]: one such failure cannot tell a spent
+        // plan from a transient limit, and there are no plan windows to ask (#1446).
         "StopFailure" => EventKind::TurnEnded {
             outcome: TurnOutcome::Failed {
                 reason: text("error").map(str::to_owned),

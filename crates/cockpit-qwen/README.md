@@ -35,7 +35,8 @@ version is added. On another version the daemon runs the probe (each launch flag
   `PostToolUse`/`PostToolUseFailure` working, `Notification` `permission_prompt` needs you and
   `idle_prompt` idle, `Stop` completed, `StopFailure` failed with Qwen Code's `error` as the
   reason, `PreCompact`/`PostCompact` a compaction. `rate_limit` stays `failed`: Qwen Code gives it
-  for any 429, so it never moves a session to another account. `Stop`'s `input_tokens` and
+  for any 429, a spent plan and a transient limit alike, so it is the adapter's transient limit
+  reason, and only repeated ones make a quota stop (#158). `Stop`'s `input_tokens` and
   `context_limit` are the turn's `--context-tokens` and `--context-window`. A `SessionEnd` of
   `/clear` announces `--conversation-ends`. On every `SessionStart` it prints `torlek brief` as
   the hook's `additionalContext` (#419). `Bridge::check` at the daemon's start proves the
@@ -52,8 +53,8 @@ version is added. On another version the daemon runs the probe (each launch flag
   `[[services]]` forward the owner grants, listening on `127.0.0.1:<port>` in the sandbox, whose
   `NO_PROXY` already covers loopback.
 - **Project instructions.** Qwen Code reads `QWEN.md` and `AGENTS.md` upward from the working
-  directory by default, so a project's `AGENTS.md` needs nothing. `~/.qwen/QWEN.md` is the
-  default start file (`cockpit-config`).
+  directory by default, so a project's `AGENTS.md` needs nothing. `~/.qwen/QWEN.md` and
+  `~/.qwen/settings.json` are default start files (`cockpit-config`).
 - **Needs** (`needs`). Hosts: Qwen OAuth's (`api.qwen.ai`, `auth.qwen.ai`, `chat.qwen.ai`) and
   each region of the first-party key presets (DashScope, Coding Plan, Token Plan, QwenCloud and
   its Token Plan). Writes `~/.qwen` and `~/.cache/qwen-code` in the session's own home; reads
@@ -71,7 +72,9 @@ version is added. On another version the daemon runs the probe (each launch flag
   conversation it switches to are refused until the session is relaunched. A `/clear`'s
   `SessionEnd` is not awaited by Qwen Code, so its report can arrive after the next
   `SessionStart`'s.
-- Effort, compaction threshold, remote control, quota, cost, native commands and screen reading
+- Unverified on a live Qwen Code: whether `SessionStart` comes before the `/auth` dialog of a
+  session without a sign-in, which would make a message typed then land in that dialog.
+- Effort, compaction threshold, remote control, quota windows, cost, native commands and screen reading
   are not reported; folder trust is not kept (`trust_workspace` is `NotKept`; Qwen Code's
   folder trust is off by default).
 - The nightly harness check (`tools/harness_conformance.py`) does not install Qwen Code yet.

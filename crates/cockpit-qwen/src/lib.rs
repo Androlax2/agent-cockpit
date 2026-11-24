@@ -97,6 +97,16 @@ impl Bridge {
         if !missing.is_empty() {
             return Err(format!("{} missing", missing.join(" and ")));
         }
+        // The hook command names both paths as text; another spelling would run nothing.
+        if let Some(file) = [&self.hook_program, &self.cockpit_program]
+            .into_iter()
+            .find(|file| file.to_str().is_none())
+        {
+            return Err(format!(
+                "{} is not UTF-8, so the hook command cannot name it",
+                file.display()
+            ));
+        }
         if !self.defaults_file.is_absolute() {
             return Err(format!(
                 "{} is not an absolute path, which Qwen Code would resolve from the project",
@@ -375,6 +385,10 @@ impl Provider for QwenCode {
     /// Its `SessionStart` hook runs as Qwen Code starts, before any prompt.
     fn reports_at_launch(&self) -> bool {
         self.bridge.is_some()
+    }
+
+    fn transient_limit_reasons(&self) -> &'static [&'static str] {
+        &[hooks::RATE_LIMIT]
     }
 }
 

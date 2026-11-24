@@ -113,3 +113,22 @@ fn a_hook_that_does_not_answer_in_time_is_refused() {
     let reason = bridge.check_within(Duration::from_millis(200)).unwrap_err();
     assert!(reason.contains("did not answer"), "{reason}");
 }
+
+#[test]
+fn a_program_path_that_is_not_utf8_is_refused() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let named = dir.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    std::fs::create_dir(&named).unwrap();
+    let mut bridge = installed_bridge(&named);
+    bridge.defaults_file = dir.path().join("system-defaults.json");
+    std::fs::write(
+        &bridge.defaults_file,
+        defaults_settings(&bridge.hook_program, &bridge.cockpit_program),
+    )
+    .unwrap();
+
+    let reason = bridge.check().unwrap_err();
+    assert!(reason.contains("is not UTF-8"), "{reason}");
+}

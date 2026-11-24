@@ -28,7 +28,7 @@ impl StartFile {
 
 /// Provider-owned files every user of that provider has. Sandbox launchers, learned profiles
 /// and personal hooks are installation-specific: owners declare them in their config.
-pub(crate) const DEFAULT_START_FILES: [(&str, &str, &[&str]); 6] = [
+pub(crate) const DEFAULT_START_FILES: [(&str, &str, &[&str]); 7] = [
     ("CLAUDE.md", ".claude/CLAUDE.md", &["claude", "opencode"]),
     ("settings", ".claude/settings.json", &["claude"]),
     (
@@ -43,6 +43,7 @@ pub(crate) const DEFAULT_START_FILES: [(&str, &str, &[&str]); 6] = [
     ),
     ("codex hooks", ".codex/hooks.json", &["codex"]),
     ("QWEN.md", ".qwen/QWEN.md", &["qwen"]),
+    ("qwen settings", ".qwen/settings.json", &["qwen"]),
 ];
 
 /// A file's identity and content markers. `changed_at` (ctime) moves on every write, rename

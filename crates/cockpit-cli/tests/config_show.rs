@@ -162,7 +162,8 @@ fn a_clean_home_declares_the_provider_owned_start_files() {
             "plugins",
             "opencode config",
             "codex hooks",
-            "QWEN.md"
+            "QWEN.md",
+            "qwen settings"
         ]
     );
 }

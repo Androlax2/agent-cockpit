@@ -142,3 +142,9 @@ fn its_sign_in_is_unknown_with_the_owner_s_next_step() {
         }
     );
 }
+
+/// #158: Qwen Code's `rate_limit` names a spent plan and a transient limit alike.
+#[test]
+fn a_rate_limit_failure_is_a_transient_limit_reason() {
+    assert_eq!(common::qwen().transient_limit_reasons(), ["rate_limit"]);
+}

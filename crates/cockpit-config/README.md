@@ -189,7 +189,7 @@ meeting = "/home/me/bin/in-a-meeting"
 ## Start files
 
 Files an agent reads only at launch. The product declares the provider-owned ones
-(`CLAUDE.md`, Claude `settings` and `plugins`, `opencode config`, `codex hooks`, `QWEN.md`); the owner adds
+(`CLAUDE.md`, Claude `settings` and `plugins`, `opencode config`, `codex hooks`, `QWEN.md`, `qwen settings`); the owner adds
 installation-specific ones, and an entry whose label matches a default replaces it:
 
 ```toml

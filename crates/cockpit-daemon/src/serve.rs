@@ -166,14 +166,22 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         }
         Err(reason) => unavailable_providers.push(("opencode".to_owned(), reason)),
     }
-    match qwen(&serve.programs_dir, &qwen_defaults_dir) {
-        Ok(qwen) => providers.push(Arc::new(qwen)),
-        Err(reason) => unavailable_providers.push(("qwen".to_owned(), reason)),
-    }
+    let is_qwen_found = match qwen(&serve.programs_dir, &qwen_defaults_dir) {
+        Ok(qwen) => {
+            providers.push(Arc::new(qwen));
+            true
+        }
+        Err(reason) => {
+            unavailable_providers.push(("qwen".to_owned(), reason));
+            false
+        }
+    };
     // The plugin folder exists only once OpenCode was found and its plugin written: a missing
     // path handed to the sandbox would fail every launch, OpenCode or not.
     let opencode_plugin_dir = plugin_dir.is_dir().then_some(plugin_dir);
-    let qwen_defaults_dir = qwen_defaults_dir.is_dir().then_some(qwen_defaults_dir);
+    // An earlier start's folder stays on disk after Qwen Code goes: only this start's counts.
+    let qwen_defaults_dir =
+        (is_qwen_found && qwen_defaults_dir.is_dir()).then_some(qwen_defaults_dir);
     let sandbox = sandbox(
         &instance,
         &environment,
