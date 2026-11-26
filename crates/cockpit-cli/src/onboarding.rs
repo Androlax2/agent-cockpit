@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use cockpit_client::ClientError;
-use cockpit_config::{AgentSandbox, EffectiveConfig, Source};
+use cockpit_config::{AgentSandbox, EffectiveConfig};
 use cockpit_protocol::{
     Command, NetworkGrantView, ProjectView, ReadinessStatusView, Reply, RequirementView,
     SessionView,
@@ -376,8 +376,9 @@ fn readiness_step(facts: &Facts) -> Step {
     }
 }
 
-/// What each `agents.sandbox` value does, what needs the owner and how approvals work; done
-/// once the owner wrote `agents.sandbox` in their own file, which is the recorded consent.
+/// What each `agents.sandbox` value does, what needs the owner and how approvals work. Done
+/// whatever the setting: `required` is the product default (#833), and `off` is the owner's
+/// own rollback, named with its risk.
 fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
     let Ok(config) = config else {
         return Step::waiting(SANDBOX, "the configuration reads");
@@ -407,57 +408,23 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
             config.agents_desktop_session.value.as_str()
         ),
     ];
-    if let Source::UserFile { path, line } = &setting.source {
-        if setting.value == AgentSandbox::Required {
-            lines.push(format!(
-                "you chose the sandbox ({}:{line}): the readiness step's `sandbox` line says \
-                 whether this host has it",
-                path.display()
-            ));
-            return Step {
-                title: SANDBOX,
-                state: State::Done,
-                lines,
-                next: None,
-            };
-        }
-        lines.push(format!(
-            "you chose to run agents UNSANDBOXED, with your rights ({}:{line}): {}",
-            path.display(),
+    lines.push(match setting.value {
+        AgentSandbox::Required => format!(
+            "the sandbox is on ({}): the readiness step's `sandbox` line says whether this \
+             host has it; `agents.sandbox = \"off\"` in the owner config is the rollback",
+            setting.source
+        ),
+        AgentSandbox::Off => format!(
+            "you chose to run agents UNSANDBOXED, with your rights ({}): {}",
+            setting.source,
             cockpit_config::UNSANDBOXED_RISK
-        ));
-        return Step {
-            title: SANDBOX,
-            state: State::Done,
-            lines,
-            next: None,
-        };
-    }
-    let file = &config.user_file.path;
-    // Init writes nothing, so the owner creates the folder a fresh profile lacks (#625).
-    // Anything else at that path (a file, a dangling link) is left for the owner to see.
-    let create_folder = match file.parent() {
-        Some(folder)
-            if std::fs::symlink_metadata(folder)
-                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-        {
-            format!(
-                "create the config folder with `mkdir -p -m 700 {}`, then ",
-                shell_word(&folder.to_string_lossy())
-            )
-        }
-        _ => String::new(),
-    };
+        ),
+    });
     Step {
         title: SANDBOX,
-        state: State::Open,
+        state: State::Done,
         lines,
-        next: Some(format!(
-            "to accept, {create_folder}write `[agents]` and `sandbox = \"off\"` in {}: agents \
-             run unsandboxed, with your rights ({})",
-            shell_word(&file.to_string_lossy()),
-            cockpit_config::UNSANDBOXED_RISK
-        )),
+        next: None,
     }
 }
 

@@ -2,7 +2,7 @@
 //! driven as a process through a clean home, step by step, against a scripted daemon that
 //! answers the readiness report, the projects, the sessions and the network grants.
 
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::process::Output;
 
@@ -315,7 +315,7 @@ async fn on_a_clean_home_without_a_daemon_cockpit_alone_starts_with_the_daemon()
     let checklist = text(&output.stdout);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
     assert!(
-        checklist.starts_with("Torlek setup: 0 of 6 steps done"),
+        checklist.starts_with("Torlek setup: 1 of 6 steps done"),
         "{checklist}"
     );
     assert!(
@@ -371,17 +371,35 @@ async fn a_blocking_host_requirement_is_the_first_action() {
     );
 }
 
+/// #833: the sandbox is the product default, so the step asks nothing and names the rollback.
 #[tokio::test]
-async fn the_sandbox_step_says_what_each_setting_does_and_asks_for_consent() {
+async fn under_the_product_default_the_sandbox_step_is_done_and_names_the_rollback() {
     let home = Home::new();
 
     let output = home.against(&Daemon::ready(), &["init"]).await;
 
     let checklist = text(&output.stdout);
     assert!(
-        step(&checklist, "Sandbox and approvals").starts_with("[todo"),
+        step(&checklist, "Sandbox and approvals").starts_with("[done"),
         "{checklist}"
     );
+    assert!(
+        checklist.contains(
+            "the sandbox is on (product default): the readiness step's `sandbox` line says \
+             whether this host has it; `agents.sandbox = \"off\"` in the owner config is the \
+             rollback"
+        ),
+        "{checklist}"
+    );
+}
+
+#[tokio::test]
+async fn the_sandbox_step_says_what_each_setting_does() {
+    let home = Home::new();
+
+    let output = home.against(&Daemon::ready(), &["init"]).await;
+
+    let checklist = text(&output.stdout);
     for topic in [
         "sandbox: agents.sandbox = ",
         "needs you: ",
@@ -390,47 +408,6 @@ async fn the_sandbox_step_says_what_each_setting_does_and_asks_for_consent() {
     ] {
         assert!(checklist.contains(topic), "no {topic:?} in:\n{checklist}");
     }
-    let next = final_next(&checklist);
-    assert!(next.contains("sandbox = \"off\""), "{next}");
-    assert!(
-        next.contains(&home.owner_config().display().to_string()),
-        "{next}"
-    );
-}
-
-/// #625: on a fresh profile the config folder does not exist, so the action creates it first.
-#[tokio::test]
-async fn on_a_fresh_profile_the_sandbox_action_creates_the_config_folder_first() {
-    let home = Home::new();
-    let folder = home.owner_config().parent().unwrap().to_owned();
-    assert!(!folder.exists());
-
-    let output = home.against(&Daemon::ready(), &["init"]).await;
-
-    let checklist = text(&output.stdout);
-    let next = final_next(&checklist);
-    let create = next
-        .split('`')
-        .find(|part| part.starts_with("mkdir "))
-        .unwrap_or_else(|| panic!("no mkdir command in: {next}"));
-    let created = std::process::Command::new("sh")
-        .args(["-c", create])
-        .status()
-        .unwrap();
-    assert!(created.success(), "{create}");
-    let mode = std::fs::metadata(&folder).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o700, "{create}");
-}
-
-#[tokio::test]
-async fn an_existing_config_folder_is_not_created_again() {
-    let home = Home::new();
-    std::fs::create_dir_all(home.owner_config().parent().unwrap()).unwrap();
-
-    let output = home.against(&Daemon::ready(), &["init"]).await;
-
-    let checklist = text(&output.stdout);
-    assert!(!final_next(&checklist).contains("mkdir"), "{checklist}");
 }
 
 /// #829: `required` is the owner's recorded choice; whether this host has the sandbox is

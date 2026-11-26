@@ -98,9 +98,12 @@ async fn run_in_agent(home: &Home, root: &Path, line: &str) -> String {
     home.agent_output(root, number).await
 }
 
+const ROLLBACK: &str = "[agents]\nsandbox = \"off\"\n";
+
 #[tokio::test(flavor = "multi_thread")]
-async fn by_default_a_launch_runs_unsandboxed_and_the_evidence_says_no_sandbox() {
+async fn under_the_rollback_a_launch_runs_unsandboxed_and_the_evidence_says_no_sandbox() {
     let home = Home::new();
+    home.write_owner_config(ROLLBACK);
     let _daemon = home.start();
     let client = home.connect().await;
     let (root, _) = home.project(&client, "app").await;
@@ -166,8 +169,9 @@ async fn a_required_setting_without_bubblewrap_logs_at_start_that_every_launch_i
 
 /// The daemon's start and each unsandboxed launch warn that grants no longer hold (#729).
 #[tokio::test(flavor = "multi_thread")]
-async fn the_default_warns_at_start_and_at_each_launch_that_an_agent_can_act_as_the_owner() {
+async fn the_rollback_warns_at_start_and_at_each_launch_that_an_agent_can_act_as_the_owner() {
     let home = Home::new();
+    home.write_owner_config(ROLLBACK);
     let _daemon = home.start();
     let client = home.connect().await;
     let (root, _) = home.project(&client, "app").await;

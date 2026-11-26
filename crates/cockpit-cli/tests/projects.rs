@@ -1323,6 +1323,7 @@ fn project_add_without_a_terminal_names_the_github_grant_and_grants_nothing() {
 #[test]
 fn project_add_under_an_unsandboxed_setting_offers_no_github_grant() {
     let home = TestHome::new();
+    home.allow_unsandboxed();
     let _daemon = home.start();
     let root = home.project("app");
 

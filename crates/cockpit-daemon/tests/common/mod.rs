@@ -176,6 +176,7 @@ impl TestHome {
     /// Starts the daemon and waits for its `ready` line.
     pub fn start(&self) -> RunningDaemon {
         candidate::unconfine_runs(&self.config_file());
+        candidate::unsandbox_agents(&self.config_file());
         let mut child = self.command().spawn().expect("the daemon binary runs");
         let stdout = child.stdout.take().expect("stdout is piped");
         let (lines, ready) = mpsc::channel();

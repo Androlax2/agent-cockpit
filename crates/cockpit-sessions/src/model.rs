@@ -591,8 +591,8 @@ impl Default for Settings {
                 idle_sleep_after: Duration::from_secs(60 * 60),
                 asleep_expiry: Duration::from_secs(7 * 24 * 60 * 60),
                 desktop_session: crate::DesktopSession::Shared,
-                // `agents.sandbox`'s product default while no backend exists (#828).
-                sandbox: cockpit_config::AgentSandbox::Off,
+                // `agents.sandbox`'s product default (#833).
+                sandbox: cockpit_config::AgentSandbox::Required,
             },
             stop: Escalation {
                 grace: Duration::from_secs(5),

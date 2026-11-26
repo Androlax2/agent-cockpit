@@ -12,8 +12,8 @@ pkgbase = torlek-bin
 	depends = git
 	depends = curl
 	depends = tmux>=3.6
+	depends = bubblewrap
 	optdepends = systemd: the per-user daemon service, torlek daemon install
-	optdepends = bubblewrap: the native agent sandbox, agents.sandbox = "required"
 	optdepends = github-cli: file a bug report as a GitHub issue
 	provides = torlek
 	conflicts = torlek

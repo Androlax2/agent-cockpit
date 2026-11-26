@@ -658,15 +658,15 @@ impl Home {
                 .qualified_name(),
         };
         // A home without the owner's config keeps none: its tests assert the layout the
-        // daemon creates, and run no approved command that would need the opt-out.
+        // daemon creates, and run no approved command or agent that would need the opt-outs.
         if self.has_owner_config {
-            candidate::unconfine_runs(
-                &self
-                    .path()
-                    .join("config")
-                    .join(&profile_dir)
-                    .join("config.toml"),
-            );
+            let owner_config = self
+                .path()
+                .join("config")
+                .join(&profile_dir)
+                .join("config.toml");
+            candidate::unconfine_runs(&owner_config);
+            candidate::unsandbox_agents(&owner_config);
         }
         let mut command = Process::new(candidate::program("torlek-daemon"));
         command

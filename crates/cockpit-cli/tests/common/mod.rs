@@ -142,26 +142,46 @@ impl TestHome {
     }
 
     pub fn trust(&self, root: &Path) {
-        let config = self.home().join("config/torlek-dev");
-        std::fs::create_dir_all(&config).unwrap();
-        std::fs::write(
-            config.join("config.toml"),
-            format!("[projects]\ntrusted = [{:?}]\n", root.display().to_string()),
-        )
-        .unwrap();
+        self.set_owner_table(
+            "projects",
+            &format!("trusted = [{:?}]", root.display().to_string()),
+        );
     }
 
-    /// `agents.sandbox = "required"` in the owner's configuration, under which a network
-    /// grant matters (#1256).
+    /// `agents.sandbox = "required"`, the product default, written in the owner's
+    /// configuration, under which a network grant matters (#1256).
     #[allow(dead_code, reason = "not every test binary sandboxes")]
     pub fn require_sandbox(&self) {
+        self.set_owner_table("agents", "sandbox = \"required\"");
+    }
+
+    /// `agents.sandbox = "off"`, the owner's rollback (#833): the daemon runs agents and
+    /// checks unsandboxed, as a host without `torlek-sandbox` beside the test daemon must.
+    #[allow(dead_code, reason = "not every test binary runs unsandboxed")]
+    pub fn allow_unsandboxed(&self) {
+        self.set_owner_table("agents", "sandbox = \"off\"");
+    }
+
+    /// Replaces the owner configuration's `[table]` with `body`, keeping its other tables.
+    fn set_owner_table(&self, table: &str, body: &str) {
         let config = self.home().join("config/torlek-dev");
         std::fs::create_dir_all(&config).unwrap();
-        std::fs::write(
-            config.join("config.toml"),
-            "[agents]\nsandbox = \"required\"\n",
-        )
-        .unwrap();
+        let file = config.join("config.toml");
+        let existing = std::fs::read_to_string(&file).unwrap_or_default();
+        let header = format!("[{table}]");
+        let mut kept = String::new();
+        let mut is_replaced_table = false;
+        for line in existing.lines() {
+            if line.starts_with('[') {
+                is_replaced_table = line == header;
+            }
+            if !is_replaced_table {
+                kept.push_str(line);
+                kept.push('\n');
+            }
+        }
+        kept.push_str(&format!("{header}\n{body}\n"));
+        std::fs::write(file, kept).unwrap();
     }
 
     pub fn base_command(&self, program: &Path) -> Command {

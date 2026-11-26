@@ -71,12 +71,13 @@ skipping.
   `tools/tests/test_deb_package.py` runs each script as root of a user namespace with a fake
   `systemctl`. The package never starts, stops or adopts the per-user daemon:
   `torlek daemon install` writes those services.
-- **Dependencies:** `libc6 (>= 2.39), libgcc-s1 (>= 4.2), git, curl, tmux (>= 3.6)`;
+- **Dependencies:** `libc6 (>= 2.39), libgcc-s1 (>= 4.2), git, curl, tmux (>= 3.6), bubblewrap`;
   `Suggests: systemd`. The programs need `GLIBC_2.39` and `GCC_4.2.0` symbols (built on
   `ubuntu-24.04` runners), and the workflow
   fails when a term `dpkg-shlibdeps` computes for the newest release is missing from `Depends`.
   `git`, `curl` and `tmux >= 3.6` are the [user guide](../USER-GUIDE.md#platforms-and-prerequisites)
-  prerequisites. `systemd` is needed only for the user services and the masks helper's socket.
+  prerequisites. `bubblewrap` runs the native agent sandbox, the `agents.sandbox = "required"`
+  default (#833). `systemd` is needed only for the user services and the masks helper's socket.
   Provider CLIs are left out.
 - **Maintainer:** `build.py --maintainer 'Name <address>'` is required and has no default.
   Debian policy requires an address. Publication reads it from the `apt` environment's

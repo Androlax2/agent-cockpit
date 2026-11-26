@@ -8,8 +8,8 @@ If not, follow the [README](../README.md) first.
 
 - **Runs your coding agents side by side.** Claude Code, Codex or OpenCode, each in its own terminal session.
   You see them all in one list and open the one you want.
-- **Runs agents with your rights by default.** The sandbox is off unless you turn it on, so an agent can do what you can and Torlek's grants do not bind it.
-  Keep your work in Git. With `desktop_session = "withheld"` in your config, an agent stays away from your screen and desktop session.
+- **Runs agents in a sandbox.** Each agent works in its checkout, reaches the network only through a proxy that asks you about each new host, and cannot act as you.
+  `sandbox = "off"` in your config turns it off: agents then run with your rights, and Torlek's grants do not bind them. Keep your work in Git. With `desktop_session = "withheld"` in your config, an agent stays away from your screen and desktop session.
   The [known gaps](KNOWN-GAPS.md) list what is still open.
 - **Lets an agent ask you to run a command.** The agent sends you a request.
   The command runs only if you say yes.
@@ -98,7 +98,7 @@ I am new to Torlek, the program that runs you in this session. Explain it to me.
   Wait for my answer. If I got it wrong or I am unsure, explain it another way.
   If I already know it, move on faster.
 - Cover, in this order: what Torlek is; projects and sessions; that you run
-  with my rights unless I turn the sandbox on; how you ask me to run a command,
+  in a sandbox unless I turn it off; how you ask me to run a command,
   and how I approve or decline; the todo list; how I get help when something breaks.
 - Use the real Torlek commands on this machine instead of guessing:
   "torlek --help", "torlek docs", "torlek --skill" and "torlek doctor".

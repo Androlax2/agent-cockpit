@@ -42,21 +42,37 @@ pub fn assert_running_candidate(pid: u32) {
 /// systemd user manager, so it would refuse every approved run. Tests of confined runs set
 /// the key.
 pub fn unconfine_runs(path: &Path) {
-    const OPT_OUT: &str = "confined_runs = \"off\"\n";
+    add_agents_opt_out(path, "confined_runs", "confined_runs = \"off\"\n");
+}
+
+/// Gives the owner's `config.toml` at `path` the owner's rollback `agents.sandbox = "off"`
+/// (#833), unless it sets that key itself: the fake agents a test home launches have no
+/// sandbox profile, and a test host may lack bubblewrap. Tests of the sandbox, or of its
+/// product default, set the key or keep no owner config.
+pub fn unsandbox_agents(path: &Path) {
+    add_agents_opt_out(path, "sandbox", "sandbox = \"off\"\n");
+}
+
+fn add_agents_opt_out(path: &Path, key: &str, opt_out: &str) {
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => panic!("{}: {error}", path.display()),
     };
-    if contents.contains("confined_runs") {
+    let sets_key = contents.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix(key)
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    });
+    if sets_key {
         return;
     }
     let contents = match contents.find("[agents]\n") {
         Some(at) => {
             let (before, after) = contents.split_at(at + "[agents]\n".len());
-            format!("{before}{OPT_OUT}{after}")
+            format!("{before}{opt_out}{after}")
         }
-        None => format!("{contents}\n[agents]\n{OPT_OUT}"),
+        None => format!("{contents}\n[agents]\n{opt_out}"),
     };
     std::fs::create_dir_all(path.parent().expect("a config file has a folder")).unwrap();
     std::fs::write(path, contents).unwrap();

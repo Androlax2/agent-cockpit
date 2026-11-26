@@ -267,10 +267,10 @@ impl DesktopSession {
 pub const UNSANDBOXED_RISK: &str = "an unsandboxed agent can reach the owner socket and act \
     as the owner, so Torlek's grants only hold under the sandbox";
 
-/// Whether a launched agent runs in the sandbox (#61). The product default is `off` until
-/// the native sandbox is live (#546), logged at every launch; an explicit `required` runs
-/// every launch in Torlek's native sandbox (#829) and refuses it on a host without one,
-/// never runs one unsandboxed.
+/// Whether a launched agent runs in the sandbox (#61). The product default is `required`
+/// (#833): every launch runs in Torlek's native sandbox (#829) and is refused on a host
+/// without one, never run unsandboxed. `off` is the owner's rollback, logged at every
+/// launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentSandbox {
@@ -1041,7 +1041,7 @@ fn agents_desktop_session(layers: &[Layer]) -> Sourced<DesktopSession> {
 }
 
 fn agents_sandbox(layers: &[Layer]) -> Sourced<AgentSandbox> {
-    let mut resolved = Sourced::new(AgentSandbox::Off, Source::ProductDefault);
+    let mut resolved = Sourced::new(AgentSandbox::Required, Source::ProductDefault);
     for layer in layers {
         let Some(value) = layer
             .settings

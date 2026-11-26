@@ -34,8 +34,8 @@ fn ready_host() -> HostFacts {
     HostFacts {
         platform: Platform::Linux,
         tmux: Ok("3.6".to_owned()),
-        // The product default; `required` runs agents in the native sandbox (#829).
-        sandbox_setting: AgentSandbox::Off,
+        // The product default (#833): agents run in the native sandbox (#829).
+        sandbox_setting: AgentSandbox::Required,
         sandbox_backend: Ok(NATIVE_BACKEND.to_owned()),
         shared_desktop_refusal: None,
         providers: vec![ProviderFacts {
@@ -521,15 +521,17 @@ fn an_unreadable_configuration_misses_a_prerequisite_and_skips_the_project() {
     );
 }
 
-/// Agents running unsandboxed, by default while no backend exists, is said loudly.
+/// Agents running unsandboxed, the owner's rollback (#833), is said loudly.
 #[test]
 fn an_unsandboxed_owner_is_reported_as_such() {
+    let fixture = Fixture::new();
+    fixture.configure("", Some("[agents]\nsandbox = \"off\"\n"));
     let host = HostFacts {
         sandbox_setting: AgentSandbox::Off,
         ..ready_host()
     };
 
-    let report = assess(&host, &Ok(owner_only_config()), None);
+    let report = assess(&host, &fixture.owner_config(), None);
 
     let sandbox = requirement(&report, "sandbox");
     assert_eq!(sandbox.status, Status::Available);
@@ -618,6 +620,7 @@ fn a_written_required_on_a_host_without_the_sandbox_warns_that_launches_are_then
     let fixture = Fixture::new();
     fixture.configure("", Some(OWNER_REQUIRES_THE_SANDBOX));
     let host = HostFacts {
+        sandbox_setting: AgentSandbox::Off,
         sandbox_backend: Err(NO_BUBBLEWRAP.to_owned()),
         ..ready_host()
     };
@@ -638,7 +641,7 @@ fn a_written_required_on_a_host_without_the_sandbox_warns_that_launches_are_then
 #[test]
 fn a_sandbox_setting_removed_from_the_owner_file_is_named_as_the_product_default() {
     let host = HostFacts {
-        sandbox_setting: AgentSandbox::Required,
+        sandbox_setting: AgentSandbox::Off,
         ..ready_host()
     };
 
@@ -648,7 +651,7 @@ fn a_sandbox_setting_removed_from_the_owner_file_is_named_as_the_product_default
     assert!(
         sandbox
             .detail
-            .starts_with("agents.sandbox = \"off\" (product default) is not in force"),
+            .starts_with("agents.sandbox = \"required\" (product default) is not in force"),
         "{sandbox:#?}"
     );
 }
@@ -941,8 +944,12 @@ fn the_execution_environment_is_unknown_while_the_written_sandbox_setting_is_not
             &format!("[execution]\nenvironment = \"{environment}\"\n"),
             Some(OWNER_REQUIRES_THE_SANDBOX),
         );
+        let host = HostFacts {
+            sandbox_setting: AgentSandbox::Off,
+            ..ready_host()
+        };
 
-        let report = fixture.report(&ready_host(), &fixture.facts());
+        let report = fixture.report(&host, &fixture.facts());
 
         let requirement = requirement(&report, "execution environment");
         assert_eq!(requirement.status, Status::Unknown, "{requirement:#?}");
