@@ -25,7 +25,8 @@ pub use error::Error;
 pub use home_observer::{HomeChange, HomeObserver};
 pub use lifecycle::visible_line;
 pub use lifecycle::{
-    HarnessTrust, SandboxPreflight, Sessions, SignInPlan, registry_entries, remove_tree, tool_needs,
+    HarnessTrust, ProbeLaunch, SandboxPreflight, Sessions, SignInPlan, registry_entries,
+    remove_tree, tool_needs,
 };
 pub use model::{
     Addressed, AgentExit, AgentRunsFuture, BeforeAgentRuns, Ender, ExitStatus, Launch,

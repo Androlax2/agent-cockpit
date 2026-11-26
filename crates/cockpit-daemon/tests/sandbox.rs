@@ -306,6 +306,72 @@ async fn doctor_for_a_project_names_the_launch_gate_that_refuses() {
     assert!(backend.starts_with("missing-prerequisite "), "{report}");
 }
 
+/// Every file and folder under `root` named `name`.
+fn named(root: &Path, name: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(folder) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_name() == name {
+                found.push(path.clone());
+            }
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// #833: under `required`, `doctor --project` runs a probe launch in each provider's sandbox
+/// profile, says so, and leaves none of the dry run's folders. The project is trusted and
+/// each provider has a credential, so every other gate passes and the summary is one line.
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_for_a_project_runs_a_probe_launch_and_leaves_no_folder_of_it() {
+    let home = Home::new();
+    let root = home.path().join("projects").join("app");
+    home.write_owner_config(&format!(
+        "{REQUIRED}\n[projects]\ntrusted = [{:?}]\n",
+        root.display().to_string()
+    ));
+    let qwen_bindings = cockpit_qwen::needs::credential_bindings();
+    for (provider, variable) in [
+        ("claude", "CLAUDE_CODE_OAUTH_TOKEN"),
+        ("codex", cockpit_codex::needs::CREDENTIAL_VARIABLES[0]),
+        (
+            "opencode",
+            cockpit_opencode::needs::CREDENTIAL_BINDINGS[0].0,
+        ),
+        ("qwen", qwen_bindings[0].0),
+    ] {
+        home.write_provider_credential(provider, variable, "token\n", 0o600);
+    }
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (registered, _) = home.project(&client, "app").await;
+    assert_eq!(registered, root);
+
+    let doctor = home
+        .cockpit(&["doctor", "--project", root.to_str().unwrap()], &[])
+        .await;
+
+    let report = text(&doctor.stdout);
+    let launch = report
+        .lines()
+        .find(|line| line.contains("  launch: "))
+        .unwrap_or_else(|| panic!("no launch line in:\n{report}"));
+    assert!(
+        launch.starts_with("available ")
+            && launch.contains("a probe launch ran in each one's sandbox"),
+        "{report}"
+    );
+    assert_eq!(named(&home.path(), "dry-run"), Vec::<PathBuf>::new());
+}
+
 /// #1250: with every gate passing, `doctor --project` says so in one line.
 #[tokio::test(flavor = "multi_thread")]
 async fn doctor_for_a_project_whose_launch_passes_says_so_in_one_line() {

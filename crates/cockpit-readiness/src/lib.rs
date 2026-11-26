@@ -11,7 +11,7 @@ pub use cockpit_config::{AgentSandbox, EffectiveConfig, ExecutionEnvironment, Pr
 pub use compose::{
     COMPOSE_FILES, ComposeFile, ComposeFinding, ComposeProblem, scan, service_names,
 };
-pub use launch::{HarnessTrust, LaunchFacts, Toolchains, launch_gates, launch_summary};
+pub use launch::{HarnessTrust, LaunchFacts, Probe, Toolchains, launch_gates, launch_summary};
 pub use project::needs_docker;
 
 /// One requirement's state (report 09).
