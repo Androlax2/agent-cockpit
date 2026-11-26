@@ -24,6 +24,7 @@ mod messaging;
 pub use messaging::visible_line;
 #[path = "probe_launch.rs"]
 mod probe_launch;
+pub use probe_launch::ProbeLaunch;
 #[path = "sign_ins.rs"]
 mod sign_ins;
 pub use sign_ins::SignInPlan;
@@ -120,7 +121,7 @@ pub struct Sessions {
     /// daemon. Unset, no launch reaches an engine.
     project_engines: OnceLock<Arc<dyn crate::ProjectEngines>>,
     /// Held by each [`Sessions::probe_launch`], which stages the one set of dry-run folders.
-    probe_launches: tokio::sync::Mutex<()>,
+    probe_launches: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// A session's operation lock, and whether a launch holds it. A stop never
@@ -236,7 +237,7 @@ impl Sessions {
             agentless: Mutex::new(HashMap::new()),
             home_observer: OnceLock::new(),
             project_engines: OnceLock::new(),
-            probe_launches: tokio::sync::Mutex::new(()),
+            probe_launches: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 

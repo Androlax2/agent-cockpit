@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use cockpit_config::{AgentSandbox, DesktopSession};
 use cockpit_readiness::{
-    HarnessTrust, LaunchFacts, Requirement, Status, Toolchains, launch_gates, launch_summary,
+    HarnessTrust, LaunchFacts, Probe, Requirement, Status, Toolchains, launch_gates, launch_summary,
 };
 
 const PROFILE: &str = "sandbox: enforced by torlek-sandbox on linux";
@@ -137,7 +137,7 @@ fn each_gate_that_does_not_pass_names_its_fix() {
         (
             "launch probe",
             |facts| {
-                facts.probe = Some(Err(
+                facts.probe = Some(Probe::Failed(
                     "the probe launch ended with exit 1: CARGO_HOME is not set".to_owned(),
                 ));
             },
@@ -200,8 +200,8 @@ fn a_profile_not_built_is_unknown_and_points_at_the_gates_above() {
 #[test]
 fn a_probe_launch_that_ran_is_the_last_gate() {
     let mut facts = passing("claude");
-    facts.probe = Some(Ok(
-        "ran in the sandbox: 15 per-session variables hold".to_owned()
+    facts.probe = Some(Probe::Passed(
+        "ran in the sandbox: 15 per-session variables hold".to_owned(),
     ));
 
     let gates = launch_gates(&facts);
@@ -216,10 +216,22 @@ fn a_probe_launch_that_ran_is_the_last_gate() {
 }
 
 #[test]
+fn a_probe_launch_that_did_not_run_is_unknown_not_failed() {
+    let mut facts = passing("claude");
+    facts.probe = Some(Probe::NotRun("8 blocking steps are busy".to_owned()));
+
+    let gates = launch_gates(&facts);
+
+    let probe = gate(&gates, "launch probe");
+    assert_eq!(probe.status, Status::Unknown, "{probe:#?}");
+    assert_eq!(probe.detail, "not run: 8 blocking steps are busy");
+}
+
+#[test]
 fn a_summary_of_probed_launches_says_the_probes_ran() {
     let probed = |provider: &str| {
         let mut facts = passing(provider);
-        facts.probe = Some(Ok("ran in the sandbox".to_owned()));
+        facts.probe = Some(Probe::Passed("ran in the sandbox".to_owned()));
         facts
     };
 
@@ -236,7 +248,7 @@ fn a_summary_of_probed_launches_says_the_probes_ran() {
 #[test]
 fn a_failed_probe_launch_names_its_provider_in_the_summary() {
     let mut failed = passing("codex");
-    failed.probe = Some(Err(
+    failed.probe = Some(Probe::Failed(
         "the probe launch ended with exit 1: CARGO_HOME is not set".to_owned(),
     ));
 

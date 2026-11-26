@@ -684,6 +684,7 @@ async fn launches(
     dir: &Path,
 ) -> Result<Vec<cockpit_readiness::LaunchFacts>, String> {
     let mut all = Vec::new();
+    let probes_end = std::time::Instant::now() + PROBE_BUDGET;
     for provider in &context.sign_in_providers {
         let preflight = context
             .sessions
@@ -691,18 +692,23 @@ async fn launches(
             .await
             .map_err(|error| format!("{}: {error}", provider.name()))?;
         let mut facts = launch_facts(&preflight);
-        facts.probe = probe(context, &preflight).await;
+        facts.probe = probe(context, &preflight, probes_end).await;
         all.push(facts);
     }
     Ok(all)
 }
 
-/// `torlek doctor`'s probe launch in a sandboxed profile that was built (#833); `None` for
-/// any other, which runs nothing to probe.
+/// How long every provider's probe launch together may take, well inside the minute
+/// `torlek doctor` waits for its whole report.
+const PROBE_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// `torlek doctor`'s probe launch in a sandboxed profile that was built (#833), ending by
+/// `until`; `None` for any other, which runs nothing to probe.
 async fn probe(
     context: &Context,
     preflight: &cockpit_sessions::SandboxPreflight,
-) -> Option<Result<String, String>> {
+    until: std::time::Instant,
+) -> Option<cockpit_readiness::Probe> {
     if preflight.setting != cockpit_config::AgentSandbox::Required {
         return None;
     }
@@ -710,11 +716,15 @@ async fn probe(
         return None;
     };
     Some(
-        context
-            .sessions
-            .probe_launch(prepared.clone())
-            .await
-            .unwrap_or_else(|error| Err(error.to_string())),
+        match context.sessions.probe_launch(prepared.clone(), until).await {
+            cockpit_sessions::ProbeLaunch::Passed(checked) => {
+                cockpit_readiness::Probe::Passed(checked)
+            }
+            cockpit_sessions::ProbeLaunch::Failed(found) => cockpit_readiness::Probe::Failed(found),
+            cockpit_sessions::ProbeLaunch::NotRun(reason) => {
+                cockpit_readiness::Probe::NotRun(reason)
+            }
+        },
     )
 }
 
