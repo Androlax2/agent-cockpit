@@ -41,6 +41,9 @@ pub struct LaunchFacts {
     /// The profile the backend would enforce, by its first evidence line; `None` when an
     /// earlier gate refuses, so it was not built.
     pub profile: Option<Result<String, String>>,
+    /// What `torlek doctor`'s probe launch in that profile found (#833); `None` when none
+    /// ran: under `"off"`, from `torlek sandbox show`, and when the profile was not built.
+    pub probe: Option<Result<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,17 +97,30 @@ pub fn launch_gates(facts: &LaunchFacts) -> Vec<Requirement> {
             "fix the gates above, then run this again",
         ),
     });
+    if let Some(probe) = &facts.probe {
+        gates.push(match probe {
+            Ok(found) => Requirement::available("launch probe", found),
+            Err(reason) => Requirement::needs(
+                "launch probe",
+                Status::MissingPrerequisite,
+                format!("failed: {reason}"),
+                "fix what is named here; the `sandbox` line names the host's floors, and a \
+                 variable of Torlek's own table that does not hold is a Torlek bug: report it",
+            ),
+        });
+    }
     gates
 }
 
 /// The gates that depend on the provider; the others are the host's and the project's, the
 /// same for every provider.
-const PROVIDER_GATES: [&str; 5] = [
+const PROVIDER_GATES: [&str; 6] = [
     "launch command",
     "launch sign-in",
     "launch toolchains",
     "launch folder trust",
     "launch profile",
+    "launch probe",
 ];
 
 /// The gates to show beside a project's readiness, for a session of each provider in `all`:
@@ -142,13 +158,19 @@ pub fn launch_summary(all: &[LaunchFacts], dir: &std::path::Path) -> Vec<Require
         )];
     }
     let providers: Vec<&str> = all.iter().map(|facts| facts.provider.as_str()).collect();
+    let is_probed = all.iter().all(|facts| matches!(facts.probe, Some(Ok(_))));
     vec![Requirement::available(
         "launch",
         format!(
-            "a session of {} in {} passes every launch gate; `torlek sandbox show {} --agent \
+            "a session of {} in {} passes every launch gate{}; `torlek sandbox show {} --agent \
              NAME` lists them",
             providers.join(", "),
             dir.display(),
+            if is_probed {
+                ", and a probe launch ran in each one's sandbox"
+            } else {
+                ""
+            },
             dir.display()
         ),
     )]

@@ -690,9 +690,32 @@ async fn launches(
             .sandbox_preflight(dir.to_path_buf(), Some(provider.name().as_str()))
             .await
             .map_err(|error| format!("{}: {error}", provider.name()))?;
-        all.push(launch_facts(&preflight));
+        let mut facts = launch_facts(&preflight);
+        facts.probe = probe(context, &preflight).await;
+        all.push(facts);
     }
     Ok(all)
+}
+
+/// `torlek doctor`'s probe launch in a sandboxed profile that was built (#833); `None` for
+/// any other, which runs nothing to probe.
+async fn probe(
+    context: &Context,
+    preflight: &cockpit_sessions::SandboxPreflight,
+) -> Option<Result<String, String>> {
+    if preflight.setting != cockpit_config::AgentSandbox::Required {
+        return None;
+    }
+    let Some(Ok(prepared)) = &preflight.profile else {
+        return None;
+    };
+    Some(
+        context
+            .sessions
+            .probe_launch(prepared.clone())
+            .await
+            .unwrap_or_else(|error| Err(error.to_string())),
+    )
 }
 
 /// The launch gates' facts as `cockpit-readiness` assesses them (#1250).
@@ -747,6 +770,7 @@ pub(crate) fn launch_facts(
                 })
                 .map_err(Clone::clone)
         }),
+        probe: None,
     }
 }
 

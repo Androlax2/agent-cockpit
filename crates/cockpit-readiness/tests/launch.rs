@@ -31,6 +31,7 @@ fn passing(provider: &str) -> LaunchFacts {
             from: PathBuf::from("/home/me/app"),
         },
         profile: Some(Ok(PROFILE.to_owned())),
+        probe: None,
     }
 }
 
@@ -69,7 +70,7 @@ fn a_launch_whose_gates_pass_lists_each_gate_in_launch_order() {
 #[test]
 fn each_gate_that_does_not_pass_names_its_fix() {
     type Change = fn(&mut LaunchFacts);
-    let cases: [(&str, Change, Status, &str); 9] = [
+    let cases: [(&str, Change, Status, &str); 10] = [
         (
             "launch command",
             |facts| facts.command = Err("effort \"x\" is not a level".to_owned()),
@@ -133,6 +134,16 @@ fn each_gate_that_does_not_pass_names_its_fix() {
             Status::MissingPrerequisite,
             "report it",
         ),
+        (
+            "launch probe",
+            |facts| {
+                facts.probe = Some(Err(
+                    "the probe launch ended with exit 1: CARGO_HOME is not set".to_owned(),
+                ));
+            },
+            Status::MissingPrerequisite,
+            "`sandbox` line",
+        ),
     ];
     for (name, change, status, fix) in cases {
         let mut facts = passing("claude");
@@ -184,6 +195,59 @@ fn a_profile_not_built_is_unknown_and_points_at_the_gates_above() {
 
     assert_eq!(gate(&gates, "launch profile").status, Status::Unknown);
     assert_eq!(gate(&gates, "launch toolchains").status, Status::Unknown);
+}
+
+#[test]
+fn a_probe_launch_that_ran_is_the_last_gate() {
+    let mut facts = passing("claude");
+    facts.probe = Some(Ok(
+        "ran in the sandbox: 15 per-session variables hold".to_owned()
+    ));
+
+    let gates = launch_gates(&facts);
+
+    let last = gates.last().expect("gates");
+    assert_eq!(last.name, "launch probe");
+    assert_eq!(last.status, Status::Available);
+    assert!(
+        last.detail.contains("15 per-session variables"),
+        "{last:#?}"
+    );
+}
+
+#[test]
+fn a_summary_of_probed_launches_says_the_probes_ran() {
+    let probed = |provider: &str| {
+        let mut facts = passing(provider);
+        facts.probe = Some(Ok("ran in the sandbox".to_owned()));
+        facts
+    };
+
+    let summary = launch_summary(&[probed("claude"), probed("codex")], Path::new("/app"));
+
+    assert!(
+        summary[0]
+            .detail
+            .contains("passes every launch gate, and a probe launch ran in each one's sandbox"),
+        "{summary:#?}"
+    );
+}
+
+#[test]
+fn a_failed_probe_launch_names_its_provider_in_the_summary() {
+    let mut failed = passing("codex");
+    failed.probe = Some(Err(
+        "the probe launch ended with exit 1: CARGO_HOME is not set".to_owned(),
+    ));
+
+    let summary = launch_summary(&[passing("claude"), failed], Path::new("/home/me/app"));
+
+    assert_eq!(summary.len(), 1, "{summary:#?}");
+    assert_eq!(summary[0].name, "launch codex probe");
+    assert!(
+        summary[0].detail.contains("CARGO_HOME is not set"),
+        "{summary:#?}"
+    );
 }
 
 #[test]
