@@ -3163,7 +3163,7 @@ fn doctor_sandbox_row(report: &str) -> (&str, &str) {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_required_sandbox_with_a_shared_desktop_blocks_doctor_and_init_as_the_launch_refuses() {
     let home = Home::new();
-    home.write_owner_config(REQUIRED);
+    home.write_owner_config("[agents]\nsandbox = \"required\"\ndesktop_session = \"shared\"\n");
     let _daemon = home.start_with(&[("DISPLAY", ":1")]);
     let client = home.connect().await;
     let (root, _) = home.project(&client, "app").await;

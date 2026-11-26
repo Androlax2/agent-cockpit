@@ -35,15 +35,17 @@ pub fn run(bubblewrap: PathBuf) -> Result<(), String> {
         })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let stage2_refusal = stderr.lines().any(|line| line.starts_with(STAGE2_PREFIX));
-        let diagnosis = if stage2_refusal {
-            String::new()
-        } else {
+        let bubblewrap_refused = stderr
+            .lines()
+            .any(|line| line.starts_with(BUBBLEWRAP_PREFIX));
+        let diagnosis = if bubblewrap_refused {
             format!(
                 "; {}",
                 user_namespace_refusal(Path::new(PROC_SYS), &bubblewrap)
                     .unwrap_or_else(|| NO_KERNEL_SETTING_REFUSES.to_owned())
             )
+        } else {
+            String::new()
         };
         return Err(format!(
             "the probe launch failed ({}): {}{diagnosis}",
@@ -72,9 +74,9 @@ pub fn run(bubblewrap: PathBuf) -> Result<(), String> {
 
 const PROC_SYS: &str = "/proc/sys";
 
-/// How the launcher's own errors start, once bubblewrap has started it: a refusal of
-/// Landlock or seccomp, which names its own fix, not a namespace bubblewrap could not make.
-const STAGE2_PREFIX: &str = "torlek-sandbox: ";
+/// How bubblewrap's own errors start: it failed to set up the namespaces or mounts before
+/// it ran the launcher's stage 2, whose own errors (Landlock, seccomp) name their fix.
+const BUBBLEWRAP_PREFIX: &str = "bwrap: ";
 
 /// The fix when no kernel setting explains bubblewrap's failure: most often, Torlek runs in
 /// a container that refuses nested namespaces, as a VPS's LXC or OpenVZ guest does.
@@ -111,10 +113,11 @@ fn user_namespace_refusal(proc_sys: &Path, bubblewrap: &Path) -> Option<String> 
     if setting("kernel/apparmor_restrict_unprivileged_userns").as_deref() == Some("1") {
         return Some(format!(
             "AppArmor restricts unprivileged user namespaces \
-             (kernel.apparmor_restrict_unprivileged_userns = 1, Ubuntu 23.10 and later): give \
-             bubblewrap a profile that allows them, a file /etc/apparmor.d/bwrap holding \
-             `abi <abi/4.0>, include <tunables/global> profile bwrap {} flags=(unconfined) {{ \
-             userns, }}`, then run `sudo systemctl reload apparmor`",
+             (kernel.apparmor_restrict_unprivileged_userns = 1, Ubuntu 23.10 and later): unless \
+             bubblewrap already has a profile that allows them, write /etc/apparmor.d/bwrap \
+             with three lines, `abi <abi/4.0>,`, `include <tunables/global>` and `profile \
+             bwrap {} flags=(unconfined) {{ userns, }}`, then run `sudo systemctl reload \
+             apparmor`",
             bubblewrap.display()
         ));
     }

@@ -25,15 +25,16 @@ fn load(home: &Path, project_dir: Option<&Path>) -> Result<EffectiveConfig, Conf
     cockpit_config::load(&environment, project_dir, &[])
 }
 
+/// Withheld by default (#833): the sandbox, on by default, refuses a shared desktop session.
 #[test]
-fn a_clean_home_shares_the_desktop_session_with_agents() {
+fn a_clean_home_withholds_the_desktop_session_from_agents() {
     let home = TempDir::new().unwrap();
 
     let config = load(home.path(), None).unwrap();
 
     assert_eq!(
         config.agents_desktop_session,
-        cockpit_config::Sourced::new(DesktopSession::Shared, Source::ProductDefault)
+        cockpit_config::Sourced::new(DesktopSession::Withheld, Source::ProductDefault)
     );
 }
 

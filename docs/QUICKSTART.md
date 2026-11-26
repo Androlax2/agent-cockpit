@@ -9,7 +9,7 @@ If not, follow the [README](../README.md) first.
 - **Runs your coding agents side by side.** Claude Code, Codex or OpenCode, each in its own terminal session.
   You see them all in one list and open the one you want.
 - **Runs agents in a sandbox.** Each agent works in its checkout, reaches the network only through a proxy that asks you about each new host, and cannot act as you.
-  `sandbox = "off"` in your config turns it off: agents then run with your rights, and Torlek's grants do not bind them. Keep your work in Git. With `desktop_session = "withheld"` in your config, an agent stays away from your screen and desktop session.
+  `sandbox = "off"` in your config turns it off: agents then run with your rights, and Torlek's grants do not bind them. Keep your work in Git. An agent stays away from your screen and desktop session unless you write `desktop_session = "shared"`.
   The [known gaps](KNOWN-GAPS.md) list what is still open.
 - **Lets an agent ask you to run a command.** The agent sends you a request.
   The command runs only if you say yes.

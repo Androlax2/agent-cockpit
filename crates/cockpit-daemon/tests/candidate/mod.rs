@@ -59,10 +59,13 @@ fn add_agents_opt_out(path: &Path, key: &str, opt_out: &str) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => panic!("{}: {error}", path.display()),
     };
+    let dotted = format!("agents.{key}");
     let sets_key = contents.lines().any(|line| {
-        line.trim_start()
-            .strip_prefix(key)
-            .is_some_and(|rest| rest.trim_start().starts_with('='))
+        let line = line.trim_start();
+        [key, dotted.as_str()].into_iter().any(|name| {
+            line.strip_prefix(name)
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        })
     });
     if sets_key {
         return;

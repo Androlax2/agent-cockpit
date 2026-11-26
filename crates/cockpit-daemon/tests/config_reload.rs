@@ -33,6 +33,7 @@ fn text(bytes: &[u8]) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reload_prints_each_session_setting_and_the_value_it_replaced() {
     let home = Home::new();
+    home.write_owner_config("[agents]\ndesktop_session = \"shared\"\n");
     let _daemon = home.start();
     home.write_owner_config(
         "[agents]\ndesktop_session = \"withheld\"\nsandbox = \"off\"\n\

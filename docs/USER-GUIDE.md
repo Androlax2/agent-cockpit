@@ -39,7 +39,7 @@ The steps below start once those prerequisites are ready.
 | macOS | Deferred beyond Alpha 1 | No Alpha 1 download, Homebrew package or macOS acceptance is promised. [#568](https://github.com/Androlax2/agent-cockpit/issues/568) tracks restoration, including unresolved [public CA isolation (#527)](https://github.com/Androlax2/agent-cockpit/issues/527); existing tests do not establish supported installation |
 | Windows | Inside WSL2, from Windows Terminal | Linux backend inside WSL2; platform checks run in CI for selected crates; no native Windows daemon |
 
-You need Git, tmux **3.6 or newer**, curl and a supported provider CLI.
+You need Git, tmux **3.6 or newer**, curl, bubblewrap (`bwrap`, package `bubblewrap`) for the agent sandbox, and a supported provider CLI.
 Ubuntu 24.04 (including WSL2) ships tmux 3.4: upgrade tmux before using Torlek.
 An existing private tmux server also needs the supported version; upgrading its binary alone does not replace it.
 See [tmux prerequisites](DEVELOPMENT.md#tmux-prerequisite) for checks and upgrade guidance.
@@ -56,14 +56,16 @@ A source build uses the profile `dev` and release bundles use `torlek`; `torlek 
 Use the same profile for every command. To keep a preview's state apart from an existing installation, put `--profile next` before every command, including `daemon install`.
 
 1. Check the sandbox. Agents run in Torlek's native sandbox by default, `sandbox = "required"` under `[agents]`. `torlek doctor` prints a `sandbox` line: `sandboxed:` with the bubblewrap and Landlock versions it found, or what this host lacks and how to fix it (see [Sandbox mode](#sandbox-mode)); until it is fixed, every agent launch is refused.
-   To keep agents off your screen and desktop session, add this to the owner configuration file (`torlek config show` prints its path), keeping any existing settings:
+   Agents stay off your screen and desktop session by default, `desktop_session = "withheld"` under `[agents]`.
+   An unsandboxed agent can be given your display and filtered session bus with this in the owner configuration file (`torlek config show` prints its path), keeping any existing settings:
 
    ```toml
    [agents]
-   desktop_session = "withheld"
+   sandbox = "off"
+   desktop_session = "shared"
    ```
 
-   The default, `shared`, exposes your display and filtered session bus.
+   The sandbox refuses every launch under `shared` while your desktop session is imported, so the two go together.
    If the daemon is already running, run `torlek config reload` after a change to `[agents]`. Until then it keeps the `agents.sandbox` it last read, and `torlek doctor` blocks on its `sandbox` line, naming both values.
 
 2. Sign in to a provider. Run `torlek provider list` to see the installed names, then `torlek init` and follow its sign-in instruction in your terminal. A sign-in marked `unknown` needs the manual check `init` names.

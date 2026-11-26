@@ -8,8 +8,8 @@ launch got.
 `torlek-sandbox` ([its crate](../cockpit-sandbox-launcher/README.md)) under bubblewrap, with
 Landlock and seccomp. The daemon probes it once at its start (`Backend::probe`):
 
-- `agents.sandbox = "off"` (the product default) runs every agent unsandboxed, with the
-  owner's rights. `Sandbox::prepare` returns the command unchanged with `Unsandboxed`
+- `agents.sandbox = "off"` (the owner's rollback; `required` is the product default, #833)
+  runs every agent unsandboxed, with the owner's rights. `Sandbox::prepare` returns the command unchanged with `Unsandboxed`
   evidence, reason `no sandbox: agents.sandbox = "off"`.
 - `agents.sandbox = "required"` with the native backend: `Sandbox::prepare` builds the
   profile, then the `LaunchSpec` (`spec.rs`) the launcher reads, and returns the launcher in

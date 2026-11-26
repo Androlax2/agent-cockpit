@@ -244,10 +244,12 @@ pub struct ProjectNeeds {
 /// Whether a launched agent gets the owner's display and session bus variables. The one
 /// named opt-out (#305): the owner's `agents.desktop_session` selects it today, a sandbox
 /// profile later (#61). The session bus can start units outside the agent's containment.
+/// `withheld` is the product default (#833): the native sandbox, on by default, refuses a launch
+/// that would share them, so `shared` is the owner's choice, for an unsandboxed agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DesktopSession {
-    /// The agent gets the variables the daemon has, as #303 decided.
+    /// The agent gets the variables the daemon has, as #303 decided, when the owner writes it.
     Shared,
     /// The agent gets none of them.
     Withheld,
@@ -1025,7 +1027,7 @@ fn asleep_expiry(layers: &[Layer]) -> Result<Sourced<Duration>, ConfigError> {
 }
 
 fn agents_desktop_session(layers: &[Layer]) -> Sourced<DesktopSession> {
-    let mut resolved = Sourced::new(DesktopSession::Shared, Source::ProductDefault);
+    let mut resolved = Sourced::new(DesktopSession::Withheld, Source::ProductDefault);
     for layer in layers {
         let Some(value) = layer
             .settings

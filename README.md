@@ -92,8 +92,8 @@ Ubuntu 24.04 ships tmux 3.4: install a newer tmux first.
    Agents run in Torlek's native sandbox (bubblewrap, Landlock and seccomp), reaching the network only through a proxy that asks you about each new host.
    `torlek doctor` says whether this host has the sandbox, and what to fix when it does not; until then every agent launch is refused.
    To roll back, write `sandbox = "off"` under `[agents]` in your Torlek config file: agents then run unsandboxed, with your rights, so Torlek's grants do not bind them.
-   Add `desktop_session = "withheld"` under `[agents]` to keep agents away from your screen and desktop session.
-   Without it, agents can use them.
+   Agents stay away from your screen and desktop session by default (`desktop_session = "withheld"` under `[agents]`).
+   `desktop_session = "shared"` gives them your display and session bus, which the sandbox refuses, so it suits only the rollback.
 
 The package for Arch Linux (AUR) is prepared but not published yet. Use the install script above there.
 
