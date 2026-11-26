@@ -98,9 +98,12 @@ async fn run_in_agent(home: &Home, root: &Path, line: &str) -> String {
     home.agent_output(root, number).await
 }
 
+const ROLLBACK: &str = "[agents]\nsandbox = \"off\"\n";
+
 #[tokio::test(flavor = "multi_thread")]
-async fn by_default_a_launch_runs_unsandboxed_and_the_evidence_says_no_sandbox() {
+async fn under_the_rollback_a_launch_runs_unsandboxed_and_the_evidence_says_no_sandbox() {
     let home = Home::new();
+    home.write_owner_config(ROLLBACK);
     let _daemon = home.start();
     let client = home.connect().await;
     let (root, _) = home.project(&client, "app").await;
@@ -166,8 +169,9 @@ async fn a_required_setting_without_bubblewrap_logs_at_start_that_every_launch_i
 
 /// The daemon's start and each unsandboxed launch warn that grants no longer hold (#729).
 #[tokio::test(flavor = "multi_thread")]
-async fn the_default_warns_at_start_and_at_each_launch_that_an_agent_can_act_as_the_owner() {
+async fn the_rollback_warns_at_start_and_at_each_launch_that_an_agent_can_act_as_the_owner() {
     let home = Home::new();
+    home.write_owner_config(ROLLBACK);
     let _daemon = home.start();
     let client = home.connect().await;
     let (root, _) = home.project(&client, "app").await;
@@ -345,6 +349,47 @@ async fn a_required_launch_runs_in_the_native_sandbox_and_the_evidence_names_it(
     );
     assert!(printed.contains("\nengine: bubblewrap "), "{printed}");
     assert!(printed.contains("\nobserved: landlock abi: "), "{printed}");
+}
+
+/// #833: with the sandbox the default, an upgrade's daemon restart meets sandboxed agents. The
+/// next daemon reattaches the running agent, which reaches it through the agent socket its
+/// sandbox mounted, without a new launch.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_reaches_the_next_daemon_after_a_killed_one() {
+    let home = Home::new();
+    let Sandboxed {
+        _daemon: daemon,
+        root,
+        session,
+    } = sandboxed_agent(&home, |_| {}).await;
+    run_in_agent(&home, &root, "true").await;
+    let client = home.connect().await;
+    let before = listed(&client, &session).await;
+    drop(client);
+    daemon.kill();
+
+    let _daemon = home.start();
+    let reported = run_in_agent(
+        &home,
+        &root,
+        &format!(
+            "'{}' agent report --state waiting --label kept",
+            cockpit_program().display()
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        reported,
+        format!("reported for session {session}\nexit=0\n")
+    );
+    let client = home.connect().await;
+    let after = listed(&client, &session).await;
+    assert_eq!(after.state, SessionStateView::Running, "{after:?}");
+    assert_eq!(
+        after.launch, before.launch,
+        "the same launch, not a new one"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3159,7 +3204,7 @@ fn doctor_sandbox_row(report: &str) -> (&str, &str) {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_required_sandbox_with_a_shared_desktop_blocks_doctor_and_init_as_the_launch_refuses() {
     let home = Home::new();
-    home.write_owner_config(REQUIRED);
+    home.write_owner_config("[agents]\nsandbox = \"required\"\ndesktop_session = \"shared\"\n");
     let _daemon = home.start_with(&[("DISPLAY", ":1")]);
     let client = home.connect().await;
     let (root, _) = home.project(&client, "app").await;

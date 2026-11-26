@@ -225,8 +225,14 @@ fn restrict_system_calls() -> Result<(), String> {
         let program = filter
             .and_then(BpfProgram::try_from)
             .map_err(|error| format!("cannot build the seccomp filter: {error}"))?;
-        seccompiler::apply_filter(&program)
-            .map_err(|error| format!("cannot apply the seccomp filter: {error}"))?;
+        seccompiler::apply_filter(&program).map_err(|error| {
+            format!(
+                "cannot apply the seccomp filter: {error}; the sandbox needs the kernel's \
+                 seccomp filter mode (CONFIG_SECCOMP_FILTER, which gives `/proc/self/status` \
+                 its `Seccomp_filters` line); if Torlek runs in a container that refuses it, \
+                 run Torlek on the host or in a full virtual machine"
+            )
+        })?;
     }
     Ok(())
 }

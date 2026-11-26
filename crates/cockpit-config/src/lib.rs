@@ -244,10 +244,12 @@ pub struct ProjectNeeds {
 /// Whether a launched agent gets the owner's display and session bus variables. The one
 /// named opt-out (#305): the owner's `agents.desktop_session` selects it today, a sandbox
 /// profile later (#61). The session bus can start units outside the agent's containment.
+/// `withheld` is the product default (#833): the native sandbox, on by default, refuses a launch
+/// that would share them, so `shared` is the owner's choice, for an unsandboxed agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DesktopSession {
-    /// The agent gets the variables the daemon has, as #303 decided.
+    /// The agent gets the variables the daemon has, as #303 decided, when the owner writes it.
     Shared,
     /// The agent gets none of them.
     Withheld,
@@ -267,10 +269,10 @@ impl DesktopSession {
 pub const UNSANDBOXED_RISK: &str = "an unsandboxed agent can reach the owner socket and act \
     as the owner, so Torlek's grants only hold under the sandbox";
 
-/// Whether a launched agent runs in the sandbox (#61). The product default is `off` until
-/// the native sandbox is live (#546), logged at every launch; an explicit `required` runs
-/// every launch in Torlek's native sandbox (#829) and refuses it on a host without one,
-/// never runs one unsandboxed.
+/// Whether a launched agent runs in the sandbox (#61). The product default is `required`
+/// (#833): every launch runs in Torlek's native sandbox (#829) and is refused on a host
+/// without one, never run unsandboxed. `off` is the owner's rollback, logged at every
+/// launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentSandbox {
@@ -1025,7 +1027,7 @@ fn asleep_expiry(layers: &[Layer]) -> Result<Sourced<Duration>, ConfigError> {
 }
 
 fn agents_desktop_session(layers: &[Layer]) -> Sourced<DesktopSession> {
-    let mut resolved = Sourced::new(DesktopSession::Shared, Source::ProductDefault);
+    let mut resolved = Sourced::new(DesktopSession::Withheld, Source::ProductDefault);
     for layer in layers {
         let Some(value) = layer
             .settings
@@ -1041,7 +1043,7 @@ fn agents_desktop_session(layers: &[Layer]) -> Sourced<DesktopSession> {
 }
 
 fn agents_sandbox(layers: &[Layer]) -> Sourced<AgentSandbox> {
-    let mut resolved = Sourced::new(AgentSandbox::Off, Source::ProductDefault);
+    let mut resolved = Sourced::new(AgentSandbox::Required, Source::ProductDefault);
     for layer in layers {
         let Some(value) = layer
             .settings

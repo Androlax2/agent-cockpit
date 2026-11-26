@@ -13,9 +13,8 @@ pkgdesc='Agent session cockpit: CLI, terminal UI and per-user daemon (prebuilt r
 arch=('x86_64' 'aarch64')
 url='https://github.com/Androlax2/agent-cockpit'
 license=('Apache-2.0')
-depends=('glibc' 'libgcc' 'git' 'curl' 'tmux>=3.6')
+depends=('glibc' 'libgcc' 'git' 'curl' 'tmux>=3.6' 'bubblewrap')
 optdepends=('systemd: the per-user daemon service, torlek daemon install'
-            'bubblewrap: the native agent sandbox, agents.sandbox = "required"'
             'github-cli: file a bug report as a GitHub issue')
 provides=('torlek')
 conflicts=('torlek')

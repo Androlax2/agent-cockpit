@@ -1,8 +1,8 @@
 //! What an agent the daemon launches inherits from the daemon, through the real daemon
 //! binary and a stand-in Claude Code. It reaches the daemon's agent socket whatever XDG
 //! layout the daemon runs with (#268), and the owner's desktop session through the display
-//! variables the daemon has, never ones it lacks (#303, #306), unless the owner withholds them
-//! (#305), and as the owner last imported them (#307).
+//! variables the daemon has, never ones it lacks (#303, #306), once the owner shares them
+//! (#305; withheld by default since #833), and as the owner last imported them (#307).
 
 mod candidate;
 mod real_daemon;
@@ -14,6 +14,9 @@ use cockpit_protocol::{Command, ErrorCode, Reply};
 use real_daemon::{
     Daemon, GENEROUS, Home, REPORT_PROJECT, REPORTED_LABEL, cockpit_program, new_session,
 };
+
+/// The owner's choice to share the desktop session; the harness's `sandbox = "off"` joins it.
+const SHARED: &str = "[agents]\ndesktop_session = \"shared\"\n";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_launched_agent_reports_to_a_daemon_on_a_scratch_layout() {
@@ -53,6 +56,7 @@ async fn a_launched_agent_reports_to_a_daemon_on_a_scratch_layout() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_launched_agent_sees_the_daemons_display_variables() {
     let home = Home::new();
+    home.write_owner_config(SHARED);
     let _daemon = start_in_a_desktop_session(&home);
 
     let seen = home.environment_of_a_launched_agent().await;
@@ -70,6 +74,7 @@ async fn a_launched_agent_sees_the_daemons_display_variables() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_launched_agent_gets_no_display_variable_the_daemon_lacks() {
     let home = Home::new();
+    home.write_owner_config(SHARED);
     let _daemon = home.start_with(&[("WAYLAND_DISPLAY", "wayland-7")]);
 
     let seen = home.environment_of_a_launched_agent().await;
@@ -94,9 +99,8 @@ fn start_in_a_desktop_session(home: &Home) -> Daemon {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_owner_who_withholds_the_desktop_session_launches_agents_without_any_of_it() {
+async fn by_default_agents_launch_without_any_of_the_desktop_session() {
     let home = Home::new();
-    home.write_owner_config("[agents]\ndesktop_session = \"withheld\"\n");
     let _daemon = start_in_a_desktop_session(&home);
 
     let seen = home.environment_of_a_launched_agent().await;
@@ -110,6 +114,7 @@ async fn an_owner_who_withholds_the_desktop_session_launches_agents_without_any_
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_launched_after_an_import_sees_the_imported_desktop_session() {
     let home = Home::new();
+    home.write_owner_config(SHARED);
     let _daemon = start_in_a_desktop_session(&home);
 
     let imported = home

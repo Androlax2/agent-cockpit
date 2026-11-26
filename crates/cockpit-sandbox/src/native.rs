@@ -170,11 +170,19 @@ fn probe_native(launcher: &Path, search_path: Option<&OsStr>) -> Result<NativeBa
             String::from_utf8_lossy(&output.stdout)
         )
     })?;
+    if report.landlock_abi == 0 {
+        return Err(format!(
+            "the kernel enforces no Landlock for a sandboxed process; the sandbox needs \
+             Landlock ABI {LANDLOCK_ABI_FLOOR} or later: Linux 5.19 or later with `landlock` among \
+             its security modules (`cat /sys/kernel/security/lsm` lists them; add it to the \
+             kernel's `lsm=` boot parameter, or pick a kernel or VM image that enables it)"
+        ));
+    }
     if report.landlock_abi < LANDLOCK_ABI_FLOOR {
         return Err(format!(
-            "the kernel gives a sandboxed process Landlock ABI {}, below the floor, {}; \
-             a kernel of Linux 5.19 or later with Landlock enabled is needed",
-            report.landlock_abi, LANDLOCK_ABI_FLOOR
+            "the kernel gives a sandboxed process Landlock ABI {}, below the floor, \
+             {LANDLOCK_ABI_FLOOR}: a kernel of Linux 5.19 or later is needed",
+            report.landlock_abi
         ));
     }
     Ok(NativeBackend {

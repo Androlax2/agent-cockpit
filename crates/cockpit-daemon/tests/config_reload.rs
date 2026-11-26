@@ -12,7 +12,9 @@ use real_daemon::{GENEROUS, Home, cockpit_program};
 /// A daemon started inside a graphical session.
 const DESKTOP_AT_START: [(&str, &str); 2] = [("DISPLAY", ":7"), ("WAYLAND_DISPLAY", "wayland-7")];
 
-const WITHHELD: &str = "[agents]\ndesktop_session = \"withheld\"\n";
+/// A rewritten owner file keeps the harness's `sandbox = "off"` (#833): the fake agent has no
+/// sandbox profile, and the harness adds the rollback only to the file a start reads.
+const WITHHELD: &str = "[agents]\ndesktop_session = \"withheld\"\nsandbox = \"off\"\n";
 
 /// Runs `cockpit config reload` as the owner and returns its output.
 async fn reload(home: &Home) -> std::process::Output {
@@ -31,9 +33,10 @@ fn text(bytes: &[u8]) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reload_prints_each_session_setting_and_the_value_it_replaced() {
     let home = Home::new();
+    home.write_owner_config("[agents]\ndesktop_session = \"shared\"\n");
     let _daemon = home.start();
     home.write_owner_config(
-        "[agents]\ndesktop_session = \"withheld\"\n\
+        "[agents]\ndesktop_session = \"withheld\"\nsandbox = \"off\"\n\
          [sessions]\nidle_sleep_after_minutes = 45\n",
     );
 

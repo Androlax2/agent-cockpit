@@ -5,7 +5,7 @@ This guide is the detailed reference behind them.
 
 Torlek runs your coding agents in terminal sessions and keeps their work, questions and approvals together.
 One installation belongs to one person, with a CLI and terminal UI backed by a per-user daemon and tmux.
-This release has no sandbox: agents run with your rights until Torlek's own sandbox ([#546](https://github.com/Androlax2/agent-cockpit/issues/546)) is live. You still decide which requests an agent asks you to run.
+Agents run in Torlek's native sandbox by default ([#833](https://github.com/Androlax2/agent-cockpit/issues/833)); a host without it refuses every launch rather than run an agent unsandboxed. You still decide which requests an agent asks you to run.
 
 This is **Alpha 1 for Linux and WSL2**, built under `crates/` beside the running legacy product.
 Alpha state may reset between releases; keep your work in Git and do not rely on alpha state migrating to beta.
@@ -39,7 +39,7 @@ The steps below start once those prerequisites are ready.
 | macOS | Deferred beyond Alpha 1 | No Alpha 1 download, Homebrew package or macOS acceptance is promised. [#568](https://github.com/Androlax2/agent-cockpit/issues/568) tracks restoration, including unresolved [public CA isolation (#527)](https://github.com/Androlax2/agent-cockpit/issues/527); existing tests do not establish supported installation |
 | Windows | Inside WSL2, from Windows Terminal | Linux backend inside WSL2; platform checks run in CI for selected crates; no native Windows daemon |
 
-You need Git, tmux **3.6 or newer**, curl and a supported provider CLI.
+You need Git, tmux **3.6 or newer**, curl, bubblewrap (`bwrap`, package `bubblewrap`) for the agent sandbox, and a supported provider CLI.
 Ubuntu 24.04 (including WSL2) ships tmux 3.4: upgrade tmux before using Torlek.
 An existing private tmux server also needs the supported version; upgrading its binary alone does not replace it.
 See [tmux prerequisites](DEVELOPMENT.md#tmux-prerequisite) for checks and upgrade guidance.
@@ -55,18 +55,18 @@ Run `torlek daemon install` and `torlek init` first, as the [README](../README.m
 A source build uses the profile `dev` and release bundles use `torlek`; `torlek config show` and `torlek doctor` show which profile and paths you are using.
 Use the same profile for every command. To keep a preview's state apart from an existing installation, put `--profile next` before every command, including `daemon install`.
 
-1. Accept running agents without a sandbox. Add this to the owner configuration file (`torlek config show` prints its path), keeping any existing settings:
+1. Check the sandbox. Agents run in Torlek's native sandbox by default, `sandbox = "required"` under `[agents]`. `torlek doctor` prints a `sandbox` line: `sandboxed:` with the bubblewrap and Landlock versions it found, or what this host lacks and how to fix it (see Sandbox mode under [Configuration and state](#configuration-and-state)); until it is fixed, every agent launch is refused.
+   Agents stay off your screen and desktop session by default, `desktop_session = "withheld"` under `[agents]`.
+   An unsandboxed agent can be given your display and filtered session bus with this in the owner configuration file (`torlek config show` prints its path), keeping any existing settings:
 
    ```toml
    [agents]
    sandbox = "off"
-   desktop_session = "withheld"
+   desktop_session = "shared"
    ```
 
-   `sandbox = "off"` records that you accept this: an unsandboxed agent runs with your rights, can reach the owner socket and act as you, so Torlek's grants do not bind it. The daemon logs that risk at its start and at every launch.
-   `desktop_session = "withheld"` keeps agents off your screen and desktop session; the default, `shared`, exposes your display and filtered session bus.
-   To refuse every unsandboxed launch instead, see Sandbox mode in [Configuration and state](USER-GUIDE.md#configuration-and-state).
-   If the daemon is already running, run `torlek config reload`. Until then it keeps the `agents.sandbox` it last read, and `torlek doctor` blocks on its `sandbox` line, naming both values.
+   The sandbox refuses every launch under `shared` while your desktop session is imported, so the two go together.
+   If the daemon is already running, run `torlek config reload` after a change to `[agents]`. Until then it keeps the `agents.sandbox` it last read, and `torlek doctor` blocks on its `sandbox` line, naming both values.
 
 2. Sign in to a provider. Run `torlek provider list` to see the installed names, then `torlek init` and follow its sign-in instruction in your terminal. A sign-in marked `unknown` needs the manual check `init` names.
    A local sign-in check does not prove your account has model access or remaining quota.
@@ -491,7 +491,7 @@ and save it with `torlek project token set PROJECT`: it asks for the token witho
 `0700`. `torlek project token show PROJECT` prints the file and its mode, never the token, and
 `torlek project token clear PROJECT` removes it. These verbs work from your own terminal only;
 a session is refused.
-Its next sessions get it as `GH_TOKEN`; a sandbox would hide your `~/.config/gh` login from them, but this release runs agents unsandboxed, so they can read it.
+Under `agents.sandbox = "off"` its next sessions get it as `GH_TOKEN`; they run unsandboxed, so they can also read your own `~/.config/gh` login.
 A project without one gets no `GH_TOKEN`. `torlek project show PROJECT` says which, never the
 token. A file whose mode is not `0600` or `0400`, or one that holds anything but the token, stops the
 project's sessions from launching until you fix it.
@@ -534,7 +534,18 @@ Use the paths printed by your binary; keep private state and provider credential
 
 ### Sandbox mode
 
-Where no sandbox backend exists, `sandbox = "required"` under `[agents]` refuses every agent launch and names the missing backend. It never runs an agent unsandboxed.
+`sandbox = "required"` under `[agents]` is the default: every agent launch runs in Torlek's native sandbox. Where this host has no sandbox, every launch is refused, naming what is missing; it never runs an agent unsandboxed.
+
+The daemon runs a probe launch at its start, and `torlek doctor`'s `sandbox` line reports it. The sandbox needs:
+
+- bubblewrap (`bwrap`) on the daemon's `PATH`;
+- unprivileged user namespaces: `user.max_user_namespaces` above 0, `kernel.unprivileged_userns_clone` not 0 where the kernel has it, and, on Ubuntu 23.10 and later, an AppArmor profile that lets `bwrap` create them while `kernel.apparmor_restrict_unprivileged_userns` is 1;
+- Landlock ABI 2 or later: Linux 5.19 or later, with `landlock` among its security modules (`cat /sys/kernel/security/lsm`);
+- seccomp filter mode (`CONFIG_SECCOMP_FILTER`).
+
+On a VPS or in a container (Docker, LXC, OpenVZ), the host kernel may refuse nested namespaces whatever the settings say; run Torlek on the host or in a full virtual machine. The refusal names the setting that blocks and the command that allows it. After a fix, restart the daemon so its probe runs again.
+
+To roll back, write `sandbox = "off"` under `[agents]` and run `torlek config reload`: agents then run unsandboxed, with your rights, can reach the owner socket and act as you, so Torlek's grants do not bind them. The daemon logs that risk at its start and at every launch, and `torlek doctor` and `torlek init` name it.
 
 Before a first sandboxed session, `torlek sandbox show DIR [--agent NAME]` runs the checks a launch in `DIR` runs, without launching anything or writing a file: the provider's command, the backend, the desktop session, the provider's sign-in, the project's GitHub token, the checkout's toolchains, the folder trust and the profile. It prints one line per check, with its fix when it fails, then the sandbox and the command the launch would get, and exits 1 when a check refuses the launch. `torlek doctor --project DIR` lists the checks that fail for each provider, and `torlek init` holds its session step on one that refuses.
 

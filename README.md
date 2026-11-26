@@ -7,7 +7,7 @@ Torlek runs your coding agents (Claude Code, Codex, OpenCode) side by side, each
 One screen shows every agent, its questions and a todo list per project.
 
 **Alpha 1, Linux and Windows through WSL2.** Torlek may lose its data between versions: keep your work in Git.
-The sandbox is off by default, so agents run with your rights (see [Known gaps](https://github.com/Androlax2/agent-cockpit/blob/main/docs/KNOWN-GAPS.md)).
+Agents run in Torlek's native sandbox by default; a host without it refuses every launch rather than run an agent unsandboxed (see [Known gaps](https://github.com/Androlax2/agent-cockpit/blob/main/docs/KNOWN-GAPS.md)).
 
 ## Install with your AI agent
 
@@ -20,7 +20,8 @@ https://github.com/Androlax2/agent-cockpit/blob/main/README.md
 Do not guess other commands, packages or download links.
 
 1. Check that this is Linux or WSL2 on x86_64 or aarch64, and that git, curl,
-   tmux 3.6 or newer and a systemd user session are present. Tell me what is missing.
+   tmux 3.6 or newer, bubblewrap (bwrap) and a systemd user session are present.
+   Tell me what is missing.
 2. Before any command that uses sudo or the system package manager, show me the
    exact command, say why it is needed, and wait for my yes.
 3. Download the release archive, check its checksum, unpack it and link torlek
@@ -28,16 +29,16 @@ Do not guess other commands, packages or download links.
 4. Run "torlek daemon install", then "torlek init".
 5. Follow what "torlek init" says, one step at a time. Ask me before each step
    that changes my settings. Two things are mine to do, so tell me what to do
-   and wait: writing sandbox = "off" under [agents] in my Torlek config file
-   (that is my consent to run agents without a sandbox), and signing in to
-   Claude, Codex or OpenCode.
+   and wait: signing in to Claude, Codex or OpenCode, and any change to my
+   Torlek config file. Never write sandbox = "off" in it: that runs agents
+   without a sandbox, and only I decide it.
 6. When "torlek init" has nothing left that you can do, tell me in plain words
    what you did and what is left for me.
 ```
 
 ## Install from the command line
 
-You need Linux or WSL2 (x86_64 or aarch64), `git`, `curl`, `tmux` 3.6 or newer, and a systemd user session.
+You need Linux or WSL2 (x86_64 or aarch64), `git`, `curl`, `tmux` 3.6 or newer, bubblewrap (`bwrap`, package `bubblewrap`) for the agent sandbox, and a systemd user session.
 On Windows, open your WSL2 Linux from Windows Terminal and run everything there.
 Ubuntu 24.04 ships tmux 3.4: install a newer tmux first.
 
@@ -88,11 +89,11 @@ Ubuntu 24.04 ships tmux 3.4: install a newer tmux first.
    `torlek init` changes nothing. It lists what is done and what is left, and ends with the one thing to do next.
    Do that, then run `torlek init` again.
 
-   This release has no sandbox: agents run with your rights, so Torlek's grants do not bind them.
-   One step asks you to write `sandbox = "off"` under `[agents]` in your Torlek config file.
-   Write it yourself: it records that you accept running agents unsandboxed.
-   Add `desktop_session = "withheld"` on the next line to keep agents away from your screen and desktop session.
-   Without it, agents can use them.
+   Agents run in Torlek's native sandbox (bubblewrap, Landlock and seccomp), reaching the network only through a proxy that asks you about each new host.
+   `torlek doctor` says whether this host has the sandbox, and what to fix when it does not; until then every agent launch is refused.
+   To roll back, write `sandbox = "off"` under `[agents]` in your Torlek config file: agents then run unsandboxed, with your rights, so Torlek's grants do not bind them.
+   Agents stay away from your screen and desktop session by default (`desktop_session = "withheld"` under `[agents]`).
+   `desktop_session = "shared"` gives them your display and session bus, which the sandbox refuses, so it suits only the rollback.
 
 The package for Arch Linux (AUR) is prepared but not published yet. Use the install script above there.
 

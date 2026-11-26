@@ -50,7 +50,7 @@ error-level one. `0.1.0alpha.4-1` has warnings only:
   archive. `$CARCH` there would make the `.SRCINFO` depend on the machine that printed it.
 - `Unused shared library '/usr/lib64/ld-linux-x86-64.so.2'`, once per program: the release
   build lists the loader as a needed library, and the package ships the programs unchanged.
-- `Dependency included, but may not be needed` for `git`, `curl` and `tmux`: Torlek runs
+- `Dependency included, but may not be needed` for `git`, `curl`, `tmux` and `bubblewrap`: Torlek runs
   them as programs, which `namcap` cannot see; it only reads linked libraries.
 
 ## Package
@@ -91,9 +91,9 @@ error-level one. `0.1.0alpha.4-1` has warnings only:
   script does nothing; that recipe-only change is `pkgrel` 2.
 - **Dependencies:** `glibc` and `libgcc`, the only libraries the programs link (`libc`, `libm`
   and `libgcc_s`), plus the [user guide](../USER-GUIDE.md#platforms-and-prerequisites)'s
-  prerequisites: `git`, `curl` and `tmux>=3.6`. Optional: `systemd` for `torlek daemon install`,
-  `bubblewrap` for `agents.sandbox = "required"`, and `github-cli` to file a bug report as an
-  issue. Provider CLIs are left out, because their AUR names are not owned here.
+  prerequisites: `git`, `curl` and `tmux>=3.6`, and `bubblewrap` for the native agent sandbox,
+  the `agents.sandbox = "required"` default (#833). Optional: `systemd` for
+  `torlek daemon install`, and `github-cli` to file a bug report as an issue. Provider CLIs are left out, because their AUR names are not owned here.
 - **License:** Apache-2.0, the archive's `LICENSE`.
 
 ### Version order

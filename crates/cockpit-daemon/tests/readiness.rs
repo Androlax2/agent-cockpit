@@ -376,9 +376,26 @@ async fn a_required_sandbox_without_bubblewrap_blocks_doctor_and_init_naming_why
     );
 }
 
+/// #833: with no `agents.sandbox` written, the product default requires the sandbox, so a
+/// host without bubblewrap blocks `doctor` naming it; nothing falls back to unsandboxed.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_default_unsandboxed_setting_is_reported_loudly_without_blocking() {
+async fn by_default_a_host_without_bubblewrap_blocks_doctor_on_the_sandbox() {
+    let home = Home::without_owner_config();
+    let _daemon = home.start_without_bubblewrap();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    assert_eq!(doctor.status.code(), Some(1), "{report}");
+    let (sandbox, _) = requirement(&report, "sandbox");
+    assert_eq!(status(sandbox), "missing-prerequisite", "{sandbox}");
+    assert!(sandbox.contains("bubblewrap (`bwrap`)"), "{sandbox}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_unsandboxed_rollback_is_reported_loudly_without_blocking() {
     let home = Home::new();
+    home.write_owner_config("[agents]\nsandbox = \"off\"\n");
     let _daemon = home.start();
 
     let doctor = home.cockpit(&["doctor"], &[]).await;

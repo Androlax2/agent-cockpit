@@ -590,9 +590,9 @@ impl Default for Settings {
                 // The current cockpit's `idle-sleep-after` default and expiry (sleep.rs).
                 idle_sleep_after: Duration::from_secs(60 * 60),
                 asleep_expiry: Duration::from_secs(7 * 24 * 60 * 60),
-                desktop_session: crate::DesktopSession::Shared,
-                // `agents.sandbox`'s product default while no backend exists (#828).
-                sandbox: cockpit_config::AgentSandbox::Off,
+                // `agents.desktop_session`'s and `agents.sandbox`'s product defaults (#833).
+                desktop_session: crate::DesktopSession::Withheld,
+                sandbox: cockpit_config::AgentSandbox::Required,
             },
             stop: Escalation {
                 grace: Duration::from_secs(5),

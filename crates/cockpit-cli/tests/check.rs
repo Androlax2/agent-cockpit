@@ -23,6 +23,8 @@ fn with_checks() -> (TestHome, common::RunningDaemon, PathBuf) {
 /// [`with_checks`] before the owner trusts the project.
 fn with_untrusted_checks() -> (TestHome, common::RunningDaemon, PathBuf) {
     let home = TestHome::new();
+    // The test daemon has no `torlek-sandbox` beside it, so its checks run on the host.
+    home.allow_unsandboxed();
     let daemon = home.start();
     let root = home.project("app");
     std::fs::create_dir_all(root.join(".torlek")).unwrap();
