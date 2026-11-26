@@ -351,6 +351,47 @@ async fn a_required_launch_runs_in_the_native_sandbox_and_the_evidence_names_it(
     assert!(printed.contains("\nobserved: landlock abi: "), "{printed}");
 }
 
+/// #833: with the sandbox the default, an upgrade's daemon restart meets sandboxed agents. The
+/// next daemon reattaches the running agent, which reaches it through the agent socket its
+/// sandbox mounted, without a new launch.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_reaches_the_next_daemon_after_a_killed_one() {
+    let home = Home::new();
+    let Sandboxed {
+        _daemon: daemon,
+        root,
+        session,
+    } = sandboxed_agent(&home, |_| {}).await;
+    run_in_agent(&home, &root, "true").await;
+    let client = home.connect().await;
+    let before = listed(&client, &session).await;
+    drop(client);
+    daemon.kill();
+
+    let _daemon = home.start();
+    let reported = run_in_agent(
+        &home,
+        &root,
+        &format!(
+            "'{}' agent report --state waiting --label kept",
+            cockpit_program().display()
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        reported,
+        format!("reported for session {session}\nexit=0\n")
+    );
+    let client = home.connect().await;
+    let after = listed(&client, &session).await;
+    assert_eq!(after.state, SessionStateView::Running, "{after:?}");
+    assert_eq!(
+        after.launch, before.launch,
+        "the same launch, not a new one"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sandboxed_agent_writes_its_checkout() {
     let home = Home::new();

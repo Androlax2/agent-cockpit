@@ -439,8 +439,10 @@ def verify_sessions(old, old_manifest, old_text, candidate, manifest, text):
         agent.write_text(
             SESSION_AGENT.format(version=release.STAND_IN_VERSIONS["claude"], home=home)
         )
-        # The stand-in writes its reports into this home, which a sandboxed agent never sees,
-        # so the fixture runs the owner's rollback; the sandbox has its own tests (#833).
+        # The stand-in writes its reports into this home and calls the `installed` link the
+        # swap moves, neither of which a sandboxed agent sees, so this fixture runs the
+        # owner's rollback, written out. A sandboxed agent reaching the next daemon is
+        # `a_sandboxed_agent_reaches_the_next_daemon_after_a_killed_one` (#833).
         owner_config = Path(environment["XDG_CONFIG_HOME"]) / "torlek-release-gate"
         owner_config.mkdir(mode=0o700)
         (owner_config / "config.toml").write_text('[agents]\nsandbox = "off"\n')
