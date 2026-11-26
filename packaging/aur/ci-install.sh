@@ -51,7 +51,7 @@ fi
 
 # The keyring first: the pinned image's own keyring cannot verify packages signed since.
 pacman -Sy --noconfirm archlinux-keyring
-pacman -Su --noconfirm --needed git curl tmux python namcap
+pacman -Su --noconfirm --needed git curl tmux bubblewrap python namcap
 useradd --create-home builder
 home=/home/builder
 as_builder() {
