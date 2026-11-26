@@ -55,7 +55,7 @@ Run `torlek daemon install` and `torlek init` first, as the [README](../README.m
 A source build uses the profile `dev` and release bundles use `torlek`; `torlek config show` and `torlek doctor` show which profile and paths you are using.
 Use the same profile for every command. To keep a preview's state apart from an existing installation, put `--profile next` before every command, including `daemon install`.
 
-1. Check the sandbox. Agents run in Torlek's native sandbox by default, `sandbox = "required"` under `[agents]`. `torlek doctor` prints a `sandbox` line: `sandboxed:` with the bubblewrap and Landlock versions it found, or what this host lacks and how to fix it (see [Sandbox mode](#sandbox-mode)); until it is fixed, every agent launch is refused.
+1. Check the sandbox. Agents run in Torlek's native sandbox by default, `sandbox = "required"` under `[agents]`. `torlek doctor` prints a `sandbox` line: `sandboxed:` with the bubblewrap and Landlock versions it found, or what this host lacks and how to fix it (see Sandbox mode under [Configuration and state](#configuration-and-state)); until it is fixed, every agent launch is refused.
    Agents stay off your screen and desktop session by default, `desktop_session = "withheld"` under `[agents]`.
    An unsandboxed agent can be given your display and filtered session bus with this in the owner configuration file (`torlek config show` prints its path), keeping any existing settings:
 

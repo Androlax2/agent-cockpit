@@ -104,6 +104,11 @@ jobs:
       - name: Run the packaging tests, dpkg's included
         run: |
           set -euo pipefail
+          # Ubuntu's AppArmor refuses unprivileged user namespaces, which the maintainer
+          # script tests' fake systemd host needs (#1400); the job refuses a skipped test.
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns > /dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
           python3 -m unittest discover -s tools/tests -p test_deb_package.py -v 2>&1 | tee tests.log
           if grep -q 'skipped' tests.log; then
             printf '%s\n' 'A packaging test skipped on a runner that has dpkg and gpg' >&2
