@@ -439,6 +439,11 @@ def verify_sessions(old, old_manifest, old_text, candidate, manifest, text):
         agent.write_text(
             SESSION_AGENT.format(version=release.STAND_IN_VERSIONS["claude"], home=home)
         )
+        # The stand-in writes its reports into this home, which a sandboxed agent never sees,
+        # so the fixture runs the owner's rollback; the sandbox has its own tests (#833).
+        owner_config = Path(environment["XDG_CONFIG_HOME"]) / "torlek-release-gate"
+        owner_config.mkdir(mode=0o700)
+        (owner_config / "config.toml").write_text('[agents]\nsandbox = "off"\n')
         installed = home / "installed"
 
         def cli(*arguments):

@@ -41,7 +41,7 @@ pub fn run(bubblewrap: PathBuf) -> Result<(), String> {
         let diagnosis = if bubblewrap_refused {
             format!(
                 "; {}",
-                user_namespace_refusal(Path::new(PROC_SYS), &bubblewrap)
+                userns_refusal(Path::new(PROC_SYS), &bubblewrap)
                     .unwrap_or_else(|| NO_KERNEL_SETTING_REFUSES.to_owned())
             )
         } else {
@@ -87,7 +87,7 @@ const NO_KERNEL_SETTING_REFUSES: &str = "the sandbox needs unprivileged user nam
 
 /// Why the kernel refuses bubblewrap an unprivileged user namespace, read from `proc_sys`,
 /// with the command that allows it; `None` when no setting there refuses it.
-fn user_namespace_refusal(proc_sys: &Path, bubblewrap: &Path) -> Option<String> {
+fn userns_refusal(proc_sys: &Path, bubblewrap: &Path) -> Option<String> {
     let setting = |name: &str| {
         std::fs::read_to_string(proc_sys.join(name))
             .ok()
@@ -150,7 +150,7 @@ fn bubblewrap_version(bubblewrap: &Path) -> Result<String, String> {
 mod tests {
     use std::path::Path;
 
-    use super::user_namespace_refusal;
+    use super::userns_refusal;
 
     fn proc_sys(settings: &[(&str, &str)]) -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
@@ -184,7 +184,7 @@ mod tests {
         for (name, value, fix) in cases {
             let root = proc_sys(&[(name, value)]);
 
-            let refusal = user_namespace_refusal(root.path(), Path::new("/usr/bin/bwrap"));
+            let refusal = userns_refusal(root.path(), Path::new("/usr/bin/bwrap"));
 
             let refusal = refusal.unwrap_or_else(|| panic!("{name} = {value} refuses nothing"));
             assert!(refusal.contains(fix), "{refusal}");
@@ -199,7 +199,7 @@ mod tests {
             ("kernel/apparmor_restrict_unprivileged_userns", "0"),
         ]);
 
-        let refusal = user_namespace_refusal(root.path(), Path::new("/usr/bin/bwrap"));
+        let refusal = userns_refusal(root.path(), Path::new("/usr/bin/bwrap"));
 
         assert_eq!(refusal, None);
     }
@@ -208,7 +208,7 @@ mod tests {
     fn a_kernel_without_the_settings_refuses_nothing() {
         let root = proc_sys(&[]);
 
-        let refusal = user_namespace_refusal(root.path(), Path::new("/usr/bin/bwrap"));
+        let refusal = userns_refusal(root.path(), Path::new("/usr/bin/bwrap"));
 
         assert_eq!(refusal, None);
     }
